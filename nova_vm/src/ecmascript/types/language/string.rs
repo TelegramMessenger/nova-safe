@@ -270,9 +270,6 @@ impl<'a> String<'a> {
         strings: impl AsRef<[Self]>,
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
-        // TODO: This function will need heavy changes once we support creating
-        // WTF-8 strings, since WTF-8 concatenation isn't byte concatenation.
-
         // We use this status enum so we can reuse one of the heap string inputs
         // if the output would be identical, and so we don't allocate at all
         // until it's clear we need a new heap string.
@@ -330,7 +327,11 @@ impl<'a> String<'a> {
                 }
                 Status::SmallString { data, len } => {
                     let string_len = string.len_(agent);
-                    if *len + string_len <= 7 {
+                    let joins_surrogate_pair = Wtf8Str::from_wtf8_bytes(&data[..*len])
+                        .final_lead_surrogate()
+                        .is_some()
+                        && string.as_wtf8_(agent).initial_trail_surrogate().is_some();
+                    if *len + string_len <= 7 && !joins_surrogate_pair {
                         let String::SmallString(smstr) = string else {
                             unreachable!()
                         };

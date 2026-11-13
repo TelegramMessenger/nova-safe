@@ -42,3 +42,8 @@ fn regexp_flags() {
 fn string_slice_surrogates() {
     run_test_source("stringSliceSurrogates.test.js");
 }
+
+#[test]
+fn string_concat_surrogates() {
+    run_test_source("stringConcatSurrogates.test.js");
+}
