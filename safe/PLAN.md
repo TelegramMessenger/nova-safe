@@ -83,11 +83,28 @@ Small steps, each passing the gate. Commit as the repository's configured identi
 `TZ=Asia/Dubai git commit`. No Co-Authored-By or "Generated with" lines. First line: what changed, imperative. Body:
 why the new code cannot reach undefined behaviour, and the unsafe count before and after.
 
-## Known engine bugs found by the widgets
+## Engine bugs found along the way
 
-- `corpus/compat/notes-storage.html`: panicked with `assertion failed: begin <= end` in `wtf8`. Cause: `unescape`
-  advanced its position by 1 instead of to the match (`unescape("%41%42%43")` gave `"AB%43"`). Fixed in e2f45041; the
-  widget now matches QuickJS and its baseline hash was recorded again.
-- Sorting a growable shared typed array with a comparator that grows the buffer panics in
-  `RacySlice::copy_from_slice` (length mismatch). Not fixed yet.
-- `ElementArrays::reserve_elements_raw`: the `new_key == E1` arms read the wrong source store (unreachable today).
+Fixed (each in its own commit, results checked against QuickJS):
+- `unescape` advanced by 1 instead of to the match (`unescape("%41%42%43")` gave `"AB%43"`); `notes-storage.html`
+  panicked in `wtf8`. e2f45041.
+- `%TypedArray%.prototype.slice` with a species view of another element type over the same buffer: the source index
+  used the target's element size (wrong values or a panic), floats were converted to integers with `as u64`, and the
+  copy read through a raw pointer while writing through `&mut` to the same bytes (aliasing UB). fb3b1398, 1f8baa76.
+- `Array.prototype.slice` panicked when the species constructor shrank the source. b72eb433.
+- Sorting a growable shared typed array with a comparator that grows the buffer panicked. 1505a469.
+- `ElementArrays::reserve_elements_raw` E1 arms read the wrong store (unreachable). a76a156a.
+- Dangling pointers read by the next GC after a panic the embedder catches: `vm_stack` (45409a77); the interpreter's
+  `&'static` bytecode slice could outlive its Executable (e6a2c978); unreachable realms/scripts/modules dropped their
+  host `Rc` on GC worker threads (024cc498).
+
+Open (each changes test262 or widget results, so each needs its own commit):
+- Two small strings concatenated don't join a surrogate pair: `"\uD83D" + "\uDE00" === "😀"` is false.
+- `slice`/`substring` lose lone surrogates (`"a\uD800bcdefghijk".slice(0,5).charCodeAt(1)` is 65533) and panic when an
+  index splits a surrogate pair (`"😀abc".slice(1)`).
+- RegExp replace on non-ASCII text uses UTF-8 positions as UTF-16 ones: `"éa wörld".replace(/w(ö)rld/g, "<$&>")` is
+  wrong, a similar case panics in `get_substitution`.
+- `/a/y.flags` is `"v"`.
+- RegExp captures go through `from_utf8_lossy`: a lone surrogate becomes three U+FFFD.
+- `ArgumentsList::with_scoped` keeps a raw pointer to the caller's frame in the GC roots; a caught panic leaves it
+  dangling (b-bindable round 2).
