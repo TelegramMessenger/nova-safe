@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::hint::unreachable_unchecked;
-
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin,
@@ -69,8 +67,7 @@ impl WeakMapConstructor {
         )
         .unbind()?
         else {
-            // SAFETY: ProtoIntrinsics guarded.
-            unsafe { unreachable_unchecked() }
+            unreachable!("ProtoIntrinsics::WeakMap creates a WeakMap")
         };
         // 3. Set map.[[WeakMapData]] to a new empty List.
         // 4. If iterable is either undefined or null, return map.

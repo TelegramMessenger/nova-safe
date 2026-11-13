@@ -42,11 +42,13 @@ mod control_abstraction_objects;
 mod data_view;
 #[cfg(feature = "date")]
 mod date;
+#[allow(unsafe_code)]
 mod ecmascript_function;
 mod embedder_object;
 mod error;
 mod finalization_registry;
 mod fundamental_objects;
+#[allow(unsafe_code)]
 mod global_object;
 mod indexed_collections;
 mod keyed_collections;

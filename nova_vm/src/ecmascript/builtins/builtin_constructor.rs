@@ -102,6 +102,7 @@ impl<'a> FunctionInternalProperties<'a> for BuiltinConstructorFunction<'a> {
     /// the method is present) takes arguments argumentsList (a List of
     /// ECMAScript language values) and newTarget (a constructor) and returns
     /// either a normal completion containing an Object or a throw completion.
+    #[allow(unsafe_code)]
     fn function_construct<'gc>(
         self,
         agent: &mut Agent,

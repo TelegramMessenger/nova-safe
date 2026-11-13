@@ -398,6 +398,7 @@ const _VALUE_SIZE_IS_WORD: () = assert!(size_of::<Value>() == size_of::<usize>()
 /// arrays do not start requiring extra bookkeeping.
 const _OPTIONAL_VALUE_SIZE_IS_WORD: () = assert!(size_of::<Option<Value>>() == size_of::<usize>());
 
+#[allow(unsafe_code)]
 const fn value_discriminant(value: Value) -> u8 {
     // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
     // between `repr(C)` structs, each of which has the `u8` discriminant as its first

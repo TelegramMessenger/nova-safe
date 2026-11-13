@@ -11,6 +11,7 @@ mod abstract_operations;
 pub mod builders;
 mod builtins;
 mod execution;
+#[allow(unsafe_code)]
 mod scripts_and_modules;
 mod syntax_directed_operations;
 mod types;

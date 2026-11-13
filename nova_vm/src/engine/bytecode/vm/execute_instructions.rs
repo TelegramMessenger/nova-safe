@@ -2460,10 +2460,9 @@ pub(super) fn execute_string_concat<'gc>(
             // Note: We write String into each arg.
             *arg = string.unbind().into();
         }
-        let args = &*args;
-        // SAFETY: String is a sub-enum of Value and we've written
-        // a String into each of the args.
-        let args = unsafe { std::mem::transmute::<&[Value<'_>], &[String<'_>]>(args) };
+        let args = args.iter().map(|arg| {
+            String::try_from(*arg).expect("a String was written into each argument above")
+        });
         concat_string_from_slice(agent, args, length, gc)
     } else {
         let mut args = vm
@@ -2499,7 +2498,7 @@ pub(super) fn execute_string_concat<'gc>(
             .into_iter()
             .map(|v| String::try_from(v.get(agent)).unwrap().bind(gc))
             .collect::<Vec<_>>();
-        concat_string_from_slice(agent, &args, length, gc)
+        concat_string_from_slice(agent, args, length, gc)
     };
     vm.stack.truncate(first_arg_index);
     vm.result = Some(string.unbind().into());
@@ -2647,12 +2646,9 @@ pub(super) fn execute_iterator_complete<'gc>(
     };
     // 3. If done is true, then
     if done {
-        // SAFETY: Result was checked to be an Object already.
-        let result = unsafe {
-            Object::try_from(vm.result.unwrap_unchecked())
-                .unwrap_unchecked()
-                .bind(gc.nogc())
-        };
+        let result = Object::try_from(vm.result.expect("result was checked to be an Object"))
+            .expect("result was checked to be an Object")
+            .bind(gc.nogc());
         // i. Return ? IteratorValue(innerResult).
         let result = {
             let result = result.unbind();

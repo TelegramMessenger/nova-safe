@@ -984,14 +984,14 @@ impl Vm {
     }
 }
 
-fn concat_string_from_slice<'gc>(
+fn concat_string_from_slice<'a, 'gc>(
     agent: &mut Agent,
-    slice: &[String],
+    strings: impl IntoIterator<Item = String<'a>>,
     string_length: usize,
     gc: NoGcScope<'gc, '_>,
 ) -> String<'gc> {
     let mut result_string = Wtf8Buf::with_capacity(string_length);
-    for string in slice.iter() {
+    for string in strings {
         result_string.push_wtf8(string.as_wtf8_(agent));
     }
     String::from_wtf8_buf(agent, result_string, gc)

@@ -571,6 +571,7 @@ impl<'a> FunctionInternalProperties<'a> for BuiltinFunction<'a> {
     /// (a List of ECMAScript language values) and returns either a normal
     /// completion containing an ECMAScript language value or a throw
     /// completion.
+    #[allow(unsafe_code)]
     fn function_call<'gc>(
         self,
         agent: &mut Agent,
@@ -597,6 +598,7 @@ impl<'a> FunctionInternalProperties<'a> for BuiltinFunction<'a> {
     /// the method is present) takes arguments argumentsList (a List of
     /// ECMAScript language values) and newTarget (a constructor) and returns
     /// either a normal completion containing an Object or a throw completion.
+    #[allow(unsafe_code)]
     fn function_construct<'gc>(
         self,
         agent: &mut Agent,

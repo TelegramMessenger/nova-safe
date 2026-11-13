@@ -256,20 +256,17 @@ impl ObjectConstructor {
         let value = arguments.get(0).bind(gc.nogc());
         let new_target = new_target.bind(gc.nogc());
         // 1. If NewTarget is neither undefined nor the active function object, then
-        if new_target.is_some()
-            && new_target
+        if let Some(new_target) = new_target.filter(|new_target| {
+            Some(*new_target)
                 != agent
                     .running_execution_context()
                     .function
                     .map(|obj| obj.into())
-        {
+        }) {
             // a. Return ? OrdinaryCreateFromConstructor(NewTarget, "%Object.prototype%").
             Ok(ordinary_create_from_constructor(
                 agent,
-                // SAFETY: 'new_target' is checked to be is_some() above
-                unsafe { new_target.unwrap_unchecked().unbind() }
-                    .try_into()
-                    .unwrap(),
+                new_target.unbind().try_into().unwrap(),
                 ProtoIntrinsics::Object,
                 gc,
             )?

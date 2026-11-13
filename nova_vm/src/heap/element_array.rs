@@ -3391,15 +3391,6 @@ impl ElementArrays {
         self.allocate_object_property_storage(length, &values, descriptors)
     }
 
-    pub(crate) fn allocate_property_storage<'a>(
-        &mut self,
-        values: &[Option<Value<'a>>],
-        descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>>,
-    ) -> Result<ElementsVector<'a>, TryReserveError> {
-        let length = values.len();
-        self.allocate_object_property_storage(length, values, descriptors)
-    }
-
     pub(crate) fn allocate_object_property_storage_from_entries_slice<'a>(
         &mut self,
         entries: &[ObjectEntry<'a>],
