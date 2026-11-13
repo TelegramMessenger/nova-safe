@@ -703,19 +703,11 @@ mod test {
         let index = index as u32;
         let mut changed_index = index;
         if changed_index <= LAST_INTRINSIC_CONSTRUCTOR_INDEX as u32 {
-            // Safety: Tested to be within limits.
-            panic!(
-                "Found a missing BuiltinFunction at constructor index {:?}",
-                unsafe { core::mem::transmute::<u32, IntrinsicConstructorIndexes>(changed_index) }
-            );
+            panic!("Found a missing BuiltinFunction at constructor index {changed_index}");
         }
         changed_index -= LAST_INTRINSIC_CONSTRUCTOR_INDEX as u32 + 1;
         if changed_index <= LAST_INTRINSIC_FUNCTION_INDEX as u32 {
-            // Safety: Tested to be within limits.
-            panic!(
-                "Found a missing BuiltinFunction at function index {:?}",
-                unsafe { core::mem::transmute::<u32, IntrinsicFunctionIndexes>(changed_index) }
-            );
+            panic!("Found a missing BuiltinFunction at function index {changed_index}");
         }
         panic!("Found a missing BuiltinFunction at index {index:?}");
     }
@@ -724,18 +716,11 @@ mod test {
         let index = index as u32;
         let mut changed_index = index;
         if changed_index <= LAST_INTRINSIC_OBJECT_INDEX as u32 {
-            // Safety: Tested to be within limits.
-            panic!("Found a blank Object at object index {:?}", unsafe {
-                core::mem::transmute::<u32, IntrinsicObjectIndexes>(changed_index)
-            });
+            panic!("Found a blank Object at object index {changed_index}");
         }
         changed_index -= LAST_INTRINSIC_OBJECT_INDEX as u32 + 1;
         if changed_index <= LAST_INTRINSIC_CONSTRUCTOR_INDEX as u32 {
-            // Safety: Tested to be within limits.
-            panic!(
-                "Found a blank BuiltinFunction at constructor index {:?}",
-                unsafe { core::mem::transmute::<u32, IntrinsicConstructorIndexes>(changed_index) }
-            );
+            panic!("Found a blank BuiltinFunction at constructor index {changed_index}");
         }
         panic!("Found a blank object at index {index:?}");
     }

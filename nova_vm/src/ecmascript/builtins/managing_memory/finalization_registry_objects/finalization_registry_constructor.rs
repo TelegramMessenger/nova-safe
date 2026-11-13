@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::hint::unreachable_unchecked;
-
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin,
@@ -76,8 +74,7 @@ impl FinalizationRegistryConstructor {
         )
         .unbind()?
         else {
-            // SAFETY: ProtoIntrinsics guarded.
-            unsafe { unreachable_unchecked() }
+            unreachable!("ProtoIntrinsics::FinalizationRegistry creates a FinalizationRegistry")
         };
         let gc = gc.into_nogc();
         let finalization_registry = finalization_registry.bind(gc);
@@ -102,8 +99,7 @@ impl FinalizationRegistryConstructor {
         // 6. Set finalizationRegistry.[[CleanupCallback]] to
         //    HostMakeJobCallback(cleanupCallback).
         // 7. Set finalizationRegistry.[[Cells]] to a new empty List.
-        // SAFETY: initialising new FR.
-        unsafe { finalization_registry.initialise(agent, realm, cleanup_callback) };
+        finalization_registry.initialise(agent, realm, cleanup_callback);
         // 8. Return finalizationRegistry.
         Ok(finalization_registry.into())
     }

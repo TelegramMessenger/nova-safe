@@ -210,11 +210,11 @@ impl<'gc> Executable<'gc> {
 
     /// Drops the Executable's heap-allocated data if possible.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// Any attempt to use the Executable after this call will lead to a crash
     /// if the drop was performed.
-    pub(crate) unsafe fn try_drop(self, agent: &mut Agent) {
+    pub(crate) fn try_drop(self, agent: &mut Agent) {
         debug_assert!(!agent.heap.executables.is_empty());
         let index = self.get_index();
         let last_index = agent.heap.executables.len() - 1;

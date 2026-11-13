@@ -269,9 +269,7 @@ pub(crate) fn create_dynamic_function<'a>(
     {
         func.as_ref()
     } else {
-        // SAFETY: source text was parsed but didn't match our expectations; no
-        // one has seen it yet and thus it can never be executed in this branch.
-        unsafe { source_code.manually_drop(agent) };
+        source_code.manually_drop(agent);
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::SyntaxError,
             "Invalid function source text.",

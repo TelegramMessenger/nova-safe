@@ -6,8 +6,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::hint::unreachable_unchecked;
-
 use crate::{
     ecmascript::{
         Agent, Environment, PrivateEnvironment, builtins::ECMAScriptFunction,
@@ -57,7 +55,6 @@ pub(crate) fn instantiate_function_object<'a>(
         // 1. Return InstantiateAsyncFunctionObject of AsyncFunctionDeclaration with arguments env and privateEnv.
         instantiate_ordinary_function_object(agent, function, env, private_env, gc)
     } else {
-        // SAFETY: Two boolean values, four branches.
-        unsafe { unreachable_unchecked() };
+        unreachable!("two boolean values, four branches")
     }
 }

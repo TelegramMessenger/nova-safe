@@ -91,21 +91,13 @@ impl<'fr> FinalizationRegistry<'fr> {
         }
     }
 
-    /// # Safety
+    /// ## Correctness
     ///
     /// FinalizationRegistry must be previously uninitialised.
-    pub(crate) unsafe fn initialise(
-        self,
-        agent: &mut Agent,
-        realm: Realm,
-        cleanup_callback: Function,
-    ) {
-        // SAFETY: precondition.
-        unsafe {
-            self.get_mut(agent)
-                .cleanup
-                .initialise(realm, cleanup_callback)
-        };
+    pub(crate) fn initialise(self, agent: &mut Agent, realm: Realm, cleanup_callback: Function) {
+        self.get_mut(agent)
+            .cleanup
+            .initialise(realm, cleanup_callback);
     }
 
     pub(crate) fn register(

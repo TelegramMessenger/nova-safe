@@ -110,9 +110,9 @@ impl<'a> SourceCode<'a> {
                         let String::String(source) = String::from_string(agent, string, gc) else {
                             unreachable!()
                         };
-                        // SAFETY: Allocating a String into the heap cannot turn
-                        // it into non-UTF-8.
-                        let source_text = unsafe { source.as_str(agent).unwrap_unchecked() };
+                        let source_text = source
+                            .as_str(agent)
+                            .expect("String allocated from a Rust String is UTF-8");
                         // SAFETY: Caller guarantees to keep SourceCode from
                         // being garbage collected until the parsed Program is
                         // dropped. Thus the source text is kept from garbage
@@ -132,9 +132,9 @@ impl<'a> SourceCode<'a> {
                 let String::String(source) = source else {
                     unreachable!()
                 };
-                // SAFETY: Allocating a String into the heap cannot turn it into
-                // non-UTF-8.
-                let source_text = unsafe { source.as_str(agent).unwrap_unchecked() };
+                let source_text = source
+                    .as_str(agent)
+                    .expect("String allocated from a Rust String is UTF-8");
                 // SAFETY: Caller guarantees to keep SourceCode from being
                 // garbage collected until the parsed Program is dropped. Thus
                 // the source text is kept from garbage collection.
@@ -265,7 +265,7 @@ impl<'a> SourceCode<'a> {
 
     /// Manually drop a SourceCode.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// The caller must guarantee that the SourceCode has not and will not be
     /// executed.
@@ -273,7 +273,7 @@ impl<'a> SourceCode<'a> {
     /// ## Panics
     ///
     /// If the SourceCode was not the last SourceCode to be allocated.
-    pub(crate) unsafe fn manually_drop(self, agent: &mut Agent) {
+    pub(crate) fn manually_drop(self, agent: &mut Agent) {
         agent.heap.alloc_counter = agent
             .heap
             .alloc_counter
@@ -283,15 +283,11 @@ impl<'a> SourceCode<'a> {
     }
 
     pub(crate) fn get_source_text(self, agent: &Agent) -> &str {
-        // SAFETY: parse_source will always copy non-UTF-8 source texts into
-        // well-formed UTF-8.
-        unsafe {
-            self.get(agent)
-                .source
-                .get(agent)
-                .as_str()
-                .unwrap_unchecked()
-        }
+        self.get(agent)
+            .source
+            .get(agent)
+            .as_str()
+            .expect("parse_source copies non-UTF-8 source texts into UTF-8")
     }
 
     /// Access the Scoping information of the SourceCode.
