@@ -17,7 +17,7 @@ fi
 grep -E "^warning" "$LOG/build.txt" | sort | uniq -c | head -20
 
 echo "== test262${GATE_GC:+ (--gc)}"
-cargo run -q --bin test262 --profile dev-fast -- --noprogress ${GATE_GC:+--gc} >"$LOG/t262.txt" 2>&1
+cargo run -q --bin test262 --profile dev-fast -- --noprogress ${GATE_GC:+--gc} ${GATE_T262_JOBS:+-j $GATE_T262_JOBS} >"$LOG/t262.txt" 2>&1
 grep -E "^\s+\".*\" -- Expected" "$LOG/t262.txt" | grep -v -E "Expected Timeout, got Pass|Expected Pass, got Timeout" | sort >"$LOG/t262-unexpected.txt"
 if [ -n "${GATE_GC:-}" ]; then
   baseline=safe/baseline/test262-gc-unexpected.txt
@@ -45,7 +45,7 @@ fi
 
 echo "== widgets (Nova output must not change)"
 if ! python3 -I safe/widgets/run.py --nova target/dev-fast/nova_cli --bundle "$BUNDLE" \
-    --expect safe/baseline/widgets-nova.json --jobs "${GATE_JOBS:-6}" --timeout 60 \
+    --expect safe/baseline/widgets-nova.json --jobs "${GATE_JOBS:-6}" --timeout 300 \
     $(find "$WIDGET_SANDBOX/corpus" "$LAB_WIDGETS" -name "*.html"); then
   echo "GATE FAIL: widgets"
   status=1

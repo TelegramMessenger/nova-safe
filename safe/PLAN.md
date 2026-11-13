@@ -61,6 +61,22 @@ removing now-unneeded `unsafe { }` wrappers at call sites anywhere (the strip to
 
 Paths are under `nova_vm/src/ecmascript/` unless they start with `engine/`, `heap` or `small_string/`.
 
+### Round 2 (from 236 left after round 1)
+
+The worktrees and branch names stay; the scope changes. Round 1's reports are summarised in each agent's prompt.
+
+| Worktree / branch | Round 2 scope | Owns |
+|---|---|---|
+| a1-buffers | `ViewableSlice` over `DataBlock` bytes instead of `align_to`; the normal typed arrays read and write through it; `ArrayBuffer::as_slice_and_mut_slice` for two buffers | the `DataBlock` part of `data_block.rs`, `array_buffer.rs`, `array_buffer/`, `normal_typed_array.rs`, `typed_array.rs`, `typed_array_objects/` |
+| a2-typed-arrays | `SharedDataBlock` as `Arc<Inner>` with atomic words, a safe `SharedSlice` replacing `RacySlice`, dropping `ecmascript_atomics` | the `SharedDataBlock` part of `data_block.rs`, `shared_array_buffer*`, `shared_typed_array.rs`, `atomics_object.rs` |
+| b-bindable | `#[derive(Bindable)]` (a proc-macro crate in the workspace) replacing `bindable_handle!`; owned arguments in `ArgumentsList::with_scoped`; index-based scoped iterators | `engine/`, `heap/indexes.rs`, `builtin_function.rs`, `value_vec.rs`, `property_key_vec.rs`, the new derive crate, and one-line derive attributes on handle types anywhere |
+| c-heap | `get_direct_mut` returning the stored `'static` record (all impls, including the typed arrays' two); flat strided storage in `element_array.rs`; private fields as a slice | `heap.rs`, `heap/` (not `indexes.rs`), `shape.rs`, `property_storage.rs`, `array.rs`, `array_objects/`, every `get_direct_mut` impl and its write sites, a take/restore accessor in `private_environment.rs` |
+| d-strings | an in-tree WTF-8 type replacing the `wtf8` crate; `string_prototype.rs` borrows across user code; the leftovers in `small_string`, string, JSON and RegExp constructors | as in round 1, plus the `wtf8` users the replacement touches |
+| e-scripts | the prepared VM stack change; `Executable` instructions as `Arc<[u8]>`; the heap sweep of realms, scripts and modules on the calling thread so their `unsafe impl Send` go; then step 1 of eager compilation (`FunctionTemplate`) | as in round 1, plus that sweep in `heap_gc.rs` |
+
+Gate under load: set `GATE_T262_JOBS=3 GATE_JOBS=2`, and write your logs only under your own
+`<scratchpad>/<worktree name>/`.
+
 ## Commits
 
 Small steps, each passing the gate. Commit as the repository's configured identity (`tmacos <>`) with
