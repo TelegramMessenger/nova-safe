@@ -503,6 +503,123 @@ impl<'a> String<'a> {
         agent.heap.create(buf).bind(gc)
     }
 
+    /// The WTF-8 bytes of `search` can stand for its code units in a byte
+    /// search unless it starts with a trail surrogate or ends with a lead
+    /// surrogate: those can be one half of a surrogate pair in a string.
+    fn searchable_as_bytes(search: Wtf8Str) -> bool {
+        search.initial_trail_surrogate().is_none() && search.final_lead_surrogate().is_none()
+    }
+
+    fn to_utf16_vec(self, agent: &impl StringHeapAccess) -> Vec<u16> {
+        self.as_wtf8_(agent).to_ill_formed_utf16().collect()
+    }
+
+    /// ### [6.1.4.1 StringIndexOf ( string, searchValue, fromIndex )](https://tc39.es/ecma262/#sec-stringindexof)
+    ///
+    /// The first UTF-16 index at or after `from` where `search` occurs.
+    pub(crate) fn index_of_(
+        self,
+        agent: &impl StringHeapAccess,
+        search: String,
+        from: usize,
+    ) -> Option<usize> {
+        let len = self.utf16_len_(agent);
+        let search_len = search.utf16_len_(agent);
+        if search_len == 0 {
+            return (from <= len).then_some(from);
+        }
+        if from >= len || search_len > len - from {
+            return None;
+        }
+        let needle = search.as_wtf8_(agent);
+        if !Self::searchable_as_bytes(needle) {
+            let haystack = self.to_utf16_vec(agent);
+            let needle = search.to_utf16_vec(agent);
+            return haystack[from..]
+                .windows(needle.len())
+                .position(|window| window == needle.as_slice())
+                .map(|index| from + index);
+        }
+        let start = match self.utf8_index_(agent, from) {
+            Some(start) => start,
+            None => {
+                self.utf8_index_(agent, from - 1)
+                    .expect("a trail surrogate follows its lead")
+                    + 4
+            }
+        };
+        let haystack = self.as_bytes_(agent);
+        memchr::memmem::find(&haystack[start..], needle.as_bytes())
+            .map(|index| self.utf16_index_(agent, start + index))
+    }
+
+    /// ### [6.1.4.2 StringLastIndexOf ( string, searchValue, fromIndex )](https://tc39.es/ecma262/#sec-stringlastindexof)
+    ///
+    /// The last UTF-16 index at or before `from` where `search` occurs.
+    pub(crate) fn last_index_of_(
+        self,
+        agent: &impl StringHeapAccess,
+        search: String,
+        from: usize,
+    ) -> Option<usize> {
+        let len = self.utf16_len_(agent);
+        let search_len = search.utf16_len_(agent);
+        if search_len > len {
+            return None;
+        }
+        let from = from.min(len - search_len);
+        if search_len == 0 {
+            return Some(from);
+        }
+        let needle = search.as_wtf8_(agent);
+        if !Self::searchable_as_bytes(needle) {
+            let haystack = self.to_utf16_vec(agent);
+            let needle = search.to_utf16_vec(agent);
+            return haystack[..from + needle.len()]
+                .windows(needle.len())
+                .rposition(|window| window == needle.as_slice());
+        }
+        let start = match self.utf8_index_(agent, from) {
+            Some(start) => start,
+            None => self
+                .utf8_index_(agent, from - 1)
+                .expect("a trail surrogate follows its lead"),
+        };
+        let haystack = self.as_bytes_(agent);
+        let end = (start + needle.len()).min(haystack.len());
+        memchr::memmem::rfind(&haystack[..end], needle.as_bytes())
+            .map(|index| self.utf16_index_(agent, index))
+    }
+
+    /// True if `search` occurs at UTF-16 index `at`.
+    pub(crate) fn has_substring_at_(
+        self,
+        agent: &impl StringHeapAccess,
+        search: String,
+        at: usize,
+    ) -> bool {
+        let len = self.utf16_len_(agent);
+        let search_len = search.utf16_len_(agent);
+        if search_len == 0 {
+            return at <= len;
+        }
+        if at >= len || search_len > len - at {
+            return false;
+        }
+        let needle = search.as_wtf8_(agent);
+        if !Self::searchable_as_bytes(needle) {
+            let haystack = self.to_utf16_vec(agent);
+            return haystack[at..at + search_len]
+                .iter()
+                .copied()
+                .eq(needle.to_ill_formed_utf16());
+        }
+        match self.utf8_index_(agent, at) {
+            Some(start) => self.as_bytes_(agent)[start..].starts_with(needle.as_bytes()),
+            None => false,
+        }
+    }
+
     /// Byte length of the string.
     #[inline(always)]
     pub fn len(self, agent: &Agent) -> usize {

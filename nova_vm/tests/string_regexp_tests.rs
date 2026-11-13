@@ -57,3 +57,8 @@ fn regexp_non_ascii_positions() {
 fn regexp_captures() {
     run_test_source("regExpCaptures.test.js");
 }
+
+#[test]
+fn string_search_positions() {
+    run_test_source("stringSearchPositions.test.js");
+}

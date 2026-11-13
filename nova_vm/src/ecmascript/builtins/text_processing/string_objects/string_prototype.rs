@@ -754,29 +754,19 @@ impl StringPrototype {
 
         // 6. Let len be the length of S.
         // 8. Let end be the result of clamping pos between 0 and len.
-        let haystack_str = if pos == usize::MAX {
-            s.as_bytes_(agent)
-        } else {
-            let end = if pos != 0 {
-                // NOTE: `pos` was already clamped to 0.
-                pos.min(s.utf16_len_(agent))
-            } else {
-                0
-            };
-            let u8_idx = s.utf8_index_(agent, end).unwrap();
-            &s.as_bytes_(agent)[..u8_idx]
-        };
-
+        let end = pos.min(s.utf16_len_(agent));
         // 9. Let searchLength be the length of searchStr.
+        let search_length = search_str.utf16_len_(agent);
         // 10. If searchLength = 0, return true.
         // 11. Let start be end - searchLength.
         // 12. If start < 0, return false.
+        let Some(start) = end.checked_sub(search_length) else {
+            return Ok(false.into());
+        };
         // 13. Let substring be the substring of S from start to end.
         // 14. If substring is searchStr, return true.
         // 15. Return false.
-        Ok(Value::from(
-            haystack_str.ends_with(search_str.as_bytes_(agent)),
-        ))
+        Ok(Value::from(s.has_substring_at_(agent, search_str, start)))
     }
 
     /// ### [22.1.3.8 String.prototype.includes ( searchString \[ , position \] )](https://tc39.es/ecma262/#sec-string.prototype.includes)
@@ -868,22 +858,11 @@ impl StringPrototype {
 
         // 8. Let len be the length of S.
         // 9. Let start be the result of clamping pos between 0 and len.
-        let haystack_str = {
-            let start = if pos != 0 {
-                // NOTE: `pos` was already clamped to 0.
-                pos.min(s.utf16_len_(agent))
-            } else {
-                0
-            };
-            &s.to_string_lossy_(agent)[start..]
-        };
-
+        let start = pos.min(s.utf16_len_(agent));
         // 10. Let index be StringIndexOf(S, searchStr, start).
         // 11. If index is not-found, return false.
         // 12. Return true.
-        Ok(Value::from(
-            haystack_str.contains(search_str.to_string_lossy_(agent).deref()),
-        ))
+        Ok(Value::from(s.index_of_(agent, search_str, start).is_some()))
     }
 
     /// ### [22.1.3.9 String.prototype.indexOf ( searchString \[ , position \] )](https://tc39.es/ecma262/#sec-string.prototype.indexof)
@@ -953,25 +932,11 @@ impl StringPrototype {
 
         // 6. Let len be the length of S.
         // 7. Let start be the result of clamping pos between 0 and len.
-        let utf8_start = if pos != 0 {
-            let u16_len = s.utf16_len_(agent);
-            if pos >= u16_len {
-                s.len_(agent)
-            } else {
-                s.utf8_index_(agent, pos).unwrap()
-            }
-        } else {
-            0
-        };
-
+        let start = pos.min(s.utf16_len_(agent));
         // 8. Let result be StringIndexOf(S, searchStr, start).
         // 9. If result is not-found, return -1𝔽.
         // 10. Return 𝔽(result).
-        if let Some(rel_u8_pos) =
-            s.to_string_lossy_(agent)[utf8_start..].find(search_str.to_string_lossy_(agent).deref())
-        {
-            let u8_pos = utf8_start + rel_u8_pos;
-            let result = s.utf16_index_(agent, u8_pos);
+        if let Some(result) = s.index_of_(agent, search_str, start) {
             Ok(Number::try_from(result).unwrap().into())
         } else {
             Ok(Number::from(-1).into())
@@ -1081,28 +1046,9 @@ impl StringPrototype {
         // 10. Let result be StringLastIndexOf(S, searchStr, start).
         // NOTE: If start >= (len - searchLen), there is a last index if and
         // only if start.endsWith(searchLen).
-        let haystack_str = {
-            if pos == usize::MAX {
-                s.to_string_lossy_(agent)
-            } else {
-                // When starting from a position, the position may mark the
-                // start of the search string, so we need to include the search
-                // string length in the haystack.
-                let utf8_pos = s.utf8_index_(agent, pos).unwrap();
-                let utf8_len = s.len_(agent);
-                let search_str_len = search_str.len_(agent);
-                s.as_wtf8_(agent)
-                    .slice_to(utf8_len.min(utf8_pos + search_str_len))
-                    .to_string_lossy()
-            }
-        };
-        let search_str = search_str.to_string_lossy_(agent);
-        let utf8_result = haystack_str.rfind(search_str.deref());
-
         // 11. If result is not-found, return -1𝔽.
         // 12. Return 𝔽(result).
-        if let Some(utf8_idx) = utf8_result {
-            let result = s.utf16_index_(agent, utf8_idx);
+        if let Some(result) = s.last_index_of_(agent, search_str, pos) {
             Ok(Number::try_from(result).unwrap().into())
         } else {
             Ok(Number::from(-1).into())
@@ -2176,25 +2122,22 @@ impl StringPrototype {
         }
 
         // 8. Let separatorLength be the length of R.
-        let separator_length = r.len_(agent);
+        let separator_length = r.utf16_len_(agent);
 
-        // 9. If separatorLength = 0, then split into characters
+        // 9. If separatorLength = 0, then
         if separator_length == 0 {
-            let subject = s.to_string_lossy_(agent);
-            let head = subject.split("");
-
-            let mut results: Vec<Value> = head
-                .enumerate()
-                .skip(1) // Rust's split inserts an empty string in the beginning.
-                .take_while(|(i, _)| *i <= lim as usize)
-                .map(|(_, part)| SmallString::try_from(part).unwrap().into())
+            // a. Let strLen be the length of S.
+            // b. Let outLen be the result of clamping lim between 0 and strLen.
+            // c. Let head be the substring of S from 0 to outLen.
+            // d. Let codeUnits be a List consisting of the sequence of code
+            //    units that are the elements of head.
+            // e. Return CreateArrayFromList(codeUnits).
+            let results: Vec<Value> = s
+                .as_wtf8_(agent)
+                .to_ill_formed_utf16()
+                .take(lim as usize)
+                .map(|code_unit| String::from(CodePoint::from_u16(code_unit)).into())
                 .collect();
-
-            // Remove the latest empty string if it's needed
-            if results.len() < lim as usize {
-                results.pop();
-            }
-
             let results = Array::from_slice(agent, results.as_slice(), gc);
             return Ok(results.into());
         }
@@ -2206,20 +2149,32 @@ impl StringPrototype {
             return Ok(create_array_from_list(agent, &list, gc).into());
         }
 
-        // 11-17. Normal split
-        let subject = s.to_string_lossy_(agent);
-        let separator = r.to_string_lossy_(agent);
-        let head = subject
-            .split(separator.deref())
-            .take(lim as usize)
-            .map(|part| part.to_owned())
-            .collect::<Vec<_>>();
+        // 11. Let substrings be a new empty List.
         let mut results: Vec<Value> = Vec::new();
-
-        for part in head {
-            results.push(Value::from_string(agent, part, gc));
+        // 12. Let i be 0.
+        let mut i = 0;
+        // 13. Let j be StringIndexOf(S, R, 0).
+        let mut j = s.index_of_(agent, r, 0);
+        // 14. Repeat, while j is not not-found,
+        while let Some(found) = j {
+            // a. Let T be the substring of S from i to j.
+            // b. Append T to substrings.
+            results.push(s.utf16_substring(agent, i, found, gc).into());
+            // c. If the number of elements in substrings is lim, return
+            //    CreateArrayFromList(substrings).
+            if results.len() == lim as usize {
+                return Ok(Array::from_slice(agent, results.as_slice(), gc).into());
+            }
+            // d. Set i to j + separatorLength.
+            i = found + separator_length;
+            // e. Set j to StringIndexOf(S, R, i).
+            j = s.index_of_(agent, r, i);
         }
-
+        // 15. Let T be the substring of S from i.
+        // 16. Append T to substrings.
+        let len = s.utf16_len_(agent);
+        results.push(s.utf16_substring(agent, i, len, gc).into());
+        // 17. Return CreateArrayFromList(substrings).
         let results = Array::from_slice(agent, results.as_slice(), gc);
         Ok(results.into())
     }
@@ -2323,20 +2278,7 @@ impl StringPrototype {
         // 13. Let substring be the substring of S from start to end.
         // 14. If substring is searchStr, return true.
         // 15. Return false.
-        let haystack_str = if start == 0 {
-            s.to_string_lossy_(agent)
-        } else {
-            let len = s.utf16_len_(agent);
-            if start >= len {
-                "".into()
-            } else {
-                let start = s.utf8_index_(agent, start).unwrap();
-                s.as_wtf8_(agent).slice_from(start).to_string_lossy()
-            }
-        };
-        Ok(haystack_str
-            .starts_with(search_str.to_string_lossy_(agent).deref())
-            .into())
+        Ok(s.has_substring_at_(agent, search_str, start).into())
     }
 
     /// ### [22.1.3.25 String.prototype.substring ( start, end )](https://tc39.es/ecma262/#sec-string.prototype.substring)
