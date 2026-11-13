@@ -327,8 +327,8 @@ pub(super) fn async_generator_yield(
     // 3. Let generator be the value of the Generator component of genContext.
     // 4. Assert: GetGeneratorKind() is async.
     let generator_function = ECMAScriptFunction::try_from(gen_context.function.unwrap()).unwrap();
-    let f = generator_function.get_ast(agent, gc.nogc());
-    assert!(f.is_async() && f.is_generator());
+    let kind = generator_function.get_kind(agent);
+    assert!(kind.is_async() && kind.is_generator());
     // 5. Let completion be NormalCompletion(value).
     let completion = AsyncGeneratorRequestCompletion::Ok(value);
     // 6. Assert: The execution context stack has at least two elements.

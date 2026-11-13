@@ -20,7 +20,7 @@ pub(crate) use executable_context::UNSUPPORTED_SYNTAX_IMMEDIATE;
 
 use std::{convert::Infallible, ops::ControlFlow};
 
-use super::{FunctionExpression, Instruction, SendableRef, executable::ArrowFunctionExpression};
+use super::{Instruction, executable::ArrowFunctionExpression};
 use crate::ecmascript::{
     BUILTIN_STRING_MEMORY, BigInt, ContainsExpression, FunctionAstRef, LexicallyScopedDeclaration,
     LexicallyScopedDeclarations, Number, String, Value,
@@ -1210,16 +1210,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // CompileContext holds a name identifier for us if this is NamedEvaluation.
         let identifier = ctx.name_identifier.take();
-        let compiled_bytecode = ctx.compile_nested_function(FunctionAstRef::from(self));
+        let template = ctx.compile_nested_function(FunctionAstRef::from(self));
         ctx.add_arrow_function_expression(ArrowFunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<
-                    &ast::ArrowFunctionExpression<'_>,
-                    &'static ast::ArrowFunctionExpression<'static>,
-                >(self)
-            }),
+            template,
             identifier,
-            compiled_bytecode: Some(compiled_bytecode),
         });
     }
 }
@@ -1229,18 +1223,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Functi
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // CompileContext holds a name identifier for us if this is NamedEvaluation.
         let identifier = ctx.name_identifier.take();
-        let compiled_bytecode = ctx.compile_nested_function(FunctionAstRef::from(self));
+        let function_expression = ctx.compile_function_expression(self, identifier);
         ctx.add_instruction_with_function_expression(
             Instruction::InstantiateOrdinaryFunctionExpression,
-            FunctionExpression {
-                expression: SendableRef::new(unsafe {
-                    core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                        self,
-                    )
-                }),
-                identifier,
-                compiled_bytecode: Some(compiled_bytecode),
-            },
+            function_expression,
         );
     }
 }
@@ -1428,20 +1414,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                                 // Note: not load_copy_to_stack as this is
                                 // immediately consumed
                                 ctx.add_instruction(Instruction::Load);
-                                let compiled_bytecode = ctx
-                                    .compile_nested_function(FunctionAstRef::from(value.as_ref()));
+                                let function_expression =
+                                    ctx.compile_function_expression(value, identifier);
                                 ctx.add_instruction_with_function_expression_and_immediate(
                                     Instruction::ObjectDefineMethod,
-                                    FunctionExpression {
-                                        expression: SendableRef::new(unsafe {
-                                            core::mem::transmute::<
-                                                &ast::Function<'_>,
-                                                &'static ast::Function<'static>,
-                                            >(value)
-                                        }),
-                                        identifier,
-                                        compiled_bytecode: Some(compiled_bytecode),
-                                    },
+                                    function_expression,
                                     // enumerable: true,
                                     true.into(),
                                 );
@@ -1472,27 +1449,15 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                             else {
                                 unreachable!()
                             };
-                            let compiled_bytecode = ctx.compile_nested_function(
-                                FunctionAstRef::from(function_expression.as_ref()),
-                            );
+                            let function_expression =
+                                ctx.compile_function_expression(function_expression, None);
                             ctx.add_instruction_with_function_expression_and_immediate(
                                 if is_get {
                                     Instruction::ObjectDefineGetter
                                 } else {
                                     Instruction::ObjectDefineSetter
                                 },
-                                FunctionExpression {
-                                    expression: SendableRef::new(unsafe {
-                                        core::mem::transmute::<
-                                            &ast::Function<'_>,
-                                            &'static ast::Function<'static>,
-                                        >(
-                                            function_expression
-                                        )
-                                    }),
-                                    identifier: None,
-                                    compiled_bytecode: Some(compiled_bytecode),
-                                },
+                                function_expression,
                                 // enumerable: true,
                                 true.into(),
                             );

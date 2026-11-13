@@ -4,8 +4,8 @@
 
 use crate::{
     ecmascript::{
-        Agent, CompileFunctionBodyData, ObjectShape, PropertyKey, PropertyLookupCache, Script,
-        SourceCode, SourceTextModule, String, Value,
+        Agent, CompileFunctionBodyData, FunctionTemplate, ObjectShape, PropertyKey,
+        PropertyLookupCache, Script, SourceCode, SourceTextModule, String, Value,
     },
     engine::{
         Bindable, NoGcScope, Scoped, bindable_handle,
@@ -21,90 +21,67 @@ use std::sync::Arc;
 
 use super::bytecode_compiler::GeneratorKind;
 
-#[derive(Debug)]
-/// A wrapper over a `&'static T` into a SourceCode's AST that can only be
-/// read on the thread that created it.
-pub(crate) struct SendableRef<T: ?Sized + 'static> {
-    reference: &'static T,
-    thread_id: std::thread::ThreadId,
-}
-
-impl<T: ?Sized + 'static> Clone for SendableRef<T> {
-    fn clone(&self) -> Self {
-        Self {
-            reference: self.reference,
-            thread_id: self.thread_id,
-        }
-    }
-}
-
-impl<T: ?Sized> SendableRef<T> {
-    /// Creates a new [`SendableRef`] from a reference with a static lifetime.
-    pub(crate) fn new(reference: &'static T) -> Self {
-        Self {
-            reference,
-            thread_id: std::thread::current().id(),
-        }
-    }
-
-    pub(crate) fn get(&self) -> &'static T {
-        assert_eq!(std::thread::current().id(), self.thread_id);
-        self.reference
-    }
-}
-
+/// A function defined by an Executable's code: what the instructions that
+/// create its closures need.
 #[derive(Debug, Clone, Bindable)]
 pub(crate) struct FunctionExpression<'a> {
-    pub(crate) expression: SendableRef<ast::Function<'static>>,
+    pub(crate) template: FunctionTemplate<'a>,
     pub(crate) identifier: Option<NamedEvaluationParameter>,
-    /// Optionally eagerly compile the FunctionExpression into bytecode.
-    pub(crate) compiled_bytecode: Option<Executable<'a>>,
+    /// The StringValue of the function's BindingIdentifier.
+    pub(crate) binding_name: Option<String<'a>>,
+    /// The function is a FunctionExpression (not a declaration or a method).
+    pub(crate) is_expression: bool,
+    /// The function is a FunctionDeclaration.
+    pub(crate) is_declaration: bool,
 }
 
 impl HeapMarkAndSweep for FunctionExpression<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {
-            expression: _,
+            template,
             identifier: _,
-            compiled_bytecode,
+            binding_name,
+            is_expression: _,
+            is_declaration: _,
         } = self;
-        compiled_bytecode.mark_values(queues);
+        template.mark_values(queues);
+        binding_name.mark_values(queues);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let Self {
-            expression: _,
+            template,
             identifier: _,
-            compiled_bytecode,
+            binding_name,
+            is_expression: _,
+            is_declaration: _,
         } = self;
-        compiled_bytecode.sweep_values(compactions);
+        template.sweep_values(compactions);
+        binding_name.sweep_values(compactions);
     }
 }
 
 #[derive(Debug, Clone, Bindable)]
 pub(crate) struct ArrowFunctionExpression<'a> {
-    pub(crate) expression: SendableRef<ast::ArrowFunctionExpression<'static>>,
+    pub(crate) template: FunctionTemplate<'a>,
     pub(crate) identifier: Option<NamedEvaluationParameter>,
-    pub(crate) compiled_bytecode: Option<Executable<'a>>,
 }
 
 impl HeapMarkAndSweep for ArrowFunctionExpression<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {
-            expression: _,
+            template,
             identifier: _,
-            compiled_bytecode,
         } = self;
-        compiled_bytecode.mark_values(queues);
+        template.mark_values(queues);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let Self {
-            expression: _,
+            template,
             identifier: _,
-            compiled_bytecode,
         } = self;
-        compiled_bytecode.sweep_values(compactions);
+        template.sweep_values(compactions);
     }
 }
 

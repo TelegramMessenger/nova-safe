@@ -11,7 +11,8 @@ use wtf8::Wtf8Buf;
 use crate::ecmascript::{RegExp, reg_exp_create_literal};
 use crate::{
     ecmascript::{
-        Agent, BigInt, Number, ObjectShape, PropertyKey, PropertyLookupCache, String, Value,
+        Agent, BigInt, ExceptionType, Number, ObjectShape, PropertyKey, PropertyLookupCache,
+        String, Value,
     },
     engine::{
         Bindable, Executable, ExecutableHeapData, FunctionExpression, Instruction, NoGcScope,
@@ -149,7 +150,11 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.current_instruction_pointer_is_unreachable
     }
 
-    pub(super) fn finish_as_unsupported_stub(mut self, message: &'static str) -> Executable<'gc> {
+    pub(super) fn finish_as_unsupported_stub(self, message: &'static str) -> Executable<'gc> {
+        self.finish_as_stub(message, UNSUPPORTED_SYNTAX_IMMEDIATE as usize)
+    }
+
+    fn finish_as_stub(mut self, message: &'static str, immediate: usize) -> Executable<'gc> {
         self.current_value_stack_depth = 0;
         self.current_instruction_pointer_is_unreachable = false;
         self.instructions.clear();
@@ -161,14 +166,26 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.class_initializer_bytecodes.clear();
         let message = self.create_string(message);
         self.add_instruction_with_constant(Instruction::StoreConstant, message);
-        self.add_instruction_with_immediate(
-            Instruction::ThrowError,
-            UNSUPPORTED_SYNTAX_IMMEDIATE as usize,
-        );
+        self.add_instruction_with_immediate(Instruction::ThrowError, immediate);
         self.finish()
     }
 
-    pub(super) fn finish(self) -> Executable<'gc> {
+    pub(super) fn finish(mut self) -> Executable<'gc> {
+        for index in 0..self.function_expressions.len() {
+            if self.function_expressions[index]
+                .template
+                .executable
+                .is_none()
+            {
+                // A class constructor whose class body always throws before
+                // the constructor is compiled: its closure is never reachable.
+                let stub = ExecutableContext::new(&mut *self.agent, self.gc).finish_as_stub(
+                    "Class constructor was not compiled",
+                    ExceptionType::TypeError as usize,
+                );
+                self.function_expressions[index].template.executable = Some(stub);
+            }
+        }
         self.agent.heap.create(ExecutableHeapData {
             instructions: self.instructions.into(),
             caches: self.caches.unbind().into_boxed_slice(),
@@ -494,7 +511,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         index: IndexType,
         executable: Executable<'gc>,
     ) {
-        self.function_expressions[index as usize].compiled_bytecode = Some(executable);
+        self.function_expressions[index as usize]
+            .template
+            .executable = Some(executable);
     }
 
     pub(super) fn add_class_initializer_bytecode(

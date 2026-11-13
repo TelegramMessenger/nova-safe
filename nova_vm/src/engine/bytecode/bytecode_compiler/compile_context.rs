@@ -12,8 +12,8 @@ use wtf8::Wtf8Buf;
 use crate::ecmascript::RegExp;
 use crate::{
     ecmascript::{
-        Agent, BigInt, CompileFunctionBodyData, Number, ObjectShape, PropertyKey,
-        PropertyLookupCache, SourceCode, String, Value,
+        Agent, BigInt, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, Number,
+        ObjectShape, PropertyKey, PropertyLookupCache, SourceCode, String, Value,
     },
     engine::{
         Executable, FunctionExpression, Instruction, NoGcScope,
@@ -153,17 +153,16 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     /// its own "use strict" directive, as OrdinaryFunctionCreate computes it.
     pub(crate) fn compile_nested_function(
         &mut self,
-        ast: crate::ecmascript::FunctionAstRef<'script>,
-    ) -> Executable<'gc> {
+        ast: FunctionAstRef<'script>,
+    ) -> FunctionTemplate<'gc> {
         let is_strict = self.runtime_strict || ast.ecmascript_code().has_use_strict_directive();
         let is_lexical = matches!(
             ast,
-            crate::ecmascript::FunctionAstRef::Arrow(_)
-                | crate::ecmascript::FunctionAstRef::AsyncArrow(_)
+            FunctionAstRef::Arrow(_) | FunctionAstRef::AsyncArrow(_)
         );
         let source_code = self.source_code;
         let (agent, gc) = self.get_agent_and_gc();
-        Executable::compile_function_body(
+        let executable = Executable::compile_function_body(
             agent,
             CompileFunctionBodyData {
                 ast,
@@ -172,7 +171,29 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
                 is_lexical,
             },
             gc,
-        )
+        );
+        FunctionTemplate::from_ast(ast, Some(executable))
+    }
+
+    /// Compile a function defined in this code into the record that the
+    /// instructions creating its closures read.
+    pub(crate) fn compile_function_expression(
+        &mut self,
+        function: &'script ast::Function<'script>,
+        identifier: Option<NamedEvaluationParameter>,
+    ) -> FunctionExpression<'gc> {
+        let template = self.compile_nested_function(FunctionAstRef::from(function));
+        let binding_name = function
+            .id
+            .as_ref()
+            .map(|id| self.create_string(id.name.as_str()));
+        FunctionExpression {
+            template,
+            identifier,
+            binding_name,
+            is_expression: function.is_expression(),
+            is_declaration: function.is_declaration(),
+        }
     }
 
     /// Set the compile context to be a type of generator.

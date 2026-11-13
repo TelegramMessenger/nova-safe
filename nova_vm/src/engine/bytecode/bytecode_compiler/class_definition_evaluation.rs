@@ -7,12 +7,12 @@ use std::{cell::Cell, collections::hash_map::Entry};
 use crate::{
     ecmascript::{
         BUILTIN_STRING_MEMORY, CompileFunctionBodyData, ExceptionType, FunctionAstRef,
-        LexicallyScopedDeclaration, LexicallyScopedDeclarations, String, Value, VarDeclaredNames,
-        VarScopedDeclaration, VarScopedDeclarations,
+        FunctionTemplate, LexicallyScopedDeclaration, LexicallyScopedDeclarations, String, Value,
+        VarDeclaredNames, VarScopedDeclaration, VarScopedDeclarations,
     },
     engine::{
         BlockEnvPrep, CompileContext, ExpressionError, FunctionExpression, Instruction,
-        NamedEvaluationParameter, SendableRef, ValueOutput,
+        NamedEvaluationParameter, ValueOutput,
         bytecode::{CompileEvaluation, bytecode_compiler::variable_escapes_scope},
     },
 };
@@ -668,9 +668,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                 ctx.add_class_initializer_bytecode(executable, has_constructor_parent);
             }
         } else if let Some(constructor) = constructor {
-            let executable =
+            let template =
                 ctx.compile_nested_function(FunctionAstRef::ClassConstructor(&constructor.value));
-            ctx.set_function_expression_bytecode(constructor_index, executable);
+            ctx.set_function_expression_bytecode(
+                constructor_index,
+                template
+                    .executable
+                    .expect("compile_nested_function compiles the function"),
+            );
         } else {
             ctx.add_class_initializer(has_constructor_parent);
         }
@@ -867,14 +872,14 @@ fn define_constructor_method(
     ctx.add_instruction_with_function_expression_and_immediate(
         Instruction::ClassDefineConstructor,
         FunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                    &class_element.value,
-                )
-            }),
-            // CompileContext holds a name identifier for us if this is NamedEvaluation.
+            template: FunctionTemplate::from_ast(
+                FunctionAstRef::ClassConstructor(&class_element.value),
+                None,
+            ),
             identifier: None,
-            compiled_bytecode: None,
+            binding_name: None,
+            is_expression: false,
+            is_declaration: false,
         },
         has_constructor_parent.into(),
     )
@@ -925,20 +930,12 @@ fn define_method<'s>(
     // stack: [object]
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
-    let compiled_bytecode =
-        ctx.compile_nested_function(FunctionAstRef::from(class_element.value.as_ref()));
+    // Note: method name is always found in the result register.
+    let function_expression = ctx
+        .compile_function_expression(&class_element.value, Some(NamedEvaluationParameter::Result));
     ctx.add_instruction_with_function_expression_and_immediate(
         instruction,
-        FunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                    &class_element.value,
-                )
-            }),
-            // Note: method name is always found in the result register.
-            identifier: Some(NamedEvaluationParameter::Result),
-            compiled_bytecode: Some(compiled_bytecode),
-        },
+        function_expression,
         // enumerable: false,
         false.into(),
     );
@@ -1011,19 +1008,11 @@ fn define_private_method<'s>(
     // Note: MakeMethod is performed as part of ClassDefinePrivateMethod.
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
-    let compiled_bytecode =
-        ctx.compile_nested_function(FunctionAstRef::from(method.value.as_ref()));
+    let function_expression =
+        ctx.compile_function_expression(&method.value, Some(NamedEvaluationParameter::Result));
     ctx.add_instruction_with_function_expression_and_immediate(
         Instruction::ClassDefinePrivateMethod,
-        FunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                    &method.value,
-                )
-            }),
-            identifier: Some(NamedEvaluationParameter::Result),
-            compiled_bytecode: Some(compiled_bytecode),
-        },
+        function_expression,
         immediate.into(),
     );
 }
