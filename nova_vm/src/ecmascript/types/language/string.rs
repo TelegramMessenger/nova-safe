@@ -506,7 +506,7 @@ impl<'a> String<'a> {
     /// The WTF-8 bytes of `search` can stand for its code units in a byte
     /// search unless it starts with a trail surrogate or ends with a lead
     /// surrogate: those can be one half of a surrogate pair in a string.
-    fn searchable_as_bytes(search: Wtf8Str) -> bool {
+    pub(crate) fn searchable_as_bytes(search: Wtf8Str) -> bool {
         search.initial_trail_surrogate().is_none() && search.final_lead_surrogate().is_none()
     }
 

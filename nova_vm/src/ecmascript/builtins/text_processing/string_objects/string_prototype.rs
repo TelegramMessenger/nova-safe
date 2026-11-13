@@ -1991,6 +1991,34 @@ impl StringPrototype {
             return Ok(create_array_from_list(agent, &list, gc).into());
         }
 
+        if String::searchable_as_bytes(r.as_wtf8_(agent)) {
+            // Steps 11 to 17 on the WTF-8 bytes: each match of R starts and
+            // ends at a code point boundary, so the substrings between them
+            // are byte ranges.
+            let limit = lim as usize;
+            let ranges = {
+                let haystack = s.as_bytes_(agent);
+                let needle = r.as_bytes_(agent);
+                let mut ranges = Vec::new();
+                let mut start = 0;
+                for found in memchr::memmem::find_iter(haystack, needle) {
+                    ranges.push((start, found));
+                    if ranges.len() == limit {
+                        break;
+                    }
+                    start = found + needle.len();
+                }
+                if ranges.len() < limit {
+                    ranges.push((start, haystack.len()));
+                }
+                ranges
+            };
+            let results: Vec<Value> = ranges
+                .into_iter()
+                .map(|(start, end)| s.wtf8_substring_(agent, start, end, gc).into())
+                .collect();
+            return Ok(Array::from_slice(agent, results.as_slice(), gc).into());
+        }
         // 11. Let substrings be a new empty List.
         let mut results: Vec<Value> = Vec::new();
         // 12. Let i be 0.
