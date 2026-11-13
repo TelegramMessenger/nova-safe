@@ -37,3 +37,8 @@ fn run_test_source(file_name: &str) {
 fn regexp_flags() {
     run_test_source("regExpFlags.test.js");
 }
+
+#[test]
+fn string_slice_surrogates() {
+    run_test_source("stringSliceSurrogates.test.js");
+}

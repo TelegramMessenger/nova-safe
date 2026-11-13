@@ -2068,19 +2068,14 @@ impl StringPrototype {
 
         // 12. If from ≥ to, return the empty String.
         // 13. Return the substring of S from from to to.
-        let (u8_from, u8_to) = match (from, to) {
-            (None, _) => return Ok(String::EMPTY_STRING.into()),
-            (Some(0), None) => return Ok(s.into()),
-            (Some(from_idx), None) => (s.utf8_index_(agent, from_idx).unwrap(), None),
-            (Some(from_idx), Some(to_idx)) if from_idx >= to_idx => {
-                return Ok(String::EMPTY_STRING.into());
+        match (from, to) {
+            (None, _) => Ok(String::EMPTY_STRING.into()),
+            (Some(0), None) => Ok(s.into()),
+            (Some(from_idx), to_idx) => {
+                let to_idx = to_idx.unwrap_or_else(|| s.utf16_len_(agent));
+                Ok(s.utf16_substring(agent, from_idx, to_idx, gc).into())
             }
-            (Some(from_idx), Some(to_idx)) => (
-                s.utf8_index_(agent, from_idx).unwrap(),
-                Some(s.utf8_index_(agent, to_idx).unwrap()),
-            ),
-        };
-        Ok(lossy_substring(agent, s, u8_from, u8_to, gc).into())
+        }
     }
 
     /// ### [22.1.3.23 String.prototype.split ( separator, limit )](https://tc39.es/ecma262/#sec-string.prototype.split)
@@ -2431,19 +2426,9 @@ impl StringPrototype {
         let to = final_start.max(final_end);
 
         // 10. Return the substring of S from from to to.
-        let u8_from = if from != len {
-            s.utf8_index_(agent, from).unwrap()
-        } else {
-            s.len_(agent)
-        };
-        let u8_to = if to != len {
-            s.utf8_index_(agent, to).unwrap()
-        } else {
-            s.len_(agent)
-        };
         let s = s.unbind();
         let gc = gc.into_nogc();
-        Ok(lossy_substring(agent, s, u8_from, Some(u8_to), gc).into())
+        Ok(s.utf16_substring(agent, from, to, gc).into())
     }
 
     /// ### [22.1.3.26 String.prototype.toLocaleLowerCase ( \[ reserved1 \[ , reserved2 \] \] )](https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase)
@@ -2803,13 +2788,8 @@ impl StringPrototype {
         // 11. Return the substring of S from intStart to intEnd.
         let gc = gc.into_nogc();
         let s = scoped_s.get(agent).bind(gc);
-        let s_str = s.to_string_lossy_(agent);
-        Ok(String::from_string(
-            agent,
-            s_str[int_start as usize..int_end as usize].to_string(),
-            gc,
-        )
-        .into())
+        Ok(s.utf16_substring(agent, int_start as usize, int_end as usize, gc)
+            .into())
     }
 
     /// ### [B.2.2.2 String.prototype.anchor ( name )](https://tc39.es/ecma262/#sec-string.prototype.anchor)
@@ -3283,33 +3263,6 @@ pub(crate) fn to_zero_padded_decimal_string(
     let s = n.to_string();
     // 2. Return StringPad(S, minLength, "0", start).
     format!("{s:0>min_length$}")
-}
-
-/// The lossy UTF-8 form of the substring of `s` from byte `u8_from` to byte
-/// `u8_to` (or the end), as a new String. A lone surrogate and its U+FFFD
-/// replacement both take 3 bytes, so this equals the same byte range of the
-/// lossy form of all of `s`, without converting all of `s`.
-fn lossy_substring<'gc>(
-    agent: &mut Agent,
-    s: String,
-    u8_from: usize,
-    u8_to: Option<usize>,
-    gc: NoGcScope<'gc, '_>,
-) -> String<'gc> {
-    let owned = {
-        let wtf8 = s.as_wtf8_(agent);
-        let lossy = match u8_to {
-            Some(u8_to) => wtf8.slice(u8_from, u8_to),
-            None => wtf8.slice_from(u8_from),
-        }
-        .to_string_lossy();
-        let substring: &str = &lossy;
-        if let Ok(small) = String::try_from(substring) {
-            return small;
-        }
-        substring.to_owned()
-    };
-    String::from_string(agent, owned, gc)
 }
 
 /// ### [22.1.3.19.1 GetSubstitution ( matched, str, position, captures, namedCaptures, replacementTemplate )](https://tc39.es/ecma262/#sec-getsubstitution)
