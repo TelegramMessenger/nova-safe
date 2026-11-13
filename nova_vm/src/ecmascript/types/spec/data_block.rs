@@ -103,16 +103,25 @@ impl DataBlock {
     ///
     /// Returns None if the allocation is impossible.
     fn new(len: usize) -> Option<Self> {
+        /// Blocks larger than this are probed before they are allocated. A
+        /// smaller allocation fails only when the process is out of memory,
+        /// and then any other allocation would abort it as well.
+        const PROBED_LEN: usize = 1 << 20;
         if len == 0 {
             return Some(Self::empty());
         }
-        // Probe that the allocation is possible: a failed probe is reported
-        // to the caller as a RangeError, while the zeroed allocation below
-        // would abort the process. The zeroed allocation itself lets the
-        // allocator hand out lazily zeroed pages for large blocks.
-        let mut probe: Vec<u8> = Vec::new();
-        probe.try_reserve_exact(len).ok()?;
-        drop(probe);
+        if len > PROBED_LEN {
+            // Probe that the allocation is possible: a failed probe is
+            // reported to the caller as a RangeError, while the zeroed
+            // allocation below would abort the process. For blocks this large
+            // the probe's map and unmap cost little next to the pages the
+            // block uses.
+            let mut probe: Vec<u8> = Vec::new();
+            probe.try_reserve_exact(len).ok()?;
+            drop(probe);
+        }
+        // The zeroed allocation lets the allocator hand out lazily zeroed
+        // pages for large blocks.
         Some(Self {
             bytes: Some(vec![0u8; len].into_boxed_slice()),
         })
