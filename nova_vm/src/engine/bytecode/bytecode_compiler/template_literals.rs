@@ -4,8 +4,6 @@
 
 //! ### [13.2.8 Template Literals](https://tc39.es/ecma262/#sec-template-literals)
 
-use std::ptr::NonNull;
-
 use ahash::AHashMap;
 use oxc_ast::ast;
 
@@ -46,94 +44,51 @@ pub(super) fn get_template_object<'a>(
     // 11. Let index be 0.
     // 12. Repeat, while index < count,
 
-    // First, ensure that template Array descriptors exist.
-    let template_storage = template.get_storage_mut(agent);
-    template_storage
-        .descriptors
-        .insert_entry(AHashMap::with_capacity(len));
-
-    // Second, ensure that raw_obj Array descriptors exist and grab the
-    // pointers to the values and descriptors.
-    let raw_obj_storage = raw_obj.get_storage_mut(agent);
-    let mut raw_obj_values = NonNull::from(raw_obj_storage.values);
-    let mut raw_obj_descriptors = NonNull::from(
-        raw_obj_storage
-            .descriptors
-            .insert_entry(AHashMap::with_capacity(len))
-            .into_mut(),
-    );
-
-    // Third, get the template values and descriptors; since they already
-    // exist, this cannot move the raw_obj descriptors.
-    let template_storage = template
-        .get_elements(&agent.heap.arrays)
-        .get_storage_mut(&mut agent.heap.elements);
-    let template_values = template_storage.values;
-    let template_descriptors = template_storage
-        .descriptors
-        .insert_entry(AHashMap::with_capacity(len))
-        .into_mut();
-
-    // SAFETY: Finally, get the raw_obj values and descriptors; they cannot
-    // have moved as per the above comment, and they're different from the
-    // template values and descriptors so this is not mutable aliasing.
-    let raw_obj_values = unsafe { raw_obj_values.as_mut() };
-    let raw_obj_descriptors = unsafe { raw_obj_descriptors.as_mut() };
-
-    let strings = &mut agent.heap.strings;
-    let string_lookup_table = &mut agent.heap.string_lookup_table;
-    let string_hasher = &mut agent.heap.string_hasher;
-    let alloc_counter = &mut agent.heap.alloc_counter;
-
-    for (prop, quasi) in template_literal.quasis.iter().enumerate() {
-        // a. Let prop be ! ToString(𝔽(index)).
-        // b. Let cookedValue be cookedStrings[index].
-        let cooked_value = quasi.value.cooked.map_or(Value::Undefined, |cooked_value| {
-            String::from_str_direct(
+    let mut cooked_values = Vec::with_capacity(len);
+    let mut raw_values = Vec::with_capacity(len);
+    {
+        let strings = &mut agent.heap.strings;
+        let string_lookup_table = &mut agent.heap.string_lookup_table;
+        let string_hasher = &mut agent.heap.string_hasher;
+        let alloc_counter = &mut agent.heap.alloc_counter;
+        for quasi in template_literal.quasis.iter() {
+            // a. Let prop be ! ToString(𝔽(index)).
+            // b. Let cookedValue be cookedStrings[index].
+            let cooked_value = quasi.value.cooked.map_or(Value::Undefined, |cooked_value| {
+                String::from_str_direct(
+                    strings,
+                    string_lookup_table,
+                    string_hasher,
+                    alloc_counter,
+                    cooked_value.as_str(),
+                    gc,
+                )
+                .into()
+            });
+            // d. Let rawValue be the String value rawStrings[index].
+            let raw_value = String::from_str_direct(
                 strings,
                 string_lookup_table,
                 string_hasher,
                 alloc_counter,
-                cooked_value.as_str(),
+                quasi.value.raw.as_str(),
                 gc,
-            )
-            .into()
-        });
-        // d. Let rawValue be the String value rawStrings[index].
-        let raw_value = String::from_str_direct(
-            strings,
-            string_lookup_table,
-            string_hasher,
-            alloc_counter,
-            quasi.value.raw.as_str(),
-            gc,
-        );
-        // c. Perform ! DefinePropertyOrThrow(template, prop,
-        //    PropertyDescriptor {
-        //        [[Value]]: cookedValue,
-        template_values[prop] = Some(cooked_value.unbind());
-        //        [[Writable]]: false,
-        //        [[Enumerable]]: true,
-        //        [[Configurable]]: false
-        template_descriptors.insert(
-            prop as u32,
-            ElementDescriptor::ReadOnlyEnumerableUnconfigurableData,
-        );
-        //    }).
-        // e. Perform ! DefinePropertyOrThrow(rawObj, prop,
-        //    PropertyDescriptor {
-        //        [[Value]]: rawValue,
-        raw_obj_values[prop] = Some(raw_value.unbind().into());
-        //        [[Writable]]: false,
-        //        [[Enumerable]]: true,
-        //        [[Configurable]]: false
-        raw_obj_descriptors.insert(
-            prop as u32,
-            ElementDescriptor::ReadOnlyEnumerableUnconfigurableData,
-        );
-        //    }).
-        // f. Set index to index + 1.
+            );
+            cooked_values.push(cooked_value.unbind());
+            raw_values.push(Value::from(raw_value.unbind()));
+            // f. Set index to index + 1.
+        }
     }
+    // c. Perform ! DefinePropertyOrThrow(template, prop,
+    //    PropertyDescriptor {
+    //        [[Value]]: cookedValue, [[Writable]]: false,
+    //        [[Enumerable]]: true, [[Configurable]]: false }).
+    define_read_only_elements(agent, template, cooked_values);
+    // e. Perform ! DefinePropertyOrThrow(rawObj, prop,
+    //    PropertyDescriptor {
+    //        [[Value]]: rawValue, [[Writable]]: false,
+    //        [[Enumerable]]: true, [[Configurable]]: false }).
+    define_read_only_elements(agent, raw_obj, raw_values);
     // 13. Perform ! SetIntegrityLevel(rawObj, frozen).
     unwrap_try(raw_obj.try_prevent_extensions(agent, gc));
     let prototype = template.internal_prototype(agent).unwrap();
@@ -166,4 +121,22 @@ pub(super) fn get_template_object<'a>(
     //     to realm.[[TemplateMap]].
     // 17. Return template.
     template
+}
+
+/// Writes `values` into the elements of a new array of the same length as
+/// read-only, enumerable, non-configurable data properties.
+fn define_read_only_elements(agent: &mut Agent, array: Array, values: Vec<Value<'static>>) {
+    let storage = array.get_storage_mut(agent);
+    let elements = storage.values;
+    let descriptors = storage
+        .descriptors
+        .insert_entry(AHashMap::with_capacity(values.len()))
+        .into_mut();
+    for (prop, value) in values.into_iter().enumerate() {
+        elements[prop] = Some(value);
+        descriptors.insert(
+            prop as u32,
+            ElementDescriptor::ReadOnlyEnumerableUnconfigurableData,
+        );
+    }
 }

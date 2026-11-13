@@ -142,9 +142,15 @@ pub(crate) fn create_dynamic_function<'a>(
         let body_string;
         if body_arg.is_string() && parameter_args.iter().all(|arg| arg.is_string()) {
             body_string = String::try_from(body_arg).unwrap().bind(gc.nogc());
-            parameter_strings_slice =
-                // Safety: All the strings were checked to be strings.
-                unsafe { core::mem::transmute::<&[Value], &[String<'_>]>(parameter_args) };
+            parameter_strings_vec = parameter_args
+                .iter()
+                .map(|arg| {
+                    String::try_from(*arg)
+                        .expect("every parameter was checked to be a string")
+                        .bind(gc.nogc())
+                })
+                .collect::<Vec<_>>();
+            parameter_strings_slice = &parameter_strings_vec;
         } else if body_arg.is_primitive() && parameter_args.iter().all(|arg| arg.is_primitive()) {
             // We don't need to call JavaScript here. Nice.
             let gc = gc.nogc();
