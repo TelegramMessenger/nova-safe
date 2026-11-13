@@ -207,15 +207,11 @@ impl<'gc> ElementsVector<'gc> {
         agent.heap.elements.get_values(self)
     }
 
+    /// Get the values as mutable, as stored with their `'static` GC lifetime:
+    /// values written into the slice must be unbound first.
     #[inline]
-    pub(crate) fn get_mut<'a>(&self, agent: &'a mut Agent) -> &'a mut [Option<Value<'gc>>] {
-        // SAFETY: shortening the GC lifetime is safe, as moving a shorter
-        // lifetime into the heap puts it into the GC's view.
-        unsafe {
-            core::mem::transmute::<&'a mut [Option<Value<'static>>], &'a mut [Option<Value<'gc>>]>(
-                agent.heap.elements.get_values_mut(self),
-            )
-        }
+    pub(crate) fn get_mut<'a>(&self, agent: &'a mut Agent) -> &'a mut [Option<Value<'static>>] {
+        agent.heap.elements.get_values_mut(self)
     }
 
     pub(crate) const EMPTY: Self = Self {

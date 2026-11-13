@@ -510,7 +510,10 @@ pub(crate) trait DirectArenaAccess: HeapIndexHandle {
 
 pub(crate) trait DirectArenaAccessMut: DirectArenaAccess {
     /// Access arena data belonging to a handle as mutable.
-    fn get_direct_mut(self, agent: &mut Vec<Self::Data>) -> &mut Self::Output;
+    ///
+    /// The record is returned as stored, with its `'static` GC lifetime:
+    /// handles written into it must be unbound first.
+    fn get_direct_mut(self, agent: &mut Vec<Self::Data>) -> &mut Self::Data;
 }
 
 pub(crate) trait ArenaAccess<T>: DirectArenaAccess {
@@ -520,7 +523,10 @@ pub(crate) trait ArenaAccess<T>: DirectArenaAccess {
 
 pub(crate) trait ArenaAccessMut<T>: DirectArenaAccessMut {
     /// Access data belonging to a handle as mutable.
-    fn get_mut(self, agent: &mut T) -> &mut <Self as DirectArenaAccess>::Output;
+    ///
+    /// The record is returned as stored, with its `'static` GC lifetime:
+    /// handles written into it must be unbound first.
+    fn get_mut(self, agent: &mut T) -> &mut <Self as DirectArenaAccess>::Data;
 }
 
 impl<K: DirectArenaAccess, T> ArenaAccess<T> for K
@@ -543,7 +549,7 @@ where
     fn get_mut<'agent>(
         self,
         agent: &'agent mut T,
-    ) -> &'agent mut <Self as DirectArenaAccess>::Output {
+    ) -> &'agent mut <Self as DirectArenaAccess>::Data {
         self.get_direct_mut(agent.as_mut())
     }
 }
@@ -766,15 +772,10 @@ macro_rules! arena_vec_access {
         #[doc(hidden)]
         impl<$lt> crate::heap::DirectArenaAccessMut for $name<$lt> {
             #[inline]
-            fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Output {
-                // SAFETY: GC handles are always safe within the arena.
-                unsafe {
-                    core::mem::transmute::<&mut $data<'static>, &mut $data<$lt>>(
-                        source
-                            .get_mut(crate::heap::HeapIndexHandle::get_index(self))
-                            .unwrap_or_else(|| panic!("Invalid handle {:?}", self)),
-                    )
-                }
+            fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Data {
+                source
+                    .get_mut(crate::heap::HeapIndexHandle::get_index(self))
+                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
             }
         }
 
@@ -811,7 +812,7 @@ macro_rules! arena_vec_access {
         #[doc(hidden)]
         impl crate::heap::DirectArenaAccessMut for $name<'_> {
             #[inline]
-            fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Output {
+            fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Data {
                 source
                     .get_mut(crate::heap::HeapIndexHandle::get_index(self))
                     .unwrap_or_else(|| panic!("Invalid handle {:?}", self))

@@ -34,19 +34,19 @@ arena_vec_access!(WeakMap, 'a, WeakMapRecord, weak_maps);
 
 impl<'m> WeakMap<'m> {
     pub(crate) fn delete(self, agent: &mut Agent, key: WeakKey<'m>) -> bool {
-        self.get_mut(agent).delete(key)
+        self.get_mut(agent).delete(key.unbind())
     }
 
     pub(crate) fn get_v(self, agent: &mut Agent, key: WeakKey<'m>) -> Option<Value<'m>> {
-        self.get_mut(agent).get(key)
+        self.get_mut(agent).get(key.unbind())
     }
 
     pub(crate) fn has(self, agent: &mut Agent, key: WeakKey<'m>) -> bool {
-        self.get_mut(agent).has(key)
+        self.get_mut(agent).has(key.unbind())
     }
 
     pub(crate) fn set(self, agent: &mut Agent, key: WeakKey<'m>, value: Value<'m>) {
-        self.get_mut(agent).set(key, value)
+        self.get_mut(agent).set(key.unbind(), value.unbind())
     }
 }
 

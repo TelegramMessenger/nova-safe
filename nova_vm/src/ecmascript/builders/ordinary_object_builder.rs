@@ -429,5 +429,5 @@ pub(super) fn create_intrinsic_backing_object(
 
     let slot = backing_object.get_mut(agent);
     assert_eq!(slot, &ObjectRecord::BLANK);
-    *slot = ObjectRecord::new(shape, values);
+    *slot = ObjectRecord::new(shape.unbind(), values.unbind());
 }

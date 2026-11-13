@@ -506,7 +506,7 @@ impl<'a> PropertyStorage<'a> {
                 old_len,
                 index,
             )?;
-            object.get_mut(agent).set_values(new_values);
+            object.get_mut(agent).set_values(new_values.unbind());
         } else {
             // Capacity of the property storage isn't changing, so we can
             // perform the deletion directly in the storage.

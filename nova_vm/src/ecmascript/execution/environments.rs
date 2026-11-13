@@ -102,7 +102,7 @@ macro_rules! create_environment_index {
 
         impl<'a> crate::heap::DirectArenaAccessMut for $index<'a> {
             #[inline]
-            fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Output {
+            fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Data {
                 source
                     .get_mut(crate::heap::HeapIndexHandle::get_index(self))
                     .expect("Invalid environment handle")

@@ -83,18 +83,14 @@ impl<'a> ObjectShape<'a> {
     }
 
     /// Get the Object Shape transitions as mutable.
+    ///
+    /// The map is returned as stored, with its `'static` GC lifetime: handles
+    /// written into it must be unbound first.
     pub(crate) fn get_transitions_direct_mut<'r>(
         self,
         transitions: &'r mut [ObjectShapeTransitionMap<'static>],
-    ) -> &'r mut ObjectShapeTransitionMap<'a> {
-        // SAFETY: Lifetime transmute to thread GC lifetime to temporary heap
-        // reference.
-        unsafe {
-            core::mem::transmute::<
-                &'r mut ObjectShapeTransitionMap<'static>,
-                &'r mut ObjectShapeTransitionMap<'a>,
-            >(&mut transitions[self.get_index()])
-        }
+    ) -> &'r mut ObjectShapeTransitionMap<'static> {
+        &mut transitions[self.get_index()]
     }
 
     /// Get the implied u32 index of the ObjectShape reference.
@@ -1073,9 +1069,8 @@ impl<'a> DirectArenaAccess for ObjectShape<'a> {
 impl<'a> DirectArenaAccessMut for ObjectShape<'a> {
     /// Get the Object Shape record as mutable.
     #[inline(always)]
-    fn get_direct_mut(self, object_shapes: &mut Vec<Self::Data>) -> &mut Self::Output {
-        // SAFETY: we can transmute the GC lifetime from 'static to a local bound lifetime.
-        unsafe { core::mem::transmute(&mut object_shapes[self.get_index()]) }
+    fn get_direct_mut(self, object_shapes: &mut Vec<Self::Data>) -> &mut Self::Data {
+        &mut object_shapes[self.get_index()]
     }
 }
 
