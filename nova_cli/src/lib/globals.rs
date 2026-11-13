@@ -291,6 +291,39 @@ pub fn initialize_global_object_with_internals(agent: &mut Agent, global: Object
     );
     create_obj_func(agent, nova_obj, "gc", run_gc, 0, gc);
 
+    fn eval_script<'gc>(
+        agent: &mut Agent,
+        _this: Value,
+        args: ArgumentsList,
+        gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Value<'gc>> {
+        let source = args.get(0).bind(gc.nogc());
+        let Ok(source) = String::try_from(source) else {
+            return Err(agent.throw_exception_with_static_message(
+                ExceptionType::TypeError,
+                "expected script source to be a string",
+                gc.into_nogc(),
+            ));
+        };
+        let realm = agent.current_realm(gc.nogc());
+        let script = match parse_script(agent, source, realm, false, None, gc.nogc()) {
+            Ok(script) => script,
+            Err(errors) => {
+                let message = errors
+                    .first()
+                    .map(|error| error.message.to_string())
+                    .unwrap_or_default();
+                return Err(agent.throw_exception(
+                    ExceptionType::SyntaxError,
+                    message,
+                    gc.into_nogc(),
+                ));
+            }
+        };
+        script_evaluation(agent, script.unbind(), gc)
+    }
+    create_obj_func(agent, nova_obj, "evalScript", eval_script, 1, gc);
+
     /// `start` function
     fn start<'gc>(
         agent: &mut Agent,

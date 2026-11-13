@@ -225,4 +225,5 @@ def main():
         print(f"{len(set(positions)):4d} {path}")
 
 
-main()
+if __name__ == "__main__":
+    main()
