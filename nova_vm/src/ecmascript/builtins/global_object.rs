@@ -7,6 +7,7 @@ use core::str;
 use ahash::AHashSet;
 use oxc_ast::ast;
 use oxc_ecmascript::BoundNames;
+use oxc_semantic::{AstNodes, Scoping};
 use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{
@@ -219,31 +220,36 @@ pub(crate) fn perform_eval<'gc>(
         direct,
         strict: strict_caller,
     };
-    // SAFETY: Script is only kept alive for the duration of this call, and any
-    // references made to it by functions being created in the eval call will
-    // take a copy of the SourceCode. The SourceCode is also kept in the
-    // evaluation context and thus cannot be garbage collected while the eval
-    // call happens. The Program thus refers to a valid, live Allocator for the
-    // duration of this call.
-    let parse_result = unsafe {
-        SourceCode::parse_source(
-            agent,
-            x,
-            source_type,
-            #[cfg(feature = "typescript")]
-            false,
-            gc.nogc(),
-        )
-    };
+    let eval_realm = eval_realm.unbind();
+    let parse_result = SourceCode::parse_source_with_gc(
+        agent,
+        x,
+        source_type,
+        #[cfg(feature = "typescript")]
+        false,
+        gc.reborrow(),
+        |agent, parsed, gc| {
+            evaluate_parsed_eval(
+                agent,
+                parsed,
+                EvalCaller {
+                    direct,
+                    strict_caller,
+                    in_function,
+                    in_method,
+                    in_derived_constructor,
+                    in_class_field_initializer,
+                    eval_realm,
+                },
+                gc,
+            )
+            .unbind()
+        },
+    );
 
     // b. If script is a List of errors, throw a SyntaxError exception.
-    let ParseResult {
-        source_code,
-        body,
-        directives,
-        is_strict,
-    } = match parse_result {
-        Ok(result) => result,
+    let result = match parse_result {
+        Ok(result) => result.bind(gc.into_nogc()),
         Err(errors) => {
             let message = format!(
                 "Invalid eval source text: {}",
@@ -253,6 +259,50 @@ pub(crate) fn perform_eval<'gc>(
             return Err(agent.throw_exception(ExceptionType::SyntaxError, message, gc.into_nogc()));
         }
     };
+
+    ndt::eval_evaluation_done!(|| id);
+
+    // 33. Return ? result.
+    result
+}
+
+/// What PerformEval found out about its caller before parsing.
+struct EvalCaller {
+    direct: bool,
+    strict_caller: bool,
+    in_function: bool,
+    in_method: bool,
+    in_derived_constructor: bool,
+    in_class_field_initializer: bool,
+    eval_realm: Realm<'static>,
+}
+
+/// Steps 11.c to 32 of PerformEval, run while the parsed program lives.
+fn evaluate_parsed_eval<'gc>(
+    agent: &mut Agent,
+    parsed: ParseResult<'_, 'static>,
+    caller: EvalCaller,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, Value<'gc>> {
+    let EvalCaller {
+        direct,
+        strict_caller,
+        in_function,
+        in_method,
+        in_derived_constructor,
+        in_class_field_initializer,
+        eval_realm,
+    } = caller;
+    let eval_realm = eval_realm.bind(gc.nogc());
+    let ParseResult {
+        source_code,
+        body,
+        directives,
+        scoping,
+        nodes,
+        is_strict,
+    } = parsed;
+    let source_code = source_code.bind(gc.nogc());
 
     // c. If script Contains ScriptBody is false, return undefined.
     if body.is_empty() {
@@ -264,7 +314,6 @@ pub(crate) fn perform_eval<'gc>(
             string_literal_to_wtf8(agent, &directives.last().unwrap().expression, gc.nogc()).into()
         };
         source_code.manually_drop(agent);
-        ndt::eval_evaluation_done!(|| id);
         return Ok(empty_result.unbind());
     }
 
@@ -395,18 +444,13 @@ pub(crate) fn perform_eval<'gc>(
     // 27. Push evalContext onto the execution context stack; evalContext is now the running execution context.
     agent.push_execution_context(eval_context);
     let result = {
-        // SAFETY: ECMAScriptCodeEvaluationState inside eval_context contains the
-        // SourceCode reference, keeping body's backing allocation from being
-        // dropped by garbage collection. We can detach the body from the GC
-        // lifetime for the duration of evalContext being on the execution
-        // context stack.
-        let body = unsafe { core::mem::transmute::<&[ast::Statement], &[ast::Statement]>(body) };
-
         // 28. Let result be Completion(EvalDeclarationInstantiation(body, varEnv, lexEnv, privateEnv, strictEval)).
         // SAFETY: SourceCode is rooted for the duration of this call.
         let result = eval_declaration_instantiation(
             agent,
             body,
+            scoping,
+            nodes,
             ecmascript_code.variable_environment,
             ecmascript_code.lexical_environment,
             ecmascript_code.private_environment,
@@ -420,9 +464,16 @@ pub(crate) fn perform_eval<'gc>(
         match result {
             Ok(_) => {
                 let source_code = agent.current_source_code(gc.nogc());
-                let exe =
-                    Executable::compile_eval_body(agent, body, source_code, strict_eval, gc.nogc())
-                        .scope(agent, gc.nogc());
+                let exe = Executable::compile_eval_body(
+                    agent,
+                    body,
+                    source_code,
+                    scoping,
+                    nodes,
+                    strict_eval,
+                    gc.nogc(),
+                )
+                .scope(agent, gc.nogc());
                 // a. Set result to Completion(Evaluation of body).
                 // 30. If result is a normal completion and result.[[Value]] is empty, then
                 // a. Set result to NormalCompletion(undefined).
@@ -439,9 +490,6 @@ pub(crate) fn perform_eval<'gc>(
     // TODO:
     // 32. Resume the context that is now on the top of the execution context stack as the running execution context.
 
-    ndt::eval_evaluation_done!(|| id);
-
-    // 33. Return ? result.
     result
 }
 
@@ -470,6 +518,8 @@ fn create_id(x: String) -> u64 {
 fn eval_declaration_instantiation<'a>(
     agent: &mut Agent,
     script: &[ast::Statement],
+    scoping: &Scoping,
+    nodes: &AstNodes,
     var_env: Environment,
     lex_env: Environment,
     private_env: Option<PrivateEnvironment>,
@@ -751,6 +801,8 @@ fn eval_declaration_instantiation<'a>(
         let fo = instantiate_function_object(
             agent,
             f,
+            scoping,
+            nodes,
             scoped_lex_env.get(agent).bind(gc.nogc()),
             private_env.as_ref().map(|v| v.get(agent).bind(gc.nogc())),
             gc.nogc(),

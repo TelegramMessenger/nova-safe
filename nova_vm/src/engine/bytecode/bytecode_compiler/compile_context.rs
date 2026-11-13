@@ -5,7 +5,7 @@
 #[cfg(feature = "regexp")]
 use oxc_ast::ast::RegExpFlags;
 use oxc_ast::ast::{self, LabelIdentifier, Statement};
-use oxc_semantic::ScopeId;
+use oxc_semantic::{AstNodes, ScopeId, Scoping};
 use wtf8::Wtf8Buf;
 
 #[cfg(feature = "regexp")]
@@ -77,6 +77,10 @@ pub(crate) enum GeneratorKind {
 pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     executable: ExecutableContext<'agent, 'gc, 'scope>,
     source_code: SourceCode<'gc>,
+    /// Scope analysis of the program being compiled.
+    scoping: &'script Scoping,
+    /// The AST nodes of the program being compiled.
+    nodes: &'script AstNodes<'script>,
     /// NamedEvaluation name parameter
     pub(super) name_identifier: Option<NamedEvaluationParameter>,
     /// If true, indicates that all bindings being created are lexical.
@@ -110,11 +114,15 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     pub(crate) fn new(
         agent: &'agent mut Agent,
         source_code: SourceCode<'gc>,
+        scoping: &'script Scoping,
+        nodes: &'script AstNodes<'script>,
         gc: NoGcScope<'gc, 'scope>,
     ) -> Self {
         Self {
             executable: ExecutableContext::new(agent, gc),
             source_code,
+            scoping,
+            nodes,
             name_identifier: None,
             lexical_binding_state: false,
             optional_chains: None,
@@ -161,12 +169,15 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             FunctionAstRef::Arrow(_) | FunctionAstRef::AsyncArrow(_)
         );
         let source_code = self.source_code;
+        let (scoping, nodes) = (self.scoping, self.nodes);
         let (agent, gc) = self.get_agent_and_gc();
         let executable = Executable::compile_function_body(
             agent,
             CompileFunctionBodyData {
                 ast,
                 source_code,
+                scoping,
+                nodes,
                 is_strict,
                 is_lexical,
             },
@@ -228,9 +239,19 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.source_code
     }
 
+    /// Scope analysis of the program being compiled.
+    pub(crate) fn scoping(&self) -> &'script Scoping {
+        self.scoping
+    }
+
+    /// The AST nodes of the program being compiled.
+    pub(crate) fn nodes(&self) -> &'script AstNodes<'script> {
+        self.nodes
+    }
+
     /// Returns true if the given ScopeId contains direct eval.
     pub(crate) fn scope_contains_direct_eval(&self, scope: ScopeId) -> bool {
-        let scoping = self.source_code.get_scoping(self.get_agent());
+        let scoping = self.scoping;
         let flags = scoping.scope_flags(scope);
         flags.contains_direct_eval()
     }
@@ -1112,11 +1133,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             self.add_instruction(Instruction::Yield);
         }
 
-        // SAFETY: Script referred by the Function uniquely owns the Program
-        // and the body buffer does not move under any circumstances during
-        // heap operations.
-        let body: &[Statement] =
-            unsafe { core::mem::transmute(data.ast.ecmascript_code().statements.as_slice()) };
+        let body: &'script [Statement<'script>] = data.ast.ecmascript_code().statements.as_slice();
 
         self.compile_statements(body);
 

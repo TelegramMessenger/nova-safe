@@ -609,8 +609,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
             } else {
                 true
             };
+            let (scoping, nodes) = (ctx.scoping(), ctx.nodes());
             let (agent, gc) = ctx.get_agent_and_gc();
-            let mut constructor_ctx = CompileContext::new(agent, source_code, gc);
+            let mut constructor_ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
             constructor_ctx.set_runtime_strict(constructor_runtime_strict);
             // Resolve 'this' into the stack.
             constructor_ctx.add_instruction(Instruction::ResolveThisBinding);
@@ -655,6 +656,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
             if let Some(constructor) = constructor {
                 let constructor_data = CompileFunctionBodyData {
                     source_code,
+                    scoping,
+                    nodes,
                     is_lexical: false,
                     // Class code is always strict.
                     is_strict: true,
@@ -766,10 +769,8 @@ fn class_has_self_references(class: &ast::Class, ctx: &CompileContext) -> bool {
         // An unnamed class cannot be self-referential.
         return false;
     };
-    let agent = ctx.get_agent();
-    let sc = ctx.get_source_code();
-    let scoping = sc.get_scoping(agent);
-    let nodes = sc.get_nodes(agent);
+    let scoping = ctx.scoping();
+    let nodes = ctx.nodes();
     let s = class_binding.symbol_id();
     let class_scope = class.scope_id();
     if scoping.scope_flags(class_scope).contains_direct_eval() {

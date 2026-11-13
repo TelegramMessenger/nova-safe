@@ -5,7 +5,7 @@
 use crate::{
     ecmascript::{
         Agent, CompileFunctionBodyData, FunctionTemplate, ObjectShape, PropertyKey,
-        PropertyLookupCache, SourceCode, SourceTextModule, String, Value,
+        PropertyLookupCache, SourceCode, String, Value,
     },
     engine::{
         Bindable, NoGcScope, Scoped, bindable_handle,
@@ -17,6 +17,7 @@ use crate::{
     },
 };
 use oxc_ast::ast;
+use oxc_semantic::{AstNodes, Scoping};
 use std::sync::Arc;
 
 use super::bytecode_compiler::GeneratorKind;
@@ -118,10 +119,12 @@ pub(crate) struct ExecutableHeapData<'a> {
 }
 
 impl<'gc> Executable<'gc> {
-    pub(crate) fn compile_script(
+    pub(crate) fn compile_script<'s>(
         agent: &mut Agent,
-        body: &[ast::Statement],
+        body: &'s [ast::Statement<'s>],
         source_code: SourceCode<'gc>,
+        scoping: &'s Scoping,
+        nodes: &'s AstNodes<'s>,
         is_strict: bool,
         gc: NoGcScope<'gc, '_>,
     ) -> Self {
@@ -130,7 +133,7 @@ impl<'gc> Executable<'gc> {
             eprintln!("=== Compiling Script ===");
             eprintln!();
         }
-        let mut ctx = CompileContext::new(agent, source_code, gc);
+        let mut ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
         ctx.set_runtime_strict(is_strict);
 
         ctx.compile_statements(body);
@@ -138,9 +141,12 @@ impl<'gc> Executable<'gc> {
         ctx.finish()
     }
 
-    pub(crate) fn compile_module(
+    pub(crate) fn compile_module<'s>(
         agent: &mut Agent,
-        module: SourceTextModule,
+        body: &'s [ast::Statement<'s>],
+        source_code: SourceCode<'gc>,
+        scoping: &'s Scoping,
+        nodes: &'s AstNodes<'s>,
         gc: NoGcScope<'gc, '_>,
     ) -> Self {
         if agent.options.print_internals {
@@ -148,9 +154,7 @@ impl<'gc> Executable<'gc> {
             eprintln!("=== Compiling Module ===");
             eprintln!();
         }
-        let source_code = module.get_source_code(agent, gc);
-        let body = module.get_statements(agent, gc);
-        let mut ctx = CompileContext::new(agent, source_code, gc);
+        let mut ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
         ctx.set_runtime_strict(true);
 
         ctx.compile_statements(body);
@@ -163,7 +167,7 @@ impl<'gc> Executable<'gc> {
         data: CompileFunctionBodyData<'_, 'gc>,
         gc: NoGcScope<'gc, '_>,
     ) -> Self {
-        let mut ctx = CompileContext::new(agent, data.source_code, gc);
+        let mut ctx = CompileContext::new(agent, data.source_code, data.scoping, data.nodes, gc);
         ctx.set_runtime_strict(data.is_strict);
         if data.ast.is_generator() {
             ctx.set_generator_kind(if data.ast.is_async() {
@@ -184,10 +188,12 @@ impl<'gc> Executable<'gc> {
         ctx.finish()
     }
 
-    pub(crate) fn compile_eval_body(
+    pub(crate) fn compile_eval_body<'s>(
         agent: &mut Agent,
-        body: &[ast::Statement],
+        body: &'s [ast::Statement<'s>],
         source_code: SourceCode<'gc>,
+        scoping: &'s Scoping,
+        nodes: &'s AstNodes<'s>,
         is_strict: bool,
         gc: NoGcScope<'gc, '_>,
     ) -> Self {
@@ -196,7 +202,7 @@ impl<'gc> Executable<'gc> {
             eprintln!("=== Compiling Eval Body ===");
             eprintln!();
         }
-        let mut ctx = CompileContext::new(agent, source_code, gc);
+        let mut ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
         ctx.set_runtime_strict(is_strict);
 
         ctx.compile_statements(body);

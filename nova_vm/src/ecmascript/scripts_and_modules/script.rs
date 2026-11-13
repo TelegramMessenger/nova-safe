@@ -26,6 +26,7 @@ use core::any::Any;
 use oxc_ast::ast;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_ecmascript::BoundNames;
+use oxc_semantic::{AstNodes, Scoping};
 use std::rc::Rc;
 
 /// Host defined data for an ECMAScript Agent, Script, or Module.
@@ -198,10 +199,12 @@ impl GlobalDeclarations {
     /// Collects the declarations of a script body and compiles its function
     /// declarations, which GlobalDeclarationInstantiation instantiates in
     /// the script's (strict when `is_strict`) execution context.
-    pub(crate) fn new(
+    pub(crate) fn new<'s>(
         agent: &mut Agent,
-        body: &[ast::Statement],
+        body: &'s [ast::Statement<'s>],
         source_code: SourceCode,
+        scoping: &'s Scoping,
+        nodes: &'s AstNodes<'s>,
         is_strict: bool,
         gc: NoGcScope,
     ) -> Self {
@@ -231,6 +234,8 @@ impl GlobalDeclarations {
                         CompileFunctionBodyData {
                             ast,
                             source_code,
+                            scoping,
+                            nodes,
                             is_strict: is_strict
                                 || ast.ecmascript_code().has_use_strict_directive(),
                             is_lexical: false,
@@ -329,33 +334,37 @@ pub fn parse_script<'a>(
     // 1. Let script be ParseText(sourceText, Script).
     let source_type = SourceCodeType::Script { strict };
 
-    // SAFETY: Script keeps the SourceCode reference alive in the Heap, thus
-    // making the Program's references point to a live Allocator.
-    let parse_result = unsafe {
-        SourceCode::parse_source(
-            agent,
-            source_text,
-            source_type,
-            #[cfg(feature = "typescript")]
-            true,
-            gc,
-        )
-    };
+    let parse_result = SourceCode::parse_source(
+        agent,
+        source_text,
+        source_type,
+        #[cfg(feature = "typescript")]
+        true,
+        gc,
+        |agent, parsed| {
+            let ParseResult {
+                source_code,
+                body,
+                directives: _,
+                scoping,
+                nodes,
+                is_strict,
+            } = parsed;
+            let declarations =
+                GlobalDeclarations::new(agent, body, source_code, scoping, nodes, is_strict, gc);
+            let executable =
+                Executable::compile_script(agent, body, source_code, scoping, nodes, is_strict, gc);
+            (source_code, declarations, executable, is_strict)
+        },
+    );
 
-    let ParseResult {
-        source_code,
-        body,
-        directives: _,
-        is_strict,
-    } = match parse_result {
+    let (source_code, declarations, executable, is_strict) = match parse_result {
         // 2. If script is a List of errors, return script.
         Ok(result) => result,
         Err(errors) => {
             return Err(errors);
         }
     };
-    let declarations = GlobalDeclarations::new(agent, body, source_code, is_strict, gc);
-    let executable = Executable::compile_script(agent, body, source_code, is_strict, gc);
 
     // 3. Return Script Record {
     let script_record = ScriptRecord {

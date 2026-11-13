@@ -7,35 +7,36 @@
 use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
-    ptr::NonNull,
 };
 
 use ahash::AHashSet;
 use oxc_ast::ast;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_ecmascript::BoundNames;
+use oxc_semantic::{AstNodes, Scoping};
 
 use crate::{
     ecmascript::{
         AbstractModule, AbstractModuleMethods, AbstractModuleRecord, AbstractModuleSlots, Agent,
-        AsyncEvaluationOrder, AwaitReactionRecord, BUILTIN_STRING_MEMORY, Contains, ContainsSymbol,
-        CyclicModuleMethods, CyclicModuleRecord, CyclicModuleRecordStatus, CyclicModuleSlots,
-        ECMAScriptCodeEvaluationState, ExceptionType, ExecutionContext, GraphLoadingStateRecord,
-        HostDefined, JsError, JsResult, LexicallyScopedDeclaration, LexicallyScopedDeclarations,
-        Module, ModuleEnvironment, ModuleRequest, ModuleRequestRecord, OrdinaryObject, ParseResult,
-        Promise, PromiseCapability, PromiseReactionHandler, Realm, ResolveSetEntry,
+        AsyncEvaluationOrder, AwaitReactionRecord, BUILTIN_STRING_MEMORY, CompileFunctionBodyData,
+        Contains, ContainsSymbol, CyclicModuleMethods, CyclicModuleRecord,
+        CyclicModuleRecordStatus, CyclicModuleSlots, ECMAScriptCodeEvaluationState, ExceptionType,
+        ExecutionContext, FunctionAstRef, FunctionTemplate, GraphLoadingStateRecord, HostDefined,
+        JsError, JsResult, LexicallyScopedDeclaration, LexicallyScopedDeclarations, Module,
+        ModuleEnvironment, ModuleRequest, ModuleRequestRecord, OrdinaryObject, ParseResult,
+        Promise, PromiseCapability, PromiseReactionHandler, PropertyKey, Realm, ResolveSetEntry,
         ResolvedBinding, ScriptOrModule, SourceCode, SourceCodeType, String, Value,
         VarScopedDeclaration, VarScopedDeclarations, create_import_binding,
         create_indirect_import_binding, get_imported_module, get_module_namespace,
         initialize_import_binding, inner_module_evaluation, inner_module_linking,
-        inner_module_loading, inner_promise_then, instantiate_function_object,
-        new_module_environment, unwrap_try,
+        inner_module_loading, inner_promise_then,
+        instantiate_ordinary_function_object_from_template, new_module_environment, unwrap_try,
     },
     engine::{
         Bindable, Executable, ExecutionResult, GcScope, GcToken, HeapRootData, NoGcScope, Scopable,
         Scoped, Vm, bindable_handle,
     },
-    heap::{CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep, WorkQueues},
+    heap::{CompactionLists, CreateHeapData, Heap, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
     ndt,
 };
 
@@ -46,16 +47,11 @@ pub(crate) struct SourceTextModuleRecord<'a> {
     cyclic_fields: CyclicModuleRecord<'a>,
     /// ### \[\[ECMAScriptCode]]
     ///
-    /// a Parse Node
-    ///
-    /// The result of parsing the source text of this module using Module as the goal symbol.
-    ///
-    /// Note: The Program's drop code is never run. The referred structures
-    /// live in the SourceCode heap data in its contained Allocator. The bump
-    /// allocator drops all of the data in a single go. All that needs to be
-    /// dropped here is the local Program itself, not any of its referred
-    /// parts.
-    ecmascript_code: NonNull<[ast::Statement<'a>]>,
+    /// The module body compiled when it was parsed; taken when it is
+    /// evaluated.
+    executable: Option<Executable<'a>>,
+    /// What InitializeEnvironment needs from the module body.
+    declarations: ModuleDeclarations,
     /// Compiled bytecode of \[\[ECMAScriptCode]], placed here for resuming
     /// async module evaluation after an await.
     compiled_bytecode: Option<Executable<'a>>,
@@ -129,15 +125,6 @@ impl core::fmt::Debug for SourceTextModule<'_> {
 }
 
 impl<'m> SourceTextModule<'m> {
-    /// Get the script SourceCode.
-    pub(crate) fn get_source_code<'a>(
-        self,
-        agent: &Agent,
-        gc: NoGcScope<'a, '_>,
-    ) -> SourceCode<'a> {
-        self.get(agent).source_code.bind(gc)
-    }
-
     fn get<'a>(
         self,
         agent: &'a impl AsRef<SourceTextModuleHeap>,
@@ -212,21 +199,12 @@ impl<'m> SourceTextModule<'m> {
         self.get_requested_modules(agent).get(index).copied()
     }
 
-    /// Get the module statements as a slice.
-    pub(crate) fn get_statements<'a>(
-        self,
-        agent: &Agent,
-        _: NoGcScope<'a, '_>,
-    ) -> &'a [ast::Statement<'a>] {
-        // SAFETY: Caller promises that SourceTextModule is rooted while the
-        // statements slice is held: the SourceTextModuleRecord may move during
-        // GC but the statements it points to do not move. Hence the reference
-        // is valid while the self SourceTextModule is held (the parent call).
-        unsafe {
-            core::mem::transmute::<&[ast::Statement], &'a [ast::Statement<'a>]>(
-                self.get(agent).ecmascript_code.as_ref(),
-            )
-        }
+    /// Take the module body compiled when the module was parsed.
+    fn take_ecmascript_code(self, agent: &mut Agent) -> Executable<'m> {
+        self.get_mut(agent)
+            .executable
+            .take()
+            .expect("a module is evaluated once")
     }
 
     pub(crate) fn get_executable(self, agent: &Agent) -> Executable<'m> {
@@ -1153,29 +1131,28 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
         //     moduleContext is now the running execution context.
         agent.push_execution_context(module_context);
         // 18. Let code be module.[[ECMAScriptCode]].
-        let code = module.get_statements(agent, gc);
+        let ModuleDeclarations {
+            var_names,
+            lex_declarations,
+            create_default_export,
+        } = module.get(agent).declarations.clone();
         // 19. Let varDeclarations be the VarScopedDeclarations of code.
         // 21. For each element d of varDeclarations, do
         {
             // 20. Let declaredVarNames be a new empty List.
             let mut declared_var_names = AHashSet::new();
             // a. For each element dn of the BoundNames of d, do
-            let cb = &mut |dn: &oxc_ast::ast::BindingIdentifier<'a>| {
-                let dn = dn.name;
+            for dn in var_names.iter() {
                 // i. If declaredVarNames does not contain dn, then
                 if declared_var_names.insert(dn) {
                     // 3. Append dn to declaredVarNames.
-                    let dn = String::from_str(agent, &dn, gc);
+                    let dn = String::from_str(agent, dn, gc);
                     // 1. Perform ! env.CreateMutableBinding(dn, false).
                     env.create_mutable_binding(agent, dn, false);
                     // 2. Perform ! env.InitializeBinding(dn, undefined).
                     env.initialize_binding(&mut agent.heap.environments, dn, Value::Undefined);
                 }
-            };
-            code.var_scoped_declarations(&mut |d| match d {
-                VarScopedDeclaration::Variable(d) => d.id.bound_names(cb),
-                VarScopedDeclaration::Function(d) => d.bound_names(cb),
-            });
+            }
         }
         // 22. Let lexDeclarations be the LexicallyScopedDeclarations of code.
         // 23. Let privateEnv be null.
@@ -1183,11 +1160,10 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
         // 24. For each element d of lexDeclarations, do
         {
             // a. For each element dn of the BoundNames of d, do
-            let cb = &mut |dn: &oxc_ast::ast::BindingIdentifier<'a>,
-                           d: &LexicallyScopedDeclaration<'a>| {
-                let dn_string = String::from_str(agent, dn.name.as_str(), gc);
+            for declaration in lex_declarations.iter() {
+                let dn_string = String::from_str(agent, &declaration.name, gc);
                 // i. If IsConstantDeclaration of d is true, then
-                if d.is_const() {
+                if declaration.is_const {
                     // 1. Perform ! env.CreateImmutableBinding(dn, true).
                     env.create_immutable_binding(&mut agent.heap.environments, dn_string);
                 } else {
@@ -1197,44 +1173,24 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
                 // iii. If d is either a FunctionDeclaration, a
                 //      GeneratorDeclaration, an AsyncFunctionDeclaration,
                 //      or an AsyncGeneratorDeclaration, then
-                if let LexicallyScopedDeclaration::Function(d) = d {
+                if let Some((function_name, template)) = &declaration.function {
                     // 1. Let fo be InstantiateFunctionObject of d with arguments env and privateEnv.
-                    let fo = instantiate_function_object(agent, d, env.into(), private_env, gc);
+                    let pk_name = match function_name {
+                        Some(name) => PropertyKey::from_str(agent, name, gc),
+                        None => PropertyKey::from(BUILTIN_STRING_MEMORY.default),
+                    };
+                    let fo = instantiate_ordinary_function_object_from_template(
+                        agent,
+                        pk_name,
+                        template.bind(gc),
+                        env.into(),
+                        private_env,
+                        gc,
+                    );
                     // 2. Perform ! env.InitializeBinding(dn, fo).
                     env.initialize_binding(&mut agent.heap.environments, dn_string, fo.into());
                 }
-            };
-            let mut create_default_export = false;
-            code.lexically_scoped_declarations(&mut |d| {
-                match d {
-                    LexicallyScopedDeclaration::Variable(v) => {
-                        v.id.bound_names(&mut |dn| cb(dn, &d));
-                    }
-                    LexicallyScopedDeclaration::Function(f) => {
-                        f.bound_names(&mut |dn| cb(dn, &d));
-                    }
-                    LexicallyScopedDeclaration::Class(c) => {
-                        c.bound_names(&mut |dn| cb(dn, &d));
-                    }
-                    #[cfg(feature = "typescript")]
-                    LexicallyScopedDeclaration::TSEnum(e) => {
-                        e.id.bound_names(&mut |dn| cb(dn, &d));
-                    }
-                    LexicallyScopedDeclaration::DefaultExport => {
-                        // ExportDeclaration : export default AssignmentExpression ;
-                        // 1. Return « "*default*" ».
-                        // NOTE: It is not necessary to treat export default
-                        // AssignmentExpression as a constant declaration because
-                        // there is no syntax that permits assignment to the
-                        // internal bound name used to reference a module's default
-                        // object.
-                        // NOTE: We optimise references to constant declarations
-                        // separately, so we choose to use an immutable binding
-                        // here despite the spec suggesting a mutable one.
-                        create_default_export = true;
-                    }
-                }
-            });
+            }
             if create_default_export {
                 env.create_immutable_binding(agent, BUILTIN_STRING_MEMORY._default_);
             }
@@ -1351,8 +1307,10 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
             agent.push_execution_context(module_context);
             // c. Let result be Completion(Evaluation of
             //    module.[[ECMAScriptCode]]).
-            let bytecode =
-                Executable::compile_module(agent, module, gc.nogc()).scope(agent, gc.nogc());
+            let bytecode = module
+                .take_ecmascript_code(agent)
+                .bind(gc.nogc())
+                .scope(agent, gc.nogc());
             let result = Vm::execute(agent, bytecode.clone(), None, gc.reborrow())
                 .into_js_result()
                 .unbind()
@@ -1391,15 +1349,7 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
 
 #[inline(never)]
 fn create_id(agent: &Agent, module: SourceTextModule) -> u64 {
-    u64::try_from(
-        module
-            .get(agent)
-            .ecmascript_code
-            .cast::<()>()
-            .as_ptr()
-            .addr(),
-    )
-    .unwrap()
+    u64::from(module.get(agent).source_code.get_index_u32())
 }
 
 fn async_module_start(
@@ -1417,7 +1367,10 @@ fn async_module_start(
     // 3. Set the code evaluation state of asyncContext such that when
     //    evaluation is resumed for that execution context, closure will be
     //    called with no arguments.
-    let bytecode = Executable::compile_module(agent, module, gc.nogc()).scope(agent, gc.nogc());
+    let bytecode = module
+        .take_ecmascript_code(agent)
+        .bind(gc.nogc())
+        .scope(agent, gc.nogc());
     // 4. Push asyncContext onto the execution context stack; asyncContext is
     //    now the running execution context.
     agent.push_execution_context(async_context);
@@ -1526,31 +1479,37 @@ pub fn parse_module<'a>(
 ) -> Result<SourceTextModule<'a>, Vec<OxcDiagnostic>> {
     let realm = realm.bind(gc);
     // 1. Let body be ParseText(sourceText, Module).
-    // SAFETY: Script keeps the SourceCode reference alive in the Heap, thus
-    // making the Program's references point to a live Allocator.
-    let parse_result = unsafe {
-        SourceCode::parse_source(
-            agent,
-            source_text,
-            SourceCodeType::Module,
-            #[cfg(feature = "typescript")]
-            true,
-            gc,
-        )
-    };
+    // 2. If body is a List of errors, return body.
+    SourceCode::parse_source(
+        agent,
+        source_text,
+        SourceCodeType::Module,
+        #[cfg(feature = "typescript")]
+        true,
+        gc,
+        |agent, parsed| parse_module_body(agent, parsed, realm.unbind(), host_defined, gc),
+    )
+}
 
+/// Steps 3 to 12 of ParseModule, run while the parsed body lives.
+fn parse_module_body<'a>(
+    agent: &mut Agent,
+    parsed: ParseResult<'_, 'a>,
+    realm: Realm,
+    host_defined: Option<HostDefined>,
+    gc: NoGcScope<'a, '_>,
+) -> SourceTextModule<'a> {
+    let realm = realm.bind(gc);
     let ParseResult {
         source_code,
         body,
         directives: _,
+        scoping,
+        nodes,
         is_strict: _,
-    } = match parse_result {
-        // 2. If body is a List of errors, return body.
-        Ok(result) => result,
-        Err(errors) => {
-            return Err(errors);
-        }
-    };
+    } = parsed;
+    let declarations = ModuleDeclarations::new(agent, body, source_code, scoping, nodes, gc);
+    let executable = Executable::compile_module(agent, body, source_code, scoping, nodes, gc);
 
     // 3. Let requestedModules be the ModuleRequests of body.
     let mut requested_modules = vec![];
@@ -1872,7 +1831,7 @@ pub fn parse_module<'a>(
     // 11. Let async be body Contains await.
     let r#async = Contains::contains(body, ContainsSymbol::Await);
     // 12. Return Source Text Module Record {
-    Ok(agent
+    agent
         .heap
         .create(SourceTextModuleRecord {
             // [[Realm]]: realm,
@@ -1894,11 +1853,8 @@ pub fn parse_module<'a>(
             // [[DFSAncestorIndex]]: empty
             cyclic_fields: CyclicModuleRecord::new(r#async, requested_modules.into_boxed_slice()),
             // [[ECMAScriptCode]]: body,
-            // SAFETY: We are moving the Program onto the heap together with the
-            // SourceCode reference: the latter will keep alive the allocation that
-            // Program points to. Hence, we can unbind the Program from the garbage
-            // collector lifetime here.
-            ecmascript_code: NonNull::from(body),
+            executable: Some(executable.unbind()),
+            declarations,
             compiled_bytecode: None,
             // [[Context]]: empty,
             context: Default::default(),
@@ -1915,8 +1871,126 @@ pub fn parse_module<'a>(
 
             source_code,
         })
-        .unbind())
+        .unbind()
+        .bind(gc)
     // }.
+}
+
+/// What InitializeEnvironment needs from a module body, collected when the
+/// module is parsed.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ModuleDeclarations {
+    /// The BoundNames of VarScopedDeclarations, in order.
+    var_names: Box<[Box<str>]>,
+    /// The BoundNames of LexicallyScopedDeclarations, in order.
+    lex_declarations: Box<[ModuleLexicalDeclaration]>,
+    /// LexicallyScopedDeclarations contains `export default`
+    /// AssignmentExpression.
+    create_default_export: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleLexicalDeclaration {
+    name: Box<str>,
+    /// IsConstantDeclaration of the declaration.
+    is_const: bool,
+    /// The declaration is a function declaration: the name SetFunctionName
+    /// gives it (None is "default") and its compiled code.
+    function: Option<(Option<Box<str>>, FunctionTemplate<'static>)>,
+}
+
+impl ModuleDeclarations {
+    fn new<'s>(
+        agent: &mut Agent,
+        body: &'s [ast::Statement<'s>],
+        source_code: SourceCode,
+        scoping: &'s Scoping,
+        nodes: &'s AstNodes<'s>,
+        gc: NoGcScope,
+    ) -> Self {
+        let mut var_names = vec![];
+        body.var_scoped_declarations(&mut |d| {
+            let cb = &mut |dn: &ast::BindingIdentifier| var_names.push(Box::from(dn.name.as_str()));
+            match d {
+                VarScopedDeclaration::Variable(d) => d.id.bound_names(cb),
+                VarScopedDeclaration::Function(d) => d.bound_names(cb),
+            }
+        });
+        let mut declarations: Vec<(Box<str>, bool, Option<&'s ast::Function<'s>>)> = vec![];
+        let mut create_default_export = false;
+        body.lexically_scoped_declarations(&mut |d| {
+            let is_const = d.is_const();
+            let function = if let LexicallyScopedDeclaration::Function(f) = d {
+                Some(f)
+            } else {
+                None
+            };
+            let cb = &mut |dn: &ast::BindingIdentifier| {
+                declarations.push((Box::from(dn.name.as_str()), is_const, function))
+            };
+            match d {
+                LexicallyScopedDeclaration::Variable(v) => v.id.bound_names(cb),
+                LexicallyScopedDeclaration::Function(f) => f.bound_names(cb),
+                LexicallyScopedDeclaration::Class(c) => c.bound_names(cb),
+                #[cfg(feature = "typescript")]
+                LexicallyScopedDeclaration::TSEnum(e) => e.id.bound_names(cb),
+                LexicallyScopedDeclaration::DefaultExport => create_default_export = true,
+            }
+        });
+        let lex_declarations = declarations
+            .into_iter()
+            .map(|(name, is_const, function)| {
+                let function = function.map(|f| {
+                    let ast = FunctionAstRef::from(f);
+                    // Module code is strict.
+                    let executable = Executable::compile_function_body(
+                        agent,
+                        CompileFunctionBodyData {
+                            ast,
+                            source_code,
+                            scoping,
+                            nodes,
+                            is_strict: true,
+                            is_lexical: false,
+                        },
+                        gc,
+                    );
+                    (
+                        f.id.as_ref().map(|id| Box::from(id.name.as_str())),
+                        FunctionTemplate::from_ast(ast, Some(executable)).unbind(),
+                    )
+                });
+                ModuleLexicalDeclaration {
+                    name,
+                    is_const,
+                    function,
+                }
+            })
+            .collect();
+        Self {
+            var_names: var_names.into_boxed_slice(),
+            lex_declarations,
+            create_default_export,
+        }
+    }
+}
+
+impl HeapMarkAndSweep for ModuleDeclarations {
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        for declaration in self.lex_declarations.iter() {
+            if let Some((_, template)) = &declaration.function {
+                template.mark_values(queues);
+            }
+        }
+    }
+
+    fn sweep_values(&mut self, compactions: &CompactionLists) {
+        for declaration in self.lex_declarations.iter_mut() {
+            if let Some((_, template)) = &mut declaration.function {
+                template.sweep_values(compactions);
+            }
+        }
+    }
 }
 
 bindable_handle!(SourceTextModuleRecord);
@@ -1965,8 +2039,9 @@ impl HeapMarkAndSweep for SourceTextModuleRecord<'static> {
         let Self {
             abstract_fields,
             cyclic_fields,
-            ecmascript_code: _,
-            compiled_bytecode: _,
+            executable,
+            declarations,
+            compiled_bytecode,
             context: _,
             import_meta,
             import_entries,
@@ -1975,6 +2050,9 @@ impl HeapMarkAndSweep for SourceTextModuleRecord<'static> {
             star_export_entries: _,
             source_code,
         } = self;
+        executable.mark_values(queues);
+        declarations.mark_values(queues);
+        compiled_bytecode.mark_values(queues);
         abstract_fields.mark_values(queues);
         cyclic_fields.mark_values(queues);
         import_meta.mark_values(queues);
@@ -1988,8 +2066,9 @@ impl HeapMarkAndSweep for SourceTextModuleRecord<'static> {
         let Self {
             abstract_fields,
             cyclic_fields,
-            ecmascript_code: _,
-            compiled_bytecode: _,
+            executable,
+            declarations,
+            compiled_bytecode,
             context: _,
             import_meta,
             import_entries,
@@ -1998,6 +2077,9 @@ impl HeapMarkAndSweep for SourceTextModuleRecord<'static> {
             star_export_entries: _,
             source_code,
         } = self;
+        executable.sweep_values(compactions);
+        declarations.sweep_values(compactions);
+        compiled_bytecode.sweep_values(compactions);
         abstract_fields.sweep_values(compactions);
         cyclic_fields.sweep_values(compactions);
         import_meta.sweep_values(compactions);

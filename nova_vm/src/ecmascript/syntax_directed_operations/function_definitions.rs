@@ -99,9 +99,11 @@ impl ContainsExpression for ast::ArrayPattern<'_> {
 /// The syntax-directed operation InstantiateOrdinaryFunctionObject takes
 /// arguments env (an Environment Record) and privateEnv (a PrivateEnvironment
 /// Record or null) and returns an ECMAScript function object.
-pub(crate) fn instantiate_ordinary_function_object<'a>(
+pub(crate) fn instantiate_ordinary_function_object<'a, 's>(
     agent: &mut Agent,
-    function: &ast::Function<'_>,
+    function: &'s ast::Function<'s>,
+    scoping: &'s oxc_semantic::Scoping,
+    nodes: &'s oxc_semantic::AstNodes<'s>,
     env: Environment<'a>,
     private_env: Option<PrivateEnvironment<'a>>,
     gc: NoGcScope<'a, '_>,
@@ -127,6 +129,8 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
         CompileFunctionBodyData {
             ast,
             source_code,
+            scoping,
+            nodes,
             is_strict,
             is_lexical: false,
         },
@@ -232,6 +236,8 @@ pub(crate) fn instantiate_ordinary_function_object_from_template<'a>(
 pub(crate) struct CompileFunctionBodyData<'ast, 'gc> {
     pub(crate) ast: FunctionAstRef<'ast>,
     pub(crate) source_code: SourceCode<'gc>,
+    pub(crate) scoping: &'ast oxc_semantic::Scoping,
+    pub(crate) nodes: &'ast oxc_semantic::AstNodes<'ast>,
     pub(crate) is_strict: bool,
     pub(crate) is_lexical: bool,
 }

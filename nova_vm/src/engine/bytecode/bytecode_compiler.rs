@@ -589,10 +589,8 @@ fn variable_escapes_scope(
     ctx: &CompileContext,
     identifier: &oxc_ast::ast::BindingIdentifier,
 ) -> bool {
-    let agent = ctx.get_agent();
-    let sc = ctx.get_source_code();
-    let scoping = sc.get_scoping(agent);
-    let nodes = sc.get_nodes(agent);
+    let scoping = ctx.scoping();
+    let nodes = ctx.nodes();
     let s = identifier.symbol_id();
     if !scoping.symbol_redeclarations(s).is_empty() {
         // Redeclarations are a pain to deal with.
@@ -844,8 +842,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
     /// variable.
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         let kind = if let Some(id) = self.reference_id.get() {
-            let source_code = ctx.get_source_code();
-            let scoping = source_code.get_scoping(ctx.get_agent());
+            let scoping = ctx.scoping();
             let reference = scoping.get_reference(id);
             if let Some(s) = reference.symbol_id() {
                 // SymbolId means we might be a global, local, or a stack
@@ -854,7 +851,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                 let mutable = !symbol_flags.is_const_variable();
                 if let Some(stack_slot) = ctx.get_variable_stack_index(s) {
                     // We're a stack variable.
-                    let nodes = source_code.get_nodes(ctx.get_agent());
+                    let nodes = ctx.nodes();
                     let ref_id = reference.node_id();
                     let decl_id = scoping.symbol_declaration(s);
                     if decl_id == ref_id {
@@ -958,8 +955,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Bindin
                     mutable: true,
                 }
             } else {
-                let source_code = ctx.get_source_code();
-                let scoping = source_code.get_scoping(ctx.get_agent());
+                let scoping = ctx.scoping();
                 let scope_id = scoping.symbol_scope_id(s);
                 let scope_flags = scoping.scope_flags(scope_id);
                 let symbol_flags = scoping.symbol_flags(s);
