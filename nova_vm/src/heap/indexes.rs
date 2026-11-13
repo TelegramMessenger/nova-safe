@@ -7,10 +7,7 @@ use crate::{
     engine::{Bindable, GcToken, NoGcScope},
 };
 use core::fmt::Debug;
-use core::{
-    hash::{Hash, Hasher},
-    ops::{Index, IndexMut},
-};
+use core::hash::{Hash, Hasher};
 use core::{marker::PhantomData, mem::size_of, num::NonZeroU32};
 use std::any::type_name;
 
@@ -151,30 +148,6 @@ impl Default for ElementIndex<'static> {
     }
 }
 
-impl ElementIndex<'_> {
-    #[inline(always)]
-    pub(crate) fn last_element_index<const N: usize>(vec: &[[Option<Value>; N]]) -> Self {
-        assert!(!vec.is_empty());
-        Self::from_index(vec.len() - 1)
-    }
-}
-
-impl<const N: usize> Index<ElementIndex<'_>> for Vec<[Option<Value<'static>>; N]> {
-    type Output = [Option<Value<'static>>; N];
-
-    fn index(&self, index: ElementIndex) -> &Self::Output {
-        self.get(index.get_index())
-            .expect("Invalid ElementsVector: No item at index")
-    }
-}
-
-impl<const N: usize> IndexMut<ElementIndex<'_>> for Vec<[Option<Value<'static>>; N]> {
-    fn index_mut(&mut self, index: ElementIndex<'_>) -> &mut Self::Output {
-        self.get_mut(index.get_index())
-            .expect("Invalid ElementsVector: No item at index")
-    }
-}
-
 impl Default for PropertyKeyIndex<'static> {
     fn default() -> Self {
         Self(
@@ -182,16 +155,6 @@ impl Default for PropertyKeyIndex<'static> {
             PhantomData,
             PhantomData,
         )
-    }
-}
-
-impl PropertyKeyIndex<'_> {
-    #[inline(always)]
-    pub(crate) fn last_property_key_index<const N: usize>(
-        vec: &[[Option<PropertyKey>; N]],
-    ) -> Self {
-        assert!(!vec.is_empty());
-        Self::from_index(vec.len() - 1)
     }
 }
 

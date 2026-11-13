@@ -4602,7 +4602,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::TSEnum
 
         let keys_memory = agent.heap.elements.get_keys_uninit_raw(cap, index);
         for (slot, key) in keys_memory.iter_mut().zip(property_keys.iter()) {
-            *slot = Some(key.unbind());
+            *slot = key.unbind();
         }
 
         let shape = agent.heap.create(ObjectShapeRecord::create(

@@ -19,7 +19,7 @@ use crate::{
         ArenaAccess, ArenaAccessMut, CompactionLists, CreateHeapData, DirectArenaAccess,
         DirectArenaAccessMut, Heap, HeapMarkAndSweep, HeapSweepWeakReference,
         IntrinsicObjectShapes, PropertyKeyHeap, WeakReference, WorkQueues,
-        {ElementArrayKey, ElementArrays}, {HeapIndexHandle, PropertyKeyIndex},
+        {ElementArrayKey, ElementArrays, FREE_KEY_SLOT}, {HeapIndexHandle, PropertyKeyIndex},
     },
 };
 
@@ -327,12 +327,12 @@ impl<'a> ObjectShape<'a> {
         let keys_index = self.keys_index(agent);
         let keys_uninit = agent.heap.elements.get_keys_uninit_raw(cap, keys_index);
         let shape_record = if let Some(slot) = keys_uninit.get_mut(len)
-            && slot.is_none()
+            && *slot == FREE_KEY_SLOT
         {
             // Our current shape keys is something like [a, b, None, None], and
             // we want to add c as the third key. In this case we can just add
             // it directly and create a new shape with the same keys.
-            slot.replace(key.unbind());
+            *slot = key.unbind();
             ObjectShapeRecord::create(prototype, keys_index, cap, len.checked_add(1).unwrap())
         } else {
             // Our current shape keys is something like [a, b, x] and we want
@@ -538,7 +538,7 @@ impl<'a> ObjectShape<'a> {
             .iter_mut()
             .zip(private_fields.iter().map(|f| f.get_key()))
         {
-            *slot = Some(key.into());
+            *slot = key.into();
         }
         *len += private_fields_count;
         *values_cap = (*len).into();
