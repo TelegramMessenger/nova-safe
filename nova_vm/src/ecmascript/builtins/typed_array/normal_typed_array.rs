@@ -97,8 +97,7 @@ impl<'ta, T: Viewable> GenericTypedArray<'ta, T> {
                 let bigint = to_big_int(agent, value.unbind(), gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                // SAFETY: not shared.
-                o = unsafe { scoped_o.take(agent) }.bind(gc.nogc());
+                o = scoped_o.take(agent).bind(gc.nogc());
                 bigint.into()
             }
         } else {
@@ -110,8 +109,7 @@ impl<'ta, T: Viewable> GenericTypedArray<'ta, T> {
                 let number = to_number(agent, value.unbind(), gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                // SAFETY: not shared.
-                o = unsafe { scoped_o.take(agent) }.bind(gc.nogc());
+                o = scoped_o.take(agent).bind(gc.nogc());
                 number.into()
             }
         };
@@ -1556,7 +1554,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         // 9. Let A be ? TypedArraySpeciesCreate(O, « 𝔽(captured) »).
         let a = typed_array_species_create_with_length(
             agent,
-            unsafe { scoped_o.take(agent) }.unbind().into(),
+            scoped_o.take(agent).unbind().into(),
             captured,
             gc.reborrow(),
         )
@@ -2022,8 +2020,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         if let Some(error) = error {
             return Err(error);
         }
-        // SAFETY: not shared.
-        let ta = unsafe { ta.take(agent) }.bind(gc.into_nogc());
+        let ta = ta.take(agent).bind(gc.into_nogc());
         if !ta.is_detached(agent) {
             let slice = ta.as_mut_slice(agent);
             let len = len.min(slice.len());

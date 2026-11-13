@@ -90,8 +90,7 @@ pub(super) fn execute_simple_array_binding<'a>(
                                 idx += 1;
                             }
                             iterator_is_done = true;
-                            // SAFETY: rest is not shared
-                            let rest: Value = unsafe { rest.take(agent).into() };
+                            let rest: Value = rest.take(agent).into();
                             JsResult::Ok(rest)
                         },
                         gc.reborrow(),
@@ -145,21 +144,14 @@ pub(super) fn execute_simple_array_binding<'a>(
                         .unbind()?
                         .bind(gc.nogc());
                         if environment.is_none() {
-                            put_value(
-                                agent,
-                                &lhs.unbind(),
-                                // SAFETY: value is not shared.
-                                unsafe { value.take(agent) },
-                                gc.reborrow(),
-                            )
-                            .unbind()?
-                            .bind(gc.nogc());
+                            put_value(agent, &lhs.unbind(), value.take(agent), gc.reborrow())
+                                .unbind()?
+                                .bind(gc.nogc());
                         } else {
                             initialize_referenced_binding(
                                 agent,
                                 lhs.unbind(),
-                                // SAFETY: value is not shared.
-                                unsafe { value.take(agent) },
+                                value.take(agent),
                                 gc.reborrow(),
                             )
                             .unbind()?
@@ -279,8 +271,7 @@ pub(super) fn execute_simple_object_binding<'a>(
                         let v = get(
                             agent,
                             object.get(agent),
-                            // SAFETY: property_key is not shared.
-                            unsafe { property_key.take(agent) },
+                            property_key.take(agent),
                             gc.reborrow(),
                         )
                         .unbind()?

@@ -57,7 +57,7 @@ impl AggregateErrorConstructor {
         let errors_list =
             iterator_to_list(agent, iterator_record.unbind(), gc.reborrow()).unbind()?;
         let gc = gc.into_nogc();
-        let o = unsafe { o.take(agent) }.bind(gc);
+        let o = o.take(agent).bind(gc);
         // 6. Perform ! DefinePropertyOrThrow(O, "errors", PropertyDescriptor {
         // [[Configurable]]: true,
         // [[Enumerable]]: false,

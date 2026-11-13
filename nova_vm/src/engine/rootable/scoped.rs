@@ -115,7 +115,7 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
     /// Panics if the `Scoped` has been cloned and the clone has been used to
     /// call `take` already.
     #[must_use]
-    pub unsafe fn take(self, agent: &Agent) -> T {
+    pub fn take(self, agent: &Agent) -> T {
         match T::from_root_repr(&self.inner) {
             Ok(value) => value,
             Err(heap_root_ref) => {
@@ -204,7 +204,7 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
     ///
     /// This method should only ever be called on scoped values that have not
     /// been shared outside the caller.
-    pub unsafe fn replace(&mut self, agent: &Agent, value: T) {
+    pub fn replace(&mut self, agent: &Agent, value: T) {
         let heap_data = match T::to_root_repr(value) {
             Ok(stack_repr) => {
                 // The value doesn't need rooting.
@@ -218,9 +218,7 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
                 );
 
                 // Let's take the previous value from the heap if it existed.
-                // SAFETY: The caller guarantees that the scoped value has not
-                // been shared.
-                let _ = unsafe { previous.take(agent) };
+                let _ = previous.take(agent);
                 return;
             }
             Err(heap_data) => heap_data,
@@ -259,7 +257,7 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
     ///
     /// This method should only ever be called on scoped values that have not
     /// been shared outside the caller.
-    pub unsafe fn replace_self<U: 'static + Rootable>(
+    pub fn replace_self<U: 'static + Rootable>(
         self,
         agent: &mut Agent,
         value: U,
@@ -267,9 +265,7 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
         let heap_data = match U::to_root_repr(value) {
             Ok(stack_repr) => {
                 // Let's take the previous value from the heap if it existed.
-                // SAFETY: The caller guarantees that the scoped value has not
-                // been shared.
-                let _ = unsafe { self.take(agent) };
+                let _ = self.take(agent);
                 // The value doesn't need rooting.
                 return Scoped {
                     inner: stack_repr,

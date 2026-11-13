@@ -67,8 +67,7 @@ impl WeakRefConstructor {
         };
         let gc = gc.into_nogc();
         let weak_ref = weak_ref.bind(gc);
-        // SAFETY: target not shared.
-        let target = unsafe { target.take(agent) }.bind(gc);
+        let target = target.take(agent).bind(gc);
         // 4. Perform AddToKeptObjects(target).
         add_to_kept_objects(agent, target);
         // 5. Set weakRef.[[WeakRefTarget]] to target.

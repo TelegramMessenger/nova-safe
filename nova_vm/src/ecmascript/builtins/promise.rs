@@ -125,8 +125,7 @@ impl<'a> Promise<'a> {
                 Ok(v) => v,
                 Err(err) => return Err(err.unbind()),
             };
-            // SAFETY: not shared.
-            let x = unsafe { scoped_x.take(agent) }.bind(gc.nogc());
+            let x = scoped_x.take(agent).bind(gc.nogc());
             // b. If SameValue(xConstructor, C) is true, return x.
             if x_constructor == agent.current_realm_record().intrinsics().promise().into() {
                 return Ok(x.unbind().bind(gc.into_nogc()));
@@ -143,8 +142,7 @@ impl<'a> Promise<'a> {
             .unbind()
             .resolve(agent, x.unbind(), gc.reborrow());
         // 4. Return promiseCapability.[[Promise]].
-        // SAFETY: Not shared.
-        Ok(unsafe { promise.take(agent).bind(gc.into_nogc()) })
+        Ok(promise.take(agent).bind(gc.into_nogc()))
     }
 }
 

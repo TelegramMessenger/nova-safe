@@ -548,8 +548,7 @@ fn eval_declaration_instantiation<'a>(
             }
             // ii. Set thisEnv to thisEnv.[[OuterEnv]].
             this_env = this_env.get_outer_env(agent).unwrap();
-            // SAFETY: scoped_this_env is not shared.
-            unsafe { scoped_this_env.replace(agent, this_env.unbind()) };
+            scoped_this_env.replace(agent, this_env.unbind());
             var_env = scoped_var_env.get(agent).bind(gc.nogc());
         }
     }
@@ -803,8 +802,7 @@ fn eval_declaration_instantiation<'a>(
                         agent,
                         function_name.get(agent).unbind(),
                         None,
-                        // SAFETY: not shared.
-                        unsafe { fo.take(agent) }.into(),
+                        fo.take(agent).into(),
                         gc.reborrow(),
                     )
                     .unwrap();
@@ -819,8 +817,7 @@ fn eval_declaration_instantiation<'a>(
                         agent,
                         function_name.unbind(),
                         Some(cache.unbind()),
-                        // SAFETY: not shared.
-                        unsafe { fo.take(agent) }.into(),
+                        fo.take(agent).into(),
                         false,
                         gc.reborrow(),
                     )

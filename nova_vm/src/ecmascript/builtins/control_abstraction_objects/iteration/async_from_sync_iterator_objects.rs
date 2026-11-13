@@ -69,8 +69,7 @@ impl AsyncFromSyncIteratorPrototype {
         )
         .unbind()
         .bind(gc.nogc());
-        // SAFETY: neither is shared.
-        let sync_iterator = unsafe {
+        let sync_iterator = {
             let _ = next_method.take(agent);
             iterator.take(agent).bind(gc.nogc())
         };
@@ -145,8 +144,7 @@ impl AsyncFromSyncIteratorPrototype {
             // b. Perform ! Call(promiseCapability.[[Resolve]], undefined, « iteratorResult »).
             unwrap_try(promise_capability.try_resolve(agent, iterator_result.into(), gc.nogc()));
             // c. Return promiseCapability.[[Promise]].
-            // SAFETY: scoped_promise is not shared.
-            return unsafe { scoped_promise.take(agent) };
+            return scoped_promise.take(agent);
         };
         // 9. If value is present, then
         // a. Let result be Completion(Call(return, syncIterator, « value »)).
@@ -180,8 +178,7 @@ impl AsyncFromSyncIteratorPrototype {
                 gc,
             );
             let promise_capability = PromiseCapability {
-                // SAFETY: scoped_promise is not shared.
-                promise: unsafe { scoped_promise.take(agent).bind(gc) },
+                promise: scoped_promise.take(agent).bind(gc),
                 must_be_unresolved: true,
             };
             promise_capability.reject(agent, error, gc);
@@ -193,12 +190,10 @@ impl AsyncFromSyncIteratorPrototype {
             agent,
             result.unbind(),
             PromiseCapability {
-                // SAFETY: scoped_promise is not shared.
-                promise: unsafe { scoped_promise.take(agent) },
+                promise: scoped_promise.take(agent),
                 must_be_unresolved: true,
             },
-            // SAFETY: scoped_sync_iterator is not shared.
-            unsafe { scoped_sync_iterator.take(agent) },
+            scoped_sync_iterator.take(agent),
             false,
             gc,
         )
@@ -242,12 +237,10 @@ impl AsyncFromSyncIteratorPrototype {
             must_be_unresolved: true,
         };
         let throw = if_abrupt_reject_promise_m!(agent, throw, promise_capability, gc);
-        // SAFETY: value is not shared.
-        let value = unsafe { value.take(agent) }.bind(gc.nogc());
+        let value = value.take(agent).bind(gc.nogc());
         // 8. If throw is undefined, then
         let Some(throw) = throw else {
-            // SAFETY: scoped_sync_iterator is not shared.
-            let sync_iterator = unsafe { scoped_sync_iterator.take(agent) }.bind(gc.nogc());
+            let sync_iterator = scoped_sync_iterator.take(agent).bind(gc.nogc());
             // a. NOTE: If syncIterator does not have a throw method, close it
             //    to give it a chance to clean up before we reject the
             //    capability.
@@ -320,8 +313,7 @@ impl AsyncFromSyncIteratorPrototype {
                 gc,
             );
             let promise_capability = PromiseCapability {
-                // SAFETY: scoped_promise is not shared.
-                promise: unsafe { scoped_promise.take(agent).bind(gc) },
+                promise: scoped_promise.take(agent).bind(gc),
                 must_be_unresolved: true,
             };
             promise_capability.reject(agent, error, gc);
@@ -334,12 +326,10 @@ impl AsyncFromSyncIteratorPrototype {
             agent,
             result.unbind(),
             PromiseCapability {
-                // SAFETY: scoped_promise is not shared.
-                promise: unsafe { scoped_promise.take(agent) },
+                promise: scoped_promise.take(agent),
                 must_be_unresolved: true,
             },
-            // SAFETY: scoped_sync_iterator is not shared.
-            unsafe { scoped_sync_iterator.take(agent) },
+            scoped_sync_iterator.take(agent),
             true,
             gc,
         )
@@ -381,8 +371,7 @@ pub(crate) fn async_from_sync_iterator_continuation<'a>(
     };
     let done = if_abrupt_reject_promise_m!(agent, done, promise_capability, gc);
     // 4. Let value be Completion(IteratorValue(result)).
-    // SAFETY: scoped_result is not shared.
-    let result = unsafe { scoped_result.take(agent) }.bind(gc.nogc());
+    let result = scoped_result.take(agent).bind(gc.nogc());
     let value = iterator_value(agent, result.unbind(), gc.reborrow())
         .unbind()
         .bind(gc.nogc());
@@ -441,7 +430,7 @@ pub(crate) fn async_from_sync_iterator_continuation<'a>(
         // c. NOTE: onRejected is used to close the Iterator when the "value"
         //    property of an IteratorResult object it yields is a rejected promise.
         PromiseReactionHandler::AsyncFromSyncIteratorClose(
-            unsafe { sync_iterator.take(agent) }.bind(gc.nogc()),
+            sync_iterator.take(agent).bind(gc.nogc()),
         )
     };
     // 14. Perform PerformPromiseThen(valueWrapper, onFulfilled, onRejected, promiseCapability).
@@ -458,5 +447,5 @@ pub(crate) fn async_from_sync_iterator_continuation<'a>(
         gc.nogc(),
     );
     // 15. Return promiseCapability.[[Promise]].
-    unsafe { scoped_promise.take(agent) }.bind(gc.into_nogc())
+    scoped_promise.take(agent).bind(gc.into_nogc())
 }

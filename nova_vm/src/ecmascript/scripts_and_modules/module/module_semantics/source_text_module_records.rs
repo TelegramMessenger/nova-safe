@@ -1540,8 +1540,7 @@ fn async_module_start(
     match result {
         ExecutionResult::Return(result) => {
             let _ = agent.pop_execution_context().unwrap();
-            // SAFETY: not shared.
-            let promise = unsafe {
+            let promise = {
                 let _ = bytecode.take(agent);
                 let promise = promise.take(agent).bind(gc.nogc());
                 let _ = scoped_module.take(agent);
@@ -1558,8 +1557,7 @@ fn async_module_start(
         }
         ExecutionResult::Throw(err) => {
             let _ = agent.pop_execution_context().unwrap();
-            // SAFETY: not shared.
-            let promise = unsafe {
+            let promise = {
                 let _ = bytecode.take(agent);
                 let promise = promise.take(agent).bind(gc.nogc());
                 let _ = scoped_module.take(agent);
@@ -1577,8 +1575,7 @@ fn async_module_start(
             promise: resolve_promise,
         } => {
             let async_context = agent.pop_execution_context().unwrap();
-            // SAFETY: not shared.
-            let (bytecode, promise, module) = unsafe {
+            let (bytecode, promise, module) = {
                 let bytecode = bytecode.take(agent).bind(gc.nogc());
                 let promise = promise.take(agent).bind(gc.nogc());
                 let module = scoped_module.take(agent).bind(gc.nogc());
@@ -1603,8 +1600,7 @@ fn async_module_start(
             module.set_executable(agent, bytecode);
 
             // SAFETY: handler is not shared.
-            let handler =
-                PromiseReactionHandler::Await(unsafe { handler.take(agent) }.bind(gc.nogc()));
+            let handler = PromiseReactionHandler::Await(handler.take(agent).bind(gc.nogc()));
 
             // 7. Perform PerformPromiseThen(promise, onFulfilled, onRejected).
             inner_promise_then(

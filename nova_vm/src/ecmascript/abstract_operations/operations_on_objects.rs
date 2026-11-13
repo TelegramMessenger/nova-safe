@@ -214,8 +214,7 @@ pub(crate) fn set<'a>(
         .unbind()
         .internal_set(agent, p.unbind(), v, o.unbind().into(), gc.reborrow())
         .unbind()?;
-    // SAFETY: p is not shared.
-    let p = unsafe { scoped_p.take(agent) }.bind(gc.nogc());
+    let p = scoped_p.take(agent).bind(gc.nogc());
     // 2. If success is false and Throw is true, throw a TypeError exception.
     if !success && throw {
         return throw_set_error(agent, p.unbind(), gc.into_nogc()).into();
@@ -444,8 +443,7 @@ pub(crate) fn define_property_or_throw<'a, 'gc>(
         .unbind()?;
     // 2. If success is false, throw a TypeError exception.
     if !success {
-        // SAFETY: not shared.
-        let property_key = unsafe { scoped_key.take(agent).bind(gc.nogc()) };
+        let property_key = scoped_key.take(agent).bind(gc.nogc());
         let message = format!(
             "Failed to defined property '{}' on object",
             property_key.as_display(agent)
@@ -1606,8 +1604,7 @@ pub(crate) fn scoped_enumerable_own_keys<'a, 'b>(
                 };
             // ii. If desc is not undefined and desc.[[Enumerable]] is true, then
             if desc?.enumerable != Some(true) {
-                // SAFETY: results are not shared.
-                let _ = unsafe { scoped_key.take(agent) };
+                let _ = scoped_key.take(agent);
                 return None;
             }
             // 1. If kind is KEY, then
@@ -1618,8 +1615,7 @@ pub(crate) fn scoped_enumerable_own_keys<'a, 'b>(
     let gc = gc.into_nogc();
     let results = results
         .into_iter()
-        // SAFETY: results are not shared.
-        .map(|p| unsafe { p.take(agent).bind(gc) })
+        .map(|p| p.take(agent).bind(gc))
         .collect::<Vec<_>>();
 
     // 4. Return results.
@@ -2903,8 +2899,7 @@ pub(crate) fn group_by_property<'gc>(
         };
         let key = if_abrupt_close_iterator!(agent, key, iterator_record, gc);
 
-        // SAFETY: Not shared.
-        let value = unsafe { scoped_value.take(agent) };
+        let value = scoped_value.take(agent);
         // i. Perform AddValueToKeyedGroup(groups, key, value).
         add_value_to_keyed_group(agent, &mut groups, key.unbind(), value);
 
@@ -3033,8 +3028,7 @@ pub(crate) fn group_by_collection<'gc>(
         // ii. Set key to CanonicalizeKeyedCollectionKey(key).
         let key = canonicalize_keyed_collection_key(agent, key);
 
-        // SAFETY: Not shared.
-        let value = unsafe { scoped_value.take(agent) };
+        let value = scoped_value.take(agent);
         // i. Perform AddValueToKeyedGroup(groups, key, value).
         add_value_to_keyed_group(agent, &mut groups, key.unbind(), value);
 
@@ -3095,8 +3089,7 @@ pub(crate) fn setter_that_ignores_prototype_properties<'a>(
             .internal_get_own_property(agent, p.unbind(), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        // SAFETY: none are shared.
-        unsafe {
+        {
             v = scoped_v.take(agent).bind(gc.nogc());
             p = scoped_p.take(agent).bind(gc.nogc());
             this_value = scoped_this_value.take(agent).bind(gc.nogc());

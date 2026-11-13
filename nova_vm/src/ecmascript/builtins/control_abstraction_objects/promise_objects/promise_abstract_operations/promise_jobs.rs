@@ -149,8 +149,7 @@ impl PromiseReactionJob {
                 )
                 .unbind()
                 .bind(gc.nogc());
-                // SAFETY: reaction is not shared.
-                let reaction = unsafe { reaction.take(agent) };
+                let reaction = reaction.take(agent);
                 (
                     result,
                     reaction
@@ -207,8 +206,7 @@ impl PromiseReactionJob {
                     iterator_close_with_error(agent, object.unbind(), err.unbind(), gc.reborrow())
                         .unbind()
                         .bind(gc.nogc());
-                // SAFETY: reaction is not shared.
-                let reaction = unsafe { reaction.take(agent) }.bind(gc.nogc());
+                let reaction = reaction.take(agent).bind(gc.nogc());
                 let capability = reaction
                     .get(agent)
                     .capability

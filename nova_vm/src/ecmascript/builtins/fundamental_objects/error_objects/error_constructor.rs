@@ -87,8 +87,7 @@ impl ErrorConstructor {
         .bind(gc.nogc());
         let mut o = Error::try_from(o).unwrap();
 
-        // SAFETY: not shared.
-        let message = unsafe { scoped_message.take(agent) }.bind(gc.nogc());
+        let message = scoped_message.take(agent).bind(gc.nogc());
 
         // 3. If message is not undefined, then
         let msg = if let Ok(msg) = String::try_from(message) {
@@ -99,8 +98,7 @@ impl ErrorConstructor {
             let ms = to_string(agent, message.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: not shared.
-            o = unsafe { scoped_o.take(agent) }.bind(gc.nogc());
+            o = scoped_o.take(agent).bind(gc.nogc());
             Some(ms)
         } else {
             None
@@ -118,8 +116,7 @@ impl ErrorConstructor {
             ));
         }
 
-        // SAFETY: not shared.
-        let options = unsafe { options.take(agent) }.bind(gc.nogc());
+        let options = options.take(agent).bind(gc.nogc());
 
         // 4. Perform ? InstallErrorCause(O, options).
         let cause = if !options.is_object() {
@@ -129,8 +126,7 @@ impl ErrorConstructor {
             let cause = get_error_cause(agent, options.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: not shared.
-            o = unsafe { scoped_o.take(agent) }.bind(gc.nogc());
+            o = scoped_o.take(agent).bind(gc.nogc());
             cause
         };
         // 1. If options is an Object and ? HasProperty(options, "cause") is

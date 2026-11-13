@@ -85,8 +85,7 @@ impl TemporalInstantConstructor {
             let epoch_nanoseconds = to_big_int(agent, epoch_nanoseconds.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: not shared.
-            new_target = unsafe { scoped_new_target.take(agent) }.bind(gc.nogc());
+            new_target = scoped_new_target.take(agent).bind(gc.nogc());
             epoch_nanoseconds
         };
         // 3. If IsValidEpochNanoseconds(epochNanoseconds) is false, throw a RangeError exception.

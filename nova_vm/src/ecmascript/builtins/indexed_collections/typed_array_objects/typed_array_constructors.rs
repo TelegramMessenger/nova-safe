@@ -760,8 +760,7 @@ fn typed_array_constructor<'gc, T: Viewable>(
                 get_prototype_from_constructor(agent, new_target.unbind(), T::PROTO, gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-            // SAFETY: not shared.
-            unsafe {
+            {
                 let nogc = gc.nogc();
                 third_argument = a2.map(|a| a.take(agent).bind(nogc));
                 second_argument = a1.map(|a| a.take(agent).bind(nogc));

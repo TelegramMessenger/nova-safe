@@ -212,8 +212,7 @@ fn add_duration_to_instant<'gc, const IS_ADD: bool>(
     } else {
         let scoped_instant = instant.scope(agent, gc.nogc());
         let res = to_temporal_duration(agent, duration.unbind(), gc.reborrow()).unbind()?;
-        // SAFETY: not shared
-        unsafe {
+        {
             instant = scoped_instant.take(agent);
         }
         res

@@ -473,7 +473,7 @@ impl TemporalInstantPrototype {
         } else {
             None
         };
-        let instant = unsafe { instant.take(agent) }.bind(gc.nogc());
+        let instant = instant.take(agent).bind(gc.nogc());
         // 12. Let precision be ToSecondsStringPrecisionRecord(smallestUnit, digits).
         // 13. Let roundedNs be RoundTemporalInstant(
         //       instant.[[EpochNanoseconds]],

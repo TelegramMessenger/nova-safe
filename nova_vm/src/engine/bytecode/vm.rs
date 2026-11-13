@@ -1017,12 +1017,10 @@ fn apply_string_or_numeric_binary_operator<'gc>(
         .unbind()?
         .scope(agent, gc.nogc());
     // 4. Let rnum be ? ToNumeric(rval).
-    // SAFETY: not shared.
-    let rnum = to_numeric(agent, unsafe { rval.take(agent) }, gc.reborrow()).unbind()?;
+    let rnum = to_numeric(agent, rval.take(agent), gc.reborrow()).unbind()?;
     let gc = gc.into_nogc();
     let rnum = rnum.bind(gc);
-    // SAFETY: not shared.
-    let lnum = unsafe { lnum.take(agent) }.bind(gc);
+    let lnum = lnum.take(agent).bind(gc);
 
     // 6. If lnum is a BigInt, then
     if let (Ok(lnum), Ok(rnum)) = (BigInt::try_from(lnum), BigInt::try_from(rnum)) {
@@ -1067,16 +1065,14 @@ fn apply_string_or_numeric_addition<'gc>(
             let lprim = lprim.scope(agent, gc.nogc());
             let rprim = to_primitive(agent, rval.unbind(), None, gc.reborrow()).unbind()?;
             let gc = gc.into_nogc();
-            // SAFETY: not shared.
-            let lprim = unsafe { lprim.take(agent) };
+            let lprim = lprim.take(agent);
             (lprim.bind(gc), rprim.bind(gc), gc)
         }
         (Err(_), Ok(rprim)) => {
             let rprim = rprim.scope(agent, gc.nogc());
             let lprim = to_primitive(agent, lval.unbind(), None, gc.reborrow()).unbind()?;
             let gc = gc.into_nogc();
-            // SAFETY: not shared.
-            let rprim = unsafe { rprim.take(agent) };
+            let rprim = rprim.take(agent);
             (lprim.bind(gc), rprim.bind(gc), gc)
         }
         (Err(_), Err(_)) => {
@@ -1085,11 +1081,9 @@ fn apply_string_or_numeric_addition<'gc>(
                 .unbind()?
                 .scope(agent, gc.nogc());
             // SAFETY: not shared.
-            let rprim =
-                to_primitive(agent, unsafe { rval.take(agent) }, None, gc.reborrow()).unbind()?;
+            let rprim = to_primitive(agent, rval.take(agent), None, gc.reborrow()).unbind()?;
             let gc = gc.into_nogc();
-            // SAFETY: not shared.
-            let lprim = unsafe { lprim.take(agent) };
+            let lprim = lprim.take(agent);
             (lprim.bind(gc), rprim.bind(gc), gc)
         }
     };
@@ -1377,10 +1371,8 @@ pub(crate) fn instanceof_operator<'a, 'b>(
         )
         .unbind()?
         .bind(gc.nogc());
-        // SAFETY: not shared.
-        value = unsafe { scoped_value.take(agent) }.bind(gc.nogc());
-        // SAFETY: not shared.
-        target = unsafe { scoped_target.take(agent) }.bind(gc.nogc());
+        value = scoped_value.take(agent).bind(gc.nogc());
+        target = scoped_target.take(agent).bind(gc.nogc());
         inst_of_handler
     };
     // 3. If instOfHandler is not undefined, then

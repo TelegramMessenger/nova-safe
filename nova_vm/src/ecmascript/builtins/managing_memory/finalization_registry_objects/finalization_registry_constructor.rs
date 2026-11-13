@@ -81,8 +81,7 @@ impl FinalizationRegistryConstructor {
         };
         let gc = gc.into_nogc();
         let finalization_registry = finalization_registry.bind(gc);
-        // SAFETY: not shared.
-        let cleanup_callback = unsafe { cleanup_callback.take(agent) }.bind(gc);
+        let cleanup_callback = cleanup_callback.take(agent).bind(gc);
         // 4. Let fn be the active function object.
         // 5. Set finalizationRegistry.[[Realm]] to fn.[[Realm]].
         let realm = match agent.active_function_object(gc) {

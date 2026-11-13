@@ -153,8 +153,7 @@ pub(crate) fn get_iterator_from_method<'a>(
     )
     .unbind()?;
     let gc = gc.into_nogc();
-    // SAFETY: not shared.
-    let iterator = unsafe { scoped_iterator.take(agent).bind(gc) };
+    let iterator = scoped_iterator.take(agent).bind(gc);
 
     let next_method = is_callable(next_method, gc);
 
@@ -353,10 +352,7 @@ pub(crate) fn iterator_step<'a>(
     }
 
     // 4. Return result.
-    // SAFETY: scoped_result is never shared.
-    Ok(Some(unsafe {
-        scoped_result.take(agent).bind(gc.into_nogc())
-    }))
+    Ok(Some(scoped_result.take(agent).bind(gc.into_nogc())))
 }
 
 /// ### [7.4.10 IteratorStepValue ( iteratorRecord )](https://tc39.es/ecma262/#sec-iteratorstepvalue)
@@ -392,8 +388,7 @@ pub(crate) fn iterator_step_value<'a>(
     let done = iterator_complete(agent, result.unbind(), gc.reborrow())
         .unbind()
         .bind(gc.nogc());
-    // SAFETY: scoped_result is never shared.
-    let result = unsafe { scoped_result.take(agent) }.bind(gc.nogc());
+    let result = scoped_result.take(agent).bind(gc.nogc());
 
     // 5. If done is a throw completion, then
     let done = match done {
@@ -462,8 +457,7 @@ pub(crate) fn iterator_close_with_value<'a>(
         )
         .unbind()
         .bind(gc.nogc());
-        // SAFETY: scoped_iterator is not shared.
-        iterator = unsafe { scoped_iterator.take(agent) }.bind(gc.nogc());
+        iterator = scoped_iterator.take(agent).bind(gc.nogc());
         inner_result
     };
     // 4. If innerResult.[[Type]] is normal, then
@@ -472,8 +466,7 @@ pub(crate) fn iterator_close_with_value<'a>(
             // a. Let return be innerResult.[[Value]].
             // b. If return is undefined, return ? completion.
             let Some(return_function) = return_function else {
-                // SAFETY: completion is not shared.
-                return Ok(unsafe { completion.take(agent) });
+                return Ok(completion.take(agent));
             };
             // c. Set innerResult to Completion(Call(return, iterator)).
             call_function(
@@ -488,8 +481,7 @@ pub(crate) fn iterator_close_with_value<'a>(
         }
         Err(inner_result) => Err(inner_result),
     };
-    // SAFETY: completion is not shared.
-    let completion = unsafe { completion.take(agent) }.bind(gc.nogc());
+    let completion = completion.take(agent).bind(gc.nogc());
 
     // 5. If completion.[[Type]] is throw, return ? completion.
     // 6. If innerResult.[[Type]] is throw, return ? innerResult.
@@ -541,8 +533,7 @@ pub(crate) fn iterator_close_with_error<'a>(
         )
         .unbind()
         .bind(gc.nogc());
-        // SAFETY: scoped_iterator is not shared.
-        iterator = unsafe { scoped_iterator.take(agent) }.bind(gc.nogc());
+        iterator = scoped_iterator.take(agent).bind(gc.nogc());
         inner_result
     };
     // 4. If innerResult.[[Type]] is normal, then
@@ -559,8 +550,7 @@ pub(crate) fn iterator_close_with_error<'a>(
         );
     }
     // 5. If completion.[[Type]] is throw, return ? completion.
-    // SAFETY: completion is not shared.
-    unsafe { completion.take(agent) }
+    completion.take(agent)
 }
 
 macro_rules! if_abrupt_close_iterator {

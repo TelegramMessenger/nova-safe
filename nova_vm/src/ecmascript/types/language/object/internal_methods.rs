@@ -768,14 +768,12 @@ pub(crate) fn call_proxy_set<'a>(
         let scoped_p = p.scope(agent, gc.nogc());
         let scoped_o = receiver.scope(agent, gc.nogc());
         let succeeded = proxy.internal_set(agent, p, value, receiver, gc.reborrow());
-        // SAFETY: not shared.
-        let o = unsafe { scoped_o.take(agent) };
+        let o = scoped_o.take(agent);
         let succeeded = succeeded.unbind()?;
         if !succeeded {
             // d. If succeeded is false and V.[[Strict]] is true, throw a TypeError exception.
             let o = o.string_repr(agent, gc.reborrow()).unbind().bind(gc.nogc());
-            // SAFETY: not shared.
-            let p = unsafe { scoped_p.take(agent) }.bind(gc.nogc());
+            let p = scoped_p.take(agent).bind(gc.nogc());
             return Err(throw_cannot_set_property(
                 agent,
                 o.unbind().into(),

@@ -633,8 +633,7 @@ impl AtomicsObject {
             validate_atomic_access(agent, ta_record.unbind(), index.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-        // SAFETY: not shared.
-        let count = unsafe { count.take(agent) }.bind(gc.nogc());
+        let count = count.take(agent).bind(gc.nogc());
         // 3. If count is undefined, then
         let c = if count.is_undefined() {
             // a. Let c be +∞.
@@ -649,8 +648,7 @@ impl AtomicsObject {
             usize::try_from(int_count.into_i64().max(0).cast_unsigned()).unwrap_or(usize::MAX)
         };
         let gc = gc.into_nogc();
-        // SAFETY: not shared.
-        let typed_array = unsafe { typed_array.take(agent) }.bind(gc);
+        let typed_array = typed_array.take(agent).bind(gc);
 
         if c == 0 {
             return Ok(0.into());
@@ -1147,7 +1145,7 @@ fn handle_typed_array_index_value_slow<'gc>(
             .unbind()?
             .bind(gc.nogc());
 
-    let value = unsafe { value.take(agent) }.bind(gc.nogc());
+    let value = value.take(agent).bind(gc.nogc());
 
     // 2. If typedArray.[[ContentType]] is bigint,
     let v: Numeric = if is_bigint {
@@ -1166,7 +1164,7 @@ fn handle_typed_array_index_value_slow<'gc>(
     let v = v.unbind();
     let gc = gc.into_nogc();
     let v = v.bind(gc);
-    let typed_array = unsafe { typed_array.take(agent) }.bind(gc);
+    let typed_array = typed_array.take(agent).bind(gc);
     revalidate_atomic_access(agent, typed_array, byte_index_in_buffer, gc)?;
     Ok((byte_index_in_buffer, typed_array, v))
 }
@@ -1199,19 +1197,14 @@ fn handle_typed_array_index_two_values_slow<'gc>(
         let expected = to_big_int(agent, expected_value.get(agent), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        // SAFETY: not shared.
-        let expected = unsafe { expected_value.replace_self(agent, expected.unbind()) };
+        let expected = expected_value.replace_self(agent, expected.unbind());
         // b. Let replacement be ? ToBigInt(replacementValue).
         // SAFETY: not shared.
-        let replacement = to_big_int(
-            agent,
-            unsafe { replacement_value.take(agent) },
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
+        let replacement = to_big_int(agent, replacement_value.take(agent), gc.reborrow())
+            .unbind()?
+            .bind(gc.nogc());
         (
-            unsafe { expected.take(agent) }.bind(gc.nogc()).into(),
+            expected.take(agent).bind(gc.nogc()).into(),
             replacement.into(),
         )
     } else {
@@ -1221,19 +1214,15 @@ fn handle_typed_array_index_two_values_slow<'gc>(
             to_integer_number_or_infinity(agent, expected_value.get(agent), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-        // SAFETY: not shared.
-        let expected = unsafe { expected_value.replace_self(agent, expected.unbind()) };
+        let expected = expected_value.replace_self(agent, expected.unbind());
         // b. Let replacement be 𝔽(? ToIntegerOrInfinity(replacementValue)).
         // SAFETY: not shared.
-        let replacement = to_integer_number_or_infinity(
-            agent,
-            unsafe { replacement_value.take(agent) },
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
+        let replacement =
+            to_integer_number_or_infinity(agent, replacement_value.take(agent), gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc());
         (
-            unsafe { expected.take(agent) }.bind(gc.nogc()).into(),
+            expected.take(agent).bind(gc.nogc()).into(),
             replacement.into(),
         )
     };
@@ -1242,7 +1231,7 @@ fn handle_typed_array_index_two_values_slow<'gc>(
     let gc = gc.into_nogc();
     let expected = expected.bind(gc);
     let replacement = replacement.bind(gc);
-    let typed_array = unsafe { typed_array.take(agent) }.bind(gc);
+    let typed_array = typed_array.take(agent).bind(gc);
     // 6. Perform ? RevalidateAtomicAccess(typedArray, byteIndexInBuffer).
     revalidate_atomic_access(agent, typed_array, byte_index_in_buffer, gc)?;
     Ok((byte_index_in_buffer, typed_array, expected, replacement))
@@ -1270,12 +1259,9 @@ fn atomic_load_slow<'gc>(
             let cached_buffer_byte_length = ta_record.cached_buffer_byte_length;
             let access_index = to_index(agent, index.unbind(), gc.reborrow()).unbind()?;
             revalidate = true;
-            // SAFETY: not shared.
-            ta_record = unsafe {
-                TypedArrayWithBufferWitnessRecords {
-                    object: ta.take(agent),
-                    cached_buffer_byte_length,
-                }
+            ta_record = TypedArrayWithBufferWitnessRecords {
+                object: ta.take(agent),
+                cached_buffer_byte_length,
             };
             access_index
         };
@@ -1564,8 +1550,7 @@ fn do_wait_slow<'gc>(
     let i = validate_atomic_access(agent, ta_record.unbind(), index.unbind(), gc.reborrow())
         .unbind()?
         .bind(gc.nogc());
-    // SAFETY: not shared.
-    let value = unsafe { scoped_value.take(agent) }.bind(gc.nogc());
+    let value = scoped_value.take(agent).bind(gc.nogc());
     let v = if is_big_int_64_array {
         // 6. If arrayTypeName is "BigInt64Array", let v be ? ToBigInt64(value).
         to_big_int64(agent, value.unbind(), gc.reborrow())
@@ -1578,8 +1563,7 @@ fn do_wait_slow<'gc>(
             .bind(gc.nogc()) as i64
     };
     // 8. Let q be ? ToNumber(timeout).
-    // SAFETY: not shared.
-    let q = to_number(agent, unsafe { scoped_timeout.take(agent) }, gc.reborrow()).unbind()?;
+    let q = to_number(agent, scoped_timeout.take(agent), gc.reborrow()).unbind()?;
     let gc = gc.into_nogc();
     let q = q.bind(gc);
     // 9. If q is either NaN or +∞𝔽,
@@ -1593,7 +1577,7 @@ fn do_wait_slow<'gc>(
         // else let t be max(ℝ(q), 0).
         q.into_i64_(agent).max(0) as u64
     };
-    Ok((unsafe { scoped_typed_array.take(agent) }.bind(gc), i, v, t))
+    Ok((scoped_typed_array.take(agent).bind(gc), i, v, t))
 }
 
 fn create_wait_result_object<'gc>(

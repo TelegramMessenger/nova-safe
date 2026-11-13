@@ -1005,8 +1005,7 @@ pub(super) fn execute_instantiate_arrow_function_expression<'gc>(
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: not shared.
-                function = unsafe { scoped_function.take(agent).bind(gc.nogc()) };
+                function = scoped_function.take(agent).bind(gc.nogc());
                 pk
             }
         }
@@ -2106,13 +2105,7 @@ pub(super) fn execute_has_property<'gc>(
                 let property_key = to_property_key(agent, lval, gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                has_property(
-                    agent,
-                    // SAFETY: not shred.
-                    unsafe { scoped_rval.take(agent) },
-                    property_key.unbind(),
-                    gc,
-                )
+                has_property(agent, scoped_rval.take(agent), property_key.unbind(), gc)
             },
             gc.reborrow(),
         )
@@ -2496,8 +2489,7 @@ pub(super) fn execute_string_concat<'gc>(
                         .bind(gc.nogc());
                     length += string.len_(agent);
                     let string: Value = string.into();
-                    // SAFETY: args are never shared
-                    unsafe { ele.replace(agent, string.unbind()) };
+                    ele.replace(agent, string.unbind());
                 }
                 Ok(())
             },
@@ -2812,8 +2804,7 @@ pub(super) fn execute_iterator_rest_into_array<'gc>(
     result?;
 
     // Store the array as the result.
-    // SAFETY: not shared.
-    vm.result = Some(unsafe { array.take(agent).into() });
+    vm.result = Some(array.take(agent).into());
     Ok(())
 }
 
@@ -3102,8 +3093,7 @@ pub(super) fn execute_delete<'a>(
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: not shared.
-                base_obj = unsafe { scoped_base_obj.take(agent) }.bind(gc.nogc());
+                base_obj = scoped_base_obj.take(agent).bind(gc.nogc());
                 referenced_name
             }
         } else {

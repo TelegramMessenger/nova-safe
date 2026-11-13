@@ -372,8 +372,7 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
                 .unbind()?;
             let gc = gc.into_nogc();
             let px = px.bind(gc);
-            // SAFETY: not shared.
-            let py = unsafe { py.take(agent) }.bind(gc);
+            let py = py.take(agent).bind(gc);
             (px, py, gc)
         }
         (Err(_), Err(_)) => {
@@ -387,8 +386,7 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
                     .unbind()?
                     .bind(gc.nogc());
                 let py = y.get(agent).bind(gc.nogc());
-                // SAFETY: not shared.
-                let px = unsafe { y.replace_self(agent, px.unbind()) };
+                let px = y.replace_self(agent, px.unbind());
                 let py = to_primitive(
                     agent,
                     py.unbind(),
@@ -397,8 +395,7 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
                 )
                 .unbind()?;
                 let gc = gc.into_nogc();
-                // SAFETY: not shared.
-                let px = unsafe { px.take(agent) }.bind(gc);
+                let px = px.take(agent).bind(gc);
                 let py = py.bind(gc);
                 (px, py, gc)
             } else {
@@ -412,8 +409,7 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
                     .unbind()?
                     .bind(gc.nogc());
                 let px = x.get(agent).bind(gc.nogc());
-                // SAFETY: not shared.
-                let py = unsafe { x.replace_self(agent, py.unbind()) };
+                let py = x.replace_self(agent, py.unbind());
                 let px = to_primitive(
                     agent,
                     px.unbind(),
@@ -423,7 +419,7 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
                 .unbind()?;
                 let gc = gc.into_nogc();
                 let px = px.bind(gc);
-                let py = unsafe { py.take(agent) }.bind(gc);
+                let py = py.take(agent).bind(gc);
                 (px, py, gc)
             }
         }

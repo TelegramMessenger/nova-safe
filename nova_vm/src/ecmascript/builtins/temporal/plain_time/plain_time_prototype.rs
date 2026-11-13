@@ -466,7 +466,7 @@ impl TemporalPlainTimePrototype {
             rounding_mode: Some(rounding_mode),
         };
         // 12. Return TimeRecordToString(roundResult, precision.[[Precision]]).
-        let plain_time = unsafe { plain_time.take(agent) };
+        let plain_time = plain_time.take(agent);
         match plain_time.inner_plain_time(agent).to_ixdtf_string(options) {
             Ok(string) => Ok(Value::from_string(agent, string, gc.into_nogc())),
             Err(err) => Err(temporal_err_to_js_err(agent, err, gc.into_nogc())),

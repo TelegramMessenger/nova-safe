@@ -83,8 +83,7 @@ impl RegExpConstructor {
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: not shared.
-                let new_target = unsafe { new_target.take(agent) }.bind(gc.nogc());
+                let new_target = new_target.take(agent).bind(gc.nogc());
                 // ii. If SameValue(newTarget, patternConstructor) is true, return pattern.
                 if Value::from(new_target) == pattern_constructor {
                     return Ok(scoped_pattern.get(agent));
@@ -130,15 +129,13 @@ impl RegExpConstructor {
                 // i. Let F be ? Get(pattern, "flags").
                 let f = get(
                     agent,
-                    // SAFETY: not shared.
-                    Object::try_from(unsafe { scoped_pattern.take(agent) }).unwrap(),
+                    Object::try_from(scoped_pattern.take(agent)).unwrap(),
                     BUILTIN_STRING_MEMORY.flags.into(),
                     gc.reborrow(),
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: not shared
-                p = unsafe { scoped_p.take(agent) }.bind(gc.nogc());
+                p = scoped_p.take(agent).bind(gc.nogc());
                 f.scope(agent, gc.nogc())
             } else {
                 // c. Else,
@@ -158,8 +155,7 @@ impl RegExpConstructor {
         // 7. Let O be ? RegExpAlloc(newTarget).
         let o = reg_exp_alloc(
             agent,
-            // SAFETY: not shared.
-            Function::try_from(unsafe { new_target.take(agent) })
+            Function::try_from(new_target.take(agent))
                 .expect("Proxy constructors not yet supported"),
             gc.reborrow(),
         )

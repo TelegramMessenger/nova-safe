@@ -888,8 +888,7 @@ pub(crate) fn get_identifier_reference<'a, 'b>(
         )
         .unbind()?
         .bind(gc.nogc());
-        // SAFETY: not shared.
-        unsafe {
+        {
             cache = cache_scoped.map(|c| c.take(agent));
             name = name_scoped.take(agent);
             env = env_scoped.take(agent);

@@ -147,8 +147,8 @@ pub(crate) fn cleanup_finalization_registry<'gc>(
             let mut queue = queue.take(agent).bind(gc);
             // Drain all elements that were found so far.
             queue.drain(0..i);
-            let finalization_registry = unsafe { finalization_registry.take(agent) }.bind(gc);
-            let _ = unsafe { scoped_callback.take(agent) };
+            let finalization_registry = finalization_registry.take(agent).bind(gc);
+            let _ = scoped_callback.take(agent);
             if !queue.is_empty() {
                 finalization_registry.add_cleanups(agent, queue);
             }

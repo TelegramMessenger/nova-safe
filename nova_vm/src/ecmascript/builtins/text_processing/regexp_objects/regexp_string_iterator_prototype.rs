@@ -121,8 +121,7 @@ impl RegExpStringIteratorPrototype {
             let s = to_string(agent, s.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: not shared.
-            r#match = unsafe { scoped_match.take(agent) }.bind(gc.nogc());
+            r#match = scoped_match.take(agent).bind(gc.nogc());
             s
         };
         // 13. If matchStr is the empty String, then
@@ -158,7 +157,7 @@ impl RegExpStringIteratorPrototype {
                 gc.reborrow(),
             )
             .unbind()?;
-            r#match = unsafe { scoped_match.take(agent) }.bind(gc.nogc());
+            r#match = scoped_match.take(agent).bind(gc.nogc());
         }
         // 14. Return CreateIteratorResultObject(match, false).
         create_iter_result_object(agent, r#match.unbind().into(), false, gc.into_nogc())

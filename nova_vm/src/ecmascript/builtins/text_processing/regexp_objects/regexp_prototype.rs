@@ -188,8 +188,7 @@ impl RegExpPrototype {
         let s = to_string(agent, string.unbind(), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        // SAFETY: not shared.
-        let r = unsafe { r.take(agent) }.bind(gc.nogc());
+        let r = r.take(agent).bind(gc.nogc());
         // 4. Return ? RegExpBuiltinExec(R, S).
         reg_exp_builtin_exec(agent, r.unbind(), s.unbind(), gc)
             .map(|r| r.map_or(Value::Null, |a| a.into()))
@@ -466,15 +465,8 @@ impl RegExpPrototype {
         // 5. If flags does not contain "g", then
         if !flags.to_string_lossy_(agent).contains("g") {
             // a. Return ? RegExpExec(rx, S).
-            reg_exp_exec(
-                agent,
-                // SAFETY: not shared.
-                unsafe { rx.take(agent) },
-                // SAFETY: not shared.
-                unsafe { s.take(agent) },
-                gc,
-            )
-            .map(|o| o.map_or(Value::Null, |o| o.into()))
+            reg_exp_exec(agent, rx.take(agent), s.take(agent), gc)
+                .map(|o| o.map_or(Value::Null, |o| o.into()))
         } else {
             // 6. Else,
             // a. If flags contains "u" or flags contains "v", let fullUnicode
@@ -510,8 +502,7 @@ impl RegExpPrototype {
                         return Ok(Value::Null);
                     } else {
                         // 2. Return A.
-                        // SAFETY: not shared.
-                        return Ok(unsafe { a.take(agent) }.into());
+                        return Ok(a.take(agent).into());
                     }
                 };
                 // iii. Else,
@@ -623,7 +614,7 @@ impl RegExpPrototype {
             .bind(gc.nogc());
         let scoped_flags = flags.scope(agent, gc.nogc());
         let c = if let Some(c) = c {
-            unsafe { c.take(agent) }.bind(gc.nogc())
+            c.take(agent).bind(gc.nogc())
         } else {
             agent
                 .current_realm_record()
@@ -740,28 +731,27 @@ impl RegExpPrototype {
             String(Scoped<'a, String<'static>>),
         }
         // 5. Let functionalReplace be IsCallable(replaceValue).
-        let (replace_value, functional_replace) = if let Some(functional_replace) =
-            is_callable(replace_value.get(agent), gc.nogc())
-        {
-            // SAFETY: replace_value is not shared.
-            (
-                ReplaceValue::Functional(unsafe {
-                    replace_value.replace_self(agent, functional_replace.unbind())
-                }),
-                true,
-            )
-        } else {
-            // 6. If functionalReplace is false, then
-            // a. Set replaceValue to ? ToString(replaceValue).
-            let string = to_string(agent, replace_value.get(agent), gc.reborrow())
-                .unbind()?
-                .bind(gc.nogc());
-            // SAFETY: replace_value is not shared.
-            (
-                ReplaceValue::String(unsafe { replace_value.replace_self(agent, string.unbind()) }),
-                false,
-            )
-        };
+        let (replace_value, functional_replace) =
+            if let Some(functional_replace) = is_callable(replace_value.get(agent), gc.nogc()) {
+                // SAFETY: replace_value is not shared.
+                (
+                    ReplaceValue::Functional(
+                        replace_value.replace_self(agent, functional_replace.unbind()),
+                    ),
+                    true,
+                )
+            } else {
+                // 6. If functionalReplace is false, then
+                // a. Set replaceValue to ? ToString(replaceValue).
+                let string = to_string(agent, replace_value.get(agent), gc.reborrow())
+                    .unbind()?
+                    .bind(gc.nogc());
+                // SAFETY: replace_value is not shared.
+                (
+                    ReplaceValue::String(replace_value.replace_self(agent, string.unbind())),
+                    false,
+                )
+            };
         // 7. Let flags be ? ToString(? Get(rx, "flags")).
         let flags = get(
             agent,
@@ -1099,7 +1089,7 @@ impl RegExpPrototype {
         )
         .unbind()?
         .bind(gc.nogc());
-        let previous_last_index = unsafe { scoped_previous_last_index.take(agent) }.bind(gc.nogc());
+        let previous_last_index = scoped_previous_last_index.take(agent).bind(gc.nogc());
         // 8. If SameValue(currentLastIndex, previousLastIndex) is false, then
         if !same_value(agent, current_last_index, previous_last_index) {
             // a. Perform ? Set(rx, "lastIndex", previousLastIndex, true).
@@ -1113,7 +1103,7 @@ impl RegExpPrototype {
             )
             .unbind()?;
         }
-        if let Some(result) = result.map(|r| unsafe { r.take(agent) }.bind(gc.nogc())) {
+        if let Some(result) = result.map(|r| r.take(agent).bind(gc.nogc())) {
             // 10. Return ? Get(result, "index").
             get(
                 agent,
@@ -1274,8 +1264,7 @@ impl RegExpPrototype {
             buf.push_char('y');
             String::from_wtf8_buf(agent, buf, gc.nogc())
         };
-        // SAFETY: not shared.
-        let c = unsafe { c.take(agent) }.bind(gc.nogc());
+        let c = c.take(agent).bind(gc.nogc());
         // 10. Let splitter be ? Construct(C, « rx, newFlags »).
         let splitter = construct(
             agent,
@@ -1293,8 +1282,7 @@ impl RegExpPrototype {
         let a = Array::new(agent, gc.nogc()).scope(agent, gc.nogc());
         // 12. Let lengthA be 0.
         let mut length_a: u32 = 0;
-        // SAFETY: not shared.
-        let limit = unsafe { limit.take(agent) }.bind(gc.nogc());
+        let limit = limit.take(agent).bind(gc.nogc());
         // 13. If limit is undefined,
         let lim = if limit.is_undefined() {
             // let lim be 2**32 - 1;
@@ -1307,8 +1295,7 @@ impl RegExpPrototype {
         };
         // 14. If lim = 0, return A.
         if lim == 0 {
-            // SAFETY: not shared.
-            return Ok(unsafe { a.take(agent) }.into());
+            return Ok(a.take(agent).into());
         }
         // 15. If S is the empty String, then
         if s.is_empty_string() {
@@ -1318,12 +1305,11 @@ impl RegExpPrototype {
                 .bind(gc.nogc());
             // b. If z is not null, return A.
             if z.is_some() {
-                // SAFETY: not shared.
-                return Ok(unsafe { a.take(agent) }.into());
+                return Ok(a.take(agent).into());
             }
             let gc = gc.into_nogc();
-            let a = unsafe { a.take(agent) }.bind(gc);
-            let s = unsafe { s.take(agent) }.bind(gc);
+            let a = a.take(agent).bind(gc);
+            let s = s.take(agent).bind(gc);
             // c. Perform ! CreateDataPropertyOrThrow(A, "0", S).
             if let Err(err) = a.push(agent, s.into()) {
                 return Err(agent.throw_allocation_exception(err, gc));
@@ -1436,8 +1422,7 @@ impl RegExpPrototype {
                         length_a += 1;
                         // e. If lengthA = lim, return A.
                         if length_a == lim {
-                            // SAFETY: not shared.
-                            return Ok(unsafe { a.take(agent) }.into());
+                            return Ok(a.take(agent).into());
                         }
                     }
                     // 10. Set q to p.
@@ -1449,11 +1434,11 @@ impl RegExpPrototype {
             }
         }
         let gc = gc.into_nogc();
-        let a = unsafe { a.take(agent) }.bind(gc);
+        let a = a.take(agent).bind(gc);
         let result = if p == size {
             a.push(agent, String::EMPTY_STRING.into())
         } else {
-            let s = unsafe { s.take(agent) }.bind(gc);
+            let s = s.take(agent).bind(gc);
             let p_utf8 = s
                 .utf8_index_(agent, p)
                 .expect("p splits two surrogates into unmatched pairs");
@@ -1532,7 +1517,7 @@ impl RegExpPrototype {
         let string = to_string(agent, s.unbind(), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        let r = unsafe { r.take(agent) }.bind(gc.nogc());
+        let r = r.take(agent).bind(gc.nogc());
         // 4. Let match be ? RegExpExec(R, string).
         let r#match = reg_exp_test(agent, r.unbind(), string.unbind(), gc.reborrow())
             .unbind()?

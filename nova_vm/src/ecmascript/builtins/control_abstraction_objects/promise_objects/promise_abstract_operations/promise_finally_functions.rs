@@ -129,14 +129,12 @@ impl<'a> FunctionInternalProperties<'a> for BuiltinPromiseFinallyFunction<'a> {
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: not shared.
-                let _c = unsafe { c.take(agent) }.bind(gc.nogc());
+                let _c = c.take(agent).bind(gc.nogc());
                 // ii. Let p be ? PromiseResolve(C, result).
                 let p = Promise::resolve(agent, result.unbind(), gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                // SAFETY: not shared.
-                let value = unsafe { value.take(agent) }.bind(gc.nogc());
+                let value = value.take(agent).bind(gc.nogc());
                 // iii. Let returnValue be a new Abstract Closure with no
                 //      parameters that captures value and performs the
                 //      following steps when called:
@@ -171,13 +169,12 @@ impl<'a> FunctionInternalProperties<'a> for BuiltinPromiseFinallyFunction<'a> {
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: not shared.
-                let _c = unsafe { c.take(agent) }.bind(gc.nogc());
+                let _c = c.take(agent).bind(gc.nogc());
                 // ii. Let p be ? PromiseResolve(C, result).
                 let p = Promise::resolve(agent, result.unbind(), gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                let reason = unsafe { reason.take(agent) }.bind(gc.nogc());
+                let reason = reason.take(agent).bind(gc.nogc());
                 // iii. Let throwReason be a new Abstract Closure with no
                 // parameters that captures reason and performs the following
                 // steps when called:

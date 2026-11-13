@@ -94,10 +94,8 @@ impl PromisePrototype {
         // 4. Assert: IsConstructor(C) is true.
         debug_assert!(is_constructor(agent, c).is_some());
 
-        // SAFETY: not shared.
-        let on_finally = unsafe { scoped_on_finally.take(agent).bind(gc.nogc()) };
-        // SAFETY: not shared.
-        let promise = unsafe { scoped_promise.take(agent).bind(gc.nogc()) };
+        let on_finally = scoped_on_finally.take(agent).bind(gc.nogc());
+        let promise = scoped_promise.take(agent).bind(gc.nogc());
 
         // 5. If IsCallable(onFinally) is false, then
         let (then_finally, catch_finally) =

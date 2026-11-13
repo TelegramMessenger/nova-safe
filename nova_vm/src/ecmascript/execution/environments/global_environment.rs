@@ -582,8 +582,7 @@ impl<'e> GlobalEnvironment<'e> {
         let obj_rec = obj_rec.scope(agent, gc.nogc());
         let existing_prop =
             has_own_property(agent, global_object.unbind(), n.unbind(), gc.reborrow()).unbind()?;
-        // SAFETY: obj_rec not shared.
-        let obj_rec = unsafe { obj_rec.take(agent).bind(gc.nogc()) };
+        let obj_rec = obj_rec.take(agent).bind(gc.nogc());
         // 6. If existingProp is true, then
         if existing_prop {
             // a. Let status be ? ObjRec.DeleteBinding(N).
@@ -592,7 +591,7 @@ impl<'e> GlobalEnvironment<'e> {
                 .delete_binding(agent, scoped_name.get(agent), gc.reborrow())
                 .unbind()?;
             let gc = gc.into_nogc();
-            let env = unsafe { env.take(agent) }.bind(gc);
+            let env = env.take(agent).bind(gc);
             // b. If status is true and envRec.[[VarNames]] contains N, then
             if status {
                 let name = scoped_name.get(agent).bind(gc);
@@ -814,8 +813,7 @@ impl<'e> GlobalEnvironment<'e> {
                 .unbind()?
                 .bind(gc.nogc());
             // b. Perform ? ObjRec.InitializeBinding(N, undefined).
-            // SAFETY: obj_rec is not shared.
-            unsafe { obj_rec.take(agent) }.initialize_binding(
+            obj_rec.take(agent).initialize_binding(
                 agent,
                 name.get(agent),
                 Some(cache.get(agent)),
@@ -823,16 +821,12 @@ impl<'e> GlobalEnvironment<'e> {
                 gc,
             )?;
         } else {
-            // SAFETY: obj_rec is not shared
-            let _ = unsafe { obj_rec.take(agent) };
+            let _ = obj_rec.take(agent);
         }
 
-        // SAFETY: cache is not shared.
-        let _ = unsafe { cache.take(agent) };
-        // SAFETY: env is not shared.
-        let env = unsafe { env.take(agent) };
-        // SAFETY: name is not shared.
-        let name = unsafe { name.take(agent) };
+        let _ = cache.take(agent);
+        let env = env.take(agent);
+        let name = name.take(agent);
         // 6. If envRec.[[VarNames]] does not contain N, then
         //    a. Append N to envRec.[[VarNames]].
         env.get_mut(agent).var_names.insert(name);
@@ -918,10 +912,8 @@ impl<'e> GlobalEnvironment<'e> {
             false,
             gc,
         )?;
-        // SAFETY: env is not shared.
-        let env = unsafe { env.take(agent) };
-        // SAFETY: scoped_n is not shared.
-        let name = unsafe { scoped_n.take(agent) };
+        let env = env.take(agent);
+        let name = scoped_n.take(agent);
         // 8. If envRec.[[VarNames]] does not contain N, then
         // a. Append N to envRec.[[VarNames]].
         // SAFETY: Name of a global function cannot be a numeric string.

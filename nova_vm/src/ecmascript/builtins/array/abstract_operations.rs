@@ -203,14 +203,9 @@ pub(crate) fn array_set_length<'a>(
     let scoped_desc_value = desc_value.scope(agent, gc.nogc());
     let new_len = to_uint32(agent, desc_value.unbind(), gc.reborrow()).unbind()?;
     // 4. Let numberLen be ? ToNumber(Desc.[[Value]]).
-    let number_len = to_number(
-        agent,
-        // SAFETY: scoped_desc_value is not shared.
-        unsafe { scoped_desc_value.take(agent) },
-        gc.reborrow(),
-    )
-    .unbind()?
-    .bind(gc.nogc());
+    let number_len = to_number(agent, scoped_desc_value.take(agent), gc.reborrow())
+        .unbind()?
+        .bind(gc.nogc());
     // 5. If SameValueZero(newLen, numberLen) is false, throw a RangeError exception.
     if !Number::same_value_zero_(agent, number_len, new_len.into()) {
         return Err(agent.throw_exception_with_static_message(

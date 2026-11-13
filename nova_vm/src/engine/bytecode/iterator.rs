@@ -254,8 +254,7 @@ impl<'a> VmIteratorRecord<'a> {
             return Err(throw_iterator_method_undefined(agent, gc.into_nogc()));
         };
 
-        // SAFETY: scoped_value is not shared.
-        let value = unsafe { scoped_value.take(agent).bind(gc.nogc()) };
+        let value = scoped_value.take(agent).bind(gc.nogc());
         // 4. Return ? GetIteratorFromMethod(obj, method).
         match value {
             // Optimisation: Check if we're using the Array values iterator on
@@ -307,8 +306,7 @@ impl<'a> VmIteratorRecord<'a> {
             return Self::async_from_sync_value(agent, scoped_obj, gc);
         };
 
-        // SAFETY: scoped_value is not shared.
-        let obj = unsafe { scoped_obj.take(agent).bind(gc.nogc()) };
+        let obj = scoped_obj.take(agent).bind(gc.nogc());
 
         // 4. Return ? GetIteratorFromMethod(obj, method).
         if let Some(array) = Array::is_iterable_array(agent, obj, method) {
@@ -343,8 +341,7 @@ impl<'a> VmIteratorRecord<'a> {
         let Some(sync_method) = sync_method else {
             return Err(throw_iterator_method_undefined(agent, gc.into_nogc()));
         };
-        // SAFETY: obj is not shared.
-        let obj = unsafe { obj.take(agent) }.bind(gc.nogc());
+        let obj = obj.take(agent).bind(gc.nogc());
         // iii. Let syncIteratorRecord be ? GetIteratorFromMethod(obj, syncMethod).
         let sync_iterator_record =
             get_iterator_from_method(agent, obj.unbind(), sync_method.unbind(), gc)?;
@@ -423,8 +420,7 @@ impl<'a> ObjectPropertiesIterator<'a> {
                     .internal_get_own_property(agent, next_key.unbind(), gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                // SAFETY: scoped_next_key is not shared.
-                let next_key = unsafe { scoped_next_key.take(agent) }.bind(gc.nogc());
+                let next_key = scoped_next_key.take(agent).bind(gc.nogc());
                 if let Some(desc) = desc {
                     self.mark_key_visited(agent, next_key);
                     if desc.enumerable == Some(true) {
@@ -920,10 +916,9 @@ impl<'a> GenericIterator<'a> {
                 agent,
                 throw.unbind(),
                 iterator.unbind().into(),
-                // SAFETY: not shared.
-                Some(ArgumentsList::from_mut_value(&mut unsafe {
-                    received_value.take(agent)
-                })),
+                Some(ArgumentsList::from_mut_value(
+                    &mut received_value.take(agent),
+                )),
                 gc,
             )?))
         } else {
@@ -957,12 +952,11 @@ impl<'a> GenericIterator<'a> {
         // a. Let return be innerResult.[[Value]].
         // b. If return is undefined, ...
         if let Some(r#return) = r#return {
-            let iterator = unsafe { scoped_iterator.take(agent) }.bind(gc.nogc());
+            let iterator = scoped_iterator.take(agent).bind(gc.nogc());
             // c. Set innerResult to Completion(Call(return, iterator)).
             // d. If innerResult is a normal completion, set innerResult to
             //    Completion(innerResult.[[Value]]).
-            // SAFETY: not shared.
-            let mut value = value.map(|v| unsafe { v.take(agent) });
+            let mut value = value.map(|v| v.take(agent));
             Ok(Some(call_function(
                 agent,
                 r#return.unbind(),

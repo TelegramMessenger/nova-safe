@@ -92,17 +92,12 @@ impl<'b> ScopedPropertyDescriptor<'b> {
     /// unscoped property descriptor.
     pub(crate) fn take<'a>(self, agent: &Agent, gc: NoGcScope<'a, 'b>) -> PropertyDescriptor<'a> {
         PropertyDescriptor {
-            // SAFETY: PropertyDescriptor cannot be shared.
-            value: self.value.map(|v| unsafe { v.take(agent).bind(gc) }),
+            value: self.value.map(|v| v.take(agent).bind(gc)),
             writable: self.writable,
             // SAFETY: PropertyDescriptor cannot be shared.
-            get: self
-                .get
-                .map(|f| f.map(|f| unsafe { f.take(agent).bind(gc) })),
+            get: self.get.map(|f| f.map(|f| f.take(agent).bind(gc))),
             // SAFETY: PropertyDescriptor cannot be shared.
-            set: self
-                .set
-                .map(|f| f.map(|f| unsafe { f.take(agent).bind(gc) })),
+            set: self.set.map(|f| f.map(|f| f.take(agent).bind(gc))),
             enumerable: self.enumerable,
             configurable: self.configurable,
         }
@@ -473,8 +468,7 @@ impl<'a> PropertyDescriptor<'a> {
             }
         }
 
-        // SAFETY: scoped_obj has not been shared.
-        let _ = unsafe { scoped_obj.take(agent) };
+        let _ = scoped_obj.take(agent);
 
         // 15. If desc has a [[Get]] field or desc has a [[Set]] field, then
         if desc.get.is_some() || desc.set.is_some() {

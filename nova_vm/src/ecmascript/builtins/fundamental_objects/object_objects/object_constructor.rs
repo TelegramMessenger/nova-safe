@@ -329,9 +329,7 @@ impl ObjectConstructor {
             }
             // i. Let from be ! ToObject(nextSource).
             let from = to_object(agent, next_source, gc.nogc()).unwrap();
-            // SAFETY: scoped_from does not share its heap slot with anyone as
-            // it is created separately (not a clone itself) and never cloned.
-            unsafe { scoped_from.replace(agent, from.unbind()) };
+            scoped_from.replace(agent, from.unbind());
             // ii. Let keys be ? from.[[OwnPropertyKeys]]().
             let keys = from
                 .unbind()
@@ -414,10 +412,8 @@ impl ObjectConstructor {
             let scoped_properties = properties.scope(agent, gc.nogc());
             let proto = proto.map(|p| p.scope(agent, gc.nogc()));
             agent.gc(gc.reborrow());
-            // SAFETY: not shared.
-            let proto = proto.map(|p| unsafe { p.take(agent).bind(gc.nogc()) });
-            // SAFETY: not shared.
-            properties = unsafe { scoped_properties.take(agent) }.bind(gc.nogc());
+            let proto = proto.map(|p| p.take(agent).bind(gc.nogc()));
+            properties = scoped_properties.take(agent).bind(gc.nogc());
             OrdinaryObject::create_object(agent, proto, &[]).expect("Failed to allocate after GC")
         };
         if properties != Value::Undefined {
@@ -604,8 +600,7 @@ impl ObjectConstructor {
             )
             .unbind()?
             .bind(gc.nogc());
-            // SAFETY: Not shared.
-            iterable = unsafe { scoped_iterable.take(agent).bind(gc.nogc()) };
+            iterable = scoped_iterable.take(agent).bind(gc.nogc());
             let Value::Array(entries_array) = iterable else {
                 unreachable!()
             };
@@ -1259,8 +1254,7 @@ fn object_define_properties<'gc>(
         .unbind()?;
     }
     // 6. Return O.
-    // SAFETY: scoped_o is not shared.
-    Ok(unsafe { scoped_o.take(agent) })
+    Ok(scoped_o.take(agent))
 }
 
 /// ### [24.1.1.2 AddEntriesFromIterable ( target, iterable, adder )](https://tc39.es/ecma262/#sec-add-entries-from-iterable)
@@ -1351,9 +1345,7 @@ pub(crate) fn add_entries_from_iterable_from_entries<'a>(
                 gc,
             ));
         };
-        // SAFETY: scoped_next is its own Scoped value, not a clone from target
-        // or anything else. Hence we can change its held value freely.
-        unsafe { scoped_next.replace(agent, next.unbind()) };
+        scoped_next.replace(agent, next.unbind());
         // d. Let k be Completion(Get(next, "0")).
         let k = get(agent, next.unbind(), 0.into(), gc.reborrow());
         // e. IfAbruptCloseIterator(k, iteratorRecord).
@@ -1362,8 +1354,7 @@ pub(crate) fn add_entries_from_iterable_from_entries<'a>(
             next_method: next_method.get(agent),
         };
         let k = if_abrupt_close_iterator!(agent, k, iterator_record, gc);
-        // SAFETY: scoped_k is never shared.
-        unsafe { scoped_k.replace(agent, k.unbind()) };
+        scoped_k.replace(agent, k.unbind());
         // f. Let v be Completion(Get(next, "1")).
         let v = get(agent, scoped_next.get(agent), 1.into(), gc.reborrow());
         // g. IfAbruptCloseIterator(v, iteratorRecord).
@@ -1372,8 +1363,7 @@ pub(crate) fn add_entries_from_iterable_from_entries<'a>(
             next_method: next_method.get(agent),
         };
         let v = if_abrupt_close_iterator!(agent, v, iterator_record, gc);
-        // SAFETY: scoped_v is never shared.
-        unsafe { scoped_v.replace(agent, v.unbind()) };
+        scoped_v.replace(agent, v.unbind());
         // h. Let status be Completion(Call(adder, target, « k, v »)).
         {
             // a. Let propertyKey be ? ToPropertyKey(key).

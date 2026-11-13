@@ -116,7 +116,7 @@ impl SharedArrayBufferPrototype {
         } else {
             let scoped_o = o.scope(agent, gc.nogc());
             let n = to_index(agent, new_length.unbind(), gc.reborrow()).unbind()?;
-            o = unsafe { scoped_o.take(agent) }.bind(gc.nogc());
+            o = scoped_o.take(agent).bind(gc.nogc());
             n
         };
         let o = o.unbind();
@@ -219,7 +219,7 @@ impl SharedArrayBufferPrototype {
         } else {
             let scoped_end = end.scope(agent, gc.nogc());
             let r = to_integer_or_infinity(agent, start.unbind(), gc.reborrow()).unbind()?;
-            end = unsafe { scoped_end.take(agent) }.bind(gc.nogc());
+            end = scoped_end.take(agent).bind(gc.nogc());
             r
         };
         // 6. If relativeStart = -∞, let first be 0.
@@ -275,8 +275,7 @@ impl SharedArrayBufferPrototype {
         let new = new.unbind();
         let gc = gc.into_nogc();
         let new = new.bind(gc);
-        // SAFETY: not shared.
-        let o = unsafe { o.take(agent).bind(gc) };
+        let o = o.take(agent).bind(gc);
         // 16. Perform ? RequireInternalSlot(new, [[ArrayBufferData]]).
         // 17. If IsSharedArrayBuffer(new) is false, throw a TypeError exception.
         let new = require_internal_slot_shared_array_buffer(agent, new.into(), gc)?;

@@ -643,7 +643,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
             let b = buffer.scope(agent, nogc);
             let l = length.map(|l| l.scope(agent, nogc));
             let offset = to_index(agent, byte_offset.unbind(), gc.reborrow()).unbind()? as u64;
-            unsafe {
+            {
                 let nogc = gc.nogc();
                 length = l.map(|l| l.take(agent)).bind(nogc);
                 buffer = b.take(agent).bind(nogc);
@@ -682,7 +682,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
             let o = o_proto.map(|p| p.scope(agent, nogc));
             let b = buffer.scope(agent, nogc);
             let offset = to_index(agent, length.unbind(), gc.reborrow()).unbind()? as u64;
-            unsafe {
+            {
                 let nogc = gc.nogc();
                 buffer = b.take(agent).bind(nogc);
                 o_proto = o.map(|p| p.take(agent).bind(nogc));
@@ -1182,8 +1182,7 @@ pub(crate) fn typed_array_species_create_with_buffer<'a>(
     let result = typed_array_create_from_constructor_with_buffer(
         agent,
         constructor.unbind(),
-        // SAFETY: not shared.
-        unsafe { buffer.take(agent) },
+        buffer.take(agent),
         byte_offset,
         length,
         gc.reborrow(),

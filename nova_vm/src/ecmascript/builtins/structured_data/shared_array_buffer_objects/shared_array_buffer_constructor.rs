@@ -66,18 +66,14 @@ impl SharedArrayBufferConstructor {
             .unbind()?
             .bind(gc.nogc()) as u64;
         // 3. Let requestedMaxByteLength be ? GetArrayBufferMaxByteLengthOption(options).
-        let requested_max_byte_length = get_array_buffer_max_byte_length_option(
-            agent,
-            unsafe { options.take(agent) },
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
+        let requested_max_byte_length =
+            get_array_buffer_max_byte_length_option(agent, options.take(agent), gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc());
         // 4. Return ? AllocateSharedArrayBuffer(NewTarget, byteLength, requestedMaxByteLength).
         allocate_shared_array_buffer(
             agent,
-            // SAFETY: not shared.
-            unsafe { new_target.take(agent) },
+            new_target.take(agent),
             byte_length,
             requested_max_byte_length,
             gc,

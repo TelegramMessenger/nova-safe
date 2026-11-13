@@ -749,9 +749,7 @@ pub(crate) fn inner_module_evaluation<'a, 'b>(
         // b. Return index.
         return Ok(index);
     };
-    // SAFETY: We're not actually replacing anything but just
-    // reinterpreting the Scoped inner type.
-    let scoped_module = unsafe { scoped_module.replace_self(agent, module.unbind()) };
+    let scoped_module = scoped_module.replace_self(agent, module.unbind());
     // 2. If module.[[Status]] is either evaluating-async or evaluated, then
     if matches!(
         module.status(agent),
@@ -1026,13 +1024,11 @@ pub(crate) fn async_module_execution_fulfilled(
         let m = scoped_m.get(agent).bind(gc.nogc());
         // a. If m.[[Status]] is evaluated, then
         if matches!(m.status(agent), CyclicModuleRecordStatus::Evaluated) {
-            // SAFETY: scoped_m is not shared.
-            let _ = unsafe { scoped_m.take(agent).bind(gc.nogc()) };
+            let _ = scoped_m.take(agent).bind(gc.nogc());
             // i. Assert: m.[[EvaluationError]] is not empty.
             assert!(m.evaluation_error(agent, gc.nogc()).is_ok());
         } else if m.has_tla(agent) {
-            // SAFETY: scoped_m is not shared.
-            let _ = unsafe { scoped_m.take(agent).bind(gc.nogc()) };
+            let _ = scoped_m.take(agent).bind(gc.nogc());
             // b. Else if m.[[HasTLA]] is true, then
             // i. Perform ExecuteAsyncModule(m).
             execute_async_module(agent, m.unbind(), gc.reborrow());
@@ -1044,8 +1040,7 @@ pub(crate) fn async_module_execution_fulfilled(
                 .execute_module(agent, None, gc.reborrow())
                 .unbind()
                 .bind(gc.nogc());
-            // SAFETY: scoped_m is not shared.
-            let m = unsafe { scoped_m.take(agent).bind(gc.nogc()) };
+            let m = scoped_m.take(agent).bind(gc.nogc());
 
             // ii. If result is an abrupt completion, then
             if let Err(value) = result {

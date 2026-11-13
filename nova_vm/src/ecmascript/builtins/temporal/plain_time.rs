@@ -158,8 +158,7 @@ fn add_duration_to_time<'gc, const IS_ADD: bool>(
     } else {
         let scoped_instant = plain_time.scope(agent, gc.nogc());
         let res = to_temporal_duration(agent, duration.unbind(), gc.reborrow()).unbind()?;
-        // SAFETY: not shared
-        unsafe {
+        {
             plain_time = scoped_instant.take(agent);
         }
         res

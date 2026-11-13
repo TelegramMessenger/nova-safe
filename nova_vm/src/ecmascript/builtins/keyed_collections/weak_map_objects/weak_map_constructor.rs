@@ -98,10 +98,8 @@ impl WeakMapConstructor {
         // 7. Return ? AddEntriesFromIterable(map, iterable, adder).
         add_entries_from_iterable(
             agent,
-            // SAFETY: not shared.
-            unsafe { scoped_map.take(agent) },
-            // SAFETY: not shared.
-            unsafe { iterable.take(agent) },
+            scoped_map.take(agent),
+            iterable.take(agent),
             adder.unbind(),
             gc,
         )

@@ -615,8 +615,7 @@ impl StringPrototype {
                         let stack_arg = to_string(agent, stack_arg, gc.reborrow())
                             .unbind()?
                             .bind(gc.nogc());
-                        // SAFETY: args are never shared
-                        Ok(unsafe { arg.replace_self(agent, stack_arg.unbind()) })
+                        Ok(arg.replace_self(agent, stack_arg.unbind()))
                     })
                     .collect::<JsResult<Vec<_>>>()?;
                 scoped_string_args.insert(0, s);
@@ -729,8 +728,7 @@ impl StringPrototype {
             let search_str = to_string(agent, search_string.get(agent), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: search_string is not shared.
-            let search_str = unsafe { search_string.replace_self(agent, search_str.unbind()) };
+            let search_str = search_string.replace_self(agent, search_str.unbind());
 
             // 6. Let len be the length of S.
             // 7. If endPosition is undefined, let pos be len;
@@ -846,8 +844,7 @@ impl StringPrototype {
                 .unbind()?
                 .bind(gc.nogc());
 
-            // SAFETY: search_string is not shared.
-            let search_str = unsafe { search_string.replace_self(agent, search_str.unbind()) };
+            let search_str = search_string.replace_self(agent, search_str.unbind());
             // 6. Let pos be ? ToIntegerOrInfinity(position).
             let position = position.get(agent);
             let position_is_undefined = position.is_undefined();
@@ -938,8 +935,7 @@ impl StringPrototype {
             let search_str = to_string(agent, search_string.get(agent), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: search_str is not shared.
-            let search_str = unsafe { search_string.replace_self(agent, search_str.unbind()) };
+            let search_str = search_string.replace_self(agent, search_str.unbind());
             // 4. Let pos be ? ToIntegerOrInfinity(position).
             // 5. Assert: If position is undefined, then pos is 0.
             let pos = to_integer_or_infinity(agent, position.get(agent), gc.reborrow())
@@ -1224,13 +1220,12 @@ impl StringPrototype {
                 .unbind()?
                 .bind(gc.nogc());
             let that = scoped_that.get(agent).bind(gc.nogc());
-            // SAFETY: not shared.
-            let s = unsafe { scoped_that.replace_self(agent, s.unbind()) };
+            let s = scoped_that.replace_self(agent, s.unbind());
             // 3. Let thatValue be ? ToString(that).
             let that_value = to_string(agent, that.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            let s = unsafe { s.take(agent) }.bind(gc.nogc());
+            let s = s.take(agent).bind(gc.nogc());
             (s, that_value)
         };
         match s.as_wtf8_(agent).cmp(that_value.as_wtf8_(agent)) {
@@ -1278,19 +1273,14 @@ impl StringPrototype {
                 return call_function(
                     agent,
                     matcher.unbind(),
-                    // SAFETY: not shared.
-                    unsafe { scoped_regexp.take(agent) },
-                    Some(ArgumentsList::from_mut_value(
-                        // SAFETY: not shared.
-                        &mut unsafe { o.take(agent) },
-                    )),
+                    scoped_regexp.take(agent),
+                    Some(ArgumentsList::from_mut_value(&mut o.take(agent))),
                     gc,
                 );
             }
         }
         // 3. Let S be ? ToString(O).
-        // SAFETY: o is not shared.
-        let s = to_string(agent, unsafe { o.take(agent) }, gc.reborrow())
+        let s = to_string(agent, o.take(agent), gc.reborrow())
             .unbind()?
             .scope(agent, gc.nogc());
         // 4. Let rx be ? RegExpCreate(regexp, undefined).
@@ -1302,9 +1292,7 @@ impl StringPrototype {
             agent,
             rx.unbind().into(),
             WellKnownSymbols::Match.to_property_key(),
-            Some(ArgumentsList::from_mut_value(&mut unsafe {
-                s.take(agent).into()
-            })),
+            Some(ArgumentsList::from_mut_value(&mut s.take(agent).into())),
             gc,
         )
     }
@@ -1398,19 +1386,14 @@ impl StringPrototype {
                 return call_function(
                     agent,
                     matcher.unbind(),
-                    // SAFETY: not shared.
-                    unsafe { scoped_regexp.take(agent) },
-                    Some(ArgumentsList::from_mut_value(
-                        // SAFETY: not shared.
-                        &mut unsafe { o.take(agent) },
-                    )),
+                    scoped_regexp.take(agent),
+                    Some(ArgumentsList::from_mut_value(&mut o.take(agent))),
                     gc,
                 );
             }
         }
         // 3. Let S be ? ToString(O).
-        // SAFETY: not shared.
-        let s = to_string(agent, unsafe { o.take(agent) }, gc.reborrow())
+        let s = to_string(agent, o.take(agent), gc.reborrow())
             .unbind()?
             .scope(agent, gc.nogc());
         // 4. Let rx be ? RegExpCreate(regexp, "g").
@@ -1422,7 +1405,7 @@ impl StringPrototype {
         )
         .unbind()?
         .bind(gc.nogc());
-        let s = unsafe { s.take(agent) }.bind(gc.nogc());
+        let s = s.take(agent).bind(gc.nogc());
         // 5. Return ? Invoke(rx, %Symbol.matchAll%, « S »).
         invoke(
             agent,
@@ -1592,8 +1575,7 @@ impl StringPrototype {
             .bind(gc.nogc());
 
         // 3. Let n be ? ToIntegerOrInfinity(count).
-        // SAFETY: count is not shared.
-        let count = unsafe { count.take(agent) };
+        let count = count.take(agent);
         let n = if let Some(n) =
             try_result_into_js(try_to_integer_or_infinity(agent, count, gc.nogc())).unbind()?
         {
@@ -1987,10 +1969,10 @@ impl StringPrototype {
             )
             .unbind()?
             .bind(gc.nogc());
-            o = unsafe { scoped_o.take(agent) }.bind(gc.nogc());
+            o = scoped_o.take(agent).bind(gc.nogc());
             // b. If searcher is not undefined, then
             if let Some(searcher) = searcher {
-                let regexp = unsafe { scoped_regexp.take(agent) }.bind(gc.nogc());
+                let regexp = scoped_regexp.take(agent).bind(gc.nogc());
                 // i. Return ? Call(searcher, regexp, « O »).
                 return call_function(
                     agent,
@@ -2009,7 +1991,7 @@ impl StringPrototype {
         let rx = reg_exp_create(agent, scoped_regexp, None, gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        let string = unsafe { string.take(agent) }.bind(gc.nogc());
+        let string = string.take(agent).bind(gc.nogc());
         // 5. Return ? Invoke(rx, %Symbol.search%, « string »).
         invoke(
             agent,
@@ -2185,8 +2167,7 @@ impl StringPrototype {
             .bind(gc.nogc());
         let scoped_s = s.scope(agent, gc.nogc());
 
-        // SAFETY: not shared.
-        let limit = unsafe { limit.take(agent).bind(gc.nogc()) };
+        let limit = limit.take(agent).bind(gc.nogc());
         let lim = match limit {
             // 4. If limit is undefined, lim is 2**32 - 1.
             Value::Undefined => u32::MAX,
@@ -2199,8 +2180,7 @@ impl StringPrototype {
         // 5. Let R be ? ToString(separator).
         let r = to_string(agent, scoped_separator.get(agent), gc.reborrow()).unbind()?;
         let gc = gc.into_nogc();
-        // SAFETY: not shared.
-        let separator = unsafe { scoped_separator.take(agent) }.bind(gc);
+        let separator = scoped_separator.take(agent).bind(gc);
         let s = scoped_s.get(agent).bind(gc);
         let r = r.bind(gc);
 
@@ -2410,8 +2390,7 @@ impl StringPrototype {
 
         // 3. Let len be the length of S.
         // 4. Let intStart be ? ToIntegerOrInfinity(start).
-        // SAFETY: Never shared.
-        let start = unsafe { start.take(agent) }.bind(gc.nogc());
+        let start = start.take(agent).bind(gc.nogc());
         let int_start = if let Some(int_start) =
             try_result_into_js(try_to_integer_or_infinity(agent, start, gc.nogc())).unbind()?
         {
@@ -3172,8 +3151,7 @@ fn string_padding_builtins_impl<'gc>(
         let s = to_string(agent, o.unbind(), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        // SAFETY: never leaked outside this call path.
-        max_length = unsafe { scoped_max_length.take(agent).bind(gc.nogc()) };
+        max_length = scoped_max_length.take(agent).bind(gc.nogc());
         fill_string = scoped_fill_string
             .as_ref()
             .unwrap()

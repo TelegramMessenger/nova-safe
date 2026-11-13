@@ -186,8 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             lib::run_microtask_queue(agent, host_hooks, gc.reborrow())
                                 .unbind()
                                 .bind(gc.nogc());
-                        // SAFETY: not shared.
-                        microtask_result.map(|_| unsafe { result.take(agent) }.bind(gc.nogc()))
+                        microtask_result.map(|_| result.take(agent).bind(gc.nogc()))
                     } else {
                         result
                     };

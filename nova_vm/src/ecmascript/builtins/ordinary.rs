@@ -900,15 +900,13 @@ pub(crate) fn ordinary_get<'gc>(
         // 2. If desc is undefined, then
 
         // a. Let parent be ? O.[[GetPrototypeOf]]().
-        // SAFETY: not shared.
-        let object = unsafe { scoped_object.take(agent) }.bind(gc.nogc());
+        let object = scoped_object.take(agent).bind(gc.nogc());
         let (parent, property_key, receiver) =
             if let TryResult::Continue(parent) = object.try_get_prototype_of(agent, gc.nogc()) {
                 let Some(parent) = parent else {
                     return Ok(Value::Undefined);
                 };
-                // SAFETY: not shared.
-                let property_key = unsafe { scoped_property_key.take(agent) }.bind(gc.nogc());
+                let property_key = scoped_property_key.take(agent).bind(gc.nogc());
                 (parent, property_key, receiver)
             } else {
                 // Note: We should root property_key and receiver here.
@@ -922,10 +920,8 @@ pub(crate) fn ordinary_get<'gc>(
                     return Ok(Value::Undefined);
                 };
                 let parent = parent.unbind().bind(gc.nogc());
-                // SAFETY: not shared.
-                let receiver = unsafe { receiver.take(agent) }.bind(gc.nogc());
-                // SAFETY: not shared.
-                let property_key = unsafe { scoped_property_key.take(agent) }.bind(gc.nogc());
+                let receiver = receiver.take(agent).bind(gc.nogc());
+                let property_key = scoped_property_key.take(agent).bind(gc.nogc());
                 (parent, property_key, receiver)
             };
 
@@ -1224,8 +1220,7 @@ fn ordinary_set_with_own_descriptor<'a>(
                 .internal_get_own_property(agent, scoped_property_key.get(agent), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: Neither are shared.
-            unsafe {
+            {
                 value = scoped_value.take(agent).bind(gc.nogc());
                 receiver = scoped_receiver.take(agent).bind(gc.nogc());
             }
@@ -1880,8 +1875,7 @@ pub(crate) fn ordinary_populate_from_constructor<'gc>(
         )
         .unbind()?
         .bind(gc.nogc());
-        // SAFETY: not shared.
-        object = unsafe { scoped_object.take(agent) }.bind(gc.nogc());
+        object = scoped_object.take(agent).bind(gc.nogc());
         proto
     };
     let object = object.unbind();
@@ -1965,10 +1959,8 @@ pub(crate) fn get_prototype_from_constructor<'a>(
             .unbind()?
             .bind(gc.nogc());
             let gc = gc.nogc();
-            // SAFETY: not shared.
-            constructor = unsafe { scoped_constructor.take(agent) }.bind(gc);
-            // SAFETY: not shared.
-            function_realm = scoped_realm.map(|r| unsafe { r.take(agent) }.bind(gc));
+            constructor = scoped_constructor.take(agent).bind(gc);
+            function_realm = scoped_realm.map(|r| r.take(agent).bind(gc));
             proto
         }
     };

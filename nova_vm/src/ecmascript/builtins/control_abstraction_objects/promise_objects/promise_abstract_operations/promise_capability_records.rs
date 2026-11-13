@@ -227,8 +227,7 @@ impl<'a> PromiseCapability<'a> {
             // b. Return undefined.
             return;
         };
-        // SAFETY: Promise is not shared.
-        let promise = unsafe { promise.take(agent) }.bind(gc.nogc());
+        let promise = promise.take(agent).bind(gc.nogc());
 
         // 13. Let thenJobCallback be HostMakeJobCallback(thenAction).
         // TODO: Add the HostMakeJobCallback host hook. Leaving it for later, since in

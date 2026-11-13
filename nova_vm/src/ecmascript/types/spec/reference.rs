@@ -504,9 +504,8 @@ pub(crate) fn get_value<'gc>(
             let referenced_name = to_property_key(agent, referenced_name.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: not shared.
-            let base = unsafe { base.take(agent) }.bind(gc.nogc());
-            let this_value = this_value.map_or(base, |v| unsafe { v.take(agent) }.bind(gc.nogc()));
+            let base = base.take(agent).bind(gc.nogc());
+            let this_value = this_value.map_or(base, |v| v.take(agent).bind(gc.nogc()));
             if let Ok(base_obj) = Object::try_from(base) {
                 // d. Return ? baseObj.[[Get]](V.[[ReferencedName]], GetThisValue(V)).
                 base_obj.unbind().internal_get(
@@ -927,25 +926,19 @@ pub(crate) fn put_value<'a>(
                 .internal_set(
                     agent,
                     referenced_name.unbind(),
-                    // SAFETY: not shared.
-                    unsafe { w.take(agent) },
-                    // SAFETY: not shared.
-                    unsafe { this_value.take(agent) },
+                    w.take(agent),
+                    this_value.take(agent),
                     gc.reborrow(),
                 )
                 .unbind()?;
             // d. If succeeded is false and V.[[Strict]] is true,
             if !succeeded && let Some(scoped_referenced_name) = scoped_referenced_name {
                 // throw a TypeError exception.
-                // SAFETY: not shared.
-                let base_obj_repr = unsafe {
-                    Value::from(base_obj.take(agent))
-                        .string_repr(agent, gc.reborrow())
-                        .unbind()
-                        .bind(gc.nogc())
-                };
-                // SAFETY: not shared.
-                let referenced_name = unsafe { scoped_referenced_name.take(agent) }.bind(gc.nogc());
+                let base_obj_repr = Value::from(base_obj.take(agent))
+                    .string_repr(agent, gc.reborrow())
+                    .unbind()
+                    .bind(gc.nogc());
+                let referenced_name = scoped_referenced_name.take(agent).bind(gc.nogc());
                 return Err(throw_cannot_set_property(
                     agent,
                     base_obj_repr.unbind().into(),
@@ -954,8 +947,7 @@ pub(crate) fn put_value<'a>(
                 ));
             }
             if let Some(scoped_referenced_name) = scoped_referenced_name {
-                // SAFETY: not shared.
-                let _ = unsafe { scoped_referenced_name.take(agent) }.bind(gc.nogc());
+                let _ = scoped_referenced_name.take(agent).bind(gc.nogc());
             };
             // e. Return UNUSED.
             Ok(())
@@ -1004,15 +996,11 @@ pub(crate) fn put_value<'a>(
                 && let Some((scoped_referenced_name, scoped_base_obj)) = scoped_strict_error_data
             {
                 // d. If succeeded is false and V.[[Strict]] is true, throw a TypeError exception.
-                // SAFETY: not shared.
-                let base_obj_repr = unsafe {
-                    Value::from(scoped_base_obj.take(agent))
-                        .string_repr(agent, gc.reborrow())
-                        .unbind()
-                        .bind(gc.nogc())
-                };
-                // SAFETY: not shared.
-                let referenced_name = unsafe { scoped_referenced_name.take(agent) }.bind(gc.nogc());
+                let base_obj_repr = Value::from(scoped_base_obj.take(agent))
+                    .string_repr(agent, gc.reborrow())
+                    .unbind()
+                    .bind(gc.nogc());
+                let referenced_name = scoped_referenced_name.take(agent).bind(gc.nogc());
                 return Err(throw_cannot_set_property(
                     agent,
                     base_obj_repr.unbind().into(),
@@ -1021,10 +1009,8 @@ pub(crate) fn put_value<'a>(
                 ));
             }
             if let Some((scoped_referenced_name, scoped_base_obj)) = scoped_strict_error_data {
-                // SAFETY: not shared.
-                let _ = unsafe { scoped_base_obj.take(agent) }.bind(gc.nogc());
-                // SAFETY: not shared.
-                let _ = unsafe { scoped_referenced_name.take(agent) }.bind(gc.nogc());
+                let _ = scoped_base_obj.take(agent).bind(gc.nogc());
+                let _ = scoped_referenced_name.take(agent).bind(gc.nogc());
             };
             // e. Return UNUSED.
             Ok(())

@@ -287,8 +287,7 @@ pub(crate) fn evaluate_async_function_body<'a>(
     .unbind();
     let gc = gc.into_nogc();
     let result = result.bind(gc);
-    // SAFETY: not shared.
-    let promise = unsafe { promise.take(agent) }.bind(gc);
+    let promise = promise.take(agent).bind(gc);
     // AsyncFunctionStart will run the function until it returns, throws or gets
     // suspended with an await.
     match result {
@@ -396,8 +395,7 @@ pub(crate) fn evaluate_generator_body<'gc>(
             object_index: None,
             generator_state: Some(GeneratorState::SuspendedStart(SuspendedGeneratorState {
                 vm,
-                // SAFETY: exe is not shared.
-                executable: unsafe { exe.take(agent) },
+                executable: exe.take(agent),
                 execution_context: agent.running_execution_context().clone(),
             })),
         })
@@ -405,8 +403,7 @@ pub(crate) fn evaluate_generator_body<'gc>(
     ordinary_populate_from_constructor(
         agent,
         g.unbind().into(),
-        // SAFETY: not shared.
-        unsafe { function_object.take(agent) }.into(),
+        function_object.take(agent).into(),
         ProtoIntrinsics::Generator,
         gc,
     )
@@ -470,8 +467,7 @@ pub(crate) fn evaluate_async_generator_body<'gc>(
         .heap
         .create(AsyncGeneratorHeapData {
             object_index: None,
-            // SAFETY: exe is not shared.
-            executable: Some(unsafe { exe.take(agent) }),
+            executable: Some(exe.take(agent)),
             async_generator_state: Some(AsyncGeneratorState::SuspendedStart {
                 vm,
                 execution_context: agent.running_execution_context().clone(),
@@ -482,8 +478,7 @@ pub(crate) fn evaluate_async_generator_body<'gc>(
     ordinary_populate_from_constructor(
         agent,
         generator.unbind().into(),
-        // SAFETY: not shared.
-        unsafe { function_object.take(agent) }.into(),
+        function_object.take(agent).into(),
         ProtoIntrinsics::AsyncGenerator,
         gc,
     )

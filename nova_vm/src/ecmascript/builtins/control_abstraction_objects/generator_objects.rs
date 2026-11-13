@@ -224,10 +224,8 @@ impl Generator<'_> {
             .unbind();
         let gc = gc.into_nogc();
         let execution_result = execution_result.bind(gc);
-        // SAFETY: shared but not stored by resume.
-        let executable = unsafe { executable.take(agent).bind(gc) };
-        // SAFETY: not shared.
-        let generator = unsafe { generator.take(agent).bind(gc) };
+        let executable = executable.take(agent).bind(gc);
+        let generator = generator.take(agent).bind(gc);
 
         // GeneratorStart: 4.f. Remove acGenContext from the execution context stack and restore the
         // execution context that is at the top of the execution context stack as the running
@@ -353,10 +351,8 @@ impl Generator<'_> {
             .unbind();
         let gc = gc.into_nogc();
         let execution_result = execution_result.bind(gc);
-        // SAFETY: shared but not stored by resume.
-        let executable = unsafe { executable.take(agent).bind(gc) };
-        // SAFETY: not shared.
-        let generator = unsafe { generator.take(agent).bind(gc) };
+        let executable = executable.take(agent).bind(gc);
+        let generator = generator.take(agent).bind(gc);
 
         // GeneratorStart: 4.f. Remove acGenContext from the execution context stack and restore the
         // execution context that is at the top of the execution context stack as the running

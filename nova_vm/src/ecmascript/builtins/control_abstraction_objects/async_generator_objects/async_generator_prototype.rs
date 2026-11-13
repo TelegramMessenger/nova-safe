@@ -79,8 +79,7 @@ impl AsyncGeneratorPrototype {
                 .unbind()
                 .resolve(agent, iterator_result.unbind().into(), gc);
             // c. Return promiseCapability.[[Promise]].
-            // SAFETY: Promise has not been shared.
-            return Ok(unsafe { promise.take(agent).into() });
+            return Ok(promise.take(agent).into());
         }
         let state_is_suspended = state.is_suspended();
         let state_is_executing_or_draining = state.is_active();
@@ -98,7 +97,7 @@ impl AsyncGeneratorPrototype {
             assert!(state_is_executing_or_draining);
         }
         // 11. Return promiseCapability.[[Promise]].
-        Ok(unsafe { promise.take(agent).into() })
+        Ok(promise.take(agent).into())
     }
 
     /// ### [27.6.1.3 %AsyncGeneratorPrototype%.return ( value )](https://tc39.es/ecma262/#sec-asyncgenerator-prototype-return)

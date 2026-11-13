@@ -280,8 +280,7 @@ impl IteratorPrototype {
             let Some(value) = value else {
                 return Ok(Value::Undefined);
             };
-            // SAFETY: scoped_value is never shared.
-            unsafe { scoped_value.replace(agent, value.unbind()) };
+            scoped_value.replace(agent, value.unbind());
 
             // c. Let result be Completion(Call(predicate, undefined, « value, 𝔽(counter) »)).
             let result = call(
@@ -544,8 +543,7 @@ impl IteratorPrototype {
             let result = if_abrupt_close_iterator!(agent, result, iterated, gc);
 
             // e. Set accumulator to result.
-            // SAFETY: accumulator is never shared.
-            unsafe { accumulator.replace(agent, result.unbind()) };
+            accumulator.replace(agent, result.unbind());
 
             // f. Set counter to counter + 1.
             counter += 1;

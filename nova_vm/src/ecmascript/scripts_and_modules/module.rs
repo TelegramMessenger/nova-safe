@@ -49,8 +49,7 @@ pub(crate) fn evaluate_import_call<'gc>(
         let specifier = to_string(agent, specifier.unbind(), gc.reborrow())
             .unbind()
             .bind(gc.nogc());
-        // SAFETY: not shared.
-        options = scoped_options.map(|o| unsafe { o.take(agent) }.bind(gc.nogc()));
+        options = scoped_options.map(|o| o.take(agent).bind(gc.nogc()));
         // 9. IfAbruptRejectPromise(specifierString, promiseCapability).
         let promise_capability = PromiseCapability {
             promise: scoped_promise.get(agent).bind(gc.nogc()),
@@ -113,7 +112,7 @@ pub(crate) fn evaluate_import_call<'gc>(
             let gc = gc.into_nogc();
             let entries = entries.bind(gc);
 
-            let promise = unsafe { scoped_promise.take(agent) }.bind(gc);
+            let promise = scoped_promise.take(agent).bind(gc);
             let promise_capability = PromiseCapability {
                 promise,
                 must_be_unresolved: true,
@@ -172,19 +171,19 @@ pub(crate) fn evaluate_import_call<'gc>(
             //    in that hosts are prohibited from changing behaviour based on the
             //    order in which attributes are enumerated.
             attributes.sort_by(|a, b| a.key.as_wtf8_(agent).cmp(b.key.as_wtf8_(agent)));
-            let specifier = unsafe { specifier.take(agent) }.bind(gc);
+            let specifier = specifier.take(agent).bind(gc);
             (promise, specifier, attributes.into_boxed_slice(), gc)
         } else {
             let gc = gc.into_nogc();
-            let specifier = unsafe { specifier.take(agent) }.bind(gc);
-            let promise = unsafe { scoped_promise.take(agent) }.bind(gc);
+            let specifier = specifier.take(agent).bind(gc);
+            let promise = scoped_promise.take(agent).bind(gc);
             (promise, specifier, Default::default(), gc)
         }
     } else {
         let specifier = specifier.unbind();
         let gc = gc.into_nogc();
         let specifier = specifier.bind(gc);
-        let promise = unsafe { scoped_promise.take(agent) }.bind(gc);
+        let promise = scoped_promise.take(agent).bind(gc);
         (promise, specifier, Default::default(), gc)
     };
     // 12. Let moduleRequest be a new ModuleRequest Record {
@@ -219,8 +218,7 @@ fn reject_import_not_object_or_undefined<'gc>(
 ) -> Promise<'gc> {
     let value = value.bind(gc);
     let promise_capability = PromiseCapability {
-        // SAFETY: not shared.
-        promise: unsafe { scoped_promise.take(agent) }.bind(gc),
+        promise: scoped_promise.take(agent).bind(gc),
         must_be_unresolved: true,
     };
     // i. Perform ! Call(promiseCapability.[[Reject]], undefined, « a newly created TypeError object »).
@@ -348,10 +346,8 @@ pub(crate) fn link_and_evaluate(
         .evaluate(agent, gc.reborrow())
         .unbind()
         .bind(gc.nogc());
-    // SAFETY: not shared.
-    let promise = unsafe { promise.take(agent) }.bind(gc.nogc());
-    // SAFETY: not shared.
-    let module = unsafe { scoped_module.take(agent) }.bind(gc.nogc());
+    let promise = promise.take(agent).bind(gc.nogc());
+    let module = scoped_module.take(agent).bind(gc.nogc());
     if let Some(result) = evaluate_promise.try_get_result(agent, gc.nogc()) {
         // Synchronous evaluation finish.
         match result {

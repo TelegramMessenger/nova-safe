@@ -386,14 +386,9 @@ impl ArrayPrototype {
         // 3. Let n be 0.
         let mut n = 0;
         // 4. Prepend O to items.
-        // SAFETY: We're replacing the stored Object value with itself as a
-        // Value; their heap root data is the same in either case so on the
-        // heap this is a no-op.
-        let o_as_value = unsafe {
-            scoped_o
-                .clone()
-                .replace_self(agent, scoped_o.get(agent).into())
-        };
+        let o_as_value = scoped_o
+            .clone()
+            .replace_self(agent, scoped_o.get(agent).into());
         items.insert(0, o_as_value);
         // 5. For each element E of items, do
         for e in items {
@@ -590,7 +585,7 @@ impl ArrayPrototype {
         // 3. Let relativeTarget be ? ToIntegerOrInfinity(target).
         // SAFETY: target has not been shared.
         let relative_target =
-            to_integer_or_infinity(agent, unsafe { target.take(agent) }, gc.reborrow()).unbind()?;
+            to_integer_or_infinity(agent, target.take(agent), gc.reborrow()).unbind()?;
 
         let to = if relative_target.is_neg_infinity() {
             // 4. If relativeTarget = -∞, let to be 0.
@@ -606,7 +601,7 @@ impl ArrayPrototype {
         // 7. Let relativeStart be ? ToIntegerOrInfinity(start).
         // SAFETY: start has not been shared.
         let relative_start =
-            to_integer_or_infinity(agent, unsafe { start.take(agent) }, gc.reborrow()).unbind()?;
+            to_integer_or_infinity(agent, start.take(agent), gc.reborrow()).unbind()?;
 
         let from = if relative_start.is_neg_infinity() {
             // 8. If relativeStart = -∞, let from be 0.
@@ -620,8 +615,7 @@ impl ArrayPrototype {
         };
 
         // 11. If end is undefined, let relativeEnd be len; else let relativeEnd be ? ToIntegerOrInfinity(end).
-        // SAFETY: end has not been shared.
-        let end = end.map(|e| unsafe { e.take(agent) }.bind(gc.nogc()));
+        let end = end.map(|e| e.take(agent).bind(gc.nogc()));
         let final_end = if end.is_none_or(|e| e.is_undefined()) {
             len
         } else {
@@ -778,8 +772,7 @@ impl ArrayPrototype {
                 gc.into_nogc(),
             ));
         };
-        // SAFETY: callback_fn never escapes this call.
-        let callback_fn = unsafe { callback_fn.replace_self(agent, stack_callback_fn.unbind()) };
+        let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
         // 4. Let k be 0.
         let mut k = 0;
         // 5. Repeat, while k < len,
@@ -1017,8 +1010,7 @@ impl ArrayPrototype {
                 gc.into_nogc(),
             ));
         };
-        // SAFETY: callback_fn never escapes this call.
-        let callback_fn = unsafe { callback_fn.replace_self(agent, stack_callback_fn.unbind()) };
+        let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
         // 4. Let A be ? ArraySpeciesCreate(O, 0).
         let a = array_species_create(agent, o.get(agent), 0, gc.reborrow())
             .unbind()?
@@ -1040,8 +1032,7 @@ impl ArrayPrototype {
                 let k_value = get(agent, o.get(agent), pk, gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                // SAFETY: scoped_k_value never escapes this call
-                unsafe { scoped_k_value.replace(agent, k_value.unbind()) };
+                scoped_k_value.replace(agent, k_value.unbind());
                 // ii. Let selected be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
                 let result = call_function(
                     agent,
@@ -1286,8 +1277,7 @@ impl ArrayPrototype {
             ));
         };
         // SAFETY: callback_fn is not shared.
-        let mapper_function =
-            unsafe { mapper_function.replace_self(agent, stack_mapper_function.unbind()) };
+        let mapper_function = mapper_function.replace_self(agent, stack_mapper_function.unbind());
 
         // 4. Let A be ? ArraySpeciesCreate(O, 0).
         let a = array_species_create(agent, o.get(agent), 0, gc.reborrow())
@@ -1370,8 +1360,7 @@ impl ArrayPrototype {
                 gc.into_nogc(),
             ));
         };
-        // SAFETY: callback_fn is not shared.
-        let callback_fn = unsafe { callback_fn.replace_self(agent, stack_callback_fn.unbind()) };
+        let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
 
         // 4. Let k be 0.
         let mut k = 0;
@@ -1719,9 +1708,7 @@ impl ArrayPrototype {
             let sep = to_string(agent, separator.get(agent), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            // SAFETY: separator is not shared.
-            // Note: Separator is likely a small string so this is a very cheap.
-            unsafe { separator.replace_self(agent, sep.unbind()) }
+            separator.replace_self(agent, sep.unbind())
         };
         // 5. Let R be the empty String.
         let mut r = Wtf8Buf::with_capacity(len * 10);
@@ -1978,8 +1965,7 @@ impl ArrayPrototype {
                 gc.into_nogc(),
             ));
         };
-        // SAFETY: callback_fn is not shared.
-        let callback_fn = unsafe { callback_fn.replace_self(agent, stack_callback_fn.unbind()) };
+        let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
         // 4. Let A be ? ArraySpeciesCreate(O, len).
         let a = array_species_create(agent, o.get(agent), len as usize, gc.reborrow())
             .unbind()?
@@ -2272,8 +2258,7 @@ impl ArrayPrototype {
                 gc.into_nogc(),
             ));
         };
-        // SAFETY: callback_fn is not shared.
-        let callback_fn = unsafe { callback_fn.replace_self(agent, stack_callback_fn.unbind()) };
+        let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
 
         // 4. If len = 0 and initialValue is not present, throw a TypeError exception.
         if len == 0 && initial_value.is_none() {
@@ -2311,8 +2296,7 @@ impl ArrayPrototype {
                     let result = get(agent, o.get(agent), pk, gc.reborrow())
                         .unbind()?
                         .bind(gc.nogc());
-                    // SAFETY: accumulator is not shared.
-                    unsafe { accumulator.replace(agent, result.unbind()) };
+                    accumulator.replace(agent, result.unbind());
                 }
 
                 // iv. Set k to k + 1.
@@ -2360,8 +2344,7 @@ impl ArrayPrototype {
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: accumulator is not shared.
-                unsafe { accumulator.replace(agent, result.unbind()) };
+                accumulator.replace(agent, result.unbind());
             }
 
             // d. Set k to k + 1.
@@ -2439,8 +2422,7 @@ impl ArrayPrototype {
                 gc.into_nogc(),
             ));
         };
-        // SAFETY: callback_fn is not shared outside this call.
-        let callback_fn = unsafe { callback_fn.replace_self(agent, stack_callback_fn.unbind()) };
+        let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
 
         // 4. If len = 0 and initialValue is not present, throw a TypeError exception.
         if len == 0 && initial_value.is_none() {
@@ -2478,8 +2460,7 @@ impl ArrayPrototype {
                     let result = get(agent, o.get(agent), pk, gc.reborrow())
                         .unbind()?
                         .bind(gc.nogc());
-                    // SAFETY: Accumulator is not shared outside this call.
-                    unsafe { accumulator.replace(agent, result.unbind()) };
+                    accumulator.replace(agent, result.unbind());
                 }
 
                 // iv. Set k to k - 1.
@@ -2526,8 +2507,7 @@ impl ArrayPrototype {
                 )
                 .unbind()?
                 .bind(gc.nogc());
-                // SAFETY: Accumulator is not shared outside this call.
-                unsafe { accumulator.replace(agent, result.unbind()) };
+                accumulator.replace(agent, result.unbind());
             }
 
             // d. Set k to k - 1.
@@ -3100,8 +3080,7 @@ impl ArrayPrototype {
                 gc.into_nogc(),
             ));
         };
-        // SAFETY: callback_fn is never shared before this call.
-        let callback_fn = unsafe { callback_fn.replace_self(agent, stack_callback_fn.unbind()) };
+        let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
         // 4. Let k be 0.
         let mut k = 0;
         // 5. Repeat, while k < len,
@@ -3774,8 +3753,7 @@ impl ArrayPrototype {
                 agent,
                 local_a,
                 pi,
-                // SAFETY: not shared.
-                unsafe { e.take(agent) },
+                e.take(agent),
                 None,
                 gc.nogc(),
             ));
@@ -3807,8 +3785,7 @@ impl ArrayPrototype {
             r += 1;
         }
         // 19. Return A.
-        // SAFETY: not shared.
-        Ok(unsafe { scoped_a.take(agent) }.into())
+        Ok(scoped_a.take(agent).into())
     }
 
     /// ### [23.1.3.36 Array.prototype.toString ( )](https://tc39.es/ecma262/#sec-array.prototype.tostring)
@@ -4300,9 +4277,7 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
             gc.into_nogc(),
         ));
     };
-    // SAFETY: We're only ever called in a way that gives ownership of
-    // predicate to us.
-    let predicate = unsafe { predicate.replace_self(agent, stack_predicate.unbind()) };
+    let predicate = predicate.replace_self(agent, stack_predicate.unbind());
     // 4. For each integer k of indices, do
     fn check<'gc, T: 'static + Rootable + InternalMethods<'static>>(
         agent: &mut Agent,
@@ -4338,8 +4313,7 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
         .bind(gc.nogc());
         // e. If ToBoolean(testResult) is true, return the Record { [[Index]]: 𝔽(k), [[Value]]: kValue }.
         if to_boolean(agent, test_result) {
-            // SAFETY: scoped_k_value is never shared.
-            Ok(Some((k, unsafe { scoped_k_value.take(agent) })))
+            Ok(Some((k, scoped_k_value.take(agent))))
         } else {
             Ok(None)
         }

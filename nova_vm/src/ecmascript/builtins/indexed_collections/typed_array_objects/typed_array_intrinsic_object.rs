@@ -266,8 +266,7 @@ impl TypedArrayIntrinsicObject {
             // f. Set k to k + 1.
             k += 1;
         }
-        // SAFETY: not shared.
-        Ok(unsafe { scoped_target_obj.take(agent) }.into())
+        Ok(scoped_target_obj.take(agent).into())
     }
 
     /// ### [23.2.2.2 %TypedArray%.of ( ...items )](https://tc39.es/ecma262/#sec-properties-of-the-%typedarray%-intrinsic-object)
@@ -620,8 +619,7 @@ impl TypedArrayPrototype {
             let result = to_integer_or_infinity(agent, index.unbind(), gc.reborrow())
                 .unbind()?
                 .into_i64();
-            // SAFETY: not shared.
-            o = unsafe { scoped_o.take(agent).bind(gc.nogc()) };
+            o = scoped_o.take(agent).bind(gc.nogc());
             result
         };
         // 5. If relativeIndex ≥ 0, then
@@ -814,8 +812,7 @@ impl TypedArrayPrototype {
         let target_index =
             calculate_relative_index_value(agent, target.unbind(), len, gc.reborrow()).unbind()?;
 
-        // SAFETY: not shared.
-        let start = unsafe { start.take(agent) }.bind(gc.nogc());
+        let start = start.take(agent).bind(gc.nogc());
 
         // 8. Let relativeStart be ? ToIntegerOrInfinity(start).
         // 9. If relativeStart = -∞, let startIndex be 0
@@ -824,8 +821,7 @@ impl TypedArrayPrototype {
         let start_index =
             calculate_relative_index_value(agent, start.unbind(), len, gc.reborrow()).unbind()?;
 
-        // SAFETY: not shared.
-        let end = unsafe { end.take(agent) }.bind(gc.nogc());
+        let end = end.take(agent).bind(gc.nogc());
 
         // 12. If end is undefined, let relativeEnd be len; else let
         //     relativeEnd be ? ToIntegerOrInfinity(end).
@@ -838,8 +834,7 @@ impl TypedArrayPrototype {
 
         let gc = gc.into_nogc();
 
-        // SAFETY: not shared.
-        let o = unsafe { o.take(agent) }.bind(gc);
+        let o = o.take(agent).bind(gc);
 
         let ta_record = make_typed_array_with_buffer_witness_record(agent, o, Ordering::SeqCst);
         if ta_record.is_typed_array_out_of_bounds(agent) {
@@ -1048,8 +1043,7 @@ impl TypedArrayPrototype {
         };
 
         let start_temp = start.get(agent).bind(gc.nogc());
-        // SAFETY: not shared.
-        let value = unsafe { start.replace_self(agent, value.unbind()) };
+        let value = start.replace_self(agent, value.unbind());
         let start = start_temp;
 
         // 6. Let relativeStart be ? ToIntegerOrInfinity(start).
@@ -1060,8 +1054,7 @@ impl TypedArrayPrototype {
         let start_index =
             calculate_relative_index_value(agent, start.unbind(), len, gc.reborrow()).unbind()?;
 
-        // SAFETY: not shared.
-        let end = unsafe { end.take(agent) }.bind(gc.nogc());
+        let end = end.take(agent).bind(gc.nogc());
 
         // 10. If end is undefined, let relativeEnd be len; else let
         //     relativeEnd be ? ToIntegerOrInfinity(end).
@@ -1074,10 +1067,8 @@ impl TypedArrayPrototype {
 
         let gc = gc.into_nogc();
 
-        // SAFETY: not shared.
-        let value = unsafe { value.take(agent) }.bind(gc);
-        // SAFETY: not shared.
-        let o = unsafe { o.take(agent) }.bind(gc);
+        let value = value.take(agent).bind(gc);
+        let o = o.take(agent).bind(gc);
 
         // 14. Set taRecord to MakeTypedArrayWithBufferWitnessRecord(O, seq-cst).
         let ta_record = make_typed_array_with_buffer_witness_record(agent, o, Ordering::SeqCst);
@@ -1355,8 +1346,7 @@ impl TypedArrayPrototype {
             let result =
                 to_integer_or_infinity(agent, from_index.unbind(), gc.reborrow()).unbind()?;
             let gc = gc.nogc();
-            // SAFETY: not shared.
-            unsafe {
+            {
                 search_element = scoped_search_element.take(agent).bind(gc);
                 o = scoped_o.take(agent).bind(gc);
             }
@@ -1446,8 +1436,7 @@ impl TypedArrayPrototype {
             let result =
                 to_integer_or_infinity(agent, from_index.unbind(), gc.reborrow()).unbind()?;
             let gc = gc.nogc();
-            // SAFETY: not shared.
-            unsafe {
+            {
                 search_element = scoped_search_element.take(agent).bind(gc);
                 o = scoped_o.take(agent).bind(gc);
             }
@@ -1648,8 +1637,7 @@ impl TypedArrayPrototype {
                 let result =
                     to_integer_or_infinity(agent, from_index.unbind(), gc.reborrow()).unbind()?;
                 let gc = gc.nogc();
-                // SAFETY: not shared.
-                unsafe {
+                {
                     search_element = scoped_search_element.take(agent).bind(gc);
                     o = scoped_o.take(agent).bind(gc);
                 }
@@ -1846,8 +1834,7 @@ impl TypedArrayPrototype {
             )
             .unbind()?
             .bind(gc.nogc());
-            // SAFETY: accumulator is not shared.
-            unsafe { accumulator.replace(agent, result.unbind()) };
+            accumulator.replace(agent, result.unbind());
             // d. Set k to k + 1.
             k += 1;
         }
@@ -1947,8 +1934,7 @@ impl TypedArrayPrototype {
             )
             .unbind()?
             .bind(gc.nogc());
-            // SAFETY: accumulator is not shared.
-            unsafe { accumulator.replace(agent, result.unbind()) };
+            accumulator.replace(agent, result.unbind());
             // d. Set k to k - 1.
             k = l.checked_sub(1);
         }
@@ -2014,8 +2000,7 @@ impl TypedArrayPrototype {
             let target_offset =
                 to_integer_or_infinity(agent, offset.unbind(), gc.reborrow()).unbind()?;
             let gc = gc.nogc();
-            // SAFETY: not shared.
-            unsafe {
+            {
                 source = scoped_source.take(agent).bind(gc);
                 target = scoped_target.take(agent).bind(gc);
             }
@@ -2087,8 +2072,7 @@ impl TypedArrayPrototype {
                 let scoped_target = target.scope(agent, gc.nogc());
                 let scoped_src = src.scope(agent, gc.nogc());
                 let len = length_of_array_like(agent, src.unbind(), gc.reborrow()).unbind()? as u64;
-                // SAFETY: not shared
-                unsafe {
+                {
                     src = scoped_src.take(agent).bind(gc.nogc());
                     target = scoped_target.take(agent).bind(gc.nogc());
                 }
@@ -2297,8 +2281,7 @@ impl TypedArrayPrototype {
                 // 15. Return A.
                 return Ok(a.into());
             };
-            // SAFETY: o is not shared.
-            let o = unsafe { scoped_o.take(agent) }.bind(gc);
+            let o = scoped_o.take(agent).bind(gc);
             // Note: SharedArrayBuffers cannot shrink.
             if !o.is_shared() {
                 // a. Set taRecord to MakeTypedArrayWithBufferWitnessRecord(O, seq-cst).
@@ -2344,8 +2327,7 @@ impl TypedArrayPrototype {
             calculate_relative_index_value(agent, start.unbind(), src_array_length, gc.reborrow())
                 .unbind()?;
 
-        // SAFETY: not shared.
-        let end = unsafe { end.take(agent) }.bind(gc.nogc());
+        let end = end.take(agent).bind(gc.nogc());
 
         // 8. If end is undefined, let relativeEnd be srcArrayLength; else let
         //    relativeEnd be ? ToIntegerOrInfinity(end).
@@ -2355,12 +2337,7 @@ impl TypedArrayPrototype {
         let end_index =
             calculate_relative_end_index_value(agent, end.unbind(), src_array_length, gc)?;
 
-        Ok((
-            // SAFETY: not shared.
-            unsafe { o.take(agent) },
-            start_index,
-            end_index,
-        ))
+        Ok((o.take(agent), start_index, end_index))
     }
 
     /// ### [23.2.3.28 %TypedArray%.prototype.some ( callback \[ , thisArg \] )](https://tc39.es/ecma262/#sec-%typedarray%.prototype.some)
@@ -2486,8 +2463,7 @@ impl TypedArrayPrototype {
                 .sort_with_comparator(agent, len, comparator, gc)?;
 
             // 10. Return obj.
-            // SAFETY: not shared.
-            Ok(unsafe { scoped_obj.take(agent) }.into())
+            Ok(scoped_obj.take(agent).into())
         } else {
             let obj = obj.unbind().bind(gc.into_nogc());
             obj.sort(agent, len);
@@ -2623,8 +2599,7 @@ impl TypedArrayPrototype {
             calculate_relative_index_value(agent, start.unbind(), src_length, gc.reborrow())
                 .unbind()?;
 
-        // SAFETY: not shared.
-        let end = unsafe { end.take(agent) }.bind(gc.nogc());
+        let end = end.take(agent).bind(gc.nogc());
 
         // 15. If O.[[ArrayLength]] is auto and end is undefined, then
         let new_length = if no_new_length_param {
@@ -2646,12 +2621,7 @@ impl TypedArrayPrototype {
             // f. Let argumentsList be « buffer, 𝔽(beginByteOffset), 𝔽(newLength) ».
             Some(new_length)
         };
-        Ok((
-            // SAFETY: not shared.
-            unsafe { o.take(agent) },
-            start_index,
-            new_length,
-        ))
+        Ok((o.take(agent), start_index, new_length))
     }
 
     /// ### [23.2.3.31 %TypedArray%.prototype.toLocaleString ( \[ reserved1 \[ , reserved2 \] \] )](https://tc39.es/ecma262/#sec-%typedarray%.prototype.tolocalestring)
@@ -2822,8 +2792,7 @@ impl TypedArrayPrototype {
                 .unbind()
                 .sort_with_comparator(agent, len, comparator, gc.reborrow())
                 .unbind()?;
-            // SAFETY: not shared.
-            a = unsafe { scoped_a.take(agent) }.bind(gc.into_nogc());
+            a = scoped_a.take(agent).bind(gc.into_nogc());
         } else {
             let a: AnyTypedArray = a.into();
             a.sort(agent, len);
@@ -2896,8 +2865,7 @@ impl TypedArrayPrototype {
                     .unbind()?
                     .into_i64();
 
-                // SAFETY: not shared.
-                let value = unsafe { value.take(agent) }.bind(gc.nogc());
+                let value = value.take(agent).bind(gc.nogc());
 
                 // 7. If O.[[ContentType]] is BIGINT, let numericValue be ? ToBigInt(value).
                 let numeric_value = if is_bigint {
@@ -2912,8 +2880,7 @@ impl TypedArrayPrototype {
                         .bind(gc.nogc())
                         .into()
                 };
-                // SAFETY: not shared.
-                o = unsafe { scoped_o.take(agent).bind(gc.nogc()) };
+                o = scoped_o.take(agent).bind(gc.nogc());
                 (relative_index, numeric_value)
             };
         let o = o.unbind();

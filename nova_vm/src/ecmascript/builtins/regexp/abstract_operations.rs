@@ -99,8 +99,7 @@ pub(crate) fn reg_exp_initialize<'a>(
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, RegExp<'a>> {
     let obj = obj.bind(gc.nogc());
-    // SAFETY: not shared.
-    let pattern = unsafe { scoped_pattern.take(agent).bind(gc.nogc()) };
+    let pattern = scoped_pattern.take(agent).bind(gc.nogc());
     let flags = scoped_flags
         .as_ref()
         .map(|f| *f)
@@ -142,7 +141,7 @@ pub(crate) fn reg_exp_initialize<'a>(
         let f = match flags {
             Ok(f) => Ok(f),
             Err(flags) => {
-                let flags = unsafe { flags.take(agent) }.bind(gc.nogc());
+                let flags = flags.take(agent).bind(gc.nogc());
                 // 3. If flags is undefined,
                 if flags.is_undefined() {
                     // let F be the empty String.
@@ -153,12 +152,12 @@ pub(crate) fn reg_exp_initialize<'a>(
                     let f = to_string(agent, flags.unbind(), gc.reborrow())
                         .unbind()?
                         .bind(gc.nogc());
-                    p = unsafe { scoped_p.take(agent) }.bind(gc.nogc());
+                    p = scoped_p.take(agent).bind(gc.nogc());
                     Err(f)
                 }
             }
         };
-        let obj = unsafe { obj.take(agent) }.bind(gc.nogc());
+        let obj = obj.take(agent).bind(gc.nogc());
         (obj, p, f)
     };
     // 5. If F contains any code unit other than "d", "g", "i", "m", "s", "u",
@@ -367,8 +366,7 @@ fn reg_exp_exec_prepare<'a>(
                 Err(err) => return ControlFlow::Break(Err(err.unbind())),
             };
             let gc = gc.nogc();
-            // SAFETY: Not shared.
-            unsafe {
+            {
                 s = scoped_s.take(agent).bind(gc);
                 r = scoped_r.take(agent).bind(gc);
             }
@@ -496,8 +494,7 @@ pub(crate) fn reg_exp_builtin_exec_prepare<'a>(
             let scoped_s = s.scope(agent, gc.nogc());
             let last_index =
                 to_length(agent, last_index.unbind(), gc.reborrow()).unbind()? as usize;
-            // SAFETY: Not shared.
-            unsafe {
+            {
                 s = scoped_s.take(agent).bind(gc.nogc());
                 r = scoped_r.take(agent).bind(gc.nogc());
             }

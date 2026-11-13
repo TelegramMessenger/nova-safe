@@ -252,8 +252,7 @@ fn get_view_value_scope_slow<'gc>(
 ) -> JsResult<'gc, (AnyDataView<'gc>, usize)> {
     let scoped_view = view.scope(agent, gc.nogc());
     let index = to_index(agent, request_index, gc).unbind()? as usize;
-    // SAFETY: not shared.
-    Ok((unsafe { scoped_view.take(agent) }, index))
+    Ok((scoped_view.take(agent), index))
 }
 
 /// ### [25.3.1.6 SetViewValue ( view, requestIndex, isLittleEndian, type, value )](https://tc39.es/ecma262/#sec-setviewvalue)

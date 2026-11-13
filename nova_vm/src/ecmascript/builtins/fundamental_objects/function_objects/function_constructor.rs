@@ -293,8 +293,7 @@ pub(crate) fn create_dynamic_function<'a>(
         )
         .unbind()?
         .bind(gc.nogc()),
-        // SAFETY: source_code was not shared.
-        source_code: Some(unsafe { source_code.take(agent) }),
+        source_code: Some(source_code.take(agent)),
         source_text: function.span,
         ast: FunctionAstRef::from(function),
         lexical_this: false,

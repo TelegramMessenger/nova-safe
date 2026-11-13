@@ -306,16 +306,14 @@ impl JSONObject {
                         }
                     }
                 }
-                // SAFETY: scoped_replacer is not shared.
-                let _ = unsafe { scoped_replacer.take(agent) };
+                let _ = scoped_replacer.take(agent);
             }
             None
         } else {
             None
         };
 
-        // SAFETY: space is not shared.
-        let space = unsafe { space.take(agent) }.bind(gc.nogc());
+        let space = space.take(agent).bind(gc.nogc());
         // 6. If space is an Object, then
         let space: Option<Primitive> = if let Ok(space) = PrimitiveObject::try_from(space) {
             if space.is_number_object(agent) {
@@ -378,8 +376,7 @@ impl JSONObject {
         else {
             unreachable!()
         };
-        // SAFETY: value is not shared.
-        let mut value = unsafe { value.take(agent) }.bind(gc.nogc());
+        let mut value = value.take(agent).bind(gc.nogc());
         // 11. Perform ! CreateDataPropertyOrThrow(wrapper, the empty String, value).
         if wrapper
             .property_storage()
@@ -395,8 +392,7 @@ impl JSONObject {
             let scoped_value = value.scope(agent, gc.nogc());
             let scoped_wrapper = wrapper.scope(agent, gc.nogc());
             agent.gc(gc.reborrow());
-            // SAFETY: Not shared.
-            unsafe {
+            {
                 wrapper = scoped_wrapper.take(agent).bind(gc.nogc());
                 value = scoped_value.take(agent).bind(gc.nogc());
             }
@@ -589,10 +585,7 @@ fn internalize_json_property<'a>(
                 }
             }
         }
-        // SAFETY: scoped_val was shared to other internalise calls as the
-        // holder object but those calls have finished and do not store
-        // scoped_val anywhere.
-        unsafe { scoped_val.take(agent) }.bind(gc.nogc()).into()
+        scoped_val.take(agent).bind(gc.nogc()).into()
     } else {
         val
     };
@@ -696,12 +689,10 @@ fn get_serializable_json_property_value<'a>(
             )
             .unbind()?
             .bind(gc.nogc());
-            // SAFETY: scoped_value is not shared.
-            let _ = unsafe { scoped_value.take(agent) };
+            let _ = scoped_value.take(agent);
         } else {
             // Return the value back from scoping.
-            // SAFETY: scoped_value is not shared.
-            value = unsafe { scoped_value.take(agent) };
+            value = scoped_value.take(agent);
         }
     }
     // 3. If state.[[ReplacerFunction]] is not undefined, then
@@ -713,8 +704,7 @@ fn get_serializable_json_property_value<'a>(
         value = call_function(
             agent,
             replacer_function.get(agent),
-            // SAFETY: scoped_holder is not shared.
-            unsafe { scoped_holder.unwrap().take(agent).unbind().into() },
+            scoped_holder.unwrap().take(agent).unbind().into(),
             Some(ArgumentsList::from_mut_slice(&mut [
                 key.unbind().into(),
                 value.unbind(),

@@ -428,7 +428,7 @@ pub(crate) fn async_generator_await_return(
             let promise = promise.unbind();
             let gc = gc.into_nogc();
             let promise = promise.bind(gc);
-            let generator = unsafe { scoped_generator.take(agent) }.bind(gc);
+            let generator = scoped_generator.take(agent).bind(gc);
             // 10. Let promise be promiseCompletion.[[Value]].
             // 11. ... onFulfilled ...
             // 12. Let onFulfilled be CreateBuiltinFunction(fulfilledClosure, 1, "", « »).

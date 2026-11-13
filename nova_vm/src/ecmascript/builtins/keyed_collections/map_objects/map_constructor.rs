@@ -131,8 +131,7 @@ impl MapConstructor {
                 .unbind()?
                 .bind(gc.nogc());
                 let gc = gc.nogc();
-                // SAFETY: not shared.
-                map = unsafe { scoped_map.take(agent).bind(gc) };
+                map = scoped_map.take(agent).bind(gc);
                 adder
             }
         };
@@ -446,8 +445,7 @@ pub(crate) fn add_entries_from_iterable<'a, T: Into<Object<'a>> + TryFrom<Object
         .bind(gc.nogc());
         // b. If next is DONE, return target.
         let Some(next) = next else {
-            // SAFETY: not shared.
-            let target = unsafe { target.take(agent).bind(gc.into_nogc()) };
+            let target = target.take(agent).bind(gc.into_nogc());
             // SAFETY: passed in type is still the same type.
             let target = unsafe { T::try_from(target).unwrap_unchecked() };
             return Ok(target);

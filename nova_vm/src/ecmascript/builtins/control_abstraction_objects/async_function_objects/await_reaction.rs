@@ -65,8 +65,7 @@ impl AwaitReaction<'_> {
 
         match execution_result {
             ExecutionResult::Return(result) => {
-                // SAFETY: reaction is not shared.
-                let reaction = unsafe { reaction.take(agent) }.bind(gc.nogc());
+                let reaction = reaction.take(agent).bind(gc.nogc());
 
                 // [27.7.5.2 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext )](https://tc39.es/ecma262/#sec-asyncblockstart)
                 //
@@ -87,8 +86,7 @@ impl AwaitReaction<'_> {
                     .resolve(agent, result.unbind(), gc);
             }
             ExecutionResult::Throw(err) => {
-                // SAFETY: reaction is not shared.
-                let reaction = unsafe { reaction.take(agent) }.bind(gc.nogc());
+                let reaction = reaction.take(agent).bind(gc.nogc());
 
                 // [27.7.5.2 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext )](https://tc39.es/ecma262/#sec-asyncblockstart)
                 //
@@ -120,8 +118,7 @@ impl AwaitReaction<'_> {
 
                 // 2. Let promise be ? PromiseResolve(%Promise%, value).
 
-                // SAFETY: not shared.
-                let reaction = unsafe { reaction.take(agent) }.bind(gc);
+                let reaction = reaction.take(agent).bind(gc);
 
                 // `handler` corresponds to the `fulfilledClosure` and
                 // `rejectedClosure` functions, which resume execution of the
