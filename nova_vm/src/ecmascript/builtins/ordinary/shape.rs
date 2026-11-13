@@ -2,9 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{
-    cmp::Ordering, collections::TryReserveError, marker::PhantomData, num::NonZeroU32, ptr::NonNull,
-};
+use std::{cmp::Ordering, collections::TryReserveError, marker::PhantomData, num::NonZeroU32};
 
 use ahash::AHashMap;
 use hashbrown::{HashTable, hash_table::Entry};
@@ -550,24 +548,11 @@ impl<'a> ObjectShape<'a> {
     ///
     /// > NOTE: This function will create a new Object Shape, or possibly
     /// > multiple ones, if an existing one cannot be found.
-    ///
-    /// ## Safety
-    ///
-    /// The private_fields parameter must not be backed by memory in the Agent
-    /// heap's Elements or Object Shape related vectors.
-    ///
-    /// The method will read from the private_fields parameter but does not
-    /// mutate them. The method also does not touch the Agent's environments at
-    /// all. As a result, it is safe to pass in private fields backed by a
-    /// PrivateEnvironment held in the Agent.
-    pub(crate) unsafe fn add_private_fields(
+    pub(crate) fn add_private_fields(
         self,
         agent: &mut Agent,
-        private_fields: NonNull<[PrivateField<'a>]>,
+        private_fields: &[PrivateField<'a>],
     ) -> Result<(Self, usize), TryReserveError> {
-        // SAFETY: User guarantees that the fields are not backed by memory
-        // that we're going to be mutating.
-        let private_fields = unsafe { private_fields.as_ref() };
         let original_len = self.len(agent);
         let insertion_index = if original_len == 0 {
             // Property storage is currently empty: We don't need to do any

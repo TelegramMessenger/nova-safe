@@ -188,6 +188,19 @@ impl PrivateEnvironmentRecord {
     ) -> &[PrivateField<'gc>] {
         &self.private_fields
     }
+
+    /// Take the list of instance PrivateFields out of this PrivateEnvironment,
+    /// leaving it empty until it is put back with
+    /// [`Self::restore_instance_private_fields`].
+    pub(crate) fn take_instance_private_fields(&mut self) -> Vec<PrivateField<'static>> {
+        core::mem::take(&mut self.private_fields)
+    }
+
+    /// Put back the list taken with [`Self::take_instance_private_fields`].
+    pub(crate) fn restore_instance_private_fields(&mut self, fields: Vec<PrivateField<'static>>) {
+        debug_assert!(self.private_fields.is_empty());
+        self.private_fields = fields;
+    }
 }
 
 /// ### [9.2.1.1 NewPrivateEnvironment ( outerPrivEnv )](https://tc39.es/ecma262/#sec-newprivateenvironment)
