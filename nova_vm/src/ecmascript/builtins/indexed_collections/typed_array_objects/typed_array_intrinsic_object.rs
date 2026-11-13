@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::hint::unreachable_unchecked;
-
 use ecmascript_atomics::Ordering;
 use wtf8::Wtf8Buf;
 
@@ -2040,8 +2038,8 @@ impl TypedArrayPrototype {
             // a. Perform ? SetTypedArrayFromTypedArray(target, targetOffset, source).
 
             let Ok(source) = AnyTypedArray::try_from(source) else {
-                // SAFETY: checked above.
-                unsafe { unreachable_unchecked() }
+                // Checked above.
+                unreachable!()
             };
 
             // 6. Let srcRecord be MakeTypedArrayWithBufferWitnessRecord(source, seq-cst).
@@ -2111,8 +2109,8 @@ impl TypedArrayPrototype {
 
         if source_is_typed_array {
             let Ok(src) = AnyTypedArray::try_from(src) else {
-                // SAFETY: checked above.
-                unsafe { unreachable_unchecked() }
+                // Checked above.
+                unreachable!()
             };
 
             if target.is_bigint() != src.is_bigint() {
@@ -2261,14 +2259,11 @@ impl TypedArrayPrototype {
             for_any_typed_array!(
                 o,
                 o,
-                // SAFETY: type checked by the macro.
-                unsafe {
-                    typed_array_create_from_data_block(agent, o, data_block)
-                        .unbind()
-                        .bind(gc.into_nogc())
-                        .cast::<TA>()
-                }
-                .into(),
+                typed_array_create_from_data_block(agent, o, data_block)
+                    .unbind()
+                    .bind(gc.into_nogc())
+                    .cast::<TA>()
+                    .into(),
                 TA
             )
         } else {
@@ -3091,26 +3086,22 @@ fn calculate_offset_index(relative_index: i64, len: usize) -> i64 {
         // Can't turn length into a i64... that's pretty weird. At least u64
         // should always work.
         let len = u64::try_from(len).unwrap();
-        // SAFETY: len is a positive value larger than i64::MAX; adding a
-        // negative number to it cannot under- or overflow.
-        let actual_index = unsafe { len.checked_add_signed(relative_index).unwrap_unchecked() };
+        let actual_index = len
+            .checked_add_signed(relative_index)
+            .expect("len is larger than i64::MAX, adding a negative i64 cannot underflow");
         i64::try_from(actual_index).unwrap_or(i64::MAX)
     }
 }
 
 #[inline]
 fn calculate_relative_index(relative_index: i64, len: usize) -> usize {
-    // SAFETY: length values in JavaScript are always within 2^53, ie. fit in
-    // 64 bits. usize may be 128, 64, or 32 bits but in any case this relation
-    // holds.
-    let len = unsafe { u64::try_from(len).unwrap_unchecked() };
+    let len = u64::try_from(len).expect("JavaScript lengths are within 2^53");
     let result = if relative_index < 0 {
         len.saturating_add_signed(relative_index)
     } else {
         len.min(relative_index.unsigned_abs())
     };
-    // SAFETY: len - abs(relative_index) is at most len, and len was usize.
-    unsafe { usize::try_from(result).unwrap_unchecked() }
+    usize::try_from(result).expect("result is at most len, which was a usize")
 }
 
 #[inline]
@@ -3120,17 +3111,13 @@ fn calculate_relative_end_index(relative_index: Value, len: usize) -> usize {
     } else {
         return len;
     };
-    // SAFETY: length values in JavaScript are always within 2^53, ie. fit in
-    // 64 bits. usize may be 128, 64, or 32 bits but in any case this relation
-    // holds.
-    let len = unsafe { u64::try_from(len).unwrap_unchecked() };
+    let len = u64::try_from(len).expect("JavaScript lengths are within 2^53");
     let result = if relative_index < 0 {
         len.saturating_add_signed(relative_index)
     } else {
         len.min(relative_index.unsigned_abs())
     };
-    // SAFETY: len - abs(relative_index) is at most len, and len was usize.
-    unsafe { usize::try_from(result).unwrap_unchecked() }
+    usize::try_from(result).expect("result is at most len, which was a usize")
 }
 
 #[inline]

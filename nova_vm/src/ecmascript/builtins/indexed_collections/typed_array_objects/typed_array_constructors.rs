@@ -811,8 +811,7 @@ fn typed_array_constructor<'gc, T: Viewable>(
                 .unbind()?
                 .bind(gc.nogc());
             let obj = typed_array_create::<T>(agent, proto);
-            // SAFETY: Initialising new TypedArray.
-            unsafe { obj.initialise_data(agent, buffer, 0, Some((byte_length, element_length))) };
+            obj.initialise_data(agent, buffer, 0, Some((byte_length, element_length)));
             obj.set_from_typed_array(agent, 0, source, 0, element_length, gc.nogc())
                 .unbind()?;
             return Ok(obj.unbind().into());
