@@ -62,3 +62,8 @@ fn regexp_captures() {
 fn string_search_positions() {
     run_test_source("stringSearchPositions.test.js");
 }
+
+#[test]
+fn string_replace_string_pattern() {
+    run_test_source("stringReplaceStringPattern.test.js");
+}
