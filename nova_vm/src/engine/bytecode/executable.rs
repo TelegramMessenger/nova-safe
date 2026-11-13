@@ -5,7 +5,7 @@
 use crate::{
     ecmascript::{
         Agent, CompileFunctionBodyData, FunctionTemplate, ObjectShape, PropertyKey,
-        PropertyLookupCache, Script, SourceCode, SourceTextModule, String, Value,
+        PropertyLookupCache, SourceCode, SourceTextModule, String, Value,
     },
     engine::{
         Bindable, NoGcScope, Scoped, bindable_handle,
@@ -120,7 +120,9 @@ pub(crate) struct ExecutableHeapData<'a> {
 impl<'gc> Executable<'gc> {
     pub(crate) fn compile_script(
         agent: &mut Agent,
-        script: Script,
+        body: &[ast::Statement],
+        source_code: SourceCode<'gc>,
+        is_strict: bool,
         gc: NoGcScope<'gc, '_>,
     ) -> Self {
         if agent.options.print_internals {
@@ -128,9 +130,6 @@ impl<'gc> Executable<'gc> {
             eprintln!("=== Compiling Script ===");
             eprintln!();
         }
-        let source_code = script.get_source_code(agent, gc);
-        let body = script.get_statements(agent, gc);
-        let is_strict = script.get(agent).is_strict;
         let mut ctx = CompileContext::new(agent, source_code, gc);
         ctx.set_runtime_strict(is_strict);
 

@@ -132,11 +132,33 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
         },
         gc,
     );
+    let template = FunctionTemplate::from_ast(ast, Some(executable));
+    instantiate_ordinary_function_object_from_template(
+        agent,
+        pk_name,
+        template,
+        env,
+        private_env,
+        gc,
+    )
+}
+
+/// InstantiateOrdinaryFunctionObject of a function declaration that was
+/// compiled together with its script.
+pub(crate) fn instantiate_ordinary_function_object_from_template<'a>(
+    agent: &mut Agent,
+    pk_name: PropertyKey<'a>,
+    template: FunctionTemplate<'a>,
+    env: Environment<'a>,
+    private_env: Option<PrivateEnvironment<'a>>,
+    gc: NoGcScope<'a, '_>,
+) -> ECMAScriptFunction<'a> {
+    let kind = template.kind;
     // 3. Let F be OrdinaryFunctionCreate(%Function.prototype%, sourceText, FormalParameters, FunctionBody, NON-LEXICAL-THIS, env, privateEnv).
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
-        template: FunctionTemplate::from_ast(ast, Some(executable)),
+        template,
         lexical_this: false,
         env,
         private_env,
@@ -146,11 +168,11 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
     // 4. Perform SetFunctionName(F, name).
     set_function_name(agent, f, pk_name, None, gc);
     // 5. Perform MakeConstructor(F).
-    if !function.r#async && !function.generator {
+    if !kind.is_async() && !kind.is_generator() {
         make_constructor(agent, f, None, None, gc);
     }
 
-    if function.generator {
+    if kind.is_generator() {
         // InstantiateGeneratorFunctionObject
         // 5. Let prototype be OrdinaryObjectCreate(%GeneratorFunction.prototype.prototype%).
 
@@ -162,7 +184,7 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
         let prototype = ordinary_object_create_with_intrinsics(
             agent,
             ProtoIntrinsics::Object,
-            Some(if function.r#async {
+            Some(if kind.is_async() {
                 agent
                     .current_realm_record()
                     .intrinsics()
