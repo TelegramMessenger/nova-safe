@@ -155,11 +155,10 @@ impl<'a> ObjectShape<'a> {
 
     pub(crate) fn set_extensible(&mut self, extensible: bool) {
         if !extensible {
-            // SAFETY: Non-null u31 OR'd with a top bit is also non-null.
-            self.0 = unsafe { NonZeroU32::new_unchecked(self.0.get() | 0x8000_0000) };
+            self.0 |= 0x8000_0000;
         } else {
-            // SAFETY: Non-null u31 AND'd with all but top bit set is also non-null.
-            self.0 = unsafe { NonZeroU32::new_unchecked(self.0.get() & 0x7FFF_FFFF) };
+            self.0 = NonZeroU32::new(self.0.get() & 0x7FFF_FFFF)
+                .expect("ObjectShape index is a non-zero u31");
         }
     }
 
@@ -206,8 +205,10 @@ impl<'a> ObjectShape<'a> {
         debug_assert!(!shapes.is_empty());
 
         ObjectShape::from_non_zero(
-            // SAFETY: The shapes list is not empty.
-            unsafe { NonZeroU32::new_unchecked(shapes.len() as u32) },
+            u32::try_from(shapes.len())
+                .ok()
+                .and_then(NonZeroU32::new)
+                .expect("Object Shapes list is not empty and fits in u32"),
         )
     }
 
@@ -283,14 +284,10 @@ impl<'a> ObjectShape<'a> {
 
     /// Mutate the Object Shape by pushing a key into the keys storage.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
-    /// This is only safe to use on intrinsic Object Shapes.
-    unsafe fn push_key(
-        self,
-        agent: &mut Agent,
-        key: PropertyKey<'a>,
-    ) -> Result<(), TryReserveError> {
+    /// This is only correct to use on intrinsic Object Shapes.
+    fn push_key(self, agent: &mut Agent, key: PropertyKey<'a>) -> Result<(), TryReserveError> {
         debug_assert_eq!(self.values_capacity(agent), self.len(agent).into());
         let ObjectShapeRecord {
             prototype: _,
@@ -299,7 +296,7 @@ impl<'a> ObjectShape<'a> {
             values_cap,
             len,
         } = self.get_direct_mut(&mut agent.heap.object_shapes);
-        unsafe { agent.heap.elements.push_key(keys_cap, keys, len, key) }?;
+        agent.heap.elements.push_key(keys_cap, keys, len, key)?;
         *values_cap = (*len).into();
         Ok(())
     }
@@ -318,8 +315,7 @@ impl<'a> ObjectShape<'a> {
         key: PropertyKey<'a>,
     ) -> Result<Self, TryReserveError> {
         if self.is_intrinsic(agent) {
-            // SAFETY: self is intrinsic.
-            unsafe { self.push_key(agent, key)? };
+            self.push_key(agent, key)?;
             return Ok(self);
         }
         let frozen = !self.extensible();
@@ -465,13 +461,10 @@ impl<'a> ObjectShape<'a> {
         if self.is_intrinsic(agent) {
             debug_assert_eq!(self.values_capacity(agent), self.len(agent).into());
             let data = self.get_direct_mut(&mut agent.heap.object_shapes);
-            // SAFETY: Mutating an intrinsic Object Shape.
-            unsafe {
-                agent
-                    .heap
-                    .elements
-                    .remove_key(keys_cap, keys_index, &mut data.len, index)
-            };
+            agent
+                .heap
+                .elements
+                .remove_key(keys_cap, keys_index, &mut data.len, index);
             // We have to update the values capacity in case we crossed a
             // border here.
             data.values_cap = data.len.into();
@@ -519,10 +512,10 @@ impl<'a> ObjectShape<'a> {
 
     /// Insert private fields into an intrinsic Object Shape.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// This Object Shape must be an intrinsic Object Shape.
-    unsafe fn insert_intrinsic_private_fields(
+    fn insert_intrinsic_private_fields(
         self,
         agent: &mut Agent,
         private_fields: &[PrivateField<'a>],
@@ -610,15 +603,11 @@ impl<'a> ObjectShape<'a> {
             if insertion_index == original_len as usize {
                 // We're inserting the fields at the end.
                 for field in private_fields {
-                    // SAFETY: self is intrinsic.
-                    unsafe { self.push_key(agent, field.get_key().into())? };
+                    self.push_key(agent, field.get_key().into())?;
                 }
                 return Ok((self, insertion_index));
             }
-            // SAFETY: self is intrinsic.
-            return unsafe {
-                self.insert_intrinsic_private_fields(agent, private_fields, insertion_index)
-            };
+            return self.insert_intrinsic_private_fields(agent, private_fields, insertion_index);
         }
         if insertion_index == original_len as usize {
             // We're inserting the fields at the end; no need to do anything
@@ -719,15 +708,12 @@ impl<'a> ObjectShape<'a> {
             let count = (original_len as usize).wrapping_sub(i);
             agent.heap.object_shapes.reserve(count);
             agent.heap.object_shape_transitions.reserve(count);
-            let keys =
-                agent
-                    .heap
-                    .elements
-                    .get_keys_raw(original_cap, original_keys_index, original_len)
-                    as *const [PropertyKey<'a>];
-            // SAFETY: Creating shapes below cannot invalidate the keys pointer.
-            let keys = unsafe { &*keys };
-            for (i, key) in keys.iter().enumerate().take(original_len as usize).skip(i) {
+            for i in i..original_len as usize {
+                let key = agent.heap.elements.get_keys_raw(
+                    original_cap,
+                    original_keys_index,
+                    original_len,
+                )[i];
                 let next_shape = agent.heap.create((
                     ObjectShapeRecord::create(
                         prototype,
@@ -737,7 +723,7 @@ impl<'a> ObjectShape<'a> {
                     ),
                     ObjectShapeTransitionMap::with_parent(shape),
                 ));
-                shape.add_transition(agent, *key, next_shape);
+                shape.add_transition(agent, key, next_shape);
                 shape = next_shape.unbind();
             }
             break;
@@ -1162,12 +1148,12 @@ impl HeapMarkAndSweep for ObjectShape<'static> {
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let top_bit = self.0.get() & 0x8000_0000;
-        // SAFETY: non-null 31-bit number is still non-null.
-        self.0 = unsafe { NonZeroU32::new_unchecked(self.0.get() & 0x7FFF_FFFF) };
+        self.0 = NonZeroU32::new(self.0.get() & 0x7FFF_FFFF)
+            .expect("ObjectShape index is a non-zero u31");
         compactions
             .object_shapes
             .shift_non_zero_u32_index(&mut self.0);
-        self.0 = unsafe { NonZeroU32::new_unchecked(self.0.get() | top_bit) };
+        self.0 |= top_bit;
     }
 }
 
@@ -1175,18 +1161,12 @@ impl HeapSweepWeakReference for ObjectShape<'static> {
     fn sweep_weak_reference(self, compactions: &CompactionLists) -> Option<Self> {
         // Mask the top bit into a separate u32.
         let top_bit = self.0.get() & 0x8000_0000;
-        // SAFETY: Non-zero u31; masking the top bit still leaves a non-zero
-        // value.
-        let raw_value = unsafe { NonZeroU32::new_unchecked(self.0.get() & 0x7FFF_FFFF) };
+        let raw_value = NonZeroU32::new(self.0.get() & 0x7FFF_FFFF)
+            .expect("ObjectShape index is a non-zero u31");
         compactions
             .object_shapes
             .shift_weak_non_zero_u32_index(raw_value)
-            .map(|i| {
-                // SAFETY: Non-zero u31 OR'd with a possibly set top bit is
-                // still non-zero.
-                let i = unsafe { NonZeroU32::new_unchecked(i.get() | top_bit) };
-                Self(i, PhantomData)
-            })
+            .map(|i| Self(i | top_bit, PhantomData))
     }
 }
 

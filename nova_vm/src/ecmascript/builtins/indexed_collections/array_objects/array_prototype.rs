@@ -619,8 +619,7 @@ impl ArrayPrototype {
         let final_end = if end.is_none_or(|e| e.is_undefined()) {
             len
         } else {
-            // SAFETY: checked.
-            let end = unsafe { end.unwrap_unchecked() };
+            let end = end.expect("end is Some: checked above");
             let relative_end =
                 to_integer_or_infinity(agent, end.unbind(), gc.reborrow()).unbind()?;
             // 12. If relativeEnd = -∞, let final be 0.
@@ -2876,14 +2875,15 @@ impl ArrayPrototype {
                     && a.as_slice(agent).iter().all(|el| el.is_none())
                 {
                     // Array full of holes
-                    let source_data = array.get(agent).as_slice(agent)[start..end].as_ptr();
-                    let destination_data = a.as_mut_slice(agent).as_mut_ptr();
-                    // SAFETY: Source and destination are properly aligned
-                    // and valid for reads/writes. They do not overlap.
                     // From JS point of view, setting data properties to
                     // the destination would not call any JS code so this
                     // is spec-wise correct.
-                    unsafe { core::ptr::copy_nonoverlapping(source_data, destination_data, count) };
+                    let source = *array.get(agent).get_elements(agent);
+                    let destination = *a.get_elements(agent);
+                    agent
+                        .heap
+                        .elements
+                        .copy_values_between(&source, start..end, &destination);
                     set(
                         agent,
                         a.into(),
@@ -3637,14 +3637,11 @@ impl ArrayPrototype {
         //  a. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(j)), sortedList[j]).
         //  b. Set j to j + 1.
         // Fast path: Copy sorted items directly into array.
-        let sorted_list_as_slice = sorted_list.as_slice();
-        // SAFETY: Value has a nice optimisation for Option<Value>, so a Value
-        // slice is always a slice of Some(Value).
-        let sorted_list_as_slice = unsafe {
-            core::mem::transmute::<&[Value<'_>], &[Option<Value<'static>>]>(sorted_list_as_slice)
-        };
         let slice = a.as_mut_slice(agent);
-        slice.copy_from_slice(sorted_list_as_slice);
+        assert_eq!(slice.len(), sorted_list.len());
+        for (slot, value) in slice.iter_mut().zip(sorted_list.iter()) {
+            *slot = Some(value.unbind());
+        }
         // 9. Return A.
         Ok(a.into())
     }
@@ -3853,17 +3850,14 @@ impl ArrayPrototype {
                 if let Err(err) = array.reserve(agent, arg_count as u32) {
                     return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
                 }
-                // SAFETY: reserve did not fail.
-                unsafe { array.set_len(agent, array.len(agent) + arg_count as u32) };
+                array.set_len(agent, array.len(agent) + arg_count as u32);
                 // Fast path: Copy old items to the end of array,
                 // copy new items to the front of the array.
                 let slice = array.as_mut_slice(agent);
                 slice.copy_within(..len as usize, arg_count);
-                slice[..arg_count].copy_from_slice(unsafe {
-                    // SAFETY: Option<Value> is an extra variant of the Value enum.
-                    // The transmute effectively turns Value into Some(Value).
-                    core::mem::transmute::<&[Value], &[Option<Value>]>(items.as_slice())
-                });
+                for (slot, value) in slice[..arg_count].iter_mut().zip(items.as_slice()) {
+                    *slot = Some(value.unbind());
+                }
                 return Ok(final_len.into());
             }
         }

@@ -941,8 +941,7 @@ fn perform_promise_group<'gc>(
         if let Err(err) = temp_array.reserve(agent, 1) {
             return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
         }
-        // SAFETY: reserve did not fail.
-        unsafe { temp_array.set_len(agent, index + 1) };
+        temp_array.set_len(agent, index + 1);
 
         // d. Let nextPromise be ? Call(promiseResolve, constructor, « next »).
         let call_result = call_function(

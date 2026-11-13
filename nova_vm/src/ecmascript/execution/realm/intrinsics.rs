@@ -335,8 +335,7 @@ impl Intrinsics {
         );
         let primitive_object_index_base = BaseIndex::from_index(agent.heap.primitive_objects.len());
         let builtin_function_index_base = BaseIndex::from_index(agent.heap.builtin_functions.len());
-        // SAFETY: we're creating the intrinsics.
-        let array_prototype = unsafe { Array::next_array(agent) };
+        let array_prototype = Array::next_array(agent);
 
         agent
             .heap

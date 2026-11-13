@@ -66,13 +66,13 @@ impl<'a> Array<'a> {
 
     /// Get a reference to the next Array that will be allocated.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// You should not use this unless you're about to allocate the next Array
     /// very soon but need to generate references to it ahead of time.
     /// Effectively, this is only useful in Realm creation for getting the
     /// `%Array.prototype%` intrinsic.
-    pub(crate) unsafe fn next_array(agent: &Agent) -> Self {
+    pub(crate) fn next_array(agent: &Agent) -> Self {
         Array(BaseIndex::from_index_u32(agent.heap.arrays.len()))
     }
 
@@ -155,15 +155,16 @@ impl<'a> Array<'a> {
         self.get_elements(agent).len()
     }
 
-    /// ### Safety
+    /// ### Panics
     ///
-    /// `len` must be less or equal to the capacity of the Array. Also note
+    /// If `len` is greater than the capacity of the Array. Also note
     /// that uninitialised entries in the Array are allowed and are guaranteed
     /// to appear as JavaScript Array "holes", but this guarantee may be
     /// removed in the future.
-    pub unsafe fn set_len(self, agent: &mut Agent, len: u32) {
+    pub fn set_len(self, agent: &mut Agent, len: u32) {
         let elems = self.get_elements_mut(agent);
         debug_assert!(elems.len_writable);
+        assert!(len <= elems.cap(), "Array length exceeds its capacity");
         elems.len = len;
     }
 

@@ -159,24 +159,15 @@ impl ArrayConstructor {
             let array_as_slice = array.as_mut_slice(agent);
             debug_assert_eq!(array_as_slice.len(), arguments.len());
             let arguments_as_slice = arguments.as_slice();
-            // SAFETY: Value and Option<Value> have the same layout and
-            // has a niche optimisation. All Values are always equal to
-            // Some(Value).
-            let arguments_as_slice =
-                unsafe { core::mem::transmute::<&[Value], &[Option<Value>]>(arguments_as_slice) };
-            debug_assert!({
-                arguments_as_slice
-                    .iter()
-                    .enumerate()
-                    .all(|(i, v)| v.is_some() && *v == Some(arguments.get(i)))
-            });
             // c. Let k be 0.
             // d. Repeat, while k < numberOfArgs,
             // i. Let Pk be ! ToString(𝔽(k)).
             // ii. Let itemK be values[k].
             // iii. Perform ! CreateDataPropertyOrThrow(array, Pk, itemK).
             // iv. Set k to k + 1.
-            array_as_slice.copy_from_slice(arguments_as_slice);
+            for (slot, value) in array_as_slice.iter_mut().zip(arguments_as_slice) {
+                *slot = Some(value.unbind());
+            }
 
             // e. Assert: The mathematical value of array's "length" property is numberOfArgs.
             debug_assert_eq!(array.len(agent) as usize, number_of_args);
@@ -519,21 +510,15 @@ impl ArrayConstructor {
         let a_as_slice = a.as_mut_slice(agent);
         debug_assert_eq!(a_as_slice.len(), arguments.len());
         let arguments_as_slice = arguments.as_slice();
-        let arguments_as_slice =
-            unsafe { core::mem::transmute::<&[Value], &[Option<Value>]>(arguments_as_slice) };
-        debug_assert!({
-            arguments_as_slice
-                .iter()
-                .enumerate()
-                .all(|(i, v)| v.is_some() && *v == Some(arguments.get(i)))
-        });
         // 6. Let k be 0.
         // 7. Repeat, while k < len,
         // a. Let kValue be items[k].
         // b. Let Pk be ! ToString(𝔽(k)).
         // c. Perform ? CreateDataPropertyOrThrow(A, Pk, kValue).
         // d. Set k to k + 1.
-        a_as_slice.copy_from_slice(arguments_as_slice);
+        for (slot, value) in a_as_slice.iter_mut().zip(arguments_as_slice) {
+            *slot = Some(value.unbind());
+        }
 
         // 8. Perform ? Set(A, "length", lenNumber, true).
         // Note: Array's own length setting cannot be observed.
