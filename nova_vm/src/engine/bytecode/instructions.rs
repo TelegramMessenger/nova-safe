@@ -2,9 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use oxc_ast::ast::BindingPattern;
-use oxc_syntax::number::ToJsString;
-
 use crate::{
     ecmascript::{Agent, String},
     engine::{Executable, NoGcScope, Scoped, bytecode::bytecode_compiler::IndexType},
@@ -926,29 +923,17 @@ impl Instr {
             debug_print_identifier(agent, exe, index, gc)
         } else if kind.has_function_expression_index() {
             if kind == Instruction::InstantiateArrowFunctionExpression {
-                let expr = exe.fetch_arrow_function_expression(agent, index);
-                let arrow_fn = expr.expression.get();
-                format!(
-                    "({}) => {{}}",
-                    arrow_fn
-                        .params
-                        .iter_bindings()
-                        .map(debug_print_binding_pattern)
-                        .collect::<Vec<std::string::String>>()
-                        .join(", ")
-                )
+                let expr = exe.fetch_arrow_function_expression(agent, index, gc);
+                format!("arrow function {:?}", expr.template.span)
             } else {
                 let expr = exe.fetch_function_expression(agent, index, gc);
-                let normal_fn = expr.expression.get();
+                let name = expr
+                    .binding_name
+                    .map(|name| name.to_string_lossy_(agent).into_owned());
                 format!(
-                    "function {}({})",
-                    normal_fn.name().map_or("anonymous", |a| a.as_str()),
-                    normal_fn
-                        .params
-                        .iter_bindings()
-                        .map(debug_print_binding_pattern)
-                        .collect::<Vec<std::string::String>>()
-                        .join(", ")
+                    "function {} {:?}",
+                    name.as_deref().unwrap_or("anonymous"),
+                    expr.template.span
                 )
             }
         } else if kind == Instruction::ClassDefineDefaultConstructor {
@@ -1058,80 +1043,6 @@ fn debug_print_identifier(
 ) -> std::string::String {
     let identifier = exe.fetch_property_key(agent, index, gc);
     identifier.as_display(agent).to_string()
-}
-
-fn debug_print_binding_pattern(b: &BindingPattern) -> std::string::String {
-    match b {
-        oxc_ast::ast::BindingPattern::BindingIdentifier(b) => b.name.to_string(),
-        oxc_ast::ast::BindingPattern::ObjectPattern(b) => {
-            let mut prop_strings = b
-                .properties
-                .iter()
-                .map(|b| {
-                    format!(
-                        "{}: {}",
-                        debug_print_property_key(&b.key),
-                        debug_print_binding_pattern(&b.value)
-                    )
-                })
-                .collect::<Vec<std::string::String>>();
-            if let Some(rest) = &b.rest {
-                prop_strings.push(format!(
-                    "...{}",
-                    debug_print_binding_pattern(&rest.argument)
-                ));
-            }
-            format!("{{ {} }}", prop_strings.join(", "))
-        }
-        oxc_ast::ast::BindingPattern::ArrayPattern(b) => {
-            let mut elem_strings = b
-                .elements
-                .iter()
-                .map(|b| {
-                    if let Some(b) = b {
-                        debug_print_binding_pattern(b)
-                    } else {
-                        "".to_string()
-                    }
-                })
-                .collect::<Vec<std::string::String>>();
-            if let Some(rest) = &b.rest {
-                elem_strings.push(format!(
-                    "...{}",
-                    debug_print_binding_pattern(&rest.argument)
-                ));
-            }
-            format!("{{ {} }}", elem_strings.join(", "))
-        }
-        oxc_ast::ast::BindingPattern::AssignmentPattern(b) => {
-            format!(
-                "{} = {}",
-                debug_print_binding_pattern(&b.left),
-                debug_print_expression(&b.right)
-            )
-        }
-    }
-}
-
-fn debug_print_property_key<'a>(pk: &'a oxc_ast::ast::PropertyKey) -> &'a str {
-    match pk {
-        oxc_ast::ast::PropertyKey::StaticIdentifier(n) => n.name.as_str(),
-        oxc_ast::ast::PropertyKey::PrivateIdentifier(p) => p.name.as_str(),
-        _ => "[computed]",
-    }
-}
-
-fn debug_print_expression(expr: &oxc_ast::ast::Expression) -> std::string::String {
-    match expr {
-        oxc_ast::ast::Expression::BooleanLiteral(l) => l.value.to_string(),
-        oxc_ast::ast::Expression::NullLiteral(_) => "null".to_string(),
-        oxc_ast::ast::Expression::NumericLiteral(l) => l.value.to_js_string(),
-        oxc_ast::ast::Expression::BigIntLiteral(l) => l.raw.as_ref().unwrap().to_string(),
-        oxc_ast::ast::Expression::RegExpLiteral(l) => l.raw.as_ref().unwrap().to_string(),
-        oxc_ast::ast::Expression::StringLiteral(l) => l.raw.as_ref().unwrap().to_string(),
-        oxc_ast::ast::Expression::TemplateLiteral(_) => "`...`".to_string(),
-        _ => "[computed]".to_string(),
-    }
 }
 
 #[derive(Debug)]

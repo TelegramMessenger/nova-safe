@@ -13,7 +13,8 @@ use wtf8::Wtf8Buf;
 use crate::ecmascript::{RegExp, reg_exp_create_literal};
 use crate::{
     ecmascript::{
-        Agent, BigInt, Number, ObjectShape, PropertyKey, PropertyLookupCache, String, Value,
+        Agent, BigInt, ExceptionType, Number, ObjectShape, PropertyKey, PropertyLookupCache,
+        String, Value,
     },
     engine::{
         Bindable, Executable, ExecutableHeapData, FunctionExpression, Instruction, NoGcScope,
@@ -23,6 +24,11 @@ use crate::{
 };
 
 use super::{IndexType, JumpIndex};
+
+/// The ThrowError immediate of an executable that stands in for code using
+/// syntax the compiler does not support. Running it panics, as compiling that
+/// code did before functions were compiled ahead of their first call.
+pub(crate) const UNSUPPORTED_SYNTAX_IMMEDIATE: IndexType = IndexType::MAX;
 
 /// Context for executable creation only. This struct contains the things
 /// needed for adding instructions and nothing else, no scope tracking and
@@ -46,7 +52,7 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// Function expressions being built
     function_expressions: Vec<FunctionExpression<'gc>>,
     /// Arrow function expressions being built
-    arrow_function_expressions: Vec<ArrowFunctionExpression>,
+    arrow_function_expressions: Vec<ArrowFunctionExpression<'gc>>,
     class_initializer_bytecodes: Vec<(Option<Executable<'gc>>, bool)>,
 }
 
@@ -146,14 +152,49 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.current_instruction_pointer_is_unreachable
     }
 
-    pub(super) fn finish(self) -> Executable<'gc> {
+    pub(super) fn finish_as_unsupported_stub(self, message: &'static str) -> Executable<'gc> {
+        self.finish_as_stub(message, UNSUPPORTED_SYNTAX_IMMEDIATE as usize)
+    }
+
+    fn finish_as_stub(mut self, message: &'static str, immediate: usize) -> Executable<'gc> {
+        self.current_value_stack_depth = 0;
+        self.current_instruction_pointer_is_unreachable = false;
+        self.instructions.clear();
+        self.caches.clear();
+        self.constants.clear();
+        self.shapes.clear();
+        self.function_expressions.clear();
+        self.arrow_function_expressions.clear();
+        self.class_initializer_bytecodes.clear();
+        let message = self.create_string(message);
+        self.add_instruction_with_constant(Instruction::StoreConstant, message);
+        self.add_instruction_with_immediate(Instruction::ThrowError, immediate);
+        self.finish()
+    }
+
+    pub(super) fn finish(mut self) -> Executable<'gc> {
+        for index in 0..self.function_expressions.len() {
+            if self.function_expressions[index]
+                .template
+                .executable
+                .is_none()
+            {
+                // A class constructor whose class body always throws before
+                // the constructor is compiled: its closure is never reachable.
+                let stub = ExecutableContext::new(&mut *self.agent, self.gc).finish_as_stub(
+                    "Class constructor was not compiled",
+                    ExceptionType::TypeError as usize,
+                );
+                self.function_expressions[index].template.executable = Some(stub);
+            }
+        }
         self.agent.heap.create(ExecutableHeapData {
             instructions: self.instructions.into(),
             caches: self.caches.unbind().into_boxed_slice(),
             constants: self.constants.unbind().into_boxed_slice(),
             shapes: self.shapes.unbind().into_boxed_slice(),
             function_expressions: self.function_expressions.unbind().into_boxed_slice(),
-            arrow_function_expressions: self.arrow_function_expressions.into_boxed_slice(),
+            arrow_function_expressions: self.arrow_function_expressions.unbind().into_boxed_slice(),
             class_initializer_bytecodes: self
                 .class_initializer_bytecodes
                 .into_iter()
@@ -424,7 +465,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
 
     pub(super) fn add_arrow_function_expression(
         &mut self,
-        arrow_function_expression: ArrowFunctionExpression,
+        arrow_function_expression: ArrowFunctionExpression<'gc>,
     ) {
         let instruction = Instruction::InstantiateArrowFunctionExpression;
         debug_assert_eq!(instruction.argument_count(), 1);
@@ -473,7 +514,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         index: IndexType,
         executable: Executable<'gc>,
     ) {
-        self.function_expressions[index as usize].compiled_bytecode = Some(executable);
+        self.function_expressions[index as usize]
+            .template
+            .executable = Some(executable);
     }
 
     pub(super) fn add_class_initializer_bytecode(

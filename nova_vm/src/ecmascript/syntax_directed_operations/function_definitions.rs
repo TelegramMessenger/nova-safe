@@ -7,16 +7,16 @@ use std::collections::VecDeque;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, AsyncGeneratorHeapData, AsyncGeneratorState, AwaitReactionRecord,
-        BUILTIN_STRING_MEMORY, ECMAScriptFunction, Environment, FunctionAstRef, GeneratorHeapData,
-        GeneratorState, JsResult, OrdinaryFunctionCreateParams, PrivateEnvironment, Promise,
-        PromiseCapability, PromiseReactionHandler, PropertyDescriptor, PropertyKey,
-        ProtoIntrinsics, SourceCode, SuspendedGeneratorState, ThisMode, Value, inner_promise_then,
-        make_constructor, ordinary_function_create, ordinary_object_create_with_intrinsics,
-        ordinary_populate_from_constructor, set_function_name, try_define_property_or_throw,
-        unwrap_try,
+        BUILTIN_STRING_MEMORY, ECMAScriptFunction, Environment, FunctionAstRef, FunctionTemplate,
+        GeneratorHeapData, GeneratorState, JsResult, OrdinaryFunctionCreateParams,
+        PrivateEnvironment, Promise, PromiseCapability, PromiseReactionHandler, PropertyDescriptor,
+        PropertyKey, ProtoIntrinsics, SourceCode, SuspendedGeneratorState, Value,
+        inner_promise_then, make_constructor, ordinary_function_create,
+        ordinary_object_create_with_intrinsics, ordinary_populate_from_constructor,
+        set_function_name, try_define_property_or_throw, unwrap_try,
     },
     engine::{Bindable, Executable, ExecutionResult, GcScope, NoGcScope, Scopable, Vm},
-    heap::{ArenaAccess, ArenaAccessMut, CreateHeapData},
+    heap::CreateHeapData,
 };
 use oxc_ast::ast::{self};
 
@@ -99,9 +99,11 @@ impl ContainsExpression for ast::ArrayPattern<'_> {
 /// The syntax-directed operation InstantiateOrdinaryFunctionObject takes
 /// arguments env (an Environment Record) and privateEnv (a PrivateEnvironment
 /// Record or null) and returns an ECMAScript function object.
-pub(crate) fn instantiate_ordinary_function_object<'a>(
+pub(crate) fn instantiate_ordinary_function_object<'a, 's>(
     agent: &mut Agent,
-    function: &ast::Function<'_>,
+    function: &'s ast::Function<'s>,
+    scoping: &'s oxc_semantic::Scoping,
+    nodes: &'s oxc_semantic::AstNodes<'s>,
     env: Environment<'a>,
     private_env: Option<PrivateEnvironment<'a>>,
     gc: NoGcScope<'a, '_>,
@@ -118,13 +120,49 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
     };
 
     // 2. Let sourceText be the source text matched by FunctionDeclaration.
-    let source_text = function.span;
+    let ast = FunctionAstRef::from(function);
+    let source_code = agent.current_source_code(gc);
+    let is_strict =
+        agent.is_evaluating_strict_code() || ast.ecmascript_code().has_use_strict_directive();
+    let executable = Executable::compile_function_body(
+        agent,
+        CompileFunctionBodyData {
+            ast,
+            source_code,
+            scoping,
+            nodes,
+            is_strict,
+            is_lexical: false,
+        },
+        gc,
+    );
+    let template = FunctionTemplate::from_ast(ast, Some(executable));
+    instantiate_ordinary_function_object_from_template(
+        agent,
+        pk_name,
+        template,
+        env,
+        private_env,
+        gc,
+    )
+}
+
+/// InstantiateOrdinaryFunctionObject of a function declaration that was
+/// compiled together with its script.
+pub(crate) fn instantiate_ordinary_function_object_from_template<'a>(
+    agent: &mut Agent,
+    pk_name: PropertyKey<'a>,
+    template: FunctionTemplate<'a>,
+    env: Environment<'a>,
+    private_env: Option<PrivateEnvironment<'a>>,
+    gc: NoGcScope<'a, '_>,
+) -> ECMAScriptFunction<'a> {
+    let kind = template.kind;
     // 3. Let F be OrdinaryFunctionCreate(%Function.prototype%, sourceText, FormalParameters, FunctionBody, NON-LEXICAL-THIS, env, privateEnv).
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
-        source_text,
-        ast: FunctionAstRef::from(function),
+        template,
         lexical_this: false,
         env,
         private_env,
@@ -134,11 +172,11 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
     // 4. Perform SetFunctionName(F, name).
     set_function_name(agent, f, pk_name, None, gc);
     // 5. Perform MakeConstructor(F).
-    if !function.r#async && !function.generator {
+    if !kind.is_async() && !kind.is_generator() {
         make_constructor(agent, f, None, None, gc);
     }
 
-    if function.generator {
+    if kind.is_generator() {
         // InstantiateGeneratorFunctionObject
         // 5. Let prototype be OrdinaryObjectCreate(%GeneratorFunction.prototype.prototype%).
 
@@ -150,7 +188,7 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
         let prototype = ordinary_object_create_with_intrinsics(
             agent,
             ProtoIntrinsics::Object,
-            Some(if function.r#async {
+            Some(if kind.is_async() {
                 agent
                     .current_realm_record()
                     .intrinsics()
@@ -195,26 +233,13 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
     // mode code.
 }
 
-pub(crate) struct CompileFunctionBodyData<'a> {
-    pub(crate) ast: FunctionAstRef<'a>,
-    pub(crate) source_code: SourceCode<'a>,
+pub(crate) struct CompileFunctionBodyData<'ast, 'gc> {
+    pub(crate) ast: FunctionAstRef<'ast>,
+    pub(crate) source_code: SourceCode<'gc>,
+    pub(crate) scoping: &'ast oxc_semantic::Scoping,
+    pub(crate) nodes: &'ast oxc_semantic::AstNodes<'ast>,
     pub(crate) is_strict: bool,
     pub(crate) is_lexical: bool,
-}
-
-impl<'a> CompileFunctionBodyData<'a> {
-    fn new(agent: &mut Agent, function: ECMAScriptFunction<'a>, gc: NoGcScope<'a, '_>) -> Self {
-        let ast = function.get_ast(agent, gc);
-        let source_code = function.get_source_code(agent);
-        let is_strict = function.is_strict(agent);
-        let this_mode = function.get_this_mode(agent);
-        CompileFunctionBodyData {
-            ast,
-            source_code,
-            is_strict,
-            is_lexical: this_mode == ThisMode::Lexical,
-        }
-    }
 }
 
 /// ### [15.2.3 Runtime Semantics: EvaluateFunctionBody](https://tc39.es/ecma262/#sec-runtime-semantics-evaluatefunctionbody)
@@ -233,14 +258,7 @@ pub(crate) fn evaluate_function_body<'gc>(
     // 1. Perform ? FunctionDeclarationInstantiation(functionObject, argumentsList).
     //function_declaration_instantiation(agent, function_object, arguments_list).unbind()?.bind(gc.nogc());
     // 2. Return ? Evaluation of FunctionStatementList.
-    let exe = if let Some(exe) = function_object.get(agent).compiled_bytecode {
-        exe.bind(gc.nogc())
-    } else {
-        let data = CompileFunctionBodyData::new(agent, function_object, gc.nogc());
-        let exe = Executable::compile_function_body(agent, data, gc.nogc());
-        function_object.get_mut(agent).compiled_bytecode = Some(exe.unbind());
-        exe
-    };
+    let exe = function_object.get_executable(agent).bind(gc.nogc());
     let exe = exe.scope(agent, gc.nogc());
     Vm::execute(agent, exe, Some(arguments_list.unbind().as_mut_slice()), gc).into_js_result()
 }
@@ -268,14 +286,7 @@ pub(crate) fn evaluate_async_function_body<'a>(
     // Note: FunctionDeclarationInstantiation is performed as the first part of
     // the compiled function body; we do not need to run it and
     // AsyncFunctionStart separately.
-    let exe = if let Some(exe) = function_object.get(agent).compiled_bytecode {
-        exe.bind(gc.nogc())
-    } else {
-        let data = CompileFunctionBodyData::new(agent, function_object, gc.nogc());
-        let exe = Executable::compile_function_body(agent, data, gc.nogc());
-        function_object.get_mut(agent).compiled_bytecode = Some(exe.unbind());
-        exe
-    };
+    let exe = function_object.get_executable(agent).bind(gc.nogc());
     let exe = exe.scope(agent, gc.nogc());
 
     let result = Vm::execute(
@@ -353,14 +364,10 @@ pub(crate) fn evaluate_generator_body<'gc>(
     let arguments_list = arguments_list.bind(gc.nogc());
     let function_object = function_object.bind(gc.nogc());
 
-    let exe = if let Some(exe) = function_object.get(agent).compiled_bytecode {
-        exe.scope(agent, gc.nogc())
-    } else {
-        let data = CompileFunctionBodyData::new(agent, function_object, gc.nogc());
-        let exe = Executable::compile_function_body(agent, data, gc.nogc());
-        function_object.get_mut(agent).compiled_bytecode = Some(exe.unbind());
-        exe.scope(agent, gc.nogc())
-    };
+    let exe = function_object
+        .get_executable(agent)
+        .bind(gc.nogc())
+        .scope(agent, gc.nogc());
 
     let function_object = function_object.scope(agent, gc.nogc());
 
@@ -425,14 +432,10 @@ pub(crate) fn evaluate_async_generator_body<'gc>(
     let function_object = function_object.bind(gc.nogc());
     let arguments_list = arguments_list.bind(gc.nogc());
 
-    let exe = if let Some(exe) = function_object.get(agent).compiled_bytecode {
-        exe.scope(agent, gc.nogc())
-    } else {
-        let data = CompileFunctionBodyData::new(agent, function_object, gc.nogc());
-        let exe = Executable::compile_function_body(agent, data, gc.nogc());
-        function_object.get_mut(agent).compiled_bytecode = Some(exe.unbind());
-        exe.scope(agent, gc.nogc())
-    };
+    let exe = function_object
+        .get_executable(agent)
+        .bind(gc.nogc())
+        .scope(agent, gc.nogc());
 
     let function_object = function_object.scope(agent, gc.nogc());
 

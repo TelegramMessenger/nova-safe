@@ -16,12 +16,13 @@ mod template_literals;
 mod with_statement;
 
 pub(crate) use compile_context::*;
+pub(crate) use executable_context::UNSUPPORTED_SYNTAX_IMMEDIATE;
 
 use std::{convert::Infallible, ops::ControlFlow};
 
-use super::{FunctionExpression, Instruction, SendableRef, executable::ArrowFunctionExpression};
+use super::{Instruction, executable::ArrowFunctionExpression};
 use crate::ecmascript::{
-    BUILTIN_STRING_MEMORY, BigInt, ContainsExpression, LexicallyScopedDeclaration,
+    BUILTIN_STRING_MEMORY, BigInt, ContainsExpression, FunctionAstRef, LexicallyScopedDeclaration,
     LexicallyScopedDeclarations, Number, String, Value,
 };
 #[cfg(feature = "typescript")]
@@ -588,10 +589,8 @@ fn variable_escapes_scope(
     ctx: &CompileContext,
     identifier: &oxc_ast::ast::BindingIdentifier,
 ) -> bool {
-    let agent = ctx.get_agent();
-    let sc = ctx.get_source_code();
-    let scoping = sc.get_scoping(agent);
-    let nodes = sc.get_nodes(agent);
+    let scoping = ctx.scoping();
+    let nodes = ctx.nodes();
     let s = identifier.symbol_id();
     if !scoping.symbol_redeclarations(s).is_empty() {
         // Redeclarations are a pain to deal with.
@@ -843,8 +842,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
     /// variable.
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         let kind = if let Some(id) = self.reference_id.get() {
-            let source_code = ctx.get_source_code();
-            let scoping = source_code.get_scoping(ctx.get_agent());
+            let scoping = ctx.scoping();
             let reference = scoping.get_reference(id);
             if let Some(s) = reference.symbol_id() {
                 // SymbolId means we might be a global, local, or a stack
@@ -853,7 +851,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                 let mutable = !symbol_flags.is_const_variable();
                 if let Some(stack_slot) = ctx.get_variable_stack_index(s) {
                     // We're a stack variable.
-                    let nodes = source_code.get_nodes(ctx.get_agent());
+                    let nodes = ctx.nodes();
                     let ref_id = reference.node_id();
                     let decl_id = scoping.symbol_declaration(s);
                     if decl_id == ref_id {
@@ -957,8 +955,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Bindin
                     mutable: true,
                 }
             } else {
-                let source_code = ctx.get_source_code();
-                let scoping = source_code.get_scoping(ctx.get_agent());
+                let scoping = ctx.scoping();
                 let scope_id = scoping.symbol_scope_id(s);
                 let scope_flags = scoping.scope_flags(scope_id);
                 let symbol_flags = scoping.symbol_flags(s);
@@ -1209,13 +1206,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // CompileContext holds a name identifier for us if this is NamedEvaluation.
         let identifier = ctx.name_identifier.take();
+        let template = ctx.compile_nested_function(FunctionAstRef::from(self));
         ctx.add_arrow_function_expression(ArrowFunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<
-                    &ast::ArrowFunctionExpression<'_>,
-                    &'static ast::ArrowFunctionExpression<'static>,
-                >(self)
-            }),
+            template,
             identifier,
         });
     }
@@ -1226,17 +1219,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Functi
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // CompileContext holds a name identifier for us if this is NamedEvaluation.
         let identifier = ctx.name_identifier.take();
+        let function_expression = ctx.compile_function_expression(self, identifier);
         ctx.add_instruction_with_function_expression(
             Instruction::InstantiateOrdinaryFunctionExpression,
-            FunctionExpression {
-                expression: SendableRef::new(unsafe {
-                    core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                        self,
-                    )
-                }),
-                identifier,
-                compiled_bytecode: None,
-            },
+            function_expression,
         );
     }
 }
@@ -1424,18 +1410,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                                 // Note: not load_copy_to_stack as this is
                                 // immediately consumed
                                 ctx.add_instruction(Instruction::Load);
+                                let function_expression =
+                                    ctx.compile_function_expression(value, identifier);
                                 ctx.add_instruction_with_function_expression_and_immediate(
                                     Instruction::ObjectDefineMethod,
-                                    FunctionExpression {
-                                        expression: SendableRef::new(unsafe {
-                                            core::mem::transmute::<
-                                                &ast::Function<'_>,
-                                                &'static ast::Function<'static>,
-                                            >(value)
-                                        }),
-                                        identifier,
-                                        compiled_bytecode: None,
-                                    },
+                                    function_expression,
                                     // enumerable: true,
                                     true.into(),
                                 );
@@ -1466,24 +1445,15 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                             else {
                                 unreachable!()
                             };
+                            let function_expression =
+                                ctx.compile_function_expression(function_expression, None);
                             ctx.add_instruction_with_function_expression_and_immediate(
                                 if is_get {
                                     Instruction::ObjectDefineGetter
                                 } else {
                                     Instruction::ObjectDefineSetter
                                 },
-                                FunctionExpression {
-                                    expression: SendableRef::new(unsafe {
-                                        core::mem::transmute::<
-                                            &ast::Function<'_>,
-                                            &'static ast::Function<'static>,
-                                        >(
-                                            function_expression
-                                        )
-                                    }),
-                                    identifier: None,
-                                    compiled_bytecode: None,
-                                },
+                                function_expression,
                                 // enumerable: true,
                                 true.into(),
                             );
@@ -2734,7 +2704,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Expres
             ast::Expression::UnaryExpression(x) => x.compile(ctx).map(Into::into),
             ast::Expression::UpdateExpression(x) => x.compile(ctx).map(Into::into),
             ast::Expression::YieldExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::V8IntrinsicExpression(_) => todo!(),
+            ast::Expression::V8IntrinsicExpression(_) => {
+                ctx.mark_unsupported("V8 intrinsic expressions are not supported");
+                Ok(ValueOutput::Value.into())
+            }
             #[cfg(feature = "typescript")]
             ast::Expression::TSAsExpression(x) => x.expression.compile(ctx),
             #[cfg(feature = "typescript")]
@@ -3667,8 +3640,12 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Variab
                     // 6. Return empty.
                 }
             }
-            ast::VariableDeclarationKind::Using => todo!(),
-            ast::VariableDeclarationKind::AwaitUsing => todo!(),
+            ast::VariableDeclarationKind::Using => {
+                ctx.mark_unsupported("using declarations are not supported");
+            }
+            ast::VariableDeclarationKind::AwaitUsing => {
+                ctx.mark_unsupported("await using declarations are not supported");
+            }
         }
         Ok(())
     }

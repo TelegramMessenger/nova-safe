@@ -6,10 +6,11 @@
 
 use crate::{
     ecmascript::{
-        AbstractModule, Agent, BUILTIN_STRING_MEMORY, ECMAScriptCode, Environment, ExceptionType,
-        ExecutionContext, GlobalEnvironment, JsResult, LexicallyScopedDeclaration, LoadedModules,
-        ModuleRequest, ParseResult, PropertyLookupCache, Realm, ScriptOrModule, SourceCode,
-        SourceCodeType, String, Value, VarScopedDeclaration, instantiate_function_object,
+        AbstractModule, Agent, BUILTIN_STRING_MEMORY, CompileFunctionBodyData, ECMAScriptCode,
+        Environment, ExceptionType, ExecutionContext, FunctionAstRef, FunctionTemplate,
+        GlobalEnvironment, JsResult, LexicallyScopedDeclaration, LoadedModules, ModuleRequest,
+        ParseResult, PropertyLookupCache, Realm, ScriptOrModule, SourceCode, SourceCodeType,
+        String, Value, VarScopedDeclaration, instantiate_ordinary_function_object_from_template,
         script_lexically_declared_names, script_lexically_scoped_declarations,
         script_var_declared_names, script_var_scoped_declarations,
     },
@@ -25,7 +26,8 @@ use core::any::Any;
 use oxc_ast::ast;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_ecmascript::BoundNames;
-use std::{ptr::NonNull, rc::Rc};
+use oxc_semantic::{AstNodes, Scoping};
+use std::rc::Rc;
 
 /// Host defined data for an ECMAScript Agent, Script, or Module.
 pub type HostDefined = Rc<dyn Any>;
@@ -56,32 +58,6 @@ impl core::fmt::Debug for Script<'_> {
 }
 
 impl Script<'_> {
-    /// Get the script statements as a slice.
-    pub(crate) fn get_statements<'a>(
-        self,
-        agent: &Agent,
-        _: NoGcScope<'a, '_>,
-    ) -> &'a [ast::Statement<'a>] {
-        // SAFETY: Caller promises that SourceTextModule is rooted while the
-        // statements slice is held: the SourceTextModuleRecord may move during
-        // GC but the statements it points to do not move. Hence the reference
-        // is valid while the self SourceTextModule is held (the parent call).
-        unsafe {
-            core::mem::transmute::<&[ast::Statement], &'a [ast::Statement<'a>]>(
-                self.get(agent).ecmascript_code.as_ref(),
-            )
-        }
-    }
-
-    /// Get the script SourceCode.
-    pub(crate) fn get_source_code<'a>(
-        self,
-        agent: &Agent,
-        gc: NoGcScope<'a, '_>,
-    ) -> SourceCode<'a> {
-        self.get(agent).source_code.bind(gc)
-    }
-
     /// ### \[\[Realm]]
     pub(crate) fn realm<'a>(self, agent: &Agent, gc: NoGcScope<'a, '_>) -> Realm<'a> {
         self.get(agent).realm.bind(gc)
@@ -136,13 +112,10 @@ pub(crate) struct ScriptRecord<'a> {
 
     /// ### \[\[ECMAScriptCode]]
     ///
-    /// The result of parsing the source text of this script.
-    ///
-    /// Note: The slice and its contents live in the SourceCode heap data in
-    /// its contained Allocator. The SourceCode is thus in charge of dropping
-    /// the ECMAScriptCode, and we ensure it doesn't drop prematurely by
-    /// holding the SourceCode reference.
-    pub(crate) ecmascript_code: NonNull<[ast::Statement<'a>]>,
+    /// The script compiled when it was parsed; taken when it is evaluated.
+    pub(crate) executable: Option<Executable<'a>>,
+    /// What GlobalDeclarationInstantiation needs from the script's code.
+    pub(crate) declarations: GlobalDeclarations,
     pub(crate) is_strict: bool,
 
     /// ### \[\[LoadedModules]]
@@ -169,13 +142,16 @@ impl HeapMarkAndSweep for ScriptRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {
             realm,
-            ecmascript_code: _,
+            executable,
+            declarations,
             is_strict: _,
             loaded_modules,
             host_defined: _,
             source_code,
         } = self;
         realm.mark_values(queues);
+        executable.mark_values(queues);
+        declarations.mark_values(queues);
         loaded_modules.mark_values(queues);
         source_code.mark_values(queues);
     }
@@ -183,15 +159,147 @@ impl HeapMarkAndSweep for ScriptRecord<'static> {
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let Self {
             realm,
-            ecmascript_code: _,
+            executable,
+            declarations,
             is_strict: _,
             loaded_modules,
             host_defined: _,
             source_code,
         } = self;
         realm.sweep_values(compactions);
+        executable.sweep_values(compactions);
+        declarations.sweep_values(compactions);
         loaded_modules.sweep_values(compactions);
         source_code.sweep_values(compactions);
+    }
+}
+
+/// What GlobalDeclarationInstantiation needs from a script's code, collected
+/// when the script is parsed.
+#[derive(Debug, Default)]
+pub(crate) struct GlobalDeclarations {
+    /// LexicallyDeclaredNames.
+    lex_names: Box<[Box<str>]>,
+    /// VarDeclaredNames.
+    var_names: Box<[Box<str>]>,
+    /// The function declarations of VarScopedDeclarations in reverse order,
+    /// only the last declaration of each name: functionsToInitialize.
+    functions: Box<[(Box<str>, FunctionTemplate<'static>)]>,
+    /// The BoundNames of the variable declarations of VarScopedDeclarations,
+    /// in order.
+    var_declaration_names: Box<[Box<str>]>,
+    /// The BoundNames of LexicallyScopedDeclarations in order, and whether
+    /// the declaration IsConstantDeclaration; None is "*default*".
+    lex_declarations: Box<[(Option<Box<str>>, bool)]>,
+}
+
+impl GlobalDeclarations {
+    /// Collects the declarations of a script body and compiles its function
+    /// declarations, which GlobalDeclarationInstantiation instantiates in
+    /// the script's (strict when `is_strict`) execution context.
+    pub(crate) fn new<'s>(
+        agent: &mut Agent,
+        body: &'s [ast::Statement<'s>],
+        source_code: SourceCode,
+        scoping: &'s Scoping,
+        nodes: &'s AstNodes<'s>,
+        is_strict: bool,
+        gc: NoGcScope,
+    ) -> Self {
+        let lex_names = script_lexically_declared_names(body)
+            .into_iter()
+            .map(|name| Box::from(name.as_str()))
+            .collect();
+        let var_names = script_var_declared_names(body)
+            .into_iter()
+            .map(|name| Box::from(name.as_str()))
+            .collect();
+        let var_declarations = script_var_scoped_declarations(body);
+        let mut functions = vec![];
+        let mut declared_function_names = AHashSet::default();
+        for d in var_declarations.iter().rev() {
+            if let VarScopedDeclaration::Function(d) = *d {
+                let mut function_name = None;
+                d.bound_names(&mut |identifier| {
+                    assert!(function_name.is_none());
+                    function_name = Some(identifier.name);
+                });
+                let function_name = function_name.unwrap();
+                if declared_function_names.insert(function_name) {
+                    let ast = FunctionAstRef::from(d);
+                    let executable = Executable::compile_function_body(
+                        agent,
+                        CompileFunctionBodyData {
+                            ast,
+                            source_code,
+                            scoping,
+                            nodes,
+                            is_strict: is_strict
+                                || ast.ecmascript_code().has_use_strict_directive(),
+                            is_lexical: false,
+                        },
+                        gc,
+                    );
+                    functions.push((
+                        Box::from(function_name.as_str()),
+                        FunctionTemplate::from_ast(ast, Some(executable)).unbind(),
+                    ));
+                }
+            }
+        }
+        let mut var_declaration_names = vec![];
+        for d in &var_declarations {
+            if let VarScopedDeclaration::Variable(d) = d {
+                d.id.bound_names(&mut |identifier| {
+                    var_declaration_names.push(Box::from(identifier.name.as_str()));
+                });
+            }
+        }
+        let mut lex_declarations = vec![];
+        for d in script_lexically_scoped_declarations(body) {
+            let mut push = |identifier: &ast::BindingIdentifier, is_const: bool| {
+                lex_declarations.push((Some(Box::from(identifier.name.as_str())), is_const));
+            };
+            match d {
+                LexicallyScopedDeclaration::Variable(decl) => {
+                    let is_const = decl.kind == ast::VariableDeclarationKind::Const;
+                    decl.id
+                        .bound_names(&mut |identifier| push(identifier, is_const));
+                }
+                LexicallyScopedDeclaration::Function(decl) => {
+                    decl.bound_names(&mut |identifier| push(identifier, false))
+                }
+                LexicallyScopedDeclaration::Class(decl) => {
+                    decl.bound_names(&mut |identifier| push(identifier, false))
+                }
+                #[cfg(feature = "typescript")]
+                LexicallyScopedDeclaration::TSEnum(decl) => decl
+                    .id
+                    .bound_names(&mut |identifier| push(identifier, false)),
+                LexicallyScopedDeclaration::DefaultExport => lex_declarations.push((None, false)),
+            }
+        }
+        Self {
+            lex_names,
+            var_names,
+            functions: functions.into_boxed_slice(),
+            var_declaration_names: var_declaration_names.into_boxed_slice(),
+            lex_declarations: lex_declarations.into_boxed_slice(),
+        }
+    }
+}
+
+impl HeapMarkAndSweep for GlobalDeclarations {
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        for (_, template) in self.functions.iter() {
+            template.mark_values(queues);
+        }
+    }
+
+    fn sweep_values(&mut self, compactions: &CompactionLists) {
+        for (_, template) in self.functions.iter_mut() {
+            template.sweep_values(compactions);
+        }
     }
 }
 
@@ -224,25 +332,31 @@ pub fn parse_script<'a>(
     // 1. Let script be ParseText(sourceText, Script).
     let source_type = SourceCodeType::Script { strict };
 
-    // SAFETY: Script keeps the SourceCode reference alive in the Heap, thus
-    // making the Program's references point to a live Allocator.
-    let parse_result = unsafe {
-        SourceCode::parse_source(
-            agent,
-            source_text,
-            source_type,
-            #[cfg(feature = "typescript")]
-            true,
-            gc,
-        )
-    };
+    let parse_result = SourceCode::parse_source(
+        agent,
+        source_text,
+        source_type,
+        #[cfg(feature = "typescript")]
+        true,
+        gc,
+        |agent, parsed| {
+            let ParseResult {
+                source_code,
+                body,
+                directives: _,
+                scoping,
+                nodes,
+                is_strict,
+            } = parsed;
+            let declarations =
+                GlobalDeclarations::new(agent, body, source_code, scoping, nodes, is_strict, gc);
+            let executable =
+                Executable::compile_script(agent, body, source_code, scoping, nodes, is_strict, gc);
+            (source_code, declarations, executable, is_strict)
+        },
+    );
 
-    let ParseResult {
-        source_code,
-        body,
-        directives: _,
-        is_strict,
-    } = match parse_result {
+    let (source_code, declarations, executable, is_strict) = match parse_result {
         // 2. If script is a List of errors, return script.
         Ok(result) => result,
         Err(errors) => {
@@ -255,11 +369,8 @@ pub fn parse_script<'a>(
         // [[Realm]]: realm,
         realm: realm.unbind(),
         // [[ECMAScriptCode]]: script,
-        // SAFETY: We are moving the statements slice onto the heap together
-        // with the SourceCode reference: the latter will keep alive the
-        // allocation that Statements point to. Hence, we can unbind the
-        // Statements from the garbage collector lifetime here.
-        ecmascript_code: NonNull::from(body),
+        executable: Some(executable.unbind()),
+        declarations,
         is_strict,
         // [[LoadedModules]]: « »,
         loaded_modules: Default::default(),
@@ -332,13 +443,14 @@ pub fn script_evaluation<'a>(
     // NOTE: We cannot define the script here due to reference safety.
 
     // 12. Let result be Completion(GlobalDeclarationInstantiation(script, globalEnv)).
-    // SAFETY: script is currently on the execution stack and is thus
-    // indirectly rooted.
-    let result = unsafe {
-        global_declaration_instantiation(agent, script.unbind(), global_env.unbind(), gc.reborrow())
-            .unbind()
-            .bind(gc.nogc())
-    };
+    let result = global_declaration_instantiation(
+        agent,
+        script.unbind(),
+        global_env.unbind(),
+        gc.reborrow(),
+    )
+    .unbind()
+    .bind(gc.nogc());
 
     let Some(ScriptOrModule::Script(script)) = agent.running_execution_context().script_or_module
     else {
@@ -349,8 +461,13 @@ pub fn script_evaluation<'a>(
     // 13. If result.[[Type]] is normal, then
     let result: JsResult<Value> = match result {
         Ok(_) => {
-            let bytecode =
-                Executable::compile_script(agent, script, gc.nogc()).scope(agent, gc.nogc());
+            let bytecode = script
+                .get_mut(agent)
+                .executable
+                .take()
+                .expect("a Script is evaluated once")
+                .bind(gc.nogc())
+                .scope(agent, gc.nogc());
             // a. Set result to Completion(Evaluation of script).
             // b. If result.[[Type]] is normal and result.[[Value]] is empty, then
             // i. Set result to NormalCompletion(undefined).
@@ -382,8 +499,8 @@ pub fn script_evaluation<'a>(
 }
 
 #[inline(never)]
-fn create_id(agent: &Agent, script: Script, gc: NoGcScope) -> u64 {
-    u64::try_from(script.get_statements(agent, gc).as_ptr().addr()).unwrap()
+fn create_id(agent: &Agent, script: Script, _: NoGcScope) -> u64 {
+    u64::from(script.get(agent).source_code.get_index_u32())
 }
 
 /// ### [16.1.7 GlobalDeclarationInstantiation ( script, env )](https://tc39.es/ecma262/#sec-globaldeclarationinstantiation)
@@ -394,10 +511,7 @@ fn create_id(agent: &Agent, script: Script, gc: NoGcScope) -> u64 {
 /// script is the Script for which the execution context is being established.
 /// env is the global environment in which bindings are to be created.
 ///
-/// ## Safety
-///
-/// Script must be rooted for the duration of this call.
-unsafe fn global_declaration_instantiation<'a>(
+fn global_declaration_instantiation<'a>(
     agent: &mut Agent,
     script: Script,
     env: GlobalEnvironment,
@@ -407,29 +521,27 @@ unsafe fn global_declaration_instantiation<'a>(
     let env = env.bind(gc.nogc());
     let scoped_env = env.scope(agent, gc.nogc());
     // 11. Let script be scriptRecord.[[ECMAScriptCode]].
-    let (lex_names, var_names, var_declarations, lex_declarations) = {
-        // SAFETY: The caller promises that Script is rooted, meaning that its
-        // backing SourceCode cannot be dropped during this call. Hence, we can
-        // take the body slice reference and keep it alive for the duration of
-        // this call.
-        let body = unsafe { script.unbind().get(agent).ecmascript_code.as_ref() };
-
-        // 1. Let lexNames be the LexicallyDeclaredNames of script.
-        let lex_names = script_lexically_declared_names(body);
-        // 2. Let varNames be the VarDeclaredNames of script.
-        let var_names = script_var_declared_names(body);
-        // 5. Let varDeclarations be the VarScopedDeclarations of script.
-        let var_declarations = script_var_scoped_declarations(body);
-        // 13. Let lexDeclarations be the LexicallyScopedDeclarations of script.
-        let lex_declarations = script_lexically_scoped_declarations(body);
-        (lex_names, var_names, var_declarations, lex_declarations)
-    };
+    let declarations = &script.get(agent).declarations;
+    // 1. Let lexNames be the LexicallyDeclaredNames of script.
+    let lex_names = declarations.lex_names.clone();
+    // 2. Let varNames be the VarDeclaredNames of script.
+    let var_names = declarations.var_names.clone();
+    // 5. Let varDeclarations be the VarScopedDeclarations of script.
+    let function_names: Vec<Box<str>> = declarations
+        .functions
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    let var_declaration_names = declarations.var_declaration_names.clone();
+    // 13. Let lexDeclarations be the LexicallyScopedDeclarations of script.
+    let lex_declarations = declarations.lex_declarations.clone();
+    let script = script.scope(agent, gc.nogc());
 
     // 3. For each element name of lexNames, do
-    for name in lex_names {
+    for name in lex_names.iter() {
         let env = scoped_env.get(agent).bind(gc.nogc());
         let name_atom = name;
-        let name = String::from_str(agent, name.as_str(), gc.nogc());
+        let name = String::from_str(agent, name, gc.nogc());
         if
         // a. If env.HasVarDeclaration(name) is true, throw a SyntaxError exception.
         env.has_var_declaration(agent, name)
@@ -441,7 +553,7 @@ unsafe fn global_declaration_instantiation<'a>(
         {
             let error_message = format!(
                 "Redeclaration of restricted global property '{}'.",
-                name_atom.as_str()
+                name_atom
             );
             return Err(agent.throw_exception(
                 ExceptionType::SyntaxError,
@@ -453,9 +565,9 @@ unsafe fn global_declaration_instantiation<'a>(
 
     let env = scoped_env.get(agent).bind(gc.nogc());
     // 4. For each element name of varNames, do
-    for name in &var_names {
+    for name in var_names.iter() {
         // a. If env.HasLexicalDeclaration(name) is true, throw a SyntaxError exception.
-        let name = String::from_str(agent, name.as_str(), gc.nogc());
+        let name = String::from_str(agent, name, gc.nogc());
         if env.has_lexical_declaration(agent, name) {
             let error_message = format!(
                 "Redeclaration of lexical binding '{}'.",
@@ -474,87 +586,69 @@ unsafe fn global_declaration_instantiation<'a>(
     // 7. Let declaredFunctionNames be a new empty List.
     let mut declared_function_names = AHashSet::default();
     // 8. For each element d of varDeclarations, in reverse List order, do
-    for d in var_declarations.iter().rev() {
-        // a. If d is not either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
-        if let VarScopedDeclaration::Function(d) = *d {
-            // i. Assert: d is either a FunctionDeclaration, a GeneratorDeclaration, an AsyncFunctionDeclaration, or an AsyncGeneratorDeclaration.
-            // ii. NOTE: If there are multiple function declarations for the same name, the last declaration is used.
-            // iii. Let fn be the sole element of the BoundNames of d.
-            let mut function_name = None;
-            d.bound_names(&mut |identifier| {
-                assert!(function_name.is_none());
-                function_name = Some(identifier.name);
-            });
-            let function_name = function_name.unwrap();
-            // iv. If declaredFunctionNames does not contain fn, then
-            if declared_function_names.insert(function_name) {
-                // 1. Let fnDefinable be ? env.CanDeclareGlobalFunction(fn).
-                let fn_name = String::from_str(agent, function_name.as_str(), gc.nogc());
-                let fn_definable = scoped_env
-                    .get(agent)
-                    .can_declare_global_function(agent, fn_name.unbind(), gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
-                // 2. If fnDefinable is false, throw a TypeError exception.
-                if !fn_definable {
-                    let error_message = format!(
-                        "Cannot declare of global function '{}'.",
-                        function_name.as_str()
-                    );
-                    return Err(agent.throw_exception(
-                        ExceptionType::TypeError,
-                        error_message,
-                        gc.into_nogc(),
-                    ));
-                }
-                // 3. Append fn to declaredFunctionNames.
-                // 4. Insert d as the first element of functionsToInitialize.
-                functions_to_initialize.push(d);
-            }
+    // a. If d is not either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
+    // i. Assert: d is either a FunctionDeclaration, a GeneratorDeclaration, an AsyncFunctionDeclaration, or an AsyncGeneratorDeclaration.
+    // ii. NOTE: If there are multiple function declarations for the same name, the last declaration is used.
+    // iii. Let fn be the sole element of the BoundNames of d.
+    // iv. If declaredFunctionNames does not contain fn, then
+    // Note: the declarations were collected in this order, the last one of
+    // each name, when the script was parsed.
+    for (index, function_name) in function_names.iter().enumerate() {
+        declared_function_names.insert(function_name.as_ref());
+        // 1. Let fnDefinable be ? env.CanDeclareGlobalFunction(fn).
+        let fn_name = String::from_str(agent, function_name, gc.nogc());
+        let fn_definable = scoped_env
+            .get(agent)
+            .can_declare_global_function(agent, fn_name.unbind(), gc.reborrow())
+            .unbind()?
+            .bind(gc.nogc());
+        // 2. If fnDefinable is false, throw a TypeError exception.
+        if !fn_definable {
+            let error_message = format!("Cannot declare of global function '{}'.", function_name);
+            return Err(agent.throw_exception(
+                ExceptionType::TypeError,
+                error_message,
+                gc.into_nogc(),
+            ));
         }
+        // 3. Append fn to declaredFunctionNames.
+        // 4. Insert d as the first element of functionsToInitialize.
+        functions_to_initialize.push(index);
     }
 
     // 9. Let declaredVarNames be a new empty List.
     let mut declared_var_names = AHashSet::default();
     // 10. For each element d of varDeclarations, do
-    for d in var_declarations {
-        // a. If d is either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
-        if let VarScopedDeclaration::Variable(d) = d {
-            // i. For each String vn of the BoundNames of d, do
-            let mut bound_names = vec![];
-            d.id.bound_names(&mut |identifier| {
-                bound_names.push(identifier.name);
-            });
-            for vn in bound_names {
-                // 1. If declaredFunctionNames does not contain vn, then
-                if !declared_function_names.contains(&vn) {
-                    // a. Let vnDefinable be ? env.CanDeclareGlobalVar(vn).
-                    // TODO: This is a very problematic area for lifetimes.
-                    // CanDeclareGlobalVar can trigger GC, but we also need to
-                    // hash the strings to eliminate duplicates...
-                    let vn = String::from_str(agent, vn.as_str(), gc.nogc()).unbind();
-                    let vn_definable = scoped_env
-                        .get(agent)
-                        .can_declare_global_var(agent, vn, gc.reborrow())
-                        .unbind()?
-                        .bind(gc.nogc());
-                    // b. If vnDefinable is false, throw a TypeError exception.
-                    if !vn_definable {
-                        let error_message = format!(
-                            "Cannot declare global variable '{}'.",
-                            vn.to_string_lossy_(agent)
-                        );
-                        return Err(agent.throw_exception(
-                            ExceptionType::TypeError,
-                            error_message,
-                            gc.into_nogc(),
-                        ));
-                    }
-                    // c. If declaredVarNames does not contain vn, then
-                    // i. Append vn to declaredVarNames.
-                    declared_var_names.insert(vn);
-                }
+    // a. If d is either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
+    // i. For each String vn of the BoundNames of d, do
+    for vn in var_declaration_names.iter() {
+        // 1. If declaredFunctionNames does not contain vn, then
+        if !declared_function_names.contains(vn.as_ref()) {
+            // a. Let vnDefinable be ? env.CanDeclareGlobalVar(vn).
+            // TODO: This is a very problematic area for lifetimes.
+            // CanDeclareGlobalVar can trigger GC, but we also need to
+            // hash the strings to eliminate duplicates...
+            let vn = String::from_str(agent, vn, gc.nogc()).unbind();
+            let vn_definable = scoped_env
+                .get(agent)
+                .can_declare_global_var(agent, vn, gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc());
+            // b. If vnDefinable is false, throw a TypeError exception.
+            if !vn_definable {
+                let error_message = format!(
+                    "Cannot declare global variable '{}'.",
+                    vn.to_string_lossy_(agent)
+                );
+                return Err(agent.throw_exception(
+                    ExceptionType::TypeError,
+                    error_message,
+                    gc.into_nogc(),
+                ));
             }
+            // c. If declaredVarNames does not contain vn, then
+            // i. Append vn to declaredVarNames.
+            declared_var_names.insert(vn);
         }
     }
 
@@ -568,44 +662,20 @@ unsafe fn global_declaration_instantiation<'a>(
     let private_env = None;
     let env = scoped_env.get(agent).bind(gc.nogc());
     // 15. For each element d of lexDeclarations, do
-    for d in lex_declarations {
-        // a. NOTE: Lexically declared names are only instantiated here but not initialized.
-        let mut bound_names = vec![];
-        let mut const_bound_names = vec![];
-        let mut closure = |identifier: &ast::BindingIdentifier| {
-            bound_names.push(String::from_str(agent, identifier.name.as_str(), gc.nogc()));
+    // a. NOTE: Lexically declared names are only instantiated here but not initialized.
+    // b. For each element dn of the BoundNames of d, do
+    for (dn, is_const) in lex_declarations.iter() {
+        let dn = match dn {
+            Some(dn) => String::from_str(agent, dn, gc.nogc()),
+            None => BUILTIN_STRING_MEMORY._default_,
         };
-        match d {
-            LexicallyScopedDeclaration::Variable(decl) => {
-                if decl.kind == ast::VariableDeclarationKind::Const {
-                    decl.id.bound_names(&mut |identifier| {
-                        const_bound_names.push(String::from_str(
-                            agent,
-                            identifier.name.as_str(),
-                            gc.nogc(),
-                        ))
-                    });
-                } else {
-                    decl.id.bound_names(&mut closure)
-                }
-            }
-            LexicallyScopedDeclaration::Function(decl) => decl.bound_names(&mut closure),
-            LexicallyScopedDeclaration::Class(decl) => decl.bound_names(&mut closure),
-            #[cfg(feature = "typescript")]
-            LexicallyScopedDeclaration::TSEnum(decl) => decl.id.bound_names(&mut closure),
-            LexicallyScopedDeclaration::DefaultExport => {
-                bound_names.push(BUILTIN_STRING_MEMORY._default_)
-            }
-        }
-        // b. For each element dn of the BoundNames of d, do
-        for dn in const_bound_names {
+        if *is_const {
             // i. If IsConstantDeclaration of d is true, then
             // 1. Perform ? env.CreateImmutableBinding(dn, true).
             env.create_immutable_binding(agent, dn, true, gc.nogc())
                 .unbind()?
                 .bind(gc.nogc());
-        }
-        for dn in bound_names {
+        } else {
             // ii. Else,
             // 1. Perform ? env.CreateMutableBinding(dn, false).
             env.create_mutable_binding(agent, dn, false, gc.nogc())
@@ -615,18 +685,24 @@ unsafe fn global_declaration_instantiation<'a>(
     }
 
     // 16. For each Parse Node f of functionsToInitialize, do
-    for f in functions_to_initialize {
+    for index in functions_to_initialize {
         // a. Let fn be the sole element of the BoundNames of f.
-        let mut function_name = None;
-        f.bound_names(&mut |identifier| {
-            assert!(function_name.is_none());
-            function_name = Some(identifier.name);
-        });
+        let (function_name, template) = {
+            let (function_name, template) =
+                &script.get(agent).get(agent).declarations.functions[index];
+            (function_name.clone(), template.bind(gc.nogc()))
+        };
+        let function_name = String::from_str(agent, &function_name, gc.nogc());
         let env = scoped_env.get(agent).bind(gc.nogc());
         // b. Let fo be InstantiateFunctionObject of f with arguments env and privateEnv.
-        let fo =
-            instantiate_function_object(agent, f, Environment::Global(env), private_env, gc.nogc());
-        let function_name = String::from_str(agent, function_name.unwrap().as_str(), gc.nogc());
+        let fo = instantiate_ordinary_function_object_from_template(
+            agent,
+            function_name.into(),
+            template,
+            Environment::Global(env),
+            private_env,
+            gc.nogc(),
+        );
         // c. Perform ? env.CreateGlobalFunctionBinding(fn, fo, false).
         env.unbind()
             .create_global_function_binding(

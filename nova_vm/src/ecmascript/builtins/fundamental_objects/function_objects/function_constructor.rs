@@ -2,19 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use oxc_ast::ast;
 use wtf8::Wtf8Buf;
 
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin,
-        BuiltinIntrinsicConstructor, ECMAScriptFunction, Environment, ExceptionType, Function,
-        FunctionAstRef, JsResult, Object, OrdinaryFunctionCreateParams, ParseResult, Primitive,
-        ProtoIntrinsics, Realm, SourceCode, SourceCodeType, String, Value,
-        builders::BuiltinFunctionBuilder, get_prototype_from_constructor, make_constructor,
-        ordinary_function_create, set_function_name, to_string, to_string_primitive,
+        BuiltinIntrinsicConstructor, CompileFunctionBodyData, ECMAScriptFunction, Environment,
+        ExceptionType, Function, FunctionAstRef, FunctionTemplate, JsResult, Object,
+        OrdinaryFunctionCreateParams, ParseResult, Primitive, ProtoIntrinsics, Realm, SourceCode,
+        SourceCodeType, String, Value, builders::BuiltinFunctionBuilder,
+        get_prototype_from_constructor, make_constructor, ordinary_function_create,
+        set_function_name, to_string, to_string_primitive,
     },
-    engine::{Bindable, GcScope, Scopable},
+    engine::{Bindable, Executable, GcScope, Scopable},
     heap::IntrinsicConstructorIndexes,
 };
 
@@ -226,28 +226,73 @@ pub(crate) fn create_dynamic_function<'a>(
     // Instead, we parse the source string as a script, and throw unless it has
     // exactly one statement which is a function declaration of the right kind.
 
-    // SAFETY: The safety requirements are that the SourceCode cannot be
-    // GC'd before the program is dropped. If this function returns
-    // successfully, then the program's AST and the SourceCode will both be
-    // kept alive in the returned function object.
-    let parse_result = unsafe {
-        SourceCode::parse_source(
-            agent,
-            source_string,
-            SourceCodeType::Script { strict: false },
-            #[cfg(feature = "typescript")]
-            false,
-            gc.nogc(),
-        )
-    };
+    let nogc = gc.nogc();
+    let parse_result = SourceCode::parse_source(
+        agent,
+        source_string,
+        SourceCodeType::Script { strict: false },
+        #[cfg(feature = "typescript")]
+        false,
+        nogc,
+        |agent, parsed| {
+            let ParseResult {
+                source_code,
+                body,
+                directives,
+                scoping,
+                nodes,
+                is_strict,
+            } = parsed;
+            let function = if let Some(oxc_ast::ast::Statement::FunctionDeclaration(func)) =
+                body.first()
+                // Note: we didn't add a directives so there should be none...
+                && directives.is_empty()
+                // ... and as a result, is_strict should be false!
+                && !is_strict
+                && body.len() == 1
+                && kind.function_matches_kind(func)
+            {
+                func.as_ref()
+            } else {
+                return Err(source_code);
+            };
+            // The function's source code is only that of the function
+            // definition, so its [[Strict]] comes from its own directive
+            // alone.
+            let ast = FunctionAstRef::from(function);
+            let template = FunctionTemplate::from_ast(ast, None);
+            let executable = Executable::compile_function_body(
+                agent,
+                CompileFunctionBodyData {
+                    ast,
+                    source_code,
+                    scoping,
+                    nodes,
+                    is_strict: template.has_use_strict_directive,
+                    is_lexical: false,
+                },
+                nogc,
+            );
+            Ok((
+                source_code,
+                FunctionTemplate {
+                    executable: Some(executable),
+                    ..template
+                },
+            ))
+        },
+    );
 
-    let ParseResult {
-        source_code,
-        body,
-        directives,
-        is_strict,
-    } = match parse_result {
-        Ok(r) => r,
+    let (source_code, template) = match parse_result {
+        Ok(Ok(r)) => r,
+        Ok(Err(source_code)) => {
+            source_code.manually_drop(agent);
+            return Err(agent.throw_exception_with_static_message(
+                ExceptionType::SyntaxError,
+                "Invalid function source text.",
+                gc.into_nogc(),
+            ));
+        }
         Err(err) => {
             let gc = gc.into_nogc();
             let message = String::from_string(agent, err.first().unwrap().message.to_string(), gc);
@@ -258,30 +303,16 @@ pub(crate) fn create_dynamic_function<'a>(
             ));
         }
     };
-
-    let function = if let oxc_ast::ast::Statement::FunctionDeclaration(func) = &body[0]
-        // Note: we didn't add a directives so there should be none...
-        && directives.is_empty()
-        // ... and as a result, is_strict should be false!
-        && !is_strict
-        && body.len() == 1
-        && kind.function_matches_kind(func)
-    {
-        func.as_ref()
-    } else {
-        source_code.manually_drop(agent);
-        return Err(agent.throw_exception_with_static_message(
-            ExceptionType::SyntaxError,
-            "Invalid function source text.",
-            gc.into_nogc(),
-        ));
+    let executable = template
+        .executable
+        .expect("compiled above")
+        .scope(agent, gc.nogc());
+    let template = FunctionTemplate {
+        executable: None,
+        ..template.unbind()
     };
-
-    let source_code = source_code.scope(agent, gc.nogc());
-    // SAFETY: SourceCode keeps the result Function's backing allocation from
-    // being dropped, and SourceCode is currently rooted. Hence, we can detach
-    // the Function from the garbage collector lifetime temporarily.
-    let function = unsafe { core::mem::transmute::<&ast::Function, &ast::Function>(function) };
+    let source_code = source_code.unbind();
+    let source_code = source_code.bind(gc.nogc()).scope(agent, gc.nogc());
     let params = OrdinaryFunctionCreateParams {
         function_prototype: get_prototype_from_constructor(
             agent,
@@ -292,8 +323,10 @@ pub(crate) fn create_dynamic_function<'a>(
         .unbind()?
         .bind(gc.nogc()),
         source_code: Some(source_code.take(agent)),
-        source_text: function.span,
-        ast: FunctionAstRef::from(function),
+        template: FunctionTemplate {
+            executable: Some(executable.take(agent)),
+            ..template
+        },
         lexical_this: false,
         env: Environment::Global(
             agent

@@ -5,15 +5,15 @@
 #[cfg(feature = "regexp")]
 use oxc_ast::ast::RegExpFlags;
 use oxc_ast::ast::{self, LabelIdentifier, Statement};
-use oxc_semantic::ScopeId;
+use oxc_semantic::{AstNodes, ScopeId, Scoping};
 use wtf8::Wtf8Buf;
 
 #[cfg(feature = "regexp")]
 use crate::ecmascript::RegExp;
 use crate::{
     ecmascript::{
-        Agent, BigInt, CompileFunctionBodyData, Number, ObjectShape, PropertyKey,
-        PropertyLookupCache, SourceCode, String, Value,
+        Agent, BigInt, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, Number,
+        ObjectShape, PropertyKey, PropertyLookupCache, SourceCode, String, Value,
     },
     engine::{
         Executable, FunctionExpression, Instruction, NoGcScope,
@@ -77,6 +77,10 @@ pub(crate) enum GeneratorKind {
 pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     executable: ExecutableContext<'agent, 'gc, 'scope>,
     source_code: SourceCode<'gc>,
+    /// Scope analysis of the program being compiled.
+    scoping: &'script Scoping,
+    /// The AST nodes of the program being compiled.
+    nodes: &'script AstNodes<'script>,
     /// NamedEvaluation name parameter
     pub(super) name_identifier: Option<NamedEvaluationParameter>,
     /// If true, indicates that all bindings being created are lexical.
@@ -97,17 +101,28 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     ///
     /// This affects generator yield and return behaviour.
     generator_kind: Option<GeneratorKind>,
+    /// Whether the running execution context is strict while this code runs:
+    /// the \[\[Strict]] of the function, script or eval being compiled. Nested
+    /// functions created by this code inherit it.
+    runtime_strict: bool,
+    /// Set when the code uses syntax the compiler does not support; the
+    /// finished executable then panics when run.
+    unsupported: Option<&'static str>,
 }
 
 impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> {
     pub(crate) fn new(
         agent: &'agent mut Agent,
         source_code: SourceCode<'gc>,
+        scoping: &'script Scoping,
+        nodes: &'script AstNodes<'script>,
         gc: NoGcScope<'gc, 'scope>,
     ) -> Self {
         Self {
             executable: ExecutableContext::new(agent, gc),
             source_code,
+            scoping,
+            nodes,
             name_identifier: None,
             lexical_binding_state: false,
             optional_chains: None,
@@ -115,6 +130,80 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             control_flow_stack: Vec::new(),
             stack_variables: Vec::new(),
             generator_kind: None,
+            runtime_strict: false,
+            unsupported: None,
+        }
+    }
+
+    /// Set the strictness of the running execution context while this code
+    /// runs.
+    pub(crate) fn set_runtime_strict(&mut self, strict: bool) {
+        self.runtime_strict = strict;
+    }
+
+    /// Returns the strictness of the running execution context while this
+    /// code runs.
+    pub(crate) fn is_runtime_strict(&self) -> bool {
+        self.runtime_strict
+    }
+
+    /// Mark the code as using unsupported syntax: the executable is replaced
+    /// with one that panics when run.
+    pub(crate) fn mark_unsupported(&mut self, message: &'static str) {
+        if self.unsupported.is_none() {
+            self.unsupported = Some(message);
+        }
+    }
+
+    /// Compile a function defined in this code into its own executable.
+    ///
+    /// The function's \[\[Strict]] is the strictness of the code creating it or
+    /// its own "use strict" directive, as OrdinaryFunctionCreate computes it.
+    pub(crate) fn compile_nested_function(
+        &mut self,
+        ast: FunctionAstRef<'script>,
+    ) -> FunctionTemplate<'gc> {
+        let is_strict = self.runtime_strict || ast.ecmascript_code().has_use_strict_directive();
+        let is_lexical = matches!(
+            ast,
+            FunctionAstRef::Arrow(_) | FunctionAstRef::AsyncArrow(_)
+        );
+        let source_code = self.source_code;
+        let (scoping, nodes) = (self.scoping, self.nodes);
+        let (agent, gc) = self.get_agent_and_gc();
+        let executable = Executable::compile_function_body(
+            agent,
+            CompileFunctionBodyData {
+                ast,
+                source_code,
+                scoping,
+                nodes,
+                is_strict,
+                is_lexical,
+            },
+            gc,
+        );
+        FunctionTemplate::from_ast(ast, Some(executable))
+    }
+
+    /// Compile a function defined in this code into the record that the
+    /// instructions creating its closures read.
+    pub(crate) fn compile_function_expression(
+        &mut self,
+        function: &'script ast::Function<'script>,
+        identifier: Option<NamedEvaluationParameter>,
+    ) -> FunctionExpression<'gc> {
+        let template = self.compile_nested_function(FunctionAstRef::from(function));
+        let binding_name = function
+            .id
+            .as_ref()
+            .map(|id| self.create_string(id.name.as_str()));
+        FunctionExpression {
+            template,
+            identifier,
+            binding_name,
+            is_expression: function.is_expression(),
+            is_declaration: function.is_declaration(),
         }
     }
 
@@ -150,9 +239,19 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.source_code
     }
 
+    /// Scope analysis of the program being compiled.
+    pub(crate) fn scoping(&self) -> &'script Scoping {
+        self.scoping
+    }
+
+    /// The AST nodes of the program being compiled.
+    pub(crate) fn nodes(&self) -> &'script AstNodes<'script> {
+        self.nodes
+    }
+
     /// Returns true if the given ScopeId contains direct eval.
     pub(crate) fn scope_contains_direct_eval(&self, scope: ScopeId) -> bool {
-        let scoping = self.source_code.get_scoping(self.get_agent());
+        let scoping = self.scoping;
         let flags = scoping.scope_flags(scope);
         flags.contains_direct_eval()
     }
@@ -1009,7 +1108,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ///
     /// This is useful when the function body is part of a larger whole, namely
     /// with class constructors.
-    pub(crate) fn compile_function_body(&mut self, data: CompileFunctionBodyData<'script>) {
+    pub(crate) fn compile_function_body(&mut self, data: CompileFunctionBodyData<'script, '_>) {
         if self.executable.agent.options.print_internals {
             eprintln!();
             eprintln!("=== Compiling Function ===");
@@ -1034,11 +1133,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             self.add_instruction(Instruction::Yield);
         }
 
-        // SAFETY: Script referred by the Function uniquely owns the Program
-        // and the body buffer does not move under any circumstances during
-        // heap operations.
-        let body: &[Statement] =
-            unsafe { core::mem::transmute(data.ast.ecmascript_code().statements.as_slice()) };
+        let body: &'script [Statement<'script>] = data.ast.ecmascript_code().statements.as_slice();
 
         self.compile_statements(body);
 
@@ -1068,6 +1163,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     }
 
     pub(crate) fn finish(self) -> Executable<'gc> {
+        if let Some(message) = self.unsupported {
+            return self.executable.finish_as_unsupported_stub(message);
+        }
         debug_assert!(
             self.control_flow_stack.is_empty(),
             "Control flow stack contained: {:?}",
@@ -1235,7 +1333,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
 
     pub(super) fn add_arrow_function_expression(
         &mut self,
-        arrow_function_expression: ArrowFunctionExpression,
+        arrow_function_expression: ArrowFunctionExpression<'gc>,
     ) {
         self.executable
             .add_arrow_function_expression(arrow_function_expression);

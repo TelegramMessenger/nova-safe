@@ -7,12 +7,12 @@ use std::{cell::Cell, collections::hash_map::Entry};
 use crate::{
     ecmascript::{
         BUILTIN_STRING_MEMORY, CompileFunctionBodyData, ExceptionType, FunctionAstRef,
-        LexicallyScopedDeclaration, LexicallyScopedDeclarations, String, Value, VarDeclaredNames,
-        VarScopedDeclaration, VarScopedDeclarations,
+        FunctionTemplate, LexicallyScopedDeclaration, LexicallyScopedDeclarations, String, Value,
+        VarDeclaredNames, VarScopedDeclaration, VarScopedDeclarations,
     },
     engine::{
         BlockEnvPrep, CompileContext, ExpressionError, FunctionExpression, Instruction,
-        NamedEvaluationParameter, SendableRef, ValueOutput,
+        NamedEvaluationParameter, ValueOutput,
         bytecode::{CompileEvaluation, bytecode_compiler::variable_escapes_scope},
     },
 };
@@ -526,11 +526,17 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                     }
                 }
                 #[cfg(feature = "typescript")]
-                ast::ClassElement::AccessorProperty(_) => todo!(),
+                ast::ClassElement::AccessorProperty(_) => {
+                    ctx.mark_unsupported("Class accessor properties are not supported");
+                    continue;
+                }
                 #[cfg(not(feature = "typescript"))]
                 ast::ClassElement::AccessorProperty(_) => unreachable!(),
                 #[cfg(feature = "typescript")]
-                ast::ClassElement::TSIndexSignature(_) => todo!(),
+                ast::ClassElement::TSIndexSignature(_) => {
+                    ctx.mark_unsupported("TypeScript index signatures are not supported");
+                    continue;
+                }
                 #[cfg(not(feature = "typescript"))]
                 ast::ClassElement::TSIndexSignature(_) => unreachable!(),
             };
@@ -593,8 +599,20 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
         // 29. Set F.[[Fields]] to instanceFields.
         if has_instance_private_fields_or_methods || !instance_fields.is_empty() {
             let source_code = ctx.get_source_code();
+            let constructor_runtime_strict = if let Some(constructor) = constructor {
+                ctx.is_runtime_strict()
+                    || constructor
+                        .value
+                        .body
+                        .as_ref()
+                        .is_some_and(|body| body.has_use_strict_directive())
+            } else {
+                true
+            };
+            let (scoping, nodes) = (ctx.scoping(), ctx.nodes());
             let (agent, gc) = ctx.get_agent_and_gc();
-            let mut constructor_ctx = CompileContext::new(agent, source_code, gc);
+            let mut constructor_ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
+            constructor_ctx.set_runtime_strict(constructor_runtime_strict);
             // Resolve 'this' into the stack.
             constructor_ctx.add_instruction(Instruction::ResolveThisBinding);
             constructor_ctx.add_instruction(Instruction::Load);
@@ -638,6 +656,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
             if let Some(constructor) = constructor {
                 let constructor_data = CompileFunctionBodyData {
                     source_code,
+                    scoping,
+                    nodes,
                     is_lexical: false,
                     // Class code is always strict.
                     is_strict: true,
@@ -650,7 +670,16 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                 let executable = constructor_ctx.finish();
                 ctx.add_class_initializer_bytecode(executable, has_constructor_parent);
             }
-        } else if constructor.is_none() {
+        } else if let Some(constructor) = constructor {
+            let template =
+                ctx.compile_nested_function(FunctionAstRef::ClassConstructor(&constructor.value));
+            ctx.set_function_expression_bytecode(
+                constructor_index,
+                template
+                    .executable
+                    .expect("compile_nested_function compiles the function"),
+            );
+        } else {
             ctx.add_class_initializer(has_constructor_parent);
         }
         // 30. For each PrivateElement method of staticPrivateMethods, do
@@ -740,10 +769,8 @@ fn class_has_self_references(class: &ast::Class, ctx: &CompileContext) -> bool {
         // An unnamed class cannot be self-referential.
         return false;
     };
-    let agent = ctx.get_agent();
-    let sc = ctx.get_source_code();
-    let scoping = sc.get_scoping(agent);
-    let nodes = sc.get_nodes(agent);
+    let scoping = ctx.scoping();
+    let nodes = ctx.nodes();
     let s = class_binding.symbol_id();
     let class_scope = class.scope_id();
     if scoping.scope_flags(class_scope).contains_direct_eval() {
@@ -846,14 +873,14 @@ fn define_constructor_method(
     ctx.add_instruction_with_function_expression_and_immediate(
         Instruction::ClassDefineConstructor,
         FunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                    &class_element.value,
-                )
-            }),
-            // CompileContext holds a name identifier for us if this is NamedEvaluation.
+            template: FunctionTemplate::from_ast(
+                FunctionAstRef::ClassConstructor(&class_element.value),
+                None,
+            ),
             identifier: None,
-            compiled_bytecode: None,
+            binding_name: None,
+            is_expression: false,
+            is_declaration: false,
         },
         has_constructor_parent.into(),
     )
@@ -904,18 +931,12 @@ fn define_method<'s>(
     // stack: [object]
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
+    // Note: method name is always found in the result register.
+    let function_expression = ctx
+        .compile_function_expression(&class_element.value, Some(NamedEvaluationParameter::Result));
     ctx.add_instruction_with_function_expression_and_immediate(
         instruction,
-        FunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                    &class_element.value,
-                )
-            }),
-            // Note: method name is always found in the result register.
-            identifier: Some(NamedEvaluationParameter::Result),
-            compiled_bytecode: None,
-        },
+        function_expression,
         // enumerable: false,
         false.into(),
     );
@@ -988,17 +1009,11 @@ fn define_private_method<'s>(
     // Note: MakeMethod is performed as part of ClassDefinePrivateMethod.
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
+    let function_expression =
+        ctx.compile_function_expression(&method.value, Some(NamedEvaluationParameter::Result));
     ctx.add_instruction_with_function_expression_and_immediate(
         Instruction::ClassDefinePrivateMethod,
-        FunctionExpression {
-            expression: SendableRef::new(unsafe {
-                core::mem::transmute::<&ast::Function<'_>, &'static ast::Function<'static>>(
-                    &method.value,
-                )
-            }),
-            identifier: Some(NamedEvaluationParameter::Result),
-            compiled_bytecode: None,
-        },
+        function_expression,
         immediate.into(),
     );
 }

@@ -8,13 +8,13 @@ use oxc_span::Span;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, BigInt, BuiltinConstructorArgs,
-        ConstructorStatus, Environment, ExceptionType, Function, FunctionAstRef, InternalMethods,
-        InternalSlots, JsResult, Number, Numeric, Object, OrdinaryFunctionCreateParams,
-        OrdinaryObject, Primitive, PrivateMethod, Promise, PropertyDescriptor, PropertyKey,
-        PropertyKeySet, PropertyLookupCache, ProtoIntrinsics, Reference, ScriptOrModule,
-        SetFunctionNamePrefix, SetResult, String, TryError, TryGetValueContinue, TryHasResult,
-        TryResult, Value, array_create, call, call_function, call_proxy_set, construct,
-        copy_data_properties, copy_data_properties_into_object, create_builtin_constructor,
+        ConstructorStatus, Environment, ExceptionType, Function, InternalMethods, InternalSlots,
+        JsResult, Number, Numeric, Object, OrdinaryFunctionCreateParams, OrdinaryObject, Primitive,
+        PrivateMethod, Promise, PropertyDescriptor, PropertyKey, PropertyKeySet,
+        PropertyLookupCache, ProtoIntrinsics, Reference, ScriptOrModule, SetFunctionNamePrefix,
+        SetResult, String, TryError, TryGetValueContinue, TryHasResult, TryResult, Value,
+        array_create, call, call_function, call_proxy_set, construct, copy_data_properties,
+        copy_data_properties_into_object, create_builtin_constructor,
         create_data_property_or_throw, create_unmapped_arguments_object, define_property_or_throw,
         evaluate_import_call, get_this_environment, get_this_value, get_value, has_property,
         is_constructor, is_less_than, is_loosely_equal, is_private_reference,
@@ -424,9 +424,6 @@ pub(super) fn execute_object_define_method<'gc>(
     instr: Instr,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let FunctionExpression { expression, .. } =
-        executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
-    let function_expression = expression.get();
     let enumerable = instr.get_second_bool();
     // 1. Let propKey be ? Evaluation of ClassElementName.
     let prop_key = vm.stack.pop().unwrap();
@@ -452,12 +449,14 @@ pub(super) fn execute_object_define_method<'gc>(
     //     a. Let prototype be functionPrototype.
     // 5. Else,
     //     a. Let prototype be %Function.prototype%.
+    let template = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .template;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
         // 4. Let sourceText be the source text matched by MethodDefinition.
-        source_text: function_expression.span,
-        ast: FunctionAstRef::from(function_expression),
+        template,
         lexical_this: false,
         env,
         private_env,
@@ -525,9 +524,6 @@ pub(super) fn execute_object_define_getter<'gc>(
     instr: Instr,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let FunctionExpression { expression, .. } =
-        executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
-    let function_expression = expression.get();
     let enumerable = instr.get_second_bool();
     // 1. Let propKey be ? Evaluation of ClassElementName.
     let prop_key = vm.stack.pop().unwrap();
@@ -547,12 +543,14 @@ pub(super) fn execute_object_define_getter<'gc>(
     // We have to create a temporary allocator to create the empty
     // items Vec. The allocator will never be asked to allocate
     // anything.
+    let template = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .template;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
         // 4. Let sourceText be the source text matched by MethodDefinition.
-        source_text: function_expression.span,
-        ast: FunctionAstRef::from(function_expression),
+        template,
         lexical_this: false,
         env,
         private_env,
@@ -614,9 +612,6 @@ pub(super) fn execute_object_define_setter<'gc>(
     instr: Instr,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let FunctionExpression { expression, .. } =
-        executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
-    let function_expression = expression.get();
     let enumerable = instr.get_second_bool();
     // 1. Let propKey be ? Evaluation of ClassElementName.
     let prop_key = vm.stack.pop().unwrap();
@@ -632,12 +627,14 @@ pub(super) fn execute_object_define_setter<'gc>(
     let env = agent.current_lexical_environment(gc.nogc());
     // 3. Let privateEnv be the running execution context's PrivateEnvironment.
     let private_env = agent.current_private_environment(gc.nogc());
+    let template = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .template;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
         // 4. Let sourceText be the source text matched by MethodDefinition.
-        source_text: function_expression.span,
-        ast: FunctionAstRef::from(function_expression),
+        template,
         lexical_this: false,
         env,
         private_env,
@@ -948,11 +945,9 @@ pub(super) fn execute_instantiate_arrow_function_expression<'gc>(
 ) -> JsResult<'gc, ()> {
     // ArrowFunction : ArrowParameters => ConciseBody
     let ArrowFunctionExpression {
-        expression,
+        template,
         identifier,
-    } = executable.fetch_arrow_function_expression(agent, instr.get_first_index());
-    let function_expression = expression.get();
-    let identifier = *identifier;
+    } = *executable.fetch_arrow_function_expression(agent, instr.get_first_index(), gc.nogc());
     // 2. Let env be the LexicalEnvironment of the running execution context.
     let env = agent.current_lexical_environment(gc.nogc());
     // 3. Let privateEnv be the running execution context's PrivateEnvironment.
@@ -965,8 +960,7 @@ pub(super) fn execute_instantiate_arrow_function_expression<'gc>(
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
-        source_text: function_expression.span,
-        ast: FunctionAstRef::from(function_expression),
+        template,
         lexical_this: true,
         env,
         private_env,
@@ -1026,15 +1020,17 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let FunctionExpression {
-        expression,
+        template,
         identifier,
-        ..
-    } = executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
-    let function_expression = expression.get();
-    let identifier = *identifier;
+        binding_name,
+        is_expression,
+        is_declaration,
+    } = *executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
+    let binding_name = binding_name.unbind();
+    let kind = template.kind;
 
     let (name, env, initialize_binding) = if let Some(parameter) = identifier {
-        debug_assert!(function_expression.id.is_none());
+        debug_assert!(binding_name.is_none());
         // 1. If name is not present, set name to "".
         let pk = match parameter {
             NamedEvaluationParameter::Result => vm.result.take().unwrap(),
@@ -1063,13 +1059,13 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
         // 8. Return closure.
 
         (name, env, initialize_binding)
-    } else if let Some(binding_identifier) = &function_expression.id
-        && function_expression.is_expression()
+    } else if let Some(binding_name) = binding_name
+        && is_expression
     {
         // 1. Assert: name is not present.
         assert!(identifier.is_none());
         // 2. Set name to the StringValue of BindingIdentifier.
-        let name = String::from_str(agent, &binding_identifier.name, gc.nogc());
+        let name = binding_name.bind(gc.nogc());
         // 3. Let outerEnv be the running execution context's LexicalEnvironment.
         let outer_env = agent.current_lexical_environment(gc.nogc());
         // 4. Let funcEnv be NewDeclarativeEnvironment(outerEnv).
@@ -1100,11 +1096,11 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
             Environment::Declarative(func_env),
             initialize_binding,
         )
-    } else if let Some(binding_identifier) = &function_expression.id
-        && function_expression.is_declaration()
+    } else if let Some(binding_name) = binding_name
+        && is_declaration
     {
         // 1. Let name be the StringValue of BindingIdentifier.
-        let name = String::from_str(agent, &binding_identifier.name, gc.nogc());
+        let name = binding_name.bind(gc.nogc());
         // 2. Let sourceText be the source text matched by FunctionDeclaration.
         // 3. Let F be OrdinaryFunctionCreate(%Function.prototype%, sourceText,
         //    FormalParameters, FunctionBody, non-lexical-this, env,
@@ -1128,28 +1124,24 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
 
     // 6. Let privateEnv be the running execution context's PrivateEnvironment.
     let private_env = agent.current_private_environment(gc.nogc());
+    let template = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .template;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
-        source_text: function_expression.span,
-        ast: FunctionAstRef::from(function_expression),
+        template,
         lexical_this: false,
         env,
         private_env,
     };
     let function = ordinary_function_create(agent, params, gc.nogc());
-    let FunctionExpression {
-        compiled_bytecode, ..
-    } = executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
-    if let Some(compiled_bytecode) = compiled_bytecode {
-        function.get_mut(agent).compiled_bytecode = Some(compiled_bytecode.unbind());
-    }
     set_function_name(agent, function, name, None, gc.nogc());
-    if !function_expression.r#async && !function_expression.generator {
+    if !kind.is_async() && !kind.is_generator() {
         make_constructor(agent, function, None, None, gc.nogc());
     }
 
-    if function_expression.generator {
+    if kind.is_generator() {
         // InstantiateGeneratorFunctionExpression
         // 7. Let prototype be OrdinaryObjectCreate(%GeneratorFunction.prototype.prototype%).
         // NOTE: Although `prototype` has the generator prototype, it doesn't have the generator
@@ -1157,7 +1149,7 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
         let prototype = ordinary_object_create_with_intrinsics(
             agent,
             ProtoIntrinsics::Object,
-            Some(if function_expression.r#async {
+            Some(if kind.is_async() {
                 agent
                     .current_realm_record()
                     .intrinsics()
@@ -1216,13 +1208,9 @@ pub(super) fn execute_class_define_constructor<'gc>(
         .unbind()?
         .bind(gc.nogc());
 
-    let FunctionExpression {
-        expression,
-        compiled_bytecode,
-        ..
-    } = executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
-    let function_expression = expression.get();
-    let compiled_bytecode = *compiled_bytecode;
+    let template = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .template;
     let has_constructor_parent = instr.get_second_bool();
 
     let function_prototype = if has_constructor_parent {
@@ -1241,16 +1229,12 @@ pub(super) fn execute_class_define_constructor<'gc>(
     let params = OrdinaryFunctionCreateParams {
         function_prototype,
         source_code: None,
-        source_text: function_expression.span,
-        ast: FunctionAstRef::ClassConstructor(function_expression),
+        template,
         lexical_this: false,
         env,
         private_env,
     };
     let function = ordinary_function_create(agent, params, gc.nogc());
-    if let Some(compiled_bytecode) = compiled_bytecode {
-        function.get_mut(agent).compiled_bytecode = Some(compiled_bytecode.unbind());
-    }
     set_function_name(agent, function, class_name.into(), None, gc.nogc());
     make_constructor(agent, function, Some(false), Some(proto), gc.nogc());
     function.get_mut(agent).ecmascript_function.home_object = Some(proto.into());
@@ -1355,8 +1339,9 @@ pub(super) fn execute_class_define_private_method<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let description = String::try_from(vm.result.take().unwrap().bind(gc.nogc())).unwrap();
-    let FunctionExpression { expression, .. } =
-        executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
+    let template = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .template;
     let bits = instr.get_second_index() as u8;
     let is_static = bits & 0b100 == 0b100;
     let is_setter = bits & 0b10 == 0b10;
@@ -1368,7 +1353,6 @@ pub(super) fn execute_class_define_private_method<'gc>(
         vm.stack[vm.stack.len() - 2]
     };
     let object = Object::try_from(object).unwrap().bind(gc.nogc());
-    let function_expression = expression.get();
     // 2. Let env be the running execution context's LexicalEnvironment.
     let env = agent.current_lexical_environment(gc.nogc());
     // 3. Let privateEnv be the running execution context's PrivateEnvironment.
@@ -1379,8 +1363,7 @@ pub(super) fn execute_class_define_private_method<'gc>(
         function_prototype: None,
         source_code: None,
         // 4. Let sourceText be the source text matched by MethodDefinition.
-        source_text: function_expression.span,
-        ast: FunctionAstRef::from(function_expression),
+        template,
         lexical_this: false,
         env,
         private_env: Some(private_env),
@@ -2347,6 +2330,9 @@ pub(super) fn execute_throw_error<'gc>(
 ) -> JsResult<'gc, ()> {
     let exception_type_immediate = instr.get_first_arg();
     let message = String::try_from(vm.result.take().unwrap()).unwrap();
+    if exception_type_immediate == crate::engine::bytecode::UNSUPPORTED_SYNTAX_IMMEDIATE {
+        panic!("not yet implemented: {}", message.to_string_lossy_(agent));
+    }
 
     let exception_type = ExceptionType::try_from(exception_type_immediate).unwrap();
 
