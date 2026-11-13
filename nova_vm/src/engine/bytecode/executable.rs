@@ -22,9 +22,8 @@ use std::sync::Arc;
 use super::bytecode_compiler::GeneratorKind;
 
 #[derive(Debug)]
-/// A `Send` and `Sync` wrapper over a `&'static T` where `T` might not itself
-/// be `Sync`. This is safe because the reference can only be obtained from the
-/// same thread in which the `SendableRef` was created.
+/// A wrapper over a `&'static T` into a SourceCode's AST that can only be
+/// read on the thread that created it.
 pub(crate) struct SendableRef<T: ?Sized + 'static> {
     reference: &'static T,
     thread_id: std::thread::ThreadId,
@@ -53,11 +52,6 @@ impl<T: ?Sized> SendableRef<T> {
         self.reference
     }
 }
-
-// SAFETY: The reference will only be dereferenced in a thread in which the
-// reference is valid, so it's fine to send or use this type from other threads.
-unsafe impl<T: ?Sized> Send for SendableRef<T> {}
-unsafe impl<T: ?Sized> Sync for SendableRef<T> {}
 
 #[derive(Debug, Clone)]
 pub(crate) struct FunctionExpression<'a> {

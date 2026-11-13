@@ -107,8 +107,6 @@ pub(crate) struct ECMAScriptFunctionHeapData<'a> {
     pub(crate) name: Option<String<'a>>,
 }
 
-unsafe impl Send for ECMAScriptFunctionHeapData<'_> {}
-
 impl HeapMarkAndSweep for BoundFunctionHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {

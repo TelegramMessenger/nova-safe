@@ -165,11 +165,6 @@ pub(crate) struct ScriptRecord<'a> {
     pub(crate) source_code: SourceCode<'a>,
 }
 
-// SAFETY: [[ECMAScriptCode]] does not permit mutable access, and points to
-// data considered (and used as) immutable. It is safe to send the pointer to
-// other threads.
-unsafe impl Send for ScriptRecord<'_> {}
-
 bindable_handle!(ScriptRecord);
 
 impl HeapMarkAndSweep for ScriptRecord<'static> {

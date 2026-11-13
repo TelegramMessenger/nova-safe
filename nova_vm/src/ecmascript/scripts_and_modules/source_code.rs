@@ -318,8 +318,6 @@ pub(crate) struct SourceCodeHeapData<'a> {
     allocator: Allocator,
 }
 
-unsafe impl Send for SourceCodeHeapData<'_> {}
-
 impl Debug for SourceCodeHeapData<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SourceCodeHeapData")

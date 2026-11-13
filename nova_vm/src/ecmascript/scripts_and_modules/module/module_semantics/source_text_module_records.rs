@@ -103,11 +103,6 @@ pub(crate) struct SourceTextModuleRecord<'a> {
     pub(crate) source_code: SourceCode<'a>,
 }
 
-// SAFETY: [[ECMAScriptCode]] does not permit mutable access, and points to
-// data considered (and used as) immutable. It is safe to send the pointer to
-// other threads.
-unsafe impl Send for SourceTextModuleRecord<'_> {}
-
 /// ### [16.2.1.7 Source Text Module Records](https://tc39.es/ecma262/#sec-source-text-module-records)
 ///
 /// A _Source Text Module Record_ is used to represent information about a
