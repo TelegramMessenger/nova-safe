@@ -2,25 +2,24 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::hash::Hasher;
+use core::{hash::Hasher, marker::PhantomData};
 
 use ahash::AHasher;
 use hashbrown::{HashTable, hash_table::Entry};
 
 use crate::{
     ecmascript::{PropertyKey, Value, execution::Agent},
-    engine::{
-        Bindable, HeapRootCollection, NoGcScope, ScopableCollection, ScopedCollection,
-        bindable_handle,
-    },
+    engine::{Bindable, HeapRootCollection, NoGcScope, ScopableCollection, ScopedCollection},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
+#[derive(Bindable)]
 pub(crate) struct KeyedGroup<'a> {
     // TODO: Use a SoA vector for keys and values.
-    keys: Vec<Value<'a>>,
-    values: Vec<Vec<Value<'a>>>,
+    keys: Vec<Value<'static>>,
+    values: Vec<Vec<Value<'static>>>,
     hash_table: HashTable<u32>,
+    _gc: PhantomData<Value<'a>>,
 }
 
 impl core::fmt::Debug for KeyedGroup<'_> {
@@ -38,6 +37,7 @@ impl<'a> KeyedGroup<'a> {
             keys: Vec::new(),
             values: Vec::new(),
             hash_table: HashTable::new(),
+            _gc: PhantomData,
         })
     }
 
@@ -159,7 +159,7 @@ impl<'a> KeyedGroup<'a> {
         debug_assert_eq!(self.keys.len(), self.values.len());
         self.keys
             .into_iter()
-            .map(|v| PropertyKey::from_value_unchecked(v))
+            .map(PropertyKey::from_value_unchecked)
             .zip(self.values)
     }
 
@@ -219,8 +219,6 @@ impl ScopedCollection<'_, Box<KeyedGroup<'static>>> {
     }
 }
 
-bindable_handle!(KeyedGroup);
-
 fn value_needs_rehash(v: &Value<'static>, compactions: &CompactionLists) -> bool {
     // Note: Symbols currently do not have static hashes; this will
     // eventually need to change.
@@ -246,6 +244,7 @@ impl HeapMarkAndSweep for KeyedGroup<'static> {
             keys,
             values,
             hash_table: _,
+            _gc: _,
         } = self;
         keys.mark_values(queues);
         for vec in values.iter() {
@@ -258,6 +257,7 @@ impl HeapMarkAndSweep for KeyedGroup<'static> {
             keys,
             values,
             hash_table,
+            _gc: _,
         } = self;
         if keys.iter().any(|v| value_needs_rehash(v, compactions)) {
             if keys

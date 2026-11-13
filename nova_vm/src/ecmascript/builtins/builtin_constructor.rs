@@ -11,7 +11,7 @@ use crate::{
         PrivateEnvironment, PropertyKey, SourceCode, String, Value, base_class_default_constructor,
         derived_class_default_constructor, function_handle,
     },
-    engine::{Bindable, Executable, GcScope, NoGcScope, bindable_handle},
+    engine::{Bindable, Executable, GcScope, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapIndexHandle, HeapMarkAndSweep, HeapSweepWeakReference, ObjectEntry,
@@ -315,8 +315,6 @@ impl HeapSweepWeakReference for BuiltinConstructorFunction<'static> {
             .map(Self)
     }
 }
-
-bindable_handle!(BuiltinConstructorRecord);
 
 impl HeapMarkAndSweep for BuiltinConstructorRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

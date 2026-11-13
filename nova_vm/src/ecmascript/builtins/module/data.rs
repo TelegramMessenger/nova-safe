@@ -4,16 +4,16 @@
 
 use crate::{
     ecmascript::{AbstractModule, String},
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{CompactionLists, CreateHeapData, Heap, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
 };
 
 use super::Module;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) struct ModuleHeapData<'a> {
     pub(super) module: AbstractModule<'a>,
-    pub(super) exports: Box<[String<'a>]>,
+    pub(super) exports: Box<[String<'static>]>,
 }
 
 impl<'a> CreateHeapData<ModuleHeapData<'a>, Module<'a>> for Heap {
@@ -24,8 +24,6 @@ impl<'a> CreateHeapData<ModuleHeapData<'a>, Module<'a>> for Heap {
         Module::from_index(index)
     }
 }
-
-bindable_handle!(ModuleHeapData);
 
 impl HeapMarkAndSweep for ModuleHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

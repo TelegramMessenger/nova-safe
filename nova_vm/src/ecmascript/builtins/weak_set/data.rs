@@ -6,15 +6,15 @@ use ahash::AHashSet;
 
 use crate::{
     ecmascript::{execution::WeakKey, types::OrdinaryObject},
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues, sweep_side_set},
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Bindable)]
 pub(crate) struct WeakSetHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     /// ### \[\[WeakSetData]]
-    weak_set_data: AHashSet<WeakKey<'a>>,
+    weak_set_data: AHashSet<WeakKey<'static>>,
 }
 
 impl WeakSetHeapData<'_> {
@@ -33,8 +33,6 @@ impl WeakSetHeapData<'_> {
         self.weak_set_data.contains(&value.unbind())
     }
 }
-
-bindable_handle!(WeakSetHeapData);
 
 impl HeapMarkAndSweep for WeakSetHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

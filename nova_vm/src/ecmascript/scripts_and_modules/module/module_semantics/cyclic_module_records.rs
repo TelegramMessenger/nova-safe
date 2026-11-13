@@ -43,7 +43,7 @@ impl AsyncEvaluationOrder {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Bindable)]
 pub(crate) struct CyclicModuleRecord<'a> {
     /// ### \[\[Status]]
     ///
@@ -85,7 +85,7 @@ pub(crate) struct CyclicModuleRecord<'a> {
     ///
     /// Note: The requested module specifiers are borrowed strings pointing to
     /// the source text of the module record.
-    requested_modules: Box<[ModuleRequest<'a>]>,
+    requested_modules: Box<[ModuleRequest<'static>]>,
     /// ### \[\[LoadedModules]]
     ///
     /// a List of LoadedModuleRequest Records
@@ -142,7 +142,7 @@ pub(crate) struct CyclicModuleRecord<'a> {
     /// in progress, this tracks the parent importers of this module for the
     /// top-level execution job. These parent modules will not start executing
     /// before this module has successfully completed execution.
-    async_parent_modules: Vec<SourceTextModule<'a>>,
+    async_parent_modules: Vec<SourceTextModule<'static>>,
     /// ### \[\[PendingAsyncDependencies]]
     ///
     /// If this module has any asynchronous dependencies, this tracks the
@@ -156,7 +156,7 @@ impl<'m> CyclicModuleRecord<'m> {
     pub(super) fn new(r#async: bool, requested_modules: Box<[ModuleRequest<'m>]>) -> Self {
         Self {
             has_tla: r#async,
-            requested_modules,
+            requested_modules: requested_modules.unbind(),
             ..Default::default()
         }
     }

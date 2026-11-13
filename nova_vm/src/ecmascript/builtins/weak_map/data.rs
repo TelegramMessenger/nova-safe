@@ -6,17 +6,15 @@ use ahash::AHashMap;
 
 use crate::{
     ecmascript::{OrdinaryObject, Value, execution::WeakKey},
-    engine::bindable_handle,
+    engine::Bindable,
     heap::{CompactionLists, HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues},
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Bindable)]
 pub(crate) struct WeakMapRecord<'a> {
-    pub(crate) weak_map_data: AHashMap<WeakKey<'a>, Value<'a>>,
+    pub(crate) weak_map_data: AHashMap<WeakKey<'static>, Value<'static>>,
     pub(super) object_index: Option<OrdinaryObject<'a>>,
 }
-bindable_handle!(WeakMapRecord);
-
 impl<'a> WeakMapRecord<'a> {
     pub(super) fn delete(&mut self, key: WeakKey<'a>) -> bool {
         // 4. For each Record { [[Key]], [[Value]] } p of M.[[WeakMapData]], do
@@ -25,21 +23,21 @@ impl<'a> WeakMapRecord<'a> {
         // ii. Set p.[[Value]] to EMPTY.
         // iii. Return true.
         // 5. Return false.
-        self.weak_map_data.remove(&key).is_some()
+        self.weak_map_data.remove(&key.unbind()).is_some()
     }
 
     pub(super) fn get(&mut self, key: WeakKey<'a>) -> Option<Value<'a>> {
         // 4. For each Record { [[Key]], [[Value]] } p of M.[[WeakMapData]], do
         // a. If p.[[Key]] is not empty and SameValue(p.[[Key]], key) is true, return p.[[Value]].
         // 5. Return undefined.
-        self.weak_map_data.get(&key).cloned()
+        self.weak_map_data.get(&key.unbind()).cloned()
     }
 
     pub(super) fn has(&mut self, key: WeakKey<'a>) -> bool {
         // 4. For each Record { [[Key]], [[Value]] } p of M.[[WeakMapData]], do
         // a. If p.[[Key]] is not empty and SameValue(p.[[Key]], key) is true, return true.
         // 5. Return false.
-        self.weak_map_data.contains_key(&key)
+        self.weak_map_data.contains_key(&key.unbind())
     }
 
     pub(super) fn set(&mut self, key: WeakKey<'a>, value: Value<'a>) {
@@ -49,7 +47,7 @@ impl<'a> WeakMapRecord<'a> {
         // ii. Return M.
         // 5. Let p be the Record { [[Key]]: key, [[Value]]: value }.
         // 6. Append p to M.[[WeakMapData]].
-        self.weak_map_data.insert(key, value);
+        self.weak_map_data.insert(key.unbind(), value.unbind());
     }
 }
 

@@ -4,7 +4,7 @@
 
 use crate::{
     ecmascript::{OrdinaryObject, Value},
-    engine::bindable_handle,
+    engine::Bindable,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 use ahash::AHasher;
@@ -16,10 +16,10 @@ use core::{
 use hashbrown::HashTable;
 use soavec_derive::SoAble;
 
-#[derive(Debug, Default, SoAble)]
+#[derive(Debug, Default, SoAble, Bindable)]
 pub(crate) struct SetHeapData<'a> {
     pub(crate) set_data: RefCell<HashTable<u32>>,
-    pub(crate) values: Vec<Option<Value<'a>>>,
+    pub(crate) values: Vec<Option<Value<'static>>>,
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     /// Low-level hash table pointing to value indexes.
     /// Flag that lets the Set know if it needs to rehash its primitive keys.
@@ -34,8 +34,6 @@ pub(crate) struct SetHeapData<'a> {
     // the items in the set cannot be compacted.
     // pub(crate) observed: bool;
 }
-
-bindable_handle!(SetHeapData);
 
 impl HeapMarkAndSweep for SetHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

@@ -35,7 +35,7 @@ pub(crate) struct BoundFunctionHeapData<'a> {
     pub(crate) bound_arguments: ElementsVector<'a>,
     pub(crate) name: Option<String<'a>>,
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, crate::engine::Bindable)]
 pub(crate) struct BuiltinFunctionHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) length: u8,
@@ -60,7 +60,7 @@ impl BuiltinFunctionHeapData<'_> {
     };
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, crate::engine::Bindable)]
 pub(crate) struct BuiltinConstructorRecord<'a> {
     pub(crate) backing_object: Option<OrdinaryObject<'a>>,
     /// #### \[\[Realm]]
@@ -95,7 +95,7 @@ pub(crate) struct BuiltinConstructorRecord<'a> {
     pub(crate) class_name: String<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct ECMAScriptFunctionHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) length: u8,

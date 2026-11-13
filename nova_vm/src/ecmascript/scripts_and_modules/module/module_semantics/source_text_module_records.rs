@@ -33,13 +33,13 @@ use crate::{
     },
     engine::{
         Bindable, Executable, ExecutionResult, GcScope, GcToken, HeapRootData, NoGcScope, Scopable,
-        Scoped, Vm, bindable_handle,
+        Scoped, Vm,
     },
     heap::{CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep, WorkQueues},
     ndt,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 /// ### [16.2.1.7 Source Text Module Records](https://tc39.es/ecma262/#sec-source-text-module-records)
 pub(crate) struct SourceTextModuleRecord<'a> {
     abstract_fields: AbstractModuleRecord<'a>,
@@ -65,7 +65,6 @@ pub(crate) struct SourceTextModuleRecord<'a> {
     ///
     /// The execution context associated with this module. It is empty until
     /// the module's environment has been initialized.
-    #[expect(dead_code)]
     context: (),
     /// ### \[\[ImportMeta]]
     ///
@@ -75,18 +74,18 @@ pub(crate) struct SourceTextModuleRecord<'a> {
     /// ### \[\[ImportEntries]]
     ///
     /// A List of ImportEntry records derived from the code of this module.
-    import_entries: Box<[ImportEntryRecord<'a>]>,
+    import_entries: Box<[ImportEntryRecord<'static>]>,
     /// ### \[\[LocalExportEntries]]
     ///
     /// A List of ExportEntry records derived from the code of this module that
     /// correspond to declarations that occur within the module.
-    local_export_entries: Box<[LocalExportEntryRecord<'a>]>,
+    local_export_entries: Box<[LocalExportEntryRecord<'static>]>,
     /// ### \[\[IndirectExportEntries]]
     ///
     /// A List of ExportEntry records derived from the code of this module that
     /// correspond to reexported imports that occur within the module or
     /// exports from export * as namespace declarations.
-    indirect_export_entries: Box<[IndirectExportEntryRecord<'a>]>,
+    indirect_export_entries: Box<[IndirectExportEntryRecord<'static>]>,
     /// ### \[\[StarExportEntries]]
     ///
     /// A List of ExportEntry records derived from the code of this module that
@@ -94,7 +93,7 @@ pub(crate) struct SourceTextModuleRecord<'a> {
     /// including export * as namespace declarations.
     ///
     /// > NOTE: These are references to \[\[RequestedModules]] list.
-    star_export_entries: Box<[ModuleRequest<'a>]>,
+    star_export_entries: Box<[ModuleRequest<'static>]>,
 
     /// Source text of the script
     ///
@@ -371,7 +370,7 @@ impl<'a> From<Scoped<'a, SourceTextModule<'static>>> for Scoped<'a, AbstractModu
 }
 
 /// # [ImportEntry Record Fields](https://tc39.es/ecma262/#table-importentry-record-fields)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 struct ImportEntryRecord<'a> {
     /// ### \[\[ModuleRequest]]
     ///
@@ -408,7 +407,7 @@ struct ImportEntryRecord<'a> {
 /// export function x() {}
 /// export class X {}
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 struct LocalExportEntryRecord<'a> {
     /// ### \[\[ExportName]]
     ///
@@ -432,7 +431,7 @@ struct LocalExportEntryRecord<'a> {
 /// export { x } from "mod";
 /// export { v as x } from "mod";
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 struct IndirectExportEntryRecord<'a> {
     /// ### \[\[ExportName]]
     ///
@@ -450,8 +449,6 @@ struct IndirectExportEntryRecord<'a> {
     /// `export * as ns from "mod"` declarations.
     import_name: Option<String<'a>>,
 }
-
-bindable_handle!(IndirectExportEntryRecord);
 
 impl<'a> From<SourceTextModule<'a>> for ScriptOrModule<'a> {
     fn from(value: SourceTextModule<'a>) -> Self {
@@ -1905,21 +1902,19 @@ pub fn parse_module<'a>(
             // [[ImportMeta]]: empty,
             import_meta: Default::default(),
             // [[ImportEntries]]: importEntries,
-            import_entries: import_entries.into_boxed_slice(),
+            import_entries: import_entries.unbind().into_boxed_slice(),
             // [[LocalExportEntries]]: localExportEntries,
-            local_export_entries: local_export_entries.into_boxed_slice(),
+            local_export_entries: local_export_entries.unbind().into_boxed_slice(),
             // [[IndirectExportEntries]]: indirectExportEntries,
-            indirect_export_entries: indirect_export_entries.into_boxed_slice(),
+            indirect_export_entries: indirect_export_entries.unbind().into_boxed_slice(),
             // [[StarExportEntries]]: starExportEntries,
-            star_export_entries: star_export_entries.into_boxed_slice(),
+            star_export_entries: star_export_entries.unbind().into_boxed_slice(),
 
             source_code,
         })
         .unbind())
     // }.
 }
-
-bindable_handle!(SourceTextModuleRecord);
 
 impl From<SourceTextModule<'_>> for HeapRootData {
     fn from(value: SourceTextModule<'_>) -> Self {

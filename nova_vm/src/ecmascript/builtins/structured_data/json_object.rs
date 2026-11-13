@@ -935,7 +935,8 @@ fn serialize_json_object<'a, 'b>(
     // 1. If state.[[Stack]] contains value, throw a TypeError exception
     //    because the structure is cyclical.
     if state.stack.iter(agent).any(|x| {
-        Object::try_from(x.get(agent, gc.nogc())).expect("only objects are pushed onto the stack") == value
+        Object::try_from(x.get(agent, gc.nogc())).expect("only objects are pushed onto the stack")
+            == value
     }) {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,
@@ -1098,7 +1099,8 @@ fn serialize_json_array<'a, 'b>(
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception because the structure is cyclical.
     if state.stack.iter(agent).any(|x| {
-        Object::try_from(x.get(agent, gc.nogc())).expect("only objects are pushed onto the stack") == value
+        Object::try_from(x.get(agent, gc.nogc())).expect("only objects are pushed onto the stack")
+            == value
     }) {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,

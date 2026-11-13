@@ -8,7 +8,7 @@ use crate::{
         SourceCode, SourceTextModule, String, Value,
     },
     engine::{
-        Bindable, NoGcScope, Scoped, bindable_handle,
+        Bindable, NoGcScope, Scoped,
         bytecode::{CompileContext, NamedEvaluationParameter, instructions::Instr},
     },
     heap::{
@@ -16,6 +16,7 @@ use crate::{
         arena_vec_access, {BaseIndex, HeapIndexHandle, index_handle},
     },
 };
+use core::marker::PhantomData;
 use oxc_ast::ast;
 use std::sync::Arc;
 
@@ -108,15 +109,16 @@ const EXECUTABLE_OPTION_SIZE_IS_U32: () =
 ///
 /// - This is inspired by and/or copied from Kiesel engine:
 ///   Copyright (c) 2023-2024 Linus Groh
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) struct ExecutableHeapData<'a> {
     pub(crate) instructions: Arc<[u8]>,
-    pub(crate) caches: Box<[PropertyLookupCache<'a>]>,
-    pub(crate) constants: Box<[Value<'a>]>,
-    pub(crate) shapes: Box<[ObjectShape<'a>]>,
-    pub(crate) function_expressions: Box<[FunctionExpression<'a>]>,
+    pub(crate) caches: Box<[PropertyLookupCache<'static>]>,
+    pub(crate) constants: Box<[Value<'static>]>,
+    pub(crate) shapes: Box<[ObjectShape<'static>]>,
+    pub(crate) function_expressions: Box<[FunctionExpression<'static>]>,
     pub(crate) arrow_function_expressions: Box<[ArrowFunctionExpression]>,
-    pub(crate) class_initializer_bytecodes: Box<[(Option<Executable<'a>>, bool)]>,
+    pub(crate) class_initializer_bytecodes: Box<[(Option<Executable<'static>>, bool)]>,
+    pub(crate) _gc: PhantomData<Value<'a>>,
 }
 
 impl<'gc> Executable<'gc> {
@@ -436,8 +438,6 @@ impl<'a> CreateHeapData<ExecutableHeapData<'a>, Executable<'a>> for Heap {
     }
 }
 
-bindable_handle!(ExecutableHeapData);
-
 impl HeapMarkAndSweep for Executable<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         queues.executables.push(*self);
@@ -458,6 +458,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             function_expressions,
             arrow_function_expressions: _,
             class_initializer_bytecodes,
+            _gc: _,
         } = self;
         constants.mark_values(queues);
         caches.mark_values(queues);
@@ -475,6 +476,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             function_expressions,
             arrow_function_expressions: _,
             class_initializer_bytecodes,
+            _gc: _,
         } = self;
         constants.sweep_values(compactions);
         caches.sweep_values(compactions);

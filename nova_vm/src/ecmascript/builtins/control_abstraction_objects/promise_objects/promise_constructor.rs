@@ -15,7 +15,7 @@ use crate::{
         get_iterator, inner_promise_then, is_callable, is_constructor, iterator_close_with_error,
         iterator_step_value, ordinary_create_from_constructor,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{
         ArenaAccessMut, CreateHeapData, IntrinsicConstructorIndexes, ObjectEntry, WellKnownSymbols,
     },
@@ -89,19 +89,19 @@ impl Builtin for PromiseGetSpecies {
 }
 impl BuiltinGetter for PromiseGetSpecies {}
 
+#[derive(Bindable)]
 struct PromiseGroupSetup<'a> {
     iterator_record: IteratorRecord<'a>,
     constructor: Function<'a>,
     promise_capability: PromiseCapability<'a>,
     promise_resolve: Function<'a>,
 }
-bindable_handle!(PromiseGroupSetup);
 
+#[derive(Bindable)]
 enum PromiseGroupSetupResult<'a> {
     Success(PromiseGroupSetup<'a>),
     AbruptReject(Promise<'a>),
 }
-bindable_handle!(PromiseGroupSetupResult);
 
 impl PromiseConstructor {
     /// ### [27.2.3.1 Promise ( executor )](https://tc39.es/ecma262/#sec-promise-executor)

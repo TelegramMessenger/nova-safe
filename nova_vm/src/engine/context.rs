@@ -391,25 +391,6 @@ pub trait Bindable: Sized {
     fn bind<'a>(self, gc: NoGcScope<'a, '_>) -> Self::Of<'a>;
 }
 
-macro_rules! bindable_handle {
-    ($self:ident) => {
-        impl crate::engine::Bindable for $self<'_> {
-            type Of<'a> = $self<'a>;
-
-            #[inline(always)]
-            fn unbind(self) -> Self::Of<'static> {
-                unsafe { core::mem::transmute::<Self, Self::Of<'static>>(self) }
-            }
-
-            #[inline(always)]
-            fn bind<'a>(self, _: crate::engine::NoGcScope<'a, '_>) -> Self::Of<'a> {
-                unsafe { core::mem::transmute::<Self, Self::Of<'a>>(self) }
-            }
-        }
-    };
-}
-pub(crate) use bindable_handle;
-
 macro_rules! trivially_bindable {
     ($self:ty) => {
         impl crate::engine::Bindable for $self {
@@ -594,6 +575,34 @@ impl<T: Bindable> Bindable for Box<[T]> {
             assert!(core::mem::align_of::<T>() == core::mem::align_of::<T::Of<'_>>());
         }
         self.into_vec().bind(gc).into_boxed_slice()
+    }
+}
+
+impl Bindable for core::ptr::NonNull<[oxc_ast::ast::Statement<'_>]> {
+    type Of<'a> = core::ptr::NonNull<[oxc_ast::ast::Statement<'a>]>;
+
+    #[inline(always)]
+    fn unbind(self) -> Self::Of<'static> {
+        core::ptr::NonNull::slice_from_raw_parts(self.cast(), self.len())
+    }
+
+    #[inline(always)]
+    fn bind<'a>(self, _: NoGcScope<'a, '_>) -> Self::Of<'a> {
+        core::ptr::NonNull::slice_from_raw_parts(self.cast(), self.len())
+    }
+}
+
+impl<T: Bindable, const N: usize> Bindable for [T; N] {
+    type Of<'a> = [T::Of<'a>; N];
+
+    #[inline(always)]
+    fn unbind(self) -> Self::Of<'static> {
+        self.map(T::unbind)
+    }
+
+    #[inline(always)]
+    fn bind<'a>(self, gc: NoGcScope<'a, '_>) -> Self::Of<'a> {
+        self.map(|t| t.bind(gc))
     }
 }
 

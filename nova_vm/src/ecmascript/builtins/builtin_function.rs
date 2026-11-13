@@ -11,9 +11,7 @@ use crate::{
         Function, FunctionInternalProperties, InternalSlots, JsResult, Object, OrdinaryObject,
         PropertyKey, Realm, ScopedValuesIterator, String, Value, function_handle,
     },
-    engine::{
-        Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData, bindable_handle,
-    },
+    engine::{Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, IntrinsicConstructorIndexes,
@@ -236,6 +234,20 @@ impl<'scope> ScopedArgumentsList<'scope> {
     pub(crate) fn new(index: u32, _: NoGcScope<'_, 'scope>) -> Self {
         Self {
             index,
+            value: PhantomData,
+        }
+    }
+
+    /// The same list with its scope lifetime erased.
+    ///
+    /// ## Correctness
+    ///
+    /// The list is an index into the Agent's scoped collections: after its
+    /// `with_scoped` call returns, using it panics or reads another call's
+    /// arguments.
+    pub(crate) fn into_static(self) -> ScopedArgumentsList<'static> {
+        ScopedArgumentsList {
+            index: self.index,
             value: PhantomData,
         }
     }
@@ -831,8 +843,6 @@ impl HeapSweepWeakReference for BuiltinFunction<'static> {
             .map(Self)
     }
 }
-
-bindable_handle!(BuiltinFunctionHeapData);
 
 impl HeapMarkAndSweep for BuiltinFunctionHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

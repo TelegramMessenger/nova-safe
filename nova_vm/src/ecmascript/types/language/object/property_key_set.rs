@@ -2,21 +2,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use core::marker::PhantomData;
+
 use hashbrown::HashTable;
 
 use crate::{
     ecmascript::{Agent, PropertyKey},
-    engine::{
-        Bindable, HeapRootCollection, NoGcScope, ScopableCollection, ScopedCollection,
-        bindable_handle,
-    },
+    engine::{Bindable, HeapRootCollection, NoGcScope, ScopableCollection, ScopedCollection},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
 /// An unordered set of PropertyKeys.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Bindable)]
 #[repr(transparent)]
-pub struct PropertyKeySet<'a>(HashTable<PropertyKey<'a>>);
+pub struct PropertyKeySet<'a>(
+    HashTable<PropertyKey<'static>>,
+    PhantomData<PropertyKey<'a>>,
+);
 
 impl core::fmt::Debug for PropertyKeySet<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -27,12 +29,12 @@ impl core::fmt::Debug for PropertyKeySet<'_> {
 impl<'a> PropertyKeySet<'a> {
     /// Create a new PropertyKeySet.
     pub fn new(_: NoGcScope<'a, '_>) -> Self {
-        Self(HashTable::new())
+        Self(HashTable::new(), PhantomData)
     }
 
     /// Create a new PropertyKeySet with a given capacity.
     pub fn with_capacity(capacity: usize, _: NoGcScope<'a, '_>) -> Self {
-        Self(HashTable::with_capacity(capacity))
+        Self(HashTable::with_capacity(capacity), PhantomData)
     }
 
     /// Insert a PropertyKey into the set.
@@ -90,8 +92,6 @@ impl ScopedCollection<'_, PropertyKeySet<'static>> {
         property_key_set.contains(agent, value)
     }
 }
-
-bindable_handle!(PropertyKeySet);
 
 impl HeapMarkAndSweep for PropertyKeySet<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

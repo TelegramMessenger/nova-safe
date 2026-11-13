@@ -7,7 +7,7 @@ use soavec_derive::SoAble;
 
 use crate::{
     ecmascript::{Function, OrdinaryObject, Realm, Value, WeakKey},
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{
         CompactionLists, HeapIndexHandle, HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues,
     },
@@ -17,14 +17,14 @@ use crate::{
 ///
 /// This maps a _cell_.\[\[WeakRefTarget]] to a _cell_.\[\[HeldValue]].
 #[derive(Debug, Default)]
-pub(crate) struct Cells<'a> {
+pub(crate) struct Cells {
     /// This maps a _cell_.\[\[WeakRefTarget]] to a _cell_.\[\[HeldValue]].
-    cells_weak_ref_target_to_held_value: AHashMap<WeakKey<'a>, Value<'a>>,
+    cells_weak_ref_target_to_held_value: AHashMap<WeakKey<'static>, Value<'static>>,
     /// This maps a _cell_.\[\[UnregisterToken]] to a _cell_.\[\[WeakRefTarget]].
-    cells_unregister_token_to_weak_ref_target: AHashMap<WeakKey<'a>, WeakKey<'a>>,
+    cells_unregister_token_to_weak_ref_target: AHashMap<WeakKey<'static>, WeakKey<'static>>,
 }
 
-impl Cells<'_> {
+impl Cells {
     pub(super) fn register(
         &mut self,
         weak_ref_target: WeakKey,
@@ -63,17 +63,15 @@ impl Cells<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct CleanupRecord<'a> {
-    cleanup_queue: Vec<Value<'a>>,
+    cleanup_queue: Vec<Value<'static>>,
     /// \[\[CleanupCallback]]
     callback: Function<'a>,
     /// \[\[Realm]]
     realm: Realm<'a>,
     cleanup_requested: bool,
 }
-bindable_handle!(CleanupRecord);
-
 impl Default for CleanupRecord<'_> {
     fn default() -> Self {
         Self {
@@ -113,7 +111,7 @@ impl<'fr> CleanupRecord<'fr> {
     }
 
     pub(super) fn push_cleanup_queue(&mut self, queue: Vec<Value<'fr>>) -> bool {
-        self.cleanup_queue.extend(queue);
+        self.cleanup_queue.extend(queue.unbind());
         if !self.cleanup_requested {
             // We haven't requested cleanup yet, so we should do it now.
             self.cleanup_requested = true;
@@ -125,15 +123,13 @@ impl<'fr> CleanupRecord<'fr> {
     }
 }
 
-#[derive(Debug, Default, SoAble)]
+#[derive(Debug, Default, SoAble, Bindable)]
 pub(crate) struct FinalizationRegistryRecord<'a> {
     /// \[\[Cells]]
-    pub(super) cells: Cells<'a>,
+    pub(super) cells: Cells,
     pub(super) cleanup: CleanupRecord<'a>,
     pub(super) object_index: Option<OrdinaryObject<'a>>,
 }
-bindable_handle!(FinalizationRegistryRecord);
-
 impl HeapMarkAndSweep for FinalizationRegistryRecordRef<'_, 'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {

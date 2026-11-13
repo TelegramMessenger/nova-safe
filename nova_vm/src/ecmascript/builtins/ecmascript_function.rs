@@ -21,7 +21,7 @@ use crate::{
         new_function_environment, ordinary_create_from_constructor,
         ordinary_object_create_with_intrinsics, to_object,
     },
-    engine::{Bindable, Executable, GcScope, NoGcScope, Scopable, bindable_handle},
+    engine::{Bindable, Executable, GcScope, NoGcScope, Scopable},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -238,7 +238,7 @@ impl<'ast> FunctionAstRef<'ast> {
 }
 
 /// ## [10.2 ECMAScript Function Objects](https://tc39.es/ecma262/#sec-ecmascript-function-objects)
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct ECMAScriptFunctionObjectHeapData<'a> {
     /// \[\[Environment]]
     pub(crate) environment: Environment<'a>,
@@ -1218,8 +1218,6 @@ impl<'a> CreateHeapData<ECMAScriptFunctionHeapData<'a>, ECMAScriptFunction<'a>> 
         ECMAScriptFunction(BaseIndex::last(&self.ecmascript_functions))
     }
 }
-
-bindable_handle!(ECMAScriptFunctionHeapData);
 
 impl HeapMarkAndSweep for ECMAScriptFunctionHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

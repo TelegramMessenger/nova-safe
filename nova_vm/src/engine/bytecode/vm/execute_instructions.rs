@@ -2509,8 +2509,10 @@ pub(super) fn execute_string_concat<'gc>(
 pub(super) fn execute_enumerate_object_properties(agent: &mut Agent, vm: &mut Vm, gc: NoGcScope) {
     let object = to_object(agent, vm.result.take().unwrap(), gc).unwrap();
     vm.iterator_stack.push(
-        VmIteratorRecord::ObjectProperties(Box::new(ObjectPropertiesIteratorRecord::new(object)))
-            .unbind(),
+        VmIteratorRecord::ObjectProperties(Box::new(ObjectPropertiesIteratorRecord::new(
+            object.unbind(),
+        )))
+        .unbind(),
     );
 }
 

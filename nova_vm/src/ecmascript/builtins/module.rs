@@ -734,7 +734,10 @@ pub(crate) fn module_namespace_create<'a>(
     exports.sort_by(|a, b| a.as_wtf8_(agent).cmp(&b.as_wtf8_(agent)));
     // 7. Set M.[[Exports]] to sortedExports.
     // 8. Create own properties of M corresponding to the definitions in 28.3.
-    let m = agent.heap.create(ModuleHeapData { module, exports });
+    let m = agent.heap.create(ModuleHeapData {
+        module,
+        exports: exports.unbind(),
+    });
     // 9. Set module.[[Namespace]] to M.
     module.set_namespace(agent, m);
     // 10. Return M.

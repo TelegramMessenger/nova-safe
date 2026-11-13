@@ -4,18 +4,16 @@
 
 use crate::{
     ecmascript::{Agent, OrdinaryObject, PromiseReaction, Value, new_promise_reaction_job},
-    engine::{NoGcScope, bindable_handle},
+    engine::{Bindable, NoGcScope},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Bindable)]
 pub(crate) struct PromiseHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) promise_state: PromiseState<'a>,
 }
-bindable_handle!(PromiseHeapData);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) enum PromiseState<'a> {
     Pending {
         fulfill_reactions: Option<PromiseReactions<'a>>,
@@ -43,10 +41,10 @@ impl Default for PromiseState<'_> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) enum PromiseReactions<'a> {
     One(PromiseReaction<'a>),
-    Many(Vec<PromiseReaction<'a>>),
+    Many(Vec<PromiseReaction<'static>>),
 }
 
 impl PromiseReactions<'_> {
