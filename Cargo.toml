@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nova_cli", "nova_vm", "small_string", "tests"]
+members = ["nova_cli", "nova_vm", "nova_vm_derive", "small_string", "tests"]
 exclude = ["nova_lint"]
 
 [workspace.package]
@@ -41,11 +41,14 @@ oxc_regular_expression = "=0.124.0"
 oxc_semantic = "=0.124.0"
 oxc_span = "=0.124.0"
 oxc_syntax = "=0.124.0"
+proc-macro2 = "=1.0.107"
+quote = "=1.0.47"
 rand = "=0.10.3"
 regex = "=1.13.1"
 ryu-js = "=1.0.3"
 soavec = "=0.2.0"
 soavec_derive = "=0.2.0"
+syn = "=2.0.119"
 sonic-rs = "=0.5.10"
 unicode-normalization = "=0.1.26"
 usdt = "=0.6.0"

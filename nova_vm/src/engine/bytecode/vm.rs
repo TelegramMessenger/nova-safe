@@ -19,7 +19,7 @@ use crate::{
         try_get_object_method, try_result_into_option_js,
     },
     engine::{
-        Bindable, GcScope, NoGcScope, Scopable, Scoped, bindable_handle,
+        Bindable, GcScope, NoGcScope, Scopable, Scoped,
         bytecode::{
             Executable, IndexType, Instruction, InstructionIter, instructions::Instr,
             iterator::VmIteratorRecord,
@@ -28,7 +28,7 @@ use crate::{
     heap::{CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) enum ExecutionResult<'a> {
     Return(Value<'a>),
     Throw(JsError<'a>),
@@ -50,8 +50,6 @@ impl<'a> ExecutionResult<'a> {
         }
     }
 }
-
-bindable_handle!(ExecutionResult);
 
 /// Indicates how the execution of an instruction should affect the remainder of
 /// execution that contains it.

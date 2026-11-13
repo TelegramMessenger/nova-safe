@@ -7,7 +7,7 @@ use crate::{
         Agent, CollectionIteratorKind, InternalMethods, InternalSlots, OrdinaryObject,
         ProtoIntrinsics, Set, object_handle,
     },
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -88,9 +88,7 @@ impl HeapSweepWeakReference for SetIterator<'static> {
     }
 }
 
-bindable_handle!(SetIteratorHeapData);
-
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Bindable)]
 pub(crate) struct SetIteratorHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) set: Option<Set<'a>>,

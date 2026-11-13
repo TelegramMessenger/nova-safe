@@ -30,7 +30,7 @@ use crate::{
         UINT_8_CLAMPED_ARRAY_DISCRIMINANT, UINT_16_ARRAY_DISCRIMINANT, UINT_32_ARRAY_DISCRIMINANT,
         Uint8Array, Uint8ClampedArray, Uint16Array, Uint32Array, Value,
     },
-    engine::{GcScope, HeapRootData, NoGcScope, Scoped, bindable_handle},
+    engine::{GcScope, HeapRootData, NoGcScope, Scoped},
     heap::HeapMarkAndSweep,
 };
 
@@ -47,7 +47,7 @@ use crate::{
 /// [`SharedArrayBuffer`]: crate::ecmascript::SharedArrayBuffer
 /// [`SharedTypedArray`]: crate::ecmascript::SharedTypedArray
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, crate::engine::Bindable)]
 #[repr(u8)]
 pub enum AnyTypedArray<'a> {
     /// ### [19.3.17 Int8Array ( . . . )](https://tc39.es/ecma262/#sec-int8array)
@@ -160,8 +160,6 @@ pub enum AnyTypedArray<'a> {
     /// An `f64` view into a SharedArrayBuffer.
     SharedFloat64Array(SharedFloat64Array<'a>) = SHARED_FLOAT_64_ARRAY_DISCRIMINANT,
 }
-bindable_handle!(AnyTypedArray);
-
 impl AnyTypedArray<'_> {
     /// Returns true if the TypedArray contains bigints.
     #[inline]

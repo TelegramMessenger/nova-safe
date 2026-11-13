@@ -17,7 +17,7 @@ use crate::{
         Agent, BIGINT_DISCRIMINANT, ExceptionType, JsResult, Numeric, Primitive,
         SMALL_BIGINT_DISCRIMINANT, SmallInteger, String, Value, primitive_handle, with_radix,
     },
-    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, bindable_handle},
+    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable},
     heap::{
         ArenaAccess, BaseIndex, CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep,
         WorkQueues, arena_vec_access,
@@ -129,7 +129,7 @@ impl TryFrom<&num_bigint::BigInt> for SmallBigInt {
 /// answers. For binary operations, BigInts act as two's complement binary
 /// strings, with negative numbers treated as having bits set infinitely to the
 /// left.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 #[repr(u8)]
 pub enum BigInt<'a> {
     /// Unlimited size integer data on the heap. Accessing the data can only be
@@ -747,8 +747,6 @@ impl<'a> BigInt<'a> {
         )
     }
 }
-
-bindable_handle!(BigInt);
 
 // Note: SmallInteger can be a number or BigInt.
 // Hence there are no further impls here.

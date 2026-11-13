@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     ecmascript::{Agent, numeric_handle, to_int32_number, to_uint32_number},
-    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, bindable_handle},
+    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable},
     heap::{
         ArenaAccess, BaseIndex, CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep,
         NumberHeapAccess, WorkQueues, arena_vec_access,
@@ -41,7 +41,7 @@ use num_traits::{PrimInt, Zero};
 /// bits on the stack with the 8 trailing zeroes chopped off.
 ///
 /// [`Number`]: Number
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Bindable)]
 #[repr(u8)]
 pub enum Number<'a> {
     /// f64 on the heap. Accessing the data can only be done through the Agent.
@@ -52,8 +52,6 @@ pub enum Number<'a> {
     /// off to fit into 56 bits.
     SmallF64(SmallF64) = FLOAT_DISCRIMINANT,
 }
-bindable_handle!(Number);
-
 impl<'a> Number<'a> {
     /// Allocate a 64-bit floating point number onto the Agent heap
     ///

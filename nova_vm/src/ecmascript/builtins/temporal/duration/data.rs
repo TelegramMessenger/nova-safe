@@ -4,11 +4,11 @@
 
 use crate::{
     ecmascript::OrdinaryObject,
-    engine::{NoGcScope, bindable_handle, trivially_bindable},
+    engine::{NoGcScope, trivially_bindable},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, crate::engine::Bindable)]
 pub(crate) struct DurationRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) duration: temporal_rs::Duration,
@@ -16,8 +16,6 @@ pub(crate) struct DurationRecord<'a> {
 
 trivially_bindable!(temporal_rs::Duration);
 trivially_bindable!(temporal_rs::partial::PartialDuration);
-bindable_handle!(DurationRecord);
-
 impl HeapMarkAndSweep for DurationRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {

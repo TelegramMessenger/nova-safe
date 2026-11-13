@@ -436,7 +436,7 @@ impl AsyncGeneratorState<'_> {
 /// An AsyncGeneratorRequest is a Record value used to store information about
 /// how an async generator should be resumed and contains capabilities for
 /// fulfilling or rejecting the corresponding promise.
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct AsyncGeneratorRequest<'a> {
     /// \[\[Completion]]
     pub(crate) completion: AsyncGeneratorRequestCompletion<'a>,
@@ -444,16 +444,12 @@ pub(crate) struct AsyncGeneratorRequest<'a> {
     pub(crate) capability: PromiseCapability<'a>,
 }
 
-bindable_handle!(AsyncGeneratorRequest);
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) enum AsyncGeneratorRequestCompletion<'a> {
     Ok(Value<'a>),
     Err(JsError<'a>),
     Return(Value<'a>),
 }
-
-bindable_handle!(AsyncGeneratorRequestCompletion);
 
 impl HeapMarkAndSweep for AsyncGenerator<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

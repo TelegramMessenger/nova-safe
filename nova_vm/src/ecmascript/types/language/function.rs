@@ -20,7 +20,7 @@ use crate::{
         PropertyKey, PropertyLookupCache, PropertyOffset, ProtoIntrinsics, SetAtOffsetProps,
         SetResult, String, TryGetResult, TryHasResult, TryResult, Value,
     },
-    engine::{Bindable, GcScope, HeapRootData, NoGcScope, bindable_handle},
+    engine::{Bindable, GcScope, HeapRootData, NoGcScope},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -30,7 +30,7 @@ use crate::{
 /// and has the internal slots listed in [Table 28](https://tc39.es/ecma262/#table-internal-slots-of-ecmascript-function-objects).
 /// Function objects created using the `Function.prototype.bind` method ([20.2.3.2](https://tc39.es/ecma262/#sec-function.prototype.bind))
 /// have the internal slots listed in [Table 29](https://tc39.es/ecma262/#table-internal-slots-of-bound-function-exotic-objects).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Bindable)]
 #[repr(u8)]
 pub enum Function<'a> {
     /// ### [10.4.1 Bound Function Exotic Objects](https://tc39.es/ecma262/#sec-bound-function-exotic-objects)
@@ -57,8 +57,6 @@ pub enum Function<'a> {
     /// Placeholder.
     BuiltinProxyRevokerFunction = BUILTIN_PROXY_REVOKER_FUNCTION,
 }
-bindable_handle!(Function);
-
 impl Function<'_> {
     /// Call the function with the given arguments.
     ///

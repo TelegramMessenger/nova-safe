@@ -16,7 +16,7 @@ use crate::{
         ordinary_try_has_property, ordinary_try_set, throw_cannot_set_property, try_result_ok,
         unwrap_try,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable},
 };
 
 /// ### [6.1.7.2 Object Internal Methods and Internal Slots](https://tc39.es/ecma262/#sec-object-internal-methods-and-internal-slots)
@@ -575,7 +575,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Bindable)]
 /// Continue results for the \[\[Get]] method's Try variant.
 pub enum TryHasResult<'a> {
     /// Property was not found in the object or its prototype chain.
@@ -590,10 +590,9 @@ pub enum TryHasResult<'a> {
     /// Proxy trap itself.
     Proxy(Proxy<'a>),
 }
-bindable_handle!(TryHasResult);
 try_result_ok!(TryHasResult);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Bindable)]
 /// Continue results for the \[\[Get]] method's Try variant.
 pub enum TryGetResult<'a> {
     /// No property exists in the object or its prototype chain.
@@ -611,7 +610,6 @@ pub enum TryGetResult<'a> {
     /// Proxy trap itself.
     Proxy(Proxy<'a>),
 }
-bindable_handle!(TryGetResult);
 try_result_ok!(TryGetResult);
 
 /// Handle TryGetResult within a GC scope.
@@ -709,7 +707,7 @@ pub struct SetAtOffsetProps<'a> {
 ///
 /// Early-return effectively means that a cached property lookup was found and
 /// the normal \[\[Set]] method variant need not be entered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bindable)]
 pub enum SetResult<'a> {
     /// Value was successfully set.
     Done,
@@ -723,7 +721,6 @@ pub enum SetResult<'a> {
     /// A Proxy trap call is needed.
     Proxy(Proxy<'a>),
 }
-bindable_handle!(SetResult);
 try_result_ok!(SetResult);
 
 impl SetResult<'_> {

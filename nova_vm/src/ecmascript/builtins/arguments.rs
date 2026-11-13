@@ -76,7 +76,7 @@ use crate::{
         Agent, BUILTIN_STRING_MEMORY, InternalMethods, InternalSlots, Number, Object, ObjectRecord,
         OrdinaryObject, Value,
     },
-    engine::{Bindable, HeapRootData, NoGcScope, bindable_handle},
+    engine::{Bindable, HeapRootData, NoGcScope},
     heap::{
         CompactionLists, DirectArenaAccess, ElementDescriptor, HeapMarkAndSweep,
         HeapSweepWeakReference, WellKnownSymbols, WorkQueues,
@@ -92,7 +92,7 @@ use super::{ObjectShape, ScopedArgumentsList};
 /// object is either an ordinary object or an arguments exotic object.
 ///
 /// This is the ordinary object version of arguments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(transparent)]
 pub struct UnmappedArguments<'a>(OrdinaryObject<'a>);
 
@@ -263,7 +263,6 @@ impl HeapSweepWeakReference for UnmappedArguments<'static> {
 }
 
 // === OUTPUT FROM object_handle! ADAPTED TO UnmappedArguments ===
-bindable_handle!(UnmappedArguments);
 impl crate::heap::HeapIndexHandle for UnmappedArguments<'_> {
     const _DEF: Self = Self(OrdinaryObject::_DEF);
     #[inline]

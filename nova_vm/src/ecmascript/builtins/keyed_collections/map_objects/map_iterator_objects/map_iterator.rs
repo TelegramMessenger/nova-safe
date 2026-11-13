@@ -7,7 +7,7 @@ use crate::{
         Agent, CollectionIteratorKind, InternalMethods, InternalSlots, Map, OrdinaryObject,
         ProtoIntrinsics, object_handle,
     },
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -89,15 +89,13 @@ impl HeapSweepWeakReference for MapIterator<'static> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Bindable)]
 pub(crate) struct MapIteratorHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) map: Option<Map<'a>>,
     pub(crate) next_index: usize,
     pub(crate) kind: CollectionIteratorKind,
 }
-
-bindable_handle!(MapIteratorHeapData);
 
 impl HeapMarkAndSweep for MapIteratorHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

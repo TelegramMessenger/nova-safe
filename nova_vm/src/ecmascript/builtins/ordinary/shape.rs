@@ -43,15 +43,13 @@ use super::caches::PropertyLookupCache;
 /// as objects by eg. prototype changes or property assignments, they act merely
 /// as a front to their backing object.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 pub struct ObjectShape<'a>(
     // Non-zero u31; zero is reserved for None.
     // The top bit is reserved for OrdinaryObject extensible bit.
     NonZeroU32,
     PhantomData<&'a GcToken>,
 );
-bindable_handle!(ObjectShape);
-
 impl<'a> ObjectShape<'a> {
     /// Object Shape for `{ __proto__: null }`.
     ///
@@ -817,7 +815,7 @@ const fn handle_object_shape_count_overflow() -> ! {
 /// bytecode or machine code data directly, "in line"). When the lookup gets
 /// repeated, the code can check if the object shape matches and skip the
 /// property search entirely if a match is found.
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct ObjectShapeRecord<'a> {
     /// Prototype of the object shape.
     ///
@@ -893,8 +891,6 @@ impl<'a> ObjectShapeRecord<'a> {
         self.len == 0
     }
 }
-
-bindable_handle!(ObjectShapeRecord);
 
 /// Data structure for finding a forward transition from an Object Shape to a
 /// larger one when a property key is added.

@@ -16,7 +16,7 @@ use crate::{
         Object, OrdinaryObject, ProtoIntrinsics, Value, Viewable, ViewedArrayBufferByteLength,
         ViewedArrayBufferByteOffset,
     },
-    engine::{Bindable, HeapRootData, bindable_handle},
+    engine::{Bindable, HeapRootData},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -360,7 +360,7 @@ impl HeapSweepWeakReference for SharedDataView<'static> {
 ///
 /// [`DataView`]: crate::ecmascript::DataView
 /// [`SharedDataView`]: crate::ecmascript::SharedDataView
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(u8)]
 pub enum AnyDataView<'a> {
     /// ## [25.3 DataView Objects](https://tc39.es/ecma262/#sec-dataview-objects)
@@ -371,8 +371,6 @@ pub enum AnyDataView<'a> {
     /// A variant of DataView Objects viewing a SharedArrayBuffer.
     SharedDataView(SharedDataView<'a>) = SHARED_DATA_VIEW_DISCRIMINANT,
 }
-bindable_handle!(AnyDataView);
-
 macro_rules! data_view_delegate {
     ($value: ident, $method: ident, $($arg:expr),*) => {
         match $value {

@@ -24,7 +24,7 @@ use crate::{
             Value, Viewable, copy_data_block_bytes, create_byte_data_block,
         },
     },
-    engine::{Bindable, HeapRootData, NoGcScope, bindable_handle},
+    engine::{Bindable, HeapRootData, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapIndexHandle, HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -287,7 +287,7 @@ impl<'a> CreateHeapData<ArrayBufferHeapData<'a>, ArrayBuffer<'a>> for Heap {
 ///
 /// [`ArrayBuffer`]: crate::ecmascript::ArrayBuffer
 /// [`SharedArrayBuffer`]: crate::ecmascript::SharedArrayBuffer
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(u8)]
 pub enum AnyArrayBuffer<'a> {
     /// ## [25.1 ArrayBuffer Objects](https://tc39.es/ecma262/#sec-arraybuffer-objects)
@@ -296,8 +296,6 @@ pub enum AnyArrayBuffer<'a> {
     /// ## [25.2 SharedArrayBuffer Objects](https://tc39.es/ecma262/#sec-sharedarraybuffer-objects)
     SharedArrayBuffer(SharedArrayBuffer<'a>) = SHARED_ARRAY_BUFFER_DISCRIMINANT,
 }
-bindable_handle!(AnyArrayBuffer);
-
 impl<'ab> AnyArrayBuffer<'ab> {
     /// Returns true if the ArrayBuffer is a SharedArrayBuffer.
     #[inline(always)]

@@ -17,7 +17,7 @@ use crate::{
         set_value_in_buffer, species_constructor, to_index, try_result_into_js,
         try_species_constructor, try_to_index,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped, ScopedCollection, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped, ScopedCollection},
     heap::CreateHeapData,
 };
 
@@ -50,13 +50,11 @@ impl From<CachedBufferByteLength> for Option<usize> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct TypedArrayWithBufferWitnessRecords<'a> {
     pub(crate) object: AnyTypedArray<'a>,
     pub(crate) cached_buffer_byte_length: CachedBufferByteLength,
 }
-bindable_handle!(TypedArrayWithBufferWitnessRecords);
-
 impl<'ta> TypedArrayWithBufferWitnessRecords<'ta> {
     /// ### [10.4.5.13 IsTypedArrayOutOfBounds ( taRecord )](https://tc39.es/ecma262/#sec-istypedarrayoutofbounds)
     ///

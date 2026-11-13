@@ -7,9 +7,7 @@ use crate::{
         Agent, ExceptionType, ExecutionContext, InternalMethods, InternalSlots, JsError, JsResult,
         OrdinaryObject, ProtoIntrinsics, Value, create_iter_result_object, object_handle,
     },
-    engine::{
-        Bindable, Executable, ExecutionResult, GcScope, Scopable, SuspendedVm, bindable_handle,
-    },
+    engine::{Bindable, Executable, ExecutionResult, GcScope, Scopable, SuspendedVm},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -431,7 +429,7 @@ impl HeapSweepWeakReference for Generator<'static> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Bindable)]
 pub(crate) struct GeneratorHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) generator_state: Option<GeneratorState>,
@@ -475,8 +473,6 @@ impl HeapMarkAndSweep for SuspendedGeneratorState {
         execution_context.sweep_values(compactions);
     }
 }
-
-bindable_handle!(GeneratorHeapData);
 
 impl HeapMarkAndSweep for GeneratorHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

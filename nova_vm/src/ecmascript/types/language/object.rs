@@ -83,7 +83,7 @@ use crate::{
         PropertyOffset, ProtoIntrinsics, Proxy, StringIterator, TryResult,
         ordinary_object_create_with_intrinsics,
     },
-    engine::{Bindable, GcScope, HeapRootData, NoGcScope, bindable_handle},
+    engine::{Bindable, GcScope, HeapRootData, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, DirectArenaAccess,
         Heap, HeapMarkAndSweep, HeapSweepWeakReference, IntrinsicConstructorIndexes,
@@ -103,7 +103,7 @@ use std::collections::TryReserveError;
 /// ### [6.1.7 The Object Type](https://tc39.es/ecma262/#sec-object-type)
 ///
 /// In Nova
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(u8)]
 pub enum Object<'a> {
     /// ### [6.1.7 The Object Type](https://tc39.es/ecma262/#sec-object-type)
@@ -342,8 +342,6 @@ pub enum Object<'a> {
     /// native data embedded into them.
     EmbedderObject(EmbedderObject<'a>) = EMBEDDER_OBJECT_DISCRIMINANT,
 }
-
-bindable_handle!(Object);
 
 impl Object<'_> {
     /// Returns true if this Object is a Module.

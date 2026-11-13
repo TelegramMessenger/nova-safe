@@ -4,11 +4,10 @@
 
 use crate::{
     ecmascript::types::Object,
-    engine::bindable_handle,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, crate::engine::Bindable)]
 pub(crate) enum ProxyHeapData<'a> {
     /// Proxy has not been revoked.
     NonRevoked {
@@ -22,8 +21,6 @@ pub(crate) enum ProxyHeapData<'a> {
     /// A non-callable Proxy was revoked.
     _Revoked,
 }
-
-bindable_handle!(ProxyHeapData);
 
 impl HeapMarkAndSweep for ProxyHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

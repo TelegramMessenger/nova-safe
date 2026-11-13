@@ -12,11 +12,10 @@ use crate::{
         },
         types::OrdinaryObject,
     },
-    engine::bindable_handle,
     heap::{CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug)]
+#[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct DataViewRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     // TODO: Add a helper function for a u32::MAX value which signifies an a under-construction value:
@@ -28,8 +27,6 @@ pub(crate) struct DataViewRecord<'a> {
     /// ### [\[\[ByteOffset\]\]](https://tc39.es/ecma262/#sec-properties-of-dataview-instances)
     pub(crate) byte_offset: ViewedArrayBufferByteOffset,
 }
-bindable_handle!(DataViewRecord);
-
 impl Default for DataViewRecord<'_> {
     fn default() -> Self {
         Self {
@@ -42,7 +39,7 @@ impl Default for DataViewRecord<'_> {
 }
 
 #[cfg(feature = "shared-array-buffer")]
-#[derive(Debug)]
+#[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct SharedDataViewRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     // TODO: Add a helper function for a u32::MAX value which signifies an a under-construction value:
@@ -55,8 +52,6 @@ pub(crate) struct SharedDataViewRecord<'a> {
     pub(crate) byte_offset: ViewedArrayBufferByteOffset,
 }
 #[cfg(feature = "shared-array-buffer")]
-bindable_handle!(SharedDataViewRecord);
-
 #[cfg(feature = "shared-array-buffer")]
 impl Default for SharedDataViewRecord<'_> {
     fn default() -> Self {

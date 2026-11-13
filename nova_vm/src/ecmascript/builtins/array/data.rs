@@ -6,7 +6,6 @@ use soavec_derive::SoAble;
 
 use crate::{
     ecmascript::types::OrdinaryObject,
-    engine::bindable_handle,
     heap::{CompactionLists, ElementsVector, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -15,13 +14,11 @@ use crate::{
 /// is also called an element. Every Array has a non-configurable "**length**"
 /// property whose value is always a non-negative integral Number whose
 /// mathematical value is strictly less than 2**32.
-#[derive(Debug, Clone, Copy, Default, SoAble)]
+#[derive(Debug, Clone, Copy, Default, SoAble, crate::engine::Bindable)]
 pub(crate) struct ArrayHeapData<'a> {
     pub(crate) elements: ElementsVector<'a>,
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
 }
-bindable_handle!(ArrayHeapData);
-
 impl HeapMarkAndSweep for ArrayHeapDataRef<'_, 'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {

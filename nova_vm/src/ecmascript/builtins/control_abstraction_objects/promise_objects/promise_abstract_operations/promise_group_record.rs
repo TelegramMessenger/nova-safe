@@ -8,7 +8,7 @@ use crate::{
         PromiseCapability, PromiseReactionType, PropertyDescriptor, Value,
         try_define_property_or_throw, unwrap_try,
     },
-    engine::{Bindable, GcScope, NoGcScope, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, ObjectEntry, WorkQueues, arena_vec_access, index_handle,
@@ -22,7 +22,7 @@ pub(crate) enum PromiseGroupType {
     Any,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) struct PromiseGroupRecord<'a> {
     pub(crate) promise_group_type: PromiseGroupType,
     pub(crate) remaining_elements_count: u32,
@@ -280,8 +280,6 @@ impl HeapMarkAndSweep for PromiseGroup<'static> {
         compactions.promise_group_records.shift_index(&mut self.0);
     }
 }
-
-bindable_handle!(PromiseGroupRecord);
 
 impl<'a> CreateHeapData<PromiseGroupRecord<'a>, PromiseGroup<'a>> for Heap {
     fn create(&mut self, data: PromiseGroupRecord<'a>) -> PromiseGroup<'a> {

@@ -34,6 +34,7 @@ ryu-js = { workspace = true }
 small_string = { path = "../small_string", version = "1.0.0" }
 soavec = { workspace = true }
 soavec_derive = { workspace = true }
+nova_vm_derive = { path = "../nova_vm_derive", version = "1.0.0" }
 sonic-rs = { workspace = true, optional = true }
 unicode-normalization = { workspace = true }
 usdt = { workspace = true }

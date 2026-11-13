@@ -1,0 +1,18 @@
+[package]
+name = "nova_vm_derive"
+version = "1.0.0"
+repository = "https://github.com/trynova/nova/tree/main/nova_vm_derive"
+description = "Derive macros for the Nova JavaScript engine"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+
+[lib]
+proc-macro = true
+path = "lib.rs"
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }

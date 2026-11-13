@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     ecmascript::{Agent, Function, PropertyDescriptor, PropertyKey, Value},
-    engine::{Bindable, NoGcScope, bindable_handle},
+    engine::{Bindable, NoGcScope},
     heap::HeapIndexHandle,
 };
 use core::mem::MaybeUninit;
@@ -186,7 +186,7 @@ impl From<usize> for ElementArrayKey {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) struct ElementsVector<'a> {
     pub(crate) elements_index: ElementIndex<'a>,
     pub(crate) cap: ElementArrayKey,
@@ -395,8 +395,6 @@ impl<'gc> ElementsVector<'gc> {
     }
 }
 
-bindable_handle!(ElementsVector);
-
 impl HeapMarkAndSweep for ElementsVector<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {
@@ -446,7 +444,7 @@ impl HeapMarkAndSweep for ElementsVector<'static> {
 }
 
 /// Property descriptor enumeration used for creating objects.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Bindable)]
 #[repr(u8)]
 pub enum ElementDescriptor<'a> {
     /// ```js
@@ -1214,8 +1212,6 @@ impl<'a> ElementDescriptor<'a> {
         !self.is_accessor_descriptor()
     }
 }
-
-bindable_handle!(ElementDescriptor);
 
 #[derive(Debug, Default)]
 pub(crate) struct ElementArray<const N: usize> {

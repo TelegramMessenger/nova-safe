@@ -4,10 +4,7 @@
 
 //! # [16 ECMAScript Language: Scripts and Modules](https://tc39.es/ecma262/#sec-ecmascript-language-scripts-and-modules)
 
-use crate::{
-    engine::bindable_handle,
-    heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
-};
+use crate::heap::{CompactionLists, HeapMarkAndSweep, WorkQueues};
 
 mod module;
 mod script;
@@ -17,7 +14,7 @@ pub use module::*;
 pub use script::*;
 pub(crate) use source_code::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, crate::engine::Bindable)]
 pub(crate) enum ScriptOrModule<'a> {
     /// ## [16.1 Scripts](https://tc39.es/ecma262/#sec-scripts)
     Script(Script<'a>),
@@ -33,8 +30,6 @@ impl core::fmt::Debug for ScriptOrModule<'_> {
         }
     }
 }
-
-bindable_handle!(ScriptOrModule);
 
 impl HeapMarkAndSweep for ScriptOrModule<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

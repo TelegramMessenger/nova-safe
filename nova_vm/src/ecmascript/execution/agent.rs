@@ -41,7 +41,7 @@ use crate::{
     },
     engine::{
         Bindable, GcScope, Global, HeapRootCollection, HeapRootData, HeapRootRef, NoGcScope,
-        Rootable, Vm, bindable_handle,
+        Rootable, Vm,
     },
     heap::{
         ArenaAccess, CompactionLists, CreateHeapData, Heap, HeapIndexHandle, HeapMarkAndSweep,
@@ -81,11 +81,9 @@ impl<'a, T: 'a> From<JsError<'a>> for JsResult<'a, T> {
 /// A JavaScript [`Value`] thrown as an error.
 ///
 /// [`Value`]: crate::ecmascript::Value
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Bindable)]
 #[repr(transparent)]
 pub struct JsError<'a>(Value<'a>);
-bindable_handle!(JsError);
-
 impl<'a> JsError<'a> {
     pub(crate) fn new(value: Value<'a>) -> Self {
         Self(value)
@@ -142,7 +140,7 @@ impl HeapMarkAndSweep for JsError<'static> {
 }
 
 /// Failure conditions for internal method's Try variants.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Bindable)]
 pub enum TryError<'a> {
     /// The method threw an error.
     Err(JsError<'a>),
@@ -160,8 +158,6 @@ pub enum TryError<'a> {
     /// > that would affect how the normal variant runs.
     GcError,
 }
-bindable_handle!(TryError);
-
 /// Helper function turning an Option into a [`TryResult`]. If the value is
 /// `Some` then the result is `Continue`, otherwise it is [`TryError::GcError`].
 ///

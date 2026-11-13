@@ -694,6 +694,7 @@ fn try_handle_primitive_get_value<'a>(
         .map_continue(|c| TryGetValueContinue::from_get_continue(c, receiver, referenced_name))
 }
 
+#[derive(Bindable)]
 pub(crate) enum TryGetValueContinue<'a> {
     /// No property exists in the object or its prototype chain.
     Unset,
@@ -717,8 +718,6 @@ pub(crate) enum TryGetValueContinue<'a> {
         property_key: PropertyKey<'a>,
     },
 }
-bindable_handle!(TryGetValueContinue);
-
 impl<'a> TryGetValueContinue<'a> {
     fn from_get_continue(
         c: TryGetResult<'a>,

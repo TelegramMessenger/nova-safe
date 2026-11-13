@@ -7,7 +7,7 @@ use crate::{
         Agent, ArgumentsList, FunctionInternalProperties, JsResult, OrdinaryObject,
         PromiseCapability, String, Value, function_handle,
     },
-    engine::{Bindable, GcScope, bindable_handle},
+    engine::{Bindable, GcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -26,7 +26,7 @@ pub(crate) enum PromiseResolvingFunctionType {
 /// \[\[Promise\]\] and \[\[AlreadyResolved\]\] internal slots.
 ///
 /// The "length" property of a promise reject function is 1𝔽.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) struct PromiseResolvingFunctionHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) promise_capability: PromiseCapability<'a>,
@@ -131,8 +131,6 @@ impl HeapSweepWeakReference for BuiltinPromiseResolvingFunction<'static> {
             .map(Self)
     }
 }
-
-bindable_handle!(PromiseResolvingFunctionHeapData);
 
 impl HeapMarkAndSweep for PromiseResolvingFunctionHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

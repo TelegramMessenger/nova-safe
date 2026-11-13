@@ -32,7 +32,7 @@ use crate::{
         to_boolean, to_number, to_number_primitive, typed_array_create_from_data_block,
         typed_array_species_create_with_length, unwrap_try,
     },
-    engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, Scoped, bindable_handle},
+    engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, Scoped},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, DirectArenaAccess,
         DirectArenaAccessMut, Heap, HeapIndexHandle, HeapMarkAndSweep, HeapSweepWeakReference,
@@ -640,7 +640,7 @@ impl<'a> InternalMethods<'a> for SharedTypedArray<'a> {
 /// [`SharedArrayBuffer`]: crate::ecmascript::builtins::SharedArrayBuffer
 /// [`TypedArray`]: crate::ecmascript::builtins::TypedArray
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(u8)]
 pub enum SharedTypedArray<'a> {
     /// ### [19.3.17 Int8Array ( . . . )](https://tc39.es/ecma262/#sec-int8array)
@@ -693,8 +693,6 @@ pub enum SharedTypedArray<'a> {
     /// An `f64` view into a SharedArrayBuffer.
     SharedFloat64Array(SharedFloat64Array<'a>) = SHARED_FLOAT_64_ARRAY_DISCRIMINANT,
 }
-bindable_handle!(SharedTypedArray);
-
 impl<'a> SharedTypedArray<'a> {
     #[inline(always)]
     const fn into_void_array(self) -> SharedVoidArray<'a> {

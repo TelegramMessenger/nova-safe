@@ -31,7 +31,7 @@ use crate::{
         to_boolean, to_number, to_number_primitive, typed_array_create_from_data_block,
         typed_array_species_create_with_length, unwrap_try,
     },
-    engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, Scoped, bindable_handle},
+    engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, Scoped},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, DirectArenaAccess,
         DirectArenaAccessMut, Heap, HeapIndexHandle, HeapMarkAndSweep, HeapSweepWeakReference,
@@ -361,7 +361,7 @@ pub type Float64Array<'a> = GenericTypedArray<'a, f64>;
 /// In Nova engine, TypedArrays view an ArrayBuffer. TypedArrays viewing a
 /// SharedArrayBuffer are represented by a different type.
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(u8)]
 pub enum TypedArray<'a> {
     /// ### [19.3.17 Int8Array ( . . . )](https://tc39.es/ecma262/#sec-int8array)
@@ -414,8 +414,6 @@ pub enum TypedArray<'a> {
     /// An `f64` view into an ArrayBuffer.
     Float64Array(Float64Array<'a>) = FLOAT_64_ARRAY_DISCRIMINANT,
 }
-bindable_handle!(TypedArray);
-
 macro_rules! for_normal_typed_array {
     ($value: ident, $ta: ident, $expr: expr) => {
         for_normal_typed_array($value, $ta, $expr, TA)
