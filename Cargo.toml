@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nova_cli", "nova_vm", "small_string", "tests"]
+members = ["nova_cli", "nova_vm", "small_string", "tests", "wtf8"]
 exclude = ["nova_lint"]
 
 [workspace.package]
@@ -49,7 +49,7 @@ soavec_derive = "=0.2.0"
 sonic-rs = "=0.5.10"
 unicode-normalization = "=0.1.26"
 usdt = "=0.6.0"
-wtf8 = "=0.1.0"
+wtf8 = { path = "wtf8" }
 xsum = "=0.1.6"
 temporal_rs = "=0.2.6"
 

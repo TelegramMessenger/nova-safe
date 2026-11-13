@@ -17,7 +17,7 @@
 use std::convert::Infallible;
 
 use num_bigint::Sign;
-use wtf8::Wtf8;
+use wtf8::Wtf8Str;
 
 use crate::{
     ecmascript::{
@@ -1391,7 +1391,7 @@ pub(crate) fn to_property_key_primitive<'a>(
     }
 }
 
-pub(crate) fn parse_wtf8_to_integer_property_key(str: &Wtf8) -> Option<PropertyKey<'static>> {
+pub(crate) fn parse_wtf8_to_integer_property_key(str: Wtf8Str<'_>) -> Option<PropertyKey<'static>> {
     if let Some(str) = str.as_str() {
         parse_string_to_integer_property_key(str)
     } else {

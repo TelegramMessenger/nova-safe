@@ -5,7 +5,7 @@
 use core::{cell::OnceCell, hash::Hash, num::NonZeroUsize};
 use std::borrow::Cow;
 
-use wtf8::{CodePoint, Wtf8, Wtf8Buf};
+use wtf8::{CodePoint, Wtf8Buf, Wtf8Str};
 
 use crate::heap::{CompactionLists, HeapMarkAndSweep, WorkQueues};
 
@@ -20,7 +20,7 @@ impl PartialEq for StringRecord {
         // If both strings are static, we can compare their pointers directly.
         if let (&StringBuffer::Static(self_str), &StringBuffer::Static(other_str)) =
             (&self.data, &other.data)
-            && core::ptr::eq(self_str, other_str)
+            && core::ptr::eq(self_str.as_bytes(), other_str.as_bytes())
         {
             return true;
         }
@@ -49,7 +49,7 @@ pub(crate) enum IndexMapping {
 #[derive(Debug, Clone)]
 pub(crate) enum StringBuffer {
     Owned(Wtf8Buf),
-    Static(&'static Wtf8),
+    Static(Wtf8Str<'static>),
 }
 
 impl Hash for StringBuffer {
@@ -347,15 +347,13 @@ impl StringRecord {
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
-        let buf = self.as_wtf8();
-        // SAFETY: converting to backing store data.
-        unsafe { core::mem::transmute::<&Wtf8, &[u8]>(buf) }
+        self.as_wtf8().as_bytes()
     }
 
-    pub(crate) fn as_wtf8(&self) -> &Wtf8 {
+    pub(crate) fn as_wtf8(&self) -> Wtf8Str<'_> {
         match &self.data {
-            StringBuffer::Owned(buf) => buf,
-            StringBuffer::Static(buf) => buf,
+            StringBuffer::Owned(buf) => buf.as_wtf8(),
+            StringBuffer::Static(buf) => *buf,
         }
     }
 
@@ -372,7 +370,7 @@ impl StringRecord {
         debug_assert!(str.len() > 7);
         assert!(str.len() <= Self::MAX_UTF8_LENGTH, "String is too long.");
         StringRecord {
-            data: StringBuffer::Static(Wtf8::from_str(str)),
+            data: StringBuffer::Static(Wtf8Str::from_str(str)),
             mapping: OnceCell::new(),
         }
     }

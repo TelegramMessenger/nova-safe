@@ -68,7 +68,11 @@ impl RegExpConstructor {
             .unbind()?
             .bind(gc.nogc());
         // 2. If NewTarget is undefined, then
-        let new_target = if new_target.is_none() {
+        let new_target = if let Some(new_target) = new_target {
+            // 3. Else,
+            // a. Let newTarget be NewTarget.
+            new_target
+        } else {
             // a. Let newTarget be the active function object.
             let new_target = agent.active_function_object(gc.nogc());
             // b. If patternIsRegExp is true and flags is undefined, then
@@ -92,11 +96,6 @@ impl RegExpConstructor {
             } else {
                 new_target.into()
             }
-        } else {
-            // 3. Else,
-            // a. Let newTarget be NewTarget.
-            // SAFETY: checked above.
-            unsafe { new_target.unwrap_unchecked() }
         };
         let new_target = new_target.scope(agent, gc.nogc());
         let pattern = scoped_pattern.get(agent).bind(gc.nogc());

@@ -126,10 +126,9 @@ const fn get_index(n: &'static str) -> usize {
         struct_const.push_str("    r#");
         struct_const.push_str(&escaped_string);
         if is_small_string {
-            struct_const
-                .push_str(": String::SmallString(unsafe { SmallString::from_str_unchecked(\"");
+            struct_const.push_str(": String::SmallString(SmallString::from_str_const(\"");
             struct_const.push_str(string);
-            struct_const.push_str("\") }),\n");
+            struct_const.push_str("\")),\n");
         } else {
             struct_const
                 .push_str(": String::String(HeapString(BaseIndex::from_index_const(get_index(");

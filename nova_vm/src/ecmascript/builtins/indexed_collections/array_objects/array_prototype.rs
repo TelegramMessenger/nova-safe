@@ -4682,6 +4682,6 @@ fn compare_array_elements<'a>(
         // 10. If ySmaller is true, return 1𝔽.
         // 11. Return +0𝔽.
         // TODO: this gives UTF-8 lexicographic ordering, not UTF-16.
-        Ok(x.as_wtf8_(agent).cmp(y.as_wtf8_(agent)))
+        Ok(x.as_wtf8_(agent).cmp(&y.as_wtf8_(agent)))
     }
 }
