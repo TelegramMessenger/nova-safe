@@ -54,9 +54,11 @@ impl SmallF64 {
         }
     }
 
-    /// SAFETY: f64 must have 8 or more trailing zeros
+    /// ## Correctness
+    ///
+    /// The f64 must have 8 or more trailing zeros, or its lowest byte is lost.
     #[inline]
-    unsafe fn from_f64_unchecked(mut value: f64) -> SmallF64 {
+    fn from_f64_unchecked(mut value: f64) -> SmallF64 {
         if value.is_nan() {
             // Canonicalize NaNs.
             value = f64::NAN;
@@ -81,8 +83,7 @@ impl TryFrom<f64> for SmallF64 {
     type Error = ();
     fn try_from(value: f64) -> Result<Self, Self::Error> {
         if SmallF64::can_convert(value) {
-            // SAFETY: Checked conversion is safe.
-            Ok(unsafe { Self::from_f64_unchecked(value) })
+            Ok(Self::from_f64_unchecked(value))
         } else {
             Err(())
         }
@@ -99,8 +100,7 @@ impl From<f16> for SmallF64 {
 
 impl From<f32> for SmallF64 {
     fn from(value: f32) -> Self {
-        // SAFETY: All floats have 8 trailing zeros when converted to double.
-        unsafe { Self::from_f64_unchecked(value as f64) }
+        Self::from_f64_unchecked(value as f64)
     }
 }
 
@@ -108,14 +108,9 @@ impl From<SmallF64> for f64 {
     fn from(value: SmallF64) -> Self {
         let SmallF64 { data } = value;
 
-        #[repr(u8)]
-        enum Repr {
-            #[expect(dead_code)]
-            Data([u8; 7]) = 0,
-        }
-
-        // SAFETY: This matches the format on the endian platform.
-        let number: u64 = unsafe { core::mem::transmute(Repr::Data(data)) };
+        let number = u64::from_ne_bytes([
+            0, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
+        ]);
 
         // The enum repr zero is the first byte
         if cfg!(target_endian = "little") {

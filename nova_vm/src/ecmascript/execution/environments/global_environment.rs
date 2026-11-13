@@ -916,8 +916,7 @@ impl<'e> GlobalEnvironment<'e> {
         let name = scoped_n.take(agent);
         // 8. If envRec.[[VarNames]] does not contain N, then
         // a. Append N to envRec.[[VarNames]].
-        // SAFETY: Name of a global function cannot be a numeric string.
-        let n = unsafe { String::try_from(name.into_value_unchecked()).unwrap() };
+        let n = String::try_from(name.into_value_unchecked()).unwrap();
         env.get_mut(agent).var_names.insert(n);
         // 9. Return UNUSED.
         Ok(())

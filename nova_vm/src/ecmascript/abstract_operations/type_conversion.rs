@@ -1338,8 +1338,7 @@ pub(crate) fn to_property_key_simple<'a, 'gc>(
             if (SmallInteger::MIN..=SmallInteger::MAX).contains(&x.into_i64()) =>
         {
             Some(PropertyKey::Integer(
-                // SAFETY: Range check performed above.
-                unsafe { SmallInteger::from_small_bigint_unchecked(x) },
+                SmallInteger::from_small_bigint_unchecked(x),
             ))
         }
         Value::Undefined => Some(PropertyKey::from(BUILTIN_STRING_MEMORY.undefined)),

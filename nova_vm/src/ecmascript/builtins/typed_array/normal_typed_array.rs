@@ -1678,8 +1678,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                 this_arg.get(agent),
                 Some(ArgumentsList::from_mut_slice(&mut [
                     k_value.unbind(),
-                    // SAFETY: we want the numeric value, not string.
-                    unsafe { pk.into_value_unchecked() },
+                    pk.into_value_unchecked(),
                     scoped_o.get(agent).into(),
                 ])),
                 gc.reborrow(),

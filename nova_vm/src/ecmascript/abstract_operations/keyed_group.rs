@@ -92,17 +92,13 @@ impl<'a> KeyedGroup<'a> {
         value: Value,
     ) {
         let hash = key.heap_hash(agent);
-        // SAFETY: Caller is using this KeyedGroup with the PROPERTY key
-        // coercion.
-        let key = unsafe { key.into_value_unchecked() };
+        let key = key.into_value_unchecked();
         let entry = self.hash_table.entry(
             hash,
             |idx| self.keys[*idx as usize] == key,
             |idx| {
                 let key = self.keys[*idx as usize];
-                // SAFETY: Caller is using this KeyedGroup with the PROPERTY
-                // key coercion.
-                let key = unsafe { PropertyKey::from_value_unchecked(key) };
+                let key = PropertyKey::from_value_unchecked(key);
                 key.heap_hash(agent)
             },
         );
@@ -163,7 +159,7 @@ impl<'a> KeyedGroup<'a> {
         debug_assert_eq!(self.keys.len(), self.values.len());
         self.keys
             .into_iter()
-            .map(|v| unsafe { PropertyKey::from_value_unchecked(v) })
+            .map(|v| PropertyKey::from_value_unchecked(v))
             .zip(self.values)
     }
 

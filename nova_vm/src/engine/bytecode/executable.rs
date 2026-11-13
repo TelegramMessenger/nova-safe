@@ -281,8 +281,7 @@ impl<'gc> Executable<'gc> {
         gc: NoGcScope<'gc, '_>,
     ) -> PropertyKey<'gc> {
         let value = self.get(agent).constants[index];
-        // SAFETY: caller wants a PropertyKey.
-        unsafe { PropertyKey::from_value_unchecked(value).bind(gc) }
+        PropertyKey::from_value_unchecked(value).bind(gc)
     }
 
     fn fetch_function_expression<'a>(

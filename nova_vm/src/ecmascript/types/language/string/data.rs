@@ -99,8 +99,7 @@ impl StringRecord {
             let mut buf = [0u8; 4];
             let mut iter = self.as_wtf8().slice_from(idx).code_points();
 
-            // SAFETY: We
-            let ch = unsafe { iter.next().unwrap_unchecked() };
+            let ch = iter.next().expect("non-ASCII byte starts a code point");
 
             if is_surrogate_pair(ch) {
                 mapping.push(None);
@@ -153,8 +152,7 @@ impl StringRecord {
         let (utf8_idx, take_latter_half): (usize, bool) = if idx != 0 {
             match self.index_mapping() {
                 IndexMapping::Ascii => {
-                    // SAFETY: ASCII is always valid CodePoints.
-                    return unsafe { CodePoint::from_u32_unchecked(self.as_bytes()[idx] as u32) };
+                    return CodePoint::from_char(char::from(self.as_wtf8().ascii_byte_at(idx)));
                 }
                 IndexMapping::NonAscii { mapping } => {
                     match mapping[idx] {
@@ -162,8 +160,7 @@ impl StringRecord {
                         None => {
                             // We got a None; that means we're looking at a latter
                             // surrogate here.
-                            // SAFETY: idx is not 0.
-                            let idx = unsafe { idx.unchecked_sub(1) };
+                            let idx = idx - 1;
                             let idx = if idx == 0 {
                                 0
                             } else {
@@ -197,8 +194,7 @@ impl StringRecord {
         // encode into two u16s.
         debug_assert_eq!(enc.len(), 2);
         let surrogate = encoded[if take_latter_half { 1 } else { 0 }];
-        // SAFETY: 0..0xFFFF is always less than 0x10FFFF.
-        unsafe { CodePoint::from_u32_unchecked(surrogate as u32) }
+        CodePoint::from_u32(u32::from(surrogate)).expect("a u16 is a code point")
     }
 
     pub(crate) fn utf8_index(&self, utf16_idx: usize) -> Option<usize> {
@@ -289,9 +285,8 @@ impl StringRecord {
     pub(crate) fn code_point_at(&self, utf16_idx: usize) -> CodePoint {
         assert!(utf16_idx <= self.utf16_len());
         let mapping = match self.index_mapping() {
-            // SAFETY: ASCII is all valid CodePoints.
             IndexMapping::Ascii => {
-                return unsafe { CodePoint::from_u32_unchecked(self.as_bytes()[utf16_idx] as u32) };
+                return CodePoint::from_char(char::from(self.as_wtf8().ascii_byte_at(utf16_idx)));
             }
             IndexMapping::NonAscii { mapping } => mapping,
         };
@@ -326,8 +321,7 @@ impl StringRecord {
                 // encode into two u16s.
                 debug_assert_eq!(encoded.len(), 2);
                 let surrogate = encoded[1];
-                // SAFETY: 0..0xFFFF is always less than 0x10FFFF.
-                unsafe { CodePoint::from_u32_unchecked(surrogate as u32) }
+                CodePoint::from_u32(u32::from(surrogate)).expect("a u16 is a code point")
             }
         }
     }

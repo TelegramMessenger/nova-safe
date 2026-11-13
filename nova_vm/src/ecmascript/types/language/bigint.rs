@@ -506,8 +506,8 @@ impl<'a> BigInt<'a> {
         match (x, y) {
             (BigInt::SmallBigInt(x), BigInt::SmallBigInt(y)) => {
                 // Note: The result can still overflow stack bigint limits.
-                // SAFETY: SmallBigInt is i54; add cannot overflow an i64.
-                Self::from_i64(agent, unsafe { x.into_i64().unchecked_add(y.into_i64()) })
+                // SmallBigInt is i56; add cannot overflow an i64.
+                Self::from_i64(agent, x.into_i64() + y.into_i64())
             }
             (BigInt::SmallBigInt(x), BigInt::BigInt(y))
             | (BigInt::BigInt(y), BigInt::SmallBigInt(x)) => match x.into_i64() {
@@ -531,8 +531,8 @@ impl<'a> BigInt<'a> {
         match (x, y) {
             (BigInt::SmallBigInt(x), BigInt::SmallBigInt(y)) => {
                 // Note: The result can still overflow stack bigint limits.
-                // SAFETY: SmallBigInt is i54; subtract cannot overflow an i64.
-                Self::from_i64(agent, unsafe { x.into_i64().unchecked_sub(y.into_i64()) })
+                // SmallBigInt is i56; subtract cannot overflow an i64.
+                Self::from_i64(agent, x.into_i64() - y.into_i64())
             }
             (BigInt::SmallBigInt(x), BigInt::BigInt(y)) => {
                 // Note: Subtract can produce a stack bigint.

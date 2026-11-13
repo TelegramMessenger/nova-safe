@@ -484,21 +484,14 @@ impl<'a> String<'a> {
     /// static string) then garbage collection may deallocate the backing data,
     /// causing the string slice to dangle.
     #[inline(always)]
-    pub fn to_string_lossy(&self, agent: &Agent) -> Cow<'_, str> {
+    pub fn to_string_lossy<'r>(&'r self, agent: &'r Agent) -> Cow<'r, str> {
         self.to_string_lossy_(agent)
     }
 
     #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn to_string_lossy_(&self, agent: &impl StringHeapAccess) -> Cow<'_, str> {
+    pub(crate) fn to_string_lossy_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> Cow<'r, str> {
         match self {
-            // SAFETY: Assuming that user has properly bound the String, the
-            // backing string data is guaranteed to never be accessed as
-            // exclusive by the heap and thus the reference never invalidates.
-            // As `&self` is bound to the GC lfietime, the StringHeapData will
-            // not be dropped while the `&str` is being used.
-            String::String(s) => unsafe {
-                std::mem::transmute::<Cow<str>, Cow<str>>(s.get(agent).to_string_lossy())
-            },
+            String::String(s) => s.get(agent).to_string_lossy(),
             String::SmallString(s) => s.to_string_lossy(),
         }
     }
@@ -507,60 +500,39 @@ impl<'a> String<'a> {
     ///
     /// Returns `None` if the string is not valid UTF-8.
     #[inline(always)]
-    pub fn as_str(&self, agent: &Agent) -> Option<&str> {
+    pub fn as_str<'r>(&'r self, agent: &'r Agent) -> Option<&'r str> {
         self.as_str_(agent)
     }
 
-    pub(crate) fn as_str_(&self, agent: &impl StringHeapAccess) -> Option<&str> {
+    pub(crate) fn as_str_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> Option<&'r str> {
         match self {
-            // SAFETY: Assuming that user has properly bound the String, the
-            // backing string data is guaranteed to never be accessed as
-            // exclusive by the heap and thus the reference never invalidates.
-            // As `&self` is bound to the GC lfietime, the StringHeapData will
-            // not be dropped while the `&str` is being used.
-            String::String(s) => {
-                Some(unsafe { std::mem::transmute::<&str, &str>(s.get(agent).as_str()?) })
-            }
+            String::String(s) => s.get(agent).as_str(),
             String::SmallString(s) => s.as_str(),
         }
     }
 
     /// Get the String data as a WTF-8 slice.
     #[inline(always)]
-    pub fn as_wtf8(&self, agent: &Agent) -> &Wtf8 {
+    pub fn as_wtf8<'r>(&'r self, agent: &'r Agent) -> &'r Wtf8 {
         self.as_wtf8_(agent)
     }
 
-    pub(crate) fn as_wtf8_(&self, agent: &impl StringHeapAccess) -> &Wtf8 {
+    pub(crate) fn as_wtf8_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> &'r Wtf8 {
         match self {
-            // SAFETY: Assuming that user has properly bound the String, the
-            // backing string data is guaranteed to never be accessed as
-            // exclusive by the heap and thus the reference never invalidates.
-            // As `&self` is bound to the GC lfietime, the StringHeapData will
-            // not be dropped while the `&str` is being used.
-            String::String(s) => unsafe {
-                std::mem::transmute::<&Wtf8, &Wtf8>(s.get(agent).as_wtf8())
-            },
+            String::String(s) => s.get(agent).as_wtf8(),
             String::SmallString(s) => s.as_wtf8(),
         }
     }
 
     /// Get the String data as a byte slice.
     #[inline(always)]
-    pub fn as_bytes(&self, agent: &Agent) -> &[u8] {
+    pub fn as_bytes<'r>(&'r self, agent: &'r Agent) -> &'r [u8] {
         self.as_bytes_(agent)
     }
 
-    pub(crate) fn as_bytes_(&self, agent: &impl StringHeapAccess) -> &[u8] {
+    pub(crate) fn as_bytes_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> &'r [u8] {
         match self {
-            // SAFETY: Assuming that user has properly bound the String, the
-            // backing string data is guaranteed to never be accessed as
-            // exclusive by the heap and thus the reference never invalidates.
-            // As `&self` is bound to the GC lfietime, the StringHeapData will
-            // not be dropped while the `&str` is being used.
-            String::String(s) => unsafe {
-                std::mem::transmute::<&[u8], &[u8]>(s.get(agent).as_bytes())
-            },
+            String::String(s) => s.get(agent).as_bytes(),
             String::SmallString(s) => s.as_bytes(),
         }
     }

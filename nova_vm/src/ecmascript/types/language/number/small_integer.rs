@@ -43,14 +43,9 @@ impl SmallInteger {
     pub const fn into_i64(self) -> i64 {
         let SmallInteger { data } = self;
 
-        #[repr(u8)]
-        enum Repr {
-            #[expect(dead_code)]
-            Data([u8; 7]),
-        }
-
-        // SAFETY: This matches the format on the endian platform.
-        let number: i64 = unsafe { core::mem::transmute(Repr::Data(data)) };
+        let number = i64::from_ne_bytes([
+            0, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
+        ]);
 
         if cfg!(target_endian = "little") {
             number >> 8
@@ -68,12 +63,12 @@ impl SmallInteger {
 
     /// Encode an i64 as a SmallInteger without a range check.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// If the value is outside the SmallInteger range, the method panics
-    /// in debug mode. In release mode, data may be lost and an invalid
-    /// variant may be created.
-    pub(crate) unsafe fn from_i64_unchecked(value: i64) -> Self {
+    /// in debug mode. In release mode, data may be lost and an out of range
+    /// value may be created.
+    pub(crate) fn from_i64_unchecked(value: i64) -> Self {
         debug_assert!((Self::MIN..=Self::MAX).contains(&value));
         let bytes = i64::to_ne_bytes(value);
 
@@ -92,11 +87,12 @@ impl SmallInteger {
 
     /// Convert a SmallBigInt as SmallInteger without a range check.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
-    /// If the value is outside the SmallInteger range, an invalid variant is
-    /// created.
-    pub(crate) unsafe fn from_small_bigint_unchecked(value: SmallBigInt) -> Self {
+    /// If the value is outside the SmallInteger range, the method panics
+    /// in debug mode. In release mode, an out of range value is created.
+    pub(crate) fn from_small_bigint_unchecked(value: SmallBigInt) -> Self {
+        debug_assert!((Self::MIN..=Self::MAX).contains(&value.into_i64()));
         Self { data: value.data }
     }
 }
@@ -107,16 +103,14 @@ impl core::ops::Neg for SmallInteger {
     /// ## Panics
     /// - If the negation overflows.
     fn neg(self) -> Self::Output {
-        unsafe { Self::from_i64_unchecked(-self.into_i64()) }
+        Self::from_i64_unchecked(-self.into_i64())
     }
 }
 
 impl core::ops::Not for SmallInteger {
     type Output = Self;
     fn not(self) -> Self::Output {
-        // SAFETY: This is safe because the bitwise not of any number in the
-        // range will always be in the safe number range.
-        unsafe { Self::from_i64_unchecked(!self.into_i64()) }
+        Self::from_i64_unchecked(!self.into_i64())
     }
 }
 
@@ -124,8 +118,7 @@ impl TryFrom<i64> for SmallInteger {
     type Error = ();
     fn try_from(value: i64) -> Result<Self, Self::Error> {
         if (Self::MIN..=Self::MAX).contains(&value) {
-            // SAFETY: Checked to be in range.
-            Ok(unsafe { Self::from_i64_unchecked(value) })
+            Ok(Self::from_i64_unchecked(value))
         } else {
             Err(())
         }
@@ -136,8 +129,7 @@ impl TryFrom<isize> for SmallInteger {
     type Error = ();
     fn try_from(value: isize) -> Result<Self, Self::Error> {
         if (Self::MIN..=Self::MAX).contains(&(value as i64)) {
-            // SAFETY: Checked to be in range.
-            Ok(unsafe { Self::from_i64_unchecked(value as i64) })
+            Ok(Self::from_i64_unchecked(value as i64))
         } else {
             Err(())
         }
@@ -148,8 +140,7 @@ impl TryFrom<f64> for SmallInteger {
     type Error = ();
     fn try_from(value: f64) -> Result<Self, Self::Error> {
         if value.fract() == 0.0 && (Self::MIN..=Self::MAX).contains(&(value as i64)) {
-            // SAFETY: Checked to be in range.
-            Ok(unsafe { Self::from_i64_unchecked(value as i64) })
+            Ok(Self::from_i64_unchecked(value as i64))
         } else {
             Err(())
         }
@@ -160,8 +151,7 @@ impl TryFrom<f32> for SmallInteger {
     type Error = ();
     fn try_from(value: f32) -> Result<Self, Self::Error> {
         if value.fract() == 0.0 && (Self::MIN..=Self::MAX).contains(&(value as i64)) {
-            // SAFETY: Checked to be in range.
-            Ok(unsafe { Self::from_i64_unchecked(value as i64) })
+            Ok(Self::from_i64_unchecked(value as i64))
         } else {
             Err(())
         }
@@ -172,8 +162,7 @@ impl TryFrom<i128> for SmallInteger {
     type Error = ();
     fn try_from(value: i128) -> Result<Self, Self::Error> {
         if (Self::MIN as i128..=Self::MAX as i128).contains(&value) {
-            // SAFETY: Checked to be in range.
-            Ok(unsafe { Self::from_i64_unchecked(value as i64) })
+            Ok(Self::from_i64_unchecked(value as i64))
         } else {
             Err(())
         }
@@ -184,8 +173,7 @@ impl TryFrom<u64> for SmallInteger {
     type Error = ();
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         if value <= (Self::MAX as u64) {
-            // SAFETY: Checked to be in range.
-            Ok(unsafe { Self::from_i64_unchecked(value as i64) })
+            Ok(Self::from_i64_unchecked(value as i64))
         } else {
             Err(())
         }
@@ -196,8 +184,7 @@ impl TryFrom<usize> for SmallInteger {
     type Error = ();
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         if value <= (Self::MAX as usize) {
-            // SAFETY: Checked to be in range.
-            Ok(unsafe { Self::from_i64_unchecked(value as i64) })
+            Ok(Self::from_i64_unchecked(value as i64))
         } else {
             Err(())
         }
@@ -225,8 +212,7 @@ macro_rules! from_numeric_type {
         };
         impl From<$numtype> for SmallInteger {
             fn from(value: $numtype) -> Self {
-                // SAFETY: Checked to be in range.
-                unsafe { Self::from_i64_unchecked(i64::from(value)) }
+                Self::from_i64_unchecked(i64::from(value))
             }
         }
     };

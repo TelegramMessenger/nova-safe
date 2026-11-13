@@ -1438,7 +1438,7 @@ impl GlobalObject {
         let mut previous_k = 0;
         while let Some(offset) = bytes_iterator.position(|b| b == &b'%') {
             let k = accumulator + offset;
-            accumulator += 1;
+            accumulator = k + 1;
             // a. Let C be the code unit at index k within string.
             // b. If C is the code unit 0x0025 (PERCENT SIGN), then
             // i. Let hexDigits be the empty String.

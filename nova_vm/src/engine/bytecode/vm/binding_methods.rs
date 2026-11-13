@@ -252,9 +252,7 @@ pub(super) fn execute_simple_object_binding<'a>(
                                 instr.get_second_index(),
                                 gc.nogc(),
                             );
-                            // SAFETY: It should be impossible for binding pattern
-                            // names to be integer strings.
-                            unsafe { PropertyKey::from_value_unchecked(key_value) }
+                            PropertyKey::from_value_unchecked(key_value)
                         };
 
                         excluded_names.insert(agent, property_key);
@@ -295,9 +293,7 @@ pub(super) fn execute_simple_object_binding<'a>(
                     |agent, gc| {
                         let key_value =
                             executable.fetch_constant(agent, instr.get_second_index(), gc.nogc());
-                        // SAFETY: It should be impossible for binding pattern
-                        // names to be integer strings.
-                        let key_value = unsafe { PropertyKey::from_value_unchecked(key_value) };
+                        let key_value = PropertyKey::from_value_unchecked(key_value);
 
                         excluded_names.insert(agent, key_value);
 
@@ -315,16 +311,9 @@ pub(super) fn execute_simple_object_binding<'a>(
                     agent,
                     vm,
                     |agent, gc| {
-                        // SAFETY: The constant was created using PropertyKey::from_str
-                        // which checks for integer-ness, and then converted to Value
-                        // without conversion, or is a floating point number string.
-                        let property_key = unsafe {
-                            PropertyKey::from_value_unchecked(executable.fetch_constant(
-                                agent,
-                                instr.get_first_index(),
-                                gc.nogc(),
-                            ))
-                        };
+                        let property_key = PropertyKey::from_value_unchecked(
+                            executable.fetch_constant(agent, instr.get_first_index(), gc.nogc()),
+                        );
 
                         excluded_names.insert(agent, property_key);
                         get(agent, object.get(agent), property_key.unbind(), gc)
