@@ -15,15 +15,12 @@ use std::{
     time::Duration,
 };
 
-use core::{
-    mem::MaybeUninit,
-    ops::{Deref, DerefMut},
-    ptr::{NonNull, read_unaligned, write_unaligned},
-};
-use std::{
-    alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error, realloc},
-    ops::{BitAnd, BitOr, BitXor},
-};
+use core::ops::{Deref, DerefMut};
+#[cfg(feature = "shared-array-buffer")]
+use core::ptr::NonNull;
+#[cfg(feature = "shared-array-buffer")]
+use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::ops::{BitAnd, BitOr, BitXor};
 
 use ecmascript_atomics::RacyStorage;
 #[cfg(feature = "shared-array-buffer")]
@@ -50,35 +47,18 @@ use crate::ecmascript::execution::ProtoIntrinsics;
 /// integer in the inclusive interval from 0 to 255. A Data Block value is
 /// created with a fixed number of bytes that each have the initial value 0.
 ///
-/// The `ptr` points to a continuous buffer of bytes, the length of which is
-/// determined by the capacity. The pointer can be None if the block is
-/// detached.
+/// The bytes are owned by a boxed slice whose length is the byte length of
+/// the block. The bytes are None if the block is detached.
 pub(crate) struct DataBlock {
-    ptr: Option<NonNull<u8>>,
-    byte_length: usize,
+    bytes: Option<Box<[u8]>>,
 }
 trivially_bindable!(DataBlock);
 
 impl core::fmt::Debug for DataBlock {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if let Some(ptr) = self.ptr {
-            // SAFETY: ptr points to a valid allocation of byte_length bytes.
-            unsafe { core::slice::from_raw_parts(ptr.as_ptr(), self.byte_length) }.fmt(f)
-        } else {
-            f.write_str("<detached>")
-        }
-    }
-}
-
-impl Drop for DataBlock {
-    fn drop(&mut self) {
-        if let Some(ptr) = self.ptr {
-            if self.byte_length == 0 {
-                // dangling data block; don't dealloc.
-                return;
-            }
-            let layout = Layout::from_size_align(self.byte_length, 8).unwrap();
-            unsafe { dealloc(ptr.as_ptr(), layout) }
+        match &self.bytes {
+            Some(bytes) => bytes.fmt(f),
+            None => f.write_str("<detached>"),
         }
     }
 }
@@ -87,182 +67,136 @@ impl Deref for DataBlock {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        if let Some(ptr) = self.ptr {
-            // SAFETY: DataBlock has a non-null, pointer. We guarantee it
-            // points to a valid allocation of byte_length initialized bytes
-            // (note, length can be 0 in which case pointer is dangling).
-            unsafe { std::slice::from_raw_parts(ptr.as_ptr(), self.byte_length) }
-        } else {
-            &[]
+        match &self.bytes {
+            Some(bytes) => bytes,
+            None => &[],
         }
     }
 }
 
 impl DerefMut for DataBlock {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        if let Some(mut ptr) = self.ptr {
-            // SAFETY: DataBlock has a non-null, pointer. We guarantee it
-            // points to a valid allocation of byte_length initialized bytes
-            // (note, length can be 0 in which case pointer is dangling).
-            unsafe { std::slice::from_raw_parts_mut(ptr.as_mut(), self.byte_length) }
-        } else {
-            &mut []
+        match &mut self.bytes {
+            Some(bytes) => bytes,
+            None => &mut [],
         }
     }
 }
 
 impl DataBlock {
     /// A detached DataBlock.
-    pub(crate) const DETACHED_DATA_BLOCK: DataBlock = DataBlock {
-        ptr: None,
-        byte_length: 0,
-    };
+    pub(crate) const DETACHED_DATA_BLOCK: DataBlock = DataBlock { bytes: None };
 
     /// An empty DataBlock.
-    const EMPTY_DATA_BLOCK: DataBlock = DataBlock {
-        ptr: Some(NonNull::<usize>::dangling().cast::<u8>()),
-        byte_length: 0,
-    };
+    fn empty() -> Self {
+        Self {
+            bytes: Some(Box::default()),
+        }
+    }
 
     #[inline(always)]
     pub(crate) fn is_detached(&self) -> bool {
-        self.ptr.is_none()
+        self.bytes.is_none()
     }
 
-    /// Allocate a new DataBlock with the given size.
+    /// Allocate a new zeroed DataBlock with the given size.
+    ///
+    /// Returns None if the allocation is impossible.
     fn new(len: usize) -> Option<Self> {
         if len == 0 {
-            Some(Self::EMPTY_DATA_BLOCK)
-        } else {
-            let Ok(layout) = Layout::from_size_align(len, 8) else {
-                return None;
-            };
-            // SAFETY: Size of allocation is non-zero.
-            let ptr = unsafe { alloc_zeroed(layout) };
-            let ptr = NonNull::new(ptr)?;
-            debug_assert_eq!(ptr.align_offset(8), 0);
-            Some(Self {
-                ptr: Some(ptr),
-                byte_length: len,
-            })
+            return Some(Self::empty());
         }
+        // Probe that the allocation is possible: a failed probe is reported
+        // to the caller as a RangeError, while the zeroed allocation below
+        // would abort the process. The zeroed allocation itself lets the
+        // allocator hand out lazily zeroed pages for large blocks.
+        let mut probe: Vec<u8> = Vec::new();
+        probe.try_reserve_exact(len).ok()?;
+        drop(probe);
+        Some(Self {
+            bytes: Some(vec![0u8; len].into_boxed_slice()),
+        })
     }
 
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.byte_length
+        self.bytes.as_ref().map_or(0, |bytes| bytes.len())
     }
 
-    fn as_ptr(&self, byte_offset: usize) -> Option<*const u8> {
-        if byte_offset >= self.byte_length {
-            None
-        } else {
-            self.ptr.map(|data| {
-                // SAFETY: The data is properly initialized, and the T being read is
-                // checked to be fully within the length of the data allocation.
-                unsafe { data.as_ptr().add(byte_offset) as *const _ }
-            })
-        }
+    /// Get the bytes of a T at `byte_offset`.
+    ///
+    /// Panics if the bytes are not within the block.
+    #[inline(always)]
+    fn element_bytes<T: Viewable>(&self, byte_offset: usize) -> &[u8] {
+        let end = byte_offset
+            .checked_add(core::mem::size_of::<T>())
+            .expect("DataBlock byte offset overflows");
+        &self[byte_offset..end]
     }
 
-    fn as_mut_ptr(&mut self, byte_offset: usize) -> Option<*mut u8> {
-        if byte_offset >= self.byte_length {
-            None
-        } else {
-            self.ptr.map(|data| {
-                // SAFETY: The data is properly initialized, and the T being read is
-                // checked to be fully within the length of the data allocation.
-                unsafe { data.as_ptr().add(byte_offset) }
-            })
-        }
-    }
-
+    /// Read the T at element index `offset`, or None if it is not within the
+    /// block.
     #[allow(unused)]
     pub(crate) fn get<T: Viewable>(&self, offset: usize) -> Option<T> {
         let size = core::mem::size_of::<T>();
-        let byte_offset = offset * size;
-        if byte_offset >= self.byte_length {
-            None
-        } else {
-            self.ptr.map(|data| {
-                // SAFETY: The data is properly initialized, and the T being read is
-                // checked to be fully within the length of the data allocation.
-                unsafe { read_unaligned(data.as_ptr().add(offset).cast()) }
-            })
-        }
+        let byte_offset = offset.checked_mul(size)?;
+        let end = byte_offset.checked_add(size)?;
+        <[u8]>::get(self, byte_offset..end).map(T::read_ne)
     }
 
-    /// Read a T from the buffer at `byte_offset`.
+    /// Read a T in native byte order from the buffer at `byte_offset`.
     ///
-    /// # Safety
+    /// ## Correctness
     ///
-    /// The buffer must have enough room to read a T at `byte_offset` and must
-    /// not be detached. The offset must be aligned.
+    /// The buffer must have enough room to read a T at `byte_offset`, else
+    /// this panics.
     #[inline(always)]
-    pub(crate) unsafe fn read_aligned<T: Viewable>(&self, byte_offset: usize) -> T {
-        // SAFETY: The data is properly initialized, and the T being read is
-        // checked to be fully within the length of the data allocation.
-        unsafe {
-            core::ptr::read(
-                self.ptr
-                    .unwrap_unchecked()
-                    .as_ptr()
-                    .byte_add(byte_offset)
-                    .cast(),
-            )
-        }
+    pub(crate) fn read_aligned<T: Viewable>(&self, byte_offset: usize) -> T {
+        T::read_ne(self.element_bytes::<T>(byte_offset))
     }
 
-    /// Read a T from the buffer at `byte_offset`.
+    /// Read a T in native byte order from the buffer at `byte_offset`.
     ///
-    /// # Safety
+    /// ## Correctness
     ///
-    /// The buffer must have enough room to read a T at `byte_offset` and must
-    /// not be detached.
+    /// The buffer must have enough room to read a T at `byte_offset`, else
+    /// this panics.
     #[inline(always)]
-    pub(crate) unsafe fn read_unaligned<T: Viewable>(&self, byte_offset: usize) -> T {
-        // SAFETY: The data is properly initialized, and the T being read is
-        // checked to be fully within the length of the data allocation.
-        unsafe {
-            core::ptr::read_unaligned(
-                self.ptr
-                    .unwrap_unchecked()
-                    .as_ptr()
-                    .byte_add(byte_offset)
-                    .cast(),
-            )
-        }
+    pub(crate) fn read_unaligned<T: Viewable>(&self, byte_offset: usize) -> T {
+        T::read_ne(self.element_bytes::<T>(byte_offset))
     }
 
+    /// Write the T at element index `offset`; does nothing if it is not
+    /// within the block.
     #[allow(unused)]
     pub(crate) fn set<T: Viewable>(&mut self, offset: usize, value: T) {
         let size = core::mem::size_of::<T>();
-        if let Some(data) = self.ptr {
-            // Note: We have to check offset + 1 to ensure that the write does
-            // not reach data beyond the end of the DataBlock allocation.
-            let end_byte_offset = (offset + 1) * size;
-            if end_byte_offset <= self.byte_length {
-                // SAFETY: The data is properly initialized, and the T being written is
-                // checked to be fully within the length of the data allocation.
-                unsafe { write_unaligned(data.as_ptr().add(offset).cast(), value) }
-            }
+        let Some(byte_offset) = offset.checked_mul(size) else {
+            return;
+        };
+        let Some(end) = byte_offset.checked_add(size) else {
+            return;
+        };
+        if let Some(bytes) = self.get_mut(byte_offset..end) {
+            value.write_ne(bytes);
         }
     }
 
+    /// Write a T in native byte order at `byte_offset`; does nothing if it is
+    /// not within the block.
     pub(crate) fn set_offset_by_byte<T: Viewable>(&mut self, byte_offset: usize, value: T) {
-        let size = core::mem::size_of::<T>();
-        if let Some(data) = self.ptr {
-            // Note: We have to check offset + 1 to ensure that the write does
-            // not reach data beyond the end of the DataBlock allocation.
-            let end_byte_offset = byte_offset + size;
-            if end_byte_offset <= self.byte_length {
-                // SAFETY: The data is properly initialized, and the T being written is
-                // checked to be fully within the length of the data allocation.
-                unsafe { write_unaligned(data.as_ptr().byte_add(byte_offset).cast(), value) }
-            }
+        let Some(end) = byte_offset.checked_add(core::mem::size_of::<T>()) else {
+            return;
+        };
+        if let Some(bytes) = self.get_mut(byte_offset..end) {
+            value.write_ne(bytes);
         }
     }
 
+    /// Copy `count` elements of T from `src` at element index `src_offset`
+    /// to this block at element index `dst_offset`.
+    ///
+    /// Panics if either range is not within its block.
     #[allow(unused)]
     pub(crate) fn set_from<T: Viewable>(
         &mut self,
@@ -278,18 +212,14 @@ impl DataBlock {
         }
         let dst_byte_offset = dst_offset * size;
         let src_byte_offset = src_offset * size;
-        debug_assert!(dst_byte_offset + byte_length <= self.byte_length);
-        debug_assert!(src_byte_offset + byte_length <= src.byte_length);
-        let src_ptr = src.as_ptr(src_byte_offset);
-        let dst_ptr = self.as_mut_ptr(dst_byte_offset);
-        if let (Some(src), Some(dst)) = (src_ptr, dst_ptr) {
-            // SAFETY: Source buffer length is valid, destination buffer
-            // is likewise at least equal in length to source, and both
-            // are properly aligned for bytes.
-            unsafe { dst.copy_from_nonoverlapping(src, byte_length) }
-        }
+        self[dst_byte_offset..dst_byte_offset + byte_length]
+            .copy_from_slice(&src[src_byte_offset..src_byte_offset + byte_length]);
     }
 
+    /// Copy `count` elements of T within this block from element index
+    /// `src_offset` to element index `dst_offset`.
+    ///
+    /// Panics if either range is not within the block.
     #[allow(unused)]
     pub(crate) fn copy_within<T: Viewable>(
         &mut self,
@@ -304,65 +234,33 @@ impl DataBlock {
         }
         let dst_byte_offset = dst_offset * size;
         let src_byte_offset = src_offset * size;
-        debug_assert!(dst_byte_offset + byte_length <= self.byte_length);
-        debug_assert!(src_byte_offset + byte_length <= self.byte_length);
-        if let Some(ptr) = self.as_mut_ptr(0) {
-            // SAFETY: Buffer is valid for reads and writes of u8 for the whole length.
-            let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.byte_length) };
-            slice.copy_within(
-                src_byte_offset..(src_byte_offset + byte_length),
-                dst_byte_offset,
-            );
-        }
+        <[u8]>::copy_within(
+            self,
+            src_byte_offset..(src_byte_offset + byte_length),
+            dst_byte_offset,
+        );
     }
 
+    /// Resize the block to `new_byte_length` bytes; new bytes are zero.
+    ///
+    /// A detached block stays detached.
     pub(crate) fn realloc(&mut self, new_byte_length: usize) {
         // Max byte length should be within safe integer length.
         debug_assert!(new_byte_length < 2usize.pow(53));
-        let ptr = if let Some(ptr) = self.ptr {
-            if new_byte_length == 0 {
-                // When resizing to zero, we can just reassign self to an empty
-                // data block; that drops the previous block which deallocs.
-                *self = Self::EMPTY_DATA_BLOCK;
-                return;
-            } else {
-                // SAFETY: `ptr` can currently only come from GlobalAllocator, it was
-                // allocated with `Layout::from_size_align(self.byte_length, 8)`, new
-                // size is non-zero, and cannot overflow isize (on a 64-bit machine).
-                if self.byte_length > 0 {
-                    let layout = Layout::from_size_align(self.byte_length, 8).unwrap();
-                    unsafe { realloc(ptr.as_ptr(), layout, new_byte_length) }
-                } else {
-                    let layout = Layout::from_size_align(new_byte_length, 8).unwrap();
-                    unsafe { alloc_zeroed(layout) }
-                }
-            }
-        } else {
+        let Some(bytes) = self.bytes.take() else {
             // Detached.
             return;
         };
-        let Some(ptr) = NonNull::new(ptr) else {
-            let layout = Layout::from_size_align(new_byte_length, 8).unwrap();
-            handle_alloc_error(layout);
-        };
-        self.ptr = Some(ptr);
-        if new_byte_length > self.byte_length {
-            // Need to zero out the new data.
-            // SAFETY: The new pointer does point to valid data which is
-            // big enough.
-            let new_data_ptr = unsafe { ptr.add(self.byte_length) };
-            // SAFETY: The new pointer does point to valid, big enough
-            // allocation which contains uninitialized bytes. No one else
-            // can hold a reference to it currently.
-            let data_slice = unsafe {
-                core::slice::from_raw_parts_mut(
-                    new_data_ptr.as_ptr().cast::<MaybeUninit<u8>>(),
-                    new_byte_length - self.byte_length,
-                )
-            };
-            data_slice.fill(MaybeUninit::new(0));
+        if new_byte_length == 0 {
+            *self = Self::empty();
+            return;
         }
-        self.byte_length = new_byte_length;
+        let mut bytes = bytes.into_vec();
+        if new_byte_length > bytes.len() {
+            bytes.reserve_exact(new_byte_length - bytes.len());
+        }
+        bytes.resize(new_byte_length, 0);
+        self.bytes = Some(bytes.into_boxed_slice());
     }
 }
 
@@ -1308,22 +1206,13 @@ pub(crate) fn copy_data_block_bytes(
     count: usize,
 ) {
     // 1. Assert: fromBlock and toBlock are distinct values.
-    assert!(
-        to_block.ptr.is_none()
-            || from_block.ptr.is_none()
-            || unsafe {
-                to_block.ptr.unwrap().as_ptr().add(to_block.len())
-                    <= from_block.ptr.unwrap().as_ptr()
-                    || from_block.ptr.unwrap().as_ptr().add(from_block.len())
-                        <= to_block.ptr.unwrap().as_ptr()
-            }
-    );
+    // NOTE: An exclusive and a shared reference cannot alias.
     // 2. Let fromSize be the number of bytes in fromBlock.
-    let from_size = from_block.byte_length;
+    let from_size = from_block.len();
     // 3. Assert: fromIndex + count ≤ fromSize.
     assert!(from_index + count <= from_size);
     // 4. Let toSize be the number of bytes in toBlock.
-    let to_size = to_block.byte_length;
+    let to_size = to_block.len();
     // 5. Assert: toIndex + count ≤ toSize.
     assert!(to_index + count <= to_size);
     // 6. Repeat, while count > 0,
@@ -1332,18 +1221,8 @@ pub(crate) fn copy_data_block_bytes(
     // c. Set toIndex to toIndex + 1.
     // d. Set fromIndex to fromIndex + 1.
     // e. Set count to count - 1.
-    let to_ptr = if let Some(ptr) = to_block.as_mut_ptr(to_index) {
-        ptr
-    } else {
-        return;
-    };
-    let from_ptr = if let Some(ptr) = from_block.as_ptr(from_index) {
-        ptr
-    } else {
-        return;
-    };
-    // SAFETY: Pointers have been checked to not overlap.
-    unsafe { to_ptr.copy_from_nonoverlapping(from_ptr, count) };
+    to_block[to_index..to_index + count]
+        .copy_from_slice(&from_block[from_index..from_index + count]);
     // 7. Return UNUSED.
 }
 
@@ -1441,12 +1320,68 @@ mod private {
     impl Sealed for f64 {}
 }
 
+/// Conversion of a Viewable storage type from and to its bytes in native
+/// byte order.
+pub(crate) trait StorageBytes: Copy {
+    /// Read the value from exactly `size_of::<Self>()` bytes.
+    ///
+    /// Panics if `bytes` has a different length.
+    fn read_ne(bytes: &[u8]) -> Self;
+
+    /// Write the value into exactly `size_of::<Self>()` bytes.
+    ///
+    /// Panics if `bytes` has a different length.
+    fn write_ne(self, bytes: &mut [u8]);
+}
+
+macro_rules! storage_bytes {
+    ($($t:ty),*) => {
+        $(
+            impl StorageBytes for $t {
+                #[inline(always)]
+                fn read_ne(bytes: &[u8]) -> Self {
+                    Self::from_ne_bytes(
+                        bytes
+                            .try_into()
+                            .expect("byte slice length does not match the element size"),
+                    )
+                }
+
+                #[inline(always)]
+                fn write_ne(self, bytes: &mut [u8]) {
+                    bytes.copy_from_slice(&self.to_ne_bytes());
+                }
+            }
+        )*
+    };
+}
+
+storage_bytes!(u8, u16, u32, u64);
+
 pub(crate) trait Viewable:
     'static + private::Sealed + Copy + PartialEq + core::fmt::Debug
 {
     /// Type of the data in its storage format. This is used with
     /// SharedDataBlock.
-    type Storage: RacyStorage;
+    type Storage: RacyStorage + StorageBytes;
+
+    /// Read a value in native byte order from exactly `size_of::<Self>()`
+    /// bytes.
+    ///
+    /// Panics if `bytes` has a different length.
+    #[inline(always)]
+    fn read_ne(bytes: &[u8]) -> Self {
+        Self::from_storage(Self::Storage::read_ne(bytes))
+    }
+
+    /// Write a value in native byte order into exactly `size_of::<Self>()`
+    /// bytes.
+    ///
+    /// Panics if `bytes` has a different length.
+    #[inline(always)]
+    fn write_ne(self, bytes: &mut [u8]) {
+        Self::into_storage(self).write_ne(bytes)
+    }
 
     /// Functions as the \[\[ContentType\]\] internal slot of the TypedArray and
     /// as a marker for data views. Used to determine that the viewable type is

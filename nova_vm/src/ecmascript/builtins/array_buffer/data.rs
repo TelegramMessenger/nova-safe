@@ -194,8 +194,6 @@ impl Default for ArrayBufferHeapData<'_> {
     }
 }
 
-unsafe impl Send for ArrayBufferHeapData<'_> {}
-
 impl<'a> ArrayBufferHeapData<'a> {
     pub(crate) fn new_fixed_length(db: DataBlock) -> Self {
         Self {

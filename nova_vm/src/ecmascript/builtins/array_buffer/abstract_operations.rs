@@ -281,11 +281,9 @@ pub(crate) fn get_value_from_buffer<'a, T: Viewable>(
             //    in the interval from byteIndex (inclusive) to byteIndex + elementSize
             //    (exclusive).
             if is_typed_array {
-                // SAFETY: Caller checked.
-                unsafe { block.read_aligned(byte_index) }
+                block.read_aligned(byte_index)
             } else {
-                // SAFETY: Caller checked.
-                unsafe { block.read_unaligned(byte_index) }
+                block.read_unaligned(byte_index)
             }
         }
     };
@@ -450,18 +448,15 @@ pub(crate) fn get_modify_set_value_in_buffer<'gc, Type: Viewable, const OP: u8>(
             // 8. If IsSharedArrayBuffer(arrayBuffer) is true, then
             // 9. Else,
             let slot = &mut block[byte_index..byte_index + element_size];
-            // SAFETY: Viewable types are safe to transmute.
-            let (head, slot, tail) = unsafe { slot.align_to_mut::<Type>() };
-            debug_assert!(head.is_empty() && tail.is_empty());
             // a. Let rawBytesRead be a List of length elementSize whose
             //    elements are the sequence of elementSize bytes starting with
             //    block[byteIndex].
-            let raw_bytes_read = slot[0];
+            let raw_bytes_read = Type::read_ne(slot);
             // b. Let rawBytesModified be op(rawBytesRead, rawBytes).
             let data_modified = op(raw_bytes_read, raw_bytes);
             // c. Store the individual bytes of rawBytesModified into block,
             //    starting at block[byteIndex].
-            slot[0] = data_modified;
+            data_modified.write_ne(slot);
             raw_bytes_read
         }
         AnyArrayBuffer::SharedArrayBuffer(array_buffer) => {
@@ -606,18 +601,15 @@ pub(crate) fn compare_exchange_in_buffer<'gc, Type: Viewable>(
             // 3. Let block be buffer.[[ArrayBufferData]].
             let block = array_buffer.as_mut_slice(agent);
             let slot = &mut block[byte_index..byte_index + element_size];
-            // SAFETY: Viewable types are safe to transmute.
-            let (head, slot, tail) = unsafe { slot.align_to_mut::<Type>() };
-            debug_assert!(head.is_empty() && tail.is_empty());
             // a. Let rawBytesRead be a List of length elementSize whose
             //    elements are the sequence of elementSize bytes starting with
             //    block[byteIndexInBuffer].
-            let raw_bytes_read = slot[0];
+            let raw_bytes_read = Type::read_ne(slot);
             // b. If ByteListEqual(rawBytesRead, expectedBytes) is true, then
             if raw_bytes_read == expected_bytes {
                 // i. Store the individual bytes of replacementBytes into
                 //    block, starting at block[byteIndexInBuffer].
-                slot[0] = replacement_bytes;
+                replacement_bytes.write_ne(slot);
             }
             raw_bytes_read
         }

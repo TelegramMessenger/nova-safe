@@ -230,9 +230,7 @@ pub(crate) fn get_view_value<'gc, T: Viewable>(
     let buffer_index = get_index + view_offset;
 
     // 13. Return GetValueFromBuffer(view.[[ViewedArrayBuffer]], bufferIndex, type, false, unordered, isLittleEndian).
-    // SAFETY: Checked that view is not detached and that bufferIndex is
-    // within bounds.
-    let result = unsafe { view.get_value_from_buffer::<T>(agent, buffer_index) };
+    let result = view.get_value_from_buffer::<T>(agent, buffer_index);
     if is_little_endian && cfg!(target_endian = "big")
         || !is_little_endian && cfg!(target_endian = "little")
     {

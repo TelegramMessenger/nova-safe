@@ -72,12 +72,12 @@ impl<'gc> DataView<'gc> {
 
     /// ### [25.1.3.15 GetValueFromBuffer ( arrayBuffer, byteIndex, type, isTypedArray, order \[ , isLittleEndian \] )](https://tc39.es/ecma262/#sec-getvaluefrombuffer)
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The backing buffer must have enough room to read a T at `byte_index`
-    /// and must not be detached.
+    /// and must not be detached, else this panics.
     #[inline(always)]
-    pub(crate) unsafe fn get_value_from_buffer<T: Viewable>(
+    pub(crate) fn get_value_from_buffer<T: Viewable>(
         self,
         agent: &mut Agent,
         byte_index: usize,
@@ -97,16 +97,15 @@ impl<'gc> DataView<'gc> {
         // a. Let rawValue be a List whose elements are bytes from block at indices
         //    in the interval from byteIndex (inclusive) to byteIndex + elementSize
         //    (exclusive).
-        // SAFETY: Caller guarantees the buffer has been checked for size.
-        unsafe { block.read_unaligned::<T>(byte_index) }
+        block.read_unaligned::<T>(byte_index)
     }
 
     /// Initialise the DataView's internal slots.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The DataView must be uninitialised. Reinitialisation is not allowed.
-    pub(crate) unsafe fn initialise_data(
+    pub(crate) fn initialise_data(
         self,
         agent: &mut Agent,
         ab: ArrayBuffer<'gc>,
@@ -188,17 +187,17 @@ impl<'gc> SharedDataView<'gc> {
 
     /// ### [25.1.3.15 GetValueFromBuffer ( arrayBuffer, byteIndex, type, isTypedArray, order \[ , isLittleEndian \] )](https://tc39.es/ecma262/#sec-getvaluefrombuffer)
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The backing buffer must have enough room to read a T at `byte_index`
-    /// and must not be detached.
+    /// and must not be detached, else this panics.
     ///
     /// # Soundness
     ///
     /// This method is unsound, as it can cause data races depending on user
     /// code actions.
     #[inline(always)]
-    pub(crate) unsafe fn get_value_from_buffer<T: Viewable>(
+    pub(crate) fn get_value_from_buffer<T: Viewable>(
         self,
         agent: &mut Agent,
         byte_index: usize,
@@ -218,17 +217,15 @@ impl<'gc> SharedDataView<'gc> {
         // a. Let rawValue be a List whose elements are bytes from block at indices
         //    in the interval from byteIndex (inclusive) to byteIndex + elementSize
         //    (exclusive).
-        // SAFETY: We're entirely on unsound ground here; there's nothing I can
-        // say to make this okay.
         block.load_unaligned::<T>(byte_index).unwrap()
     }
 
     /// Initialise the SharedDataView's internal slots.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The SharedDataView must be uninitialised. Reinitialisation is not allowed.
-    pub(crate) unsafe fn initialise_data(
+    pub(crate) fn initialise_data(
         self,
         agent: &mut Agent,
         sab: SharedArrayBuffer<'gc>,
@@ -411,34 +408,34 @@ impl<'gc> AnyDataView<'gc> {
 
     /// ### [25.1.3.15 GetValueFromBuffer ( arrayBuffer, byteIndex, type, isTypedArray, order \[ , isLittleEndian \] )](https://tc39.es/ecma262/#sec-getvaluefrombuffer)
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The backing buffer must have enough room to read a T at `byte_index`
-    /// and must not be detached.
+    /// and must not be detached, else this panics.
     ///
     /// # Soundness
     ///
     /// This method is unsound, as it can cause data races depending on user
     /// code actions.
     #[inline(always)]
-    pub(crate) unsafe fn get_value_from_buffer<T: Viewable>(
+    pub(crate) fn get_value_from_buffer<T: Viewable>(
         self,
         agent: &mut Agent,
         byte_index: usize,
     ) -> T {
         match self {
-            Self::DataView(ta) => unsafe { ta.get_value_from_buffer(agent, byte_index) },
+            Self::DataView(ta) => ta.get_value_from_buffer(agent, byte_index),
             #[cfg(feature = "shared-array-buffer")]
-            Self::SharedDataView(sta) => unsafe { sta.get_value_from_buffer(agent, byte_index) },
+            Self::SharedDataView(sta) => sta.get_value_from_buffer(agent, byte_index),
         }
     }
 
     /// Initialise the DataView's internal slots.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The DataView must be uninitialised. Reinitialisation is not allowed.
-    pub(crate) unsafe fn initialise_data(
+    pub(crate) fn initialise_data(
         self,
         agent: &mut Agent,
         buffer: AnyArrayBuffer<'gc>,
@@ -447,13 +444,11 @@ impl<'gc> AnyDataView<'gc> {
     ) {
         match (self, buffer) {
             (AnyDataView::DataView(dv), AnyArrayBuffer::ArrayBuffer(ab)) => {
-                // SAFETY: pass-through
-                unsafe { dv.initialise_data(agent, ab, byte_length, byte_offset) }
+                dv.initialise_data(agent, ab, byte_length, byte_offset)
             }
             #[cfg(feature = "shared-array-buffer")]
             (AnyDataView::SharedDataView(sdv), AnyArrayBuffer::SharedArrayBuffer(sab)) => {
-                // SAFETY: pass-through
-                unsafe { sdv.initialise_data(agent, sab, byte_length, byte_offset) }
+                sdv.initialise_data(agent, sab, byte_length, byte_offset)
             }
             #[cfg(feature = "shared-array-buffer")]
             _ => unreachable!(),
