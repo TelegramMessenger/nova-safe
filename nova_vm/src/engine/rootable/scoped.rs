@@ -70,12 +70,12 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
     /// Unwrap the Scoped value to get access to the inner RootRepr value of
     /// the wrapped type.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// The RootRepr does not carry the 'scope lifetime and is thus liable to
-    /// become use-after-free. This method should only be used to implement eg.
+    /// become stale. This method should only be used to implement eg.
     /// trivial From-implementations, or TryFrom-like methods.
-    pub(crate) unsafe fn into_root_repr(self) -> T::RootRepr {
+    pub(crate) fn into_root_repr(self) -> T::RootRepr {
         self.inner
     }
 
@@ -148,9 +148,7 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
             .rfind(|(_, v)| !matches!(v, HeapRootData::Empty))
             .map_or(0, |(index, _)| index + 1);
         debug_assert!(last_non_empty_index < stack_refs.len());
-        // SAFETY: The last non-empty index is necessarily within
-        // the bounds of the vector, so this only shortens it.
-        unsafe { stack_refs.set_len(last_non_empty_index) };
+        stack_refs.truncate(last_non_empty_index);
     }
 
     /// Get a copy of the contained scopable value from a `Scoped`.
@@ -379,12 +377,7 @@ impl<'a, T: 'static + RootableCollection> ScopedCollection<'a, T> {
             .rfind(|(_, v)| !v.is_empty())
             .map_or(0, |(index, _)| index + 1);
         debug_assert!(last_non_empty_index < stack_ref_collections.len());
-        // SAFETY: The last non-empty index is necessarily within
-        // the bounds of the vector, so this only shortens it. The
-        // items being dropped are also Empty slots which don't
-        // need any drop calls, so this is not a memory leak
-        // either.
-        unsafe { stack_ref_collections.set_len(last_non_empty_index) };
+        stack_ref_collections.truncate(last_non_empty_index);
     }
 }
 

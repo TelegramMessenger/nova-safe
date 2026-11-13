@@ -387,7 +387,7 @@ mod test {
 
     #[test]
     fn script_with_imports() {
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let mut gc = GcScope::new(&mut gc, &mut scope);
         let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
         initialize_default_realm(&mut agent, gc.reborrow());
@@ -411,7 +411,7 @@ mod test {
 
     #[test]
     fn strict_script_with_imports() {
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let mut gc = GcScope::new(&mut gc, &mut scope);
         let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
         initialize_default_realm(&mut agent, gc.reborrow());
@@ -435,7 +435,7 @@ mod test {
 
     #[test]
     fn parse_and_realloc_source_codes_with_program() {
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let mut gc = GcScope::new(&mut gc, &mut scope);
         let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
         initialize_default_realm(&mut agent, gc.reborrow());

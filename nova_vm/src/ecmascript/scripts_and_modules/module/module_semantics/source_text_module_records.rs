@@ -472,11 +472,7 @@ impl Scoped<'_, SourceTextModule<'static>> {
 
 impl<'a> From<Scoped<'a, SourceTextModule<'static>>> for Scoped<'a, AbstractModule<'static>> {
     fn from(value: Scoped<'a, SourceTextModule<'static>>) -> Self {
-        // SAFETY: Unwrapped root repr is moved into a new Scoped wrapper that
-        // holds the 'scoped lifetime: there is no chance of use-after-free
-        // here. A SourceTextModule is a subtype of AbstractModule, so the root
-        // repr and its backing data is valid for both.
-        Scoped::from_root_repr(unsafe { value.into_root_repr() })
+        Scoped::from_root_repr(value.into_root_repr())
     }
 }
 

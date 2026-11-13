@@ -854,7 +854,7 @@ impl GcAgent {
             // GC is disabled; no-op
             return;
         }
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let gc = GcScope::new(&mut gc, &mut scope);
         let Self {
             agent, realm_roots, ..
@@ -994,7 +994,7 @@ impl Agent {
         >,
         initialize_global_object: Option<impl FnOnce(&mut Agent, Object, GcScope)>,
     ) -> Realm<'static> {
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let gc = GcScope::new(&mut gc, &mut scope);
 
         initialize_host_defined_realm(
@@ -1011,7 +1011,7 @@ impl Agent {
     ///
     /// This is intended for usage within BuiltinFunction calls.
     fn create_default_realm(&mut self) -> Realm<'static> {
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let gc = GcScope::new(&mut gc, &mut scope);
 
         initialize_default_realm(self, gc);
@@ -1029,7 +1029,7 @@ impl Agent {
             realm: realm.unbind(),
             script_or_module: None,
         });
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let gc = GcScope::new(&mut gc, &mut scope);
 
         let result = func(self, gc);
@@ -1058,7 +1058,7 @@ impl Agent {
             realm,
             script_or_module: None,
         });
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let mut gc = GcScope::new(&mut gc, &mut scope);
 
         let result = job.run(self, gc.reborrow()).unbind().bind(gc.nogc());

@@ -746,7 +746,7 @@ mod test {
         use crate::ecmascript::{Agent, AgentOptions, DefaultHostHooks, ObjectRecord};
 
         let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
-        let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+        let (mut gc, mut scope) = GcScope::create_root();
         let gc = GcScope::new(&mut gc, &mut scope);
         initialize_default_realm(&mut agent, gc);
         assert_eq!(

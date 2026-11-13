@@ -2221,8 +2221,7 @@ impl HeapMarkAndSweep for SharedTypedArray<'static> {
 
 // === OUTPUT FROM object_handle! ADAPTED TO GenericSharedTypedArray ===
 
-// SAFETY: GC lifetime.
-unsafe impl<T: Viewable> Bindable for GenericSharedTypedArray<'_, T> {
+impl<T: Viewable> Bindable for GenericSharedTypedArray<'_, T> {
     type Of<'a> = GenericSharedTypedArray<'a, T>;
 
     fn unbind(self) -> Self::Of<'static> {
