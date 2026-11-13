@@ -1575,7 +1575,7 @@ impl<const N: usize> PropertyKeyArray<N> {
 
     fn get_raw<'a>(&self, keys_index: PropertyKeyIndex<'a>, len: u32) -> &[PropertyKey<'a>] {
         let keys = &self.keys[keys_index][0..len as usize];
-        debug_assert!(keys.iter().all(|k| *k != FREE_KEY_SLOT));
+        debug_assert!(keys.last() != Some(&FREE_KEY_SLOT));
         keys
     }
 
