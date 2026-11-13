@@ -82,6 +82,29 @@ The worktrees and branch names stay; the scope changes. Round 1's reports are su
 Gate under load: set `GATE_T262_JOBS=3 GATE_JOBS=2`, and write your logs only under your own
 `<scratchpad>/<worktree name>/`.
 
+### Round 4 (from 0 unsafe, 2026-11-14): make it the widget engine
+
+Measured against QuickJS on the 501 widgets (release builds, `safe/widgets/run.py --qjs`): 360 same output, 140
+differ (many from a few Nova bugs, the most common `ReferenceError: Uninitialized this binding`), Nova CPU 100 s
+against 23 s (median widget 2.9x, heavy animations 9-10x). Tracks, one worktree each:
+
+| Worktree / branch | Track |
+|---|---|
+| e-scripts | compat: the differences against QuickJS, by root cause |
+| c-heap | perf: the hot paths of the heavy widgets, output unchanged |
+| b-bindable | limits: interrupt (uncatchable termination), heap limit, call depth and native stack, parse and JSON depth, size caps |
+| d-strings | regexp: an in-tree JS regex engine (regress fork, no unsafe, step budget, UTF-16), drop `regex` |
+| a2-typed-arrays | dependencies: JSON, number parsing/printing and byte search without unsafe crates; audit the rest |
+| a1-buffers | embedding: a safe `nova_embed` API, a minimal C ABI crate, the xcframework build, then the Swift backend in `../widget-sandbox-nova` |
+
+The embedding contract the limits track provides (names may be refined, keep them in sync):
+- `HostHooks::check_interrupt(&self) -> bool` (default false), polled by the interpreter at least every few
+  thousand instructions and inside long native loops; true ends the running script with an uncatchable
+  termination that `try`/`catch`/`finally` cannot stop.
+- `Agent::set_heap_limit(bytes)` / `Agent::heap_size()`: allocation past the limit ends the script the same way,
+  with a memory reason.
+- a maximum call depth and a native-stack guard that throw a catchable RangeError instead of overflowing.
+
 ## Commits
 
 Small steps, each passing the gate. Commit as the repository's configured identity (`tmacos <>`) with
