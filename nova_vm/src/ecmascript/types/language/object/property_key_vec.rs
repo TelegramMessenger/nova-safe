@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{marker::PhantomData, ptr::NonNull};
+use std::marker::PhantomData;
 
 use crate::{
     ecmascript::Agent,
@@ -64,8 +64,10 @@ impl ScopedCollection<'_, Vec<PropertyKey<'static>>> {
 
     pub(crate) fn iter(&self, agent: &mut Agent) -> ScopedPropertyKeysIterator<'_> {
         self.with_cb(agent, |property_key_vec| ScopedPropertyKeysIterator {
-            slice: NonNull::from(property_key_vec.as_slice()),
-            collection: PhantomData,
+            collection: self.inner,
+            position: 0,
+            end: property_key_vec.len(),
+            marker: PhantomData,
         })
     }
 
@@ -94,29 +96,36 @@ impl<'scope> Bindable for ScopedCollection<'scope, Vec<PropertyKey<'static>>> {
     }
 }
 
-#[repr(transparent)]
+/// Iterator over a scoped [`Vec<PropertyKey>`] that stays on the heap while
+/// it is iterated.
+///
+/// The items are positions in the Vec; each read goes through the Agent, so
+/// garbage collection between reads is fine.
 pub(crate) struct ScopedPropertyKeysIterator<'a> {
-    slice: NonNull<[PropertyKey<'static>]>,
-    collection: PhantomData<&'a mut ScopedCollection<'a, Vec<PropertyKey<'static>>>>,
+    collection: u32,
+    position: usize,
+    end: usize,
+    marker: PhantomData<&'a mut ScopedCollection<'a, Vec<PropertyKey<'static>>>>,
 }
 
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub(crate) struct ScopedPropertyKey<'a> {
-    key: NonNull<PropertyKey<'static>>,
-    collection: PhantomData<&'a mut ScopedCollection<'a, Vec<PropertyKey<'static>>>>,
+    collection: u32,
+    index: usize,
+    marker: PhantomData<&'a mut ScopedCollection<'a, Vec<PropertyKey<'static>>>>,
 }
 
 impl ScopedPropertyKey<'_> {
     /// Get the referenced PropertyKey.
-    pub fn get<'a>(self, gc: NoGcScope<'a, '_>) -> PropertyKey<'a> {
-        // SAFETY: We retain exclusive access to ScopedCollection, meaning that
-        // no one else can push into the vector while we are iterating over it.
-        // Garbage collection can trigger during this time which will change
-        // the data in the vector, but will not reallocate it. Hence, the
-        // pointer is still valid to read from and the PropertyKey in the
-        // vector has been sweeped by the garbage collector if it did trigger.
-        unsafe { self.key.as_ref().bind(gc) }
+    pub fn get<'a>(self, agent: &Agent, gc: NoGcScope<'a, '_>) -> PropertyKey<'a> {
+        let stack_ref_collections = agent.stack_ref_collections.borrow();
+        let key = match stack_ref_collections.get(self.collection as usize) {
+            Some(HeapRootCollection::PropertyKeyVec(keys)) => keys.get(self.index),
+            _ => None,
+        };
+        key.copied()
+            .expect("ScopedPropertyKey read after its collection was dropped")
+            .bind(gc)
     }
 }
 
@@ -124,19 +133,20 @@ impl<'a> Iterator for ScopedPropertyKeysIterator<'a> {
     type Item = ScopedPropertyKey<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let ScopedPropertyKeysIterator { slice, .. } = self;
-        // SAFETY: We retain exclusive access to ScopedCollection, meaning that
-        // no one else can push into the vector while we are iterating over it.
-        // Garbage collection can trigger during this time which will change
-        // the data in the vector, but will not reallocate it.
-        let slice_ref = unsafe { slice.as_ref() };
-        let (first, rest) = slice_ref.split_first()?;
-        let first = NonNull::from(first);
-        let rest = NonNull::from(rest);
-        *slice = rest;
-        Some(ScopedPropertyKey {
-            key: first,
-            collection: PhantomData,
-        })
+        if self.position >= self.end {
+            return None;
+        }
+        let item = ScopedPropertyKey {
+            collection: self.collection,
+            index: self.position,
+            marker: PhantomData,
+        };
+        self.position += 1;
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.end.saturating_sub(self.position);
+        (len, Some(len))
     }
 }

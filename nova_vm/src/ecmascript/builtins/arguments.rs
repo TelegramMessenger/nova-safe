@@ -106,11 +106,18 @@ pub(crate) fn create_unmapped_arguments_object<'a, 'b>(
     arguments_list: &ScopedArgumentsList<'b>,
     gc: NoGcScope<'a, 'b>,
 ) -> Result<UnmappedArguments<'a>, TryReserveError> {
+    arguments_list.with_slice(agent, gc, |agent, arguments| {
+        create_unmapped_arguments_object_from_slice(agent, arguments, gc)
+    })
+}
+
+fn create_unmapped_arguments_object_from_slice<'a>(
+    agent: &mut Agent,
+    arguments: &[Value<'static>],
+    gc: NoGcScope<'a, '_>,
+) -> Result<UnmappedArguments<'a>, TryReserveError> {
     // 1. Let len be the number of elements in argumentsList.
-    let len = arguments_list.len(agent);
-    // SAFETY: GC is not allowed in this scope, and no other scoped values are
-    // accessed during this call. The pointer is not held beyond the current call scope.
-    let arguments_non_null_slice = unsafe { arguments_list.as_non_null_slice(agent) };
+    let len = arguments.len();
     debug_assert!(len < u32::MAX as usize);
     let len = len as u32;
     let len_value = Number::from(len);
@@ -170,9 +177,7 @@ pub(crate) fn create_unmapped_arguments_object<'a, 'b>(
     for index in 0..len {
         // a. Let val be argumentsList[index].
         // b. Perform ! CreateDataPropertyOrThrow(obj, ! ToString(𝔽(index)), val).
-        // SAFETY: arguments slice valid in this call stack and we've not
-        // performed GC or touched other scoped data.
-        let val = unsafe { arguments_non_null_slice.as_ref() }
+        let val = arguments
             .get(index as usize)
             .cloned()
             .unwrap_or(Value::Undefined);

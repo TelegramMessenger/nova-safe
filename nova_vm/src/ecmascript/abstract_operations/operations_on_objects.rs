@@ -1746,7 +1746,7 @@ fn enumerable_own_properties_slow<'gc, Kind: EnumerablePropertiesKind>(
     let own_keys = own_keys.scope(agent, gc.nogc());
     let mut results = results.scope(agent, gc.nogc());
     for key in own_keys.iter(agent) {
-        let local_key = key.get(gc.nogc());
+        let local_key = key.get(agent, gc.nogc());
         if local_key.is_symbol() {
             continue;
         }
@@ -1769,7 +1769,7 @@ fn enumerable_own_properties_slow<'gc, Kind: EnumerablePropertiesKind>(
         let value = get(
             agent,
             o.get(agent),
-            key.get(gc.nogc()).unbind(),
+            key.get(agent, gc.nogc()).unbind(),
             gc.reborrow(),
         )
         .unbind()?
@@ -1783,7 +1783,8 @@ fn enumerable_own_properties_slow<'gc, Kind: EnumerablePropertiesKind>(
             // i. Assert: kind is KEY+VALUE.
             debug_assert_eq!(Kind::KIND, EnumPropKind::KeyValue);
             let key_value =
-                String::try_from(key.get(gc.nogc()).convert_to_value(agent, gc.nogc())).unwrap();
+                String::try_from(key.get(agent, gc.nogc()).convert_to_value(agent, gc.nogc()))
+                    .unwrap();
             // ii. Let entry be CreateArrayFromList(« key, value »).
             let entry = create_array_from_list(
                 agent,
@@ -1937,7 +1938,7 @@ fn enumerable_own_keys_slow<'gc>(
     let own_keys = own_keys.scope(agent, gc.nogc());
     let mut results = results.scope(agent, gc.nogc());
     for key in own_keys.iter(agent) {
-        let local_key = key.get(gc.nogc());
+        let local_key = key.get(agent, gc.nogc());
         if local_key.is_symbol() {
             continue;
         }
@@ -1956,7 +1957,7 @@ fn enumerable_own_keys_slow<'gc>(
         }
         // 1. If kind is KEY, then
         // a. Append key to results.
-        results.push(agent, key.get(gc.nogc()));
+        results.push(agent, key.get(agent, gc.nogc()));
     }
     Ok(results.take(agent))
 }
@@ -2145,7 +2146,11 @@ fn copy_data_properties_slow<'a>(
         // ii. If desc is not undefined and desc.[[Enumerable]] is true, then
         if let Some(dest) = from
             .get(agent)
-            .internal_get_own_property(agent, next_key.get(gc.nogc()).unbind(), gc.reborrow())
+            .internal_get_own_property(
+                agent,
+                next_key.get(agent, gc.nogc()).unbind(),
+                gc.reborrow(),
+            )
             .unbind()?
             .bind(gc.nogc())
             && dest.enumerable.unwrap()
@@ -2154,7 +2159,7 @@ fn copy_data_properties_slow<'a>(
             let prop_value = get(
                 agent,
                 from.get(agent),
-                next_key.get(gc.nogc()).unbind(),
+                next_key.get(agent, gc.nogc()).unbind(),
                 gc.reborrow(),
             )
             .unbind()?
@@ -2163,7 +2168,7 @@ fn copy_data_properties_slow<'a>(
             unwrap_try(try_create_data_property(
                 agent,
                 target.get(agent),
-                next_key.get(gc.nogc()).unbind(),
+                next_key.get(agent, gc.nogc()).unbind(),
                 prop_value,
                 None,
                 gc.nogc(),
@@ -2357,7 +2362,7 @@ fn copy_data_properties_into_object_slow<'a>(
         // b. For each element e of excludedItems, do
         //   i. If SameValue(e, nextKey) is true, then
         //     1. Set excluded to true.
-        let local_next_key = next_key.get(gc.nogc());
+        let local_next_key = next_key.get(agent, gc.nogc());
         if excluded_items.contains(agent, local_next_key) {
             continue;
         }
@@ -2376,7 +2381,7 @@ fn copy_data_properties_into_object_slow<'a>(
             let prop_value = get(
                 agent,
                 from.get(agent),
-                next_key.get(gc.nogc()).unbind(),
+                next_key.get(agent, gc.nogc()).unbind(),
                 gc.reborrow(),
             )
             .unbind()?
@@ -2385,7 +2390,7 @@ fn copy_data_properties_into_object_slow<'a>(
             unwrap_try(try_create_data_property_or_throw(
                 agent,
                 object.get(agent),
-                next_key.get(gc.nogc()),
+                next_key.get(agent, gc.nogc()),
                 prop_value,
                 None,
                 gc.nogc(),

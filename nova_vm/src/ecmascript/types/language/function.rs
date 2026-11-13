@@ -61,11 +61,14 @@ bindable_handle!(Function);
 
 impl Function<'_> {
     /// Call the function with the given arguments.
+    ///
+    /// The arguments are unbound values; they are updated in place if garbage
+    /// collection runs during the call.
     pub fn call<'gc>(
         self,
         agent: &mut Agent,
         this_argument: Value,
-        args: &mut [Value],
+        args: &mut [Value<'static>],
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
         self.internal_call(

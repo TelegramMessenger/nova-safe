@@ -833,7 +833,7 @@ pub(crate) fn initialize_typed_array_from_list<'a, T: Viewable>(
     for (k, k_value) in values.iter(agent).enumerate() {
         // a. Let Pk be ! ToString(𝔽(k)).
         let pk = PropertyKey::from(SmallInteger::try_from(k as i64).unwrap());
-        let k_value = k_value.get(gc.nogc());
+        let k_value = k_value.get(agent, gc.nogc());
         // d. Perform ? Set(O, Pk, kValue, true).
         set(
             agent,

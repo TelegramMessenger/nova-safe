@@ -175,7 +175,7 @@ impl TypedArrayIntrinsicObject {
                         mapper.get(agent),
                         scoped_this_arg.get(agent),
                         Some(ArgumentsList::from_mut_slice(&mut [
-                            k_value.get(gc.nogc()).unbind(),
+                            k_value.get(agent, gc.nogc()).unbind(),
                             fk,
                         ])),
                         gc.reborrow(),
@@ -185,7 +185,7 @@ impl TypedArrayIntrinsicObject {
                 } else {
                     // v. Else,
                     //      1. Let mappedValue be kValue.
-                    k_value.get(gc.nogc())
+                    k_value.get(agent, gc.nogc())
                 };
                 // vi. Perform ? Set(targetObj, Pk, mappedValue, true).
                 set(

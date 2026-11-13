@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::{marker::PhantomData, ops::Deref};
-use std::{borrow::Cow, ptr::NonNull};
+use core::{cell::RefCell, marker::PhantomData, ops::Deref};
+use std::borrow::Cow;
 
 use crate::{
     ecmascript::{
@@ -11,7 +11,9 @@ use crate::{
         Function, FunctionInternalProperties, InternalSlots, JsResult, Object, OrdinaryObject,
         PropertyKey, Realm, ScopedValuesIterator, String, Value, function_handle,
     },
-    engine::{Bindable, GcScope, HeapRootCollection, NoGcScope, bindable_handle},
+    engine::{
+        Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData, bindable_handle,
+    },
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, IntrinsicConstructorIndexes,
@@ -43,25 +45,17 @@ impl core::fmt::Debug for ArgumentsList<'_, '_> {
 
 impl<'slice, 'value> ArgumentsList<'slice, 'value> {
     /// Create an ArgumentsList from a single Value.
-    pub(crate) fn from_mut_value(value: &'slice mut Value<'value>) -> Self {
+    pub(crate) fn from_mut_value(value: &'slice mut Value<'static>) -> Self {
         Self {
-            // SAFETY: The Value lifetime is moved over to the PhantomData.
-            slice: core::slice::from_mut(unsafe {
-                core::mem::transmute::<&'slice mut Value<'value>, &'slice mut Value<'static>>(value)
-            }),
+            slice: core::slice::from_mut(value),
             value: PhantomData,
         }
     }
 
     /// Create an ArgumentsList from a Value slice.
-    pub(crate) fn from_mut_slice(slice: &'slice mut [Value<'value>]) -> Self {
+    pub(crate) fn from_mut_slice(slice: &'slice mut [Value<'static>]) -> Self {
         Self {
-            // SAFETY: The Value lifetime is moved over to the PhantomData.
-            slice: unsafe {
-                core::mem::transmute::<&'slice mut [Value<'value>], &'slice mut [Value<'static>]>(
-                    slice,
-                )
-            },
+            slice,
             value: PhantomData,
         }
     }
@@ -69,6 +63,11 @@ impl<'slice, 'value> ArgumentsList<'slice, 'value> {
     /// Temporarily store the list on the [`Agent`](Agent) heap for the duration
     /// of a callback, ensuring that garbage collection does not invalidate any
     /// of the [`Value`](Value)s within.
+    ///
+    /// The list is copied onto the heap and the values that the callback did
+    /// not consume are copied back afterwards, so garbage collection during the
+    /// callback updates them. When the call returns, this list holds only
+    /// those values.
     ///
     /// See [`ScopedArgumentsList`](ScopedArgumentsList) for accessing the
     /// [`Value`](Value)s within the callback.
@@ -81,99 +80,45 @@ impl<'slice, 'value> ArgumentsList<'slice, 'value> {
     where
         R: 'a,
     {
-        // First take the arguments from ArgumentsList. Note: This is
-        // strictly extra work from a computational standpoint, but makes
-        // the code safer from a memory stand point. Any errors will also
-        // become more obvious.
         let slice = core::mem::take(&mut self.slice);
-        // SAFETY: We push the slice to the heap temporarily, for which we
-        // need to transmute its lifetime to static. This is strictly not
-        // correct: The slice points either to the stack or to a Vec owned
-        // by an above call frame. But! We give our best possible guarantee
-        // that the slice will be taken out of the heap before the end of
-        // this call. As long as that holds, then this is all perfectly
-        // legal. Note that unwinding of panics will break that guarantee
-        // currently.
-        let slice = unsafe {
-            std::mem::transmute::<&mut [Value<'static>], &'static mut [Value<'static>]>(slice)
-        };
-        // Store the slice's end pointer for validity checking later.
-        let slice_end_ptr = slice.as_ptr_range().end;
-        let slice_len = slice.len();
-        // Now we push the slice onto the heap.
-        let (stack_refs_len, len) = {
-            let stack_refs_len = u32::try_from(agent.stack_refs.borrow().len())
-                .expect("Stack references overflowed");
+        let values = take_pooled_arguments_vec(slice);
+        let (stack_refs_len, index) = {
+            let stack_refs_len = agent.stack_refs.borrow().len();
             let mut stack_ref_collections = agent.stack_ref_collections.borrow_mut();
-            let len = stack_ref_collections.len();
-            stack_ref_collections.push(HeapRootCollection::ArgumentsList(slice.into()));
-            // Elsewhere we make assumptions about the size of the stack.
-            // Thus check it here as well.
-            (
-                stack_refs_len,
-                u32::try_from(len).expect("Stack reference collections overflowed"),
-            )
+            let index = u32::try_from(stack_ref_collections.len())
+                .expect("Stack reference collections overflowed");
+            stack_ref_collections.push(HeapRootCollection::ArgumentsList(ScopedArgumentsData {
+                values,
+                start: 0,
+            }));
+            (stack_refs_len, index)
         };
         let result = {
             let sub_gc = gc.subscope();
-            let scoped_args = ScopedArgumentsList::new(len, sub_gc.nogc());
-            // Once the slice is on the heap, we can perform the user's work.
+            let scoped_args = ScopedArgumentsList::new(index, sub_gc.nogc());
             work(agent, scoped_args, sub_gc)
         };
-        // After the user's work is done, we can get to work returning the
-        // slice from the heap.
-        let mut slice = {
-            agent
-                .stack_refs
-                .borrow_mut()
-                .truncate(stack_refs_len as usize);
-
-            // We look at the slot where we put the slice in and check that
-            // it contains an arguments list.
+        agent.stack_refs.borrow_mut().truncate(stack_refs_len);
+        let ScopedArgumentsData { values, start } = {
             let mut stack_ref_collections = agent.stack_ref_collections.borrow_mut();
-            debug_assert!(stack_ref_collections.len() >= len as usize);
-            let stack_slot = &mut stack_ref_collections[len as usize];
-            // We take the slice back from the heap by replacing the data
-            // with an empty collection, and then truncate the heap stack
-            // to its previous size.
-            let HeapRootCollection::ArgumentsList(slice) =
-                core::mem::replace(stack_slot, HeapRootCollection::Empty)
-            else {
-                unreachable!()
+            let data = match stack_ref_collections
+                .get_mut(index as usize)
+                .map(|slot| core::mem::replace(slot, HeapRootCollection::Empty))
+            {
+                Some(HeapRootCollection::ArgumentsList(data)) => data,
+                _ => panic!("ArgumentsList::with_scoped: the arguments slot was replaced"),
             };
-            stack_ref_collections.truncate(len as usize);
-            slice
+            stack_ref_collections.truncate(index as usize);
+            data
         };
-        // Confirm that we have the right slice and that only valid subslicing
-        // has occurred.
-        // SAFETY: We had exclusive access to the slice and we've checked that it's
-        let post_work_slice_len = slice.len();
-        // SAFETY: This computes the end pointer of the slice meaning that we
-        // necessarily do not wrap around or go out of bounds (by more than 1).
-        let post_work_slice_end_ptr = unsafe {
-            slice
-                .as_ptr()
-                .cast::<Value<'static>>()
-                .add(post_work_slice_len)
-        };
-        assert!(slice_len >= post_work_slice_len);
-        assert_eq!(slice_end_ptr, post_work_slice_end_ptr);
-        // Now that we have our slice back, we can place it back where it
-        // came from. The end result is that the slice has temporarily been
-        // held by the heap and has been given back to the caller. While
-        // the heap held it, the caller couldn't have done so, and thus the
-        // exclusive reference requirement cannot have been broken by this
-        // method.
-        // The only thing we can break here is the lifetime requirement,
-        // and that is only possible if the user method panicked and that
-        // panic was caught and recovered from above us. ie. We're not
-        // panic safe currently.
-        // SAFETY: We've confirmed that this slice is the same slice that we
-        // got originally in self.slice; it may have become a subslice of the
-        // original slice but otherwise it is the same. Thus converting it
-        // back to a mutable slice is safe.
-        let slice = core::mem::replace(&mut self.slice, unsafe { slice.as_mut() });
-        debug_assert!(slice.is_empty());
+        let tail = slice
+            .split_at_mut_checked(start)
+            .map_or(&mut [][..], |(_, tail)| tail);
+        let remaining = values.get(start..).unwrap_or(&[]);
+        let copied = tail.len().min(remaining.len());
+        tail[..copied].copy_from_slice(&remaining[..copied]);
+        self.slice = tail;
+        return_pooled_arguments_vec(values);
         result
     }
 
@@ -248,6 +193,36 @@ impl<'value> Deref for ArgumentsList<'_, 'value> {
     }
 }
 
+const ARGUMENTS_POOL_LEN: usize = 16;
+const ARGUMENTS_POOL_MAX_CAPACITY: usize = 64;
+
+thread_local! {
+    static ARGUMENTS_POOL: RefCell<Vec<Vec<Value<'static>>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn take_pooled_arguments_vec(values: &[Value<'static>]) -> Vec<Value<'static>> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let mut vec = ARGUMENTS_POOL
+        .with_borrow_mut(|pool| pool.pop())
+        .unwrap_or_default();
+    vec.extend_from_slice(values);
+    vec
+}
+
+fn return_pooled_arguments_vec(mut vec: Vec<Value<'static>>) {
+    if vec.capacity() == 0 || vec.capacity() > ARGUMENTS_POOL_MAX_CAPACITY {
+        return;
+    }
+    vec.clear();
+    ARGUMENTS_POOL.with_borrow_mut(|pool| {
+        if pool.len() < ARGUMENTS_POOL_LEN {
+            pool.push(vec);
+        }
+    });
+}
+
 /// Arguments list stored temporarily on the Agent's heap.
 ///
 /// The arguments can be accessed through the Agent for the duration of the
@@ -265,6 +240,26 @@ impl<'scope> ScopedArgumentsList<'scope> {
         }
     }
 
+    fn with_data<R>(&self, agent: &Agent, f: impl FnOnce(&ScopedArgumentsData) -> R) -> R {
+        let stack_ref_collections = agent.stack_ref_collections.borrow();
+        let Some(HeapRootCollection::ArgumentsList(data)) =
+            stack_ref_collections.get(self.index as usize)
+        else {
+            panic!("ScopedArgumentsList used outside of its with_scoped call");
+        };
+        f(data)
+    }
+
+    fn with_data_mut<R>(&self, agent: &Agent, f: impl FnOnce(&mut ScopedArgumentsData) -> R) -> R {
+        let mut stack_ref_collections = agent.stack_ref_collections.borrow_mut();
+        let Some(HeapRootCollection::ArgumentsList(data)) =
+            stack_ref_collections.get_mut(self.index as usize)
+        else {
+            panic!("ScopedArgumentsList used outside of its with_scoped call");
+        };
+        f(data)
+    }
+
     /// Get a Value by index from an ArgumentsList.
     ///
     /// If a Value with that index isn't present, `undefined` is returned.
@@ -272,97 +267,49 @@ impl<'scope> ScopedArgumentsList<'scope> {
     /// If the list itself has not been [bound](Bindable) then the returned
     /// Value should immediately be bound.
     pub fn get<'gc>(&self, agent: &Agent, index: u32, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
-        if let HeapRootCollection::ArgumentsList(args) = agent
-            .stack_ref_collections
-            .borrow()
-            .get(self.index as usize)
-            .unwrap()
-        {
-            // SAFETY: The arguments list slice is guaranteed to be held
-            // exclusively by an above call frame, and placed onto the heap as
-            // a NonNull slice. Creating a temporary slice of it is safe.
-            // Exception: if a panic has occurred then we could theoretically
-            // be looking at an invalid slice, but in that case we shouldn't
-            // have access to the ScopedArgumentsList anymore either.
-            unsafe {
-                args.as_ref()
-                    .get(index as usize)
-                    .unwrap_or(&Value::Undefined)
-                    .bind(gc)
-            }
-        } else {
-            unreachable!()
-        }
+        self.with_data(agent, |data| {
+            data.remaining()
+                .get(index as usize)
+                .copied()
+                .unwrap_or(Value::Undefined)
+                .bind(gc)
+        })
     }
 
     /// Get the number of provided arguments.
     pub fn len(&self, agent: &Agent) -> usize {
-        if let HeapRootCollection::ArgumentsList(args) = agent
-            .stack_ref_collections
-            .borrow()
-            .get(self.index as usize)
-            .unwrap()
-        {
-            args.len()
-        } else {
-            unreachable!()
-        }
+        self.with_data(agent, |data| data.remaining().len())
     }
 
     pub(crate) fn unshift<'gc>(&self, agent: &Agent, gc: NoGcScope<'gc, '_>) -> Option<Value<'gc>> {
-        let mut collections = agent.stack_ref_collections.borrow_mut();
-        let collection_data: &mut HeapRootCollection =
-            collections.get_mut(self.index as usize).unwrap();
-        if let HeapRootCollection::ArgumentsList(args_ref) = collection_data {
-            // SAFETY: args_ref points to a valid exclusively held slice in an
-            // above call frame.
-            let args: &mut [Value<'static>] = unsafe { args_ref.as_mut() };
-            if let Some((first, rest)) = args.split_first_mut() {
-                let result = first.unbind().bind(gc);
-                let rest = NonNull::from(rest);
-                *args_ref = rest;
-                Some(result)
-            } else {
-                None
-            }
-        } else {
-            unreachable!()
-        }
+        self.with_data_mut(agent, |data| {
+            let first = data.values.get(data.start).copied()?;
+            data.start += 1;
+            Some(first.bind(gc))
+        })
     }
 
     pub(crate) fn iter(&self, agent: &mut Agent) -> ScopedValuesIterator<'_> {
-        if let HeapRootCollection::ArgumentsList(args) = agent
-            .stack_ref_collections
-            .borrow()
-            .get(self.index as usize)
-            .unwrap()
-        {
-            // SAFETY: args points to a uniquely owned slice in an above
-            // call frame, we can safely dereference it.
-            ScopedValuesIterator::from_slice(unsafe { args.as_ref() })
-        } else {
-            unreachable!()
-        }
+        self.with_data(agent, |data| {
+            ScopedValuesIterator::new(self.index, data.start, data.values.len())
+        })
     }
 
-    /// Get access to the backing reference slice as a pointer slice.
+    /// Call `f` with the remaining arguments as a slice.
     ///
-    /// ## Safety
-    ///
-    /// Garbage collection must not be called while this slice is exposed.
-    ///
-    /// Stack values must not be accessed while this slice is exposed.
-    pub(crate) unsafe fn as_non_null_slice(&self, agent: &Agent) -> NonNull<[Value<'static>]> {
-        if let HeapRootCollection::ArgumentsList(args) = agent
-            .stack_ref_collections
-            .borrow()
-            .get(self.index as usize)
-            .unwrap()
-        {
-            *args
-        } else {
-            unreachable!()
-        }
+    /// The values are taken off the heap for the duration of the call, so
+    /// `f` must not trigger garbage collection (hence the `NoGcScope`) nor
+    /// access this list.
+    pub(crate) fn with_slice<R>(
+        &self,
+        agent: &mut Agent,
+        _gc: NoGcScope<'_, '_>,
+        f: impl FnOnce(&mut Agent, &[Value<'static>]) -> R,
+    ) -> R {
+        let data = self.with_data_mut(agent, core::mem::take);
+        let result = f(agent, data.remaining());
+        self.with_data_mut(agent, |slot| *slot = data);
+        result
     }
 }
 

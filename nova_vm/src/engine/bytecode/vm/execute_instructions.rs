@@ -3190,7 +3190,7 @@ fn handle_set_value_break<'gc>(
     vm: &mut Vm,
     reference: &Reference,
     result: TryResult<SetResult>,
-    mut value: Value,
+    value: Value,
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     match result {
@@ -3218,7 +3218,7 @@ fn handle_set_value_break<'gc>(
                         agent,
                         setter,
                         receiver,
-                        Some(ArgumentsList::from_mut_value(&mut value)),
+                        Some(ArgumentsList::from_mut_value(&mut value.unbind())),
                         gc,
                     )
                 },
