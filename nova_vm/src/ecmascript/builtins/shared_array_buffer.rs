@@ -49,8 +49,7 @@ impl<'sab> SharedArrayBuffer<'sab> {
         byte_length: usize,
         gc: NoGcScope<'gc, '_>,
     ) -> JsResult<'gc, SharedArrayBuffer<'gc>> {
-        // SAFETY: No maxByteLength.
-        let block = unsafe { create_shared_byte_data_block(agent, byte_length as u64, None, gc) }?;
+        let block = create_shared_byte_data_block(agent, byte_length as u64, None, gc)?;
         Ok(agent
             .heap
             .create(SharedArrayBufferRecord::new(block, gc))
@@ -137,7 +136,7 @@ impl<'sab> SharedArrayBuffer<'sab> {
         // Note: new_byte_length is less or equal to max_byte_length which is
         // a usize.
         let new_byte_length = new_byte_length as usize;
-        if unsafe { data_block.grow(new_byte_length) } {
+        if data_block.grow(new_byte_length) {
             // Success
             Ok(())
         } else {
@@ -151,10 +150,10 @@ impl<'sab> SharedArrayBuffer<'sab> {
 
     /// Set the SharedArrayBuffer's internal buffer to `data_block`.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// The SharedArrayBuffer should not have had an internal buffer set.
-    pub(crate) unsafe fn set_data_block(self, agent: &mut Agent, data_block: SharedDataBlock) {
+    pub(crate) fn set_data_block(self, agent: &mut Agent, data_block: SharedDataBlock) {
         let data = self.get_mut(agent);
         debug_assert!(data.data_block.is_dangling());
         data.data_block = data_block;

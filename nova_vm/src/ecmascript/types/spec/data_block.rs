@@ -674,14 +674,13 @@ impl SharedDataBlock {
 
     /// Allocate a new SharedDataBlock.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
-    /// `byte_length` is less or equal to `max_byte_length` if defined.
-    unsafe fn new(byte_length: usize, max_byte_length: Option<usize>) -> Option<Self> {
+    /// `byte_length` is less or equal to `max_byte_length` if defined, else
+    /// this panics.
+    fn new(byte_length: usize, max_byte_length: Option<usize>) -> Option<Self> {
         let size = max_byte_length.unwrap_or(byte_length);
-        unsafe {
-            assert_unchecked(byte_length <= size);
-        }
+        assert!(byte_length <= size);
         let growable = max_byte_length.is_some();
         if size == 0 {
             if growable {
@@ -837,11 +836,12 @@ impl SharedDataBlock {
     /// store it via compare-and-swap. If another thread wins the race,
     /// the locally allocated map is dropped and the winner's map is used.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
-    /// Must not be a dangling SharedDataBlock.
-    pub(crate) unsafe fn get_or_init_waiters(&self) -> &Mutex<WaiterLists> {
-        // SAFETY: caller guarantees non-dangling.
+    /// Must not be a dangling SharedDataBlock, else this panics.
+    pub(crate) fn get_or_init_waiters(&self) -> &Mutex<WaiterLists> {
+        assert!(!self.is_dangling());
+        // SAFETY: Checked to be non-dangling.
         let waiters_atomic = unsafe { self.get_waiters_ptr() };
         let current = waiters_atomic.load(Ordering::Acquire);
         if !current.is_null() {
@@ -877,13 +877,13 @@ impl SharedDataBlock {
     /// Get the shared waiter map if it has been initialized.
     ///
     /// Returns `None` if no thread has ever called `get_or_init_waiters` on
-    /// this block (i.e. no `Atomics.wait` / `Atomics.waitAsync` has occurred).
-    ///
-    /// ## Safety
-    ///
-    /// Must not be a dangling SharedDataBlock.
-    pub(crate) unsafe fn get_waiters(&self) -> Option<&Mutex<WaiterLists>> {
-        // SAFETY: caller guarantees non-dangling.
+    /// this block (i.e. no `Atomics.wait` / `Atomics.waitAsync` has occurred),
+    /// or if the block is dangling.
+    pub(crate) fn get_waiters(&self) -> Option<&Mutex<WaiterLists>> {
+        if self.is_dangling() {
+            return None;
+        }
+        // SAFETY: Checked to be non-dangling.
         let waiters_atomic = unsafe { self.get_waiters_ptr() };
         let current = waiters_atomic.load(Ordering::Acquire);
         if current.is_null() {
@@ -912,37 +912,9 @@ impl SharedDataBlock {
         order: ECMAScriptOrdering,
     ) -> Option<T> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
-        if const { size_of::<T>() == size_of::<u8>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u8>, Option<T>>(
-                    &slice.get(0).map(|s| s.load(order)),
-                )
-            }
-        } else if const { size_of::<T>() == size_of::<u16>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u16>, Option<T>>(
-                    &slice.as_aligned::<u16>().map(|t| t.load(order)),
-                )
-            }
-        } else if const { size_of::<T>() == size_of::<u32>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u32>, Option<T>>(
-                    &slice.as_aligned::<u32>().map(|t| t.load(order)),
-                )
-            }
-        } else if const { size_of::<T>() == size_of::<u64>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u64>, Option<T>>(
-                    &slice.as_aligned::<u64>().map(|t| t.load(order)),
-                )
-            }
-        } else {
-            unreachable!("Unexpected load type")
-        }
+        slice
+            .as_aligned::<T::Storage>()
+            .map(|t| T::from_storage(t.load(order)))
     }
 
     /// Read a value at the given possibly unaligned offset with no
@@ -958,29 +930,7 @@ impl SharedDataBlock {
     #[inline(always)]
     pub(crate) fn load_unaligned<T: Viewable>(&self, byte_offset: usize) -> Option<T> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
-        if const { size_of::<T>() == size_of::<u8>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u8>, Option<T>>(&slice.load_unaligned::<u8>())
-            }
-        } else if const { size_of::<T>() == size_of::<u16>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u16>, Option<T>>(&slice.load_unaligned::<u16>())
-            }
-        } else if const { size_of::<T>() == size_of::<u32>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u32>, Option<T>>(&slice.load_unaligned::<u32>())
-            }
-        } else if const { size_of::<T>() == size_of::<u64>() } {
-            // SAFETY: Type checked to match.
-            unsafe {
-                core::mem::transmute_copy::<Option<u64>, Option<T>>(&slice.load_unaligned::<u64>())
-            }
-        } else {
-            unreachable!("Unexpected load_unaligned type")
-        }
+        slice.load_unaligned::<T::Storage>().map(T::from_storage)
     }
 
     /// Write a value at the given offset and the given ordering.
@@ -998,25 +948,9 @@ impl SharedDataBlock {
         order: ECMAScriptOrdering,
     ) -> Option<()> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
-        if const { size_of::<T>() == size_of::<u8>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u8>(&val) };
-            slice.as_aligned::<u8>().map(|t| t.store(val, order))
-        } else if const { size_of::<T>() == size_of::<u16>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u16>(&val) };
-            slice.as_aligned::<u16>().map(|t| t.store(val, order))
-        } else if const { size_of::<T>() == size_of::<u32>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u32>(&val) };
-            slice.as_aligned::<u32>().map(|t| t.store(val, order))
-        } else if const { size_of::<T>() == size_of::<u64>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u64>(&val) };
-            slice.as_aligned::<u64>().map(|t| t.store(val, order))
-        } else {
-            unreachable!("Unexpected read type {:?}", core::any::type_name::<T>())
-        }
+        slice
+            .as_aligned::<T::Storage>()
+            .map(|t| t.store(T::into_storage(val), order))
     }
 
     /// Write a value at the given possibly unaligned offset with no
@@ -1029,25 +963,7 @@ impl SharedDataBlock {
     /// There is no write in the Rust world: this should be pretty okay.
     pub(crate) fn store_unaligned<T: Viewable>(&self, byte_offset: usize, val: T) -> Option<()> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
-        if const { size_of::<T>() == size_of::<u8>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u8>(&val) };
-            slice.store_unaligned::<u8>(val)
-        } else if const { size_of::<T>() == size_of::<u16>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u16>(&val) };
-            slice.store_unaligned::<u16>(val)
-        } else if const { size_of::<T>() == size_of::<u32>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u32>(&val) };
-            slice.store_unaligned::<u32>(val)
-        } else if const { size_of::<T>() == size_of::<u64>() } {
-            // SAFETY: Type checked to match.
-            let val = unsafe { core::mem::transmute_copy::<T, u64>(&val) };
-            slice.store_unaligned::<u64>(val)
-        } else {
-            unreachable!("Unexpected read type")
-        }
+        slice.store_unaligned::<T::Storage>(T::into_storage(val))
     }
 
     /// Attempt to grow the SharedDataBlock. Returns false if `new_byte_length`
@@ -1055,18 +971,16 @@ impl SharedDataBlock {
     ///
     /// Note that this is a synchronising compare-and-exchange loop.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// Must be a growable, non-dangling SharedDataBlock with a maximum byte
-    /// length greater or equal to `new_byte_length`.
-    pub(crate) unsafe fn grow(&self, new_byte_length: usize) -> bool {
-        // SAFETY: precondition.
-        let byte_length = unsafe {
-            assert_unchecked(self.is_growable());
-            assert_unchecked(!self.is_dangling());
-            assert_unchecked(new_byte_length <= self.max_byte_length());
-            self.get_byte_length()
-        };
+    /// length greater or equal to `new_byte_length`, else this panics.
+    pub(crate) fn grow(&self, new_byte_length: usize) -> bool {
+        assert!(self.is_growable());
+        assert!(!self.is_dangling());
+        assert!(new_byte_length <= self.max_byte_length());
+        // SAFETY: Checked to be a growable, non-dangling SharedDataBlock.
+        let byte_length = unsafe { self.get_byte_length() };
         // 9. Let currentByteLengthRawBytes be
         //    GetRawBytesFromSharedBlock(byteLengthBlock, 0, biguint64, true, seq-cst).
         let mut current_byte_length = byte_length.load(Ordering::SeqCst);
@@ -1140,21 +1054,19 @@ pub(crate) fn create_byte_data_block<'a>(
 /// non-negative integer) and returns either a normal completion containing
 /// a Shared Data Block or a throw completion.
 ///
-/// ## Safety
+/// ## Correctness
 ///
 /// `byte_length` must be less or equal than `max_byte_length` if it has been
-/// defined.
+/// defined, else this panics.
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) unsafe fn create_shared_byte_data_block<'a>(
+pub(crate) fn create_shared_byte_data_block<'a>(
     agent: &mut Agent,
     byte_length: u64,
     max_byte_length: Option<u64>,
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, SharedDataBlock> {
     let size = max_byte_length.unwrap_or(byte_length);
-    unsafe {
-        assert_unchecked(byte_length <= size);
-    }
+    assert!(byte_length <= size);
     // 1. Let db be a new Shared Data Block value consisting of size bytes. If
     //    it is impossible to create such a Shared Data Block, throw a
     //    RangeError exception.
@@ -1162,10 +1074,7 @@ pub(crate) unsafe fn create_shared_byte_data_block<'a>(
         .ok()
         .filter(|&size| size as u64 <= DATA_BLOCK_SIZE_LIMIT)
         .and_then(|_| {
-            // SAFETY: function precondition
-            unsafe {
-                SharedDataBlock::new(byte_length as usize, max_byte_length.map(|s| s as usize))
-            }
+            SharedDataBlock::new(byte_length as usize, max_byte_length.map(|s| s as usize))
         })
     {
         // 2. Let execution be the [[CandidateExecution]] field of the
@@ -3100,16 +3009,14 @@ mod tests {
     #[cfg(feature = "shared-array-buffer")]
     fn new_shared_data_block() {
         use super::SharedDataBlock;
-        // SAFETY: max_byte_length is None.
-        let _ = unsafe { SharedDataBlock::new(1024, None).unwrap() };
+        let _ = SharedDataBlock::new(1024, None).unwrap();
     }
 
     #[test]
     #[cfg(feature = "shared-array-buffer")]
     fn clone_shared_data_block() {
         use super::SharedDataBlock;
-        // SAFETY: max_byte_length is None.
-        let a = unsafe { SharedDataBlock::new(1024, None).unwrap() };
+        let a = SharedDataBlock::new(1024, None).unwrap();
         let _ = a.clone();
     }
 
@@ -3118,8 +3025,7 @@ mod tests {
     fn clone_shared_data_block_thread_safe() {
         use super::SharedDataBlock;
         use std::thread;
-        // SAFETY: max_byte_length is None.
-        let a = unsafe { SharedDataBlock::new(1024, None).unwrap() };
+        let a = SharedDataBlock::new(1024, None).unwrap();
         thread::scope(|s| {
             s.spawn(|| a.clone());
             s.spawn(|| a.clone());
