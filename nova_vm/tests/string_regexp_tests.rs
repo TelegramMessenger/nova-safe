@@ -72,3 +72,8 @@ fn string_replace_string_pattern() {
 fn regexp_named_groups() {
     run_test_source("regExpNamedGroups.test.js");
 }
+
+#[test]
+fn regexp_multiline_dot_all() {
+    run_test_source("regExpMultilineDotAll.test.js");
+}

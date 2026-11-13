@@ -129,7 +129,7 @@ impl<'a> RegExpHeapData<'a> {
         flags: RegExpFlags,
     ) -> Result<Regex, regex::Error> {
         RegexBuilder::new(pattern)
-            .dot_matches_new_line((flags & RegExpFlags::M).bits() > 0)
+            .multi_line((flags & RegExpFlags::M).bits() > 0)
             .case_insensitive((flags & RegExpFlags::I).bits() > 0)
             .unicode(true)
             .dot_matches_new_line((flags & RegExpFlags::S).bits() > 0)
