@@ -474,6 +474,35 @@ impl<'a> String<'a> {
         self.utf16_index_(agent, utf8_idx)
     }
 
+    /// The substring from byte `start` to byte `end`, each moved back to the
+    /// start of the code point it is in.
+    pub(crate) fn wtf8_substring_<'gc>(
+        self,
+        agent: &mut Agent,
+        start: usize,
+        end: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
+        let wtf8 = self.as_wtf8_(agent);
+        let code_point_start = |mut index: usize| {
+            let bytes = wtf8.as_bytes();
+            index = index.min(bytes.len());
+            while index > 0 && index < bytes.len() && bytes[index] & 0xC0 == 0x80 {
+                index -= 1;
+            }
+            index
+        };
+        let start = code_point_start(start);
+        let end = code_point_start(end).max(start);
+        let substring = wtf8.slice(start, end);
+        if let Ok(small) = String::try_from(substring) {
+            return small;
+        }
+        let mut buf = Wtf8Buf::with_capacity(substring.len());
+        buf.push_wtf8(substring);
+        agent.heap.create(buf).bind(gc)
+    }
+
     /// Byte length of the string.
     #[inline(always)]
     pub fn len(self, agent: &Agent) -> usize {

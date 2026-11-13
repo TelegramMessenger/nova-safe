@@ -721,19 +721,7 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
             //         vi. Append capture to indices.
         }
         let captured_value = if let Some((start, end)) = capture_i {
-            let captured = match std::string::String::from_utf8_lossy(
-                &s.as_bytes_(&agent.heap.strings)[start..end],
-            ) {
-                std::borrow::Cow::Borrowed(str) => match String::try_from(str) {
-                    Ok(small) => Err(small),
-                    Err(()) => Ok(str.to_owned()),
-                },
-                std::borrow::Cow::Owned(string) => Ok(string),
-            };
-            match captured {
-                Ok(captured) => String::from_string(agent, captured, gc).into(),
-                Err(small) => small.into(),
-            }
+            s.wtf8_substring_(agent, start, end, gc).into()
         } else {
             Value::Undefined
         };

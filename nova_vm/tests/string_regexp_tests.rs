@@ -52,3 +52,8 @@ fn string_concat_surrogates() {
 fn regexp_non_ascii_positions() {
     run_test_source("regExpNonAsciiPositions.test.js");
 }
+
+#[test]
+fn regexp_captures() {
+    run_test_source("regExpCaptures.test.js");
+}
