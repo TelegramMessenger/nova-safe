@@ -333,14 +333,10 @@ impl<'a> DirectArenaAccess for UnmappedArguments<'a> {
 }
 impl<'a> crate::heap::DirectArenaAccessMut for UnmappedArguments<'a> {
     #[inline]
-    fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Output {
-        unsafe {
-            core::mem::transmute::<&mut ObjectRecord<'static>, &mut ObjectRecord<'a>>(
-                source
-                    .get_mut(crate::heap::HeapIndexHandle::get_index(self))
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self)),
-            )
-        }
+    fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Data {
+        source
+            .get_mut(crate::heap::HeapIndexHandle::get_index(self))
+            .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
     }
 }
 // === END ===

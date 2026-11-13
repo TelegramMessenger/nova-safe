@@ -116,7 +116,7 @@ impl<'gc> DataView<'gc> {
         let heap_byte_offset = byte_offset.into();
 
         let d = self.get_mut(agent);
-        d.viewed_array_buffer = ab;
+        d.viewed_array_buffer = ab.unbind();
         d.byte_length = heap_byte_length;
         d.byte_offset = heap_byte_offset;
 
@@ -236,7 +236,7 @@ impl<'gc> SharedDataView<'gc> {
         let heap_byte_offset = byte_offset.into();
 
         let d = self.get_mut(agent);
-        d.viewed_array_buffer = sab;
+        d.viewed_array_buffer = sab.unbind();
         d.byte_length = heap_byte_length;
         d.byte_offset = heap_byte_offset;
 

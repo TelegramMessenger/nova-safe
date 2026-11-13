@@ -2,9 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{
-    cmp::Ordering, collections::TryReserveError, marker::PhantomData, num::NonZeroU32, ptr::NonNull,
-};
+use std::{cmp::Ordering, collections::TryReserveError, marker::PhantomData, num::NonZeroU32};
 
 use ahash::AHashMap;
 use hashbrown::{HashTable, hash_table::Entry};
@@ -19,7 +17,7 @@ use crate::{
         ArenaAccess, ArenaAccessMut, CompactionLists, CreateHeapData, DirectArenaAccess,
         DirectArenaAccessMut, Heap, HeapMarkAndSweep, HeapSweepWeakReference,
         IntrinsicObjectShapes, PropertyKeyHeap, WeakReference, WorkQueues,
-        {ElementArrayKey, ElementArrays}, {HeapIndexHandle, PropertyKeyIndex},
+        {ElementArrayKey, ElementArrays, FREE_KEY_SLOT}, {HeapIndexHandle, PropertyKeyIndex},
     },
 };
 
@@ -83,18 +81,14 @@ impl<'a> ObjectShape<'a> {
     }
 
     /// Get the Object Shape transitions as mutable.
+    ///
+    /// The map is returned as stored, with its `'static` GC lifetime: handles
+    /// written into it must be unbound first.
     pub(crate) fn get_transitions_direct_mut<'r>(
         self,
         transitions: &'r mut [ObjectShapeTransitionMap<'static>],
-    ) -> &'r mut ObjectShapeTransitionMap<'a> {
-        // SAFETY: Lifetime transmute to thread GC lifetime to temporary heap
-        // reference.
-        unsafe {
-            core::mem::transmute::<
-                &'r mut ObjectShapeTransitionMap<'static>,
-                &'r mut ObjectShapeTransitionMap<'a>,
-            >(&mut transitions[self.get_index()])
-        }
+    ) -> &'r mut ObjectShapeTransitionMap<'static> {
+        &mut transitions[self.get_index()]
     }
 
     /// Get the implied u32 index of the ObjectShape reference.
@@ -331,12 +325,12 @@ impl<'a> ObjectShape<'a> {
         let keys_index = self.keys_index(agent);
         let keys_uninit = agent.heap.elements.get_keys_uninit_raw(cap, keys_index);
         let shape_record = if let Some(slot) = keys_uninit.get_mut(len)
-            && slot.is_none()
+            && *slot == FREE_KEY_SLOT
         {
             // Our current shape keys is something like [a, b, None, None], and
             // we want to add c as the third key. In this case we can just add
             // it directly and create a new shape with the same keys.
-            slot.replace(key.unbind());
+            *slot = key.unbind();
             ObjectShapeRecord::create(prototype, keys_index, cap, len.checked_add(1).unwrap())
         } else {
             // Our current shape keys is something like [a, b, x] and we want
@@ -542,7 +536,7 @@ impl<'a> ObjectShape<'a> {
             .iter_mut()
             .zip(private_fields.iter().map(|f| f.get_key()))
         {
-            *slot = Some(key.into());
+            *slot = key.into();
         }
         *len += private_fields_count;
         *values_cap = (*len).into();
@@ -554,24 +548,11 @@ impl<'a> ObjectShape<'a> {
     ///
     /// > NOTE: This function will create a new Object Shape, or possibly
     /// > multiple ones, if an existing one cannot be found.
-    ///
-    /// ## Safety
-    ///
-    /// The private_fields parameter must not be backed by memory in the Agent
-    /// heap's Elements or Object Shape related vectors.
-    ///
-    /// The method will read from the private_fields parameter but does not
-    /// mutate them. The method also does not touch the Agent's environments at
-    /// all. As a result, it is safe to pass in private fields backed by a
-    /// PrivateEnvironment held in the Agent.
-    pub(crate) unsafe fn add_private_fields(
+    pub(crate) fn add_private_fields(
         self,
         agent: &mut Agent,
-        private_fields: NonNull<[PrivateField<'a>]>,
+        private_fields: &[PrivateField<'a>],
     ) -> Result<(Self, usize), TryReserveError> {
-        // SAFETY: User guarantees that the fields are not backed by memory
-        // that we're going to be mutating.
-        let private_fields = unsafe { private_fields.as_ref() };
         let original_len = self.len(agent);
         let insertion_index = if original_len == 0 {
             // Property storage is currently empty: We don't need to do any
@@ -1073,9 +1054,8 @@ impl<'a> DirectArenaAccess for ObjectShape<'a> {
 impl<'a> DirectArenaAccessMut for ObjectShape<'a> {
     /// Get the Object Shape record as mutable.
     #[inline(always)]
-    fn get_direct_mut(self, object_shapes: &mut Vec<Self::Data>) -> &mut Self::Output {
-        // SAFETY: we can transmute the GC lifetime from 'static to a local bound lifetime.
-        unsafe { core::mem::transmute(&mut object_shapes[self.get_index()]) }
+    fn get_direct_mut(self, object_shapes: &mut Vec<Self::Data>) -> &mut Self::Data {
+        &mut object_shapes[self.get_index()]
     }
 }
 

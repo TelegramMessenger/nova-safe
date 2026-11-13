@@ -205,7 +205,7 @@ impl<'ta, T: Viewable> GenericTypedArray<'ta, T> {
     ) {
         let heap_byte_offset = byte_offset.into();
         let d = self.into_void_array().get_mut(agent);
-        d.viewed_array_buffer = ab;
+        d.viewed_array_buffer = ab.unbind();
         d.byte_offset = heap_byte_offset;
 
         if let Some((byte_length, array_length)) = byte_and_array_length {
@@ -2234,20 +2234,10 @@ impl<'a, T: Viewable> DirectArenaAccess for GenericTypedArray<'a, T> {
 }
 impl<'a, T: Viewable> DirectArenaAccessMut for GenericTypedArray<'a, T> {
     #[inline]
-    fn get_direct_mut<'agent>(
-        self,
-        source: &'agent mut Vec<Self::Data>,
-    ) -> &'agent mut Self::Output {
-        unsafe {
-            core::mem::transmute::<
-                &'agent mut TypedArrayRecord<'static>,
-                &'agent mut TypedArrayRecord<'a>,
-            >(
-                source
-                    .get_mut(HeapIndexHandle::get_index(self))
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self)),
-            )
-        }
+    fn get_direct_mut<'agent>(self, source: &'agent mut Vec<Self::Data>) -> &'agent mut Self::Data {
+        source
+            .get_mut(HeapIndexHandle::get_index(self))
+            .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
     }
 }
 #[doc(hidden)]

@@ -2869,7 +2869,19 @@ impl ArrayPrototype {
                     .unbind()?;
                     return Ok(a.get(agent).into());
                 }
-                if let Object::Array(a) = a.get(agent)
+                // The species constructor may have run user code that changed
+                // the source: copy directly only while every source element is
+                // still an own data property.
+                let source_unchanged = {
+                    let source = array.get(agent);
+                    source.is_trivial(agent)
+                        && source
+                            .as_slice(agent)
+                            .get(start..end)
+                            .is_some_and(|values| values.iter().all(Option::is_some))
+                };
+                if source_unchanged
+                    && let Object::Array(a) = a.get(agent)
                     && a.len(agent) as usize == count
                     && a.is_trivial(agent)
                     && a.as_slice(agent).iter().all(|el| el.is_none())
@@ -2900,19 +2912,42 @@ impl ArrayPrototype {
                 while k < end {
                     // a. Let Pk be ! ToString(𝔽(k)).
                     // b. Let kPresent be ? HasProperty(O, Pk).
-                    // Note: Array is dense, we do not need to check this.
                     // c. If kPresent is true, then
                     // i. Let kValue be ? Get(O, Pk).
-                    let k_value = array.get(agent).as_slice(agent)[k].unwrap();
+                    // Note: an element of a trivial Array is an own data
+                    // property, read without calling user code. User code
+                    // run by the species constructor or by A may have
+                    // shrunk the source or added holes or accessors to it,
+                    // so this is checked for every element.
+                    let source = array.get(agent);
+                    let own_value = if source.is_trivial(agent) {
+                        source.as_slice(agent).get(k).copied().flatten()
+                    } else {
+                        None
+                    };
+                    let k_value = if let Some(k_value) = own_value {
+                        Some(k_value.unbind())
+                    } else {
+                        let pk = k.try_into().unwrap();
+                        if has_property(agent, array.get(agent).into(), pk, gc.reborrow())
+                            .unbind()?
+                        {
+                            Some(get(agent, array.get(agent), pk, gc.reborrow()).unbind()?)
+                        } else {
+                            None
+                        }
+                    };
                     // ii. Perform ? CreateDataPropertyOrThrow(A, ! ToString(𝔽(n)), kValue).
-                    create_data_property_or_throw(
-                        agent,
-                        a.get(agent),
-                        n.into(),
-                        k_value,
-                        gc.reborrow(),
-                    )
-                    .unbind()?;
+                    if let Some(k_value) = k_value {
+                        create_data_property_or_throw(
+                            agent,
+                            a.get(agent),
+                            n.into(),
+                            k_value,
+                            gc.reborrow(),
+                        )
+                        .unbind()?;
+                    }
                     // d. Set k to k + 1.
                     k += 1;
                     // e. Set n to n + 1.

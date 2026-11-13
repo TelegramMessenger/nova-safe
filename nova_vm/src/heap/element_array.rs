@@ -5,15 +5,16 @@
 use ahash::AHashMap;
 
 use super::{
-    CompactionLists, ElementIndex, HeapMarkAndSweep, PropertyKeyIndex, WorkQueues,
+    AtomicBits, BitRange, CompactionLists, ElementIndex, HeapMarkAndSweep, PropertyKeyIndex,
+    WorkQueues,
     object_entry::{ObjectEntry, ObjectEntryPropertyDescriptor},
 };
 use crate::{
-    ecmascript::{Agent, Function, PropertyDescriptor, PropertyKey, Value},
+    ecmascript::{Agent, Function, PrivateName, PropertyDescriptor, PropertyKey, Value},
     engine::{Bindable, NoGcScope, bindable_handle},
     heap::HeapIndexHandle,
 };
-use core::mem::MaybeUninit;
+use core::ops::{Index, IndexMut};
 use std::collections::{TryReserveError, hash_map::Entry};
 
 /// Shared access to an element storage.
@@ -207,15 +208,11 @@ impl<'gc> ElementsVector<'gc> {
         agent.heap.elements.get_values(self)
     }
 
+    /// Get the values as mutable, as stored with their `'static` GC lifetime:
+    /// values written into the slice must be unbound first.
     #[inline]
-    pub(crate) fn get_mut<'a>(&self, agent: &'a mut Agent) -> &'a mut [Option<Value<'gc>>] {
-        // SAFETY: shortening the GC lifetime is safe, as moving a shorter
-        // lifetime into the heap puts it into the GC's view.
-        unsafe {
-            core::mem::transmute::<&'a mut [Option<Value<'static>>], &'a mut [Option<Value<'gc>>]>(
-                agent.heap.elements.get_values_mut(self),
-            )
-        }
+    pub(crate) fn get_mut<'a>(&self, agent: &'a mut Agent) -> &'a mut [Option<Value<'static>>] {
+        agent.heap.elements.get_values_mut(self)
     }
 
     pub(crate) const EMPTY: Self = Self {
@@ -1217,9 +1214,187 @@ impl<'a> ElementDescriptor<'a> {
 
 bindable_handle!(ElementDescriptor);
 
+/// Fixed-size storages of `N` slots each, kept back to back in one flat
+/// vector: storage `i` is `data[i * N..(i + 1) * N]`.
+///
+/// A `Vec<[T; N]>` cannot grow without building a `[T; N]` on the stack, and
+/// `N` goes up to 2^32.
+#[derive(Debug)]
+pub(crate) struct StridedVec<T, const N: usize> {
+    data: Vec<T>,
+}
+
+impl<T, const N: usize> Default for StridedVec<T, N> {
+    fn default() -> Self {
+        Self { data: Vec::new() }
+    }
+}
+
+impl<T: Copy, const N: usize> StridedVec<T, N> {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(
+                cap.checked_mul(N)
+                    .expect("Element storage capacity overflow"),
+            ),
+        }
+    }
+
+    /// Number of storages.
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.data.len() / N
+    }
+
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    #[inline]
+    fn range(index: usize) -> Option<core::ops::Range<usize>> {
+        let start = index.checked_mul(N)?;
+        Some(start..start.checked_add(N)?)
+    }
+
+    /// The storage at `index`, all `N` slots.
+    #[inline]
+    pub(crate) fn get(&self, index: usize) -> Option<&[T]> {
+        self.data.get(Self::range(index)?)
+    }
+
+    /// The storage at `index` as mutable, all `N` slots.
+    #[inline]
+    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut [T]> {
+        self.data.get_mut(Self::range(index)?)
+    }
+
+    /// All slots of all storages as one flat slice.
+    fn as_flat_mut(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
+    fn last_index<I: HeapIndexHandle>(&self) -> I {
+        assert!(!self.is_empty());
+        I::from_index(self.len() - 1)
+    }
+
+    /// Append a storage holding `items` followed by `filler` up to `N` slots.
+    fn try_push(
+        &mut self,
+        items: impl IntoIterator<Item = T>,
+        filler: T,
+    ) -> Result<usize, TryReserveError> {
+        self.data.try_reserve(N)?;
+        let start = self.data.len();
+        self.data.extend(items.into_iter().take(N));
+        self.data.resize(start + N, filler);
+        Ok(start / N)
+    }
+
+    /// Append a storage holding the first `len` slots of the storage at
+    /// `index`, followed by `filler` up to `N` slots.
+    fn try_push_within(
+        &mut self,
+        index: usize,
+        len: usize,
+        filler: T,
+    ) -> Result<usize, TryReserveError> {
+        assert!(len <= N);
+        let source = Self::range(index).expect("Invalid storage index");
+        assert!(source.end <= self.data.len(), "Invalid storage index");
+        self.data.try_reserve(N)?;
+        let start = self.data.len();
+        self.data
+            .extend_from_within(source.start..source.start + len);
+        self.data.resize(start + N, filler);
+        Ok(start / N)
+    }
+
+    /// Append a copy of the storage at `index`, all `N` slots.
+    fn push_copy(&mut self, index: usize) -> usize {
+        let source = Self::range(index).expect("Invalid storage index");
+        let start = self.data.len();
+        self.data.extend_from_within(source);
+        start / N
+    }
+
+    /// Keep only the storages for which `keep` returns true, moving the kept
+    /// storages down in order.
+    pub(crate) fn retain_mut(&mut self, mut keep: impl FnMut(&mut [T]) -> bool) {
+        let count = self.len();
+        let mut kept = 0;
+        for index in 0..count {
+            let range = index * N..(index + 1) * N;
+            if keep(&mut self.data[range.clone()]) {
+                if kept != index {
+                    self.data.copy_within(range, kept * N);
+                }
+                kept += 1;
+            }
+        }
+        self.data.truncate(kept * N);
+    }
+
+    /// Drop the storages not marked in `range` and sweep the slots of the
+    /// kept ones.
+    pub(crate) fn sweep(
+        &mut self,
+        compactions: &CompactionLists,
+        range: &BitRange,
+        bits: &[AtomicBits],
+    ) where
+        T: HeapMarkAndSweep,
+    {
+        assert_eq!(self.len(), range.len());
+        let mut iter = range.iter(bits);
+        self.retain_mut(|storage| {
+            let do_retain = iter.next().unwrap();
+            if do_retain {
+                for slot in storage.iter_mut() {
+                    slot.sweep_values(compactions);
+                }
+            }
+            do_retain
+        });
+    }
+}
+
+impl<const N: usize> Index<ElementIndex<'_>> for StridedVec<Option<Value<'static>>, N> {
+    type Output = [Option<Value<'static>>];
+
+    fn index(&self, index: ElementIndex) -> &Self::Output {
+        self.get(index.get_index())
+            .expect("Invalid ElementsVector: No item at index")
+    }
+}
+
+impl<const N: usize> IndexMut<ElementIndex<'_>> for StridedVec<Option<Value<'static>>, N> {
+    fn index_mut(&mut self, index: ElementIndex<'_>) -> &mut Self::Output {
+        self.get_mut(index.get_index())
+            .expect("Invalid ElementsVector: No item at index")
+    }
+}
+
+impl<const N: usize> Index<PropertyKeyIndex<'_>> for StridedVec<PropertyKey<'static>, N> {
+    type Output = [PropertyKey<'static>];
+
+    fn index(&self, index: PropertyKeyIndex) -> &Self::Output {
+        self.get(index.get_index())
+            .expect("Invalid PropertyKeyIndex: No item at index")
+    }
+}
+
+impl<const N: usize> IndexMut<PropertyKeyIndex<'_>> for StridedVec<PropertyKey<'static>, N> {
+    fn index_mut(&mut self, index: PropertyKeyIndex<'_>) -> &mut Self::Output {
+        self.get_mut(index.get_index())
+            .expect("Invalid PropertyKeyIndex: No item at index")
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ElementArray<const N: usize> {
-    pub values: Vec<[Option<Value<'static>>; N]>,
+    pub values: StridedVec<Option<Value<'static>>, N>,
     pub descriptors: AHashMap<ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
 }
 
@@ -1227,13 +1402,13 @@ impl<const N: usize> ElementArray<N> {
     /// All value slots of this backing store as one flat slice, with the
     /// stride of one elements storage.
     fn as_flat_mut(&mut self) -> (&mut [Option<Value<'static>>], usize) {
-        (self.values.as_flattened_mut(), N)
+        (self.values.as_flat_mut(), N)
     }
 
     pub(crate) fn with_capacity(cap: usize) -> Self {
         const { assert!(N.is_power_of_two()) }
         Self {
-            values: Vec::with_capacity(cap),
+            values: StridedVec::with_capacity(cap),
             descriptors: Default::default(),
         }
     }
@@ -1244,11 +1419,11 @@ impl<const N: usize> ElementArray<N> {
 
     #[inline]
     fn get_values_raw(&self, index: ElementIndex, len: u32) -> &[Option<Value<'static>>] {
-        &self.values[index].as_slice()[0..len as usize]
+        &self.values[index][0..len as usize]
     }
 
     fn get_values_mut(&mut self, vector: &ElementsVector) -> &mut [Option<Value<'static>>] {
-        &mut self.values[vector.elements_index].as_mut_slice()[0..vector.len() as usize]
+        &mut self.values[vector.elements_index][0..vector.len() as usize]
     }
 
     fn get_descriptors_and_values_raw<'gc>(
@@ -1268,8 +1443,7 @@ impl<const N: usize> ElementArray<N> {
             values: &mut self
                 .values
                 .get_mut(vector.elements_index.get_index())
-                .unwrap()
-                .as_mut_slice()[0..vector.len() as usize],
+                .unwrap()[0..vector.len() as usize],
             descriptors: self.descriptors.entry(vector.elements_index.unbind()),
         }
     }
@@ -1280,7 +1454,7 @@ impl<const N: usize> ElementArray<N> {
         len: u32,
     ) -> ElementStorageMut<'_> {
         ElementStorageMut {
-            values: &mut self.values[index].as_mut_slice()[0..len as usize],
+            values: &mut self.values[index][0..len as usize],
             descriptors: self.descriptors.entry(index),
         }
     }
@@ -1292,7 +1466,7 @@ impl<const N: usize> ElementArray<N> {
         index: ElementIndex<'static>,
     ) -> ElementStorageUninit<'_> {
         ElementStorageUninit {
-            values: self.values[index].as_mut_slice(),
+            values: &mut self.values[index],
             descriptors: self.descriptors.entry(index),
         }
     }
@@ -1302,41 +1476,13 @@ impl<const N: usize> ElementArray<N> {
         source: &[Option<Value>],
         descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>>,
     ) -> Result<ElementIndex<'static>, TryReserveError> {
-        let length = source.len();
-        self.values.try_reserve(1)?;
+        assert!(source.len() <= N);
         if descriptors.is_some() {
             self.descriptors.try_reserve(1)?;
         }
-        let remaining = self.values.spare_capacity_mut();
-        assert!(length <= N);
-        let last = remaining.get_mut(0).unwrap();
-        debug_assert_eq!(
-            core::mem::size_of::<Option<[Option<Value>; N]>>(),
-            core::mem::size_of::<[Option<Value>; N]>()
-        );
-        // SAFETY: We can move MaybeUninit from outside of the array into individual items in it.
-        // Moving inside the Option<[_]> is less well defined; the size is asserted to be the same
-        // but it could theoretically be that we end up copying a bit that says "the array is None".
-        // Experimentally however, this works and we do not copy None but Some([_]).
-        let last = unsafe {
-            core::mem::transmute::<
-                &mut MaybeUninit<[Option<Value>; N]>,
-                &mut [MaybeUninit<Option<Value>>; N],
-            >(last)
-        };
-        // SAFETY: Interpreting any T as MaybeUninit<T> is always safe.
-        let len_slice = unsafe {
-            core::mem::transmute::<&[Option<Value>], &[MaybeUninit<Option<Value>>]>(source)
-        };
-        last[..length].copy_from_slice(len_slice);
-        last[length..].fill(MaybeUninit::new(None));
-        // SAFETY: We have fully initialized the next item.
-        unsafe {
-            self.values.set_len(self.values.len() + 1);
-        }
-        // Check that above our moving inside of the `Option<[_]>` to copy data into the inner
-        // array is indeed Some(_) afterwards.
-        let index = ElementIndex::last_element_index(&self.values);
+        self.values
+            .try_push(source.iter().map(|&v| v.unbind()), None)?;
+        let index = self.values.last_index();
         if let Some(descriptors) = descriptors {
             self.descriptors.insert(index, descriptors);
         }
@@ -1350,37 +1496,20 @@ impl<const N: usize> ElementArray<N> {
     ) -> Result<ElementIndex<'static>, TryReserveError> {
         let source_length = source.values.len();
         let target_length = source_length - 1;
-        self.values.try_reserve(1)?;
+        assert!((removal_index as usize) < source_length);
+        assert!(target_length <= N);
         if source.descriptors.is_some() {
             self.descriptors.try_reserve(1)?;
         }
-        let remaining = self.values.spare_capacity_mut();
-        assert!((removal_index as usize) < source_length);
-        assert!(target_length <= N);
-        let target_values = remaining.get_mut(0).unwrap();
-        // SAFETY: We can move MaybeUninit from outside of the array into individual items in it.
-        let target_values = unsafe {
-            core::mem::transmute::<
-                &mut MaybeUninit<[Option<Value>; N]>,
-                &mut [MaybeUninit<Option<Value>>; N],
-            >(target_values)
-        };
-        // SAFETY: Interpreting any T as MaybeUninit<T> is always safe
-        // and we checked above in const that PropertyKey can be
-        // reinterpreted as Option<PropertyKey>.
-        let source_values = unsafe {
-            core::mem::transmute::<&[Option<Value>], &[MaybeUninit<Option<Value>>]>(source.values)
-        };
-        target_values[..removal_index as usize]
-            .copy_from_slice(&source_values[..removal_index as usize]);
-        target_values[removal_index as usize..target_length]
-            .copy_from_slice(&source_values[(removal_index as usize + 1)..]);
-        target_values[target_length..].fill(MaybeUninit::new(None));
-        // SAFETY: We have fully initialized the next item.
-        unsafe {
-            self.values.set_len(self.values.len() + 1);
-        }
-        let key = ElementIndex::last_element_index(&self.values);
+        let removal_index_usize = removal_index as usize;
+        self.values.try_push(
+            source.values[..removal_index_usize]
+                .iter()
+                .chain(&source.values[removal_index_usize + 1..])
+                .map(|&v| v.unbind()),
+            None,
+        )?;
+        let key = self.values.last_index();
         if let Some(descriptors) = source.descriptors {
             let descriptors = descriptors
                 .iter()
@@ -1394,6 +1523,13 @@ impl<const N: usize> ElementArray<N> {
             debug_assert!(inserted_new);
         }
         Ok(key)
+    }
+
+    /// Append a copy of the storage at `index`, all `N` slots, without its
+    /// descriptors.
+    fn push_copy(&mut self, index: ElementIndex) -> ElementIndex<'static> {
+        self.values.push_copy(index.get_index());
+        self.values.last_index()
     }
 }
 
@@ -1420,63 +1556,45 @@ pub(crate) type ElementArray2Pow24 = ElementArray<16777216>;
 /// Element arrays of up to 4294967296 elements
 pub(crate) type ElementArray2Pow32 = ElementArray<4294967296>;
 
-/// Element arrays of up to 16 elements
+/// The value of a key slot past the keys of every shape using the storage. It
+/// is a Private Name that is never handed out: `Agent::create_private_names`
+/// only hands out names below `u32::MAX`.
+pub(crate) const FREE_KEY_SLOT: PropertyKey<'static> =
+    PropertyKey::PrivateName(PrivateName::from_u32(u32::MAX));
+
+/// Property key arrays of up to N keys
 #[derive(Debug, Default)]
 #[repr(transparent)]
 pub(crate) struct PropertyKeyArray<const N: usize> {
-    pub keys: Vec<[Option<PropertyKey<'static>>; N]>,
+    pub keys: StridedVec<PropertyKey<'static>, N>,
 }
 
 impl<const N: usize> PropertyKeyArray<N> {
     pub(crate) fn with_capacity(cap: usize) -> Self {
         const { assert!(N.is_power_of_two()) }
         Self {
-            keys: Vec::with_capacity(cap),
+            keys: StridedVec::with_capacity(cap),
         }
     }
 
     fn get_raw<'a>(&self, keys_index: PropertyKeyIndex<'a>, len: u32) -> &[PropertyKey<'a>] {
-        let keys = &self.keys[keys_index.get_index()].as_slice()[0..len as usize];
-        debug_assert!(keys.iter().all(|k| k.is_some()));
-        // SAFETY: We're indexing into an initialized part of the slice where
-        // only Some keys are present, and PropertyKey uses enum niches so Some
-        // PropertyKey is equal to just a PropertyKey.
-        unsafe { std::mem::transmute::<&[Option<PropertyKey<'a>>], &[PropertyKey<'a>]>(keys) }
+        let keys = &self.keys[keys_index][0..len as usize];
+        debug_assert!(keys.iter().all(|k| *k != FREE_KEY_SLOT));
+        keys
     }
 
-    fn get_uninit(&mut self, index: PropertyKeyIndex) -> &mut [Option<PropertyKey<'static>>] {
-        self.keys[index.get_index()].as_mut_slice()
+    fn get_uninit(&mut self, index: PropertyKeyIndex) -> &mut [PropertyKey<'static>] {
+        &mut self.keys[index]
     }
 
     fn push(
         &mut self,
         source: &[PropertyKey],
     ) -> Result<PropertyKeyIndex<'static>, TryReserveError> {
-        let length = source.len();
-        self.keys.try_reserve(1)?;
-        let remaining = self.keys.spare_capacity_mut();
-        assert!(length <= N);
-        let last = remaining.get_mut(0).unwrap();
-        // SAFETY: We can move MaybeUninit from outside of the array into individual items in it.
-        let last = unsafe {
-            core::mem::transmute::<
-                &mut MaybeUninit<[Option<PropertyKey>; N]>,
-                &mut [MaybeUninit<Option<PropertyKey>>; N],
-            >(last)
-        };
-        // SAFETY: Interpreting any T as MaybeUninit<T> is always safe
-        // and we checked above in const that PropertyKey can be
-        // reinterpreted as Option<PropertyKey>.
-        let len_slice = unsafe {
-            core::mem::transmute::<&[PropertyKey], &[MaybeUninit<Option<PropertyKey>>]>(source)
-        };
-        last[..length].copy_from_slice(len_slice);
-        last[length..].fill(MaybeUninit::new(None));
-        // SAFETY: We have fully initialized the next item.
-        unsafe {
-            self.keys.set_len(self.keys.len() + 1);
-        }
-        Ok(PropertyKeyIndex::last_property_key_index(&self.keys))
+        assert!(source.len() <= N);
+        self.keys
+            .try_push(source.iter().map(|&k| k.unbind()), FREE_KEY_SLOT)?;
+        Ok(self.keys.last_index())
     }
 
     fn push_with_removal(
@@ -1486,44 +1604,27 @@ impl<const N: usize> PropertyKeyArray<N> {
     ) -> Result<PropertyKeyIndex<'static>, TryReserveError> {
         let source_length = source.len();
         let target_length = source_length - 1;
-        self.keys.try_reserve(1)?;
-        let remaining = self.keys.spare_capacity_mut();
         assert!(removal_index < source_length);
         assert!(target_length <= N);
-        let target = remaining.get_mut(0).unwrap();
-        // SAFETY: We can move MaybeUninit from outside of the array into individual items in it.
-        let target = unsafe {
-            core::mem::transmute::<
-                &mut MaybeUninit<[Option<PropertyKey>; N]>,
-                &mut [MaybeUninit<Option<PropertyKey>>; N],
-            >(target)
-        };
-        // SAFETY: Interpreting any T as MaybeUninit<T> is always safe
-        // and we checked above in const that PropertyKey can be
-        // reinterpreted as Option<PropertyKey>.
-        let source = unsafe {
-            core::mem::transmute::<&[PropertyKey], &[MaybeUninit<Option<PropertyKey>>]>(source)
-        };
-        target[..removal_index].copy_from_slice(&source[..removal_index]);
-        target[removal_index..target_length]
-            .copy_from_slice(&source[removal_index.wrapping_add(1)..]);
-        target[target_length..].fill(MaybeUninit::new(None));
-        // SAFETY: We have fully initialized the next item.
-        unsafe {
-            self.keys.set_len(self.keys.len() + 1);
-        }
-        Ok(PropertyKeyIndex::last_property_key_index(&self.keys))
+        self.keys.try_push(
+            source[..removal_index]
+                .iter()
+                .chain(&source[removal_index.wrapping_add(1)..])
+                .map(|&k| k.unbind()),
+            FREE_KEY_SLOT,
+        )?;
+        Ok(self.keys.last_index())
     }
 
     fn push_key(&mut self, index: PropertyKeyIndex, len: u32, key: PropertyKey) {
-        let keys = self.keys[index.get_index()].as_mut_slice();
-        let previous = keys[len as usize].replace(key.unbind());
-        debug_assert!(previous.is_none());
+        let slot = &mut self.keys[index][len as usize];
+        debug_assert!(*slot == FREE_KEY_SLOT);
+        *slot = key.unbind();
     }
 
     fn remove(&mut self, index: PropertyKeyIndex, len: u32, removal_index: u32) {
         let len = usize::try_from(len).unwrap_or(usize::MAX);
-        let keys = &mut self.keys[index.get_index()].as_mut_slice()[..len];
+        let keys = &mut self.keys[index][..len];
         let Some(next_index) = usize::try_from(removal_index)
             .ok()
             .and_then(|i| i.checked_add(1))
@@ -1533,7 +1634,7 @@ impl<const N: usize> PropertyKeyArray<N> {
         };
         keys.copy_within(next_index.., removal_index as usize);
         if let Some(slot) = keys.last_mut() {
-            *slot = None;
+            *slot = FREE_KEY_SLOT;
         }
     }
 
@@ -1544,15 +1645,9 @@ impl<const N: usize> PropertyKeyArray<N> {
         key_index: PropertyKeyIndex<'a>,
         len: u32,
     ) -> Result<PropertyKeyIndex<'a>, TryReserveError> {
-        self.keys.try_reserve(1)?;
-        let start = key_index.get_index();
-        let end = start.saturating_add(1);
-        // TODO: We'd want to use split_at_spare_mut here to only copy len keys
-        // instead of copying N keys and writing None into N - len.
-        self.keys.extend_from_within(start..end);
-        let last = &mut self.keys.last_mut().unwrap()[len as usize..];
-        last.fill(None);
-        Ok(PropertyKeyIndex::last_property_key_index(&self.keys))
+        self.keys
+            .try_push_within(key_index.get_index(), len as usize, FREE_KEY_SLOT)?;
+        Ok(self.keys.last_index())
     }
 
     /// Push a copy of a PropertyKey storage into the PropertyKeyArray, copying
@@ -1563,20 +1658,16 @@ impl<const N: usize> PropertyKeyArray<N> {
         len: u32,
         removal_index: usize,
     ) -> Result<PropertyKeyIndex<'a>, TryReserveError> {
-        self.keys.try_reserve(1)?;
         let len = len as usize;
-        let start = key_index.get_index();
-        let end = start.saturating_add(1);
-        // TODO: We'd want to use split_at_spare_mut here to only copy len keys
-        // instead of copying N keys and writing None into N - len.
-        self.keys.extend_from_within(start..end);
-        let last = self.keys.last_mut().unwrap();
+        self.keys
+            .try_push_within(key_index.get_index(), N, FREE_KEY_SLOT)?;
+        let last = self.keys.get_mut(self.keys.len() - 1).unwrap();
         debug_assert!(removal_index < last.len());
-        debug_assert!(last[removal_index].is_some());
+        debug_assert!(last[removal_index] != FREE_KEY_SLOT);
         debug_assert!(removal_index < len);
         last.copy_within(removal_index.saturating_add(1)..len, removal_index);
-        last[len.wrapping_sub(1)] = None;
-        Ok(PropertyKeyIndex::last_property_key_index(&self.keys))
+        last[len.wrapping_sub(1)] = FREE_KEY_SLOT;
+        Ok(self.keys.last_index())
     }
 }
 
@@ -1647,10 +1738,6 @@ impl ElementArrays {
         source: &[Option<Value>],
         descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>>,
     ) -> Result<ElementIndex<'static>, TryReserveError> {
-        debug_assert_eq!(
-            core::mem::size_of::<Option<[Option<Value>; 1]>>(),
-            core::mem::size_of::<[Option<Value>; 1]>()
-        );
         let ElementArrays {
             e2pow1,
             e2pow2,
@@ -1741,13 +1828,13 @@ impl ElementArrays {
                         unreachable!()
                     }
                     ElementArrayKey::E2 => {
-                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
                     }
                     ElementArrayKey::E3 => {
-                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
                     }
                     ElementArrayKey::E4 => {
-                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
                     }
                     ElementArrayKey::E6 => {
                         e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
@@ -2324,37 +2411,37 @@ impl ElementArrays {
         match new_cap {
             ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => unreachable!(),
             ElementArrayKey::E1 => {
-                k2pow1.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow1.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E2 => {
-                k2pow2.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow2.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E3 => {
-                k2pow3.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow3.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E4 => {
-                k2pow4.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow4.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E6 => {
-                k2pow6.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow6.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E8 => {
-                k2pow8.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow8.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E10 => {
-                k2pow10.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow10.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E12 => {
-                k2pow12.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow12.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E16 => {
-                k2pow16.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow16.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E24 => {
-                k2pow24.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow24.get_uninit(new_key)[len as usize] = key.unbind();
             }
             ElementArrayKey::E32 => {
-                k2pow32.get_uninit(new_key)[len as usize] = Some(key.unbind());
+                k2pow32.get_uninit(new_key)[len as usize] = key.unbind();
             }
         }
         Ok((new_cap, new_key))
@@ -3380,14 +3467,14 @@ impl ElementArrays {
         }
     }
 
-    /// Get the currently reserved key storage as a mutable slice. None values
-    /// may appear at the end of the storage and stand for unset key/value
-    /// slots in the object.
+    /// Get the currently reserved key storage as a mutable slice.
+    /// [`FREE_KEY_SLOT`] values may appear at the end of the storage and stand
+    /// for unset key/value slots in the object.
     pub(crate) fn get_keys_uninit_raw(
         &mut self,
         cap: ElementArrayKey,
         keys_index: PropertyKeyIndex,
-    ) -> &mut [Option<PropertyKey<'static>>] {
+    ) -> &mut [PropertyKey<'static>] {
         let Self {
             k2pow1,
             k2pow2,
@@ -3820,7 +3907,6 @@ impl ElementArrays {
         &mut self,
         elements_vector: &ElementsVector<'a>,
     ) -> ElementsVector<'a> {
-        let index = elements_vector.elements_index.get_index();
         let ElementArrays {
             e2pow1,
             e2pow2,
@@ -3837,61 +3923,17 @@ impl ElementArrays {
         } = self;
         let new_index = match elements_vector.cap {
             ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => ElementIndex::ZERO,
-            ElementArrayKey::E1 => {
-                let elements = e2pow1;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E2 => {
-                let elements = e2pow2;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E3 => {
-                let elements = e2pow3;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E4 => {
-                let elements = e2pow4;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E6 => {
-                let elements = e2pow6;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E8 => {
-                let elements = e2pow8;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E10 => {
-                let elements = e2pow10;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E12 => {
-                let elements = e2pow12;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E16 => {
-                let elements = e2pow16;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E24 => {
-                let elements = e2pow24;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
-            ElementArrayKey::E32 => {
-                let elements = e2pow32;
-                elements.values.extend_from_within(index..index + 1);
-                ElementIndex::last_element_index(&elements.values)
-            }
+            ElementArrayKey::E1 => e2pow1.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E2 => e2pow2.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E3 => e2pow3.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E4 => e2pow4.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E6 => e2pow6.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E8 => e2pow8.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E10 => e2pow10.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E12 => e2pow12.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E16 => e2pow16.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E24 => e2pow24.push_copy(elements_vector.elements_index),
+            ElementArrayKey::E32 => e2pow32.push_copy(elements_vector.elements_index),
         };
 
         ElementsVector {

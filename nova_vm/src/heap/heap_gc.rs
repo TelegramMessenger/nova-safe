@@ -1407,7 +1407,7 @@ fn sweep(
                     &bits.e_2_1,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(&mut e2pow1.values, &compactions, &bits.e_2_1, &bits.bits);
+                e2pow1.values.sweep(&compactions, &bits.e_2_1, &bits.bits);
             });
         }
         if !e2pow2.values.is_empty() {
@@ -1419,7 +1419,7 @@ fn sweep(
                     &bits.e_2_2,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(&mut e2pow2.values, &compactions, &bits.e_2_2, &bits.bits);
+                e2pow2.values.sweep(&compactions, &bits.e_2_2, &bits.bits);
             });
         }
         if !e2pow3.values.is_empty() {
@@ -1431,7 +1431,7 @@ fn sweep(
                     &bits.e_2_3,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(&mut e2pow3.values, &compactions, &bits.e_2_3, &bits.bits);
+                e2pow3.values.sweep(&compactions, &bits.e_2_3, &bits.bits);
             });
         }
         if !e2pow4.values.is_empty() {
@@ -1443,7 +1443,7 @@ fn sweep(
                     &bits.e_2_4,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(&mut e2pow4.values, &compactions, &bits.e_2_4, &bits.bits);
+                e2pow4.values.sweep(&compactions, &bits.e_2_4, &bits.bits);
             });
         }
         if !e2pow6.values.is_empty() {
@@ -1455,7 +1455,7 @@ fn sweep(
                     &bits.e_2_6,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(&mut e2pow6.values, &compactions, &bits.e_2_6, &bits.bits);
+                e2pow6.values.sweep(&compactions, &bits.e_2_6, &bits.bits);
             });
         }
         if !e2pow8.values.is_empty() {
@@ -1467,7 +1467,7 @@ fn sweep(
                     &bits.e_2_8,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(&mut e2pow8.values, &compactions, &bits.e_2_8, &bits.bits);
+                e2pow8.values.sweep(&compactions, &bits.e_2_8, &bits.bits);
             });
         }
         if !e2pow10.values.is_empty() {
@@ -1479,12 +1479,7 @@ fn sweep(
                     &bits.e_2_10,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(
-                    &mut e2pow10.values,
-                    &compactions,
-                    &bits.e_2_10,
-                    &bits.bits,
-                );
+                e2pow10.values.sweep(&compactions, &bits.e_2_10, &bits.bits);
             });
         }
         if !e2pow12.values.is_empty() {
@@ -1496,12 +1491,7 @@ fn sweep(
                     &bits.e_2_12,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(
-                    &mut e2pow12.values,
-                    &compactions,
-                    &bits.e_2_12,
-                    &bits.bits,
-                );
+                e2pow12.values.sweep(&compactions, &bits.e_2_12, &bits.bits);
             });
         }
         if !e2pow16.values.is_empty() {
@@ -1513,12 +1503,7 @@ fn sweep(
                     &bits.e_2_16,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(
-                    &mut e2pow16.values,
-                    &compactions,
-                    &bits.e_2_16,
-                    &bits.bits,
-                );
+                e2pow16.values.sweep(&compactions, &bits.e_2_16, &bits.bits);
             });
         }
         if !e2pow24.values.is_empty() {
@@ -1530,12 +1515,7 @@ fn sweep(
                     &bits.e_2_24,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(
-                    &mut e2pow24.values,
-                    &compactions,
-                    &bits.e_2_24,
-                    &bits.bits,
-                );
+                e2pow24.values.sweep(&compactions, &bits.e_2_24, &bits.bits);
             });
         }
         if !e2pow32.values.is_empty() {
@@ -1547,67 +1527,62 @@ fn sweep(
                     &bits.e_2_32,
                     &bits.bits,
                 );
-                sweep_heap_vector_values(
-                    &mut e2pow32.values,
-                    &compactions,
-                    &bits.e_2_32,
-                    &bits.bits,
-                );
+                e2pow32.values.sweep(&compactions, &bits.e_2_32, &bits.bits);
             });
         }
         if !k2pow1.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow1.keys, &compactions, &bits.k_2_1, &bits.bits);
+                k2pow1.keys.sweep(&compactions, &bits.k_2_1, &bits.bits);
             });
         }
         if !k2pow2.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow2.keys, &compactions, &bits.k_2_2, &bits.bits);
+                k2pow2.keys.sweep(&compactions, &bits.k_2_2, &bits.bits);
             });
         }
         if !k2pow3.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow3.keys, &compactions, &bits.k_2_3, &bits.bits);
+                k2pow3.keys.sweep(&compactions, &bits.k_2_3, &bits.bits);
             });
         }
         if !k2pow4.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow4.keys, &compactions, &bits.k_2_4, &bits.bits);
+                k2pow4.keys.sweep(&compactions, &bits.k_2_4, &bits.bits);
             });
         }
         if !k2pow6.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow6.keys, &compactions, &bits.k_2_6, &bits.bits);
+                k2pow6.keys.sweep(&compactions, &bits.k_2_6, &bits.bits);
             });
         }
         if !k2pow8.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow8.keys, &compactions, &bits.k_2_8, &bits.bits);
+                k2pow8.keys.sweep(&compactions, &bits.k_2_8, &bits.bits);
             });
         }
         if !k2pow10.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow10.keys, &compactions, &bits.k_2_10, &bits.bits);
+                k2pow10.keys.sweep(&compactions, &bits.k_2_10, &bits.bits);
             });
         }
         if !k2pow12.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow12.keys, &compactions, &bits.k_2_12, &bits.bits);
+                k2pow12.keys.sweep(&compactions, &bits.k_2_12, &bits.bits);
             });
         }
         if !k2pow16.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow16.keys, &compactions, &bits.k_2_16, &bits.bits);
+                k2pow16.keys.sweep(&compactions, &bits.k_2_16, &bits.bits);
             });
         }
         if !k2pow24.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow24.keys, &compactions, &bits.k_2_24, &bits.bits);
+                k2pow24.keys.sweep(&compactions, &bits.k_2_24, &bits.bits);
             });
         }
         if !k2pow32.keys.is_empty() {
             s.spawn(|| {
-                sweep_heap_vector_values(&mut k2pow32.keys, &compactions, &bits.k_2_32, &bits.bits);
+                k2pow32.keys.sweep(&compactions, &bits.k_2_32, &bits.bits);
             });
         }
         #[cfg(feature = "array-buffer")]

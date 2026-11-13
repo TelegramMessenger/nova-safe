@@ -2,10 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{
-    collections::{TryReserveError, hash_map::Entry},
-    ptr::NonNull,
-};
+use std::collections::{TryReserveError, hash_map::Entry};
 
 use ahash::AHashMap;
 
@@ -58,15 +55,7 @@ impl<'a> PropertyStorage<'a> {
         agent: &mut Agent,
         private_name: PrivateName,
     ) -> Result<(), TryReserveError> {
-        // SAFETY: Private fields are backed by on-stack data; mutating Agent
-        // is totally okay.
-        unsafe {
-            Self::insert_private_fields(
-                agent,
-                self.0,
-                NonNull::from(&[PrivateField::Field { key: private_name }]),
-            )
-        }
+        Self::insert_private_fields(agent, self.0, &[PrivateField::Field { key: private_name }])
     }
 
     /// Copy all PrivateMethods and reserve PrivateName fields from the current
@@ -87,8 +76,9 @@ impl<'a> PropertyStorage<'a> {
             object_shapes,
             ..
         } = &agent.heap;
-        let private_env = environments.get_private_environment(private_env);
-        let private_fields = private_env.get_instance_private_fields(gc);
+        let private_fields = environments
+            .get_private_environment(private_env)
+            .get_instance_private_fields(gc);
         if object
             .get_direct(objects)
             .get_shape()
@@ -101,40 +91,37 @@ impl<'a> PropertyStorage<'a> {
                 gc,
             ));
         }
-        let private_fields = NonNull::from(private_fields);
-        // SAFETY: insert_private_fields does not touch environments, and it
-        // cannot push into the private_fields list. Hence the pointer here is
-        // always valid.
-        if let Err(err) = unsafe { Self::insert_private_fields(agent, self.0, private_fields) } {
+        // The fields are moved out of the environment while the object is
+        // mutated, so that they are not borrowed from the Agent.
+        let private_fields = agent
+            .heap
+            .environments
+            .get_private_environment_mut(private_env)
+            .take_instance_private_fields();
+        let result = Self::insert_private_fields(agent, self.0, &private_fields);
+        agent
+            .heap
+            .environments
+            .get_private_environment_mut(private_env)
+            .restore_instance_private_fields(private_fields);
+        if let Err(err) = result {
             return Err(agent.throw_allocation_exception(err, gc));
         };
         Ok(())
     }
 
     /// Insert a list of private fields to an object.
-    ///
-    /// ## Safety
-    ///
-    /// The private_fields must not be backed by memory in the Agent heap's
-    /// Elements or Object Shape related vectors.
-    ///
-    /// The method will read from the private_fields parameter but does not
-    /// mutate them. The method also does not touch the Agent's environments at
-    /// all. As a result, it is safe to pass in private fields backed by a
-    /// PrivateEnvironment held in the Agent.
-    unsafe fn insert_private_fields(
+    fn insert_private_fields(
         agent: &mut Agent,
         object: OrdinaryObject,
-        private_fields: NonNull<[PrivateField]>,
+        private_fields: &[PrivateField],
     ) -> Result<(), TryReserveError> {
         let old_len = object.len(agent);
         let new_len = old_len.checked_add(private_fields.len() as u32).unwrap();
         let old_shape = object.object_shape(agent);
         let mut elements_vector = object.get_elements_vector(agent);
         elements_vector.reserve(&mut agent.heap.elements, new_len)?;
-        // SAFETY: User says so.
-        let (new_shape, insertion_index) =
-            unsafe { old_shape.add_private_fields(agent, private_fields)? };
+        let (new_shape, insertion_index) = old_shape.add_private_fields(agent, private_fields)?;
         let insertion_end_index = insertion_index
             .checked_add(private_fields.len())
             .expect("insertion index is <= old_len and old_len + private_fields.len() was checked");
@@ -163,10 +150,6 @@ impl<'a> PropertyStorage<'a> {
                 }
             }
         }
-
-        // SAFETY: User guarantees that the fields are not backed by memory
-        // that we're going to be mutating.
-        let private_fields = unsafe { private_fields.as_ref() };
 
         // Fill the keys and values with our PrivateNames starting at our found
         // index and ending at found index + number of private elements.
@@ -506,7 +489,7 @@ impl<'a> PropertyStorage<'a> {
                 old_len,
                 index,
             )?;
-            object.get_mut(agent).set_values(new_values);
+            object.get_mut(agent).set_values(new_values.unbind());
         } else {
             // Capacity of the property storage isn't changing, so we can
             // perform the deletion directly in the storage.
