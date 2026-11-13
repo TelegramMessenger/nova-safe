@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::{cmp::max, str::FromStr};
+use core::str::FromStr;
 use small_string::SmallString;
-use std::{cmp::Ordering, ops::Deref};
+use std::cmp::Ordering;
 use unicode_normalization::{
     IsNormalized, UnicodeNormalization, is_nfc_quick, is_nfd_quick, is_nfkc_quick, is_nfkd_quick,
 };
@@ -20,14 +20,12 @@ use crate::{
         to_number, to_string, to_string_primitive, to_uint32, try_result_into_js,
         try_to_integer_or_infinity, try_to_length, try_to_string,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable},
+    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{ArenaAccess, HeapIndexHandle, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
+use crate::ecmascript::{Object, get};
 #[cfg(feature = "regexp")]
-use crate::{
-    ecmascript::{Object, get, get_object_method, invoke, reg_exp_create},
-    engine::Scoped,
-};
+use crate::ecmascript::{get_object_method, invoke, reg_exp_create};
 
 pub(crate) struct StringPrototype;
 
@@ -754,29 +752,19 @@ impl StringPrototype {
 
         // 6. Let len be the length of S.
         // 8. Let end be the result of clamping pos between 0 and len.
-        let haystack_str = if pos == usize::MAX {
-            s.as_bytes_(agent)
-        } else {
-            let end = if pos != 0 {
-                // NOTE: `pos` was already clamped to 0.
-                pos.min(s.utf16_len_(agent))
-            } else {
-                0
-            };
-            let u8_idx = s.utf8_index_(agent, end).unwrap();
-            &s.as_bytes_(agent)[..u8_idx]
-        };
-
+        let end = pos.min(s.utf16_len_(agent));
         // 9. Let searchLength be the length of searchStr.
+        let search_length = search_str.utf16_len_(agent);
         // 10. If searchLength = 0, return true.
         // 11. Let start be end - searchLength.
         // 12. If start < 0, return false.
+        let Some(start) = end.checked_sub(search_length) else {
+            return Ok(false.into());
+        };
         // 13. Let substring be the substring of S from start to end.
         // 14. If substring is searchStr, return true.
         // 15. Return false.
-        Ok(Value::from(
-            haystack_str.ends_with(search_str.as_bytes_(agent)),
-        ))
+        Ok(Value::from(s.has_substring_at_(agent, search_str, start)))
     }
 
     /// ### [22.1.3.8 String.prototype.includes ( searchString \[ , position \] )](https://tc39.es/ecma262/#sec-string.prototype.includes)
@@ -868,22 +856,11 @@ impl StringPrototype {
 
         // 8. Let len be the length of S.
         // 9. Let start be the result of clamping pos between 0 and len.
-        let haystack_str = {
-            let start = if pos != 0 {
-                // NOTE: `pos` was already clamped to 0.
-                pos.min(s.utf16_len_(agent))
-            } else {
-                0
-            };
-            &s.to_string_lossy_(agent)[start..]
-        };
-
+        let start = pos.min(s.utf16_len_(agent));
         // 10. Let index be StringIndexOf(S, searchStr, start).
         // 11. If index is not-found, return false.
         // 12. Return true.
-        Ok(Value::from(
-            haystack_str.contains(search_str.to_string_lossy_(agent).deref()),
-        ))
+        Ok(Value::from(s.index_of_(agent, search_str, start).is_some()))
     }
 
     /// ### [22.1.3.9 String.prototype.indexOf ( searchString \[ , position \] )](https://tc39.es/ecma262/#sec-string.prototype.indexof)
@@ -953,25 +930,11 @@ impl StringPrototype {
 
         // 6. Let len be the length of S.
         // 7. Let start be the result of clamping pos between 0 and len.
-        let utf8_start = if pos != 0 {
-            let u16_len = s.utf16_len_(agent);
-            if pos >= u16_len {
-                s.len_(agent)
-            } else {
-                s.utf8_index_(agent, pos).unwrap()
-            }
-        } else {
-            0
-        };
-
+        let start = pos.min(s.utf16_len_(agent));
         // 8. Let result be StringIndexOf(S, searchStr, start).
         // 9. If result is not-found, return -1𝔽.
         // 10. Return 𝔽(result).
-        if let Some(rel_u8_pos) =
-            s.to_string_lossy_(agent)[utf8_start..].find(search_str.to_string_lossy_(agent).deref())
-        {
-            let u8_pos = utf8_start + rel_u8_pos;
-            let result = s.utf16_index_(agent, u8_pos);
+        if let Some(result) = s.index_of_(agent, search_str, start) {
             Ok(Number::try_from(result).unwrap().into())
         } else {
             Ok(Number::from(-1).into())
@@ -1081,28 +1044,9 @@ impl StringPrototype {
         // 10. Let result be StringLastIndexOf(S, searchStr, start).
         // NOTE: If start >= (len - searchLen), there is a last index if and
         // only if start.endsWith(searchLen).
-        let haystack_str = {
-            if pos == usize::MAX {
-                s.to_string_lossy_(agent)
-            } else {
-                // When starting from a position, the position may mark the
-                // start of the search string, so we need to include the search
-                // string length in the haystack.
-                let utf8_pos = s.utf8_index_(agent, pos).unwrap();
-                let utf8_len = s.len_(agent);
-                let search_str_len = search_str.len_(agent);
-                s.as_wtf8_(agent)
-                    .slice_to(utf8_len.min(utf8_pos + search_str_len))
-                    .to_string_lossy()
-            }
-        };
-        let search_str = search_str.to_string_lossy_(agent);
-        let utf8_result = haystack_str.rfind(search_str.deref());
-
         // 11. If result is not-found, return -1𝔽.
         // 12. Return 𝔽(result).
-        if let Some(utf8_idx) = utf8_result {
-            let result = s.utf16_index_(agent, utf8_idx);
+        if let Some(result) = s.last_index_of_(agent, search_str, pos) {
             Ok(Number::try_from(result).unwrap().into())
         } else {
             Ok(Number::from(-1).into())
@@ -1676,71 +1620,8 @@ impl StringPrototype {
             .unbind()?
             .bind(gc.nogc());
 
-        // 5. Let functionalReplace be IsCallable(replaceValue).
-        if let Some(functional_replace) = is_callable(replace_value.get(agent), gc.nogc()) {
-            // 7. Let searchLength be the length of searchString.
-            let search_length = search_string.len_(agent);
-
-            // 8. Let position be StringIndexOf(s, searchString, 0).
-            let position = if let Some(position) = s
-                .to_string_lossy(agent)
-                .find(search_string.to_string_lossy_(agent).deref())
-            {
-                position
-            } else {
-                // 9. If position is not-found, return s.
-                return Ok(s.get(agent).into());
-            };
-
-            // Let replacement be ? ToString(? Call(replaceValue, undefined, « searchString, 𝔽(position), string »)).
-            let result = call_function(
-                agent,
-                functional_replace.unbind(),
-                Value::Undefined,
-                Some(ArgumentsList::from_mut_slice(&mut [
-                    search_string.unbind().into(),
-                    Number::from(position as u32).into(),
-                    s.get(agent).unbind().into(),
-                ])),
-                gc.reborrow(),
-            )
-            .unbind()?
-            .bind(gc.nogc());
-
-            let result = to_string(agent, result.unbind(), gc.reborrow())
-                .unbind()?
-                .bind(gc.nogc());
-
-            // 10. Let preceding be the substring of s from 0 to position.
-            // 11. Let following be the substring of s from position + searchLength.
-            // 12. If functionalReplace is true,
-            let preceding = &s.to_string_lossy(agent)[0..position];
-            let following = &s.to_string_lossy(agent)[position + search_length..];
-
-            // 14. Return the string-concatenation of preceding, replacement, and following.
-            let concatenated_result = format!(
-                "{}{}{}",
-                preceding,
-                result.to_string_lossy_(agent),
-                following
-            );
-            return Ok(String::from_string(agent, concatenated_result, gc.into_nogc()).into());
-        }
-
-        let search_string_root = search_string.scope(agent, gc.nogc());
-
-        // 6. If functionalReplace is false, Set replaceValue to ? ToString(replaceValue).
-        let replace_string = to_string(agent, replace_value.get(agent), gc.reborrow())
-            .unbind()?
-            .bind(gc.nogc());
-
-        // Everything are strings: `"foo".replace("o", "a")` => use rust's replace
-        let result = s.to_string_lossy(agent).into_owned().replacen(
-            search_string_root.to_string_lossy(agent).deref(),
-            &replace_string.to_string_lossy_(agent),
-            1,
-        );
-        Ok(String::from_string(agent, result, gc.into_nogc()).into())
+        let search_string = search_string.scope(agent, gc.nogc());
+        replace_string_matches(agent, s, search_string, replace_value, false, gc)
     }
 
     /// ### [22.1.3.20 String.prototype.replaceAll ( searchValue, replaceValue )](https://tc39.es/ecma262/#sec-string.prototype.replaceall)
@@ -1830,103 +1711,10 @@ impl StringPrototype {
             .scope(agent, gc.nogc());
 
         // 4. Let searchString be ? ToString(searchValue).
-        let mut search_string = to_string(agent, scoped_search_value.get(agent), gc.reborrow())
+        let search_string = to_string(agent, scoped_search_value.get(agent), gc.reborrow())
             .unbind()?
-            .bind(gc.nogc());
-        let search_string_root = search_string.scope(agent, gc.nogc());
-
-        // 5. Let functionalReplace be IsCallable(replaceValue).
-        if let Some(functional_replace) = is_callable(replace_value.get(agent), gc.nogc()) {
-            // 7. Let searchLength be the length of searchString.
-            let search_length = search_string.len_(agent);
-
-            // 8. Let advanceBy be max(1, searchLength).
-            let advance_by = max(1, search_length);
-
-            // 9. Let matchPositions be a new empty List.
-            let mut match_positions: Vec<usize> = vec![];
-
-            // 10. Let position be StringIndexOf(s, searchString, 0).
-            let search_str = search_string.to_string_lossy_(agent);
-            let subject = s.to_string_lossy(agent).into_owned();
-            let mut position = 0;
-
-            // 11. Repeat, while position is not not-found,
-            while let Some(pos) = subject
-                .split_at_checked(position)
-                .and_then(|(_, str)| str.find(search_str.deref()))
-            {
-                // a. Append position to matchPositions.
-                match_positions.push(position + pos);
-                // b. Set position to StringIndexOf(string, searchString,
-                //    position + advanceBy).
-                position += advance_by + pos;
-            }
-
-            // If none has found, return s.
-            if match_positions.is_empty() {
-                return Ok(s.get(agent).into());
-            }
-
-            // 12. Let endOfLastMatch be 0.
-            let mut end_of_last_match = 0;
-
-            // 13. Let result be the empty String.
-            let mut result = std::string::String::with_capacity(subject.len());
-
-            // 14. For each element p of matchPositions, do
-            let functional_replace = functional_replace.scope(agent, gc.nogc());
-            for p in match_positions {
-                // b. let replacement be ? ToString(? Call(replaceValue, undefined, « searchString, 𝔽(p), string »)).
-                let replacement = call_function(
-                    agent,
-                    functional_replace.get(agent),
-                    Value::Undefined,
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        search_string_root.get(agent).into(),
-                        Number::from(p as u32).into(),
-                        s.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
-                .unbind()?
-                .bind(gc.nogc());
-                let replacement = to_string(agent, replacement.unbind(), gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
-
-                // a. Let preserved be the substring of string from endOfLastMatch to p.
-                let preserved = &subject[end_of_last_match..p];
-                // d. Set result to the string-concatenation of result, preserved, and replacement.
-                let replacement_str = replacement.to_string_lossy_(agent);
-                result.reserve(preserved.len() + replacement_str.len());
-                result.push_str(preserved);
-                result.push_str(&replacement_str);
-                end_of_last_match = p + search_length;
-            }
-
-            // 15. If endOfLastMatch < the length of string, set result to the string-concatenation of result and the substring of string from endOfLastMatch.
-            if end_of_last_match < subject.len() {
-                let preserved = &subject[end_of_last_match..];
-                result.push_str(preserved);
-            }
-
-            // 16. Return result.
-            return Ok(String::from_string(agent, result, gc.into_nogc()).into());
-        }
-
-        // 6. If functionalReplace is false, Set replaceValue to ? ToString(replaceValue).
-        let replace_string = to_string(agent, replace_value.get(agent), gc.reborrow())
-            .unbind()?
-            .bind(gc.nogc());
-        // Everything are strings: `"foo".replaceAll("o", "a")` => use rust's replace
-        search_string = search_string_root.get(agent).bind(gc.nogc());
-        let s = s.get(agent).bind(gc.nogc());
-        let result = s.to_string_lossy_(agent).into_owned().replace(
-            search_string.to_string_lossy_(agent).deref(),
-            &replace_string.to_string_lossy_(agent),
-        );
-        Ok(String::from_string(agent, result, gc.into_nogc()).into())
+            .scope(agent, gc.nogc());
+        replace_string_matches(agent, s, search_string, replace_value, true, gc)
     }
 
     /// ### [22.1.3.21 String.prototype.search ( regexp )](https://tc39.es/ecma262/#sec-string.prototype.search)
@@ -2176,25 +1964,22 @@ impl StringPrototype {
         }
 
         // 8. Let separatorLength be the length of R.
-        let separator_length = r.len_(agent);
+        let separator_length = r.utf16_len_(agent);
 
-        // 9. If separatorLength = 0, then split into characters
+        // 9. If separatorLength = 0, then
         if separator_length == 0 {
-            let subject = s.to_string_lossy_(agent);
-            let head = subject.split("");
-
-            let mut results: Vec<Value> = head
-                .enumerate()
-                .skip(1) // Rust's split inserts an empty string in the beginning.
-                .take_while(|(i, _)| *i <= lim as usize)
-                .map(|(_, part)| SmallString::try_from(part).unwrap().into())
+            // a. Let strLen be the length of S.
+            // b. Let outLen be the result of clamping lim between 0 and strLen.
+            // c. Let head be the substring of S from 0 to outLen.
+            // d. Let codeUnits be a List consisting of the sequence of code
+            //    units that are the elements of head.
+            // e. Return CreateArrayFromList(codeUnits).
+            let results: Vec<Value> = s
+                .as_wtf8_(agent)
+                .to_ill_formed_utf16()
+                .take(lim as usize)
+                .map(|code_unit| String::from(CodePoint::from_u16(code_unit)).into())
                 .collect();
-
-            // Remove the latest empty string if it's needed
-            if results.len() < lim as usize {
-                results.pop();
-            }
-
             let results = Array::from_slice(agent, results.as_slice(), gc);
             return Ok(results.into());
         }
@@ -2206,20 +1991,60 @@ impl StringPrototype {
             return Ok(create_array_from_list(agent, &list, gc).into());
         }
 
-        // 11-17. Normal split
-        let subject = s.to_string_lossy_(agent);
-        let separator = r.to_string_lossy_(agent);
-        let head = subject
-            .split(separator.deref())
-            .take(lim as usize)
-            .map(|part| part.to_owned())
-            .collect::<Vec<_>>();
-        let mut results: Vec<Value> = Vec::new();
-
-        for part in head {
-            results.push(Value::from_string(agent, part, gc));
+        if String::searchable_as_bytes(r.as_wtf8_(agent)) {
+            // Steps 11 to 17 on the WTF-8 bytes: each match of R starts and
+            // ends at a code point boundary, so the substrings between them
+            // are byte ranges.
+            let limit = lim as usize;
+            let ranges = {
+                let haystack = s.as_bytes_(agent);
+                let needle = r.as_bytes_(agent);
+                let mut ranges = Vec::new();
+                let mut start = 0;
+                for found in memchr::memmem::find_iter(haystack, needle) {
+                    ranges.push((start, found));
+                    if ranges.len() == limit {
+                        break;
+                    }
+                    start = found + needle.len();
+                }
+                if ranges.len() < limit {
+                    ranges.push((start, haystack.len()));
+                }
+                ranges
+            };
+            let results: Vec<Value> = ranges
+                .into_iter()
+                .map(|(start, end)| s.wtf8_substring_(agent, start, end, gc).into())
+                .collect();
+            return Ok(Array::from_slice(agent, results.as_slice(), gc).into());
         }
-
+        // 11. Let substrings be a new empty List.
+        let mut results: Vec<Value> = Vec::new();
+        // 12. Let i be 0.
+        let mut i = 0;
+        // 13. Let j be StringIndexOf(S, R, 0).
+        let mut j = s.index_of_(agent, r, 0);
+        // 14. Repeat, while j is not not-found,
+        while let Some(found) = j {
+            // a. Let T be the substring of S from i to j.
+            // b. Append T to substrings.
+            results.push(s.utf16_substring(agent, i, found, gc).into());
+            // c. If the number of elements in substrings is lim, return
+            //    CreateArrayFromList(substrings).
+            if results.len() == lim as usize {
+                return Ok(Array::from_slice(agent, results.as_slice(), gc).into());
+            }
+            // d. Set i to j + separatorLength.
+            i = found + separator_length;
+            // e. Set j to StringIndexOf(S, R, i).
+            j = s.index_of_(agent, r, i);
+        }
+        // 15. Let T be the substring of S from i.
+        // 16. Append T to substrings.
+        let len = s.utf16_len_(agent);
+        results.push(s.utf16_substring(agent, i, len, gc).into());
+        // 17. Return CreateArrayFromList(substrings).
         let results = Array::from_slice(agent, results.as_slice(), gc);
         Ok(results.into())
     }
@@ -2323,20 +2148,7 @@ impl StringPrototype {
         // 13. Let substring be the substring of S from start to end.
         // 14. If substring is searchStr, return true.
         // 15. Return false.
-        let haystack_str = if start == 0 {
-            s.to_string_lossy_(agent)
-        } else {
-            let len = s.utf16_len_(agent);
-            if start >= len {
-                "".into()
-            } else {
-                let start = s.utf8_index_(agent, start).unwrap();
-                s.as_wtf8_(agent).slice_from(start).to_string_lossy()
-            }
-        };
-        Ok(haystack_str
-            .starts_with(search_str.to_string_lossy_(agent).deref())
-            .into())
+        Ok(s.has_substring_at_(agent, search_str, start).into())
     }
 
     /// ### [22.1.3.25 String.prototype.substring ( start, end )](https://tc39.es/ecma262/#sec-string.prototype.substring)
@@ -3265,6 +3077,119 @@ pub(crate) fn to_zero_padded_decimal_string(
     format!("{s:0>min_length$}")
 }
 
+/// Steps 5 to the end of [22.1.3.19 String.prototype.replace](https://tc39.es/ecma262/#sec-string.prototype.replace)
+/// (`all` false) and [22.1.3.20 String.prototype.replaceAll](https://tc39.es/ecma262/#sec-string.prototype.replaceall)
+/// (`all` true) for a string searchValue.
+fn replace_string_matches<'gc, 'scope>(
+    agent: &mut Agent,
+    string: Scoped<'scope, String>,
+    search_string: Scoped<'scope, String>,
+    replace_value: Scoped<'scope, Value>,
+    all: bool,
+    mut gc: GcScope<'gc, 'scope>,
+) -> JsResult<'gc, Value<'gc>> {
+    // 5. Let functionalReplace be IsCallable(replaceValue).
+    let functional_replace = is_callable(replace_value.get(agent), gc.nogc())
+        .map(|function| function.scope(agent, gc.nogc()));
+    // 6. If functionalReplace is false, then
+    let replace_template = if functional_replace.is_none() {
+        // a. Set replaceValue to ? ToString(replaceValue).
+        Some(
+            to_string(agent, replace_value.get(agent), gc.reborrow())
+                .unbind()?
+                .scope(agent, gc.nogc()),
+        )
+    } else {
+        None
+    };
+    // 7. Let searchLength be the length of searchString.
+    let search_length = search_string.get(agent).utf16_len_(agent);
+    // 8. Let advanceBy be max(1, searchLength).
+    let advance_by = search_length.max(1);
+    // 9. Let matchPositions be a new empty List.
+    // 10. Let position be StringIndexOf(string, searchString, 0).
+    // 11. Repeat, while position is not not-found,
+    //     a. Append position to matchPositions.
+    //     b. Set position to StringIndexOf(string, searchString, position + advanceBy).
+    let mut match_positions = Vec::new();
+    {
+        let str = string.get(agent);
+        let search = search_string.get(agent);
+        let mut position = str.index_of_(agent, search, 0);
+        while let Some(found) = position {
+            match_positions.push(found);
+            if !all {
+                break;
+            }
+            position = str.index_of_(agent, search, found + advance_by);
+        }
+    }
+    // String.prototype.replace, 9. If position is not-found, return string.
+    if match_positions.is_empty() {
+        return Ok(string.get(agent).bind(gc.into_nogc()).into());
+    }
+    // 12. Let endOfLastMatch be 0.
+    let mut end_of_last_match = 0;
+    // 13. Let result be the empty String.
+    let mut result = Wtf8Buf::with_capacity(string.get(agent).len_(agent));
+    // 14. For each element p of matchPositions, do
+    for p in match_positions {
+        let replacement = if let Some(functional_replace) = &functional_replace {
+            // b. If functionalReplace is true, then
+            //     i. Let replacement be ? ToString(? Call(replaceValue,
+            //        undefined, « searchString, 𝔽(p), string »)).
+            let replacement = call_function(
+                agent,
+                functional_replace.get(agent),
+                Value::Undefined,
+                Some(ArgumentsList::from_mut_slice(&mut [
+                    search_string.get(agent).into(),
+                    Number::try_from(p).unwrap().into(),
+                    string.get(agent).into(),
+                ])),
+                gc.reborrow(),
+            )
+            .unbind()?
+            .bind(gc.nogc());
+            to_string(agent, replacement.unbind(), gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc())
+        } else {
+            // c. Else,
+            //     i. Assert: replaceValue is a String.
+            //     ii. Let captures be a new empty List.
+            //     iii. Let replacement be ! GetSubstitution(searchString,
+            //          string, p, captures, undefined, replaceValue).
+            get_substitution(
+                agent,
+                search_string.clone(),
+                string.clone(),
+                p,
+                vec![],
+                None,
+                replace_template.clone().expect("replaceValue is a String"),
+                gc.reborrow(),
+            )
+            .unbind()?
+            .bind(gc.nogc())
+        };
+        // a. Let preserved be the substring of string from endOfLastMatch to p.
+        // d. Set result to the string-concatenation of result, preserved, and replacement.
+        let str = string.get(agent);
+        str.push_utf16_substring(agent, &mut result, end_of_last_match, p);
+        result.push_wtf8(replacement.as_wtf8_(agent));
+        // e. Set endOfLastMatch to p + searchLength.
+        end_of_last_match = p + search_length;
+    }
+    // 15. If endOfLastMatch < the length of string, then
+    //     a. Set result to the string-concatenation of result and the
+    //        substring of string from endOfLastMatch.
+    let str = string.get(agent);
+    str.push_utf16_substring(agent, &mut result, end_of_last_match, usize::MAX);
+    // 16. Return result.
+    Ok(String::from_wtf8_buf(agent, result, gc.into_nogc()).into())
+}
+
 /// ### [22.1.3.19.1 GetSubstitution ( matched, str, position, captures, namedCaptures, replacementTemplate )](https://tc39.es/ecma262/#sec-getsubstitution)
 ///
 /// The abstract operation GetSubstitution takes arguments matched (a String),
@@ -3275,7 +3200,6 @@ pub(crate) fn to_zero_padded_decimal_string(
 /// abstract operation, a decimal digit is a code unit in the inclusive
 /// interval from 0x0030 (DIGIT ZERO) to 0x0039 (DIGIT NINE).
 #[allow(clippy::too_many_arguments)]
-#[cfg(feature = "regexp")]
 pub(crate) fn get_substitution<'gc, 'scope>(
     agent: &mut Agent,
     scoped_matched: Scoped<'scope, String>,

@@ -57,3 +57,28 @@ fn regexp_non_ascii_positions() {
 fn regexp_captures() {
     run_test_source("regExpCaptures.test.js");
 }
+
+#[test]
+fn string_search_positions() {
+    run_test_source("stringSearchPositions.test.js");
+}
+
+#[test]
+fn string_replace_string_pattern() {
+    run_test_source("stringReplaceStringPattern.test.js");
+}
+
+#[test]
+fn regexp_named_groups() {
+    run_test_source("regExpNamedGroups.test.js");
+}
+
+#[test]
+fn regexp_multiline_dot_all() {
+    run_test_source("regExpMultilineDotAll.test.js");
+}
+
+#[test]
+fn regexp_ascii_classes() {
+    run_test_source("regExpAsciiClasses.test.js");
+}

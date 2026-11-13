@@ -112,14 +112,20 @@ Fixed (each in its own commit, results checked against QuickJS):
   surrogate panicked. a9b69dba (26 test262 tests pass).
 - RegExp captures went through `from_utf8_lossy` (unreachable today: the regex crate never matches surrogate bytes).
   ad18c376.
+- `indexOf`/`lastIndexOf`/`includes`/`startsWith`/`endsWith` panicked on a position inside a surrogate pair; string
+  `split` lost lone surrogates and split "😀" by "" into one element. ad1aaacb.
+- `replace`/`replaceAll` with a string pattern ignored `$` patterns and passed a byte offset to a replacer.
+  30544066 (7 test262 tests pass).
+- RegExp named groups were never filled in. 090e2895 (8 test262 tests pass).
+- The RegExp `m` flag did nothing. a9d7c685 (13 test262 tests pass).
+- RegExp `\d`, `\w`, `\b` were Unicode-aware. 864d6ad2 (8 test262 tests pass).
 
 Open (each changes test262 or widget results, so each needs its own commit):
-- `indexOf`/`lastIndexOf`/`includes`/`startsWith`/`endsWith` panic on a position inside a surrogate pair
-  (`"😀abc".indexOf("a", 1)`).
-- `String.prototype.replace`/`replaceAll` with a string pattern ignore `$` patterns, go through `to_string_lossy` and
-  pass a byte offset to a replacer function.
-- RegExp: named groups are not filled in (`groups` is undefined); `.` and negated classes never match a lone
-  surrogate (the regex crate needs valid UTF-8); `\w` matches non-ASCII letters (`/\w/u` matches "é"); the `m` flag sets
-  `dot_matches_new_line` instead of `multi_line`.
+- RegExp: `.` and negated classes never match a lone surrogate and a lone surrogate in a pattern is a syntax error (the
+  regex crate needs valid UTF-8); multi-line `^`/`$` only treat "\n" as a line terminator; `\s` is Unicode
+  White_Space (takes U+0085, misses U+FEFF); `i` without `u` folds non-ASCII into ASCII (`/s/i` matches "ſ"); no
+  backreferences or lookaround; `indices` (`d` flag) is not created.
+- `toUpperCase`/`toLowerCase`/`normalize`/`repeat`/`localeCompare` go through `to_string_lossy` (lone surrogates
+  become U+FFFD).
 - `ArgumentsList::with_scoped` keeps a raw pointer to the caller's frame in the GC roots; a caught panic leaves it
   dangling (b-bindable round 2).
