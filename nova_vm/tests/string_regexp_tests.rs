@@ -77,3 +77,8 @@ fn regexp_named_groups() {
 fn regexp_multiline_dot_all() {
     run_test_source("regExpMultilineDotAll.test.js");
 }
+
+#[test]
+fn regexp_ascii_classes() {
+    run_test_source("regExpAsciiClasses.test.js");
+}

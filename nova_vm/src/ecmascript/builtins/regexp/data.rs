@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::borrow::Cow;
 use oxc_ast::ast::RegExpFlags;
 use regex::bytes::{Regex, RegexBuilder};
 use wtf8::Wtf8Buf;
@@ -128,7 +129,8 @@ impl<'a> RegExpHeapData<'a> {
         pattern: &str,
         flags: RegExpFlags,
     ) -> Result<Regex, regex::Error> {
-        RegexBuilder::new(pattern)
+        let pattern = ascii_class_escapes(pattern, flags);
+        RegexBuilder::new(&pattern)
             .multi_line((flags & RegExpFlags::M).bits() > 0)
             .case_insensitive((flags & RegExpFlags::I).bits() > 0)
             .unicode(true)
@@ -162,6 +164,84 @@ impl<'a> RegExpHeapData<'a> {
         });
         regexp_string
     }
+}
+
+/// JavaScript's `\d`, `\w` and `\b` (and `\D`, `\W`, `\B`) are ASCII even
+/// with the `u` flag, where the regex crate's Unicode mode makes them
+/// Unicode; with `u` and `i`, `\w` also takes U+017F and U+212A, which
+/// case-fold to ASCII word characters (outside a class, `\w` and `\W` turn
+/// case folding off so that `i` alone does not add them). Inside a class,
+/// `\b` is a backspace.
+fn ascii_class_escapes(pattern: &str, flags: RegExpFlags) -> Cow<'_, str> {
+    if !pattern.contains('\\') {
+        return Cow::Borrowed(pattern);
+    }
+    let folds_to_word = flags.contains(RegExpFlags::I)
+        && flags.intersects(RegExpFlags::U | RegExpFlags::V);
+    let word = if folds_to_word {
+        r"0-9A-Za-z_\x{17F}\x{212A}"
+    } else {
+        "0-9A-Za-z_"
+    };
+    let mut out = std::string::String::with_capacity(pattern.len() + 16);
+    let mut class_depth = 0usize;
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                let Some(escaped) = chars.next() else {
+                    out.push('\\');
+                    break;
+                };
+                match (escaped, class_depth > 0) {
+                    ('d', false) => out.push_str("[0-9]"),
+                    ('d', true) => out.push_str("0-9"),
+                    ('D', _) => out.push_str("[^0-9]"),
+                    ('w', false) => {
+                        out.push_str("(?-i:[");
+                        out.push_str(word);
+                        out.push_str("])");
+                    }
+                    ('w', true) => out.push_str(word),
+                    ('W', false) => {
+                        out.push_str("(?-i:[^");
+                        out.push_str(word);
+                        out.push_str("])");
+                    }
+                    ('W', true) => {
+                        out.push_str("[^");
+                        out.push_str(word);
+                        out.push(']');
+                    }
+                    ('b', false) => out.push_str(r"(?-u:\b)"),
+                    ('B', false) => out.push_str(r"(?-u:\B)"),
+                    ('b', true) => out.push_str(r"\x08"),
+                    (escaped, _) => {
+                        out.push('\\');
+                        out.push(escaped);
+                    }
+                }
+            }
+            '[' => {
+                class_depth += 1;
+                out.push('[');
+                if chars.peek() == Some(&'^') {
+                    out.push('^');
+                    chars.next();
+                }
+                if chars.peek() == Some(&']') {
+                    out.push(']');
+                    chars.next();
+                }
+            }
+            ']' if class_depth > 0 => {
+                class_depth -= 1;
+                out.push(']');
+            }
+            c => out.push(c),
+        }
+    }
+    Cow::Owned(out)
 }
 
 impl Default for RegExpHeapData<'_> {
