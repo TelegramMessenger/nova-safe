@@ -7785,7 +7785,6 @@
   "staging/sm/strict/8.7.2.js": "FAIL",
   "staging/sm/strict/eval-variable-environment.js": "FAIL",
   "staging/sm/syntax/let-as-label.js": "FAIL",
-  "staging/sm/syntax/linefeed-at-eof-in-unterminated-string-or-template.js": "CRASH",
   "staging/sm/syntax/yield-as-identifier.js": "FAIL",
   "staging/source-phase-imports/import-source-source-text-module.js": "FAIL",
   "staging/source-phase-imports/module-source-prototype-chain.js": "FAIL"
