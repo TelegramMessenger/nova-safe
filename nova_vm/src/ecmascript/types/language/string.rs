@@ -25,7 +25,7 @@ use crate::{
 };
 
 use hashbrown::HashTable;
-use wtf8::{CodePoint, Wtf8, Wtf8Buf};
+use wtf8::{CodePoint, Wtf8Buf, Wtf8Str};
 
 /// ### [6.1.4 The String Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-string-type)
 ///
@@ -192,9 +192,9 @@ impl TryFrom<&str> for String<'static> {
     }
 }
 
-impl TryFrom<&Wtf8> for String<'static> {
+impl TryFrom<Wtf8Str<'_>> for String<'static> {
     type Error = ();
-    fn try_from(value: &Wtf8) -> Result<Self, Self::Error> {
+    fn try_from(value: Wtf8Str<'_>) -> Result<Self, Self::Error> {
         SmallString::try_from(value).map(String::SmallString)
     }
 }
@@ -263,7 +263,7 @@ impl<'a> String<'a> {
         assert!(
             message.len() < 8 && (message.is_empty() || message.as_bytes()[message.len() - 1] != 0)
         );
-        String::SmallString(unsafe { SmallString::from_str_unchecked(message) })
+        String::SmallString(SmallString::from_str_const(message))
     }
 
     /// Concatenate a list of JavaScript strings together.
@@ -341,9 +341,7 @@ impl<'a> String<'a> {
                         *len += string_len;
                     } else {
                         let mut result = Wtf8Buf::with_capacity(*len + string_len);
-                        // SAFETY: Since SmallStrings are guaranteed UTF-8, `&data[..len]` is the result
-                        // of concatenating UTF-8 strings, which is always valid UTF-8.
-                        result.push_str(unsafe { core::str::from_utf8_unchecked(&data[..*len]) });
+                        result.push_wtf8(Wtf8Str::from_wtf8_bytes(&data[..*len]));
                         push_string_to_wtf8(agent, &mut result, *string);
                         status = Status::String(result);
                     }
@@ -356,11 +354,7 @@ impl<'a> String<'a> {
             Status::Empty => String::EMPTY_STRING,
             Status::ExistingString(idx) => String::String(idx.bind(gc)),
             Status::SmallString { data, len } => {
-                // SAFETY: Since SmallStrings are guaranteed UTF-8, `&data[..len]` is the result of
-                // concatenating UTF-8 strings, which is always valid UTF-8.
-                let str_slice = unsafe { core::str::from_utf8_unchecked(&data[..len]) };
-                // SAFETY: small statuses are guaranteed to be 7 bytes or fewer.
-                unsafe { SmallString::from_str_unchecked(str_slice) }.into()
+                SmallString::from_wtf8(Wtf8Str::from_wtf8_bytes(&data[..len])).into()
             }
             Status::String(string) => agent.heap.create(string).bind(gc),
         }
@@ -513,11 +507,11 @@ impl<'a> String<'a> {
 
     /// Get the String data as a WTF-8 slice.
     #[inline(always)]
-    pub fn as_wtf8<'r>(&'r self, agent: &'r Agent) -> &'r Wtf8 {
+    pub fn as_wtf8<'r>(&'r self, agent: &'r Agent) -> Wtf8Str<'r> {
         self.as_wtf8_(agent)
     }
 
-    pub(crate) fn as_wtf8_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> &'r Wtf8 {
+    pub(crate) fn as_wtf8_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> Wtf8Str<'r> {
         match self {
             String::String(s) => s.get(agent).as_wtf8(),
             String::SmallString(s) => s.as_wtf8(),
@@ -659,9 +653,7 @@ impl<'gc> String<'gc> {
         }
 
         let mut s = SmallString::EMPTY;
-        // SAFETY: transmute to backing data type. This is done for const.
-        let cp = unsafe { core::mem::transmute::<CodePoint, u32>(cp) };
-        encode_utf8_raw(cp, s.data_mut());
+        encode_utf8_raw(cp.to_u32(), s.data_mut());
         Self::SmallString(s)
     }
 
@@ -682,21 +674,25 @@ impl<'gc> String<'gc> {
                 Ok(string) => string,
                 Err(hash) => {
                     let data = StringRecord::from_str(str);
-                    // SAFETY: checked that the value is not found.
-                    String::String(unsafe {
-                        *alloc_counter += core::mem::size_of::<HeapString>();
-                        Self::insert_string_with_hash(strings, string_lookup_table, data, hash)
-                    })
+                    *alloc_counter += core::mem::size_of::<HeapString>();
+                    String::String(Self::insert_string_with_hash(
+                        strings,
+                        string_lookup_table,
+                        data,
+                        hash,
+                    ))
                     .bind(gc)
                 }
             }
         }
     }
 
-    /// # Safety
+    /// ## Correctness
     ///
-    /// The string must not exist in the string lookup table or strings vector.
-    pub(crate) unsafe fn insert_string_with_hash(
+    /// The string must not exist in the string lookup table or strings vector;
+    /// otherwise the table holds two equal strings and lookups may return
+    /// either one.
+    pub(crate) fn insert_string_with_hash(
         strings: &mut Vec<StringRecord>,
         string_lookup_table: &mut HashTable<HeapString<'static>>,
         data: StringRecord,
@@ -717,7 +713,7 @@ impl<'gc> String<'gc> {
         message: &str,
     ) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);
-        let message = Wtf8::from_str(message);
+        let message = Wtf8Str::from_str(message);
         let hash = string_hasher.hash_one(message);
         string_lookup_table
             .find(hash, |s| {

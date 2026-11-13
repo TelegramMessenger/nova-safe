@@ -170,7 +170,7 @@ pub(crate) fn evaluate_import_call<'gc>(
             //    of UTF-16 code unit values. NOTE: This sorting is observable only
             //    in that hosts are prohibited from changing behaviour based on the
             //    order in which attributes are enumerated.
-            attributes.sort_by(|a, b| a.key.as_wtf8_(agent).cmp(b.key.as_wtf8_(agent)));
+            attributes.sort_by(|a, b| a.key.as_wtf8_(agent).cmp(&b.key.as_wtf8_(agent)));
             let specifier = specifier.take(agent).bind(gc);
             (promise, specifier, attributes.into_boxed_slice(), gc)
         } else {

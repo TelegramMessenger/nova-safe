@@ -22,7 +22,6 @@ pub(crate) use indexes::*;
 pub(crate) use object_entry::*;
 
 use core::cell::RefCell;
-use std::ops::Deref;
 
 #[cfg(feature = "date")]
 use crate::ecmascript::DateHeapData;
@@ -64,7 +63,7 @@ use crate::{
 use ahash::AHashMap;
 use hashbrown::HashTable;
 use soavec::{SoAVec, SoAble};
-use wtf8::{Wtf8, Wtf8Buf};
+use wtf8::{Wtf8Buf, Wtf8Str};
 
 pub(crate) struct Heap {
     #[cfg(feature = "array-buffer")]
@@ -206,7 +205,7 @@ impl CreateHeapData<std::string::String, String<'static>> for Heap {
 
 impl CreateHeapData<Wtf8Buf, String<'static>> for Heap {
     fn create(&mut self, data: Wtf8Buf) -> String<'static> {
-        if let Ok(value) = String::try_from(data.deref()) {
+        if let Ok(value) = String::try_from(data.as_wtf8()) {
             value
         } else {
             self.alloc_wtf8_buf(data)
@@ -349,10 +348,9 @@ impl Heap {
         let string_hasher = &mut heap.string_hasher;
         let string_lookup_table = &mut heap.string_lookup_table;
         for builtin_string in BUILTIN_STRINGS_LIST.iter() {
-            let hash = string_hasher.hash_one(Wtf8::from_str(builtin_string));
+            let hash = string_hasher.hash_one(Wtf8Str::from_str(builtin_string));
             let data = StringRecord::from_static_str(builtin_string);
-            // SAFETY: heap is entry.
-            unsafe { String::insert_string_with_hash(strings, string_lookup_table, data, hash) };
+            String::insert_string_with_hash(strings, string_lookup_table, data, hash);
         }
 
         heap.symbols.extend_from_slice(&[
@@ -440,7 +438,7 @@ impl Heap {
     /// comparison between heap allocated strings and SmallStrings can be
     /// guaranteed to never equal true.
     fn alloc_wtf8_buf(&mut self, message: Wtf8Buf) -> String<'static> {
-        let found = self.find_equal_wtf8(message.deref());
+        let found = self.find_equal_wtf8(message.as_wtf8());
         match found {
             Ok(string) => string,
             Err(hash) => {
@@ -475,12 +473,12 @@ impl Heap {
 
     /// Find existing heap String or return the strings hash.
     fn find_equal_string(&self, message: &str) -> Result<String<'static>, u64> {
-        let message = Wtf8::from_str(message);
+        let message = Wtf8Str::from_str(message);
         self.find_equal_wtf8(message)
     }
 
     /// Find existing heap String or return the strings hash.
-    fn find_equal_wtf8(&self, message: &Wtf8) -> Result<String<'static>, u64> {
+    fn find_equal_wtf8(&self, message: Wtf8Str<'_>) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);
         let hash = self.string_hasher.hash_one(message);
         self.string_lookup_table

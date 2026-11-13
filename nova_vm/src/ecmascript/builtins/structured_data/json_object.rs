@@ -886,8 +886,7 @@ fn quote_json_string(agent: &Agent, product: &mut Wtf8Buf, value: String) {
                 buf[4] = u16_to_char_code((unit >> 4) % 16);
                 buf[3] = u16_to_char_code((unit >> 8) % 16);
                 buf[2] = u16_to_char_code(unit >> 12);
-                // SAFETY: the buffer contains only valid UTF-8.
-                let byte_buf = unsafe { str::from_utf8_unchecked_mut(&mut buf) };
+                let byte_buf = str::from_utf8(&buf).expect("the buffer holds only ASCII");
 
                 product.push_str(byte_buf);
             }
@@ -932,12 +931,9 @@ fn serialize_json_object<'a, 'b>(
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception
     //    because the structure is cyclical.
-    if state
-        .stack
-        .iter(agent)
-        // SAFETY: We only push objects into the stack.
-        .any(|x| unsafe { Object::try_from(x.get(gc.nogc())).unwrap_unchecked() } == value)
-    {
+    if state.stack.iter(agent).any(|x| {
+        Object::try_from(x.get(gc.nogc())).expect("only objects are pushed onto the stack") == value
+    }) {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,
             "Cyclical structure in JSON",
@@ -1032,12 +1028,9 @@ fn serialize_json_object<'a, 'b>(
             agent,
             state.replacer_function.clone(),
             p,
-            // SAFETY: We only push the objects onto the stack.
-            unsafe {
-                Object::try_from(state.stack.last(agent, gc.nogc()).unwrap())
-                    .unwrap_unchecked()
-                    .unbind()
-            },
+            Object::try_from(state.stack.last(agent, gc.nogc()).unwrap())
+                .expect("only objects are pushed onto the stack")
+                .unbind(),
             gc.reborrow(),
         )
         .unbind()?
@@ -1101,12 +1094,9 @@ fn serialize_json_array<'a, 'b>(
 ) -> JsResult<'a, ()> {
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception because the structure is cyclical.
-    if state
-        .stack
-        .iter(agent)
-        // SAFETY: We only push objects into the stack.
-        .any(|x| unsafe { Object::try_from(x.get(gc.nogc())).unwrap_unchecked() } == value)
-    {
+    if state.stack.iter(agent).any(|x| {
+        Object::try_from(x.get(gc.nogc())).expect("only objects are pushed onto the stack") == value
+    }) {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,
             "Cyclical structure in JSON",
@@ -1194,11 +1184,9 @@ fn serialize_json_array<'a, 'b>(
             agent,
             state.replacer_function.clone(),
             key,
-            unsafe {
-                Object::try_from(state.stack.last(agent, gc.nogc()).unwrap())
-                    .unwrap_unchecked()
-                    .unbind()
-            },
+            Object::try_from(state.stack.last(agent, gc.nogc()).unwrap())
+                .expect("only objects are pushed onto the stack")
+                .unbind(),
             gc.reborrow(),
         )
         .unbind()?

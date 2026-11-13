@@ -1,0 +1,11 @@
+[package]
+name = "wtf8"
+version = "1.0.0"
+description = "WTF-8 strings for the Nova JavaScript engine, without unsafe code"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+
+[lib]
+path = "lib.rs"

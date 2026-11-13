@@ -149,8 +149,7 @@ impl StringConstructor {
         // fast path: only a single valid code unit
         if code_units.len() == 1 {
             let cu = code_units.get(0).to_uint16(agent, gc.reborrow()).unbind()?;
-            // SAFETY: number within 0..0xFFFF.
-            let cu = unsafe { CodePoint::from_u32_unchecked(cu as u32) };
+            let cu = CodePoint::from_u16(cu);
             return Ok(SmallString::from_code_point(cu).into());
         }
 
@@ -222,8 +221,7 @@ impl StringConstructor {
         ) -> JsResult<'a, CodePoint> {
             // c. If ℝ(nextCP) < 0 or ℝ(nextCP) > 0x10FFFF, throw a RangeError exception.
             if (0..=0x10FFFF).contains(&cp) {
-                // SAFETY: checked to be less or equal to 0x10FFFF.
-                let cp = unsafe { CodePoint::from_u32_unchecked(cp as u32) };
+                let cp = CodePoint::from_u32(cp as u32).expect("checked to be at most 0x10FFFF");
                 return Ok(cp);
             }
             Err(agent.throw_exception(
@@ -237,8 +235,7 @@ impl StringConstructor {
         if code_points.iter().all(|cp| cp.is_number()) {
             // 2. For each element next of codePoints, do
             for next in code_points.iter() {
-                // SAFETY: checked in the iter().all().
-                let next = unsafe { Number::try_from(*next).unwrap_unchecked() };
+                let next = Number::try_from(*next).expect("checked in the iter().all()");
                 let Number::Integer(next) = next else {
                     if next == Number::neg_zero() {
                         // Special case: -0 is an acceptable value here.

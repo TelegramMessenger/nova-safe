@@ -5,7 +5,7 @@
 use core::hash::{Hash, Hasher};
 
 use ahash::AHasher;
-use wtf8::{Wtf8, Wtf8Buf};
+use wtf8::{Wtf8Buf, Wtf8Str};
 
 use crate::{
     ecmascript::{
@@ -202,7 +202,7 @@ impl<'a> PropertyKey<'a> {
         Some(int as u32)
     }
 
-    pub(self) fn is_str_eq_num(s: &Wtf8, n: i64) -> bool {
+    pub(self) fn is_str_eq_num(s: Wtf8Str<'_>, n: i64) -> bool {
         // TODO: Come up with some advanced algorithm.
         s == Wtf8Buf::from_string(n.to_string())
     }
@@ -492,19 +492,22 @@ impl Rootable for PropertyKey<'_> {
 
 #[test]
 fn compare_num_str() {
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("23"), 23));
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("-23"), -23));
+    assert!(PropertyKey::is_str_eq_num(Wtf8Str::from_str("23"), 23));
+    assert!(PropertyKey::is_str_eq_num(Wtf8Str::from_str("-23"), -23));
     assert!(PropertyKey::is_str_eq_num(
-        Wtf8::from_str("-120543809"),
+        Wtf8Str::from_str("-120543809"),
         -120543809
     ));
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("985493"), 985493));
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("0"), 0));
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("5"), 5));
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("-5"), -5));
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("9302"), 9302));
-    assert!(PropertyKey::is_str_eq_num(Wtf8::from_str("19"), 19));
+    assert!(PropertyKey::is_str_eq_num(
+        Wtf8Str::from_str("985493"),
+        985493
+    ));
+    assert!(PropertyKey::is_str_eq_num(Wtf8Str::from_str("0"), 0));
+    assert!(PropertyKey::is_str_eq_num(Wtf8Str::from_str("5"), 5));
+    assert!(PropertyKey::is_str_eq_num(Wtf8Str::from_str("-5"), -5));
+    assert!(PropertyKey::is_str_eq_num(Wtf8Str::from_str("9302"), 9302));
+    assert!(PropertyKey::is_str_eq_num(Wtf8Str::from_str("19"), 19));
 
-    assert!(!PropertyKey::is_str_eq_num(Wtf8::from_str("19"), 91));
-    assert!(!PropertyKey::is_str_eq_num(Wtf8::from_str("-19"), 19));
+    assert!(!PropertyKey::is_str_eq_num(Wtf8Str::from_str("19"), 91));
+    assert!(!PropertyKey::is_str_eq_num(Wtf8Str::from_str("-19"), 19));
 }

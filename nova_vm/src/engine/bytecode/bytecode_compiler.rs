@@ -758,8 +758,7 @@ pub(crate) fn string_literal_to_wtf8<'a>(
                 + (char_code_to_u16(encoded_bytes[4]) << 8)
                 + (char_code_to_u16(encoded_bytes[5]) << 4)
                 + char_code_to_u16(encoded_bytes[6]);
-            let code_point =
-                CodePoint::from_u32(u32::from(value)).expect("value cannot be larger than 0xFFFF");
+            let code_point = CodePoint::from_u16(value);
             buf.push(code_point);
         }
         if !str.is_empty() {

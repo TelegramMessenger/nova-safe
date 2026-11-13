@@ -1228,7 +1228,7 @@ impl StringPrototype {
             let s = s.take(agent).bind(gc.nogc());
             (s, that_value)
         };
-        match s.as_wtf8_(agent).cmp(that_value.as_wtf8_(agent)) {
+        match s.as_wtf8_(agent).cmp(&that_value.as_wtf8_(agent)) {
             Ordering::Less => Ok((-1).into()),
             Ordering::Equal => Ok(0.into()),
             Ordering::Greater => Ok(1.into()),
@@ -1334,10 +1334,8 @@ impl StringPrototype {
                 .unbind()?
                 .bind(gc.nogc());
 
-            // SAFETY: regexp is an Object.
-            regexp = unsafe {
-                Object::try_from(scoped_regexp.get(agent).bind(gc.nogc())).unwrap_unchecked()
-            };
+            regexp = Object::try_from(scoped_regexp.get(agent).bind(gc.nogc()))
+                .expect("regexp is an Object");
 
             // b. If isRegExp is true, then
             if is_reg_exp {
@@ -1366,10 +1364,8 @@ impl StringPrototype {
                         gc.into_nogc(),
                     ));
                 }
-                // SAFETY: regexp is an Object.
-                regexp = unsafe {
-                    Object::try_from(scoped_regexp.get(agent).bind(gc.nogc())).unwrap_unchecked()
-                };
+                regexp = Object::try_from(scoped_regexp.get(agent).bind(gc.nogc()))
+                    .expect("regexp is an Object");
             }
             // c. Let matcher be ? GetMethod(regexp, %Symbol.matchAll%).
             let matcher = get_object_method(
@@ -1773,10 +1769,8 @@ impl StringPrototype {
                 .unbind()?
                 .bind(gc.nogc());
 
-            // SAFETY: searchValue is an Object.
-            search_value = unsafe {
-                Object::try_from(scoped_search_value.get(agent).bind(gc.nogc())).unwrap_unchecked()
-            };
+            search_value = Object::try_from(scoped_search_value.get(agent).bind(gc.nogc()))
+                .expect("search_value is an Object");
 
             // b. If isRegExp is true, then
             if is_reg_exp {
@@ -1805,11 +1799,8 @@ impl StringPrototype {
                         gc.into_nogc(),
                     ));
                 }
-                // SAFETY: searchValue is an Object.
-                search_value = unsafe {
-                    Object::try_from(scoped_search_value.get(agent).bind(gc.nogc()))
-                        .unwrap_unchecked()
-                };
+                search_value = Object::try_from(scoped_search_value.get(agent).bind(gc.nogc()))
+                    .expect("search_value is an Object");
             }
 
             // c. Let replacer be ? GetMethod(searchValue, %Symbol.replace%).
@@ -2077,24 +2068,19 @@ impl StringPrototype {
 
         // 12. If from ≥ to, return the empty String.
         // 13. Return the substring of S from from to to.
-        let substring = match (from, to) {
-            (None, _) => "",
+        let (u8_from, u8_to) = match (from, to) {
+            (None, _) => return Ok(String::EMPTY_STRING.into()),
             (Some(0), None) => return Ok(s.into()),
-            (Some(from_idx), None) => {
-                let u8_from = s.utf8_index_(agent, from_idx).unwrap();
-                &s.to_string_lossy_(agent)[u8_from..]
+            (Some(from_idx), None) => (s.utf8_index_(agent, from_idx).unwrap(), None),
+            (Some(from_idx), Some(to_idx)) if from_idx >= to_idx => {
+                return Ok(String::EMPTY_STRING.into());
             }
-            (Some(from_idx), Some(to_idx)) if from_idx >= to_idx => "",
-            (Some(from_idx), Some(to_idx)) => {
-                let u8_from = s.utf8_index_(agent, from_idx).unwrap();
-                let u8_to = s.utf8_index_(agent, to_idx).unwrap();
-                &s.to_string_lossy_(agent)[u8_from..u8_to]
-            }
+            (Some(from_idx), Some(to_idx)) => (
+                s.utf8_index_(agent, from_idx).unwrap(),
+                Some(s.utf8_index_(agent, to_idx).unwrap()),
+            ),
         };
-        // SAFETY: The memory for `substring` (and for the WTF-8 representation
-        // of `s`) won't be moved or deallocated before this function returns.
-        let substring: &'static str = unsafe { core::mem::transmute(substring) };
-        Ok(String::from_str(agent, substring, gc).into())
+        Ok(lossy_substring(agent, s, u8_from, u8_to, gc).into())
     }
 
     /// ### [22.1.3.23 String.prototype.split ( separator, limit )](https://tc39.es/ecma262/#sec-string.prototype.split)
@@ -2455,11 +2441,9 @@ impl StringPrototype {
         } else {
             s.len_(agent)
         };
-        let substring = &s.to_string_lossy_(agent)[u8_from..u8_to];
-        // SAFETY: The memory for `substring` (and for the WTF-8 representation
-        // of `s`) won't be moved or deallocated before this function returns.
-        let substring: &'static str = unsafe { core::mem::transmute(substring) };
-        Ok(String::from_str(agent, substring, gc.into_nogc()).into())
+        let s = s.unbind();
+        let gc = gc.into_nogc();
+        Ok(lossy_substring(agent, s, u8_from, Some(u8_to), gc).into())
     }
 
     /// ### [22.1.3.26 String.prototype.toLocaleLowerCase ( \[ reserved1 \[ , reserved2 \] \] )](https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase)
@@ -3273,11 +3257,7 @@ fn string_pad<'gc>(
         for cp in char::decode_utf16(fill_buf.to_ill_formed_utf16().take(overflow_len)) {
             match cp {
                 Ok(char) => buf.push_char(char),
-                // SAFETY: unpaired surrogates fail parsing, and they're in the
-                // CodePoint range.
-                Err(code) => buf.push(unsafe {
-                    CodePoint::from_u32_unchecked(code.unpaired_surrogate() as u32)
-                }),
+                Err(code) => buf.push(CodePoint::from_u16(code.unpaired_surrogate())),
             }
         }
     }
@@ -3305,6 +3285,33 @@ pub(crate) fn to_zero_padded_decimal_string(
     format!("{s:0>min_length$}")
 }
 
+/// The lossy UTF-8 form of the substring of `s` from byte `u8_from` to byte
+/// `u8_to` (or the end), as a new String. A lone surrogate and its U+FFFD
+/// replacement both take 3 bytes, so this equals the same byte range of the
+/// lossy form of all of `s`, without converting all of `s`.
+fn lossy_substring<'gc>(
+    agent: &mut Agent,
+    s: String,
+    u8_from: usize,
+    u8_to: Option<usize>,
+    gc: NoGcScope<'gc, '_>,
+) -> String<'gc> {
+    let owned = {
+        let wtf8 = s.as_wtf8_(agent);
+        let lossy = match u8_to {
+            Some(u8_to) => wtf8.slice(u8_from, u8_to),
+            None => wtf8.slice_from(u8_from),
+        }
+        .to_string_lossy();
+        let substring: &str = &lossy;
+        if let Ok(small) = String::try_from(substring) {
+            return small;
+        }
+        substring.to_owned()
+    };
+    String::from_string(agent, owned, gc)
+}
+
 /// ### [22.1.3.19.1 GetSubstitution ( matched, str, position, captures, namedCaptures, replacementTemplate )](https://tc39.es/ecma262/#sec-getsubstitution)
 ///
 /// The abstract operation GetSubstitution takes arguments matched (a String),
@@ -3327,14 +3334,8 @@ pub(crate) fn get_substitution<'gc, 'scope>(
     mut gc: GcScope<'gc, 'scope>,
 ) -> JsResult<'gc, String<'gc>> {
     let named_captures = named_captures.map(|c| c.scope(agent, gc.nogc()));
-    let str = scoped_str.to_string_lossy(agent);
-    // SAFETY: Scoped string data cannot be mutated or dropped.
-    let str = unsafe { core::mem::transmute::<&str, &'scope str>(str.as_ref()) };
-    let matched = scoped_matched.to_string_lossy(agent);
-    // SAFETY: Scoped string data cannot be mutated or dropped.
-    let matched = unsafe { core::mem::transmute::<&str, &'scope str>(matched.as_ref()) };
     // 1. Let stringLength be the length of str.
-    let utf8_string_length = str.len();
+    let utf8_string_length = scoped_str.get(agent).len_(agent);
     // 2. Assert: position ≤ stringLength.
     debug_assert!(position <= scoped_str.get(agent).utf16_len_(agent));
     let utf8_position = scoped_str
@@ -3344,10 +3345,10 @@ pub(crate) fn get_substitution<'gc, 'scope>(
     // 3. Let result be the empty String.
     let mut result = Wtf8Buf::new();
     // 4. Let templateRemainder be replacementTemplate.
-    let template_remainder = scoped_replacement_template.to_string_lossy(agent);
-    // SAFETY: Scoped string data cannot be mutated or dropped.
-    let mut template_remainder =
-        unsafe { core::mem::transmute::<&str, &'scope str>(template_remainder.as_ref()) };
+    let template = scoped_replacement_template
+        .to_string_lossy(agent)
+        .into_owned();
+    let mut template_remainder = template.as_str();
     // 5. Repeat, while templateRemainder is not the empty String,
     while !template_remainder.is_empty() {
         let template_remainder_bytes = template_remainder.as_bytes();
@@ -3372,25 +3373,37 @@ pub(crate) fn get_substitution<'gc, 'scope>(
                 // i. Let ref be "$`".
                 r#ref = "$`";
                 // ii. Let refReplacement be the substring of str from 0 to position.
-                ref_replacement = str[0..utf8_position].into()
+                ref_replacement = scoped_str
+                    .get(agent)
+                    .as_wtf8_(agent)
+                    .slice_to(utf8_position)
+                    .to_string_lossy()
+                    .into_owned()
+                    .into()
             } else if template_remainder_bytes[1] == b'&' {
                 // d. Else if templateRemainder starts with "$&", then
                 // i. Let ref be "$&".
                 r#ref = "$&";
                 // ii. Let refReplacement be matched.
-                ref_replacement = matched.into();
+                ref_replacement = scoped_matched.to_string_lossy(agent).into_owned().into();
             } else if template_remainder_bytes[1] == b'\'' {
                 // e. Else if templateRemainder starts with "$'" (0x0024
                 //    (DOLLAR SIGN) followed by 0x0027 (APOSTROPHE)), then
                 // i. Let ref be "$'".
                 r#ref = "$'";
                 // ii. Let matchLength be the length of matched.
-                let match_length = matched.len();
+                let match_length = scoped_matched.get(agent).len_(agent);
                 // iii. Let tailPos be position + matchLength.
                 let tail_pos = position.saturating_add(match_length);
                 // iv. Let refReplacement be the substring of str from
                 //     min(tailPos, stringLength).
-                ref_replacement = str[tail_pos.min(utf8_string_length)..].into();
+                ref_replacement = scoped_str
+                    .get(agent)
+                    .as_wtf8_(agent)
+                    .slice_from(tail_pos.min(utf8_string_length))
+                    .to_string_lossy()
+                    .into_owned()
+                    .into();
                 // v. NOTE: tailPos can exceed stringLength only if this
                 //    abstract operation was invoked by a call to the intrinsic
                 //    %Symbol.replace% method of %RegExp.prototype% on an
