@@ -4,7 +4,6 @@
 
 use core::{
     hash::{Hash, Hasher},
-    hint::{assert_unchecked, unreachable_unchecked},
     marker::PhantomData,
 };
 
@@ -12,8 +11,6 @@ use ecmascript_atomics::Ordering;
 
 #[cfg(feature = "proposal-float16array")]
 use crate::ecmascript::FLOAT_16_ARRAY_DISCRIMINANT;
-#[cfg(feature = "shared-array-buffer")]
-use crate::ecmascript::SharedDataBlock;
 use crate::{
     ecmascript::{
         Agent, AnyArrayBuffer, AnyTypedArray, ArgumentsList, ArrayBuffer,
@@ -1735,19 +1732,17 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         start_index: usize,
         count: usize,
     ) {
-        // SAFETY: precondition.
-        unsafe {
-            assert_unchecked(
-                target.len() >= count * self.typed_array_element_size()
-                    && target.as_ptr_range().start.cast::<usize>().is_aligned()
-                    && target.as_ptr_range().end.cast::<T>().is_aligned(),
-            )
-        };
+        // Precondition.
+        debug_assert!(
+            target.len() >= count * self.typed_array_element_size()
+                && target.as_ptr_range().start.cast::<usize>().is_aligned()
+                && target.as_ptr_range().end.cast::<T>().is_aligned()
+        );
         let source = &self.as_slice(agent)[start_index..start_index + count];
         // SAFETY: Viewables are safe to transmute from u8.
         let (head, target, _) = unsafe { target.align_to_mut::<T>() };
-        // SAFETY: precondition.
-        unsafe { assert_unchecked(target.len() >= count && head.is_empty()) };
+        // Precondition.
+        debug_assert!(target.len() >= count && head.is_empty());
         target[..count].copy_from_slice(source);
     }
 
@@ -1787,8 +1782,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         match src_buffer {
             AnyArrayBuffer::ArrayBuffer(src_buffer) => {
                 let Ok(source) = TypedArray::try_from(source) else {
-                    // SAFETY: Cannot get ArrayBuffer from SharedTypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get ArrayBuffer from SharedTypedArray.
+                    unreachable!()
                 };
                 if src_buffer == target_buffer {
                     // b. Set srcBuffer to
@@ -1842,18 +1837,14 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                 };
 
                 let Ok(source) = SharedTypedArray::try_from(source) else {
-                    // SAFETY: Cannot get ArrayBuffer from SharedTypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get ArrayBuffer from SharedTypedArray.
+                    unreachable!()
                 };
-                let sdb = sab.get_data_block(agent) as *const SharedDataBlock;
+                let sdb = sab.get_data_block(agent).clone();
 
                 let target_slice =
                     &mut target_buffer.as_mut_viewable_slice::<T>(agent, target_byte_offset, None)
                         [target_offset..target_offset + length];
-
-                // SAFETY: accessing target_slice as mut cannot invalidate sdb
-                // pointer or alias the memory.
-                let sdb = unsafe { &*sdb };
 
                 for_shared_typed_array!(
                     source,
@@ -1905,8 +1896,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         match src_buffer {
             AnyArrayBuffer::ArrayBuffer(src_buffer) => {
                 let Ok(source) = TypedArray::try_from(source) else {
-                    // SAFETY: Cannot get ArrayBuffer from SharedTypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get ArrayBuffer from SharedTypedArray.
+                    unreachable!()
                 };
                 if src_buffer == target_buffer {
                     let slice = src_buffer.as_mut_slice(agent);
@@ -1953,18 +1944,14 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                 };
 
                 let Ok(source) = SharedTypedArray::try_from(source) else {
-                    // SAFETY: Cannot get ArrayBuffer from SharedTypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get ArrayBuffer from SharedTypedArray.
+                    unreachable!()
                 };
-                let sdb = sab.get_data_block(agent) as *const SharedDataBlock;
+                let sdb = sab.get_data_block(agent).clone();
 
                 let target_slice =
                     &mut target_buffer.as_mut_viewable_slice::<T>(agent, target_byte_offset, None)
                         [..length];
-
-                // SAFETY: accessing target_slice as mut cannot invalidate sdb
-                // pointer or alias the memory.
-                let sdb = unsafe { &*sdb };
 
                 for_shared_typed_array!(
                     source,
@@ -2057,10 +2044,10 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         let source = &self.as_slice(agent)[..len];
         // SAFETY: Viewables can be safely transmuted from bytes.
         let (head, target, tail) = unsafe { data_block.align_to_mut::<T>() };
-        // SAFETY: cannot have any head or tail since we created length by
+        // Cannot have any head or tail since we created length by
         // multiplying with `size_of::<T>()`, and allocation is done 8-byte
         // aligned.
-        unsafe { assert_unchecked(head.is_empty() && tail.is_empty() && target.len() == len) };
+        debug_assert!(head.is_empty() && tail.is_empty() && target.len() == len);
         target.copy_from_slice(source);
         let result = typed_array_create_from_data_block(agent, self, data_block).bind(gc);
         Ok(result.cast::<T>().into())
@@ -2083,7 +2070,7 @@ fn copy_within_buffer<Source: Viewable, Target: Viewable>(
             buffer[target_offset + i] = buffer[source_offset + i];
         }
     } else {
-        unsafe { assert_unchecked(Source::IS_BIGINT == Target::IS_BIGINT) };
+        debug_assert!(Source::IS_BIGINT == Target::IS_BIGINT);
         // SAFETY: all viewables are safe to transmute from u8.
         let (head, source, _) = unsafe { buffer.align_to::<Source>() };
         assert!(head.is_empty());
@@ -2125,7 +2112,7 @@ fn copy_between_typed_arrays<Source: Viewable, Target: Viewable>(
         assert!(head.is_empty());
         target.copy_from_slice(source);
     } else {
-        unsafe { assert_unchecked(Source::IS_BIGINT == Target::IS_BIGINT) };
+        debug_assert!(Source::IS_BIGINT == Target::IS_BIGINT);
         // SAFETY: all viewables are safe to transmute from u8.
         let (head, source, _) = unsafe { source.align_to::<Source>() };
         assert!(head.is_empty());

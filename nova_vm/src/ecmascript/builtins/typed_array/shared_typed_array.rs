@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use core::hash::{Hash, Hasher};
-use std::hint::{assert_unchecked, unreachable_unchecked};
 use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
@@ -1731,19 +1730,17 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
         start_index: usize,
         count: usize,
     ) {
-        // SAFETY: precondition.
-        unsafe {
-            assert_unchecked(
-                target.len() >= count * self.typed_array_element_size()
-                    && target.as_ptr_range().start.cast::<usize>().is_aligned()
-                    && target.as_ptr_range().end.cast::<usize>().is_aligned(),
-            )
-        };
+        // Precondition.
+        debug_assert!(
+            target.len() >= count * self.typed_array_element_size()
+                && target.as_ptr_range().start.cast::<usize>().is_aligned()
+                && target.as_ptr_range().end.cast::<usize>().is_aligned()
+        );
         let source = self.as_slice(agent).slice(start_index, start_index + count);
         // SAFETY: Viewables are safe to transmute from u8.
         let (head, target, _) = unsafe { target.align_to_mut::<T::Storage>() };
-        // SAFETY: precondition.
-        unsafe { assert_unchecked(target.len() >= count && head.is_empty()) };
+        // Precondition.
+        debug_assert!(target.len() >= count && head.is_empty());
         source.copy_into_slice(&mut target[..count]);
     }
 
@@ -1780,8 +1777,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
         match src_buffer {
             AnyArrayBuffer::ArrayBuffer(src_buffer) => {
                 let Ok(source) = TypedArray::try_from(source) else {
-                    // SAFETY: Cannot get ArrayBuffer from SharedTypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get ArrayBuffer from SharedTypedArray.
+                    unreachable!()
                 };
                 let src_byte_end_offset = src_byte_offset + src_element_size * length;
                 let src_slice = &src_buffer.as_slice(agent)[src_byte_offset..src_byte_end_offset];
@@ -1806,8 +1803,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
                 use crate::ecmascript::builtins::typed_array::SharedTypedArray;
 
                 let Ok(source) = SharedTypedArray::try_from(source) else {
-                    // SAFETY: Cannot get SharedArrayBuffer from TypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get SharedArrayBuffer from TypedArray.
+                    unreachable!()
                 };
                 let target_sdb = target_buffer.get_data_block(agent);
                 let source_sdb = source_buffer.get_data_block(agent);
@@ -1815,8 +1812,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
                 let src_byte_end_offset = src_byte_offset + src_element_size * length;
 
                 if target_sdb == source_sdb {
-                    let source_sdb = source_sdb as *const SharedDataBlock;
-                    let target_sdb = target_sdb as *const SharedDataBlock;
+                    let source_sdb = source_sdb.clone();
+                    let target_sdb = target_sdb.clone();
 
                     let mut copy_block = create_byte_data_block(
                         agent,
@@ -1824,18 +1821,13 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
                         gc,
                     )?;
 
-                    // SAFETY: creating a new DataBlock can only mutate Agent
-                    // for throwing an error.
-                    let source_sdb = unsafe { &*source_sdb };
-                    let target_sdb = unsafe { &*target_sdb };
-
                     let source_slice = source_sdb
                         .as_racy_slice()
                         .slice(src_byte_offset, src_byte_end_offset);
                     source_slice.copy_into_slice(&mut copy_block);
 
                     let target_slice =
-                        sdb_as_viewable_slice::<T>(target_sdb, target_byte_offset, None)
+                        sdb_as_viewable_slice::<T>(&target_sdb, target_byte_offset, None)
                             .slice_from(target_offset)
                             .slice_to(length);
 
@@ -1901,8 +1893,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
         match src_buffer {
             AnyArrayBuffer::ArrayBuffer(src_buffer) => {
                 let Ok(source) = TypedArray::try_from(source) else {
-                    // SAFETY: Cannot get ArrayBuffer from SharedTypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get ArrayBuffer from SharedTypedArray.
+                    unreachable!()
                 };
                 let src_byte_end_offset = src_byte_offset + src_element_size * length;
                 let src_slice = &src_buffer.as_slice(agent)[src_byte_offset..src_byte_end_offset];
@@ -1926,8 +1918,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
                 use crate::ecmascript::builtins::typed_array::SharedTypedArray;
 
                 let Ok(source) = SharedTypedArray::try_from(source) else {
-                    // SAFETY: Cannot get SharedArrayBuffer from TypedArray.
-                    unsafe { unreachable_unchecked() }
+                    // Cannot get SharedArrayBuffer from TypedArray.
+                    unreachable!()
                 };
                 let target_sdb = target_buffer.get_data_block(agent);
                 let source_sdb = source_buffer.get_data_block(agent);
@@ -2013,25 +2005,27 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
         let ta = ta.take(agent).bind(gc.into_nogc());
         let slice = ta.as_slice(agent);
         let len = len.min(slice.len());
-        let items = &items[..len];
-        // SAFETY: T::Storage is a different representation of T.
-        let items = unsafe { core::mem::transmute::<&[T], &[T::Storage]>(items) };
-        slice.copy_from_slice(&items[..len]);
+        let items = items[..len]
+            .iter()
+            .map(|&item| T::into_storage(item))
+            .collect::<Vec<T::Storage>>();
+        slice.copy_from_slice(&items);
         Ok(())
     }
 
     fn sort<'gc>(self, agent: &mut Agent, len: usize) {
-        let mut items = vec![T::default(); len];
-        // SAFETY: Transmute to storage is always safe.
-        let items_storage =
-            unsafe { core::mem::transmute::<&mut [T], &mut [T::Storage]>(&mut items) };
+        let mut storage = vec![T::into_storage(T::default()); len];
         let slice = self.as_slice(agent).slice_to(len);
-        slice.copy_into_slice(items_storage);
+        slice.copy_into_slice(&mut storage);
+        let mut items = storage
+            .iter()
+            .map(|&item| T::from_storage(item))
+            .collect::<Vec<T>>();
         items.sort_by(|a, b| a.ecmascript_cmp(b));
-        // SAFETY: Transmute to storage is always safe.
-        let items_storage =
-            unsafe { core::mem::transmute::<&mut [T], &mut [T::Storage]>(&mut items) };
-        slice.copy_from_slice(items_storage);
+        for (slot, item) in storage.iter_mut().zip(items) {
+            *slot = T::into_storage(item);
+        }
+        slice.copy_from_slice(&storage);
     }
 
     fn typed_array_create_same_type_and_copy_data<'gc>(
@@ -2045,10 +2039,10 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
         let source = self.as_slice(agent).slice_to(len);
         // SAFETY: Viewables can be safely transmuted from bytes.
         let (head, target, tail) = unsafe { data_block.align_to_mut::<T::Storage>() };
-        // SAFETY: cannot have any head or tail since we created length by
+        // Cannot have any head or tail since we created length by
         // multiplying with `size_of::<T>()`, and allocation is done 8-byte
         // aligned.
-        unsafe { assert_unchecked(head.is_empty() && tail.is_empty() && target.len() == len) };
+        debug_assert!(head.is_empty() && tail.is_empty() && target.len() == len);
         source.copy_into_slice(target);
         let result = typed_array_create_from_data_block(agent, self, data_block).bind(gc);
         Ok(result.cast::<T>().into())
@@ -2093,10 +2087,11 @@ pub(crate) fn copy_from_shared_typed_array<Source: Viewable, Target: Viewable>(
         let (head, source, _) = source.align_to::<Target::Storage>();
         assert!(head.is_empty());
         assert_eq!(target.len(), source.len());
-        // SAFETY: transmuting between T and T::Storage is safe.
-        let target =
-            unsafe { core::mem::transmute::<&mut [Target], &mut [Target::Storage]>(target) };
-        source.copy_into_slice(target);
+        let mut storage = vec![Target::into_storage(Target::default()); target.len()];
+        source.copy_into_slice(&mut storage);
+        for (target, item) in target.iter_mut().zip(storage) {
+            *target = Target::from_storage(item);
+        }
     } else {
         assert_eq!(Source::IS_BIGINT, Target::IS_BIGINT);
         let (head, source, _) = source.align_to::<Source::Storage>();

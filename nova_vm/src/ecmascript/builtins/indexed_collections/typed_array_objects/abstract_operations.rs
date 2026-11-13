@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::hint::assert_unchecked;
-
 use ecmascript_atomics::Ordering;
 
 #[cfg(feature = "shared-array-buffer")]
@@ -670,8 +668,8 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
     // 5. If length is not undefined, then
     // a. Let newLength be ? ToIndex(length).
     let new_length = if let Some(length) = length {
-        // SAFETY: caller should have already mapped undefined to None.
-        unsafe { assert_unchecked(!length.is_undefined()) };
+        // Caller should have already mapped undefined to None.
+        debug_assert!(!length.is_undefined());
         if let Some(length) = try_result_into_js(try_to_index(agent, length, gc.nogc()))
             .unbind()?
             .bind(gc.nogc())
