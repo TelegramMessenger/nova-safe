@@ -7,7 +7,6 @@ mod execute_instructions;
 
 use execute_instructions::*;
 
-use std::ptr::NonNull;
 use wtf8::Wtf8Buf;
 
 use crate::{
@@ -175,6 +174,16 @@ impl SuspendedVm {
 }
 
 impl Vm {
+    const EMPTY: Self = Self {
+        ip: 0,
+        stack: Vec::new(),
+        reference_stack: Vec::new(),
+        iterator_stack: Vec::new(),
+        exception_handler_stack: Vec::new(),
+        result: None,
+        reference: None,
+    };
+
     fn new() -> Self {
         Self {
             ip: 0,
@@ -1421,11 +1430,11 @@ fn with_vm_gc<'a, 'b, R: 'a>(
     work: impl FnOnce(&mut Agent, GcScope<'a, 'b>) -> R,
     gc: GcScope<'a, 'b>,
 ) -> R {
-    let vm = NonNull::from(vm);
-    agent.vm_stack.push(vm);
+    let depth = agent.vm_stack.len();
+    agent.vm_stack.push(core::mem::replace(vm, Vm::EMPTY));
     let result = work(agent, gc);
-    let return_vm = agent.vm_stack.pop().unwrap();
-    assert_eq!(vm, return_vm, "VM Stack was misused");
+    assert_eq!(agent.vm_stack.len(), depth + 1, "VM Stack was misused");
+    *vm = agent.vm_stack.pop().unwrap();
     result
 }
 

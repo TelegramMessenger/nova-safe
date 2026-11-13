@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use core::ops::ControlFlow;
-use std::{marker::PhantomData, ptr::NonNull};
+use std::marker::PhantomData;
 
 use crate::{
     ecmascript::{
@@ -165,16 +165,21 @@ impl<'a> ActiveIterator<'a> {
     }
 
     pub(super) fn get<'agent>(&self, agent: &'agent Agent) -> &'agent VmIteratorRecord<'a> {
-        // SAFETY: VM is held exclusively in an above call stack.
-        unsafe { agent.vm_stack.last().expect("No VM found").as_ref() }.get_active_iterator()
+        agent
+            .vm_stack
+            .last()
+            .expect("No VM found")
+            .get_active_iterator()
     }
 
     fn get_mut<'agent>(
         &mut self,
         agent: &'agent mut Agent,
     ) -> &'agent mut VmIteratorRecord<'static> {
-        // SAFETY: VM is held exclusively in an above call stack.
-        unsafe { agent.vm_stack.last_mut().expect("No VM found").as_mut() }
+        agent
+            .vm_stack
+            .last_mut()
+            .expect("No VM found")
             .get_active_iterator_mut()
     }
 }
@@ -483,13 +488,9 @@ impl<'a> ObjectPropertiesIterator<'a> {
         agent: &mut Agent,
         gc: NoGcScope<'gc, '_>,
     ) -> Option<(Object<'gc>, PropertyKey<'gc>)> {
-        let mut iter = NonNull::from(self.get_mut(agent));
         loop {
-            // SAFETY: The iterator does not invalidate or move here.
-            let iter_mut = unsafe { iter.as_mut() };
-            let next_key = iter_mut.remaining_keys.as_mut().unwrap().pop()?;
-            // SAFETY: The iterator does not invalidate or move here.
-            let iter_ref = unsafe { iter.as_ref() };
+            let next_key = self.get_mut(agent).remaining_keys.as_mut().unwrap().pop()?;
+            let iter_ref = self.get(agent);
             if iter_ref.visited_keys.contains(agent, next_key) {
                 // Skip visited keys.
                 continue;
@@ -499,10 +500,9 @@ impl<'a> ObjectPropertiesIterator<'a> {
     }
 
     fn mark_key_visited(&mut self, agent: &mut Agent, key: PropertyKey) {
-        let mut iter = NonNull::from(self.get_mut(agent));
-        // SAFETY: The iterator does not invalidate or move here.
-        let iter = unsafe { iter.as_mut() };
-        iter.visited_keys.insert(agent, key);
+        let mut visited_keys = core::mem::take(&mut self.get_mut(agent).visited_keys);
+        visited_keys.insert(agent, key);
+        self.get_mut(agent).visited_keys = visited_keys;
     }
 
     fn get<'agent>(&self, agent: &'agent Agent) -> &'agent ObjectPropertiesIteratorRecord<'a> {
@@ -720,7 +720,6 @@ impl<'a> ArrayValuesIterator<'a> {
         let array = iter.array.bind(gc);
         // iv. Let indexNumber be 𝔽(index).
         let index = iter.index;
-        let mut iter = NonNull::from(iter);
         // 1. Let len be ? LengthOfArrayLike(array).
         let len = array.len(agent);
         // iii. If index ≥ len, return NormalCompletion(undefined).
@@ -728,9 +727,10 @@ impl<'a> ArrayValuesIterator<'a> {
             return None;
         }
         // viii. Set index to index + 1.
-        // SAFETY: Getting the length of array does not mutate anything in
-        // Agent, so we can safely re-reference the iterator.
-        unsafe { iter.as_mut().index += 1 };
+        let VmIteratorRecord::ArrayValues(iter) = self.iter.get_mut(agent) else {
+            unreachable!()
+        };
+        iter.index += 1;
         Some((array, index))
     }
 }
