@@ -69,5 +69,9 @@ why the new code cannot reach undefined behaviour, and the unsafe count before a
 
 ## Known engine bugs found by the widgets
 
-- `corpus/compat/notes-storage.html`: panic `assertion failed: begin <= end` in `wtf8` (`not_quite_std.rs:167`), a
-  string slice with reversed bounds. A logic bug caught by a check, not undefined behaviour.
+- `corpus/compat/notes-storage.html`: panicked with `assertion failed: begin <= end` in `wtf8`. Cause: `unescape`
+  advanced its position by 1 instead of to the match (`unescape("%41%42%43")` gave `"AB%43"`). Fixed in e2f45041; the
+  widget now matches QuickJS and its baseline hash was recorded again.
+- Sorting a growable shared typed array with a comparator that grows the buffer panics in
+  `RacySlice::copy_from_slice` (length mismatch). Not fixed yet.
+- `ElementArrays::reserve_elements_raw`: the `new_key == E1` arms read the wrong source store (unreachable today).
