@@ -81,11 +81,9 @@ fn allocate_shared_array_buffer<'a>(
     // 10. Else,
     // a. Set obj.[[ArrayBufferByteLength]] to byteLength.
     // NOTE: create_shared_byte_data_block handles the maxByteLength logic.
-    // SAFETY: 3.a. if byteLength > maxByteLength, throw a TypeError.
-    let block = unsafe { create_shared_byte_data_block(agent, byte_length, max_byte_length, gc) }?;
+    let block = create_shared_byte_data_block(agent, byte_length, max_byte_length, gc)?;
     // 8. Set obj.[[ArrayBufferData]] to block.
-    // SAFETY: we just created the obj; it cannot yet have any data block set.
-    unsafe { obj.set_data_block(agent, block) };
+    obj.set_data_block(agent, block);
     // 11. Return obj.
     Ok(obj)
 }

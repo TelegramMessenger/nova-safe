@@ -178,8 +178,7 @@ impl DataViewConstructor {
         // 15. Set O.[[ViewedArrayBuffer]] to buffer.
         // 16. Set O.[[ByteLength]] to viewByteLength.
         // 17. Set O.[[ByteOffset]] to offset.
-        // SAFETY: Initialising O.
-        unsafe { o.initialise_data(agent, buffer, view_byte_length, offset) };
+        o.initialise_data(agent, buffer, view_byte_length, offset);
 
         // 18. Return O.
         Ok(o.into())

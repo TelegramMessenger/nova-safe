@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::{
-    hint::assert_unchecked,
     ops::ControlFlow,
     sync::{Arc, Mutex},
     time::Duration,
@@ -664,10 +663,10 @@ impl AtomicsObject {
         // 8. Let WL be GetWaiterList(block, byteIndexInBuffer).
         let data_block = buffer.get_data_block(agent);
         // 9. Perform EnterCriticalSection(WL).
-        // SAFETY: buffer is a valid SharedArrayBuffer and cannot be detached. A 0-sized SAB has a
-        // dangling data block with no backing allocation, but `get_waiters` returns `None` in that case.
+        // NOTE: A 0-sized SAB has a dangling data block with no backing
+        // allocation; `get_waiters` returns `None` in that case.
         let mut n = 0;
-        let Some(waiters) = (unsafe { data_block.get_waiters() }) else {
+        let Some(waiters) = data_block.get_waiters() else {
             return Ok(0.into());
         };
 
@@ -901,13 +900,9 @@ fn validate_atomic_access<'gc>(
     // 7. Let offset be typedArray.[[ByteOffset]].
     let offset = typed_array.byte_offset(agent);
     // 8. Return (accessIndex × elementSize) + offset.
-    // SAFETY: access_index has been checked to be within length of the
+    // NOTE: access_index has been checked to be within length of the
     // typed_array buffer, which means that its byte_offset must also be.
-    Ok(unsafe {
-        access_index
-            .unchecked_mul(element_size)
-            .unchecked_add(offset)
-    })
+    Ok(access_index * element_size + offset)
 }
 
 fn try_validate_atomic_access<'gc>(
@@ -942,13 +937,9 @@ fn try_validate_atomic_access<'gc>(
     // 7. Let offset be typedArray.[[ByteOffset]].
     let offset = typed_array.byte_offset(agent);
     // 8. Return (accessIndex × elementSize) + offset.
-    // SAFETY: access_index has been checked to be within length of the
+    // NOTE: access_index has been checked to be within length of the
     // typed_array buffer, which means that its byte_offset must also be.
-    TryResult::Continue(unsafe {
-        access_index
-            .unchecked_mul(element_size)
-            .unchecked_add(offset)
-    })
+    TryResult::Continue(access_index * element_size + offset)
 }
 
 /// 25.4.3.3 ValidateAtomicAccessOnIntegerTypedArray ( typedArray, requestIndex )
@@ -1332,12 +1323,10 @@ fn do_wait_preparation<'gc>(
         ));
     };
     // These are the only waitable integer TypedArrays.
-    unsafe {
-        assert_unchecked(matches!(
-            typed_array,
-            SharedTypedArray::SharedInt32Array(_) | SharedTypedArray::SharedBigInt64Array(_)
-        ));
-    };
+    debug_assert!(matches!(
+        typed_array,
+        SharedTypedArray::SharedInt32Array(_) | SharedTypedArray::SharedBigInt64Array(_)
+    ));
     // 4. Let i be ? ValidateAtomicAccess(taRecord, index).
     let (ta_record, byte_index_in_buffer) =
         match try_validate_atomic_access(agent, &ta_record, index, nogc) {
@@ -1413,10 +1402,10 @@ fn do_wait_critical<'gc, const IS_ASYNC: bool, const IS_I64: bool>(
     // b. Let resultObject be OrdinaryObjectCreate(%Object.prototype%).
     // 17. Perform EnterCriticalSection(WL).
 
-    // SAFETY: buffer is a valid SharedArrayBuffer and cannot be detached. A 0-sized SAB would
+    // NOTE: buffer is a valid SharedArrayBuffer and cannot be detached. A 0-sized SAB would
     // have a dangling data block, but Atomics.wait requires `byteIndex` to be within bounds,
     // so a 0-sized SAB would have been rejected earlier with a RangeError.
-    let waiters = unsafe { data_block.get_or_init_waiters() };
+    let waiters = data_block.get_or_init_waiters();
     let waiter_record = WaiterRecord::new_shared();
     let mut guard = waiters.lock().unwrap();
 
@@ -1424,14 +1413,16 @@ fn do_wait_critical<'gc, const IS_ASYNC: bool, const IS_I64: bool>(
     // 19. Let w be GetValueFromBuffer(buffer, byteIndexInBuffer, elementType, true, seq-cst).
     let v_not_equal_to_w = if IS_I64 {
         let v = v as u64;
-        // SAFETY: buffer is still live and index was checked.
-        let slot = unsafe { slot.as_aligned::<u64>().unwrap_unchecked() };
+        let slot = slot
+            .as_aligned::<u64>()
+            .expect("Atomics.wait index was checked to be aligned and in bounds");
         let w = slot.load(Ordering::SeqCst);
         v != w
     } else {
         let v = v as i32 as u32;
-        // SAFETY: buffer is still live and index was checked.
-        let slot = unsafe { slot.as_aligned::<u32>().unwrap_unchecked() };
+        let slot = slot
+            .as_aligned::<u32>()
+            .expect("Atomics.wait index was checked to be aligned and in bounds");
         let w = slot.load(Ordering::SeqCst);
         v != w
     };
@@ -1541,8 +1532,8 @@ fn do_wait_slow<'gc>(
 ) -> JsResult<'gc, (SharedTypedArray<'gc>, usize, i64, u64)> {
     let nogc = gc.nogc();
     let ta_record = ta_record.bind(nogc);
-    // SAFETY: TypedArray is guaranteed to be a shared TypedArray at this point.
-    let typed_array = unsafe { SharedTypedArray::try_from(ta_record.object).unwrap_unchecked() };
+    let typed_array = SharedTypedArray::try_from(ta_record.object)
+        .expect("TypedArray was checked to be a shared TypedArray");
     let scoped_typed_array = typed_array.scope(agent, nogc);
     let index = index.bind(nogc);
     let scoped_timeout = timeout.scope(agent, nogc);
@@ -1605,8 +1596,8 @@ fn create_wait_result_object<'gc>(
 }
 
 fn get_wait_async_job_waiters(data_block: &SharedDataBlock) -> &Mutex<WaiterLists> {
-    // SAFETY: the data block is a non-dangling clone captured in [`do_wait_critical`] after validation.
-    unsafe { data_block.get_or_init_waiters() }
+    // NOTE: the data block is a non-dangling clone captured in [`do_wait_critical`] after validation.
+    data_block.get_or_init_waiters()
 }
 
 struct WaitAsyncJobInner {
