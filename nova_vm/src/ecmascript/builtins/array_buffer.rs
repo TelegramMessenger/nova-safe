@@ -31,7 +31,7 @@ use crate::{
     },
 };
 
-use ecmascript_atomics::Ordering;
+use crate::ecmascript::Ordering;
 
 /// ## [25.1 ArrayBuffer Objects](https://tc39.es/ecma262/#sec-arraybuffer-objects)
 ///

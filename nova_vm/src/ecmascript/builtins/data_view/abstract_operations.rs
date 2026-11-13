@@ -1,4 +1,4 @@
-use ecmascript_atomics::Ordering;
+use crate::ecmascript::Ordering;
 
 use crate::{
     ecmascript::{

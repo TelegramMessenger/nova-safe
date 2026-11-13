@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #[cfg(feature = "array-buffer")]
-use ecmascript_atomics::Ordering;
+use crate::ecmascript::Ordering;
 
 #[cfg(feature = "array-buffer")]
 use crate::ecmascript::builtins::{AnyTypedArray, make_typed_array_with_buffer_witness_record};

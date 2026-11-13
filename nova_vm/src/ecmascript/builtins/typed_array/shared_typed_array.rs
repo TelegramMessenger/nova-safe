@@ -6,7 +6,7 @@ use core::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
-use ecmascript_atomics::{Ordering, RacySlice};
+use crate::ecmascript::{Ordering, SharedSlice};
 
 #[cfg(feature = "proposal-float16array")]
 use crate::ecmascript::SHARED_FLOAT_16_ARRAY_DISCRIMINANT;
@@ -181,7 +181,7 @@ impl<'ta, T: Viewable> GenericSharedTypedArray<'ta, T> {
     }
 
     #[inline(always)]
-    pub(crate) fn as_slice<'a>(self, agent: &'a Agent) -> RacySlice<'a, T::Storage> {
+    pub(crate) fn as_slice<'a>(self, agent: &'a Agent) -> SharedSlice<'a, T::Storage> {
         Self::check_not_void_array();
 
         let key = self.into_void_array();
@@ -1504,10 +1504,6 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
             create_byte_data_block(agent, len.saturating_mul(size_of::<T>()) as u64, gc.nogc())
                 .unbind()?
                 .bind(gc.nogc());
-        // SAFETY: All viewable types are trivially transmutable.
-        let (head, kept_slice, _) = unsafe { kept.align_to_mut::<T>() };
-        // Should be properly aligned for all T.
-        assert!(head.is_empty());
 
         let sdb = o
             .into_void_array()
@@ -1542,7 +1538,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
             .bind(gc.nogc());
             let selected = to_boolean(agent, result);
             if selected {
-                kept_slice[captured] = value;
+                let size = size_of::<T>();
+                value.write_ne(&mut kept[captured * size..(captured + 1) * size]);
                 captured += 1;
             }
         }
@@ -1574,14 +1571,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
                     let db = ab.get_mut(agent).get_data_block_mut();
                     core::mem::swap(db, &mut kept);
                 } else {
-                    // SAFETY: All viewable types are trivially transmutable.
-                    let (head, dst, _) =
-                        unsafe { ab.as_mut_slice(agent)[byte_offset..].align_to_mut::<T>() };
-                    assert!(head.is_empty());
-                    // SAFETY: All viewable types are trivially transmutable.
-                    let (head, kept_slice, _) = unsafe { kept.align_to::<T>() };
-                    assert!(head.is_empty());
-                    dst[..captured].copy_from_slice(&kept_slice[..captured]);
+                    ab.as_mut_slice(agent)[byte_offset..byte_offset + expected_byte_length]
+                        .copy_from_slice(&kept[..expected_byte_length]);
                 }
             }
             AnyArrayBuffer::SharedArrayBuffer(sab) => {
@@ -1736,11 +1727,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
                 && target.as_ptr_range().end.cast::<usize>().is_aligned()
         );
         let source = self.as_slice(agent).slice(start_index, start_index + count);
-        // SAFETY: Viewables are safe to transmute from u8.
-        let (head, target, _) = unsafe { target.align_to_mut::<T::Storage>() };
-        // Precondition.
-        debug_assert!(target.len() >= count && head.is_empty());
-        source.copy_into_slice(&mut target[..count]);
+        source.copy_into_bytes(&mut target[..count * size_of::<T>()]);
     }
 
     fn set_from_typed_array<'gc>(
@@ -2036,21 +2023,15 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
         let byte_length = (len as u64).saturating_mul(self.typed_array_element_size() as u64);
         let mut data_block = create_byte_data_block(agent, byte_length, gc)?;
         let source = self.as_slice(agent).slice_to(len);
-        // SAFETY: Viewables can be safely transmuted from bytes.
-        let (head, target, tail) = unsafe { data_block.align_to_mut::<T::Storage>() };
-        // Cannot have any head or tail since we created length by
-        // multiplying with `size_of::<T>()`, and allocation is done 8-byte
-        // aligned.
-        debug_assert!(head.is_empty() && tail.is_empty() && target.len() == len);
-        source.copy_into_slice(target);
+        source.copy_into_bytes(&mut data_block);
         let result = typed_array_create_from_data_block(agent, self, data_block).bind(gc);
         Ok(result.cast::<T>().into())
     }
 }
 
 fn copy_between_shared_typed_arrays<Source: Viewable, Target: Viewable>(
-    source: RacySlice<u8>,
-    target: RacySlice<Target::Storage>,
+    source: SharedSlice<u8>,
+    target: SharedSlice<Target::Storage>,
 ) {
     if core::any::TypeId::of::<Target>() == core::any::TypeId::of::<Source>() {
         let (head, source, _) = source.align_to::<Target::Storage>();
@@ -2079,7 +2060,7 @@ fn copy_between_shared_typed_arrays<Source: Viewable, Target: Viewable>(
 }
 
 pub(crate) fn copy_from_shared_typed_array<Source: Viewable, Target: Viewable>(
-    source: RacySlice<'_, u8>,
+    source: SharedSlice<'_, u8>,
     target: &mut [Target],
 ) {
     if core::any::TypeId::of::<Target>() == core::any::TypeId::of::<Source>() {
@@ -2112,26 +2093,24 @@ pub(crate) fn copy_from_shared_typed_array<Source: Viewable, Target: Viewable>(
 
 fn copy_into_shared_typed_array<Source: Viewable, Target: Viewable>(
     source: &[u8],
-    target: RacySlice<'_, Target::Storage>,
+    target: SharedSlice<'_, Target::Storage>,
 ) {
     if core::any::TypeId::of::<Target>() == core::any::TypeId::of::<Source>() {
-        // SAFETY: all viewables are safe to transmute from u8.
-        let (head, source, _) = unsafe { source.align_to::<Target::Storage>() };
-        assert!(head.is_empty());
-        target.copy_from_slice(source);
+        let source = &source[..source.len() - source.len() % size_of::<Target>()];
+        target.copy_from_bytes(source);
     } else {
         assert_eq!(Source::IS_BIGINT, Target::IS_BIGINT);
-        // SAFETY: all viewables are safe to transmute from u8.
-        let (head, source, _) = unsafe { source.align_to::<Source>() };
-        assert!(head.is_empty());
+        let source = source
+            .chunks_exact(size_of::<Source>())
+            .map(Source::read_ne);
         assert_eq!(target.len(), source.len());
         if Target::IS_FLOAT {
-            for (source, target) in source.iter().zip(target.iter()) {
+            for (source, target) in source.zip(target.iter()) {
                 let value = Target::into_storage(Target::from_f64(source.into_f64()));
                 target.store(value, Ordering::Unordered);
             }
         } else {
-            for (source, target) in source.iter().zip(target.iter()) {
+            for (source, target) in source.zip(target.iter()) {
                 let value = Target::into_storage(Target::from_bits(source.into_bits()));
                 target.store(value, Ordering::Unordered);
             }
@@ -2144,7 +2123,7 @@ fn sdb_as_viewable_slice<T: Viewable>(
     sdb: &SharedDataBlock,
     byte_offset: usize,
     byte_length: Option<usize>,
-) -> RacySlice<'_, T::Storage> {
+) -> SharedSlice<'_, T::Storage> {
     let mut slice = sdb.as_racy_slice().slice_from(byte_offset);
     if let Some(byte_length) = byte_length {
         slice = slice.slice_to(byte_length);

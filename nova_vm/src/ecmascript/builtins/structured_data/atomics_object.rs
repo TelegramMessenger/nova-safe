@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use ecmascript_atomics::Ordering;
+use crate::ecmascript::Ordering;
 
 use crate::{
     ecmascript::{
@@ -363,14 +363,9 @@ impl AtomicsObject {
         let typed_array = arguments.get(0);
         let index = arguments.get(1);
         // 1. Let byteIndexInBuffer be ? ValidateAtomicAccessOnIntegerTypedArray(typedArray, index).
-        let ta_record = validate_typed_array(
-            agent,
-            typed_array,
-            ecmascript_atomics::Ordering::Unordered,
-            gc.nogc(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
+        let ta_record = validate_typed_array(agent, typed_array, Ordering::Unordered, gc.nogc())
+            .unbind()?
+            .bind(gc.nogc());
         // a. Let type be TypedArrayElementType(typedArray).
         // b. If IsUnclampedIntegerElementType(type) is false and
         //    IsBigIntElementType(type) is false, throw a TypeError exception.
@@ -831,12 +826,7 @@ fn validate_integer_typed_array<'gc, const WAITABLE: bool>(
     gc: NoGcScope<'gc, '_>,
 ) -> JsResult<'gc, TypedArrayWithBufferWitnessRecords<'gc>> {
     // 1. Let taRecord be ? ValidateTypedArray(typedArray, unordered).
-    let ta_record = validate_typed_array(
-        agent,
-        typed_array,
-        ecmascript_atomics::Ordering::Unordered,
-        gc,
-    )?;
+    let ta_record = validate_typed_array(agent, typed_array, Ordering::Unordered, gc)?;
     // 2. NOTE: Bounds checking is not a synchronizing operation when
     //    typedArray's backing buffer is a growable SharedArrayBuffer.
     // 3. If waitable is true, then
@@ -985,11 +975,8 @@ fn revalidate_atomic_access<'gc>(
     gc: NoGcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     // 1. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(typedArray, unordered).
-    let ta_record = make_typed_array_with_buffer_witness_record(
-        agent,
-        typed_array,
-        ecmascript_atomics::Ordering::Unordered,
-    );
+    let ta_record =
+        make_typed_array_with_buffer_witness_record(agent, typed_array, Ordering::Unordered);
     // 2. NOTE: Bounds checking is not a synchronizing operation when
     //    typedArray's backing buffer is a growable SharedArrayBuffer.
     // 3. If IsTypedArrayOutOfBounds(taRecord) is true,
