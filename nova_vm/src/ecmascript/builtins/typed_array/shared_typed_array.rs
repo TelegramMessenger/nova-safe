@@ -2008,7 +2008,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
             .iter()
             .map(|&item| T::into_storage(item))
             .collect::<Vec<T::Storage>>();
-        slice.copy_from_slice(&items);
+        slice.slice_to(len).copy_from_slice(&items);
         Ok(())
     }
 
