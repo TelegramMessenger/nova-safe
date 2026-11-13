@@ -7,7 +7,7 @@ use core::{
     marker::PhantomData,
 };
 
-use ecmascript_atomics::Ordering;
+use crate::ecmascript::Ordering;
 
 #[cfg(feature = "proposal-float16array")]
 use crate::ecmascript::FLOAT_16_ARRAY_DISCRIMINANT;

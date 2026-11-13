@@ -790,7 +790,7 @@ impl<'a> TypedArrayAbstractOperations<'a> for AnyTypedArray<'a> {
     fn get_cached_buffer_byte_length(
         self,
         agent: &Agent,
-        order: ecmascript_atomics::Ordering,
+        order: crate::ecmascript::Ordering,
     ) -> CachedBufferByteLength {
         any_typed_array_delegate!(self, get_cached_buffer_byte_length, agent, order)
     }

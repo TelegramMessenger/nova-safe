@@ -7,25 +7,23 @@
 #[cfg(feature = "shared-array-buffer")]
 use std::{
     collections::hash_map::Entry,
-    hint::assert_unchecked,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, WaitTimeoutResult,
-        atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering},
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, WaitTimeoutResult,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering as RustOrdering},
     },
     time::Duration,
 };
 
 use core::ops::{Deref, DerefMut};
-#[cfg(feature = "shared-array-buffer")]
-use core::ptr::NonNull;
-#[cfg(feature = "shared-array-buffer")]
-use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::ops::{BitAnd, BitOr, BitXor};
 
-use ecmascript_atomics::RacyStorage;
-#[cfg(feature = "shared-array-buffer")]
-use ecmascript_atomics::{Ordering as ECMAScriptOrdering, RacyPtr, RacySlice};
 use num_bigint::Sign;
+
+#[cfg_attr(not(feature = "shared-array-buffer"), allow(dead_code))]
+mod shared_memory;
+pub use shared_memory::Ordering;
+#[cfg(feature = "shared-array-buffer")]
+pub(crate) use shared_memory::SharedSlice;
 
 use crate::{
     ecmascript::{
@@ -348,15 +346,14 @@ impl WaiterRecord {
     }
 
     pub(crate) fn notify_waiters(self: Arc<Self>) {
-        self.notified
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.notified.store(true, RustOrdering::Relaxed);
         self.condvar.notify_all();
     }
 
     pub(crate) fn wait<'a, T>(self: &Arc<Self>, guard: MutexGuard<'a, T>) {
         let lock_result = self
             .condvar
-            .wait_while(guard, |_| !self.notified.load(Ordering::Relaxed));
+            .wait_while(guard, |_| !self.notified.load(RustOrdering::Relaxed));
 
         match lock_result {
             Ok(_) => (),
@@ -373,7 +370,7 @@ impl WaiterRecord {
     ) -> (MutexGuard<'a, T>, WaitTimeoutResult) {
         let lock_result = self
             .condvar
-            .wait_timeout_while(guard, dur, |_| !self.notified.load(Ordering::Relaxed));
+            .wait_timeout_while(guard, dur, |_| !self.notified.load(RustOrdering::Relaxed));
 
         match lock_result {
             Ok(result) => result,
@@ -384,15 +381,15 @@ impl WaiterRecord {
     }
 
     pub(crate) fn is_notified(&self) -> bool {
-        self.notified.load(Ordering::Relaxed)
+        self.notified.load(RustOrdering::Relaxed)
     }
 
     pub(crate) fn set_result(&self, result: WaitResult) {
-        self.result.store(result as u8, Ordering::Relaxed);
+        self.result.store(result as u8, RustOrdering::Relaxed);
     }
 
     pub(crate) fn get_result(&self) -> Option<WaitResult> {
-        match self.result.load(Ordering::Relaxed) {
+        match self.result.load(RustOrdering::Relaxed) {
             0 => Some(WaitResult::Ok),
             1 => Some(WaitResult::TimedOut),
             _ => None,
@@ -489,70 +486,51 @@ impl WaiterLists {
 /// Block value is created with a fixed number of bytes that each have the
 /// initial value 0.
 ///
-/// The `ptr` points to a continuous buffer of bytes, the length of which is
-/// determined by the capacity. Before the buffer of bytes, a usize is allocated
-/// that is used for reference counting.
-///
-/// ## Buffer memory layout
-///
-/// For statically sized SharedDataBlocks, the buffer memory layout is the
-/// following:
-///
-/// ```rust,ignore
-/// #[repr(C)]
-/// struct StaticSharedDataBuffer<const N: usize> {
-///   waiters: AtomicPtr<SharedWaiterMap>,
-///   rc: AtomicUsize,
-///   bytes: [RacyU8; N],
-/// }
-/// ```
-///
-/// and for growable SharedDataBlocks, the layout is:
-/// ```rust,ignore
-/// #[repr(C)]
-/// struct GrowableSharedDataBuffer<const N: usize> {
-///   byte_length: AtomicUsize,
-///   waiters: AtomicPtr<SharedWaiterMap>,
-///   rc: AtomicUsize,
-///   bytes: [RacyU8; N],
-/// }
-/// ```
-///
-/// The `ptr` field points to the start of the `bytes`.
-///
-/// The `waiters` pointer is initially null. It is lazily initialized via
-/// a compare-and-swap the first time any thread calls `Atomics.wait` or
-/// `Atomics.waitAsync` on this block. Its lifetime is managed by the
-/// buffer's existing reference count.
-///
-/// Note that the "viewed" byte length of the buffer is defined inside the
-/// buffer when the SharedDataBlock is growable.
+/// The bytes live in a reference counted allocation of atomic words shared by
+/// every clone of the block, together with the byte length of a growable block
+/// and the lazily created waiter lists of `Atomics.wait` and
+/// `Atomics.waitAsync`. A growable block allocates its maximum byte length up
+/// front, so growing it only raises the shared byte length and every agent
+/// sharing the block sees the growth. A block with a maximum byte length of
+/// zero has no allocation.
 ///
 /// ## Memory model
 ///
 /// The [ECMAScript memory model](https://tc39.es/ecma262/#sec-memory-model) is
 /// sequentially consistent when the program as no data races, but data races
-/// are allowed by the model. This makes the model strictly weaker than the Rust
-/// memory model, which decrees all data races to be undefined behaviour. Thus,
-/// it is not possible to access the backing bytes of a [`SharedDataBlock`]
-/// from Rust under any circumstances.
-///
-/// [`SharedDataBlock`]: SharedDataBlock
+/// are allowed by the model. Rust decrees data races on plain memory to be
+/// undefined behaviour, so the bytes are only ever accessed through atomic
+/// operations on their words; see [`SharedSlice`].
 #[must_use]
-#[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(Clone)]
 #[cfg(feature = "shared-array-buffer")]
 pub struct SharedDataBlock {
-    ptr: RacyPtr<u8>,
+    inner: Option<Arc<SharedDataBlockInner>>,
     max_byte_length: SharedDataBlockMaxByteLength,
 }
 
-// SAFETY: Atomic RC.
 #[cfg(feature = "shared-array-buffer")]
-unsafe impl Send for SharedDataBlock {}
-// SAFETY: Atomic RC.
+struct SharedDataBlockInner {
+    words: Box<[AtomicU64]>,
+    /// The current byte length of a growable block.
+    byte_length: AtomicUsize,
+    waiters: OnceLock<Mutex<WaiterLists>>,
+}
+
 #[cfg(feature = "shared-array-buffer")]
-unsafe impl Sync for SharedDataBlock {}
+impl PartialEq for SharedDataBlock {
+    fn eq(&self, other: &Self) -> bool {
+        self.max_byte_length == other.max_byte_length
+            && match (&self.inner, &other.inner) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+#[cfg(feature = "shared-array-buffer")]
+impl Eq for SharedDataBlock {}
 
 #[cfg(feature = "shared-array-buffer")]
 impl core::default::Default for SharedDataBlock {
@@ -562,113 +540,14 @@ impl core::default::Default for SharedDataBlock {
 }
 
 #[cfg(feature = "shared-array-buffer")]
-impl Clone for SharedDataBlock {
-    fn clone(&self) -> Self {
-        if !self.is_dangling() {
-            // Dangling blocks do not increment any RC.
-            // SAFETY: not dangling.
-            let rc = unsafe { self.get_rc() };
-            rc.fetch_add(1, Ordering::Relaxed);
-        }
-        Self {
-            ptr: self.ptr,
-            max_byte_length: self.max_byte_length,
-        }
-    }
-}
-
-#[cfg(feature = "shared-array-buffer")]
-impl Drop for SharedDataBlock {
-    fn drop(&mut self) {
-        use ecmascript_atomics::RacyMemory;
-
-        if self.is_dangling() {
-            // dangling shared data block; don't dealloc.
-            return;
-        }
-        let growable = self.is_growable();
-        // SAFETY: SharedDataBlock guarantees we have waiters_ptr and rc
-        // allocated before the bytes. rc is 1 slot before ptr.
-        let rc_ptr = unsafe { self.ptr.as_ptr().cast::<AtomicUsize>().sub(1) };
-        {
-            // SAFETY: the RC is definitely still allocated, as we haven't
-            // subtracted ourselves from it yet.
-            let rc = unsafe { rc_ptr.as_ref() };
-            // Make a guess: we're the only holder.
-            let mut value = 1;
-            let mut new_value = 0;
-            // loop over the exchange; if we fail to update, take the previous
-            // value and try to subtract one.
-            while let Err(previous_value) =
-                rc.compare_exchange_weak(value, new_value, Ordering::Relaxed, Ordering::Relaxed)
-            {
-                value = previous_value;
-                let Some(value) = value.checked_sub(1) else {
-                    // someone else dropped the value.
-                    return;
-                };
-                new_value = value;
-            }
-            if new_value > 0 {
-                // We were not the last item; do not deallocate the buffer.
-                return;
-            }
-        }
-
-        // We are the last holder. Drop the waiter map if it was initialized.
-        // SAFETY: non-dangling, and we're the sole owner now.
-        let waiters_ptr = unsafe { self.get_waiters_ptr() };
-        let waiters = waiters_ptr.load(Ordering::Acquire);
-        if !waiters.is_null() {
-            // SAFETY: the pointer was allocated via Box::into_raw in
-            // get_or_init_waiters, and we are the last holder.
-            let _ = unsafe { Box::from_raw(waiters) };
-        }
-
-        let max_byte_length = self.max_byte_length();
-        let (size, base_ptr) = if growable {
-            // SAFETY: layout guaranteed by type
-            unsafe {
-                (
-                    max_byte_length.unchecked_add(core::mem::size_of::<(
-                        AtomicUsize,
-                        AtomicUsize,
-                        AtomicUsize,
-                    )>()),
-                    rc_ptr.sub(2),
-                )
-            }
-        } else {
-            unsafe {
-                (
-                    max_byte_length
-                        .unchecked_add(core::mem::size_of::<(AtomicUsize, AtomicUsize)>()),
-                    rc_ptr.sub(1),
-                )
-            }
-        };
-        let memory = RacyMemory::from_raw_parts(self.ptr, max_byte_length);
-        // SAFETY: As per the CAS loop on the reference count, we are the only
-        // referrer to the racy memory. We can thus deallocate the ECMAScript
-        // memory; this effectively grows our Rust memory from being just the
-        // Waiters pointer, RC, and possible byte length value, into also
-        // containing the byte data.
-        let _ = unsafe { memory.exit() };
-        // SAFETY: layout guaranteed by type.
-        let layout = unsafe { Layout::from_size_align_unchecked(size, 8) };
-        unsafe { dealloc(base_ptr.cast::<u8>().as_ptr(), layout) }
-    }
-}
-
-#[cfg(feature = "shared-array-buffer")]
 impl SharedDataBlock {
     const DANGLING_STATIC_SHARED_DATA_BLOCK: Self = Self {
-        ptr: RacyPtr::dangling(),
+        inner: None,
         max_byte_length: SharedDataBlockMaxByteLength(0),
     };
 
     const DANGLING_GROWABLE_SHARED_DATA_BLOCK: Self = Self {
-        ptr: RacyPtr::dangling(),
+        inner: None,
         max_byte_length: SharedDataBlockMaxByteLength(1usize.rotate_right(1)),
     };
 
@@ -689,85 +568,25 @@ impl SharedDataBlock {
                 Some(Self::DANGLING_STATIC_SHARED_DATA_BLOCK)
             }
         } else {
-            // Note: if we start supporting 32-bit environments which do not
-            // have 64-bit atomics, then we need to allocate a lock word to the
-            // beginning as well.
-
-            use ecmascript_atomics::RacyMemory;
-            let alloc_size = if growable {
-                // Growable SharedArrayBuffer
-                size.checked_add(core::mem::size_of::<(AtomicUsize, AtomicUsize, AtomicUsize)>())?
-            } else {
-                // Static SharedArrayBuffer
-                size.checked_add(core::mem::size_of::<(AtomicUsize, AtomicUsize)>())?
-            };
-            let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
-                return None;
-            };
-            // SAFETY: Size of allocation is non-zero.
-            let base_ptr = unsafe { alloc_zeroed(layout) };
-            let base_ptr = NonNull::new(base_ptr)?.cast::<usize>();
-            unsafe { assert_unchecked(base_ptr.is_aligned()) };
-            let rc_ptr = if growable {
-                // Growable SharedArrayBuffer; write the byte length here.
-                // SAFETY: properly allocated, everything is fine.
-                unsafe { base_ptr.write(byte_length) };
-                // SAFETY: allocation size is
-                // (AtomicUsize, AtomicUsize, AtomicUsize, [AtomicU8; max_byte_length])
-                // Skip byte_length and waiters to reach rc.
-                unsafe { base_ptr.add(2) }
-            } else {
-                // Skip waiters to reach rc.
-                unsafe { base_ptr.add(1) }
-            };
-            {
-                // SAFETY: we're the only owner of this data.
-                unsafe { rc_ptr.write(1) };
-            }
-
-            // SAFETY: ptr is past waiters_ptr and rc
-            let ptr = unsafe { rc_ptr.add(1) };
-            // SAFETY: ptr does point to size bytes of readable and writable
-            // Rust memory. After this call, that memory is deallocated and we
-            // receive a new RacyMemory in its stead. Reads and writes through
-            // it are undefined behaviour. Note though that we still have the
-            // Waiters pointer, RC, and possible length values before the
-            // pointer; those are in normal Rust memory.
-            let ptr = unsafe { RacyMemory::<u8>::enter(ptr.cast(), size) };
+            let words = shared_memory::allocate_words(size)?;
             Some(Self {
-                ptr: ptr.as_slice().into_raw_parts().0,
+                inner: Some(Arc::new(SharedDataBlockInner {
+                    words,
+                    byte_length: AtomicUsize::new(byte_length),
+                    waiters: OnceLock::new(),
+                })),
                 max_byte_length: SharedDataBlockMaxByteLength::new(size, growable),
             })
         }
     }
 
-    /// Get a racy memory slice from the SharedDataBlock.
-    pub(crate) fn as_racy_slice(&self) -> RacySlice<'_, u8> {
-        // SAFETY: Type guarantees that ptr is backed by at least byte_length
-        // racy bytes.
-        unsafe {
-            RacySlice::from_raw_parts(self.ptr, self.byte_length(ECMAScriptOrdering::Unordered))
-        }
-    }
-
-    /// Get a reference to the atomic reference counter.
-    ///
-    /// ## Safety
-    ///
-    /// Must not be a dangling SharedDataBlock.
-    unsafe fn get_rc(&self) -> &AtomicUsize {
-        // SAFETY: type guarantees layout; rc is 1 slot before ptr.
-        unsafe { self.ptr.as_ptr().cast::<AtomicUsize>().sub(1).as_ref() }
-    }
-
-    /// Get a reference to the atomic byte length.
-    ///
-    /// ## Safety
-    ///
-    /// Must be a growable, non-dangling SharedDataBlock.
-    unsafe fn get_byte_length(&self) -> &AtomicUsize {
-        // SAFETY: caller guarantees growable; type guarantees layout.
-        unsafe { self.ptr.as_ptr().cast::<AtomicUsize>().sub(3).as_ref() }
+    /// Get a racy memory slice of the bytes of the SharedDataBlock.
+    pub(crate) fn as_racy_slice(&self) -> SharedSlice<'_, u8> {
+        let words = self
+            .inner
+            .as_ref()
+            .map_or(&[][..], |inner| &inner.words[..]);
+        SharedSlice::from_words(words, self.byte_length(Ordering::Unordered))
     }
 
     /// Returns the byte length of the SharedArrayBuffer.
@@ -776,19 +595,14 @@ impl SharedDataBlock {
     /// can be grown from other threads and reading it is a sequentially
     /// consistent atomic operation.
     #[inline(always)]
-    pub(crate) fn byte_length(&self, order: ECMAScriptOrdering) -> usize {
-        if self.is_dangling() {
+    pub(crate) fn byte_length(&self, order: Ordering) -> usize {
+        let Some(inner) = &self.inner else {
             return 0;
-        }
+        };
         if self.is_growable() {
-            // Need to read the byte length atomically.
-            // SAFETY: This is non-dangling growable SharedDataBlock, so the
-            // pointer points to the racy memory of
-            // `(AtomicUsize, AtomicUsize, ...racy memory...)`
-            let byte_length = unsafe { self.get_byte_length() };
-            byte_length.load(match order {
-                ECMAScriptOrdering::Unordered => Ordering::Relaxed,
-                ECMAScriptOrdering::SeqCst => Ordering::SeqCst,
+            inner.byte_length.load(match order {
+                Ordering::Unordered => std::sync::atomic::Ordering::Relaxed,
+                Ordering::SeqCst => std::sync::atomic::Ordering::SeqCst,
             })
         } else {
             self.max_byte_length()
@@ -814,64 +628,17 @@ impl SharedDataBlock {
         self.max_byte_length.is_growable()
     }
 
-    /// Get a reference to the atomic waiters pointer.
-    ///
-    /// ## Safety
-    ///
-    /// Must not be a dangling SharedDataBlock.
-    unsafe fn get_waiters_ptr(&self) -> &AtomicPtr<Mutex<WaiterLists>> {
-        // SAFETY: type guarantees layout; waiters_ptr is 2 slots before ptr.
-        unsafe {
-            self.ptr
-                .as_ptr()
-                .cast::<AtomicPtr<Mutex<WaiterLists>>>()
-                .sub(2)
-                .as_ref()
-        }
-    }
-
     /// Get or lazily initialize the shared waiter map for this data block.
-    ///
-    /// On first call, allocates a new `SharedWaiterMap` and attempts to
-    /// store it via compare-and-swap. If another thread wins the race,
-    /// the locally allocated map is dropped and the winner's map is used.
     ///
     /// ## Correctness
     ///
     /// Must not be a dangling SharedDataBlock, else this panics.
     pub(crate) fn get_or_init_waiters(&self) -> &Mutex<WaiterLists> {
-        assert!(!self.is_dangling());
-        // SAFETY: Checked to be non-dangling.
-        let waiters_atomic = unsafe { self.get_waiters_ptr() };
-        let current = waiters_atomic.load(Ordering::Acquire);
-        if !current.is_null() {
-            // SAFETY: non-null means it was previously initialized; the
-            // buffer RC keeps the allocation alive.
-            return unsafe { &*current };
-        }
-
-        let new_map = Box::into_raw(Box::default());
-        match waiters_atomic.compare_exchange(
-            core::ptr::null_mut(),
-            new_map,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {
-                // We won the race; our map is now the canonical one.
-                // SAFETY: we just stored it and the buffer RC keeps it alive.
-                unsafe { &*new_map }
-            }
-            Err(winner) => {
-                // Another thread already initialized the waiters pointer.
-                // Drop our allocation and use theirs.
-                // SAFETY: new_map was just allocated by us and never shared.
-                let _ = unsafe { Box::from_raw(new_map) };
-                // SAFETY: winner is the non-null pointer stored by the
-                // winning thread; the buffer RC keeps it alive.
-                unsafe { &*winner }
-            }
-        }
+        self.inner
+            .as_ref()
+            .expect("a dangling SharedDataBlock has no waiters")
+            .waiters
+            .get_or_init(Mutex::default)
     }
 
     /// Get the shared waiter map if it has been initialized.
@@ -880,37 +647,15 @@ impl SharedDataBlock {
     /// this block (i.e. no `Atomics.wait` / `Atomics.waitAsync` has occurred),
     /// or if the block is dangling.
     pub(crate) fn get_waiters(&self) -> Option<&Mutex<WaiterLists>> {
-        if self.is_dangling() {
-            return None;
-        }
-        // SAFETY: Checked to be non-dangling.
-        let waiters_atomic = unsafe { self.get_waiters_ptr() };
-        let current = waiters_atomic.load(Ordering::Acquire);
-        if current.is_null() {
-            None
-        } else {
-            // SAFETY: non-null means it was previously initialized; the
-            // buffer RC keeps the allocation alive.
-            Some(unsafe { &*current })
-        }
+        self.inner.as_ref()?.waiters.get()
     }
 
     /// Read a value at the given aligned offset and with the given ordering.
     ///
     /// Returns `None` if the offset is not correctly aligned or the index is
     /// out of bounds.
-    ///
-    /// # Soundness
-    ///
-    /// There is no read in the Rust world: we use the racy atomic operations
-    /// of ecmascript_atomics, which tries its best to make sure we don't leak
-    /// the status of the memory to Rust. As such, this should be pretty okay.
     #[inline(always)]
-    pub(crate) fn load<T: Viewable>(
-        &self,
-        byte_offset: usize,
-        order: ECMAScriptOrdering,
-    ) -> Option<T> {
+    pub(crate) fn load<T: Viewable>(&self, byte_offset: usize, order: Ordering) -> Option<T> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
         slice
             .as_aligned::<T::Storage>()
@@ -921,12 +666,6 @@ impl SharedDataBlock {
     /// synchronisation. This read may tear.
     ///
     /// Returns `None` if the index is out of bounds.
-    ///
-    /// # Soundness
-    ///
-    /// There is no read in the Rust world: we use the racy atomic operations
-    /// of ecmascript_atomics, which tries its best to make sure we don't leak
-    /// the status of the memory to Rust. As such, this should be pretty okay.
     #[inline(always)]
     pub(crate) fn load_unaligned<T: Viewable>(&self, byte_offset: usize) -> Option<T> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
@@ -937,15 +676,11 @@ impl SharedDataBlock {
     ///
     /// Returns `None` if the offset is not correctly aligned or the index is
     /// out of bounds.
-    ///
-    /// # Soundness
-    ///
-    /// There is no write in the Rust world: this should be pretty okay.
     pub(crate) fn store<T: Viewable>(
         &self,
         byte_offset: usize,
         val: T,
-        order: ECMAScriptOrdering,
+        order: Ordering,
     ) -> Option<()> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
         slice
@@ -957,10 +692,6 @@ impl SharedDataBlock {
     /// synchronisation. This write may tear.
     ///
     /// Returns `None` if the index is out of bounds.
-    ///
-    /// # Soundness
-    ///
-    /// There is no write in the Rust world: this should be pretty okay.
     pub(crate) fn store_unaligned<T: Viewable>(&self, byte_offset: usize, val: T) -> Option<()> {
         let slice = self.as_racy_slice().slice_from(byte_offset);
         slice.store_unaligned::<T::Storage>(T::into_storage(val))
@@ -976,14 +707,17 @@ impl SharedDataBlock {
     /// Must be a growable, non-dangling SharedDataBlock with a maximum byte
     /// length greater or equal to `new_byte_length`, else this panics.
     pub(crate) fn grow(&self, new_byte_length: usize) -> bool {
+        use std::sync::atomic::Ordering as RustOrdering;
         assert!(self.is_growable());
-        assert!(!self.is_dangling());
         assert!(new_byte_length <= self.max_byte_length());
-        // SAFETY: Checked to be a growable, non-dangling SharedDataBlock.
-        let byte_length = unsafe { self.get_byte_length() };
+        let byte_length = &self
+            .inner
+            .as_ref()
+            .expect("a dangling SharedDataBlock cannot grow")
+            .byte_length;
         // 9. Let currentByteLengthRawBytes be
         //    GetRawBytesFromSharedBlock(byteLengthBlock, 0, biguint64, true, seq-cst).
-        let mut current_byte_length = byte_length.load(Ordering::SeqCst);
+        let mut current_byte_length = byte_length.load(RustOrdering::SeqCst);
         loop {
             // c. If newByteLength = currentByteLength,
             if new_byte_length == current_byte_length {
@@ -1002,8 +736,8 @@ impl SharedDataBlock {
             let Err(read_byte_length) = byte_length.compare_exchange(
                 current_byte_length,
                 new_byte_length,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
+                RustOrdering::SeqCst,
+                RustOrdering::SeqCst,
             ) else {
                 // i. If ByteListEqual(readByteLengthRawBytes,
                 //    currentByteLengthRawBytes) is true, return undefined.
@@ -1011,6 +745,14 @@ impl SharedDataBlock {
             };
             // j. Set currentByteLengthRawBytes to readByteLengthRawBytes.
             current_byte_length = read_byte_length
+        }
+    }
+
+    /// Returns true if both blocks share the same bytes.
+    fn shares_bytes_with(&self, other: &Self) -> bool {
+        match (&self.inner, &other.inner) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
         }
     }
 }
@@ -1151,14 +893,7 @@ pub(crate) fn copy_shared_data_block_bytes(
     count: usize,
 ) {
     // 1. Assert: fromBlock and toBlock are distinct values.
-    debug_assert!(unsafe {
-        to_block.ptr.as_ptr().byte_add(to_block.max_byte_length()) <= from_block.ptr.as_ptr()
-            || from_block
-                .ptr
-                .as_ptr()
-                .byte_add(from_block.max_byte_length())
-                <= to_block.ptr.as_ptr()
-    });
+    debug_assert!(!to_block.shares_bytes_with(from_block));
     // 2. Let fromSize be the number of bytes in fromBlock.
     let from_size = from_block.max_byte_length();
     // 3. Assert: fromIndex + count ≤ fromSize.
@@ -1180,11 +915,8 @@ pub(crate) fn copy_shared_data_block_bytes(
     //     1. Append WriteSharedMemory { [[Order]]: UNORDERED, [[NoTear]]: true, [[Block]]: toBlock, [[ByteIndex]]: toIndex, [[ElementSize]]: 1, [[Payload]]: bytes } to eventsRecord.[[EventList]].
     // ix. Else,
     //     1. Set toBlock[toIndex] to bytes[0].
-    // Note: this can very well cause data races! That is language level UB in
-    // Rust, so this is very much undefined behaviour _if_ the JavaScript code
-    // causes a data race. The ECMAScript specification helpfully "recommends
-    // programs be kept data races free". We'll trust that, I guess!?
-    // SAFETY: Pointers have been checked to not overlap.
+    // Note: the copy reads and writes the bytes with atomic word operations,
+    // so data races caused by the JavaScript code are well defined.
     to_block
         .as_racy_slice()
         .slice(to_index, to_index + count)
@@ -1231,7 +963,7 @@ mod private {
 
 /// Conversion of a Viewable storage type from and to its bytes in native
 /// byte order.
-pub(crate) trait StorageBytes: Copy {
+pub(crate) trait StorageBytes: Copy + PartialEq {
     /// Read the value from exactly `size_of::<Self>()` bytes.
     ///
     /// Panics if `bytes` has a different length.
@@ -1241,6 +973,15 @@ pub(crate) trait StorageBytes: Copy {
     ///
     /// Panics if `bytes` has a different length.
     fn write_ne(self, bytes: &mut [u8]);
+
+    /// Size of the value in bytes.
+    const SIZE: usize;
+
+    /// The value zero-extended to 64 bits.
+    fn into_u64(self) -> u64;
+
+    /// The low `size_of::<Self>()` bytes of `bits`.
+    fn from_u64(bits: u64) -> Self;
 }
 
 macro_rules! storage_bytes {
@@ -1260,6 +1001,18 @@ macro_rules! storage_bytes {
                 fn write_ne(self, bytes: &mut [u8]) {
                     bytes.copy_from_slice(&self.to_ne_bytes());
                 }
+
+                const SIZE: usize = core::mem::size_of::<$t>();
+
+                #[inline(always)]
+                fn into_u64(self) -> u64 {
+                    self as u64
+                }
+
+                #[inline(always)]
+                fn from_u64(bits: u64) -> Self {
+                    bits as $t
+                }
             }
         )*
     };
@@ -1272,7 +1025,7 @@ pub(crate) trait Viewable:
 {
     /// Type of the data in its storage format. This is used with
     /// SharedDataBlock.
-    type Storage: RacyStorage + StorageBytes;
+    type Storage: StorageBytes;
 
     /// Read a value in native byte order from exactly `size_of::<Self>()`
     /// bytes.

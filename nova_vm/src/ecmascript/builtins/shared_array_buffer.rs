@@ -6,12 +6,11 @@ mod data;
 
 pub(crate) use data::*;
 
-use ecmascript_atomics::{Ordering, RacySlice};
-
 use crate::{
     ecmascript::{
-        Agent, ExceptionType, InternalMethods, InternalSlots, JsResult, OrdinaryObject,
-        ProtoIntrinsics, SharedDataBlock, array_buffer_handle, create_shared_byte_data_block,
+        Agent, ExceptionType, InternalMethods, InternalSlots, JsResult, Ordering, OrdinaryObject,
+        ProtoIntrinsics, SharedDataBlock, SharedSlice, array_buffer_handle,
+        create_shared_byte_data_block,
     },
     engine::{Bindable, NoGcScope},
     heap::{
@@ -56,7 +55,7 @@ impl<'sab> SharedArrayBuffer<'sab> {
             .bind(gc))
     }
 
-    pub(crate) fn as_slice(self, agent: &Agent) -> RacySlice<'_, u8> {
+    pub(crate) fn as_slice(self, agent: &Agent) -> SharedSlice<'_, u8> {
         self.get_data_block(agent).as_racy_slice()
     }
 
