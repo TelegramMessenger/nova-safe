@@ -67,3 +67,8 @@ fn string_search_positions() {
 fn string_replace_string_pattern() {
     run_test_source("stringReplaceStringPattern.test.js");
 }
+
+#[test]
+fn regexp_named_groups() {
+    run_test_source("regExpNamedGroups.test.js");
+}

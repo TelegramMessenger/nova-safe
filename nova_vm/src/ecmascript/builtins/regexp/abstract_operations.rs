@@ -646,6 +646,14 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     // 19. Assert: n < 2**32 - 1.
     debug_assert!(n < 2usize.pow(32) - 1);
     let has_group_name = matcher.capture_names().any(|n| n.is_some());
+    let group_names: Vec<Option<std::string::String>> = if has_group_name {
+        matcher
+            .capture_names()
+            .map(|name| name.map(str::to_owned))
+            .collect()
+    } else {
+        Vec::new()
+    };
     // 20. Let A be ! ArrayCreate(n + 1).
     // Note: we use n because it already contains the full-match group in it.
     let a = array_create(agent, n, n, None, gc).unwrap();
@@ -744,6 +752,19 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         //                 4. Append s to groupNames.
         // f. Else,
         //         i. Append undefined to groupNames.
+        // NOTE: The matcher rejects duplicate group names, so step ii never
+        // applies.
+        if let (Some(groups), Some(Some(name))) = (groups, group_names.get(i)) {
+            let name = String::from_str(agent, name, gc).to_property_key();
+            unwrap_try(try_create_data_property_or_throw(
+                agent,
+                groups,
+                name,
+                captured_value,
+                None,
+                gc,
+            ));
+        }
     }
     // 35. If hasIndices is true, then
     //         a. Let indicesArray be MakeMatchIndicesIndexPairArray(S, indices, groupNames, hasGroups).
