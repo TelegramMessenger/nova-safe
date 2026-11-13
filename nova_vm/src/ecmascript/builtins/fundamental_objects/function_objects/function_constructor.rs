@@ -304,6 +304,7 @@ pub(crate) fn create_dynamic_function<'a>(
                 .bind(gc.nogc()),
         ),
         private_env: None,
+        compiled_bytecode: None,
     };
     let f = ordinary_function_create(agent, params, gc.nogc()).unbind();
     let gc = gc.into_nogc();

@@ -81,10 +81,31 @@ impl HeapMarkAndSweep for FunctionExpression<'static> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ArrowFunctionExpression {
+#[derive(Debug, Clone, Bindable)]
+pub(crate) struct ArrowFunctionExpression<'a> {
     pub(crate) expression: SendableRef<ast::ArrowFunctionExpression<'static>>,
     pub(crate) identifier: Option<NamedEvaluationParameter>,
+    pub(crate) compiled_bytecode: Option<Executable<'a>>,
+}
+
+impl HeapMarkAndSweep for ArrowFunctionExpression<'static> {
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        let Self {
+            expression: _,
+            identifier: _,
+            compiled_bytecode,
+        } = self;
+        compiled_bytecode.mark_values(queues);
+    }
+
+    fn sweep_values(&mut self, compactions: &CompactionLists) {
+        let Self {
+            expression: _,
+            identifier: _,
+            compiled_bytecode,
+        } = self;
+        compiled_bytecode.sweep_values(compactions);
+    }
 }
 
 /// Reference to a heap-allocated executable VM bytecode.
@@ -115,7 +136,7 @@ pub(crate) struct ExecutableHeapData<'a> {
     pub(crate) constants: Box<[Value<'a>]>,
     pub(crate) shapes: Box<[ObjectShape<'a>]>,
     pub(crate) function_expressions: Box<[FunctionExpression<'a>]>,
-    pub(crate) arrow_function_expressions: Box<[ArrowFunctionExpression]>,
+    pub(crate) arrow_function_expressions: Box<[ArrowFunctionExpression<'a>]>,
     pub(crate) class_initializer_bytecodes: Box<[(Option<Executable<'a>>, bool)]>,
 }
 
@@ -132,7 +153,9 @@ impl<'gc> Executable<'gc> {
         }
         let source_code = script.get_source_code(agent, gc);
         let body = script.get_statements(agent, gc);
+        let is_strict = script.get(agent).is_strict;
         let mut ctx = CompileContext::new(agent, source_code, gc);
+        ctx.set_runtime_strict(is_strict);
 
         ctx.compile_statements(body);
         ctx.do_implicit_return();
@@ -152,6 +175,7 @@ impl<'gc> Executable<'gc> {
         let source_code = module.get_source_code(agent, gc);
         let body = module.get_statements(agent, gc);
         let mut ctx = CompileContext::new(agent, source_code, gc);
+        ctx.set_runtime_strict(true);
 
         ctx.compile_statements(body);
         ctx.do_implicit_return();
@@ -160,10 +184,11 @@ impl<'gc> Executable<'gc> {
 
     pub(crate) fn compile_function_body(
         agent: &mut Agent,
-        data: CompileFunctionBodyData<'gc>,
+        data: CompileFunctionBodyData<'_, 'gc>,
         gc: NoGcScope<'gc, '_>,
     ) -> Self {
         let mut ctx = CompileContext::new(agent, data.source_code, gc);
+        ctx.set_runtime_strict(data.is_strict);
         if data.ast.is_generator() {
             ctx.set_generator_kind(if data.ast.is_async() {
                 GeneratorKind::Async
@@ -187,6 +212,7 @@ impl<'gc> Executable<'gc> {
         agent: &mut Agent,
         body: &[ast::Statement],
         source_code: SourceCode<'gc>,
+        is_strict: bool,
         gc: NoGcScope<'gc, '_>,
     ) -> Self {
         if agent.options.print_internals {
@@ -195,6 +221,7 @@ impl<'gc> Executable<'gc> {
             eprintln!();
         }
         let mut ctx = CompileContext::new(agent, source_code, gc);
+        ctx.set_runtime_strict(is_strict);
 
         ctx.compile_statements(body);
         ctx.do_implicit_return();
@@ -293,10 +320,8 @@ impl<'gc> Executable<'gc> {
         self,
         agent: &'a Agent,
         index: usize,
-    ) -> &'a ArrowFunctionExpression
-    where
-        'gc: 'a,
-    {
+        _: NoGcScope<'gc, '_>,
+    ) -> &'a ArrowFunctionExpression<'gc> {
         &self.get(agent).arrow_function_expressions[index]
     }
 
@@ -395,13 +420,14 @@ impl Scoped<'_, Executable<'static>> {
     }
 
     #[inline]
-    pub(super) fn fetch_arrow_function_expression<'a>(
+    pub(super) fn fetch_arrow_function_expression<'a, 'gc>(
         &self,
         agent: &'a Agent,
         index: usize,
-    ) -> &'a ArrowFunctionExpression {
+        gc: NoGcScope<'gc, '_>,
+    ) -> &'a ArrowFunctionExpression<'gc> {
         self.get(agent)
-            .fetch_arrow_function_expression(agent, index)
+            .fetch_arrow_function_expression(agent, index, gc)
     }
 
     #[inline]
@@ -456,10 +482,11 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             constants,
             shapes,
             function_expressions,
-            arrow_function_expressions: _,
+            arrow_function_expressions,
             class_initializer_bytecodes,
         } = self;
         constants.mark_values(queues);
+        arrow_function_expressions.mark_values(queues);
         caches.mark_values(queues);
         shapes.mark_values(queues);
         function_expressions.mark_values(queues);
@@ -473,10 +500,11 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             constants,
             shapes,
             function_expressions,
-            arrow_function_expressions: _,
+            arrow_function_expressions,
             class_initializer_bytecodes,
         } = self;
         constants.sweep_values(compactions);
+        arrow_function_expressions.sweep_values(compactions);
         caches.sweep_values(compactions);
         shapes.sweep_values(compactions);
         function_expressions.sweep_values(compactions);

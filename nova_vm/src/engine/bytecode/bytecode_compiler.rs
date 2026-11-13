@@ -16,12 +16,13 @@ mod template_literals;
 mod with_statement;
 
 pub(crate) use compile_context::*;
+pub(crate) use executable_context::UNSUPPORTED_SYNTAX_IMMEDIATE;
 
 use std::{convert::Infallible, ops::ControlFlow};
 
 use super::{FunctionExpression, Instruction, SendableRef, executable::ArrowFunctionExpression};
 use crate::ecmascript::{
-    BUILTIN_STRING_MEMORY, BigInt, ContainsExpression, LexicallyScopedDeclaration,
+    BUILTIN_STRING_MEMORY, BigInt, ContainsExpression, FunctionAstRef, LexicallyScopedDeclaration,
     LexicallyScopedDeclarations, Number, String, Value,
 };
 #[cfg(feature = "typescript")]
@@ -1209,6 +1210,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // CompileContext holds a name identifier for us if this is NamedEvaluation.
         let identifier = ctx.name_identifier.take();
+        let compiled_bytecode = ctx.compile_nested_function(FunctionAstRef::from(self));
         ctx.add_arrow_function_expression(ArrowFunctionExpression {
             expression: SendableRef::new(unsafe {
                 core::mem::transmute::<
@@ -1217,6 +1219,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
                 >(self)
             }),
             identifier,
+            compiled_bytecode: Some(compiled_bytecode),
         });
     }
 }
@@ -1226,6 +1229,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Functi
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // CompileContext holds a name identifier for us if this is NamedEvaluation.
         let identifier = ctx.name_identifier.take();
+        let compiled_bytecode = ctx.compile_nested_function(FunctionAstRef::from(self));
         ctx.add_instruction_with_function_expression(
             Instruction::InstantiateOrdinaryFunctionExpression,
             FunctionExpression {
@@ -1235,7 +1239,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Functi
                     )
                 }),
                 identifier,
-                compiled_bytecode: None,
+                compiled_bytecode: Some(compiled_bytecode),
             },
         );
     }
@@ -1424,6 +1428,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                                 // Note: not load_copy_to_stack as this is
                                 // immediately consumed
                                 ctx.add_instruction(Instruction::Load);
+                                let compiled_bytecode = ctx
+                                    .compile_nested_function(FunctionAstRef::from(value.as_ref()));
                                 ctx.add_instruction_with_function_expression_and_immediate(
                                     Instruction::ObjectDefineMethod,
                                     FunctionExpression {
@@ -1434,7 +1440,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                                             >(value)
                                         }),
                                         identifier,
-                                        compiled_bytecode: None,
+                                        compiled_bytecode: Some(compiled_bytecode),
                                     },
                                     // enumerable: true,
                                     true.into(),
@@ -1466,6 +1472,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                             else {
                                 unreachable!()
                             };
+                            let compiled_bytecode = ctx.compile_nested_function(
+                                FunctionAstRef::from(function_expression.as_ref()),
+                            );
                             ctx.add_instruction_with_function_expression_and_immediate(
                                 if is_get {
                                     Instruction::ObjectDefineGetter
@@ -1482,7 +1491,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                                         )
                                     }),
                                     identifier: None,
-                                    compiled_bytecode: None,
+                                    compiled_bytecode: Some(compiled_bytecode),
                                 },
                                 // enumerable: true,
                                 true.into(),
@@ -2734,7 +2743,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Expres
             ast::Expression::UnaryExpression(x) => x.compile(ctx).map(Into::into),
             ast::Expression::UpdateExpression(x) => x.compile(ctx).map(Into::into),
             ast::Expression::YieldExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::V8IntrinsicExpression(_) => todo!(),
+            ast::Expression::V8IntrinsicExpression(_) => {
+                ctx.mark_unsupported("V8 intrinsic expressions are not supported");
+                Ok(ValueOutput::Value.into())
+            }
             #[cfg(feature = "typescript")]
             ast::Expression::TSAsExpression(x) => x.expression.compile(ctx),
             #[cfg(feature = "typescript")]
@@ -3667,8 +3679,12 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Variab
                     // 6. Return empty.
                 }
             }
-            ast::VariableDeclarationKind::Using => todo!(),
-            ast::VariableDeclarationKind::AwaitUsing => todo!(),
+            ast::VariableDeclarationKind::Using => {
+                ctx.mark_unsupported("using declarations are not supported");
+            }
+            ast::VariableDeclarationKind::AwaitUsing => {
+                ctx.mark_unsupported("await using declarations are not supported");
+            }
         }
         Ok(())
     }

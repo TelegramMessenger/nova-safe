@@ -288,6 +288,9 @@ pub(crate) struct OrdinaryFunctionCreateParams<'ast, 'gc> {
     pub(crate) lexical_this: bool,
     pub(crate) env: Environment<'gc>,
     pub(crate) private_env: Option<PrivateEnvironment<'gc>>,
+    /// The function's body, if it was compiled together with the code that
+    /// defines it.
+    pub(crate) compiled_bytecode: Option<Executable<'gc>>,
 }
 
 impl<'a> ECMAScriptFunction<'a> {
@@ -887,7 +890,7 @@ pub(crate) fn ordinary_function_create<'gc>(
         object_index: None,
         length: 0,
         ecmascript_function,
-        compiled_bytecode: None,
+        compiled_bytecode: params.compiled_bytecode.unbind(),
         name: None,
     };
     if let Some(function_prototype) = params.function_prototype

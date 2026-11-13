@@ -97,6 +97,13 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     ///
     /// This affects generator yield and return behaviour.
     generator_kind: Option<GeneratorKind>,
+    /// Whether the running execution context is strict while this code runs:
+    /// the \[\[Strict]] of the function, script or eval being compiled. Nested
+    /// functions created by this code inherit it.
+    runtime_strict: bool,
+    /// Set when the code uses syntax the compiler does not support; the
+    /// finished executable then panics when run.
+    unsupported: Option<&'static str>,
 }
 
 impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> {
@@ -115,7 +122,57 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             control_flow_stack: Vec::new(),
             stack_variables: Vec::new(),
             generator_kind: None,
+            runtime_strict: false,
+            unsupported: None,
         }
+    }
+
+    /// Set the strictness of the running execution context while this code
+    /// runs.
+    pub(crate) fn set_runtime_strict(&mut self, strict: bool) {
+        self.runtime_strict = strict;
+    }
+
+    /// Returns the strictness of the running execution context while this
+    /// code runs.
+    pub(crate) fn is_runtime_strict(&self) -> bool {
+        self.runtime_strict
+    }
+
+    /// Mark the code as using unsupported syntax: the executable is replaced
+    /// with one that panics when run.
+    pub(crate) fn mark_unsupported(&mut self, message: &'static str) {
+        if self.unsupported.is_none() {
+            self.unsupported = Some(message);
+        }
+    }
+
+    /// Compile a function defined in this code into its own executable.
+    ///
+    /// The function's \[\[Strict]] is the strictness of the code creating it or
+    /// its own "use strict" directive, as OrdinaryFunctionCreate computes it.
+    pub(crate) fn compile_nested_function(
+        &mut self,
+        ast: crate::ecmascript::FunctionAstRef<'script>,
+    ) -> Executable<'gc> {
+        let is_strict = self.runtime_strict || ast.ecmascript_code().has_use_strict_directive();
+        let is_lexical = matches!(
+            ast,
+            crate::ecmascript::FunctionAstRef::Arrow(_)
+                | crate::ecmascript::FunctionAstRef::AsyncArrow(_)
+        );
+        let source_code = self.source_code;
+        let (agent, gc) = self.get_agent_and_gc();
+        Executable::compile_function_body(
+            agent,
+            CompileFunctionBodyData {
+                ast,
+                source_code,
+                is_strict,
+                is_lexical,
+            },
+            gc,
+        )
     }
 
     /// Set the compile context to be a type of generator.
@@ -1009,7 +1066,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ///
     /// This is useful when the function body is part of a larger whole, namely
     /// with class constructors.
-    pub(crate) fn compile_function_body(&mut self, data: CompileFunctionBodyData<'script>) {
+    pub(crate) fn compile_function_body(&mut self, data: CompileFunctionBodyData<'script, '_>) {
         if self.executable.agent.options.print_internals {
             eprintln!();
             eprintln!("=== Compiling Function ===");
@@ -1068,6 +1125,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     }
 
     pub(crate) fn finish(self) -> Executable<'gc> {
+        if let Some(message) = self.unsupported {
+            return self.executable.finish_as_unsupported_stub(message);
+        }
         debug_assert!(
             self.control_flow_stack.is_empty(),
             "Control flow stack contained: {:?}",
@@ -1235,7 +1295,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
 
     pub(super) fn add_arrow_function_expression(
         &mut self,
-        arrow_function_expression: ArrowFunctionExpression,
+        arrow_function_expression: ArrowFunctionExpression<'gc>,
     ) {
         self.executable
             .add_arrow_function_expression(arrow_function_expression);

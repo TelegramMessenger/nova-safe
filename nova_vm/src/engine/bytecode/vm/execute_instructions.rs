@@ -452,6 +452,9 @@ pub(super) fn execute_object_define_method<'gc>(
     //     a. Let prototype be functionPrototype.
     // 5. Else,
     //     a. Let prototype be %Function.prototype%.
+    let compiled_bytecode = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .compiled_bytecode;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
@@ -461,6 +464,7 @@ pub(super) fn execute_object_define_method<'gc>(
         lexical_this: false,
         env,
         private_env,
+        compiled_bytecode,
     };
     // 7. Let closure be OrdinaryFunctionCreate(
     //      prototype,
@@ -547,6 +551,9 @@ pub(super) fn execute_object_define_getter<'gc>(
     // We have to create a temporary allocator to create the empty
     // items Vec. The allocator will never be asked to allocate
     // anything.
+    let compiled_bytecode = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .compiled_bytecode;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
@@ -556,6 +563,7 @@ pub(super) fn execute_object_define_getter<'gc>(
         lexical_this: false,
         env,
         private_env,
+        compiled_bytecode,
     };
     // 6. Let closure be OrdinaryFunctionCreate(
     //      %Function.prototype%,
@@ -632,6 +640,9 @@ pub(super) fn execute_object_define_setter<'gc>(
     let env = agent.current_lexical_environment(gc.nogc());
     // 3. Let privateEnv be the running execution context's PrivateEnvironment.
     let private_env = agent.current_private_environment(gc.nogc());
+    let compiled_bytecode = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .compiled_bytecode;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
@@ -641,6 +652,7 @@ pub(super) fn execute_object_define_setter<'gc>(
         lexical_this: false,
         env,
         private_env,
+        compiled_bytecode,
     };
     // 5. Let closure be OrdinaryFunctionCreate(
     //      %Function.prototype%,
@@ -950,7 +962,9 @@ pub(super) fn execute_instantiate_arrow_function_expression<'gc>(
     let ArrowFunctionExpression {
         expression,
         identifier,
-    } = executable.fetch_arrow_function_expression(agent, instr.get_first_index());
+        compiled_bytecode,
+    } = executable.fetch_arrow_function_expression(agent, instr.get_first_index(), gc.nogc());
+    let compiled_bytecode = *compiled_bytecode;
     let function_expression = expression.get();
     let identifier = *identifier;
     // 2. Let env be the LexicalEnvironment of the running execution context.
@@ -970,6 +984,7 @@ pub(super) fn execute_instantiate_arrow_function_expression<'gc>(
         lexical_this: true,
         env,
         private_env,
+        compiled_bytecode,
     };
     let mut function = ordinary_function_create(agent, params, gc.nogc());
     let name = if let Some(parameter) = &identifier {
@@ -1128,6 +1143,9 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
 
     // 6. Let privateEnv be the running execution context's PrivateEnvironment.
     let private_env = agent.current_private_environment(gc.nogc());
+    let compiled_bytecode = executable
+        .fetch_function_expression(agent, instr.get_first_index(), gc.nogc())
+        .compiled_bytecode;
     let params = OrdinaryFunctionCreateParams {
         function_prototype: None,
         source_code: None,
@@ -1136,14 +1154,9 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
         lexical_this: false,
         env,
         private_env,
+        compiled_bytecode,
     };
     let function = ordinary_function_create(agent, params, gc.nogc());
-    let FunctionExpression {
-        compiled_bytecode, ..
-    } = executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
-    if let Some(compiled_bytecode) = compiled_bytecode {
-        function.get_mut(agent).compiled_bytecode = Some(compiled_bytecode.unbind());
-    }
     set_function_name(agent, function, name, None, gc.nogc());
     if !function_expression.r#async && !function_expression.generator {
         make_constructor(agent, function, None, None, gc.nogc());
@@ -1246,11 +1259,9 @@ pub(super) fn execute_class_define_constructor<'gc>(
         lexical_this: false,
         env,
         private_env,
+        compiled_bytecode,
     };
     let function = ordinary_function_create(agent, params, gc.nogc());
-    if let Some(compiled_bytecode) = compiled_bytecode {
-        function.get_mut(agent).compiled_bytecode = Some(compiled_bytecode.unbind());
-    }
     set_function_name(agent, function, class_name.into(), None, gc.nogc());
     make_constructor(agent, function, Some(false), Some(proto), gc.nogc());
     function.get_mut(agent).ecmascript_function.home_object = Some(proto.into());
@@ -1355,8 +1366,12 @@ pub(super) fn execute_class_define_private_method<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let description = String::try_from(vm.result.take().unwrap().bind(gc.nogc())).unwrap();
-    let FunctionExpression { expression, .. } =
-        executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
+    let FunctionExpression {
+        expression,
+        compiled_bytecode,
+        ..
+    } = executable.fetch_function_expression(agent, instr.get_first_index(), gc.nogc());
+    let compiled_bytecode = *compiled_bytecode;
     let bits = instr.get_second_index() as u8;
     let is_static = bits & 0b100 == 0b100;
     let is_setter = bits & 0b10 == 0b10;
@@ -1384,6 +1399,7 @@ pub(super) fn execute_class_define_private_method<'gc>(
         lexical_this: false,
         env,
         private_env: Some(private_env),
+        compiled_bytecode,
     };
     // 6. Let closure be OrdinaryFunctionCreate(
     //      %Function.prototype%,
@@ -2347,6 +2363,9 @@ pub(super) fn execute_throw_error<'gc>(
 ) -> JsResult<'gc, ()> {
     let exception_type_immediate = instr.get_first_arg();
     let message = String::try_from(vm.result.take().unwrap()).unwrap();
+    if exception_type_immediate == crate::engine::bytecode::UNSUPPORTED_SYNTAX_IMMEDIATE {
+        panic!("not yet implemented: {}", message.to_string_lossy_(agent));
+    }
 
     let exception_type = ExceptionType::try_from(exception_type_immediate).unwrap();
 

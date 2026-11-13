@@ -128,6 +128,7 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
         lexical_this: false,
         env,
         private_env,
+        compiled_bytecode: None,
     };
     let f = ordinary_function_create(agent, params, gc);
 
@@ -195,14 +196,14 @@ pub(crate) fn instantiate_ordinary_function_object<'a>(
     // mode code.
 }
 
-pub(crate) struct CompileFunctionBodyData<'a> {
-    pub(crate) ast: FunctionAstRef<'a>,
-    pub(crate) source_code: SourceCode<'a>,
+pub(crate) struct CompileFunctionBodyData<'ast, 'gc> {
+    pub(crate) ast: FunctionAstRef<'ast>,
+    pub(crate) source_code: SourceCode<'gc>,
     pub(crate) is_strict: bool,
     pub(crate) is_lexical: bool,
 }
 
-impl<'a> CompileFunctionBodyData<'a> {
+impl<'a> CompileFunctionBodyData<'a, 'a> {
     fn new(agent: &mut Agent, function: ECMAScriptFunction<'a>, gc: NoGcScope<'a, '_>) -> Self {
         let ast = function.get_ast(agent, gc);
         let source_code = function.get_source_code(agent);

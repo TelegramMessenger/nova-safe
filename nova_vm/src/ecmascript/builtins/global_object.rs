@@ -420,8 +420,9 @@ pub(crate) fn perform_eval<'gc>(
         match result {
             Ok(_) => {
                 let source_code = agent.current_source_code(gc.nogc());
-                let exe = Executable::compile_eval_body(agent, body, source_code, gc.nogc())
-                    .scope(agent, gc.nogc());
+                let exe =
+                    Executable::compile_eval_body(agent, body, source_code, strict_eval, gc.nogc())
+                        .scope(agent, gc.nogc());
                 // a. Set result to Completion(Evaluation of body).
                 // 30. If result is a normal completion and result.[[Value]] is empty, then
                 // a. Set result to NormalCompletion(undefined).

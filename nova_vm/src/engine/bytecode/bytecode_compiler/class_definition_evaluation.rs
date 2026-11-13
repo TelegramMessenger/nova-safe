@@ -526,11 +526,17 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                     }
                 }
                 #[cfg(feature = "typescript")]
-                ast::ClassElement::AccessorProperty(_) => todo!(),
+                ast::ClassElement::AccessorProperty(_) => {
+                    ctx.mark_unsupported("Class accessor properties are not supported");
+                    continue;
+                }
                 #[cfg(not(feature = "typescript"))]
                 ast::ClassElement::AccessorProperty(_) => unreachable!(),
                 #[cfg(feature = "typescript")]
-                ast::ClassElement::TSIndexSignature(_) => todo!(),
+                ast::ClassElement::TSIndexSignature(_) => {
+                    ctx.mark_unsupported("TypeScript index signatures are not supported");
+                    continue;
+                }
                 #[cfg(not(feature = "typescript"))]
                 ast::ClassElement::TSIndexSignature(_) => unreachable!(),
             };
@@ -593,8 +599,19 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
         // 29. Set F.[[Fields]] to instanceFields.
         if has_instance_private_fields_or_methods || !instance_fields.is_empty() {
             let source_code = ctx.get_source_code();
+            let constructor_runtime_strict = if let Some(constructor) = constructor {
+                ctx.is_runtime_strict()
+                    || constructor
+                        .value
+                        .body
+                        .as_ref()
+                        .is_some_and(|body| body.has_use_strict_directive())
+            } else {
+                true
+            };
             let (agent, gc) = ctx.get_agent_and_gc();
             let mut constructor_ctx = CompileContext::new(agent, source_code, gc);
+            constructor_ctx.set_runtime_strict(constructor_runtime_strict);
             // Resolve 'this' into the stack.
             constructor_ctx.add_instruction(Instruction::ResolveThisBinding);
             constructor_ctx.add_instruction(Instruction::Load);
@@ -650,7 +667,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                 let executable = constructor_ctx.finish();
                 ctx.add_class_initializer_bytecode(executable, has_constructor_parent);
             }
-        } else if constructor.is_none() {
+        } else if let Some(constructor) = constructor {
+            let executable =
+                ctx.compile_nested_function(FunctionAstRef::ClassConstructor(&constructor.value));
+            ctx.set_function_expression_bytecode(constructor_index, executable);
+        } else {
             ctx.add_class_initializer(has_constructor_parent);
         }
         // 30. For each PrivateElement method of staticPrivateMethods, do
@@ -904,6 +925,8 @@ fn define_method<'s>(
     // stack: [object]
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
+    let compiled_bytecode =
+        ctx.compile_nested_function(FunctionAstRef::from(class_element.value.as_ref()));
     ctx.add_instruction_with_function_expression_and_immediate(
         instruction,
         FunctionExpression {
@@ -914,7 +937,7 @@ fn define_method<'s>(
             }),
             // Note: method name is always found in the result register.
             identifier: Some(NamedEvaluationParameter::Result),
-            compiled_bytecode: None,
+            compiled_bytecode: Some(compiled_bytecode),
         },
         // enumerable: false,
         false.into(),
@@ -988,6 +1011,8 @@ fn define_private_method<'s>(
     // Note: MakeMethod is performed as part of ClassDefinePrivateMethod.
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
+    let compiled_bytecode =
+        ctx.compile_nested_function(FunctionAstRef::from(method.value.as_ref()));
     ctx.add_instruction_with_function_expression_and_immediate(
         Instruction::ClassDefinePrivateMethod,
         FunctionExpression {
@@ -997,7 +1022,7 @@ fn define_private_method<'s>(
                 )
             }),
             identifier: Some(NamedEvaluationParameter::Result),
-            compiled_bytecode: None,
+            compiled_bytecode: Some(compiled_bytecode),
         },
         immediate.into(),
     );

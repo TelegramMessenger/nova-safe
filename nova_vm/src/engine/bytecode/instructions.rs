@@ -926,7 +926,7 @@ impl Instr {
             debug_print_identifier(agent, exe, index, gc)
         } else if kind.has_function_expression_index() {
             if kind == Instruction::InstantiateArrowFunctionExpression {
-                let expr = exe.fetch_arrow_function_expression(agent, index);
+                let expr = exe.fetch_arrow_function_expression(agent, index, gc);
                 let arrow_fn = expr.expression.get();
                 format!(
                     "({}) => {{}}",
