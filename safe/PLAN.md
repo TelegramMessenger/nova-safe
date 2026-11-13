@@ -37,6 +37,11 @@ whose Nova output must hash the same as `safe/baseline/widgets-nova.json`. Heap 
 
 Never edit `tests/expectations.json`, `tests/metrics.json` or anything in `safe/baseline/` to make the gate pass.
 
+Exception (the user's decision, 2026-11-14): a verified behaviour fix may update them, in its own commit that names
+each entry and says why it changed. Allowed: a test262 test that goes from Fail to Pass because the engine now does
+what the specification says, and a widget whose output changes and now matches QuickJS (`safe/widgets/run.py` with
+`--qjs`). Never allowed: a test going from Pass to Fail, or a widget that differs from QuickJS.
+
 ## Tools
 
 - `python3 -I safe/tools/unsafe_report.py . [--files]`: what is left.
