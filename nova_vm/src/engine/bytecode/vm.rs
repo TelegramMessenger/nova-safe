@@ -162,7 +162,7 @@ impl SuspendedVm {
         // Normal continue handling. We need to ignore that.
         let next_instruction = executable.get_instruction(agent, &mut self.ip);
         assert_eq!(next_instruction.map(|i| i.kind), Some(Instruction::Jump));
-        let peek_next_instruction = executable.get_instructions(agent).get(self.ip).copied();
+        let peek_next_instruction = executable.peek_instruction_byte(agent, self.ip);
         if peek_next_instruction == Some(Instruction::Return.as_u8()) {
             // Our return handling is to just return; we can do that without
             // unsuspending the VM.
@@ -265,7 +265,8 @@ impl Vm {
         eprintln!();
 
         eprintln!("Instructions:");
-        let iter = InstructionIter::new(executable.get_instructions(agent));
+        let instructions = executable.get_instructions(agent);
+        let iter = InstructionIter::new(&instructions);
         for (ip, instr) in iter {
             instr.debug_print(agent, ip, executable.clone(), gc);
         }
@@ -309,7 +310,7 @@ impl Vm {
     ) -> ExecutionResult<'gc> {
         let stack_depth = agent.stack_refs.borrow().len();
         let instructions = executable.get_instructions(agent);
-        while let Some(instr) = Instr::consume_instruction(instructions, &mut self.ip) {
+        while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
             if agent.check_gc() {
                 self.trigger_gc(agent, gc.reborrow());
             }

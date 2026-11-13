@@ -17,6 +17,7 @@ use crate::{
     },
 };
 use oxc_ast::ast;
+use std::sync::Arc;
 
 use super::bytecode_compiler::GeneratorKind;
 
@@ -117,7 +118,7 @@ const EXECUTABLE_OPTION_SIZE_IS_U32: () =
 ///   Copyright (c) 2023-2024 Linus Groh
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutableHeapData<'a> {
-    pub(crate) instructions: Box<[u8]>,
+    pub(crate) instructions: Arc<[u8]>,
     pub(crate) caches: Box<[PropertyLookupCache<'a>]>,
     pub(crate) constants: Box<[Value<'a>]>,
     pub(crate) shapes: Box<[ObjectShape<'a>]>,
@@ -230,13 +231,16 @@ impl<'gc> Executable<'gc> {
         }
     }
 
-    /// SAFETY: The returned reference is valid until the Executable is garbage
-    /// collected.
+    /// The bytecode, shared: a running VM holds its own reference, so the
+    /// bytecode outlives the Executable if that is dropped while it runs.
     #[inline]
-    fn get_instructions(self, agent: &Agent) -> &'static [u8] {
-        // SAFETY: As long as we're alive the instructions Box lives, and it is
-        // never accessed mutably.
-        unsafe { core::mem::transmute(&self.get(agent).instructions[..]) }
+    fn get_instructions(self, agent: &Agent) -> Arc<[u8]> {
+        self.get(agent).instructions.clone()
+    }
+
+    #[inline]
+    fn peek_instruction_byte(self, agent: &Agent, ip: usize) -> Option<u8> {
+        self.get(agent).instructions.get(ip).copied()
     }
 
     #[inline]
@@ -325,10 +329,13 @@ impl<'gc> Executable<'gc> {
 
 impl Scoped<'_, Executable<'static>> {
     #[inline]
-    pub(super) fn get_instructions(&self, agent: &Agent) -> &[u8] {
-        // SAFETY: Executable is scoped, the instructions reference is bound to
-        // the Scoped.
+    pub(super) fn get_instructions(&self, agent: &Agent) -> Arc<[u8]> {
         self.get(agent).get_instructions(agent)
+    }
+
+    #[inline]
+    pub(super) fn peek_instruction_byte(&self, agent: &Agent, ip: usize) -> Option<u8> {
+        self.get(agent).peek_instruction_byte(agent, ip)
     }
 
     #[inline]
