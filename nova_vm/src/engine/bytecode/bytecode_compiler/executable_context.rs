@@ -226,8 +226,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     }
 
     pub(super) fn add_identifier(&mut self, identifier: PropertyKey<'gc>) -> usize {
-        // SAFETY: we do not want to convert integer keys to strings here.
-        let identifier_value = unsafe { identifier.into_value_unchecked() };
+        let identifier_value = identifier.into_value_unchecked();
         let duplicate = self
             .constants
             .iter()

@@ -1285,7 +1285,7 @@ impl TypedArrayPrototype {
             let k_value = unwrap_try_get_value_or_unset(try_get(agent, o, pk, None, gc.nogc()));
             // c. Perform ? Call(callback, thisArg, « kValue, 𝔽(k), O »).
             // // SAFETY: pk is Integer, which is what we want for fk as well.
-            let fk = unsafe { pk.into_value_unchecked() };
+            let fk = pk.into_value_unchecked();
             call_function(
                 agent,
                 callback.get(agent),
@@ -1545,7 +1545,8 @@ impl TypedArrayPrototype {
             return Ok(String::EMPTY_STRING.into());
         }
 
-        let sep = sep_string.as_wtf8_(agent).to_owned();
+        let mut sep = Wtf8Buf::new();
+        sep.push_wtf8(sep_string.as_wtf8_(agent));
         // 6. Let R be the empty String.
         let mut r = Wtf8Buf::with_capacity(after_len * 3);
         // 7. Let k be 0.
@@ -1553,7 +1554,7 @@ impl TypedArrayPrototype {
         for k in 0..len {
             // a. If k > 0, set R to the string-concatenation of R and sep.
             if k > 0 {
-                r.push_wtf8(sep);
+                r.push_wtf8(&sep);
             }
             // c. If element is not undefined, then
             if k >= after_len {

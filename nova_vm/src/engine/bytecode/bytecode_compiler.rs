@@ -3181,13 +3181,9 @@ fn simple_object_pattern<'s>(
             }
         } else {
             let key_string = match &ele.key {
-                ast::PropertyKey::StaticIdentifier(identifier) => {
-                    // SAFETY: We'll use this value as a PropertyKey directly later.
-                    unsafe {
-                        ctx.create_property_key(&identifier.name)
-                            .into_value_unchecked()
-                    }
-                }
+                ast::PropertyKey::StaticIdentifier(identifier) => ctx
+                    .create_property_key(&identifier.name)
+                    .into_value_unchecked(),
                 ast::PropertyKey::NumericLiteral(literal) => {
                     if let Ok(Number::Integer(integer)) = Number::try_from(literal.value) {
                         // Literal is an integer, just drop it in as a
@@ -3200,13 +3196,9 @@ fn simple_object_pattern<'s>(
                         ctx.create_string(buffer.format(literal.value)).into()
                     }
                 }
-                ast::PropertyKey::StringLiteral(literal) => {
-                    // SAFETY: We'll use this value as a PropertyKey directly later.
-                    unsafe {
-                        ctx.create_property_key(&literal.value)
-                            .into_value_unchecked()
-                    }
-                }
+                ast::PropertyKey::StringLiteral(literal) => ctx
+                    .create_property_key(&literal.value)
+                    .into_value_unchecked(),
                 ast::PropertyKey::BigIntLiteral(lit) => {
                     // Drop out the trailing 'n' from BigInt literals.
                     let raw_str = lit

@@ -137,13 +137,13 @@ impl<'a> PropertyKey<'a> {
     /// from the specification point of view and should only be done when
     /// used with other directly converted PropertyKeys.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// If the resulting PropertyKey is mixed with normal JavaScript values or
     /// passed to user code, the resulting JavaScript will not necessarily
     /// correctly match the ECMAScript specification or user's expectations.
     #[inline(always)]
-    pub(crate) unsafe fn into_value_unchecked(self) -> Value<'a> {
+    pub(crate) fn into_value_unchecked(self) -> Value<'a> {
         match self {
             PropertyKey::Integer(small_integer) => Value::Integer(small_integer),
             PropertyKey::SmallString(small_string) => Value::SmallString(small_string),
@@ -159,7 +159,7 @@ impl<'a> PropertyKey<'a> {
     /// from the engine point of view if an integer-string like Value gets
     /// reinterpreted as a PropertyKey without the conversion.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// Caller must ensure this is value is a valid PropertyKey.
     ///
@@ -172,7 +172,7 @@ impl<'a> PropertyKey<'a> {
     /// If the passed-in Value is not a string, integer, or symbol, the method
     /// will panic.
     #[inline(always)]
-    pub(crate) unsafe fn from_value_unchecked(value: Value<'a>) -> Self {
+    pub(crate) fn from_value_unchecked(value: Value<'a>) -> Self {
         match value {
             Value::Integer(small_integer) => PropertyKey::Integer(small_integer),
             Value::SmallString(small_string) => PropertyKey::SmallString(small_string),
@@ -382,8 +382,7 @@ impl<'a> From<PropertyKey<'a>> for Value<'a> {
     /// PropertyKey into a Value using this and then comparing that with an
     /// actual Value is unsound.
     fn from(value: PropertyKey<'a>) -> Self {
-        // SAFETY: Don't be silly!
-        unsafe { value.into_value_unchecked() }
+        value.into_value_unchecked()
     }
 }
 

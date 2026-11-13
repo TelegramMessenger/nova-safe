@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::{cmp::Ordering, hint::unreachable_unchecked};
+use core::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
 
 use crate::heap::{CompactionLists, HeapMarkAndSweep, WorkQueues};
@@ -166,8 +166,7 @@ impl PartialOrd<i64> for BigIntHeapData {
             return match sign {
                 Sign::Minus => Some(Ordering::Less),
                 Sign::Plus => Some(Ordering::Greater),
-                // SAFETY: We would have already hit the unreachable above.
-                Sign::NoSign => unsafe { unreachable_unchecked() },
+                Sign::NoSign => unreachable!(),
             };
         }
         let other = other.unsigned_abs();

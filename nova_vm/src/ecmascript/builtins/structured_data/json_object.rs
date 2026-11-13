@@ -912,8 +912,7 @@ fn quote_property_key(agent: &Agent, product: &mut Wtf8Buf, key: PropertyKey) {
     } else {
         // Symbol keys do not get serialised into JSON.
         debug_assert!(key.is_string());
-        // SAFETY: The key is guaranteed to be a non-integer string.
-        let key = unsafe { key.into_value_unchecked() };
+        let key = key.into_value_unchecked();
         quote_json_string(agent, product, String::try_from(key).unwrap())
     }
 }

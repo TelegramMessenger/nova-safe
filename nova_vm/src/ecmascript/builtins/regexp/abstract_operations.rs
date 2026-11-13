@@ -572,8 +572,10 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     let s_bytes = s.as_bytes_(&agent.heap.strings);
     // 8. Let matcher be R.[[RegExpMatcher]].
-    // SAFETY: reg_exp_builtin_exec_base checks that the matcher is set.
-    let matcher = unsafe { r_data.reg_exp_matcher.as_mut().unwrap_unchecked() };
+    let matcher = r_data
+        .reg_exp_matcher
+        .as_mut()
+        .expect("reg_exp_builtin_exec_prepare sets the matcher");
     // 10. Let matchSucceeded be false.
     // 11. If fullUnicode is true, let input be StringToCodePoints(S).
     //     Otherwise, let input be a List whose elements are the code units
@@ -605,8 +607,9 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         // ii. Return null.
         return Ok(None);
     };
-    // SAFETY: first capture group is always the full match.
-    let full_match = unsafe { result.get(0).unwrap_unchecked() };
+    let full_match = result
+        .get(0)
+        .expect("first capture group is always the full match");
     // i. If sticky is true, then
     if sticky && full_match.start() != last_index {
         // sticky did match but not at the start position.
@@ -636,6 +639,10 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     // 19. Assert: n < 2**32 - 1.
     debug_assert!(n < 2usize.pow(32) - 1);
     let has_group_name = matcher.capture_names().any(|n| n.is_some());
+    let captures = result
+        .iter()
+        .map(|capture| capture.map(|capture| capture.range()))
+        .collect::<Vec<_>>();
     // 20. Let A be ! ArrayCreate(n + 1).
     // Note: we use n because it already contains the full-match group in it.
     let a = array_create(agent, n, n, None, gc).unwrap();
@@ -691,7 +698,7 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     // 33. Let matchedGroupNames be a new empty List.
     // let mut matched_group_names = vec![];
     // 34. For each integer i such that 1 ≤ i ≤ n, in ascending order, do
-    for (i, capture_i) in result.iter().enumerate() {
+    for (i, capture_i) in captures.into_iter().enumerate() {
         // a. Let captureI be ith element of r.[[Captures]].
         if has_indices {
             // b. If captureI is undefined, then
@@ -708,10 +715,10 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
             //         vi. Append capture to indices.
         }
         let captured_value = if let Some(capture_i) = capture_i {
-            match std::string::String::from_utf8_lossy(capture_i.as_bytes()) {
-                std::borrow::Cow::Borrowed(str) => String::from_str(agent, str, gc).into(),
-                std::borrow::Cow::Owned(string) => String::from_string(agent, string, gc).into(),
-            }
+            let captured =
+                std::string::String::from_utf8_lossy(&s.as_bytes_(&agent.heap.strings)[capture_i])
+                    .into_owned();
+            String::from_string(agent, captured, gc).into()
         } else {
             Value::Undefined
         };
@@ -783,8 +790,10 @@ pub(crate) fn reg_exp_builtin_test<'a>(
     }
     let s_bytes = s.as_bytes_(&agent.heap.strings);
     // 8. Let matcher be R.[[RegExpMatcher]].
-    // SAFETY: reg_exp_builtin_exec_base checks that the matcher is set.
-    let matcher = unsafe { r_data.reg_exp_matcher.as_mut().unwrap_unchecked() };
+    let matcher = r_data
+        .reg_exp_matcher
+        .as_mut()
+        .expect("reg_exp_builtin_exec_prepare sets the matcher");
     // 10. Let matchSucceeded be false.
     // 11. If fullUnicode is true, let input be StringToCodePoints(S).
     //     Otherwise, let input be a List whose elements are the code units

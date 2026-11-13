@@ -25,7 +25,7 @@ pub(crate) fn canonicalize_numeric_index_string(
     p: &mut PropertyKey,
     gc: NoGcScope,
 ) {
-    let Ok(numeric_index) = String::try_from(unsafe { p.into_value_unchecked() }) else {
+    let Ok(numeric_index) = String::try_from(p.into_value_unchecked()) else {
         return;
     };
     let numeric_index = canonical_numeric_index_string(agent, numeric_index, gc);

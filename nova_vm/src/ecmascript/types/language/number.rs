@@ -57,12 +57,12 @@ bindable_handle!(Number);
 impl<'a> Number<'a> {
     /// Allocate a 64-bit floating point number onto the Agent heap
     ///
-    /// # Safety
+    /// ## Correctness
     ///
     /// The number being allocated must not be representable
     /// as a SmallInteger or f32. All stack-allocated numbers must be
     /// inequal to any heap-allocated number.
-    unsafe fn alloc_number<'gc>(heap: &mut Heap, number: f64) -> HeapNumber<'gc> {
+    fn alloc_number<'gc>(heap: &mut Heap, number: f64) -> HeapNumber<'gc> {
         debug_assert!(
             SmallInteger::try_from(number).is_err() && SmallF64::try_from(number).is_err()
         );
@@ -76,9 +76,7 @@ impl<'a> Number<'a> {
         if let Ok(value) = Number::try_from(value) {
             value
         } else {
-            // SAFETY: Number was not representable as a
-            // stack-allocated Number.
-            let id = unsafe { Self::alloc_number(&mut agent.heap, value) };
+            let id = Self::alloc_number(&mut agent.heap, value);
             Number::Number(id.unbind().bind(gc))
         }
     }
@@ -94,9 +92,7 @@ impl<'a> Number<'a> {
                 // represented as a SmallF64.
                 Number::SmallF64(value)
             } else {
-                // SAFETY: Number was not representable as a
-                // stack-allocated Number.
-                let id = unsafe { Self::alloc_number(&mut agent.heap, value) };
+                let id = Self::alloc_number(&mut agent.heap, value);
                 Number::Number(id.unbind().bind(gc))
             }
         }
@@ -113,9 +109,7 @@ impl<'a> Number<'a> {
                 // represented as a SmallF64.
                 Number::SmallF64(value)
             } else {
-                // SAFETY: Number was not representable as a
-                // stack-allocated Number.
-                let id = unsafe { Self::alloc_number(&mut agent.heap, value) };
+                let id = Self::alloc_number(&mut agent.heap, value);
                 Number::Number(id.unbind().bind(gc))
             }
         }
@@ -1565,9 +1559,7 @@ impl<'a> CreateHeapData<f64, Number<'a>> for Heap {
         if let Ok(value) = Number::try_from(data) {
             value
         } else {
-            // SAFETY: Number was not representable as a
-            // stack-allocated Number.
-            let heap_number = unsafe { Number::alloc_number(self, data) };
+            let heap_number = Number::alloc_number(self, data);
             Number::Number(heap_number)
         }
     }

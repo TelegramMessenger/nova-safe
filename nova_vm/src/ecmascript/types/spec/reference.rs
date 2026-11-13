@@ -571,16 +571,12 @@ fn handle_primitive_get_value<'a>(
         return Err(throw_no_private_name_error(agent, gc.into_nogc()));
     }
     match value {
-        Value::Undefined | Value::Null => {
-            Err(throw_read_undefined_or_null_error(
-                agent,
-                // SAFETY: We do not care about the conversion validity in
-                // error message logging.
-                unsafe { referenced_name.into_value_unchecked() },
-                value,
-                gc.into_nogc(),
-            ))
-        }
+        Value::Undefined | Value::Null => Err(throw_read_undefined_or_null_error(
+            agent,
+            referenced_name.into_value_unchecked(),
+            value,
+            gc.into_nogc(),
+        )),
         Value::Boolean(_) => agent
             .current_realm_record()
             .intrinsics()
@@ -654,9 +650,7 @@ fn try_handle_primitive_get_value<'a>(
         Value::Undefined | Value::Null => {
             return throw_read_undefined_or_null_error(
                 agent,
-                // SAFETY: We do not care about the conversion validity in
-                // error message logging.
-                unsafe { referenced_name.into_value_unchecked() },
+                referenced_name.into_value_unchecked(),
                 receiver,
                 gc,
             )
