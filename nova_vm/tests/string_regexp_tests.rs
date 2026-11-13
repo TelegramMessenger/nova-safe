@@ -47,3 +47,8 @@ fn string_slice_surrogates() {
 fn string_concat_surrogates() {
     run_test_source("stringConcatSurrogates.test.js");
 }
+
+#[test]
+fn regexp_non_ascii_positions() {
+    run_test_source("regExpNonAsciiPositions.test.js");
+}

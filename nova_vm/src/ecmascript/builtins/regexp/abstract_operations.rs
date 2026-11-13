@@ -519,11 +519,6 @@ pub(crate) fn reg_exp_builtin_exec_prepare<'a>(
     if !global && !sticky {
         last_index = 0;
     }
-    let last_index = if last_index > s.len_(agent) {
-        last_index
-    } else {
-        s.utf8_index_(agent, last_index).unwrap_or(last_index)
-    };
     // 8. Let matcher be R.[[RegExpMatcher]].
     if let Err(err) = &r.get(agent).reg_exp_matcher {
         return Err(agent.throw_exception(ExceptionType::SyntaxError, err.to_string(), gc));
@@ -531,6 +526,22 @@ pub(crate) fn reg_exp_builtin_exec_prepare<'a>(
     // 9. If flags contains "u" or flags contains "v", let fullUnicode be true;
     //    else let fullUnicode be false.
     let full_unicode = (flags & (RegExpFlags::U | RegExpFlags::V)).bits() > 0;
+    // The matcher works on WTF-8 bytes: lastIndex becomes a byte index, past
+    // the end if lastIndex is past the end. A lastIndex inside a surrogate
+    // pair starts at the pair with fullUnicode and after it otherwise.
+    let utf16_length = s.utf16_len_(agent);
+    let last_index = if last_index > utf16_length {
+        usize::MAX
+    } else if last_index == utf16_length {
+        s.len_(agent)
+    } else if let Some(utf8_index) = s.utf8_index_(agent, last_index) {
+        utf8_index
+    } else {
+        let pair_start = s
+            .utf8_index_(agent, last_index - 1)
+            .expect("a trail surrogate follows its lead");
+        if full_unicode { pair_start } else { pair_start + 4 }
+    };
     Ok(RegExpExecBase {
         r,
         s,
@@ -617,14 +628,14 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         return Ok(None);
         // ii. Set lastIndex to AdvanceStringIndex(S, lastIndex, fullUnicode).
     }
-    let last_index = full_match.start();
+    let last_index = s.utf16_index_of_byte_(&agent.heap.strings, full_match.start());
     // e. Else,
     // i. Assert: r is a MatchState.
     // ii. Set matchSucceeded to true.
     // 14. Let e be r.[[EndIndex]].
     let e = full_match.end();
     // 15. If fullUnicode is true, set e to GetStringIndex(S, e).
-    let e = s.utf16_index_(&agent.heap.strings, e);
+    let e = s.utf16_index_of_byte_(&agent.heap.strings, e);
     // 16. If global is true or sticky is true, then
     if global || sticky {
         // a. Perform ? Set(R, "lastIndex", 𝔽(e), true).
@@ -820,7 +831,7 @@ pub(crate) fn reg_exp_builtin_test<'a>(
                 // ii. Set lastIndex to AdvanceStringIndex(S, lastIndex, fullUnicode).
                 let e = result.end();
                 // 15. If fullUnicode is true, set e to GetStringIndex(S, e).
-                let e = s.utf16_index_(&agent.heap.strings, e);
+                let e = s.utf16_index_of_byte_(&agent.heap.strings, e);
                 // 16. If global is true or sticky is true, then
                 // a. Perform ? Set(R, "lastIndex", 𝔽(e), true).
                 r_data.last_index = e.into();

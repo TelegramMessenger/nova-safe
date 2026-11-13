@@ -437,6 +437,43 @@ impl<'a> String<'a> {
         agent.heap.create(buf).bind(gc)
     }
 
+    /// Appends the substring from UTF-16 index `from` to `to` (clamped to the
+    /// length) to `buf`, like [`String::utf16_substring`].
+    pub(crate) fn push_utf16_substring(
+        self,
+        agent: &impl StringHeapAccess,
+        buf: &mut Wtf8Buf,
+        from: usize,
+        to: usize,
+    ) {
+        let utf16_len = self.utf16_len_(agent);
+        let to = to.min(utf16_len);
+        if from >= to {
+            return;
+        }
+        let (leading_trail, start, end, trailing_lead) =
+            self.utf16_range_to_wtf8(agent, from, to, utf16_len);
+        if let Some(trail) = leading_trail {
+            buf.push(trail);
+        }
+        buf.push_wtf8(self.as_wtf8_(agent).slice(start, end));
+        if let Some(lead) = trailing_lead {
+            buf.push(lead);
+        }
+    }
+
+    /// The UTF-16 index of the code point that byte `utf8_idx` is in (or the
+    /// UTF-16 length if it is past the end). The matcher can report an empty
+    /// match inside the three bytes of a lone surrogate.
+    pub(crate) fn utf16_index_of_byte_(self, agent: &impl StringHeapAccess, utf8_idx: usize) -> usize {
+        let bytes = self.as_bytes_(agent);
+        let mut utf8_idx = utf8_idx.min(bytes.len());
+        while utf8_idx > 0 && utf8_idx < bytes.len() && bytes[utf8_idx] & 0xC0 == 0x80 {
+            utf8_idx -= 1;
+        }
+        self.utf16_index_(agent, utf8_idx)
+    }
+
     /// Byte length of the string.
     #[inline(always)]
     pub fn len(self, agent: &Agent) -> usize {

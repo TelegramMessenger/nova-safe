@@ -8,7 +8,7 @@ use std::{cmp::Ordering, ops::Deref};
 use unicode_normalization::{
     IsNormalized, UnicodeNormalization, is_nfc_quick, is_nfd_quick, is_nfkc_quick, is_nfkd_quick,
 };
-use wtf8::{CodePoint, Wtf8Buf};
+use wtf8::{CodePoint, Wtf8Buf, Wtf8Str};
 
 use crate::{
     ecmascript::{
@@ -3288,100 +3288,112 @@ pub(crate) fn get_substitution<'gc, 'scope>(
 ) -> JsResult<'gc, String<'gc>> {
     let named_captures = named_captures.map(|c| c.scope(agent, gc.nogc()));
     // 1. Let stringLength be the length of str.
-    let utf8_string_length = scoped_str.get(agent).len_(agent);
+    let string_length = scoped_str.get(agent).utf16_len_(agent);
     // 2. Assert: position ≤ stringLength.
-    debug_assert!(position <= scoped_str.get(agent).utf16_len_(agent));
-    let utf8_position = scoped_str
-        .get(agent)
-        .utf8_index_(agent, position)
-        .expect("Invalid UTF-8 position");
-    // 3. Let result be the empty String.
-    let mut result = Wtf8Buf::new();
-    // 4. Let templateRemainder be replacementTemplate.
+    debug_assert!(position <= string_length);
     let template = scoped_replacement_template
-        .to_string_lossy(agent)
-        .into_owned();
-    let mut template_remainder = template.as_str();
+        .get(agent)
+        .as_bytes_(agent)
+        .to_vec();
+    if !template.contains(&b'$') {
+        return Ok(scoped_replacement_template.get(agent).bind(gc.into_nogc()));
+    }
+    let push_literal = |result: &mut Wtf8Buf, from: usize, to: usize| {
+        // Literal runs end at a "$" or at the end, so they are whole code
+        // points.
+        result.push_wtf8(Wtf8Str::from_wtf8_bytes(&template[from..to]));
+    };
+    // 3. Let result be the empty String.
+    let mut result = Wtf8Buf::with_capacity(template.len());
+    // 4. Let templateRemainder be replacementTemplate.
+    // templateRemainder is template[i..]; template[literal_start..i] is
+    // literal text not yet appended to result.
+    let mut i = 0;
+    let mut literal_start = 0;
     // 5. Repeat, while templateRemainder is not the empty String,
-    while !template_remainder.is_empty() {
-        let template_remainder_bytes = template_remainder.as_bytes();
+    while i < template.len() {
         // a. NOTE: The following steps isolate ref (a prefix of
         //    templateRemainder), determine refReplacement (its replacement),
         //    and then append that replacement to result.
-        let mut r#ref = template_remainder;
-        let mut ref_replacement = std::borrow::Cow::Borrowed(template_remainder);
-        if template_remainder_bytes.len() == 1 {
+        if template[i] != b'$' || i + 1 == template.len() {
             // h. Else,
             // i. Let ref be the substring of templateRemainder from 0 to 1.
             // ii. Let refReplacement be ref.
-        } else if template_remainder_bytes[0] == b'$' {
-            if template_remainder_bytes[1] == b'$' {
+            i += 1;
+            continue;
+        }
+        match template[i + 1] {
+            b'$' => {
                 // b. If templateRemainder starts with "$$", then
                 // i. Let ref be "$$".
-                r#ref = "$$";
                 // ii. Let refReplacement be "$".
-                ref_replacement = "$".into();
-            } else if template_remainder_bytes[1] == b'`' {
+                push_literal(&mut result, literal_start, i);
+                result.push_char('$');
+                i += 2;
+                literal_start = i;
+            }
+            b'`' => {
                 // c. Else if templateRemainder starts with "$`", then
                 // i. Let ref be "$`".
-                r#ref = "$`";
                 // ii. Let refReplacement be the substring of str from 0 to position.
-                ref_replacement = scoped_str
-                    .get(agent)
-                    .as_wtf8_(agent)
-                    .slice_to(utf8_position)
-                    .to_string_lossy()
-                    .into_owned()
-                    .into()
-            } else if template_remainder_bytes[1] == b'&' {
+                push_literal(&mut result, literal_start, i);
+                let str = scoped_str.get(agent);
+                str.push_utf16_substring(agent, &mut result, 0, position);
+                i += 2;
+                literal_start = i;
+            }
+            b'&' => {
                 // d. Else if templateRemainder starts with "$&", then
                 // i. Let ref be "$&".
-                r#ref = "$&";
                 // ii. Let refReplacement be matched.
-                ref_replacement = scoped_matched.to_string_lossy(agent).into_owned().into();
-            } else if template_remainder_bytes[1] == b'\'' {
+                push_literal(&mut result, literal_start, i);
+                let matched = scoped_matched.get(agent);
+                result.push_wtf8(matched.as_wtf8_(agent));
+                i += 2;
+                literal_start = i;
+            }
+            b'\'' => {
                 // e. Else if templateRemainder starts with "$'" (0x0024
                 //    (DOLLAR SIGN) followed by 0x0027 (APOSTROPHE)), then
                 // i. Let ref be "$'".
-                r#ref = "$'";
                 // ii. Let matchLength be the length of matched.
-                let match_length = scoped_matched.get(agent).len_(agent);
+                let match_length = scoped_matched.get(agent).utf16_len_(agent);
                 // iii. Let tailPos be position + matchLength.
                 let tail_pos = position.saturating_add(match_length);
                 // iv. Let refReplacement be the substring of str from
                 //     min(tailPos, stringLength).
-                ref_replacement = scoped_str
-                    .get(agent)
-                    .as_wtf8_(agent)
-                    .slice_from(tail_pos.min(utf8_string_length))
-                    .to_string_lossy()
-                    .into_owned()
-                    .into();
                 // v. NOTE: tailPos can exceed stringLength only if this
                 //    abstract operation was invoked by a call to the intrinsic
                 //    %Symbol.replace% method of %RegExp.prototype% on an
                 //    object whose "exec" property is not the intrinsic
                 //    %RegExp.prototype.exec%.
-            } else if template_remainder_bytes[1].is_ascii_digit() {
+                push_literal(&mut result, literal_start, i);
+                let str = scoped_str.get(agent);
+                str.push_utf16_substring(
+                    agent,
+                    &mut result,
+                    tail_pos.min(string_length),
+                    string_length,
+                );
+                i += 2;
+                literal_start = i;
+            }
+            first_digit @ b'0'..=b'9' => {
                 // f. Else if templateRemainder starts with "$" followed by 1
                 //    or more decimal digits, then
                 // i. If templateRemainder starts with "$" followed by 2 or
                 //    more decimal digits, let digitCount be 2; otherwise let
                 //    digitCount be 1.
-                let mut digit_count = if template_remainder_bytes.len() > 2
-                    && template_remainder_bytes[2].is_ascii_digit()
-                {
-                    2
-                } else {
-                    1
-                };
                 // ii. Let digits be the substring of templateRemainder from 1 to 1 + digitCount.
-                let mut digits = &template_remainder[1..1 + digit_count];
                 // iii. Let index be ℝ(StringToNumber(digits)).
-                let index: u8 = digits.parse().unwrap();
                 // iv. Assert: 0 ≤ index ≤ 99.
-                debug_assert!(index <= 99);
-                let mut index = index as usize;
+                let first_digit = usize::from(first_digit - b'0');
+                let (mut digit_count, mut index) = match template.get(i + 2) {
+                    Some(second_digit @ b'0'..=b'9') => {
+                        (2, first_digit * 10 + usize::from(second_digit - b'0'))
+                    }
+                    _ => (1, first_digit),
+                };
                 // v. Let captureLen be the number of elements in captures.
                 let capture_len = scoped_captures.len();
                 // vi. If index > captureLen and digitCount = 2, then
@@ -3391,82 +3403,88 @@ pub(crate) fn get_substitution<'gc, 'scope>(
                     //    is treated as a one-digit replacement pattern
                     //    followed by a literal digit.
                     // 2. Set digitCount to 1.
-                    digit_count = 1;
                     // 3. Set digits to the substring of digits from 0 to 1.
-                    digits = &digits[0..1];
                     // 4. Set index to ℝ(StringToNumber(digits)).
-                    index = digits.parse::<u8>().unwrap() as usize;
+                    digit_count = 1;
+                    index = first_digit;
                 }
                 // vii. Let ref be the substring of templateRemainder from 0 to
                 //      1 + digitCount.
-                r#ref = &template_remainder[0..1 + digit_count];
+                let ref_end = i + 1 + digit_count;
                 // viii. If 1 ≤ index ≤ captureLen, then
                 if 1 <= index && index <= capture_len {
+                    push_literal(&mut result, literal_start, i);
                     // 1. Let capture be captures[index - 1].
-                    let capture = scoped_captures[index - 1].clone();
-                    if let Some(capture) = capture {
-                        // 3. Else,
-                        // a. Let refReplacement be capture.
-                        ref_replacement = capture.to_string_lossy(agent).to_string().into();
-                    } else {
-                        // 2. If capture is undefined, then
-                        // a. Let refReplacement be the empty String.
-                        ref_replacement = "".into();
+                    // 2. If capture is undefined, then
+                    // a. Let refReplacement be the empty String.
+                    // 3. Else,
+                    // a. Let refReplacement be capture.
+                    if let Some(capture) = &scoped_captures[index - 1] {
+                        let capture = capture.get(agent);
+                        result.push_wtf8(capture.as_wtf8_(agent));
                     }
-                } else {
-                    // ix. Else,
-                    // 1. Let refReplacement be ref.
-                    ref_replacement = r#ref.into();
+                    literal_start = ref_end;
                 }
-            } else if template_remainder_bytes[1] == b'<' {
+                // ix. Else,
+                // 1. Let refReplacement be ref.
+                i = ref_end;
+            }
+            b'<' => {
                 // g. Else if templateRemainder starts with "$<", then
                 // i. Let gtPos be StringIndexOf(templateRemainder, ">", 0).
-                let gt_pos = template_remainder.find(">");
-                if let (Some(gt_pos), Some(named_captures)) = (gt_pos, named_captures.clone()) {
-                    // iii. Else,
-                    // 1. Let ref be the substring of templateRemainder from 0 to gtPos + 1.
-                    r#ref = &template_remainder[0..gt_pos + 1];
-                    // 2. Let groupName be the substring of templateRemainder from 2 to gtPos.
-                    let group_name = &template_remainder[2..gt_pos];
-                    let group_name = String::from_str(agent, group_name, gc.nogc());
-                    // 3. Assert: namedCaptures is an Object.
-                    // 4. Let capture be ? Get(namedCaptures, groupName).
-                    let capture = get(
-                        agent,
-                        named_captures.get(agent),
-                        group_name.to_property_key().unbind(),
-                        gc.reborrow(),
-                    )
-                    .unbind()?
-                    .bind(gc.nogc());
-                    // 5. If capture is undefined, then
-                    if capture.is_undefined() {
-                        // a. Let refReplacement be the empty String.
-                        ref_replacement = "".into();
-                    } else {
-                        // 6. Else,
-                        // a. Let refReplacement be ? ToString(capture).
-                        let capture = to_string(agent, capture.unbind(), gc.reborrow())
-                            .unbind()?
-                            .bind(gc.nogc());
-                        ref_replacement = capture.to_string_lossy_(agent).to_string().into();
-                    }
-                } else {
+                let gt_pos = template[i..]
+                    .iter()
+                    .position(|&b| b == b'>')
+                    .map(|gt_pos| i + gt_pos);
+                let (Some(gt_pos), Some(named_captures)) = (gt_pos, named_captures.clone()) else {
                     // ii. If gtPos is not-found or namedCaptures is undefined, then
                     // 1. Let ref be "$<".
-                    r#ref = "$<";
                     // 2. Let refReplacement be ref.
-                    ref_replacement = r#ref.into();
+                    i += 2;
+                    continue;
+                };
+                // iii. Else,
+                // 1. Let ref be the substring of templateRemainder from 0 to gtPos + 1.
+                push_literal(&mut result, literal_start, i);
+                // 2. Let groupName be the substring of templateRemainder from 2 to gtPos.
+                let mut group_name = Wtf8Buf::with_capacity(gt_pos - i - 2);
+                group_name.push_wtf8(Wtf8Str::from_wtf8_bytes(&template[i + 2..gt_pos]));
+                let group_name = String::from_wtf8_buf(agent, group_name, gc.nogc());
+                // 3. Assert: namedCaptures is an Object.
+                // 4. Let capture be ? Get(namedCaptures, groupName).
+                let capture = get(
+                    agent,
+                    named_captures.get(agent),
+                    group_name.to_property_key().unbind(),
+                    gc.reborrow(),
+                )
+                .unbind()?
+                .bind(gc.nogc());
+                // 5. If capture is undefined, then
+                // a. Let refReplacement be the empty String.
+                if !capture.is_undefined() {
+                    // 6. Else,
+                    // a. Let refReplacement be ? ToString(capture).
+                    let capture = to_string(agent, capture.unbind(), gc.reborrow())
+                        .unbind()?
+                        .bind(gc.nogc());
+                    result.push_wtf8(capture.as_wtf8_(agent));
                 }
+                i = gt_pos + 1;
+                literal_start = i;
+            }
+            _ => {
+                // h. Else,
+                // i. Let ref be the substring of templateRemainder from 0 to 1.
+                // ii. Let refReplacement be ref.
+                i += 1;
             }
         }
         // i. Let refLength be the length of ref.
-        let ref_length = r#ref.len();
         // j. Set templateRemainder to the substring of templateRemainder from refLength.
-        template_remainder = &template_remainder[ref_length..];
         // k. Set result to the string-concatenation of result and refReplacement.
-        result.push_str(&ref_replacement);
     }
+    push_literal(&mut result, literal_start, template.len());
     // 6. Return result.
     Ok(String::from_wtf8_buf(agent, result, gc.into_nogc()))
 }
