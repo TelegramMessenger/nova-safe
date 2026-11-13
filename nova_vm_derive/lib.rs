@@ -146,9 +146,9 @@ fn fields(
         Fields::Named(named) => {
             let mut patterns = Vec::new();
             let mut values = Vec::new();
-            for field in &named.named {
+            for (index, field) in named.named.iter().enumerate() {
                 let field_name = field.ident.as_ref().expect("named field");
-                let binding = format_ident!("__field_{}", field_name);
+                let binding = format_ident!("__field_{}", index);
                 let cfgs = cfg_attributes(&field.attrs);
                 let value = convert(&binding, &field.ty, lifetime, direction)?;
                 patterns.push(quote!(#(#cfgs)* #field_name: #binding));
@@ -193,8 +193,18 @@ fn convert(
 /// anywhere inside `ty`.
 fn allocating_container(ty: &Type) -> Option<String> {
     const CONTAINERS: &[&str] = &[
-        "Vec", "VecDeque", "Box", "Rc", "Arc", "HashMap", "HashSet", "AHashMap", "AHashSet",
-        "BTreeMap", "BTreeSet",
+        "Vec",
+        "VecDeque",
+        "Box",
+        "Rc",
+        "Arc",
+        "HashMap",
+        "HashSet",
+        "AHashMap",
+        "AHashSet",
+        "BTreeMap",
+        "BTreeSet",
+        "HashTable",
     ];
     fn find(tokens: TokenStream2) -> Option<String> {
         for token in tokens {

@@ -18,7 +18,7 @@ use crate::{
         try_create_data_property_or_throw, try_get, try_result_into_js, try_to_length, unwrap_try,
         unwrap_try_get_value,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{ArenaAccess, ArenaAccessMut, CreateHeapData, DirectArenaAccessMut},
 };
 
@@ -448,6 +448,7 @@ pub(crate) fn reg_exp_test<'a>(
     reg_exp_builtin_test(agent, r.unbind(), s.unbind(), gc)
 }
 
+#[derive(Bindable)]
 pub(crate) struct RegExpExecBase<'gc> {
     pub(crate) r: RegExp<'gc>,
     pub(crate) s: String<'gc>,
@@ -455,11 +456,8 @@ pub(crate) struct RegExpExecBase<'gc> {
     pub(crate) global: bool,
     pub(crate) sticky: bool,
     pub(crate) has_indices: bool,
-    #[expect(dead_code)]
     pub(crate) full_unicode: bool,
 }
-
-bindable_handle!(RegExpExecBase);
 
 pub(crate) fn reg_exp_builtin_exec_prepare<'a>(
     agent: &mut Agent,

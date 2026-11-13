@@ -93,8 +93,8 @@ impl TryFrom<f64> for SmallF64 {
 #[cfg(feature = "proposal-float16array")]
 impl From<f16> for SmallF64 {
     fn from(value: f16) -> Self {
-        // SAFETY: All floats have 8 trailing zeros when converted to double.
-        unsafe { Self::from_f64_unchecked(value as f64) }
+        // Note: All floats have 8 trailing zeros when converted to double.
+        Self::from_f64_unchecked(value as f64)
     }
 }
 

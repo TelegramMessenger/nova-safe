@@ -14,7 +14,7 @@ use crate::{
         AbstractModule, BUILTIN_STRING_MEMORY, HostDefined, LoadedModules, ModuleRequest, Number,
         Object, OrdinaryObject, PropertyDescriptor, PropertyKey, Value, define_property_or_throw,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapIndexHandle, HeapMarkAndSweep, WorkQueues, arena_vec_access, index_handle,
@@ -115,7 +115,7 @@ impl<'a> CreateHeapData<RealmRecord<'a>, Realm<'a>> for Heap {
 /// ECMAScript global environment, all of the ECMAScript code that is loaded
 /// within the scope of that global environment, and other associated state and
 /// resources.
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct RealmRecord<'a> {
     /// ### \[\[AgentSignifier]]
     ///
@@ -144,7 +144,6 @@ pub(crate) struct RealmRecord<'a> {
     /// that is a TemplateLiteral. The associated \[\[Array]] value is the
     /// corresponding template object that is passed to a tag function.
     /// NOTE: The template data is included in the AST.
-    #[expect(dead_code)]
     template_map: (),
 
     /// ### \[\[LoadedModules]]
@@ -166,8 +165,6 @@ impl RealmRecord<'_> {
         &self.intrinsics
     }
 }
-
-bindable_handle!(RealmRecord);
 
 impl HeapMarkAndSweep for RealmRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

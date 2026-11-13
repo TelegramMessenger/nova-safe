@@ -8,7 +8,7 @@ use hashbrown::{HashTable, hash_table::Entry};
 
 use crate::{
     ecmascript::{Agent, InternalMethods, Object, PropertyKey, TryResult, Value},
-    engine::{Bindable, GcToken, HeapRootData, NoGcScope, bindable_handle},
+    engine::{Bindable, GcToken, HeapRootData, NoGcScope},
     heap::{
         AtomicBits, BitRange, CompactionLists, HeapMarkAndSweep, HeapSweepWeakReference,
         PropertyKeyHeap, WeakReference, WorkQueues, sweep_heap_vector_values,
@@ -717,7 +717,7 @@ impl TryFrom<HeapRootData> for PropertyLookupCache<'_> {
 
 const N: usize = 4;
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct PropertyLookupCacheRecord<'a> {
     shapes: [Option<ObjectShape<'a>>; N],
     offsets: [PropertyOffset; N],
@@ -794,8 +794,6 @@ impl<'a> PropertyLookupCacheRecord<'a> {
         }
     }
 }
-
-bindable_handle!(PropertyLookupCacheRecord);
 
 /// An internal engine optimisation used to speed up property lookups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -882,7 +880,7 @@ impl PropertyOffset {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 #[repr(transparent)]
 pub(crate) struct PropertyLookupCacheRecordPrototypes<'a> {
     prototypes: [Option<Object<'a>>; N],
@@ -901,8 +899,6 @@ impl<'a> PropertyLookupCacheRecordPrototypes<'a> {
         }
     }
 }
-
-bindable_handle!(PropertyLookupCacheRecordPrototypes);
 
 impl HeapMarkAndSweep for Caches<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

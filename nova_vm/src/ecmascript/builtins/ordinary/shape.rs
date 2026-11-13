@@ -12,7 +12,7 @@ use crate::{
         Agent, InternalMethods, Object, Primitive, PrivateField, PropertyKey, Realm, Symbol,
         TryGetResult, Value,
     },
-    engine::{Bindable, GcToken, NoGcScope, bindable_handle},
+    engine::{Bindable, GcToken, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, CompactionLists, CreateHeapData, DirectArenaAccess,
         DirectArenaAccessMut, Heap, HeapMarkAndSweep, HeapSweepWeakReference,
@@ -875,7 +875,7 @@ impl<'a> ObjectShapeRecord<'a> {
 
 /// Data structure for finding a forward transition from an Object Shape to a
 /// larger one when a property key is added.
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct ObjectShapeTransitionMap<'a> {
     /// Parent Shape back-pointer.
     ///
@@ -902,7 +902,7 @@ pub(crate) struct ObjectShapeTransitionMap<'a> {
     // lookup does not need to access any other memory than the table itself.
     // The defined ordering is also stable as long as our GC implementation
     // index/creation order of heap strings and symbols.
-    table: HashTable<(PropertyKey<'a>, ObjectShape<'a>)>,
+    table: HashTable<(PropertyKey<'static>, ObjectShape<'static>)>,
 }
 
 impl<'a> ObjectShapeTransitionMap<'a> {
@@ -939,8 +939,6 @@ impl<'a> ObjectShapeTransitionMap<'a> {
         };
     }
 }
-
-bindable_handle!(ObjectShapeTransitionMap);
 
 /// Lookup-table to find a root Object Shape for a given prototype.
 ///

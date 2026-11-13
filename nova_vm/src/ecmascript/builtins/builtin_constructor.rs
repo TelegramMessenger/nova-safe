@@ -11,7 +11,7 @@ use crate::{
         PrivateEnvironment, PropertyKey, SourceCode, String, Value, base_class_default_constructor,
         derived_class_default_constructor, function_handle,
     },
-    engine::{Bindable, Executable, GcScope, NoGcScope, bindable_handle},
+    engine::{Bindable, Executable, GcScope, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapIndexHandle, HeapMarkAndSweep, HeapSweepWeakReference, ObjectEntry,
@@ -102,6 +102,7 @@ impl<'a> FunctionInternalProperties<'a> for BuiltinConstructorFunction<'a> {
     /// the method is present) takes arguments argumentsList (a List of
     /// ECMAScript language values) and newTarget (a constructor) and returns
     /// either a normal completion containing an Object or a throw completion.
+    #[allow(unsafe_code)]
     fn function_construct<'gc>(
         self,
         agent: &mut Agent,
@@ -315,8 +316,6 @@ impl HeapSweepWeakReference for BuiltinConstructorFunction<'static> {
             .map(Self)
     }
 }
-
-bindable_handle!(BuiltinConstructorRecord);
 
 impl HeapMarkAndSweep for BuiltinConstructorRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

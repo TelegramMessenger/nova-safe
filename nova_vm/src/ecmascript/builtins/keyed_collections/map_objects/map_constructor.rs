@@ -446,8 +446,9 @@ pub(crate) fn add_entries_from_iterable<'a, T: Into<Object<'a>> + TryFrom<Object
         // b. If next is DONE, return target.
         let Some(next) = next else {
             let target = target.take(agent).bind(gc.into_nogc());
-            // SAFETY: passed in type is still the same type.
-            let target = unsafe { T::try_from(target).unwrap_unchecked() };
+            let target = T::try_from(target)
+                .ok()
+                .expect("target is still of the type that was passed in");
             return Ok(target);
         };
         // c. If next is not an Object, then

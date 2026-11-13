@@ -13,7 +13,7 @@ use crate::{
         script_lexically_declared_names, script_lexically_scoped_declarations,
         script_var_declared_names, script_var_scoped_declarations,
     },
-    engine::{Bindable, Executable, GcScope, NoGcScope, Scopable, Vm, bindable_handle},
+    engine::{Bindable, Executable, GcScope, NoGcScope, Scopable, Vm},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapIndexHandle, HeapMarkAndSweep, WorkQueues, arena_vec_access, index_handle,
@@ -126,7 +126,7 @@ impl<'a> CreateHeapData<ScriptRecord<'a>, Script<'a>> for Heap {
 /// ### [16.1.4 Script Records](https://tc39.es/ecma262/#sec-script-records)
 ///
 /// A Script Record encapsulates information about a script being evaluated.
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct ScriptRecord<'a> {
     /// ### \[\[Realm]]
     ///
@@ -164,8 +164,6 @@ pub(crate) struct ScriptRecord<'a> {
     /// SourceCode struct.
     pub(crate) source_code: SourceCode<'a>,
 }
-
-bindable_handle!(ScriptRecord);
 
 impl HeapMarkAndSweep for ScriptRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

@@ -16,14 +16,17 @@ use super::continue_dynamic_import;
 use ahash::AHasher;
 use hashbrown::{HashTable, hash_table::Entry};
 use oxc_ast::ast;
-use std::hash::{Hash, Hasher};
+use std::{
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+};
 
 use crate::{
     ecmascript::{
         Agent, HostDefined, JsResult, Module, Realm, Script, ScriptOrModule,
         module_namespace_create, types::String,
     },
-    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, bindable_handle},
+    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable},
     heap::{
         ArenaAccess, BaseIndex, CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues,
         arena_vec_access,
@@ -34,7 +37,7 @@ use crate::{
 ///
 /// A ModuleRequest Record represents the request to import a module with given
 /// import attributes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Bindable)]
 pub(crate) struct ModuleRequestRecord<'a> {
     /// ### \[\[Specifier]]
     ///
@@ -50,7 +53,7 @@ pub(crate) struct ModuleRequestRecord<'a> {
     ///
     /// > NOTE: The attributes are sorted by key in a stable, deterministic,
     /// > but undetermined order.
-    attributes: Option<Box<[ImportAttributeRecord<'a>]>>,
+    attributes: Option<Box<[ImportAttributeRecord<'static>]>>,
     /// Precomputed hash of the ModuleRequest specifier and attributes.
     hash: u64,
 }
@@ -154,7 +157,7 @@ impl<'r> ModuleRequest<'r> {
         agent.heap.module_request_records.push(
             ModuleRequestRecord {
                 specifier,
-                attributes: Some(attributes),
+                attributes: Some(attributes.unbind()),
                 hash,
             }
             .unbind(),
@@ -184,8 +187,6 @@ impl HeapIndexHandle for ModuleRequest<'_> {
         self.0.get_index_u32()
     }
 }
-
-bindable_handle!(ModuleRequestRecord);
 
 /// # [LoadedModuleRequest Records](https://tc39.es/ecma262/#table-loadedmodulerequest-fields)
 #[derive(Debug)]
@@ -233,9 +234,10 @@ pub struct ImportAttributeRecord<'a> {
 /// record to request the importation of a module with the relative import
 /// attributes to the resolved Module Record. The list does not contain two
 /// different Records r1 and r2 such that ModuleRequestsEqual(r1, r2) is true.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Bindable)]
 pub(crate) struct LoadedModules<'a> {
-    table: HashTable<LoadedModuleRequestRecord<'a>>,
+    table: HashTable<LoadedModuleRequestRecord<'static>>,
+    _gc: PhantomData<AbstractModule<'a>>,
 }
 
 impl<'a> LoadedModules<'a> {

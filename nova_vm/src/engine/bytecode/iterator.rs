@@ -14,7 +14,7 @@ use crate::{
         create_iter_result_object, get, get_iterator_from_method, get_method, get_object_method,
         throw_not_callable, to_boolean, try_get,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, ScopeToken, Scoped, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable, ScopeToken, Scoped},
     heap::{CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
 };
 
@@ -184,17 +184,17 @@ impl<'a> ActiveIterator<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) enum VmIteratorRecord<'a> {
     /// Special type for iterators that do not have a callable next method.
     InvalidIterator {
         iterator: Object<'a>,
     },
-    ObjectProperties(Box<ObjectPropertiesIteratorRecord<'a>>),
+    ObjectProperties(Box<ObjectPropertiesIteratorRecord<'static>>),
     ArrayValues(ArrayValuesIteratorRecord<'a>),
     AsyncFromSyncGenericIterator(IteratorRecord<'a>),
     GenericIterator(IteratorRecord<'a>),
-    SliceIterator(ScopedArgumentsList<'a>),
+    SliceIterator(ScopedArgumentsList<'static>),
     EmptySliceIterator,
 }
 
@@ -375,8 +375,6 @@ impl<'a> VmIteratorRecord<'a> {
         }
     }
 }
-
-bindable_handle!(VmIteratorRecord);
 
 struct ObjectPropertiesIterator<'a> {
     iter: ActiveIterator<'a>,
@@ -735,7 +733,7 @@ impl<'a> ArrayValuesIterator<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct ArrayValuesIteratorRecord<'a> {
     array: Array<'a>,
     index: u32,

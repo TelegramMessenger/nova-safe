@@ -12,9 +12,9 @@ use wtf8::Wtf8Buf;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType, JsError,
-        JsResult, Number, Object, Primitive, Promise, Reference, ScopedArgumentsList, String,
-        Value, call_function, get_method, is_callable, ordinary_has_instance, to_boolean,
-        to_numeric, to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
+        JsResult, Number, Object, Primitive, Promise, Reference, String, Value, call_function,
+        get_method, is_callable, ordinary_has_instance, to_boolean, to_numeric,
+        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
         try_get_object_method, try_result_into_option_js,
     },
     engine::{
@@ -229,16 +229,11 @@ impl Vm {
             ArgumentsList::from_mut_slice(arguments).with_scoped(
                 agent,
                 |agent, arguments, gc| {
-                    // SAFETY: awaits and yields are invalid syntax inside an arguments
-                    // list, so this reference shouldn't remain alive after this
+                    // Note: awaits and yields are invalid syntax inside an
+                    // arguments list, so this list isn't used after this
                     // function returns.
-                    let arguments = unsafe {
-                        core::mem::transmute::<ScopedArgumentsList, ScopedArgumentsList<'static>>(
-                            arguments,
-                        )
-                    };
                     vm.iterator_stack
-                        .push(VmIteratorRecord::SliceIterator(arguments));
+                        .push(VmIteratorRecord::SliceIterator(arguments.into_static()));
                     if agent.options.print_internals {
                         vm.print_internals(agent, executable.clone(), gc.nogc());
                     }
@@ -989,14 +984,14 @@ impl Vm {
     }
 }
 
-fn concat_string_from_slice<'gc>(
+fn concat_string_from_slice<'a, 'gc>(
     agent: &mut Agent,
-    slice: &[String],
+    strings: impl IntoIterator<Item = String<'a>>,
     string_length: usize,
     gc: NoGcScope<'gc, '_>,
 ) -> String<'gc> {
     let mut result_string = Wtf8Buf::with_capacity(string_length);
-    for string in slice.iter() {
+    for string in strings {
         result_string.push_wtf8(string.as_wtf8_(agent));
     }
     String::from_wtf8_buf(agent, result_string, gc)

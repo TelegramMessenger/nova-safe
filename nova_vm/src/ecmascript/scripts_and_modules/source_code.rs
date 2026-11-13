@@ -18,7 +18,7 @@ use oxc_span::SourceType;
 
 use crate::{
     ecmascript::{HeapString, String, execution::Agent},
-    engine::{Bindable, NoGcScope, bindable_handle},
+    engine::{Bindable, NoGcScope},
     heap::{
         ArenaAccess, BaseIndex, CompactionLists, CreateHeapData, Heap, HeapIndexHandle,
         HeapMarkAndSweep, WorkQueues, arena_vec_access, index_handle,
@@ -304,6 +304,7 @@ impl<'a> SourceCode<'a> {
     }
 }
 
+#[derive(Bindable)]
 pub(crate) struct SourceCodeHeapData<'a> {
     /// The source JavaScript string data the eval was called with. The string
     /// is known and required to be a HeapString because functions created
@@ -314,7 +315,6 @@ pub(crate) struct SourceCodeHeapData<'a> {
     scoping: Scoping,
     nodes: AstNodes<'static>,
     /// The arena that contains the parsed data of the eval source.
-    #[expect(dead_code)]
     allocator: Allocator,
 }
 
@@ -334,8 +334,6 @@ impl<'a> CreateHeapData<SourceCodeHeapData<'a>, SourceCode<'a>> for Heap {
         SourceCode(BaseIndex::last(&self.source_codes))
     }
 }
-
-bindable_handle!(SourceCodeHeapData);
 
 impl HeapMarkAndSweep for SourceCodeHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

@@ -15,7 +15,7 @@ use crate::{
         Agent, ExecutionContext, InternalMethods, InternalSlots, JsError, OrdinaryObject,
         PromiseCapability, PromiseReactionType, ProtoIntrinsics, Value, object_handle,
     },
-    engine::{Bindable, Executable, GcScope, NoGcScope, Scopable, SuspendedVm, bindable_handle},
+    engine::{Bindable, Executable, GcScope, NoGcScope, Scopable, SuspendedVm},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -348,10 +348,10 @@ impl<'a> CreateHeapData<AsyncGeneratorHeapData<'a>, AsyncGenerator<'a>> for Heap
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Bindable)]
 pub(crate) struct AsyncGeneratorHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
-    pub(crate) async_generator_state: Option<AsyncGeneratorState<'a>>,
+    pub(crate) async_generator_state: Option<AsyncGeneratorState>,
     pub(crate) executable: Option<Executable<'a>>,
 }
 
@@ -364,18 +364,18 @@ pub(crate) enum AsyncGeneratorAwaitKind {
 }
 
 #[derive(Debug)]
-pub(crate) enum AsyncGeneratorState<'a> {
+pub(crate) enum AsyncGeneratorState {
     SuspendedStart {
         vm: SuspendedVm,
         execution_context: ExecutionContext,
-        queue: VecDeque<AsyncGeneratorRequest<'a>>,
+        queue: VecDeque<AsyncGeneratorRequest<'static>>,
     },
     SuspendedYield {
         vm: SuspendedVm,
         execution_context: ExecutionContext,
-        queue: VecDeque<AsyncGeneratorRequest<'a>>,
+        queue: VecDeque<AsyncGeneratorRequest<'static>>,
     },
-    Executing(VecDeque<AsyncGeneratorRequest<'a>>),
+    Executing(VecDeque<AsyncGeneratorRequest<'static>>),
     /// Custom addition to \[\[AsyncGeneratorState]]: this corresponds to an
     /// Executing generator performing an Await; from the specification
     /// perspective the generator is still executing but its execution context
@@ -383,14 +383,14 @@ pub(crate) enum AsyncGeneratorState<'a> {
     ExecutingAwait {
         vm: SuspendedVm,
         execution_context: ExecutionContext,
-        queue: VecDeque<AsyncGeneratorRequest<'a>>,
+        queue: VecDeque<AsyncGeneratorRequest<'static>>,
         kind: AsyncGeneratorAwaitKind,
     },
-    DrainingQueue(VecDeque<AsyncGeneratorRequest<'a>>),
-    Completed(VecDeque<AsyncGeneratorRequest<'a>>),
+    DrainingQueue(VecDeque<AsyncGeneratorRequest<'static>>),
+    Completed(VecDeque<AsyncGeneratorRequest<'static>>),
 }
 
-impl AsyncGeneratorState<'_> {
+impl AsyncGeneratorState {
     pub(crate) fn is_active(&self) -> bool {
         matches!(
             self,
@@ -497,8 +497,6 @@ impl HeapMarkAndSweep for AsyncGeneratorRequest<'static> {
         capability.sweep_values(compactions);
     }
 }
-
-bindable_handle!(AsyncGeneratorHeapData);
 
 impl HeapMarkAndSweep for AsyncGeneratorHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

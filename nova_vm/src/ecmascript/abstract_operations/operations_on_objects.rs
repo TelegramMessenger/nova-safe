@@ -977,9 +977,9 @@ pub(crate) fn create_array_from_list<'a>(
     let len = elements.len();
     // 1. Let array be ! ArrayCreate(0).
     let array = array_create(agent, len, len, None, gc).unwrap();
-    array
-        .as_mut_slice(agent)
-        .copy_from_slice(unsafe { core::mem::transmute::<&[Value], &[Option<Value>]>(elements) });
+    for (slot, element) in array.as_mut_slice(agent).iter_mut().zip(elements) {
+        *slot = Some(element.unbind());
+    }
     // 2. Let n be 0.
     // 3. For each element e of elements, do
     // a. Perform ! CreateDataPropertyOrThrow(array, ! ToString(𝔽(n)), e).
@@ -2752,7 +2752,39 @@ pub(crate) fn initialize_instance_elements<'a>(
 /// The abstract operation AddValueToKeyedGroup takes arguments groups (a List of Records with fields
 /// [[Key]] (an ECMAScript language value) and [[Elements]] (a List of ECMAScript language values)),
 /// key (an ECMAScript language value), and value (an ECMAScript language value) and returns UNUSED.
-pub(crate) fn add_value_to_keyed_group<K: 'static + Rootable + Copy + Into<Value<'static>>>(
+/// A key type of a keyed group: PROPERTY keys or COLLECTION keys.
+pub(crate) trait KeyedGroupKey: 'static + Rootable + Copy + Into<Value<'static>> {
+    fn add_to_keyed_group(
+        self,
+        agent: &mut Agent,
+        groups: &mut ScopedCollection<Box<KeyedGroup>>,
+        value: Value,
+    );
+}
+
+impl KeyedGroupKey for PropertyKey<'static> {
+    fn add_to_keyed_group(
+        self,
+        agent: &mut Agent,
+        groups: &mut ScopedCollection<Box<KeyedGroup>>,
+        value: Value,
+    ) {
+        groups.add_property_keyed_value(agent, self, value);
+    }
+}
+
+impl KeyedGroupKey for Value<'static> {
+    fn add_to_keyed_group(
+        self,
+        agent: &mut Agent,
+        groups: &mut ScopedCollection<Box<KeyedGroup>>,
+        value: Value,
+    ) {
+        groups.add_collection_keyed_value(agent, self, value);
+    }
+}
+
+pub(crate) fn add_value_to_keyed_group<K: KeyedGroupKey>(
     agent: &mut Agent,
     groups: &mut ScopedCollection<Box<KeyedGroup>>,
     key: K,
@@ -2765,17 +2797,7 @@ pub(crate) fn add_value_to_keyed_group<K: 'static + Rootable + Copy + Into<Value
     // iii. Return UNUSED.
     // 2. Let group be the Record { [[Key]]: key, [[Elements]]: « value » }.
     // 3. Append group to groups.
-    if core::any::TypeId::of::<K>() == core::any::TypeId::of::<PropertyKey>() {
-        // SAFETY: K is PropertyKey, so it is safe to transmute_copy.
-        let key = unsafe { core::mem::transmute_copy::<K, PropertyKey>(&key) };
-        groups.add_property_keyed_value(agent, key, value);
-    } else if core::any::TypeId::of::<K>() == core::any::TypeId::of::<Value>() {
-        // SAFETY: K is Value, so it is safe to transmute_copy.
-        let key = unsafe { core::mem::transmute_copy::<K, Value>(&key) };
-        groups.add_collection_keyed_value(agent, key, value);
-    } else {
-        unreachable!()
-    }
+    key.add_to_keyed_group(agent, groups, value);
 
     // 4. Return UNUSED.
 }

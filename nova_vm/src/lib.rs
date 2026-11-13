@@ -4,6 +4,7 @@
 
 #![cfg_attr(feature = "proposal-float16array", feature(f16))]
 #![warn(missing_docs)]
+#![deny(unsafe_code)]
 
 //! # Nova JavaScript engine
 //!

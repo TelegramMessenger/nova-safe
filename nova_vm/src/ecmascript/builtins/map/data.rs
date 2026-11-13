@@ -7,7 +7,7 @@ use crate::{
         BIGINT_DISCRIMINANT, HeapBigInt, HeapNumber, HeapPrimitive, HeapString,
         NUMBER_DISCRIMINANT, OrdinaryObject, STRING_DISCRIMINANT, Value,
     },
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{CompactionLists, HeapMarkAndSweep, PrimitiveHeapAccess, WorkQueues},
 };
 use ahash::AHasher;
@@ -19,14 +19,14 @@ use core::{
 use hashbrown::{HashTable, hash_table::Entry};
 use soavec_derive::SoAble;
 
-#[derive(Debug, Default, SoAble)]
+#[derive(Debug, Default, SoAble, Bindable)]
 pub(crate) struct MapHeapData<'a> {
     /// Low-level hash table pointing to keys-values indexes.
     pub(super) map_data: RefCell<HashTable<u32>>,
     // TODO: Use a ParallelVec to remove one unnecessary allocation.
     // key_values: ParallelVec<Option<Value>, Option<Value>>
-    pub(super) values: Vec<Option<Value<'a>>>,
-    pub(super) keys: Vec<Option<Value<'a>>>,
+    pub(super) values: Vec<Option<Value<'static>>>,
+    pub(super) keys: Vec<Option<Value<'static>>>,
     pub(super) object_index: Option<OrdinaryObject<'a>>,
     /// Flag that lets the Map know if it needs to rehash its primitive keys.
     ///
@@ -40,8 +40,6 @@ pub(crate) struct MapHeapData<'a> {
     // the items in the map cannot be compacted.
     // observed: bool;
 }
-bindable_handle!(MapHeapData);
-
 impl MapHeapData<'_> {
     pub(crate) fn with_capacity(new_len: usize) -> Self {
         Self {

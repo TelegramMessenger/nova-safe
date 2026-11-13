@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use core::marker::PhantomData;
+
 use num_traits::Num;
 #[cfg(feature = "regexp")]
 use oxc_ast::ast::RegExpFlags;
@@ -157,6 +159,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 .into_iter()
                 .map(|(exe, b)| (exe.unbind(), b))
                 .collect(),
+            _gc: PhantomData,
         })
     }
 

@@ -7,14 +7,14 @@ use crate::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Function, FunctionInternalProperties, JsError,
         JsResult, OrdinaryObject, Promise, String, Value, call_function, function_handle, invoke,
     },
-    engine::{Bindable, GcScope, Scopable, bindable_handle},
+    engine::{Bindable, GcScope, Scopable},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
     },
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 enum PromiseFinallyFunctionType<'a> {
     ResolveFinally {
         on_finally: Function<'a>,
@@ -40,13 +40,11 @@ enum PromiseFinallyFunctionType<'a> {
 /// \[\[Promise\]\] and \[\[AlreadyResolved\]\] internal slots.
 ///
 /// The "length" property of a promise reject function is 1𝔽.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) struct PromiseFinallyFunctionHeapData<'a> {
     backing_object: Option<OrdinaryObject<'a>>,
     resolve_type: PromiseFinallyFunctionType<'a>,
 }
-bindable_handle!(PromiseFinallyFunctionHeapData);
-
 /// Special functions created as part of `Promise.prototype.finally`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]

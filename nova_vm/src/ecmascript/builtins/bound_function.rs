@@ -107,11 +107,9 @@ pub(crate) fn bound_function_create<'a>(
         }
     };
     elements.len = u32::try_from(bound_args.len()).unwrap();
-    // SAFETY: Option<Value> is an extra variant of the Value enum.
-    // The transmute effectively turns Value into Some(Value).
-    elements
-        .get_mut(agent)
-        .copy_from_slice(unsafe { core::mem::transmute::<&[Value], &[Option<Value>]>(bound_args) });
+    for (slot, arg) in elements.get_mut(agent).iter_mut().zip(bound_args) {
+        *slot = Some(arg.unbind());
+    }
     let data = BoundFunctionHeapData {
         object_index: None,
         length: 0,

@@ -578,18 +578,21 @@ impl<'a> OrdinaryObject<'a> {
         shape: ObjectShape<'a>,
         values: &[Value<'a>],
     ) -> Self {
-        // SAFETY: Option<Value> uses a niche in Value enum at discriminant 0.
-        let values = unsafe { core::mem::transmute::<&[Value<'a>], &[Option<Value<'a>>]>(values) };
+        let mut elements = agent
+            .heap
+            .elements
+            .allocate_elements_with_length(values.len())
+            .expect("Failed to create object");
+        elements.len = u32::try_from(values.len()).expect("Failed to create object");
+        for (slot, value) in elements.get_mut(agent).iter_mut().zip(values) {
+            *slot = Some(value.unbind());
+        }
         let ElementsVector {
             elements_index: values,
             cap,
             len,
             len_writable: _,
-        } = agent
-            .heap
-            .elements
-            .allocate_property_storage(values, None)
-            .expect("Failed to create object");
+        } = elements;
         assert_eq!(cap, shape.values_capacity(agent));
         assert_eq!(len, shape.len(agent));
         agent.heap.create(ObjectRecord::new(shape, values))
@@ -898,8 +901,111 @@ impl<'a> TryFrom<Value<'a>> for Object<'a> {
             | Value::SmallF64(_)
             | Value::BigInt(_)
             | Value::SmallBigInt(_) => Err(()),
-            // SAFETY: non-primitives are all objects.
-            _ => Ok(unsafe { core::mem::transmute::<Value<'a>, Object<'a>>(value) }),
+            Value::Object(data) => Ok(Object::Object(data)),
+            Value::BoundFunction(data) => Ok(Object::BoundFunction(data)),
+            Value::BuiltinFunction(data) => Ok(Object::BuiltinFunction(data)),
+            Value::ECMAScriptFunction(data) => Ok(Object::ECMAScriptFunction(data)),
+            Value::BuiltinConstructorFunction(data) => Ok(Object::BuiltinConstructorFunction(data)),
+            Value::BuiltinPromiseResolvingFunction(data) => {
+                Ok(Object::BuiltinPromiseResolvingFunction(data))
+            }
+            Value::BuiltinPromiseFinallyFunction(data) => {
+                Ok(Object::BuiltinPromiseFinallyFunction(data))
+            }
+            Value::BuiltinProxyRevokerFunction => Ok(Object::BuiltinProxyRevokerFunction),
+            Value::PrimitiveObject(data) => Ok(Object::PrimitiveObject(data)),
+            Value::Arguments(data) => Ok(Object::Arguments(data)),
+            Value::Array(data) => Ok(Object::Array(data)),
+            #[cfg(feature = "date")]
+            Value::Date(data) => Ok(Object::Date(data)),
+            #[cfg(feature = "temporal")]
+            Value::Instant(data) => Ok(Object::Instant(data)),
+            #[cfg(feature = "temporal")]
+            Value::Duration(data) => Ok(Object::Duration(data)),
+            #[cfg(feature = "temporal")]
+            Value::PlainTime(data) => Ok(Object::PlainTime(data)),
+            Value::Error(data) => Ok(Object::Error(data)),
+            Value::FinalizationRegistry(data) => Ok(Object::FinalizationRegistry(data)),
+            Value::Map(data) => Ok(Object::Map(data)),
+            Value::Promise(data) => Ok(Object::Promise(data)),
+            Value::Proxy(data) => Ok(Object::Proxy(data)),
+            #[cfg(feature = "regexp")]
+            Value::RegExp(data) => Ok(Object::RegExp(data)),
+            #[cfg(feature = "set")]
+            Value::Set(data) => Ok(Object::Set(data)),
+            #[cfg(feature = "weak-refs")]
+            Value::WeakMap(data) => Ok(Object::WeakMap(data)),
+            #[cfg(feature = "weak-refs")]
+            Value::WeakRef(data) => Ok(Object::WeakRef(data)),
+            #[cfg(feature = "weak-refs")]
+            Value::WeakSet(data) => Ok(Object::WeakSet(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::ArrayBuffer(data) => Ok(Object::ArrayBuffer(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::DataView(data) => Ok(Object::DataView(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Int8Array(data) => Ok(Object::Int8Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Uint8Array(data) => Ok(Object::Uint8Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Uint8ClampedArray(data) => Ok(Object::Uint8ClampedArray(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Int16Array(data) => Ok(Object::Int16Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Uint16Array(data) => Ok(Object::Uint16Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Int32Array(data) => Ok(Object::Int32Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Uint32Array(data) => Ok(Object::Uint32Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::BigInt64Array(data) => Ok(Object::BigInt64Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::BigUint64Array(data) => Ok(Object::BigUint64Array(data)),
+            #[cfg(feature = "proposal-float16array")]
+            Value::Float16Array(data) => Ok(Object::Float16Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Float32Array(data) => Ok(Object::Float32Array(data)),
+            #[cfg(feature = "array-buffer")]
+            Value::Float64Array(data) => Ok(Object::Float64Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedArrayBuffer(data) => Ok(Object::SharedArrayBuffer(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedDataView(data) => Ok(Object::SharedDataView(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedInt8Array(data) => Ok(Object::SharedInt8Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedUint8Array(data) => Ok(Object::SharedUint8Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedUint8ClampedArray(data) => Ok(Object::SharedUint8ClampedArray(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedInt16Array(data) => Ok(Object::SharedInt16Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedUint16Array(data) => Ok(Object::SharedUint16Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedInt32Array(data) => Ok(Object::SharedInt32Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedUint32Array(data) => Ok(Object::SharedUint32Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedBigInt64Array(data) => Ok(Object::SharedBigInt64Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedBigUint64Array(data) => Ok(Object::SharedBigUint64Array(data)),
+            #[cfg(all(feature = "proposal-float16array", feature = "shared-array-buffer"))]
+            Value::SharedFloat16Array(data) => Ok(Object::SharedFloat16Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedFloat32Array(data) => Ok(Object::SharedFloat32Array(data)),
+            #[cfg(feature = "shared-array-buffer")]
+            Value::SharedFloat64Array(data) => Ok(Object::SharedFloat64Array(data)),
+            Value::AsyncGenerator(data) => Ok(Object::AsyncGenerator(data)),
+            Value::ArrayIterator(data) => Ok(Object::ArrayIterator(data)),
+            #[cfg(feature = "set")]
+            Value::SetIterator(data) => Ok(Object::SetIterator(data)),
+            Value::MapIterator(data) => Ok(Object::MapIterator(data)),
+            Value::StringIterator(data) => Ok(Object::StringIterator(data)),
+            #[cfg(feature = "regexp")]
+            Value::RegExpStringIterator(data) => Ok(Object::RegExpStringIterator(data)),
+            Value::Generator(data) => Ok(Object::Generator(data)),
+            Value::Module(data) => Ok(Object::Module(data)),
+            Value::EmbedderObject(data) => Ok(Object::EmbedderObject(data)),
         }
     }
 }
