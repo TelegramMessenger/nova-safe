@@ -596,9 +596,10 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     //    obtained from element lastIndex of S.
     let input_index = last_index;
     // c. Let r be matcher(input, inputIndex).
-    let result = matcher.captures_at(s_bytes, input_index);
+    let mut captures = matcher.capture_locations();
+    let result = matcher.captures_read_at(&mut captures, s_bytes, input_index);
     // d. If r is failure, then
-    let Some(result) = result else {
+    let Some(full_match) = result else {
         // i. If global is true or sticky is true, then
         if global || sticky {
             // 1. Perform ? Set(R, "lastIndex", +0𝔽, true).
@@ -607,9 +608,6 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         // ii. Return null.
         return Ok(None);
     };
-    let full_match = result
-        .get(0)
-        .expect("first capture group is always the full match");
     // i. If sticky is true, then
     if sticky && full_match.start() != last_index {
         // sticky did match but not at the start position.
@@ -633,16 +631,12 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         r_data.last_index = e.into();
     }
     // 17. Let n be the number of elements in r.[[Captures]].
-    let n = result.len();
+    let n = captures.len();
     // 18. Assert: n = R.[[RegExpRecord]].[[CapturingGroupsCount]].
     debug_assert_eq!(n, matcher.captures_len());
     // 19. Assert: n < 2**32 - 1.
     debug_assert!(n < 2usize.pow(32) - 1);
     let has_group_name = matcher.capture_names().any(|n| n.is_some());
-    let captures = result
-        .iter()
-        .map(|capture| capture.map(|capture| capture.range()))
-        .collect::<Vec<_>>();
     // 20. Let A be ! ArrayCreate(n + 1).
     // Note: we use n because it already contains the full-match group in it.
     let a = array_create(agent, n, n, None, gc).unwrap();
@@ -698,7 +692,8 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     // 33. Let matchedGroupNames be a new empty List.
     // let mut matched_group_names = vec![];
     // 34. For each integer i such that 1 ≤ i ≤ n, in ascending order, do
-    for (i, capture_i) in captures.into_iter().enumerate() {
+    for i in 0..n {
+        let capture_i = captures.get(i);
         // a. Let captureI be ith element of r.[[Captures]].
         if has_indices {
             // b. If captureI is undefined, then
@@ -714,11 +709,20 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
             //         v. Let capturedValue be GetMatchString(S, capture).
             //         vi. Append capture to indices.
         }
-        let captured_value = if let Some(capture_i) = capture_i {
-            let captured =
-                std::string::String::from_utf8_lossy(&s.as_bytes_(&agent.heap.strings)[capture_i])
-                    .into_owned();
-            String::from_string(agent, captured, gc).into()
+        let captured_value = if let Some((start, end)) = capture_i {
+            let captured = match std::string::String::from_utf8_lossy(
+                &s.as_bytes_(&agent.heap.strings)[start..end],
+            ) {
+                std::borrow::Cow::Borrowed(str) => match String::try_from(str) {
+                    Ok(small) => Err(small),
+                    Err(()) => Ok(str.to_owned()),
+                },
+                std::borrow::Cow::Owned(string) => Ok(string),
+            };
+            match captured {
+                Ok(captured) => String::from_string(agent, captured, gc).into(),
+                Err(small) => small.into(),
+            }
         } else {
             Value::Undefined
         };
