@@ -4,19 +4,17 @@
 
 use crate::{
     ecmascript::{Agent, ExceptionType, JsResult, Object},
-    engine::{Bindable, NoGcScope, bindable_handle},
+    engine::{Bindable, NoGcScope},
     heap::ArenaAccess,
 };
 
 use super::{Proxy, data::ProxyHeapData};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) struct NonRevokedProxy<'a> {
     pub(crate) target: Object<'a>,
     pub(crate) handler: Object<'a>,
 }
-
-bindable_handle!(NonRevokedProxy);
 
 /// ### [10.5.14 ValidateNonRevokedProxy ( proxy )](https://tc39.es/ecma262/#sec-validatenonrevokedproxy)
 ///

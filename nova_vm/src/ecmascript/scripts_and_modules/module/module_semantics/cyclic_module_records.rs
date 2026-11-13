@@ -11,7 +11,7 @@ use crate::{
         PromiseReactionHandler, SourceTextModule, Value, get_imported_module, inner_promise_then,
         unwrap_try,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -370,11 +370,9 @@ impl<'m> CyclicModuleRecord<'m> {
 ///
 /// Cyclic module records are the module records that can participate in
 /// dependency cycles. These are ECMAScript modules and WebAssembly modules.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 #[repr(transparent)]
 pub struct CyclicModule<'a>(InnerCyclicModule<'a>);
-
-bindable_handle!(CyclicModule);
 
 impl core::fmt::Debug for CyclicModule<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -392,13 +390,11 @@ impl<'a> From<CyclicModule<'a>> for AbstractModule<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 pub(crate) enum InnerCyclicModule<'a> {
     #[expect(dead_code)]
     SourceTextModule(SourceTextModule<'a>),
 }
-
-bindable_handle!(InnerCyclicModule);
 
 pub(crate) trait CyclicModuleSlots: Copy {
     /// ### \[\[Status]]

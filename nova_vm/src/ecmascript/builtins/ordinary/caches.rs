@@ -440,7 +440,7 @@ impl Caches<'static> {
 
 /// Property lookup caches are an internal optimisation that the engine uses in
 /// bytecode execution to speed up property lookups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 #[repr(transparent)]
 pub struct PropertyLookupCache<'a>(NonZeroU32, PhantomData<&'a GcToken>);
 
@@ -697,8 +697,6 @@ impl<'a> PropertyLookupCache<'a> {
         )
     }
 }
-
-bindable_handle!(PropertyLookupCache);
 
 impl From<PropertyLookupCache<'_>> for HeapRootData {
     fn from(value: PropertyLookupCache<'_>) -> Self {

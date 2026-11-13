@@ -7,7 +7,7 @@ use crate::{
         Agent, InternalMethods, InternalSlots, Object, OrdinaryObject, ProtoIntrinsics,
         object_handle,
     },
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -96,15 +96,13 @@ pub(crate) enum CollectionIteratorKind {
     KeyAndValue,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Bindable)]
 pub(crate) struct ArrayIteratorHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) array: Option<Object<'a>>,
     pub(crate) next_index: i64,
     pub(crate) kind: CollectionIteratorKind,
 }
-
-bindable_handle!(ArrayIteratorHeapData);
 
 impl HeapMarkAndSweep for ArrayIteratorHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

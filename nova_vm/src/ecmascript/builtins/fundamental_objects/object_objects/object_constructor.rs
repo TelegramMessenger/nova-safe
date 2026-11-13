@@ -343,7 +343,7 @@ impl ObjectConstructor {
                     .get(agent)
                     .internal_get_own_property(
                         agent,
-                        next_key.get(gc.nogc()).unbind(),
+                        next_key.get(agent, gc.nogc()).unbind(),
                         gc.reborrow(),
                     )
                     .unbind()?
@@ -359,7 +359,7 @@ impl ObjectConstructor {
                 let prop_value = get(
                     agent,
                     scoped_from.get(agent),
-                    next_key.get(gc.nogc()).unbind(),
+                    next_key.get(agent, gc.nogc()).unbind(),
                     gc.reborrow(),
                 )
                 .unbind()?
@@ -368,7 +368,7 @@ impl ObjectConstructor {
                 set(
                     agent,
                     to.get(agent),
-                    next_key.get(gc.nogc()).unbind(),
+                    next_key.get(agent, gc.nogc()).unbind(),
                     prop_value.unbind(),
                     true,
                     gc.reborrow(),
@@ -1209,7 +1209,11 @@ fn object_define_properties<'gc>(
         // a. Let propDesc be ? props.[[GetOwnProperty]](nextKey).
         let prop_desc = props
             .get(agent)
-            .internal_get_own_property(agent, next_key.get(gc.nogc()).unbind(), gc.reborrow())
+            .internal_get_own_property(
+                agent,
+                next_key.get(agent, gc.nogc()).unbind(),
+                gc.reborrow(),
+            )
             .unbind()?
             .bind(gc.nogc());
         // b. If propDesc is not undefined and propDesc.[[Enumerable]] is true, then
@@ -1225,7 +1229,7 @@ fn object_define_properties<'gc>(
         let desc_obj = get(
             agent,
             props.get(agent),
-            next_key.get(gc.nogc()).unbind(),
+            next_key.get(agent, gc.nogc()).unbind(),
             gc.reborrow(),
         )
         .unbind()?
@@ -1247,7 +1251,7 @@ fn object_define_properties<'gc>(
         define_property_or_throw(
             agent,
             scoped_o.get(agent),
-            property_key.get(gc.nogc()).unbind(),
+            property_key.get(agent, gc.nogc()).unbind(),
             property_descriptor.take(agent, gc.nogc()).unbind(),
             gc.reborrow(),
         )
@@ -1466,7 +1470,7 @@ fn get_own_property_descriptors_slow<'gc>(
         // a. Let desc be ? obj.[[GetOwnProperty]](key).
         let desc = obj
             .get(agent)
-            .internal_get_own_property(agent, key.get(gc.nogc()).unbind(), gc.reborrow())
+            .internal_get_own_property(agent, key.get(agent, gc.nogc()).unbind(), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
         // b. Let descriptor be FromPropertyDescriptor(desc).
@@ -1478,7 +1482,7 @@ fn get_own_property_descriptors_slow<'gc>(
             assert!(unwrap_try(try_create_data_property(
                 agent,
                 descriptors.get(agent).bind(gc),
-                key.get(gc),
+                key.get(agent, gc),
                 descriptor.unbind().into(),
                 None,
                 gc,

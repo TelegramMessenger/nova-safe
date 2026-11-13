@@ -10,12 +10,12 @@ use crate::{
         PropertyLookupCache, TryError, TryHasResult, TryResult, Value, get, has_property,
         is_callable, to_boolean, try_get, try_get_result_into_value, try_has_property,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::ObjectEntry,
 };
 
 /// ### [6.2.6 The Property Descriptor Specification Type](https://tc39.es/ecma262/#sec-property-descriptor-specification-type)
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Bindable)]
 pub struct PropertyDescriptor<'a> {
     /// \[\[Value]]
     pub value: Option<Value<'a>>,
@@ -731,5 +731,3 @@ impl<'a> PropertyDescriptor<'a> {
             || self.configurable.is_some()
     }
 }
-
-bindable_handle!(PropertyDescriptor);

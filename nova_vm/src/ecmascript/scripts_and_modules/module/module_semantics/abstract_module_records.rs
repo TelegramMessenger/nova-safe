@@ -6,7 +6,7 @@
 
 use crate::{
     ecmascript::{Agent, HostDefined, JsResult, Module, ModuleEnvironment, Promise, Realm, String},
-    engine::{Bindable, GcScope, HeapRootData, HeapRootRef, NoGcScope, Rootable, bindable_handle},
+    engine::{Bindable, GcScope, HeapRootData, HeapRootRef, NoGcScope, Rootable},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -98,7 +98,7 @@ impl<'m> AbstractModuleRecord<'m> {
 /// named Source Text Module Record. Other specifications and implementations
 /// may define additional Module Record subclasses corresponding to alternative
 /// module definition facilities that they defined.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 #[repr(transparent)]
 pub struct AbstractModule<'a>(InnerAbstractModule<'a>);
 
@@ -125,8 +125,6 @@ impl<'a> From<SourceTextModule<'a>> for AbstractModule<'a> {
     }
 }
 
-bindable_handle!(AbstractModule);
-
 impl Rootable for AbstractModule<'_> {
     type RootRepr = HeapRootRef;
 
@@ -147,13 +145,11 @@ impl Rootable for AbstractModule<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 #[repr(transparent)]
 pub(crate) enum InnerAbstractModule<'a> {
     SourceTextModule(SourceTextModule<'a>),
 }
-
-bindable_handle!(InnerAbstractModule);
 
 impl From<InnerAbstractModule<'_>> for HeapRootData {
     fn from(value: InnerAbstractModule<'_>) -> Self {

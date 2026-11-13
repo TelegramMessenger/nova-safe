@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{marker::PhantomData, ptr::NonNull};
+use std::marker::PhantomData;
 
 use crate::{
     ecmascript::{Agent, Value},
@@ -69,9 +69,8 @@ impl ScopedCollection<'_, Vec<Value<'static>>> {
     }
 
     pub(crate) fn iter(&self, agent: &mut Agent) -> ScopedValuesIterator<'_> {
-        self.with_cb(agent, |value_vec| ScopedValuesIterator {
-            slice: NonNull::from(value_vec.as_slice()),
-            collection: PhantomData,
+        self.with_cb(agent, |value_vec| {
+            ScopedValuesIterator::new(self.inner, 0, value_vec.len())
         })
     }
 
@@ -100,37 +99,48 @@ impl<'scope> Bindable for ScopedCollection<'scope, Vec<Value<'static>>> {
     }
 }
 
-#[repr(transparent)]
+/// Iterator over a scoped Value list ([`Vec<Value>`] or an arguments list)
+/// that stays on the heap while it is iterated.
+///
+/// The items are positions in the list; each read goes through the Agent, so
+/// garbage collection between reads is fine.
 pub(crate) struct ScopedValuesIterator<'a> {
-    slice: NonNull<[Value<'static>]>,
-    collection: PhantomData<&'a [Value<'static>]>,
+    collection: u32,
+    position: usize,
+    end: usize,
+    marker: PhantomData<&'a [Value<'static>]>,
 }
 
 impl ScopedValuesIterator<'_> {
-    pub(crate) fn from_slice(values: &[Value<'static>]) -> Self {
+    pub(crate) fn new(collection: u32, start: usize, end: usize) -> Self {
         Self {
-            slice: NonNull::from(values),
-            collection: PhantomData,
+            collection,
+            position: start,
+            end,
+            marker: PhantomData,
         }
     }
 }
 
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub(crate) struct ScopedValue<'a> {
-    key: NonNull<Value<'static>>,
-    collection: PhantomData<&'a mut ScopedCollection<'a, Vec<Value<'static>>>>,
+    collection: u32,
+    index: usize,
+    marker: PhantomData<&'a [Value<'static>]>,
 }
 
 impl ScopedValue<'_> {
-    pub fn get<'a>(&self, gc: NoGcScope<'a, '_>) -> Value<'a> {
-        // SAFETY: We retain exclusive access to ScopedCollection, meaning that
-        // no one else can push into the vector while we are iterating over it.
-        // Garbage collection can trigger during this time which will change
-        // the data in the vector, but will not reallocate it. Hence, the
-        // pointer is still valid to read from and the Value in the
-        // vector has been sweeped by the garbage collector if it did trigger.
-        unsafe { self.key.as_ref().bind(gc) }
+    pub fn get<'a>(&self, agent: &Agent, gc: NoGcScope<'a, '_>) -> Value<'a> {
+        let stack_ref_collections = agent.stack_ref_collections.borrow();
+        let value = match stack_ref_collections.get(self.collection as usize) {
+            Some(HeapRootCollection::ValueVec(values)) => values.get(self.index),
+            Some(HeapRootCollection::ArgumentsList(data)) => data.values.get(self.index),
+            _ => None,
+        };
+        value
+            .copied()
+            .expect("ScopedValue read after its collection was dropped")
+            .bind(gc)
     }
 }
 
@@ -138,19 +148,20 @@ impl<'a> Iterator for ScopedValuesIterator<'a> {
     type Item = ScopedValue<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let ScopedValuesIterator { slice, .. } = self;
-        // SAFETY: We retain exclusive access to ScopedCollection, meaning that
-        // no one else can push into the vector while we are iterating over it.
-        // Garbage collection can trigger during this time which will change
-        // the data in the vector, but will not reallocate it.
-        let slice_ref = unsafe { slice.as_ref() };
-        let (first, rest) = slice_ref.split_first()?;
-        let first = NonNull::from(first);
-        let rest = NonNull::from(rest);
-        *slice = rest;
-        Some(ScopedValue {
-            key: first,
-            collection: PhantomData,
-        })
+        if self.position >= self.end {
+            return None;
+        }
+        let item = ScopedValue {
+            collection: self.collection,
+            index: self.position,
+            marker: PhantomData,
+        };
+        self.position += 1;
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.end.saturating_sub(self.position);
+        (len, Some(len))
     }
 }

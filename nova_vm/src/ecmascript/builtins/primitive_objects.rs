@@ -14,7 +14,7 @@ use crate::{
         js_result_into_try, object_handle, ordinary_define_own_property, ordinary_delete,
         ordinary_get, ordinary_get_own_property, ordinary_has_property, ordinary_set, unwrap_try,
     },
-    engine::{Bindable, GcScope, NoGcScope, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, IntrinsicPrimitiveObjectIndexes, WorkQueues,
@@ -498,7 +498,7 @@ impl<'a> InternalMethods<'a> for PrimitiveObject<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Bindable)]
 #[repr(u8)]
 pub(crate) enum PrimitiveObjectData<'a> {
     Boolean(bool) = BOOLEAN_DISCRIMINANT,
@@ -511,8 +511,6 @@ pub(crate) enum PrimitiveObjectData<'a> {
     BigInt(HeapBigInt<'a>) = BIGINT_DISCRIMINANT,
     SmallBigInt(SmallBigInt) = SMALL_BIGINT_DISCRIMINANT,
 }
-bindable_handle!(PrimitiveObjectData);
-
 impl<'a> TryFrom<PrimitiveObjectData<'a>> for BigInt<'a> {
     type Error = ();
 
@@ -577,13 +575,11 @@ impl<'a> From<PrimitiveObjectData<'a>> for Primitive<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) struct PrimitiveObjectRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) data: PrimitiveObjectData<'a>,
 }
-bindable_handle!(PrimitiveObjectRecord);
-
 impl<'a> PrimitiveObjectRecord<'a> {
     pub(crate) const BLANK: Self = Self {
         object_index: None,

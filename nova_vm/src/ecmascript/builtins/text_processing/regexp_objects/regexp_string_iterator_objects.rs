@@ -15,7 +15,7 @@ use crate::{
         Agent, InternalMethods, InternalSlots, Object, OrdinaryObject, ProtoIntrinsics, String,
         object_handle,
     },
-    engine::{Bindable, NoGcScope, bindable_handle},
+    engine::{Bindable, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
@@ -118,7 +118,7 @@ impl<'a> InternalMethods<'a> for RegExpStringIterator<'a> {}
 /// properties from the %RegExpStringIteratorPrototype% intrinsic object.
 /// RegExp String Iterator instances are initially created with the internal
 /// slots listed in [Table 71](https://tc39.es/ecma262/#table-regexp-string-iterator-instance-slots).
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct RegExpStringIteratorRecord<'a> {
     backing_object: Option<OrdinaryObject<'a>>,
     /// \[\[IteratingRegExp]]
@@ -143,8 +143,6 @@ pub(crate) struct RegExpStringIteratorRecord<'a> {
     /// Indicates whether the iteration is complete or not.
     done: bool,
 }
-bindable_handle!(RegExpStringIteratorRecord);
-
 impl<'a> CreateHeapData<RegExpStringIteratorRecord<'a>, RegExpStringIterator<'a>> for Heap {
     fn create(&mut self, data: RegExpStringIteratorRecord<'a>) -> RegExpStringIterator<'a> {
         self.regexp_string_iterators.push(data.unbind());

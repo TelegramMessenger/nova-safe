@@ -7,7 +7,7 @@ use crate::{
         AbstractModule, AsyncGenerator, AwaitReaction, Function, Object, Promise,
         PromiseCapability, PromiseGroup, SourceTextModule,
     },
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{
         BaseIndex, CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep, WorkQueues,
         arena_vec_access, index_handle,
@@ -34,7 +34,7 @@ pub(crate) enum PromiseReactionType {
 /// return value will govern what happens to the derived promise. If
 /// \[\[Handler\]\] is empty, a function that depends on the value of
 /// \[\[Type\]\] will be used instead.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) enum PromiseReactionHandler<'a> {
     JobCallback(Function<'a>),
     Await(AwaitReaction<'a>),
@@ -60,8 +60,6 @@ pub(crate) enum PromiseReactionHandler<'a> {
     },
     Empty,
 }
-bindable_handle!(PromiseReactionHandler);
-
 impl HeapMarkAndSweep for PromiseReactionHandler<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         match self {
@@ -108,7 +106,7 @@ impl HeapMarkAndSweep for PromiseReactionHandler<'static> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) struct PromiseReactionRecord<'a> {
     /// \[\[Capability\]\]
     ///
@@ -129,8 +127,6 @@ pub(crate) struct PromiseReactionRecord<'a> {
     /// \[\[Type\]\] will be used instead.
     pub(crate) handler: PromiseReactionHandler<'a>,
 }
-bindable_handle!(PromiseReactionRecord);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub(crate) struct PromiseReaction<'a>(BaseIndex<'a, PromiseReactionRecord<'static>>);

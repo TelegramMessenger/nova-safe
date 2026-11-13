@@ -80,10 +80,9 @@ impl AsMut<[ModuleRequestRecord<'static>]> for Agent {
 ///
 /// A ModuleRequest Record represents the request to import a module with given
 /// import attributes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 #[repr(transparent)]
 pub struct ModuleRequest<'a>(BaseIndex<'a, ModuleRequestRecord<'static>>);
-bindable_handle!(ModuleRequest);
 arena_vec_access!(ModuleRequest, 'a, ModuleRequestRecord, module_request_records);
 
 impl<'r> ModuleRequest<'r> {
@@ -211,7 +210,7 @@ pub(crate) struct LoadedModuleRequestRecord<'a> {
 /// ```javascript
 /// import {} from "" with { "key": "value" };
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Bindable)]
 pub struct ImportAttributeRecord<'a> {
     /// ### \[\[Key]]
     ///
@@ -226,8 +225,6 @@ pub struct ImportAttributeRecord<'a> {
     /// The attribute value
     pub(crate) value: String<'a>,
 }
-bindable_handle!(ImportAttributeRecord);
-
 /// ### \[\[LoadedModules]]
 ///
 /// a List of LoadedModuleRequest Records
@@ -365,7 +362,7 @@ pub(crate) fn get_imported_module<'a>(
 }
 
 /// Module loading referrer.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 #[repr(transparent)]
 pub struct Referrer<'a>(InnerReferrer<'a>);
 
@@ -389,7 +386,7 @@ impl Referrer<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) enum InnerReferrer<'a> {
     Script(Script<'a>),
     SourceTextModule(SourceTextModule<'a>),
@@ -423,8 +420,6 @@ impl<'a> From<ScriptOrModule<'a>> for Referrer<'a> {
     }
 }
 
-bindable_handle!(Referrer);
-
 impl Rootable for Referrer<'_> {
     type RootRepr = HeapRootRef;
 
@@ -444,8 +439,6 @@ impl Rootable for Referrer<'_> {
         InnerReferrer::from_heap_data(heap_data).map(Self)
     }
 }
-
-bindable_handle!(InnerReferrer);
 
 impl Rootable for InnerReferrer<'_> {
     type RootRepr = HeapRootRef;

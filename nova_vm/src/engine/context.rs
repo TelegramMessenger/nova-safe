@@ -7,6 +7,11 @@ use std::ops::ControlFlow;
 
 use wtf8::CodePoint;
 
+/// `#[derive(Bindable)]` for `nova_vm`'s own handle types (it names
+/// `crate::engine`); see the `nova_vm_derive` docs.
+#[doc(hidden)]
+pub use nova_vm_derive::Bindable;
+
 use crate::engine::Rootable;
 
 use super::Scoped;

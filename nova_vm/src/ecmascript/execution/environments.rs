@@ -45,7 +45,7 @@ use crate::{
         Agent, InternalMethods, JsResult, Object, PropertyLookupCache, Proxy, Reference, SetResult,
         String, TryError, TryHasResult, TryResult, Value, js_result_into_try,
     },
-    engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, bindable_handle},
+    engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable},
     heap::{CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -170,7 +170,7 @@ impl<'a> From<ObjectEnvironment<'a>> for Environment<'a> {
 /// Environment Record, and Global Environment Record. Function Environment
 /// Records and Module Environment Records are subclasses of Declarative
 /// Environment Record.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Bindable)]
 #[repr(u8)]
 pub(crate) enum Environment<'a> {
     // Leave 0 for None option
@@ -180,8 +180,6 @@ pub(crate) enum Environment<'a> {
     Module(ModuleEnvironment<'a>),
     Object(ObjectEnvironment<'a>),
 }
-bindable_handle!(Environment);
-
 impl<'e> Environment<'e> {
     pub(crate) fn get_outer_env(self, agent: &Agent) -> OuterEnv<'e> {
         match self {
@@ -741,6 +739,7 @@ impl Default for Environments {
 /// > Note: we could return eg. the exact object and offset that a property was
 /// > found at, and cache that for later usage. Experiments showed that it did
 /// > not have a meaningful impact on performance at that time.
+#[derive(Bindable)]
 pub(crate) enum TryHasBindingContinue<'a> {
     Result(bool),
     /// A Proxy trap call is needed.
@@ -749,8 +748,6 @@ pub(crate) enum TryHasBindingContinue<'a> {
     /// Proxy trap itself.
     Proxy(Proxy<'a>),
 }
-bindable_handle!(TryHasBindingContinue);
-
 impl<'a> TryFrom<TryHasBindingContinue<'a>> for bool {
     type Error = Proxy<'a>;
 

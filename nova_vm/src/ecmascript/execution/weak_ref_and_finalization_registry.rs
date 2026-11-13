@@ -120,7 +120,7 @@ pub(crate) fn cleanup_finalization_registry<'gc>(
             err_and_i = Some((err.unbind(), 0));
         } else {
             for (i, value) in queue.iter(agent).enumerate() {
-                let value = value.get(gc.nogc());
+                let value = value.get(agent, gc.nogc());
                 let result = call_function(
                     agent,
                     scoped_callback.get(agent),

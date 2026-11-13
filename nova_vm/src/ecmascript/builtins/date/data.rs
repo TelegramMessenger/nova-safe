@@ -6,7 +6,6 @@ use std::time::SystemTime;
 
 use crate::{
     ecmascript::{OrdinaryObject, SmallInteger, Value},
-    engine::bindable_handle,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -82,7 +81,7 @@ impl<'a> From<DateValue> for Value<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, crate::engine::Bindable)]
 pub(crate) struct DateHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) date: DateValue,
@@ -96,8 +95,6 @@ impl DateHeapData<'_> {
         }
     }
 }
-
-bindable_handle!(DateHeapData);
 
 impl HeapMarkAndSweep for DateHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

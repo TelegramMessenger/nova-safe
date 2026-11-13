@@ -10,7 +10,7 @@ use crate::{
         SYMBOL_DISCRIMINANT, SmallBigInt, SmallF64, SmallInteger, SmallString, Symbol,
         UNDEFINED_DISCRIMINANT, Value,
     },
-    engine::{HeapRootData, HeapRootRef, Rootable, bindable_handle},
+    engine::{HeapRootData, HeapRootRef, Rootable},
     heap::WellKnownSymbols,
 };
 
@@ -21,7 +21,7 @@ use crate::{
 ///
 /// > NOTE: A primitive value is a datum that is represented directly at the
 /// > lowest level of the language implementation.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, crate::engine::Bindable)]
 #[repr(u8)]
 pub enum Primitive<'a> {
     /// ### [6.1.1 The Undefined Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-undefined-type)
@@ -67,7 +67,6 @@ pub enum Primitive<'a> {
     /// 56-bit signed integer on the stack.
     SmallBigInt(SmallBigInt) = SMALL_BIGINT_DISCRIMINANT,
 }
-bindable_handle!(Primitive);
 primitive_value!(bool, Boolean);
 
 #[derive(Debug, Clone, Copy)]

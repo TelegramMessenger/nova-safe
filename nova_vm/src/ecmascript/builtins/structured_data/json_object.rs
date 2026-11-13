@@ -301,7 +301,10 @@ impl JSONObject {
                     // i. Append item to PropertyList.
                     if let Some(item) = item {
                         let property_list = property_list.as_mut().unwrap();
-                        if !property_list.iter(agent).any(|x| x.get(gc.nogc()) == item) {
+                        if !property_list
+                            .iter(agent)
+                            .any(|x| x.get(agent, gc.nogc()) == item)
+                        {
                             property_list.push(agent, item);
                         }
                     }
@@ -622,8 +625,8 @@ trait IndirectPropertyKey {
 }
 
 impl IndirectPropertyKey for ScopedPropertyKey<'_> {
-    fn get_key<'a>(&self, _: &Agent, gc: NoGcScope<'a, '_>) -> PropertyKey<'a> {
-        self.get(gc)
+    fn get_key<'a>(&self, agent: &Agent, gc: NoGcScope<'a, '_>) -> PropertyKey<'a> {
+        self.get(agent, gc)
     }
 }
 
@@ -932,7 +935,7 @@ fn serialize_json_object<'a, 'b>(
     // 1. If state.[[Stack]] contains value, throw a TypeError exception
     //    because the structure is cyclical.
     if state.stack.iter(agent).any(|x| {
-        Object::try_from(x.get(gc.nogc())).expect("only objects are pushed onto the stack") == value
+        Object::try_from(x.get(agent, gc.nogc())).expect("only objects are pushed onto the stack") == value
     }) {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,
@@ -1048,7 +1051,7 @@ fn serialize_json_object<'a, 'b>(
         }
 
         // i. Let member be QuoteJSONString(P).
-        quote_property_key(agent, &mut state.result, p.get(gc.nogc()));
+        quote_property_key(agent, &mut state.result, p.get(agent, gc.nogc()));
         // ii. Set member to the string-concatenation of member and ":".
         // iii. If state.[[Gap]] is not the empty String, then
         // 1. Set member to the string-concatenation of member and the code unit 0x0020 (SPACE).
@@ -1095,7 +1098,7 @@ fn serialize_json_array<'a, 'b>(
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception because the structure is cyclical.
     if state.stack.iter(agent).any(|x| {
-        Object::try_from(x.get(gc.nogc())).expect("only objects are pushed onto the stack") == value
+        Object::try_from(x.get(agent, gc.nogc())).expect("only objects are pushed onto the stack") == value
     }) {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,

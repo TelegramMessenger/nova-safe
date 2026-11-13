@@ -9,13 +9,13 @@ use crate::{
         Behaviour, ECMAScriptFunctionObjectHeapData, Environment, OrdinaryObject,
         PrivateEnvironment, Realm, SourceCode, String, Value,
     },
-    engine::{Executable, bindable_handle},
+    engine::Executable,
     heap::{CompactionLists, ElementsVector, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
 };
 
 use super::Function;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, crate::engine::Bindable)]
 pub(crate) struct BoundFunctionHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) length: u8,
@@ -35,8 +35,6 @@ pub(crate) struct BoundFunctionHeapData<'a> {
     pub(crate) bound_arguments: ElementsVector<'a>,
     pub(crate) name: Option<String<'a>>,
 }
-bindable_handle!(BoundFunctionHeapData);
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BuiltinFunctionHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,

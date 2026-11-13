@@ -8,7 +8,7 @@ mod scoped;
 pub use global::*;
 pub use scoped::*;
 
-pub(crate) use private::{HeapRootCollection, Rootable, RootableCollection};
+pub(crate) use private::{HeapRootCollection, Rootable, RootableCollection, ScopedArgumentsData};
 
 #[cfg(feature = "date")]
 use crate::ecmascript::DATE_DISCRIMINANT;
@@ -86,10 +86,8 @@ use crate::{
 };
 
 mod private {
-    use std::ptr::NonNull;
-
     use crate::{
-        ecmascript::{ArgumentsList, KeyedGroup, PropertyKey, PropertyKeySet, Value},
+        ecmascript::{KeyedGroup, PropertyKey, PropertyKeySet, Value},
         engine::{Bindable, HeapRootData, HeapRootRef},
         heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
     };
@@ -154,20 +152,37 @@ mod private {
         fn from_heap_data(value: HeapRootCollection) -> Self;
     }
 
+    /// An arguments list copied onto the heap by `ArgumentsList::with_scoped`.
+    ///
+    /// `values[..start]` have been consumed by `ScopedArgumentsList::unshift`
+    /// and are no longer roots.
+    #[derive(Debug, Default)]
+    pub(crate) struct ScopedArgumentsData {
+        pub(crate) values: Vec<Value<'static>>,
+        pub(crate) start: usize,
+    }
+
+    impl ScopedArgumentsData {
+        pub(crate) fn remaining(&self) -> &[Value<'static>] {
+            self.values.get(self.start..).unwrap_or(&[])
+        }
+
+        pub(crate) fn remaining_mut(&mut self) -> &mut [Value<'static>] {
+            self.values.get_mut(self.start..).unwrap_or(&mut [])
+        }
+    }
+
     #[derive(Debug)]
     #[repr(u8)]
     pub(crate) enum HeapRootCollection {
         /// Empty heap root collection data slot: The data was taken from heap.
         Empty,
-        /// Not like the others: Arguments list cannot be given to the heap as
-        /// owned, they can only be borrowed. Thus, they have no scoping API but
-        /// instead have a `with_scoped` API that takes a callback, stores the list
-        /// on the heap temporarily, performs the callback, removes the list from
-        /// the heap and then returns control to the caller.
-        ///
-        /// As the arguments list is taken as an exclusive reference to the
-        /// method, we're guaranteed that the list stored here
-        ArgumentsList(NonNull<[Value<'static>]>),
+        /// Not like the others: an arguments list is borrowed from its caller,
+        /// so it has no scoping API but a `with_scoped` API that copies the
+        /// list here for the duration of a callback, runs the callback, and
+        /// copies the (possibly swept) values that were not consumed back to
+        /// the caller.
+        ArgumentsList(ScopedArgumentsData),
         ValueVec(Vec<Value<'static>>),
         PropertyKeyVec(Vec<PropertyKey<'static>>),
         PropertyKeySet(PropertyKeySet<'static>),
@@ -184,14 +199,7 @@ mod private {
         fn mark_values(&self, queues: &mut WorkQueues) {
             match self {
                 Self::Empty => {}
-                Self::ArgumentsList(slice) => {
-                    // SAFETY: The slice is pushed to heap roots based on an
-                    // exclusive reference, and gets taken out of the list when
-                    // the pushing call stack is exited. This is not panic-safe
-                    // though, so we may be indexing into deallocated memory if
-                    // a panic has been caught.
-                    unsafe { slice.as_ref().mark_values(queues) };
-                }
+                Self::ArgumentsList(data) => data.remaining().mark_values(queues),
                 Self::ValueVec(values) => values.as_slice().mark_values(queues),
                 Self::PropertyKeyVec(items) => items.mark_values(queues),
                 Self::PropertyKeySet(items) => items.mark_values(queues),
@@ -202,14 +210,7 @@ mod private {
         fn sweep_values(&mut self, compactions: &CompactionLists) {
             match self {
                 Self::Empty => {}
-                Self::ArgumentsList(slice) => {
-                    // SAFETY: The slice is pushed to heap roots based on an
-                    // exclusive reference, and gets taken out of the list when
-                    // the pushing call stack is exited. This is not panic-safe
-                    // though, so we may be indexing into deallocated memory if
-                    // a panic has been caught.
-                    unsafe { slice.as_mut().sweep_values(compactions) };
-                }
+                Self::ArgumentsList(data) => data.remaining_mut().sweep_values(compactions),
                 Self::ValueVec(values) => values.as_mut_slice().sweep_values(compactions),
                 Self::PropertyKeyVec(items) => items.sweep_values(compactions),
                 Self::PropertyKeySet(items) => items.sweep_values(compactions),
@@ -218,15 +219,6 @@ mod private {
         }
     }
 
-    impl RootableCollection for ArgumentsList<'_, '_> {
-        fn to_heap_data(mut self) -> HeapRootCollection {
-            HeapRootCollection::ArgumentsList(self.as_mut_slice().into())
-        }
-
-        fn from_heap_data(_: HeapRootCollection) -> Self {
-            unreachable!("ScopedCollection should never try to take ownership of ArgumentsList");
-        }
-    }
     impl RootableCollection for Vec<Value<'static>> {
         fn to_heap_data(self) -> HeapRootCollection {
             HeapRootCollection::ValueVec(self.unbind())

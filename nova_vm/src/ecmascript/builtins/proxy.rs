@@ -1503,7 +1503,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         // 9. If trapResult contains any duplicate entries, throw a TypeError exception.
         let mut unique_trap_results = Vec::with_capacity(trap_result.len(agent));
         for value in trap_result.iter(agent) {
-            let p = value.get(gc.nogc());
+            let p = value.get(agent, gc.nogc());
             if unique_trap_results.contains(&p) {
                 let message = format!(
                     "proxy [[OwnPropertyKeys]] can't report property '{}' more than once",
@@ -1552,23 +1552,23 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
             // a. Let desc be ? target.[[GetOwnProperty]](key).
             let desc = scoped_target
                 .get(agent)
-                .internal_get_own_property(agent, key.get(gc.nogc()).unbind(), gc.reborrow())
+                .internal_get_own_property(agent, key.get(agent, gc.nogc()).unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
             //  b. If desc is not undefined and desc.[[Configurable]] is false, then
             if desc.is_some_and(|d| d.configurable == Some(false)) {
                 // i. Append key to targetNonconfigurableKeys.
-                target_nonconfigurable_keys.push(agent, key.get(gc.nogc()));
+                target_nonconfigurable_keys.push(agent, key.get(agent, gc.nogc()));
             } else {
                 // c. Else,
                 // i. Append key to targetConfigurableKeys.
-                target_configurable_keys.push(agent, key.get(gc.nogc()));
+                target_configurable_keys.push(agent, key.get(agent, gc.nogc()));
             }
         }
         let gc = gc.into_nogc();
         let trap_result = trap_result
             .iter(agent)
-            .map(|p| p.get(gc))
+            .map(|p| p.get(agent, gc))
             .collect::<Vec<PropertyKey>>();
         // 17. If extensibleTarget is true and targetNonconfigurableKeys is empty, then
         if extensible_target && target_nonconfigurable_keys.is_empty(agent) {

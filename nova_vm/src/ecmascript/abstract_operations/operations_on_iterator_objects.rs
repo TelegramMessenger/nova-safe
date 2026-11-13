@@ -13,7 +13,7 @@ use crate::{
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, ScopableCollection, ScopedCollection,
-        VmIteratorRecord, bindable_handle,
+        VmIteratorRecord,
     },
     heap::{
         CompactionLists, HeapMarkAndSweep, ObjectEntry, ObjectEntryPropertyDescriptor,
@@ -25,15 +25,13 @@ use crate::{
 ///
 /// An Iterator Record is a Record value used to encapsulate an Iterator or
 /// AsyncIterator along with the next method.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) struct IteratorRecord<'a> {
     pub(crate) iterator: Object<'a>,
     pub(crate) next_method: Function<'a>,
     // Note: The done field doesn't seem to be used anywhere.
     // pub(crate) done: bool,
 }
-
-bindable_handle!(IteratorRecord);
 
 /// ### [7.4.2 GetIteratorDirect ( obj )](https://tc39.es/ecma262/#sec-getiteratordirect)
 /// The abstract operation GetIteratorDirect takes argument obj (an Object) and returns
@@ -73,6 +71,7 @@ pub(crate) fn get_iterator_direct<'gc>(
     Ok(Some(iterator_record))
 }
 
+#[derive(Bindable)]
 pub(crate) struct MaybeInvalidIteratorRecord<'a> {
     pub(crate) iterator: Object<'a>,
     pub(crate) next_method: Option<Function<'a>>,
@@ -109,8 +108,6 @@ impl<'a> MaybeInvalidIteratorRecord<'a> {
         }
     }
 }
-
-bindable_handle!(MaybeInvalidIteratorRecord);
 
 /// ### [7.4.3 GetIteratorFromMethod ( obj, method )](https://tc39.es/ecma262/#sec-getiteratorfrommethod)
 ///

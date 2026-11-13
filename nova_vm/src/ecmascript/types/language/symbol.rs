@@ -8,7 +8,7 @@ pub(crate) use data::*;
 
 use crate::{
     ecmascript::{Agent, BUILTIN_STRING_MEMORY, Primitive, PropertyKey, String, Value},
-    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, bindable_handle},
+    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable},
     heap::{
         ArenaAccess, BaseIndex, CompactionLists, CreateHeapData, Heap, HeapIndexHandle,
         HeapMarkAndSweep, HeapSweepWeakReference, WellKnownSymbols, WorkQueues, arena_vec_access,
@@ -24,10 +24,9 @@ use crate::{
 ///
 /// Each Symbol has an immutable \[\[Description]] internal slot whose value is
 /// either a String or undefined.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(transparent)]
 pub struct Symbol<'a>(BaseIndex<'a, SymbolHeapData<'static>>);
-bindable_handle!(Symbol);
 arena_vec_access!(
     Symbol,
     'a,

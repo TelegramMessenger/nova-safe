@@ -10,7 +10,7 @@ use crate::{
         PromiseHeapData, PromiseRejectionTrackerOperation, PromiseState, TryError, TryGetResult,
         TryResult, Value, get, try_get,
     },
-    engine::{Bindable, GcScope, NoGcScope, Scopable, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope, Scopable},
     heap::{
         ArenaAccess, ArenaAccessMut, CompactionLists, CreateHeapData, HeapMarkAndSweep, WorkQueues,
     },
@@ -33,7 +33,7 @@ use super::promise_jobs::new_promise_resolve_thenable_job;
 /// `must_be_unresolved` is false, the promise counts as already resolved if its
 /// state is Fulfilled or Rejected. If true, it also counts as already resolved
 /// if it's Pending but `is_resolved` is set to true.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 pub struct PromiseCapability<'a> {
     pub(crate) promise: Promise<'a>,
     pub(crate) must_be_unresolved: bool,
@@ -362,8 +362,6 @@ impl<'a> PromiseCapability<'a> {
         ));
     }
 }
-
-bindable_handle!(PromiseCapability);
 
 impl HeapMarkAndSweep for PromiseCapability<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

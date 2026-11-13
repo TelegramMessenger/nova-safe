@@ -4,11 +4,11 @@
 
 use crate::{
     ecmascript::OrdinaryObject,
-    engine::{NoGcScope, bindable_handle, trivially_bindable},
+    engine::{NoGcScope, trivially_bindable},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, crate::engine::Bindable)]
 pub struct InstantRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) instant: temporal_rs::Instant,
@@ -24,8 +24,6 @@ impl Default for InstantRecord<'_> {
 }
 
 trivially_bindable!(temporal_rs::Instant);
-bindable_handle!(InstantRecord);
-
 impl HeapMarkAndSweep for InstantRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {

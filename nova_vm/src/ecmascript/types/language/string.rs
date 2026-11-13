@@ -17,7 +17,7 @@ use crate::{
         Agent, Primitive, PropertyDescriptor, PropertyKey, SMALL_STRING_DISCRIMINANT,
         STRING_DISCRIMINANT, SmallInteger, Value, primitive_handle, primitive_value,
     },
-    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, Scoped, bindable_handle},
+    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, Scoped},
     heap::{
         ArenaAccess, BaseIndex, CompactionLists, CreateHeapData, Heap, HeapIndexHandle,
         HeapMarkAndSweep, HeapSweepWeakReference, StringHeapAccess, WorkQueues, arena_vec_access,
@@ -90,7 +90,7 @@ impl HeapString<'_> {
 ///
 /// String implements the Ord trait, but it does not sort heap-allocated
 /// strings into lexicographic order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Bindable)]
 #[repr(u8)]
 pub enum String<'a> {
     /// WTF-8 string on the heap. Accessing the data can only be done through
@@ -102,8 +102,6 @@ pub enum String<'a> {
     /// from the data.
     SmallString(SmallString) = SMALL_STRING_DISCRIMINANT,
 }
-bindable_handle!(String);
-
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub(crate) enum StringRootRepr {

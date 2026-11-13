@@ -4,11 +4,10 @@
 
 use crate::{
     ecmascript::{OrdinaryObject, String, Value, execution::ExceptionType},
-    engine::bindable_handle,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, crate::engine::Bindable)]
 pub(crate) struct ErrorHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) kind: ExceptionType,
@@ -31,8 +30,6 @@ impl<'a> ErrorHeapData<'a> {
         }
     }
 }
-
-bindable_handle!(ErrorHeapData);
 
 impl HeapMarkAndSweep for ErrorHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

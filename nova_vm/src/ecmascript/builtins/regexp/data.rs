@@ -8,7 +8,6 @@ use wtf8::Wtf8Buf;
 
 use crate::{
     ecmascript::{OrdinaryObject, PropertyDescriptor, String, Value, execution::Agent},
-    engine::bindable_handle,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -115,7 +114,7 @@ impl From<usize> for RegExpLastIndex {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct RegExpHeapData<'a> {
     pub(super) object_index: Option<OrdinaryObject<'a>>,
     pub(super) reg_exp_matcher: Result<Regex, regex::Error>,
@@ -176,8 +175,6 @@ impl Default for RegExpHeapData<'_> {
         }
     }
 }
-
-bindable_handle!(RegExpHeapData);
 
 impl HeapMarkAndSweep for RegExpHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

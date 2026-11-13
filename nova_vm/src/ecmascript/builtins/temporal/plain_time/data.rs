@@ -4,11 +4,11 @@
 
 use crate::{
     ecmascript::OrdinaryObject,
-    engine::{NoGcScope, bindable_handle, trivially_bindable},
+    engine::{NoGcScope, trivially_bindable},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, crate::engine::Bindable)]
 pub struct PlainTimeRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(crate) plain_time: temporal_rs::PlainTime,
@@ -24,8 +24,6 @@ impl PlainTimeRecord<'_> {
 }
 
 trivially_bindable!(temporal_rs::PlainTime);
-bindable_handle!(PlainTimeRecord);
-
 impl HeapMarkAndSweep for PlainTimeRecord<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {

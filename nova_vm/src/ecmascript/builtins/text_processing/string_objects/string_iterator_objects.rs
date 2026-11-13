@@ -8,7 +8,7 @@ use crate::{
         InternalMethods, InternalSlots, JsResult, OrdinaryObject, ProtoIntrinsics, Realm, String,
         Value, builders::OrdinaryObjectBuilder, create_iter_result_object, object_handle,
     },
-    engine::{Bindable, GcScope, NoGcScope, bindable_handle},
+    engine::{Bindable, GcScope, NoGcScope},
     heap::{
         CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep, HeapSweepWeakReference,
         WellKnownSymbols, WorkQueues, arena_vec_access, {BaseIndex, HeapIndexHandle},
@@ -189,7 +189,7 @@ impl StringIteratorPrototype {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct StringIteratorHeapData<'a> {
     backing_object: Option<OrdinaryObject<'a>>,
     s: String<'a>,
@@ -206,8 +206,6 @@ impl<'a> StringIteratorHeapData<'a> {
         }
     }
 }
-
-bindable_handle!(StringIteratorHeapData);
 
 impl<'a> CreateHeapData<StringIteratorHeapData<'a>, StringIterator<'a>> for Heap {
     fn create(&mut self, data: StringIteratorHeapData<'a>) -> StringIterator<'a> {

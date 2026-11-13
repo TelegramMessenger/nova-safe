@@ -53,15 +53,13 @@ impl<T: ?Sized> SendableRef<T> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Bindable)]
 pub(crate) struct FunctionExpression<'a> {
     pub(crate) expression: SendableRef<ast::Function<'static>>,
     pub(crate) identifier: Option<NamedEvaluationParameter>,
     /// Optionally eagerly compile the FunctionExpression into bytecode.
     pub(crate) compiled_bytecode: Option<Executable<'a>>,
 }
-
-bindable_handle!(FunctionExpression);
 
 impl HeapMarkAndSweep for FunctionExpression<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

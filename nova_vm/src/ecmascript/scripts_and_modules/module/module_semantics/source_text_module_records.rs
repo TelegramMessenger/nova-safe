@@ -118,7 +118,7 @@ pub(crate) struct SourceTextModuleRecord<'a> {
 /// [`SourceTextModule`]: SourceTextModule
 /// [`parse_module`]: parse_module
 /// [`Agent::run_module`]: crate::ecmascript::Agent::run_module
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
 #[repr(transparent)]
 pub struct SourceTextModule<'a>(u32, PhantomData<&'a GcToken>);
 
@@ -1920,8 +1920,6 @@ pub fn parse_module<'a>(
 }
 
 bindable_handle!(SourceTextModuleRecord);
-
-bindable_handle!(SourceTextModule);
 
 impl From<SourceTextModule<'_>> for HeapRootData {
     fn from(value: SourceTextModule<'_>) -> Self {

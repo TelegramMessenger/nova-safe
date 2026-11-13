@@ -7,9 +7,7 @@ use crate::{
         Agent, ECMAScriptFunction, ExecutionContext, PromiseCapability, PromiseReactionHandler,
         PromiseReactionType, SourceTextModule, Value, inner_promise_then,
     },
-    engine::{
-        Bindable, Executable, ExecutionResult, GcScope, Scopable, SuspendedVm, bindable_handle,
-    },
+    engine::{Bindable, Executable, ExecutionResult, GcScope, Scopable, SuspendedVm},
     heap::{
         ArenaAccess, ArenaAccessMut, CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep,
         WorkQueues, arena_vec_access, {BaseIndex, index_handle},
@@ -142,7 +140,7 @@ impl HeapMarkAndSweep for AwaitReaction<'static> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) enum AsyncExecutable<'a> {
     AsyncFunction(ECMAScriptFunction<'a>),
     AsyncModule(SourceTextModule<'a>),
@@ -169,9 +167,7 @@ impl<'a> From<SourceTextModule<'a>> for AsyncExecutable<'a> {
     }
 }
 
-bindable_handle!(AsyncExecutable);
-
-#[derive(Debug)]
+#[derive(Debug, Bindable)]
 pub(crate) struct AwaitReactionRecord<'a> {
     pub(crate) vm: Option<SuspendedVm>,
     pub(crate) async_executable: Option<AsyncExecutable<'a>>,
@@ -186,8 +182,6 @@ impl<'a> CreateHeapData<AwaitReactionRecord<'a>, AwaitReaction<'a>> for Heap {
         AwaitReaction(BaseIndex::last(&self.await_reactions))
     }
 }
-
-bindable_handle!(AwaitReactionRecord);
 
 impl HeapMarkAndSweep for AsyncExecutable<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

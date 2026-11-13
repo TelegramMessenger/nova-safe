@@ -8,7 +8,7 @@ use crate::{
         INTEGER_DISCRIMINANT, NUMBER_DISCRIMINANT, Number, Primitive, SMALL_BIGINT_DISCRIMINANT,
         SmallBigInt, SmallF64, SmallInteger, Value,
     },
-    engine::{HeapRootData, HeapRootRef, Rootable, bindable_handle},
+    engine::{HeapRootData, HeapRootRef, Rootable},
 };
 
 /// ### [6.1.6 Numeric Types](https://tc39.es/ecma262/#sec-numeric-types)
@@ -21,7 +21,7 @@ use crate::{
 /// conversion among these types. Programmers must explicitly call `Number` and
 /// `BigInt` functions to convert among types when calling a function which
 /// requires another type.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, crate::engine::Bindable)]
 #[repr(u8)]
 pub enum Numeric<'a> {
     /// ### [6.1.6.1 The Number Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-number-type)
@@ -103,8 +103,6 @@ impl Numeric<'_> {
             .unwrap_or(false)
     }
 }
-
-bindable_handle!(Numeric);
 
 impl Rootable for Numeric<'_> {
     type RootRepr = NumericRootRepr;

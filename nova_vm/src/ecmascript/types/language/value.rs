@@ -39,9 +39,7 @@ use crate::{
         to_big_uint64, to_int8, to_int16, to_int32, to_number, to_numeric, to_string, to_uint8,
         to_uint8_clamp, to_uint16, to_uint32, try_result_into_js, try_to_string,
     },
-    engine::{
-        Bindable, GcScope, HeapRootData, HeapRootRef, NoGcScope, Rootable, Scoped, bindable_handle,
-    },
+    engine::{Bindable, GcScope, HeapRootData, HeapRootRef, NoGcScope, Rootable, Scoped},
     heap::{
         ArenaAccess, CompactionLists, HeapIndexHandle, HeapMarkAndSweep, PrimitiveHeapAccess,
         WellKnownSymbols, WorkQueues,
@@ -93,7 +91,7 @@ use core::{
 /// [`GcScope::reborrow`]: crate::engine::GcScope::reborrow
 /// [`Bindable::bind`]: crate::engine::Bindable::bind
 /// [`Scopable::scope`]: crate::engine::Scopable::scope
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Bindable)]
 #[repr(u8)]
 pub enum Value<'a> {
     /// ### [6.1.1 The Undefined Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-undefined-type)
@@ -1016,8 +1014,6 @@ impl<'a> Value<'a> {
         Ok(())
     }
 }
-
-bindable_handle!(Value);
 
 impl<'a, T> From<Option<T>> for Value<'a>
 where

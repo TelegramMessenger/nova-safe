@@ -3223,7 +3223,7 @@ impl ArrayPrototype {
                 agent,
                 obj.get(agent),
                 j.try_into().unwrap(),
-                value.get(gc.nogc()).unbind(),
+                value.get(agent, gc.nogc()).unbind(),
                 true,
                 gc.reborrow(),
             )

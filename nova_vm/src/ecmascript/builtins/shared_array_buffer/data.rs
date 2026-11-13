@@ -4,17 +4,15 @@
 
 use crate::{
     ecmascript::{OrdinaryObject, SharedDataBlock},
-    engine::{NoGcScope, bindable_handle},
+    engine::NoGcScope,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, crate::engine::Bindable)]
 pub(crate) struct SharedArrayBufferRecord<'a> {
     pub(super) backing_object: Option<OrdinaryObject<'a>>,
     pub(super) data_block: SharedDataBlock,
 }
-bindable_handle!(SharedArrayBufferRecord);
-
 impl<'a> SharedArrayBufferRecord<'a> {
     pub(crate) fn new(block: SharedDataBlock, _: NoGcScope<'a, '_>) -> Self {
         Self {

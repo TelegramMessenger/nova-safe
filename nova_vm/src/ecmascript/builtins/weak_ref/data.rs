@@ -4,11 +4,10 @@
 
 use crate::{
     ecmascript::{execution::WeakKey, types::OrdinaryObject},
-    engine::bindable_handle,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, crate::engine::Bindable)]
 pub(crate) struct WeakRefHeapData<'a> {
     pub(super) object_index: Option<OrdinaryObject<'a>>,
     /// ### \[\[WeakRefTarget]]
@@ -26,8 +25,6 @@ impl WeakRefHeapData<'_> {
         self.kept_alive = false;
     }
 }
-
-bindable_handle!(WeakRefHeapData);
 
 impl HeapMarkAndSweep for WeakRefHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

@@ -4,7 +4,6 @@
 
 use crate::{
     ecmascript::{DataBlock, OrdinaryObject},
-    engine::bindable_handle,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -177,7 +176,7 @@ impl InternalBuffer {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct ArrayBufferHeapData<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     pub(super) buffer: InternalBuffer,
@@ -250,8 +249,6 @@ impl<'a> ArrayBufferHeapData<'a> {
         }
     }
 }
-
-bindable_handle!(ArrayBufferHeapData);
 
 impl HeapMarkAndSweep for ArrayBufferHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

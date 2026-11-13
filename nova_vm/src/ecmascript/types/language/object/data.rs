@@ -5,14 +5,14 @@
 use super::Object;
 use crate::{
     ecmascript::{ObjectShape, ObjectShapeRecord},
-    engine::{Bindable, bindable_handle},
+    engine::Bindable,
     heap::{
         CompactionLists, ElementIndex, HeapMarkAndSweep, WorkQueues,
         {ElementArrayKey, ElementArrays, ElementStorageRef},
     },
 };
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Bindable)]
 pub(crate) struct ObjectRecord<'a> {
     pub(crate) shape: ObjectShape<'a>,
     pub(crate) values: ElementIndex<'a>,
@@ -139,5 +139,3 @@ impl ObjectRecord<'static> {
         };
     }
 }
-
-bindable_handle!(ObjectRecord);

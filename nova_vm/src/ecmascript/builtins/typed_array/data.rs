@@ -11,7 +11,6 @@ use crate::{
         ArrayBuffer, OrdinaryObject, ViewedArrayBufferByteLength, ViewedArrayBufferByteOffset,
         VoidArray,
     },
-    engine::bindable_handle,
     heap::{CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -83,7 +82,7 @@ impl From<usize> for TypedArrayArrayLength {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, crate::engine::Bindable)]
 pub(crate) struct TypedArrayRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
     /// ### [\[\[ViewedArrayBuffer\]\]](https://tc39.es/ecma262/#sec-properties-of-typedarray-instances)
@@ -95,8 +94,6 @@ pub(crate) struct TypedArrayRecord<'a> {
     /// ### [\[\[ArrayLength\]\]](https://tc39.es/ecma262/#sec-properties-of-typedarray-instances)
     pub(crate) array_length: TypedArrayArrayLength,
 }
-bindable_handle!(TypedArrayRecord);
-
 impl<'a> TypedArrayRecord<'a> {
     /// Get the byte offset value of this TypedArrayRecord.
     #[inline(always)]
@@ -144,7 +141,7 @@ impl Default for TypedArrayRecord<'_> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, crate::engine::Bindable)]
 #[cfg(feature = "shared-array-buffer")]
 pub(crate) struct SharedTypedArrayRecord<'a> {
     pub(crate) object_index: Option<OrdinaryObject<'a>>,
@@ -158,8 +155,6 @@ pub(crate) struct SharedTypedArrayRecord<'a> {
     pub(crate) array_length: TypedArrayArrayLength,
 }
 #[cfg(feature = "shared-array-buffer")]
-bindable_handle!(SharedTypedArrayRecord);
-
 #[cfg(feature = "shared-array-buffer")]
 impl<'a> SharedTypedArrayRecord<'a> {
     /// Get the byte offset value of this SharedTypedArrayRecord.

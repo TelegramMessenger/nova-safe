@@ -4,11 +4,10 @@
 
 use crate::{
     ecmascript::types::String,
-    engine::bindable_handle,
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, crate::engine::Bindable)]
 pub(crate) struct SymbolHeapData<'a> {
     /// \[\[Description]]
     pub(super) description: Option<String<'a>>,
@@ -21,8 +20,6 @@ impl<'a> SymbolHeapData<'a> {
         }
     }
 }
-
-bindable_handle!(SymbolHeapData);
 
 impl HeapMarkAndSweep for SymbolHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {

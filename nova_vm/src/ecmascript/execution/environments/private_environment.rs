@@ -8,7 +8,7 @@ use ahash::AHashMap;
 
 use crate::{
     ecmascript::{PrivateName, String, Value, builtins::ECMAScriptFunction, execution::Agent},
-    engine::{Bindable, NoGcScope, bindable_handle},
+    engine::{Bindable, NoGcScope},
     heap::{CompactionLists, ElementDescriptor, HeapMarkAndSweep, WorkQueues},
 };
 
@@ -21,7 +21,7 @@ pub(crate) enum PrivateMethod<'a> {
     Method(ECMAScriptFunction<'a>),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Bindable)]
 pub(crate) enum PrivateField<'a> {
     Field {
         key: PrivateName,
@@ -107,8 +107,6 @@ impl<'a> PrivateField<'a> {
         }
     }
 }
-bindable_handle!(PrivateField);
-
 /// ## [9.2 PrivateEnvironment Records](https://tc39.es/ecma262/#sec-privateenvironment-records)
 ///
 /// A PrivateEnvironment Record is a specification mechanism used to track

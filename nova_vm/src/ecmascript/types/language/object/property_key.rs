@@ -13,7 +13,7 @@ use crate::{
         STRING_DISCRIMINANT, SYMBOL_DISCRIMINANT, SmallInteger, SmallString, String, Symbol, Value,
         parse_string_to_integer_property_key,
     },
-    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, Scoped, bindable_handle},
+    engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, Scoped},
     heap::{
         ArenaAccess, CompactionLists, HeapMarkAndSweep, PropertyKeyHeapAccess, WellKnownSymbols,
         WorkQueues,
@@ -36,7 +36,7 @@ const PRIVATE_NAME_DISCRIMINANT: u8 = SYMBOL_DISCRIMINANT + 0b1000_0000;
 /// integer index `n` such that `CanonicalNumericIndexString(n)` returns an
 /// [integral Number](crate::ecmascript::types::Number::Integer) in the
 /// inclusive interval from `+0𝔽` to `𝔽(2**32 - 2)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Bindable)]
 #[repr(u8)]
 pub enum PropertyKey<'a> {
     /// ### [6.1.6.1 The Number Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-number-type)
@@ -282,8 +282,6 @@ impl<'a> PropertyKey<'a> {
         hasher.finish()
     }
 }
-
-bindable_handle!(PropertyKey);
 
 pub(crate) struct DisplayablePropertyKey<'a, 'b, 'c> {
     key: &'b PropertyKey<'a>,

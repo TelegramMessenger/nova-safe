@@ -594,7 +594,7 @@ fn array_of_generic<'gc>(
                             agent,
                             a.get(agent),
                             pk,
-                            k_value.get(gc.nogc()).unbind(),
+                            k_value.get(agent, gc.nogc()).unbind(),
                             gc.reborrow(),
                         )
                         .unbind()?;
