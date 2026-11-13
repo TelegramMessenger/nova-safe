@@ -2015,7 +2015,7 @@ fn copy_within_buffer<Source: Viewable, Target: Viewable>(
     target_byte_offset: usize,
     len: usize,
 ) {
-    let source_offset = source_byte_offset / size_of::<Target>();
+    let source_offset = source_byte_offset / size_of::<Source>();
     let target_offset = target_byte_offset / size_of::<Target>();
     if core::any::TypeId::of::<Target>() == core::any::TypeId::of::<Source>() {
         let size = size_of::<Target>();
@@ -2055,7 +2055,7 @@ fn copy_within_buffer<Source: Viewable, Target: Viewable>(
         for i in 0..len {
             let source_start = (source_offset + i) * source_size;
             let value = Source::read_ne(&buffer[source_start..source_start + source_size]);
-            let value = if Target::IS_FLOAT {
+            let value = if Target::IS_FLOAT || Source::IS_FLOAT {
                 Target::from_f64(value.into_f64())
             } else {
                 Target::from_bits(value.into_bits())
