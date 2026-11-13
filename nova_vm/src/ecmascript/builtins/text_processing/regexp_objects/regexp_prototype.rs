@@ -302,6 +302,7 @@ impl RegExpPrototype {
         // 11. If multiline is true, append the code unit 0x006D (LATIN SMALL LETTER M) to codeUnits.
         if multiline {
             code_units[i] = b'm';
+            i += 1;
         };
 
         // 12. Let dotAll be ToBoolean(? Get(R, "dotAll")).
@@ -368,7 +369,7 @@ impl RegExpPrototype {
 
         // 19. If sticky is true, append the code unit 0x0079 (LATIN SMALL LETTER Y) to codeUnits.
         if sticky {
-            code_units[i] = b'v';
+            code_units[i] = b'y';
             i += 1;
         };
 
