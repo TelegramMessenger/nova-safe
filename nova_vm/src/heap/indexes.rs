@@ -26,10 +26,8 @@ pub(crate) struct BaseIndex<'a, T: ?Sized>(NonZeroU32, PhantomData<T>, PhantomDa
 impl<T: ?Sized> BaseIndex<'_, T> {
     pub(crate) const fn from_index_const(index: usize) -> Self {
         assert!(index < u32::MAX as usize);
-        // SAFETY: Number is not max value and will not overflow to zero.
-        // This check is done manually to allow const context.
         Self(
-            unsafe { NonZeroU32::new_unchecked(index as u32 + 1) },
+            NonZeroU32::new(index as u32 + 1).expect("index + 1 is not zero"),
             PhantomData,
             PhantomData,
         )
@@ -37,10 +35,8 @@ impl<T: ?Sized> BaseIndex<'_, T> {
 
     pub(crate) const fn from_index_u32_const(index: u32) -> Self {
         assert!(index != u32::MAX);
-        // SAFETY: Number is not max value and will not overflow to zero.
-        // This check is done manually to allow const context.
         Self(
-            unsafe { NonZeroU32::new_unchecked(index + 1) },
+            NonZeroU32::new(index + 1).expect("index + 1 is not zero"),
             PhantomData,
             PhantomData,
         )
@@ -52,16 +48,17 @@ impl<T: ?Sized> BaseIndex<'_, T> {
     }
 }
 
-// SAFETY: Marker lifetime transmute.
-unsafe impl<T: ?Sized> Bindable for BaseIndex<'_, T> {
+impl<T: ?Sized> Bindable for BaseIndex<'_, T> {
     type Of<'a> = BaseIndex<'a, T>;
 
+    #[inline(always)]
     fn unbind(self) -> Self::Of<'static> {
-        unsafe { core::mem::transmute::<Self, Self::Of<'static>>(self) }
+        BaseIndex(self.0, PhantomData, PhantomData)
     }
 
+    #[inline(always)]
     fn bind<'a>(self, _: NoGcScope<'a, '_>) -> Self::Of<'a> {
-        unsafe { core::mem::transmute::<Self, Self::Of<'a>>(self) }
+        BaseIndex(self.0, PhantomData, PhantomData)
     }
 }
 
@@ -242,7 +239,19 @@ macro_rules! index_handle {
         crate::heap::index_handle!($name, $name);
     };
     ($name: ident, $variant: ident) => {
-        crate::engine::bindable_handle!($name);
+        impl crate::engine::Bindable for $name<'_> {
+            type Of<'a> = $name<'a>;
+
+            #[inline(always)]
+            fn unbind(self) -> Self::Of<'static> {
+                $name(crate::engine::Bindable::unbind(self.0))
+            }
+
+            #[inline(always)]
+            fn bind<'a>(self, gc: crate::engine::NoGcScope<'a, '_>) -> Self::Of<'a> {
+                $name(crate::engine::Bindable::bind(self.0, gc))
+            }
+        }
 
         impl crate::heap::HeapIndexHandle for $name<'_> {
             const _DEF: Self = Self(crate::heap::BaseIndex::MAX);

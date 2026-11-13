@@ -2199,7 +2199,7 @@ impl HeapMarkAndSweep for TypedArray<'static> {
 }
 
 // === OUTPUT FROM object_handle! ADAPTED TO GenericTypedArray ===
-unsafe impl<T: Viewable> Bindable for GenericTypedArray<'_, T> {
+impl<T: Viewable> Bindable for GenericTypedArray<'_, T> {
     type Of<'a> = GenericTypedArray<'a, T>;
 
     fn unbind(self) -> Self::Of<'static> {

@@ -220,21 +220,22 @@ impl<'slice, 'value> ArgumentsList<'slice, 'value> {
     }
 }
 
-// SAFETY: Properly implemented as a lifetime transmute.
-unsafe impl<'slice> Bindable for ArgumentsList<'slice, '_> {
+impl<'slice> Bindable for ArgumentsList<'slice, '_> {
     type Of<'a> = ArgumentsList<'slice, 'a>;
 
     #[inline(always)]
     fn unbind(self) -> Self::Of<'static> {
-        unsafe {
-            core::mem::transmute::<ArgumentsList<'slice, '_>, ArgumentsList<'slice, 'static>>(self)
+        ArgumentsList {
+            slice: self.slice,
+            value: PhantomData,
         }
     }
 
     #[inline(always)]
     fn bind<'a>(self, _gc: NoGcScope<'a, '_>) -> Self::Of<'a> {
-        unsafe {
-            core::mem::transmute::<ArgumentsList<'slice, '_>, ArgumentsList<'slice, 'a>>(self)
+        ArgumentsList {
+            slice: self.slice,
+            value: PhantomData,
         }
     }
 }

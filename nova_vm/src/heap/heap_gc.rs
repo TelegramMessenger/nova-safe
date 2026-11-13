@@ -2123,7 +2123,7 @@ fn test_heap_gc() {
 
     let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
 
-    let (mut gc, mut scope) = unsafe { GcScope::create_root() };
+    let (mut gc, mut scope) = GcScope::create_root();
     let mut gc = GcScope::new(&mut gc, &mut scope);
     assert!(agent.heap.objects.is_empty());
     let obj = HeapRootData::from(

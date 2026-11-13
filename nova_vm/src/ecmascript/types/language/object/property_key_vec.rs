@@ -80,8 +80,7 @@ impl ScopedCollection<'_, Vec<PropertyKey<'static>>> {
     }
 }
 
-// SAFETY: Trivially safe.
-unsafe impl<'scope> Bindable for ScopedCollection<'scope, Vec<PropertyKey<'static>>> {
+impl<'scope> Bindable for ScopedCollection<'scope, Vec<PropertyKey<'static>>> {
     type Of<'a> = ScopedCollection<'scope, Vec<PropertyKey<'static>>>;
 
     #[inline(always)]
