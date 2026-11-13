@@ -730,15 +730,13 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
         match buffer {
             AnyArrayBuffer::ArrayBuffer(buffer) => {
                 let o = typed_array_create::<T>(agent, o_proto);
-                // SAFETY: We are initialising O.
-                unsafe { o.initialise_data(agent, buffer, offset as usize, None) };
+                o.initialise_data(agent, buffer, offset as usize, None);
                 Ok(o.into())
             }
             #[cfg(feature = "shared-array-buffer")]
             AnyArrayBuffer::SharedArrayBuffer(buffer) => {
                 let o = shared_typed_array_create::<T>(agent, o_proto);
-                // SAFETY: We are initialising O.
-                unsafe { o.initialise_data(agent, buffer, offset as usize, None) };
+                o.initialise_data(agent, buffer, offset as usize, None);
                 Ok(o.into())
             }
         }
@@ -789,29 +787,23 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
         match buffer {
             AnyArrayBuffer::ArrayBuffer(buffer) => {
                 let o = typed_array_create::<T>(agent, o_proto);
-                // SAFETY: We are initialising O.
-                unsafe {
-                    o.initialise_data(
-                        agent,
-                        buffer,
-                        offset as usize,
-                        Some((new_byte_length, array_length)),
-                    )
-                };
+                o.initialise_data(
+                    agent,
+                    buffer,
+                    offset as usize,
+                    Some((new_byte_length, array_length)),
+                );
                 Ok(o.into())
             }
             #[cfg(feature = "shared-array-buffer")]
             AnyArrayBuffer::SharedArrayBuffer(buffer) => {
                 let o = shared_typed_array_create::<T>(agent, o_proto);
-                // SAFETY: We are initialising O.
-                unsafe {
-                    o.initialise_data(
-                        agent,
-                        buffer,
-                        offset as usize,
-                        Some((new_byte_length, array_length)),
-                    )
-                };
+                o.initialise_data(
+                    agent,
+                    buffer,
+                    offset as usize,
+                    Some((new_byte_length, array_length)),
+                );
                 Ok(o.into())
             }
         }
@@ -935,8 +927,7 @@ pub(crate) fn allocate_typed_array_buffer<'a, T: Viewable>(
     // 6. Set O.[[ByteLength]] to byteLength.
     // 7. Set O.[[ByteOffset]] to 0.
     // 8. Set O.[[ArrayLength]] to length.
-    // SAFETY: We're initialising O.
-    unsafe { o.initialise_data(agent, data, 0, Some((byte_length, length))) };
+    o.initialise_data(agent, data, 0, Some((byte_length, length)));
 
     // 9. Return unused.
     Ok(())
@@ -1080,8 +1071,7 @@ pub(crate) fn typed_array_create_from_data_block<'a>(
         .heap
         .create(ArrayBufferHeapData::new_fixed_length(data_block));
     let result: VoidArray = agent.heap.create(TypedArrayRecord::default());
-    // SAFETY: Initialising new TypedArrayRecord.
-    unsafe { result.initialise_data(agent, ab, 0, Some((byte_length, array_length))) };
+    result.initialise_data(agent, ab, 0, Some((byte_length, array_length)));
     // 5. Return result.
     result
 }

@@ -2260,14 +2260,11 @@ impl TypedArrayPrototype {
             for_any_typed_array!(
                 o,
                 o,
-                // SAFETY: type checked by the macro.
-                unsafe {
-                    typed_array_create_from_data_block(agent, o, data_block)
-                        .unbind()
-                        .bind(gc.into_nogc())
-                        .cast::<TA>()
-                }
-                .into(),
+                typed_array_create_from_data_block(agent, o, data_block)
+                    .unbind()
+                    .bind(gc.into_nogc())
+                    .cast::<TA>()
+                    .into(),
                 TA
             )
         } else {
