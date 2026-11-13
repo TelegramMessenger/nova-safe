@@ -1232,6 +1232,9 @@ mod private {
 /// Conversion of a Viewable storage type from and to its bytes in native
 /// byte order.
 pub(crate) trait StorageBytes: Copy {
+    /// The bytes of a value, `[u8; size_of::<Self>()]`.
+    type Bytes: Copy;
+
     /// Read the value from exactly `size_of::<Self>()` bytes.
     ///
     /// Panics if `bytes` has a different length.
@@ -1241,12 +1244,31 @@ pub(crate) trait StorageBytes: Copy {
     ///
     /// Panics if `bytes` has a different length.
     fn write_ne(self, bytes: &mut [u8]);
+
+    /// The value of the bytes.
+    fn from_ne_array(bytes: Self::Bytes) -> Self;
+
+    /// The bytes of the value.
+    fn to_ne_array(self) -> Self::Bytes;
+
+    /// View bytes as values' bytes; trailing bytes that do not make up a
+    /// whole value are left out.
+    fn as_elements(bytes: &[u8]) -> &[Self::Bytes];
+
+    /// View bytes as values' bytes; trailing bytes that do not make up a
+    /// whole value are left out.
+    fn as_elements_mut(bytes: &mut [u8]) -> &mut [Self::Bytes];
+
+    /// The bytes of values' bytes.
+    fn flatten_mut(elements: &mut [Self::Bytes]) -> &mut [u8];
 }
 
 macro_rules! storage_bytes {
     ($($t:ty),*) => {
         $(
             impl StorageBytes for $t {
+                type Bytes = [u8; size_of::<$t>()];
+
                 #[inline(always)]
                 fn read_ne(bytes: &[u8]) -> Self {
                     Self::from_ne_bytes(
@@ -1260,12 +1282,40 @@ macro_rules! storage_bytes {
                 fn write_ne(self, bytes: &mut [u8]) {
                     bytes.copy_from_slice(&self.to_ne_bytes());
                 }
+
+                #[inline(always)]
+                fn from_ne_array(bytes: Self::Bytes) -> Self {
+                    Self::from_ne_bytes(bytes)
+                }
+
+                #[inline(always)]
+                fn to_ne_array(self) -> Self::Bytes {
+                    self.to_ne_bytes()
+                }
+
+                #[inline(always)]
+                fn as_elements(bytes: &[u8]) -> &[Self::Bytes] {
+                    bytes.as_chunks().0
+                }
+
+                #[inline(always)]
+                fn as_elements_mut(bytes: &mut [u8]) -> &mut [Self::Bytes] {
+                    bytes.as_chunks_mut().0
+                }
+
+                #[inline(always)]
+                fn flatten_mut(elements: &mut [Self::Bytes]) -> &mut [u8] {
+                    elements.as_flattened_mut()
+                }
             }
         )*
     };
 }
 
 storage_bytes!(u8, u16, u32, u64);
+
+/// The bytes of a Viewable value, `[u8; size_of::<T>()]`.
+pub(crate) type ElementBytes<T> = <<T as Viewable>::Storage as StorageBytes>::Bytes;
 
 pub(crate) trait Viewable:
     'static + private::Sealed + Copy + PartialEq + core::fmt::Debug
@@ -1290,6 +1340,18 @@ pub(crate) trait Viewable:
     #[inline(always)]
     fn write_ne(self, bytes: &mut [u8]) {
         Self::into_storage(self).write_ne(bytes)
+    }
+
+    /// The value of its bytes in native byte order.
+    #[inline(always)]
+    fn from_ne_array(bytes: ElementBytes<Self>) -> Self {
+        Self::from_storage(Self::Storage::from_ne_array(bytes))
+    }
+
+    /// The bytes of the value in native byte order.
+    #[inline(always)]
+    fn to_ne_array(self) -> ElementBytes<Self> {
+        Self::into_storage(self).to_ne_array()
     }
 
     /// Functions as the \[\[ContentType\]\] internal slot of the TypedArray and

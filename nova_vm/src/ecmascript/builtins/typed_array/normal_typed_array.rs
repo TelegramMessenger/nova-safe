@@ -23,12 +23,13 @@ use crate::{
         TryError, TryGetResult, TryHasResult, TryResult, TypedArrayAbstractOperations,
         TypedArrayArrayLength, TypedArrayRecord, U8Clamped, UINT_8_ARRAY_DISCRIMINANT,
         UINT_8_CLAMPED_ARRAY_DISCRIMINANT, UINT_16_ARRAY_DISCRIMINANT, UINT_32_ARRAY_DISCRIMINANT,
-        Value, Viewable, ViewedArrayBufferByteLength, ViewedArrayBufferByteOffset, call_function,
-        canonicalize_numeric_index_string, create_byte_data_block, js_result_into_try,
-        ordinary_define_own_property, ordinary_delete, ordinary_get, ordinary_get_own_property,
-        ordinary_has_property_entry, ordinary_prevent_extensions, ordinary_set, ordinary_try_get,
-        ordinary_try_has_property, ordinary_try_set, set, to_big_int, to_big_int_primitive,
-        to_boolean, to_number, to_number_primitive, typed_array_create_from_data_block,
+        Value, Viewable, ViewableSlice, ViewableSliceMut, ViewedArrayBufferByteLength,
+        ViewedArrayBufferByteOffset, call_function, canonicalize_numeric_index_string,
+        create_byte_data_block, js_result_into_try, ordinary_define_own_property, ordinary_delete,
+        ordinary_get, ordinary_get_own_property, ordinary_has_property_entry,
+        ordinary_prevent_extensions, ordinary_set, ordinary_try_get, ordinary_try_has_property,
+        ordinary_try_set, set, to_big_int, to_big_int_primitive, to_boolean, to_number,
+        to_number_primitive, typed_array_create_from_data_block,
         typed_array_species_create_with_length, unwrap_try,
     },
     engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, Scoped, bindable_handle},
@@ -162,37 +163,24 @@ impl<'ta, T: Viewable> GenericTypedArray<'ta, T> {
         TryResult::Continue(())
     }
 
+    /// View the elements of the TypedArray; the view is empty if they are
+    /// not all within the ArrayBuffer.
     #[inline(always)]
-    pub(crate) fn as_slice(self, agent: &'ta Agent) -> &'ta [T] {
+    pub(crate) fn as_slice(self, agent: &'ta Agent) -> ViewableSlice<'ta, T> {
         Self::check_not_void_array();
 
         let key = self.into_void_array();
         let data = self.into_void_array().get(agent);
-        let buffer = data.viewed_array_buffer;
-        let byte_slice = buffer.as_slice(agent);
         let byte_offset = data.get_byte_offset(key, &agent.heap.typed_array_byte_offsets);
         let byte_length = data.get_byte_length(key, &agent.heap.typed_array_byte_lengths);
-        let byte_limit = byte_length.map(|byte_length| byte_offset.saturating_add(byte_length));
-        if byte_limit.unwrap_or(byte_offset) > byte_slice.len() {
-            return &[];
-        }
-        let byte_slice = if let Some(byte_limit) = byte_limit {
-            &byte_slice[byte_offset..byte_limit]
-        } else {
-            &byte_slice[byte_offset..]
-        };
-        // SAFETY: All bytes in byte_slice are initialized, and all bitwise
-        // combinations of T are valid values. Alignment of T's is
-        // guaranteed by align_to_mut itself.
-        let (head, slice, _) = unsafe { byte_slice.align_to::<T>() };
-        if !head.is_empty() {
-            panic!("TypedArray is not properly aligned");
-        }
-        slice
+        data.viewed_array_buffer
+            .as_viewable_slice(agent, byte_offset, byte_length)
     }
 
+    /// View the elements of the TypedArray; the view is empty if they are
+    /// not all within the ArrayBuffer.
     #[inline(always)]
-    pub(crate) fn as_mut_slice(self, agent: &'ta mut Agent) -> &'ta mut [T] {
+    pub(crate) fn as_mut_slice(self, agent: &'ta mut Agent) -> ViewableSliceMut<'ta, T> {
         Self::check_not_void_array();
 
         let key = self.into_void_array();
@@ -200,24 +188,7 @@ impl<'ta, T: Viewable> GenericTypedArray<'ta, T> {
         let buffer = data.viewed_array_buffer;
         let byte_offset = data.get_byte_offset(key, &agent.heap.typed_array_byte_offsets);
         let byte_length = data.get_byte_length(key, &agent.heap.typed_array_byte_lengths);
-        let byte_limit = byte_length.map(|byte_length| byte_offset.saturating_add(byte_length));
-        let byte_slice = buffer.as_mut_slice(agent);
-        if byte_limit.unwrap_or(byte_offset) > byte_slice.len() {
-            return &mut [];
-        }
-        let byte_slice = if let Some(byte_limit) = byte_limit {
-            &mut byte_slice[byte_offset..byte_limit]
-        } else {
-            &mut byte_slice[byte_offset..]
-        };
-        // SAFETY: All bytes in byte_slice are initialized, and all bitwise
-        // combinations of T are valid values. Alignment of T's is
-        // guaranteed by align_to_mut itself.
-        let (head, slice, _) = unsafe { byte_slice.align_to_mut::<T>() };
-        if !head.is_empty() {
-            panic!("TypedArray is not properly aligned");
-        }
-        slice
+        buffer.as_mut_viewable_slice(agent, byte_offset, byte_length)
     }
 
     /// Initialise the heap data of a TypedArray.
@@ -1478,8 +1449,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         target_index: usize,
         count: usize,
     ) {
-        let slice = self.as_mut_slice(agent);
-        slice.copy_within(start_index..start_index + count, target_index);
+        self.as_mut_slice(agent)
+            .copy_within(start_index..start_index + count, target_index);
         // let before_len = len as usize;
         // if before_len != slice.len() {
         //     let end_bound = (len - target_index).max(0).min(before_len - target_index);
@@ -1494,8 +1465,9 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
 
     fn fill(self, agent: &mut Agent, value: Numeric, start_index: usize, count: usize) {
         let value = T::from_ne_value(agent, value);
-        let slice = self.as_mut_slice(agent);
-        slice[start_index..start_index + count].fill(value);
+        self.as_mut_slice(agent)
+            .into_slice(start_index..start_index + count)
+            .fill(value);
     }
 
     fn filter<'gc>(
@@ -1521,10 +1493,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
             create_byte_data_block(agent, len.saturating_mul(size_of::<T>()) as u64, gc.nogc())
                 .unbind()?
                 .bind(gc.nogc());
-        // SAFETY: All viewable types are trivially transmutable.
-        let (head, kept_slice, _) = unsafe { kept.align_to_mut::<T>() };
-        // Should be properly aligned for all T.
-        assert!(head.is_empty());
+        let mut kept_slice = ViewableSliceMut::<T>::new(&mut kept);
 
         // 6. Let captured be 0.
         let mut captured = 0;
@@ -1535,7 +1504,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                 scoped_buffer
                     .get(agent)
                     .as_viewable_slice::<T>(agent, byte_offset, byte_length);
-            let value = slice.get(k).copied();
+            let value = slice.get(k);
             // b. Let kValue be ! Get(O, Pk).
             let k_value = value.map_or(Value::Undefined, |v| {
                 v.into_le_value(agent, gc.nogc()).into()
@@ -1555,7 +1524,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
             .bind(gc.nogc());
             let selected = to_boolean(agent, result);
             if selected {
-                kept_slice[captured] = value.unwrap_or(T::default());
+                kept_slice.set(captured, value.unwrap_or(T::default()));
                 captured += 1;
             }
         }
@@ -1587,14 +1556,11 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                     let db = ab.get_mut(agent).get_data_block_mut();
                     core::mem::swap(db, &mut kept);
                 } else {
-                    // SAFETY: All viewable types are trivially transmutable.
-                    let (head, dst, _) =
-                        unsafe { ab.as_mut_slice(agent)[byte_offset..].align_to_mut::<T>() };
-                    assert!(head.is_empty());
-                    // SAFETY: All viewable types are trivially transmutable.
-                    let (head, kept_slice, _) = unsafe { kept.align_to::<T>() };
-                    assert!(head.is_empty());
-                    dst[..captured].copy_from_slice(&kept_slice[..captured]);
+                    let dst =
+                        ViewableSliceMut::<T>::new(&mut ab.as_mut_slice(agent)[byte_offset..]);
+                    let kept_slice = ViewableSlice::<T>::new(&kept);
+                    dst.into_slice(0..captured)
+                        .copy_from(kept_slice.slice(0..captured));
                 }
             }
             #[cfg(feature = "shared-array-buffer")]
@@ -1629,13 +1595,17 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
             if start >= end {
                 return None;
             }
-            slice[start..end]
+            slice
+                .slice(start..end)
                 .iter()
-                .position(|&r| r == search_element)
+                .position(|r| r == search_element)
                 .map(|pos| pos + start)
         } else {
             let end = start.saturating_add(1).min(slice.len());
-            slice[..end].iter().rposition(|&r| r == search_element)
+            slice
+                .slice(0..end)
+                .iter()
+                .rposition(|r| r == search_element)
         }
     }
 
@@ -1675,7 +1645,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                 scoped_buffer
                     .get(agent)
                     .as_viewable_slice::<T>(agent, byte_offset, byte_length);
-            let value = slice.get(k).copied();
+            let value = slice.get(k);
             let k_value = value.map_or(Value::Undefined, |v| {
                 v.into_ne_value(agent, gc.nogc()).into()
             });
@@ -1721,7 +1691,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         //    f. Perform ! Set(O, lowerP, upperValue, true).
         //    g. Perform ! Set(O, upperP, lowerValue, true).
         //    h. Set lower to lower + 1.
-        self.as_mut_slice(agent)[..len].reverse();
+        self.as_mut_slice(agent).into_slice(0..len).reverse();
     }
 
     fn set_into_data_block<'gc>(
@@ -1732,17 +1702,11 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         count: usize,
     ) {
         // Precondition.
-        debug_assert!(
-            target.len() >= count * self.typed_array_element_size()
-                && target.as_ptr_range().start.cast::<usize>().is_aligned()
-                && target.as_ptr_range().end.cast::<T>().is_aligned()
-        );
-        let source = &self.as_slice(agent)[start_index..start_index + count];
-        // SAFETY: Viewables are safe to transmute from u8.
-        let (head, target, _) = unsafe { target.align_to_mut::<T>() };
-        // Precondition.
-        debug_assert!(target.len() >= count && head.is_empty());
-        target[..count].copy_from_slice(source);
+        debug_assert!(target.len() >= count * self.typed_array_element_size());
+        let source = self.as_slice(agent).slice(start_index..start_index + count);
+        ViewableSliceMut::<T>::new(target)
+            .into_slice(0..count)
+            .copy_from(source);
     }
 
     fn set_from_typed_array<'gc>(
@@ -1793,11 +1757,9 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                     );
                     // c. Let srcByteIndex be 0.
 
-                    let target_slice = &mut target_buffer.as_mut_viewable_slice::<T>(
-                        agent,
-                        target_byte_offset,
-                        None,
-                    )[target_offset..target_offset + length];
+                    let target_slice = target_buffer
+                        .as_mut_viewable_slice::<T>(agent, target_byte_offset, None)
+                        .into_slice(target_offset..target_offset + length);
 
                     for_normal_typed_array!(
                         source,
@@ -1806,20 +1768,11 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                         Source
                     );
                 } else {
-                    let src_slice =
-                        &src_buffer.as_slice(agent)[src_byte_offset..src_byte_end_offset];
-                    let src_slice = src_slice as *const [u8];
-
-                    let target_slice = &mut target_buffer.as_mut_viewable_slice::<T>(
-                        agent,
-                        target_byte_offset,
-                        None,
-                    )[target_offset..target_offset + length];
-
-                    // SAFETY: taking mut slice of target_buffer doesn't invalidate
-                    // src_slice pointer and we've checked that they're not the same
-                    // buffer.
-                    let src_slice = unsafe { &*src_slice };
+                    let (src_bytes, target_bytes) =
+                        ArrayBuffer::as_slice_and_mut_slice(agent, src_buffer, target_buffer);
+                    let src_slice = &src_bytes[src_byte_offset..src_byte_end_offset];
+                    let target_slice = view_bytes_mut::<T>(target_bytes, target_byte_offset)
+                        .into_slice(target_offset..target_offset + length);
 
                     for_normal_typed_array!(
                         source,
@@ -1841,20 +1794,22 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                 };
                 let sdb = sab.get_data_block(agent).clone();
 
-                let target_slice =
-                    &mut target_buffer.as_mut_viewable_slice::<T>(agent, target_byte_offset, None)
-                        [target_offset..target_offset + length];
-
+                let mut values = vec![T::default(); length];
                 for_shared_typed_array!(
                     source,
                     _ta,
                     copy_from_shared_typed_array::<Source, T>(
                         sdb.as_racy_slice()
                             .slice(src_byte_offset, src_byte_end_offset),
-                        target_slice
+                        &mut values
                     ),
                     Source
                 );
+
+                target_buffer
+                    .as_mut_viewable_slice::<T>(agent, target_byte_offset, None)
+                    .into_slice(target_offset..target_offset + length)
+                    .copy_from_values(&values);
             }
         }
         // 25. Return unused.
@@ -1913,20 +1868,11 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                         Source
                     );
                 } else {
-                    let src_slice =
-                        &src_buffer.as_slice(agent)[src_byte_offset..src_byte_end_offset];
-                    let src_slice = src_slice as *const [u8];
-
-                    let target_slice = &mut target_buffer.as_mut_viewable_slice::<T>(
-                        agent,
-                        target_byte_offset,
-                        None,
-                    )[..length];
-
-                    // SAFETY: taking mut slice of target_buffer doesn't invalidate
-                    // src_slice pointer and we've checked that they're not the same
-                    // buffer.
-                    let src_slice = unsafe { &*src_slice };
+                    let (src_bytes, target_bytes) =
+                        ArrayBuffer::as_slice_and_mut_slice(agent, src_buffer, target_buffer);
+                    let src_slice = &src_bytes[src_byte_offset..src_byte_end_offset];
+                    let target_slice =
+                        view_bytes_mut::<T>(target_bytes, target_byte_offset).into_slice(0..length);
 
                     for_normal_typed_array!(
                         source,
@@ -1948,20 +1894,22 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
                 };
                 let sdb = sab.get_data_block(agent).clone();
 
-                let target_slice =
-                    &mut target_buffer.as_mut_viewable_slice::<T>(agent, target_byte_offset, None)
-                        [..length];
-
+                let mut values = vec![T::default(); length];
                 for_shared_typed_array!(
                     source,
                     _ta,
                     copy_from_shared_typed_array::<Source, T>(
                         sdb.as_racy_slice()
                             .slice(src_byte_offset, src_byte_end_offset),
-                        target_slice
+                        &mut values
                     ),
                     Source
                 );
+
+                target_buffer
+                    .as_mut_viewable_slice::<T>(agent, target_byte_offset, None)
+                    .into_slice(0..length)
+                    .copy_from_values(&values);
             }
         }
         // 25. Return unused.
@@ -1975,8 +1923,7 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, ()> {
         let ta = self.bind(gc.nogc());
-        let slice = &ta.as_slice(agent)[..len];
-        let mut items: Vec<T> = slice.to_vec();
+        let mut items: Vec<T> = ta.as_slice(agent).slice(0..len).to_vec();
         let mut error: Option<JsError> = None;
         let ta = ta.scope(agent, gc.nogc());
         items.sort_by(|a, b| {
@@ -2021,15 +1968,16 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         if !ta.is_detached(agent) {
             let slice = ta.as_mut_slice(agent);
             let len = len.min(slice.len());
-            let slice = &mut slice[..len];
-            slice.copy_from_slice(&items[..len]);
+            slice.into_slice(0..len).copy_from_values(&items[..len]);
         }
         Ok(())
     }
 
     fn sort<'gc>(self, agent: &mut Agent, len: usize) {
-        let slice = &mut self.as_mut_slice(agent)[..len];
-        slice.sort_by(|a, b| a.ecmascript_cmp(b));
+        let mut slice = self.as_mut_slice(agent).into_slice(0..len);
+        let mut items = slice.as_slice().to_vec();
+        items.sort_by(|a, b| a.ecmascript_cmp(b));
+        slice.copy_from_values(&items);
     }
 
     fn typed_array_create_same_type_and_copy_data<'gc>(
@@ -2040,19 +1988,27 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
     ) -> JsResult<'gc, TypedArray<'gc>> {
         let byte_length = (len as u64).saturating_mul(self.typed_array_element_size() as u64);
         let mut data_block = create_byte_data_block(agent, byte_length, gc)?;
-        let source = &self.as_slice(agent)[..len];
-        // SAFETY: Viewables can be safely transmuted from bytes.
-        let (head, target, tail) = unsafe { data_block.align_to_mut::<T>() };
-        // Cannot have any head or tail since we created length by
-        // multiplying with `size_of::<T>()`, and allocation is done 8-byte
-        // aligned.
-        debug_assert!(head.is_empty() && tail.is_empty() && target.len() == len);
-        target.copy_from_slice(source);
+        let source = self.as_slice(agent).slice(0..len);
+        let mut target = ViewableSliceMut::<T>::new(&mut data_block);
+        // The block holds exactly len T's.
+        debug_assert!(target.len() == len);
+        target.copy_from(source);
         let result = typed_array_create_from_data_block(agent, self, data_block).bind(gc);
         Ok(result.cast::<T>().into())
     }
 }
 
+/// View the bytes of an ArrayBuffer from `byte_offset` to the end as T's; the
+/// view is empty if `byte_offset` is past the end.
+fn view_bytes_mut<T: Viewable>(bytes: &mut [u8], byte_offset: usize) -> ViewableSliceMut<'_, T> {
+    match bytes.get_mut(byte_offset..) {
+        Some(bytes) => ViewableSliceMut::new(bytes),
+        None => ViewableSliceMut::empty(),
+    }
+}
+
+/// Copy `len` elements within one ArrayBuffer's bytes, converting each from
+/// Source to Target, one element after the other in increasing index order.
 fn copy_within_buffer<Source: Viewable, Target: Viewable>(
     buffer: &mut [u8],
     source_byte_offset: usize,
@@ -2062,68 +2018,72 @@ fn copy_within_buffer<Source: Viewable, Target: Viewable>(
     let source_offset = source_byte_offset / size_of::<Target>();
     let target_offset = target_byte_offset / size_of::<Target>();
     if core::any::TypeId::of::<Target>() == core::any::TypeId::of::<Source>() {
-        // SAFETY: all viewables are safe to transmute from u8.
-        let (head, buffer, _) = unsafe { buffer.align_to_mut::<Target>() };
-        assert!(head.is_empty());
-        for i in 0..len {
-            buffer[target_offset + i] = buffer[source_offset + i];
+        let size = size_of::<Target>();
+        let element_count = buffer.len() / size;
+        assert!(
+            source_offset.saturating_add(len) <= element_count
+                && target_offset.saturating_add(len) <= element_count,
+            "copy range out of bounds"
+        );
+        let source = source_offset * size;
+        let target = target_offset * size;
+        let byte_count = len * size;
+        if target <= source || target >= source + byte_count {
+            buffer.copy_within(source..source + byte_count, target);
+        } else {
+            // The target overlaps the end of the source: an element copied
+            // early is read again later, as a forward element by element
+            // copy does. Copying a distance's worth of bytes at a time keeps
+            // that order.
+            let distance = target - source;
+            let mut copied = 0;
+            while copied < byte_count {
+                let chunk = distance.min(byte_count - copied);
+                buffer.copy_within(source + copied..source + copied + chunk, target + copied);
+                copied += chunk;
+            }
         }
     } else {
         debug_assert!(Source::IS_BIGINT == Target::IS_BIGINT);
-        // SAFETY: all viewables are safe to transmute from u8.
-        let (head, source, _) = unsafe { buffer.align_to::<Source>() };
-        assert!(head.is_empty());
-        let source = &raw const source[source_offset..source_offset + len];
-        let (head, target, _) = unsafe { buffer.align_to_mut::<Target>() };
-        assert!(head.is_empty());
-        let target = &raw mut target[target_offset..target_offset + len];
-        if Target::IS_FLOAT {
-            for i in 0..len {
-                // SAFETY: copying data within buffer from T -> U
-                unsafe {
-                    let src = &raw const (&*source)[i];
-                    let dst = &raw mut (&mut *target)[i];
-                    let value = src.read().into_f64();
-                    dst.write(Target::from_f64(value));
-                }
-            }
-        } else {
-            for i in 0..len {
-                // SAFETY: copying data within buffer from T -> U
-                unsafe {
-                    let src = &raw const (&*source)[i];
-                    let dst = &raw mut (&mut *target)[i];
-                    let value = src.read().into_bits();
-                    dst.write(Target::from_bits(value));
-                }
-            }
+        let source_size = size_of::<Source>();
+        let target_size = size_of::<Target>();
+        assert!(
+            source_offset.saturating_add(len) <= buffer.len() / source_size
+                && target_offset.saturating_add(len) <= buffer.len() / target_size,
+            "copy range out of bounds"
+        );
+        for i in 0..len {
+            let source_start = (source_offset + i) * source_size;
+            let value = Source::read_ne(&buffer[source_start..source_start + source_size]);
+            let value = if Target::IS_FLOAT {
+                Target::from_f64(value.into_f64())
+            } else {
+                Target::from_bits(value.into_bits())
+            };
+            let target_start = (target_offset + i) * target_size;
+            value.write_ne(&mut buffer[target_start..target_start + target_size]);
         }
     };
 }
 
+/// Copy the elements in `source`'s bytes into `target`, converting each from
+/// Source to Target.
+///
+/// Panics if `source` does not hold exactly `target.len()` elements.
 fn copy_between_typed_arrays<Source: Viewable, Target: Viewable>(
     source: &[u8],
-    target: &mut [Target],
+    mut target: ViewableSliceMut<Target>,
 ) {
     if core::any::TypeId::of::<Target>() == core::any::TypeId::of::<Source>() {
-        // SAFETY: all viewables are safe to transmute from u8.
-        let (head, source, _) = unsafe { source.align_to::<Target>() };
-        assert!(head.is_empty());
-        target.copy_from_slice(source);
+        target.copy_from(ViewableSlice::new(source));
     } else {
         debug_assert!(Source::IS_BIGINT == Target::IS_BIGINT);
-        // SAFETY: all viewables are safe to transmute from u8.
-        let (head, source, _) = unsafe { source.align_to::<Source>() };
-        assert!(head.is_empty());
+        let source = ViewableSlice::<Source>::new(source);
         assert_eq!(target.len(), source.len());
         if Target::IS_FLOAT || Source::IS_FLOAT {
-            for (dst, src) in target.iter_mut().zip(source.iter()) {
-                *dst = Target::from_f64(src.into_f64());
-            }
+            target.write_from(source.iter().map(|src| Target::from_f64(src.into_f64())));
         } else {
-            for (dst, src) in target.iter_mut().zip(source.iter()) {
-                *dst = Target::from_bits(src.into_bits());
-            }
+            target.write_from(source.iter().map(|src| Target::from_bits(src.into_bits())));
         }
     };
 }
