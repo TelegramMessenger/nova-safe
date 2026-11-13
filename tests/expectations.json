@@ -6651,7 +6651,6 @@
   "language/expressions/super/prop-expr-uninitialized-this-putvalue-increment.js": "FAIL",
   "language/expressions/super/prop-expr-uninitialized-this-putvalue.js": "FAIL",
   "language/expressions/super/realm.js": "FAIL",
-  "language/expressions/tagged-template/cache-different-functions-same-site.js": "FAIL",
   "language/expressions/tagged-template/tco-call.js": "FAIL",
   "language/expressions/tagged-template/tco-member.js": "FAIL",
   "language/expressions/tco-pos.js": "FAIL",
