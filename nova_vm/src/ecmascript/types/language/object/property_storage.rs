@@ -135,8 +135,9 @@ impl<'a> PropertyStorage<'a> {
         // SAFETY: User says so.
         let (new_shape, insertion_index) =
             unsafe { old_shape.add_private_fields(agent, private_fields)? };
-        // SAFETY: insertion index is <= old_len; old_len + private_fields.len() was checked.
-        let insertion_end_index = unsafe { insertion_index.unchecked_add(private_fields.len()) };
+        let insertion_end_index = insertion_index
+            .checked_add(private_fields.len())
+            .expect("insertion index is <= old_len and old_len + private_fields.len() was checked");
         // Note: use saturating_mul to avoid a panic site.
         agent.heap.alloc_counter +=
             core::mem::size_of::<Option<Value>>().saturating_mul(private_fields.len());

@@ -92,8 +92,8 @@ impl ArrayIteratorPrototype {
                     let scoped_array = array.scope(agent, gc.nogc());
                     let res =
                         length_of_array_like(agent, array.unbind(), gc.reborrow()).unbind()?;
-                    array = unsafe { scoped_array.take(agent) }.bind(gc.nogc());
-                    iterator = unsafe { scoped_iterator.take(agent) }.bind(gc.nogc());
+                    array = scoped_array.take(agent).bind(gc.nogc());
+                    iterator = scoped_iterator.take(agent).bind(gc.nogc());
                     res
                 }
             }

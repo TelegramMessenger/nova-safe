@@ -781,8 +781,7 @@ impl<'gc> String<'gc> {
         if let Ok(value) = String::try_from(str) {
             value
         } else {
-            // SAFETY: String couldn't be represented as a SmallString.
-            unsafe { agent.heap.alloc_static_str(str) }
+            agent.heap.alloc_static_str(str)
         }
     }
 }

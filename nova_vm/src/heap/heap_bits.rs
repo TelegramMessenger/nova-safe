@@ -5,12 +5,7 @@
 use core::{hash::Hash, num::NonZeroU32};
 #[cfg(feature = "weak-refs")]
 use std::ops::Range;
-use std::{
-    cell::UnsafeCell,
-    hint::assert_unchecked,
-    mem::MaybeUninit,
-    sync::atomic::{AtomicU8, Ordering},
-};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use ahash::AHashMap;
 #[cfg(feature = "weak-refs")]
@@ -252,7 +247,7 @@ pub(crate) struct BitOffset(u8);
 
 impl BitOffset {
     const fn new(value: u8) -> Self {
-        unsafe { assert_unchecked(value < 8) };
+        assert!(value < 8);
         Self(value)
     }
 
@@ -274,15 +269,9 @@ impl BitOffset {
 
     pub(crate) const fn from_range(range: &Range<usize>) -> (Range<usize>, Range<BitOffset>) {
         let start_byte_offset = range.start / 8;
-        let start_bit_offset = range.start % 8;
-        // SAFETY: rem should always return < 8.
-        unsafe { assert_unchecked(start_bit_offset < 8) };
-        let start_bit_offset = start_bit_offset as u8;
+        let start_bit_offset = (range.start % 8) as u8;
         let end_byte_offset = range.end.div_ceil(8);
-        let end_bit_offset = range.end % 8;
-        // SAFETY: rem should always return < 8.
-        unsafe { assert_unchecked(end_bit_offset < 8) };
-        let end_bit_offset = end_bit_offset as u8;
+        let end_bit_offset = (range.end % 8) as u8;
         (
             Range {
                 start: start_byte_offset,
@@ -746,10 +735,9 @@ impl HeapBits {
         #[cfg(feature = "weak-refs")]
         let weak_sets = BitRange::from_bit_count_and_len(&mut bit_count, heap.weak_sets.len());
         let byte_count = bit_count.div_ceil(8);
-        let mut bits = Box::<[AtomicBits]>::new_uninit_slice(byte_count);
-        bits.fill_with(|| MaybeUninit::new(Default::default()));
-        // SAFETY: filled in.
-        let bits = unsafe { bits.assume_init() };
+        let bits = core::iter::repeat_with(AtomicBits::default)
+            .take(byte_count)
+            .collect::<Box<[AtomicBits]>>();
         Self {
             bits,
             #[cfg(feature = "array-buffer")]
@@ -1465,12 +1453,8 @@ impl CompactionList {
         // 1-indexed value
         let base_index: u32 = (*index).into();
         // 0-indexed value
-        // SAFETY: NonZeroU32 as u32 cannot wrap when 1 is subtracted.
-        let base_index = unsafe { base_index.unchecked_sub(1) };
-        // SAFETY: Shifted base index can be 0, adding 1 makes it non-zero.
-        *index = unsafe {
-            NonZeroU32::new_unchecked(self.shift_strong_u32_index(base_index).unchecked_add(1))
-        };
+        let base_index = base_index - 1;
+        *index = NonZeroU32::MIN.saturating_add(self.shift_strong_u32_index(base_index));
     }
 
     /// Shift a weakly held reference index. Returns a new index if the
@@ -1491,11 +1475,8 @@ impl CompactionList {
         let base_index: u32 = index.into();
         // 0-indexed value
         let base_index = base_index.wrapping_sub(1);
-        let base_index = self.shift_weak_u32_index(base_index)?.wrapping_add(1);
-        // SAFETY: we added 1 to the u32, which itself comes from our original
-        // index. It can be shifted down but will never wrap around, so adding
-        // the 1 cannot wrap around to 0 either.
-        Some(unsafe { NonZeroU32::new_unchecked(base_index) })
+        let base_index = self.shift_weak_u32_index(base_index)?;
+        Some(NonZeroU32::MIN.saturating_add(base_index))
     }
 
     fn build(shifts: SoAVec<ShiftData>) -> Self {
@@ -1503,14 +1484,11 @@ impl CompactionList {
     }
 
     pub(crate) fn from_mark_bits(range: &BitRange, marks: &[AtomicBits]) -> Self {
-        let builder = CompactionListBuilder::with_bits_length(range.len() as u32);
+        let mut builder = CompactionListBuilder::with_bits_length(range.len() as u32);
         if range.is_empty() {
             return builder.done();
         }
-        let builder = UnsafeCell::new(builder);
         range.for_each_byte(marks, |mark_byte, bit_iterator| {
-            // SAFETY: synchronous calls.
-            let builder = unsafe { builder.get().as_mut().unwrap() };
             if let Some(bit_iterator) = bit_iterator {
                 for bit_offset in bit_iterator {
                     if mark_byte.get_bit(bit_offset) {
@@ -1529,7 +1507,7 @@ impl CompactionList {
                 }
             }
         });
-        builder.into_inner().done()
+        builder.done()
     }
 }
 
@@ -2410,10 +2388,9 @@ pub(crate) fn sweep_heap_elements_vector_descriptors(
         descriptors.remove(old_key);
     }
     for (old_key, new_key) in keys_to_reassign {
-        // SAFETY: The old key came from iterating descriptors, and the same
-        // key cannot appear in both keys to remove and keys to reassign. Thus
-        // the key must necessarily exist in the descriptors hash map.
-        let descriptor = unsafe { descriptors.remove(&old_key).unwrap_unchecked() };
+        let descriptor = descriptors
+            .remove(&old_key)
+            .expect("reassigned descriptor key must exist: it came from iterating descriptors");
         descriptors.insert(new_key, descriptor);
     }
 }

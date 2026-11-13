@@ -189,8 +189,7 @@ impl CreateHeapData<&str, String<'static>> for Heap {
         if let Ok(value) = String::try_from(data) {
             value
         } else {
-            // SAFETY: String couldn't be represented as a SmallString.
-            unsafe { self.alloc_str(data) }
+            self.alloc_str(data)
         }
     }
 }
@@ -200,8 +199,7 @@ impl CreateHeapData<std::string::String, String<'static>> for Heap {
         if let Ok(value) = String::try_from(data.as_str()) {
             value
         } else {
-            // SAFETY: String couldn't be represented as a SmallString.
-            unsafe { self.alloc_string(data) }
+            self.alloc_string(data)
         }
     }
 }
@@ -211,8 +209,7 @@ impl CreateHeapData<Wtf8Buf, String<'static>> for Heap {
         if let Ok(value) = String::try_from(data.deref()) {
             value
         } else {
-            // SAFETY: Wtf8Buf couldn't be represented as a SmallString.
-            unsafe { self.alloc_wtf8_buf(data) }
+            self.alloc_wtf8_buf(data)
         }
     }
 }
@@ -390,13 +387,13 @@ impl Heap {
     /// heap, and if found will return its HeapString instead of allocating a
     /// copy.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The string being allocated must not be representable as a
     /// SmallString. All SmallStrings must be kept on the stack to ensure that
     /// comparison between heap allocated strings and SmallStrings can be
     /// guaranteed to never equal true.
-    pub(crate) unsafe fn alloc_str(&mut self, message: &str) -> String<'static> {
+    pub(crate) fn alloc_str(&mut self, message: &str) -> String<'static> {
         let found = self.find_equal_string(message);
         match found {
             Ok(string) => string,
@@ -413,13 +410,13 @@ impl Heap {
     /// heap, and if found will return its HeapString instead of allocating a
     /// copy.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The string being allocated must not be representable as a
     /// SmallString. All SmallStrings must be kept on the stack to ensure that
     /// comparison between heap allocated strings and SmallStrings can be
     /// guaranteed to never equal true.
-    unsafe fn alloc_string(&mut self, message: std::string::String) -> String<'static> {
+    fn alloc_string(&mut self, message: std::string::String) -> String<'static> {
         let found = self.find_equal_string(message.as_str());
         match found {
             Ok(string) => string,
@@ -436,13 +433,13 @@ impl Heap {
     /// heap, and if found will return its HeapString instead of allocating a
     /// copy.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The string being allocated must not be representable as a
     /// SmallString. All SmallStrings must be kept on the stack to ensure that
     /// comparison between heap allocated strings and SmallStrings can be
     /// guaranteed to never equal true.
-    unsafe fn alloc_wtf8_buf(&mut self, message: Wtf8Buf) -> String<'static> {
+    fn alloc_wtf8_buf(&mut self, message: Wtf8Buf) -> String<'static> {
         let found = self.find_equal_wtf8(message.deref());
         match found {
             Ok(string) => string,
@@ -459,13 +456,13 @@ impl Heap {
     /// a possible matching string and if found will return its HeapString
     /// instead of allocating a copy.
     ///
-    /// # Safety
+    /// # Correctness
     ///
     /// The string being allocated must not be representable as a
     /// SmallString. All SmallStrings must be kept on the stack to ensure that
     /// comparison between heap allocated strings and SmallStrings can be
     /// guaranteed to never equal true.
-    pub(crate) unsafe fn alloc_static_str(&mut self, message: &'static str) -> String<'static> {
+    pub(crate) fn alloc_static_str(&mut self, message: &'static str) -> String<'static> {
         let found = self.find_equal_string(message);
         match found {
             Ok(string) => string,
@@ -503,7 +500,7 @@ impl Default for Heap {
 }
 
 pub(crate) trait DirectArenaAccess: HeapIndexHandle {
-    type Data;
+    type Data: 'static;
     type Output;
 
     /// Access arena data belonging to a handle.
@@ -533,13 +530,7 @@ where
     /// Access data belonging to a handle.
     #[inline]
     fn get<'agent>(self, agent: &'agent T) -> &'agent <Self as DirectArenaAccess>::Output {
-        // SAFETY: HeapIndexHandle guarantees that the lifetime of the output is
-        // safe when agent is safe.
-        unsafe {
-            core::mem::transmute::<_, &'agent <Self as DirectArenaAccess>::Output>(
-                self.get_direct(agent.as_ref()),
-            )
-        }
+        self.get_direct(agent.as_ref())
     }
 }
 
@@ -553,13 +544,7 @@ where
         self,
         agent: &'agent mut T,
     ) -> &'agent mut <Self as DirectArenaAccess>::Output {
-        // SAFETY: HeapIndexHandle guarantees that the lifetime of the output is
-        // safe when agent is safe.
-        unsafe {
-            core::mem::transmute::<_, &'agent mut <Self as DirectArenaAccess>::Output>(
-                self.get_direct_mut(agent.as_mut()),
-            )
-        }
+        self.get_direct_mut(agent.as_mut())
     }
 }
 
@@ -742,23 +727,9 @@ macro_rules! arena_vec_access {
                 self,
                 source: &'agent mut soavec::SoAVec<Self::Data>,
             ) -> <Self::Data as soavec::SoAble>::Mut<'agent> {
-                // SAFETY: transmuting OutputMut<'agent, 'static> to
-                // OutputMut<'agent, 'gc>. The shortening of the 'gc lifetime in
-                // a mutable setting means that it's okay to store handles to
-                // garbage collectable data inside the 'agent without them being
-                // invalidated when a garbage collection safepoint is reached.
-                // This is exactly correct, as data inside the 'agent is traced
-                // by the GC and does not get invalidated at a safepoint. The
-                // shortened lifetime is thus valid, and exposing it protects
-                // users of this API from accidentally using the original
-                // 'static lifetime.
-                unsafe {
-                    core::mem::transmute::<_, <Self::Data as soavec::SoAble>::Mut<'agent>>(
-                        source
-                            .get_mut(self.get_index_u32())
-                            .unwrap_or_else(|| panic!("Invalid handle {:?}", self)),
-                    )
-                }
+                source
+                    .get_mut(self.get_index_u32())
+                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
             }
         }
 

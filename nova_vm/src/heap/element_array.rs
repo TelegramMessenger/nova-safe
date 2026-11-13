@@ -1224,6 +1224,12 @@ pub(crate) struct ElementArray<const N: usize> {
 }
 
 impl<const N: usize> ElementArray<N> {
+    /// All value slots of this backing store as one flat slice, with the
+    /// stride of one elements storage.
+    fn as_flat_mut(&mut self) -> (&mut [Option<Value<'static>>], usize) {
+        (self.values.as_flattened_mut(), N)
+    }
+
     pub(crate) fn with_capacity(cap: usize) -> Self {
         const { assert!(N.is_power_of_two()) }
         Self {
@@ -1294,7 +1300,7 @@ impl<const N: usize> ElementArray<N> {
     fn push(
         &mut self,
         source: &[Option<Value>],
-        descriptors: Option<AHashMap<u32, ElementDescriptor>>,
+        descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>>,
     ) -> Result<ElementIndex<'static>, TryReserveError> {
         let length = source.len();
         self.values.try_reserve(1)?;
@@ -1332,15 +1338,6 @@ impl<const N: usize> ElementArray<N> {
         // array is indeed Some(_) afterwards.
         let index = ElementIndex::last_element_index(&self.values);
         if let Some(descriptors) = descriptors {
-            // SAFETY: We can transmute the lifetime out of ElementDescriptors;
-            // it doesn't affect the layout and we're inside the heap so GC is
-            // not an issue.
-            let descriptors = unsafe {
-                core::mem::transmute::<
-                    AHashMap<u32, ElementDescriptor>,
-                    AHashMap<u32, ElementDescriptor<'static>>,
-                >(descriptors)
-            };
             self.descriptors.insert(index, descriptors);
         }
         Ok(index)
@@ -1518,13 +1515,13 @@ impl<const N: usize> PropertyKeyArray<N> {
         Ok(PropertyKeyIndex::last_property_key_index(&self.keys))
     }
 
-    unsafe fn push_key(&mut self, index: PropertyKeyIndex, len: u32, key: PropertyKey) {
+    fn push_key(&mut self, index: PropertyKeyIndex, len: u32, key: PropertyKey) {
         let keys = self.keys[index.get_index()].as_mut_slice();
         let previous = keys[len as usize].replace(key.unbind());
         debug_assert!(previous.is_none());
     }
 
-    unsafe fn remove(&mut self, index: PropertyKeyIndex, len: u32, removal_index: u32) {
+    fn remove(&mut self, index: PropertyKeyIndex, len: u32, removal_index: u32) {
         let len = usize::try_from(len).unwrap_or(usize::MAX);
         let keys = &mut self.keys[index.get_index()].as_mut_slice()[..len];
         let Some(next_index) = usize::try_from(removal_index)
@@ -1743,16 +1740,36 @@ impl ElementArrays {
                     ElementArrayKey::E1 => {
                         unreachable!()
                     }
-                    ElementArrayKey::E2 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E2 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow1.push(source, descriptors.cloned())
             }
@@ -1764,19 +1781,39 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E2 => {
                         unreachable!()
                     }
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow2.push(source, descriptors.cloned())
             }
@@ -1788,19 +1825,39 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E3 => {
                         unreachable!()
                     }
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow3.push(source, descriptors.cloned())
             }
@@ -1812,17 +1869,37 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E4 => unreachable!(),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow4.push(source, descriptors.cloned())
             }
@@ -1834,17 +1911,37 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E6 => unreachable!(),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow6.push(source, descriptors.cloned())
             }
@@ -1856,17 +1953,37 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E8 => unreachable!(),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow8.push(source, descriptors.cloned())
             }
@@ -1878,17 +1995,37 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E10 => unreachable!(),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow10.push(source, descriptors.cloned())
             }
@@ -1900,17 +2037,37 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E12 => unreachable!(),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow12.push(source, descriptors.cloned())
             }
@@ -1922,17 +2079,37 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E16 => unreachable!(),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow16.push(source, descriptors.cloned())
             }
@@ -1944,17 +2121,37 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E24 => unreachable!(),
-                    ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E32 => {
+                        e2pow32.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                 };
                 e2pow24.push(source, descriptors.cloned())
             }
@@ -1966,16 +2163,36 @@ impl ElementArrays {
                     ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
                         ElementStorageRef::EMPTY
                     }
-                    ElementArrayKey::E1 => e2pow1.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E2 => e2pow2.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E3 => e2pow3.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E4 => e2pow4.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E6 => e2pow6.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E8 => e2pow8.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E10 => e2pow10.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E12 => e2pow12.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(*index, old_len),
-                    ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(*index, old_len),
+                    ElementArrayKey::E1 => {
+                        e2pow1.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E2 => {
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E3 => {
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E4 => {
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E6 => {
+                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E8 => {
+                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E10 => {
+                        e2pow10.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E12 => {
+                        e2pow12.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E16 => {
+                        e2pow16.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
+                    ElementArrayKey::E24 => {
+                        e2pow24.get_descriptors_and_values_raw(index.unbind(), old_len)
+                    }
                     ElementArrayKey::E32 => unreachable!(),
                 };
                 e2pow32.push(source, descriptors.cloned())
@@ -2145,16 +2362,16 @@ impl ElementArrays {
 
     /// Mutate a property key storage by removing a key at index.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
-    /// This method can only be safely used for mutating the property key
+    /// This method can only be correctly used for mutating the property key
     /// storage of intrinsic objects' Object Shapes. Using this on normal
     /// objects will cause other objects using the same Shape to perform
     /// JavaScript-wise undefined behaviour.
     ///
     /// Effectively, those objects would find that their object key-value pairs
     /// no longer match the expected values.
-    pub(crate) unsafe fn remove_key(
+    pub(crate) fn remove_key(
         &mut self,
         cap: ElementArrayKey,
         index: PropertyKeyIndex,
@@ -2180,33 +2397,33 @@ impl ElementArrays {
         } = self;
         match cap {
             ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {}
-            ElementArrayKey::E1 => unsafe { k2pow1.remove(index, *len, removal_index) },
-            ElementArrayKey::E2 => unsafe { k2pow2.remove(index, *len, removal_index) },
-            ElementArrayKey::E3 => unsafe { k2pow3.remove(index, *len, removal_index) },
-            ElementArrayKey::E4 => unsafe { k2pow4.remove(index, *len, removal_index) },
-            ElementArrayKey::E6 => unsafe { k2pow6.remove(index, *len, removal_index) },
-            ElementArrayKey::E8 => unsafe { k2pow8.remove(index, *len, removal_index) },
-            ElementArrayKey::E10 => unsafe { k2pow10.remove(index, *len, removal_index) },
-            ElementArrayKey::E12 => unsafe { k2pow12.remove(index, *len, removal_index) },
-            ElementArrayKey::E16 => unsafe { k2pow16.remove(index, *len, removal_index) },
-            ElementArrayKey::E24 => unsafe { k2pow24.remove(index, *len, removal_index) },
-            ElementArrayKey::E32 => unsafe { k2pow32.remove(index, *len, removal_index) },
+            ElementArrayKey::E1 => k2pow1.remove(index, *len, removal_index),
+            ElementArrayKey::E2 => k2pow2.remove(index, *len, removal_index),
+            ElementArrayKey::E3 => k2pow3.remove(index, *len, removal_index),
+            ElementArrayKey::E4 => k2pow4.remove(index, *len, removal_index),
+            ElementArrayKey::E6 => k2pow6.remove(index, *len, removal_index),
+            ElementArrayKey::E8 => k2pow8.remove(index, *len, removal_index),
+            ElementArrayKey::E10 => k2pow10.remove(index, *len, removal_index),
+            ElementArrayKey::E12 => k2pow12.remove(index, *len, removal_index),
+            ElementArrayKey::E16 => k2pow16.remove(index, *len, removal_index),
+            ElementArrayKey::E24 => k2pow24.remove(index, *len, removal_index),
+            ElementArrayKey::E32 => k2pow32.remove(index, *len, removal_index),
         }
         *len -= 1;
     }
 
     /// Mutate a property key storage by push a key at the end.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
-    /// This method can only be safely used for mutating the property key
+    /// This method can only be correctly used for mutating the property key
     /// storage of intrinsic objects' Object Shapes. Using this on normal
     /// objects will cause other objects using the same Shape to perform
     /// JavaScript-wise undefined behaviour.
     ///
     /// Effectively, those objects would find that their object key-value pairs
     /// no longer match the expected values.
-    pub(crate) unsafe fn push_key(
+    pub(crate) fn push_key(
         &mut self,
         cap: &mut ElementArrayKey,
         index: &mut PropertyKeyIndex,
@@ -2232,17 +2449,17 @@ impl ElementArrays {
             // We're within our capacity, mutate directly.
             match cap {
                 ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => unreachable!(),
-                ElementArrayKey::E1 => unsafe { k2pow1.push_key(*index, *len, key) },
-                ElementArrayKey::E2 => unsafe { k2pow2.push_key(*index, *len, key) },
-                ElementArrayKey::E3 => unsafe { k2pow3.push_key(*index, *len, key) },
-                ElementArrayKey::E4 => unsafe { k2pow4.push_key(*index, *len, key) },
-                ElementArrayKey::E6 => unsafe { k2pow6.push_key(*index, *len, key) },
-                ElementArrayKey::E8 => unsafe { k2pow8.push_key(*index, *len, key) },
-                ElementArrayKey::E10 => unsafe { k2pow10.push_key(*index, *len, key) },
-                ElementArrayKey::E12 => unsafe { k2pow12.push_key(*index, *len, key) },
-                ElementArrayKey::E16 => unsafe { k2pow16.push_key(*index, *len, key) },
-                ElementArrayKey::E24 => unsafe { k2pow24.push_key(*index, *len, key) },
-                ElementArrayKey::E32 => unsafe { k2pow32.push_key(*index, *len, key) },
+                ElementArrayKey::E1 => k2pow1.push_key(*index, *len, key),
+                ElementArrayKey::E2 => k2pow2.push_key(*index, *len, key),
+                ElementArrayKey::E3 => k2pow3.push_key(*index, *len, key),
+                ElementArrayKey::E4 => k2pow4.push_key(*index, *len, key),
+                ElementArrayKey::E6 => k2pow6.push_key(*index, *len, key),
+                ElementArrayKey::E8 => k2pow8.push_key(*index, *len, key),
+                ElementArrayKey::E10 => k2pow10.push_key(*index, *len, key),
+                ElementArrayKey::E12 => k2pow12.push_key(*index, *len, key),
+                ElementArrayKey::E16 => k2pow16.push_key(*index, *len, key),
+                ElementArrayKey::E24 => k2pow24.push_key(*index, *len, key),
+                ElementArrayKey::E32 => k2pow32.push_key(*index, *len, key),
             }
         } else {
             // We need to grow our backing store.
@@ -3264,6 +3481,85 @@ impl ElementArrays {
             ElementArrayKey::E24 => e2pow24.get_values_mut(vector),
             ElementArrayKey::E32 => e2pow32.get_values_mut(vector),
         }
+    }
+
+    /// Copy the values in `source_range` of the `source` elements into the
+    /// start of the `destination` elements.
+    ///
+    /// The two may live in the same or in different backing stores; the copy
+    /// borrows each backing store once, as a flat slice.
+    pub(crate) fn copy_values_between(
+        &mut self,
+        source: &ElementsVector,
+        source_range: core::ops::Range<usize>,
+        destination: &ElementsVector,
+    ) {
+        let count = source_range.len();
+        if count == 0 {
+            return;
+        }
+        assert!(source_range.end <= source.len() as usize);
+        assert!(count <= destination.len() as usize);
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        let mut stores: [Option<(&mut [Option<Value<'static>>], usize)>; 11] = [
+            Some(e2pow1.as_flat_mut()),
+            Some(e2pow2.as_flat_mut()),
+            Some(e2pow3.as_flat_mut()),
+            Some(e2pow4.as_flat_mut()),
+            Some(e2pow6.as_flat_mut()),
+            Some(e2pow8.as_flat_mut()),
+            Some(e2pow10.as_flat_mut()),
+            Some(e2pow12.as_flat_mut()),
+            Some(e2pow16.as_flat_mut()),
+            Some(e2pow24.as_flat_mut()),
+            Some(e2pow32.as_flat_mut()),
+        ];
+        let store_index = |cap: ElementArrayKey| match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {
+                unreachable!("non-empty elements have a backing store")
+            }
+            ElementArrayKey::E1 => 0,
+            ElementArrayKey::E2 => 1,
+            ElementArrayKey::E3 => 2,
+            ElementArrayKey::E4 => 3,
+            ElementArrayKey::E6 => 4,
+            ElementArrayKey::E8 => 5,
+            ElementArrayKey::E10 => 6,
+            ElementArrayKey::E12 => 7,
+            ElementArrayKey::E16 => 8,
+            ElementArrayKey::E24 => 9,
+            ElementArrayKey::E32 => 10,
+        };
+        let source_store = store_index(source.cap);
+        let destination_store = store_index(destination.cap);
+        let (source_values, source_stride) = stores[source_store]
+            .take()
+            .expect("backing store taken once");
+        let source_start = source.elements_index.get_index() * source_stride + source_range.start;
+        if source_store == destination_store {
+            let destination_start = destination.elements_index.get_index() * source_stride;
+            source_values.copy_within(source_start..source_start + count, destination_start);
+            return;
+        }
+        let (destination_values, destination_stride) = stores[destination_store]
+            .take()
+            .expect("backing store taken once");
+        let destination_start = destination.elements_index.get_index() * destination_stride;
+        destination_values[destination_start..destination_start + count]
+            .copy_from_slice(&source_values[source_start..source_start + count]);
     }
 
     /// Get shared access to the elements storage of an object or an array.
