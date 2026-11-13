@@ -7,7 +7,6 @@ mod execute_instructions;
 
 use execute_instructions::*;
 
-use std::ptr::NonNull;
 use wtf8::Wtf8Buf;
 
 use crate::{
@@ -163,7 +162,7 @@ impl SuspendedVm {
         // Normal continue handling. We need to ignore that.
         let next_instruction = executable.get_instruction(agent, &mut self.ip);
         assert_eq!(next_instruction.map(|i| i.kind), Some(Instruction::Jump));
-        let peek_next_instruction = executable.get_instructions(agent).get(self.ip).copied();
+        let peek_next_instruction = executable.peek_instruction_byte(agent, self.ip);
         if peek_next_instruction == Some(Instruction::Return.as_u8()) {
             // Our return handling is to just return; we can do that without
             // unsuspending the VM.
@@ -175,6 +174,16 @@ impl SuspendedVm {
 }
 
 impl Vm {
+    const EMPTY: Self = Self {
+        ip: 0,
+        stack: Vec::new(),
+        reference_stack: Vec::new(),
+        iterator_stack: Vec::new(),
+        exception_handler_stack: Vec::new(),
+        result: None,
+        reference: None,
+    };
+
     fn new() -> Self {
         Self {
             ip: 0,
@@ -256,7 +265,8 @@ impl Vm {
         eprintln!();
 
         eprintln!("Instructions:");
-        let iter = InstructionIter::new(executable.get_instructions(agent));
+        let instructions = executable.get_instructions(agent);
+        let iter = InstructionIter::new(&instructions);
         for (ip, instr) in iter {
             instr.debug_print(agent, ip, executable.clone(), gc);
         }
@@ -300,7 +310,7 @@ impl Vm {
     ) -> ExecutionResult<'gc> {
         let stack_depth = agent.stack_refs.borrow().len();
         let instructions = executable.get_instructions(agent);
-        while let Some(instr) = Instr::consume_instruction(instructions, &mut self.ip) {
+        while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
             if agent.check_gc() {
                 self.trigger_gc(agent, gc.reborrow());
             }
@@ -1421,11 +1431,11 @@ fn with_vm_gc<'a, 'b, R: 'a>(
     work: impl FnOnce(&mut Agent, GcScope<'a, 'b>) -> R,
     gc: GcScope<'a, 'b>,
 ) -> R {
-    let vm = NonNull::from(vm);
-    agent.vm_stack.push(vm);
+    let depth = agent.vm_stack.len();
+    agent.vm_stack.push(core::mem::replace(vm, Vm::EMPTY));
     let result = work(agent, gc);
-    let return_vm = agent.vm_stack.pop().unwrap();
-    assert_eq!(vm, return_vm, "VM Stack was misused");
+    assert_eq!(agent.vm_stack.len(), depth + 1, "VM Stack was misused");
+    *vm = agent.vm_stack.pop().unwrap();
     result
 }
 

@@ -161,8 +161,6 @@ pub(crate) struct RealmRecord<'a> {
     pub(crate) host_defined: Option<HostDefined>,
 }
 
-unsafe impl Send for RealmRecord<'_> {}
-
 impl RealmRecord<'_> {
     pub(crate) fn intrinsics(&self) -> &Intrinsics {
         &self.intrinsics

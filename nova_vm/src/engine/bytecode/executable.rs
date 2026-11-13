@@ -17,13 +17,13 @@ use crate::{
     },
 };
 use oxc_ast::ast;
+use std::sync::Arc;
 
 use super::bytecode_compiler::GeneratorKind;
 
 #[derive(Debug)]
-/// A `Send` and `Sync` wrapper over a `&'static T` where `T` might not itself
-/// be `Sync`. This is safe because the reference can only be obtained from the
-/// same thread in which the `SendableRef` was created.
+/// A wrapper over a `&'static T` into a SourceCode's AST that can only be
+/// read on the thread that created it.
 pub(crate) struct SendableRef<T: ?Sized + 'static> {
     reference: &'static T,
     thread_id: std::thread::ThreadId,
@@ -52,11 +52,6 @@ impl<T: ?Sized> SendableRef<T> {
         self.reference
     }
 }
-
-// SAFETY: The reference will only be dereferenced in a thread in which the
-// reference is valid, so it's fine to send or use this type from other threads.
-unsafe impl<T: ?Sized> Send for SendableRef<T> {}
-unsafe impl<T: ?Sized> Sync for SendableRef<T> {}
 
 #[derive(Debug, Clone)]
 pub(crate) struct FunctionExpression<'a> {
@@ -117,7 +112,7 @@ const EXECUTABLE_OPTION_SIZE_IS_U32: () =
 ///   Copyright (c) 2023-2024 Linus Groh
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutableHeapData<'a> {
-    pub(crate) instructions: Box<[u8]>,
+    pub(crate) instructions: Arc<[u8]>,
     pub(crate) caches: Box<[PropertyLookupCache<'a>]>,
     pub(crate) constants: Box<[Value<'a>]>,
     pub(crate) shapes: Box<[ObjectShape<'a>]>,
@@ -230,13 +225,16 @@ impl<'gc> Executable<'gc> {
         }
     }
 
-    /// SAFETY: The returned reference is valid until the Executable is garbage
-    /// collected.
+    /// The bytecode, shared: a running VM holds its own reference, so the
+    /// bytecode outlives the Executable if that is dropped while it runs.
     #[inline]
-    fn get_instructions(self, agent: &Agent) -> &'static [u8] {
-        // SAFETY: As long as we're alive the instructions Box lives, and it is
-        // never accessed mutably.
-        unsafe { core::mem::transmute(&self.get(agent).instructions[..]) }
+    fn get_instructions(self, agent: &Agent) -> Arc<[u8]> {
+        self.get(agent).instructions.clone()
+    }
+
+    #[inline]
+    fn peek_instruction_byte(self, agent: &Agent, ip: usize) -> Option<u8> {
+        self.get(agent).instructions.get(ip).copied()
     }
 
     #[inline]
@@ -325,10 +323,13 @@ impl<'gc> Executable<'gc> {
 
 impl Scoped<'_, Executable<'static>> {
     #[inline]
-    pub(super) fn get_instructions(&self, agent: &Agent) -> &[u8] {
-        // SAFETY: Executable is scoped, the instructions reference is bound to
-        // the Scoped.
+    pub(super) fn get_instructions(&self, agent: &Agent) -> Arc<[u8]> {
         self.get(agent).get_instructions(agent)
+    }
+
+    #[inline]
+    pub(super) fn peek_instruction_byte(&self, agent: &Agent, ip: usize) -> Option<u8> {
+        self.get(agent).peek_instruction_byte(agent, ip)
     }
 
     #[inline]

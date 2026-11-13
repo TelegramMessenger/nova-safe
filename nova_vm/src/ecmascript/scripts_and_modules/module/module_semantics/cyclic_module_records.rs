@@ -545,13 +545,12 @@ pub(crate) fn inner_module_loading<'a>(
         // a. Append module to state.[[Visited]].
         state.visited.push(module);
         // b. Let requestedModulesCount be the number of elements in module.[[RequestedModules]].
-        // SAFETY: No GC in this scope.
-        let requested_modules = unsafe { module.get_requested_modules(agent) };
-        let requested_module_count = requested_modules.len() as u32;
+        let requested_module_count = module.get_requested_modules(agent).len();
         // c. Set state.[[PendingModulesCount]] to state.[[PendingModulesCount]] + requestedModulesCount.
-        state.pending_modules_count += requested_module_count;
+        state.pending_modules_count += requested_module_count as u32;
         // d. For each ModuleRequest Record request of module.[[RequestedModules]], do
-        for request in requested_modules {
+        for list_index in 0..requested_module_count {
+            let request = module.get_requested_modules(agent)[list_index];
             // i. If AllImportAttributesSupported(request.[[Attributes]]) is false, then
             //         1. Let error be ThrowCompletion(a newly created SyntaxError object).
             //         2. Perform ContinueModuleLoading(state, error).
@@ -563,7 +562,7 @@ pub(crate) fn inner_module_loading<'a>(
             agent.host_hooks.load_imported_module(
                 agent,
                 module.into(),
-                *request,
+                request,
                 state.host_defined.clone(),
                 state,
                 gc,
@@ -654,10 +653,10 @@ pub(crate) fn inner_module_linking<'a>(
     // 8. Append module to stack.
     stack.push(module);
     // 9. For each ModuleRequest Record request of module.[[RequestedModules]], do
-    // SAFETY: module is currently rooted.
-    for request in unsafe { module.get_requested_modules(agent) } {
+    for request_index in 0..module.get_requested_modules(agent).len() {
+        let request = module.get_requested_modules(agent)[request_index];
         // a. Let requiredModule be GetImportedModule(module, request).
-        let required_module = get_imported_module(agent, module, *request, gc);
+        let required_module = get_imported_module(agent, module, request, gc);
         // b. Set index to ? InnerModuleLinking(requiredModule, stack, index).
         index = inner_module_linking(agent, required_module, stack, index, gc)?;
         // c. If requiredModule is a Cyclic Module Record, then
@@ -782,8 +781,12 @@ pub(crate) fn inner_module_evaluation<'a, 'b>(
     // 10. Append module to stack.
     stack.push(scoped_module.clone());
     // 11. For each ModuleRequest Record request of module.[[RequestedModules]], do
-    // SAFETY: module is currently rooted.
-    for request in scoped_module.get_requested_modules(agent) {
+    let mut request_index = 0;
+    while let Some(request) = scoped_module
+        .get(agent)
+        .get_requested_module(agent, request_index)
+    {
+        request_index += 1;
         // a. Let requiredModule be GetImportedModule(module, request).
         let required_module = get_imported_module(agent, module, request, gc.nogc());
 
@@ -1113,16 +1116,10 @@ pub(crate) fn async_module_execution_rejected(
     module.set_async_evaluation_done(agent);
 
     // 9. For each Cyclic Module Record m of module.[[AsyncParentModules]], do
-    let async_parent_modules = module.get_async_parent_modules(agent);
-    // SAFETY: [[AsyncParentModules]] cannot be dropped without GC. It can be
-    // appended to in InnerModuleEvaluation, but this function does NOT
-    // re-enter there. Nothing done here can invalidate the slice.
-    let async_parent_modules = unsafe {
-        core::mem::transmute::<&[SourceTextModule], &[SourceTextModule]>(async_parent_modules)
-    };
-    for m in async_parent_modules {
+    for list_index in 0..module.get_async_parent_modules(agent).len() {
+        let m = module.get_async_parent_modules(agent)[list_index].bind(gc);
         // a. Perform AsyncModuleExecutionRejected(m, error).
-        async_module_execution_rejected(agent, *m, error, gc);
+        async_module_execution_rejected(agent, m, error, gc);
     }
     // 10. If module.[[TopLevelCapability]] is not empty, then
     if let Some(top_level_capability) = module.top_level_capability(agent) {
@@ -1151,24 +1148,15 @@ fn gather_available_ancestors<'a>(
     exec_list: &mut Vec<SourceTextModule<'a>>,
     gc: NoGcScope<'a, '_>,
 ) {
-    let async_parent_modules = module.get_async_parent_modules(agent);
-    // SAFETY: [[AsyncParentModules]] cannot be dropped without GC. It can be
-    // appended to in InnerModuleEvaluation, but this function does NOT
-    // re-enter there. The only mutation happening in Agent is the decrement of
-    // [[PendingAsyncDependencies]], which cannot invalidate this slice.
-    let async_parent_modules = unsafe {
-        core::mem::transmute::<&[SourceTextModule], &'a [SourceTextModule<'a>]>(
-            async_parent_modules,
-        )
-    };
     // 1. For each Cyclic Module Record m of module.[[AsyncParentModules]], do
-    for m in async_parent_modules {
+    for list_index in 0..module.get_async_parent_modules(agent).len() {
+        let m = module.get_async_parent_modules(agent)[list_index].bind(gc);
         // a. If execList does not contain m and m.[[CycleRoot]].[[EvaluationError]] is empty, then
         if m.get_cycle_root(agent)
             .unwrap()
             .evaluation_error(agent, gc)
             .is_ok()
-            && !exec_list.contains(m)
+            && !exec_list.contains(&m)
         {
             // i. Assert: m.[[Status]] is evaluating-async.
             assert!(matches!(
@@ -1189,10 +1177,10 @@ fn gather_available_ancestors<'a>(
             // vi. If m.[[PendingAsyncDependencies]] = 0, then
             if m.pending_async_dependencies(agent) == Some(0) {
                 // 1. Append m to execList.
-                exec_list.push(*m);
+                exec_list.push(m);
                 // 2. If m.[[HasTLA]] is false, perform GatherAvailableAncestors(m, execList).
                 if !m.has_tla(agent) {
-                    gather_available_ancestors(agent, *m, exec_list, gc);
+                    gather_available_ancestors(agent, m, exec_list, gc);
                 }
             }
         }

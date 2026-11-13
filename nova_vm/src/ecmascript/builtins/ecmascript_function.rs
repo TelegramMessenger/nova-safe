@@ -187,11 +187,10 @@ impl<'ast> FunctionAstRef<'ast> {
             | Self::AsyncFunction(f)
             | Self::Generator(f)
             | Self::AsyncGenerator(f)
-            | Self::ClassConstructor(f) => {
-                // SAFETY: ECMAScriptFunction cannot refer to a TypeScript
-                // function declaration.
-                unsafe { f.body.as_ref().unwrap_unchecked() }
-            }
+            | Self::ClassConstructor(f) => f
+                .body
+                .as_ref()
+                .expect("ECMAScriptFunction cannot refer to a TypeScript function declaration"),
             FunctionAstRef::Arrow(f) | FunctionAstRef::AsyncArrow(f) => f.body.as_ref(),
         }
     }

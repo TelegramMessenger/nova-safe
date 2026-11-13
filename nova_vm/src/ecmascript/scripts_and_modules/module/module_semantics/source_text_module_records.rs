@@ -103,11 +103,6 @@ pub(crate) struct SourceTextModuleRecord<'a> {
     pub(crate) source_code: SourceCode<'a>,
 }
 
-// SAFETY: [[ECMAScriptCode]] does not permit mutable access, and points to
-// data considered (and used as) immutable. It is safe to send the pointer to
-// other threads.
-unsafe impl Send for SourceTextModuleRecord<'_> {}
-
 /// ### [16.2.1.7 Source Text Module Records](https://tc39.es/ecma262/#sec-source-text-module-records)
 ///
 /// A _Source Text Module Record_ is used to represent information about a
@@ -198,25 +193,23 @@ impl<'m> SourceTextModule<'m> {
 
     /// Get the requested modules as a slice.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// The `self` SourceTextModule must be valid (not use-after-free) when
-    /// this call is performed, and a copy of it must be rooted (eg. present on
-    /// the execution context stack) while the slice is held. A use-after-free
-    /// `self` will lead to a panic or the conceptually wrong module's
-    /// statements being borrowed from the heap. If the SourceTextModule is not
-    /// rooted (at least a copy of it), then the slice will become a dangling
-    /// pointer during garbage collection.
-    pub(super) unsafe fn get_requested_modules(self, agent: &Agent) -> &'m [ModuleRequest<'m>] {
-        // SAFETY: Caller promises that SourceTextModule is rooted while the
-        // statements slice is held: the SourceTextModuleRecord may move during
-        // GC but the Atoms list memory does not move. Hence the reference is
-        // valid while the self SourceTextModule is held (the parent call).
-        unsafe {
-            core::mem::transmute::<&[ModuleRequest], &'m [ModuleRequest<'m>]>(
-                self.get(agent).cyclic_fields.get_requested_modules(),
-            )
-        }
+    /// this call is performed: a use-after-free `self` leads to a panic or the
+    /// conceptually wrong module's requests.
+    pub(super) fn get_requested_modules<'a>(self, agent: &'a Agent) -> &'a [ModuleRequest<'m>] {
+        self.get(agent).cyclic_fields.get_requested_modules()
+    }
+
+    /// The request at `index` in \[\[RequestedModules]], looked up anew so
+    /// that the Agent may change between two calls.
+    pub(super) fn get_requested_module(
+        self,
+        agent: &Agent,
+        index: usize,
+    ) -> Option<ModuleRequest<'m>> {
+        self.get_requested_modules(agent).get(index).copied()
     }
 
     /// Get the module statements as a slice.
@@ -269,20 +262,8 @@ impl<'m> SourceTextModule<'m> {
     }
 
     /// ### \[\[ImportEntries]]
-    ///
-    /// ## Safety
-    ///
-    /// The SourceTextModule must be properly bound to the garbage collector
-    /// lifetime.
-    fn import_entries(self, agent: &Agent) -> &'m [ImportEntryRecord<'m>] {
-        // SAFETY: import_entries list cannot be mutated except for during GC.
-        // Hence, we can safely transmute to the module lifetime (which should
-        // be bound to the GcScope).
-        unsafe {
-            core::mem::transmute::<&[ImportEntryRecord], &'m [ImportEntryRecord<'m>]>(
-                &self.get(agent).import_entries,
-            )
-        }
+    fn import_entries<'a>(self, agent: &'a Agent) -> &'a [ImportEntryRecord<'m>] {
+        &self.get(agent).import_entries
     }
 
     /// ### \[\[LocalExportEntries]]
@@ -294,42 +275,19 @@ impl<'m> SourceTextModule<'m> {
     }
 
     /// ### \[\[IndirectExportEntries]]
-    ///
-    /// ## Safety
-    ///
-    /// The SourceTextModule must be properly bound to the garbage collector
-    /// lifetime.
-    fn indirect_export_entries(
+    fn indirect_export_entries<'a>(
         self,
-        agent: &impl AsRef<SourceTextModuleHeap>,
-    ) -> &'m [IndirectExportEntryRecord<'m>] {
-        // SAFETY: [[IndirectExportEntries]] are only mutated during GC: as
-        // long as GC does not run, the reference stays valid.
-        unsafe {
-            core::mem::transmute::<
-                &[IndirectExportEntryRecord<'m>],
-                &'m [IndirectExportEntryRecord<'m>],
-            >(&self.get(agent).indirect_export_entries)
-        }
+        agent: &'a impl AsRef<SourceTextModuleHeap>,
+    ) -> &'a [IndirectExportEntryRecord<'m>] {
+        &self.get(agent).indirect_export_entries
     }
 
     /// ### \[\[StarExportEntries]]
-    ///
-    /// ## Safety
-    ///
-    /// The SourceTextModule must be properly bound to the garbage collector
-    /// lifetime.
-    fn star_export_entries(
+    fn star_export_entries<'a>(
         self,
-        agent: &impl AsRef<SourceTextModuleHeap>,
-    ) -> &'m [ModuleRequest<'m>] {
-        // SAFETY: [[StartExportEntries]] are never mutated; as long as GC does
-        // not run, the reference stays valid.
-        unsafe {
-            core::mem::transmute::<&[ModuleRequest], &'m [ModuleRequest<'m>]>(
-                &self.unbind().get(agent).star_export_entries,
-            )
-        }
+        agent: &'a impl AsRef<SourceTextModuleHeap>,
+    ) -> &'a [ModuleRequest<'m>] {
+        &self.unbind().get(agent).star_export_entries
     }
 
     /// ### \[\[EvaluationError]]
@@ -406,70 +364,6 @@ impl<'m> SourceTextModule<'m> {
     }
 }
 
-/// Direct access to the requested modules of a Scoped SourceTextModule.
-///
-/// A separate type is used because garbage collection will mutate the
-/// ModuleRequests inside the \[\[RequestedModules]] list but does not move or
-/// otherwise invalidate the list itself.
-///
-/// ## Safety
-///
-/// The type is iterable but the ModuleRequest returned by the iterator is not
-/// correctly bound to the garbage collector lifetime. It must be rebound as
-/// the first thing before usage to ensure GC safety.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ScopedRequestedModules<'a> {
-    ptr: NonNull<[ModuleRequest<'a>]>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ScopedRequestedModulesIterator<'a> {
-    ptr: ScopedRequestedModules<'a>,
-    index: usize,
-}
-
-impl<'a> Iterator for ScopedRequestedModulesIterator<'a> {
-    type Item = ModuleRequest<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // SAFETY: GC cannot be running while we call next, so this transmute
-        // is safe.
-        let slice = unsafe {
-            core::mem::transmute::<NonNull<[ModuleRequest<'a>]>, &[ModuleRequest<'a>]>(self.ptr.ptr)
-        };
-        let next = slice.get(self.index).copied();
-        self.index += 1;
-        next
-    }
-}
-
-impl<'a> IntoIterator for ScopedRequestedModules<'a> {
-    type Item = ModuleRequest<'a>;
-
-    type IntoIter = ScopedRequestedModulesIterator<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ScopedRequestedModulesIterator {
-            ptr: self,
-            index: 0,
-        }
-    }
-}
-
-impl Scoped<'_, SourceTextModule<'static>> {
-    /// Get the requested modules as a slice.
-    pub(super) fn get_requested_modules<'a>(&'a self, agent: &Agent) -> ScopedRequestedModules<'a> {
-        ScopedRequestedModules {
-            // SAFETY: self keeps the SourceTextModule scoped, which means that
-            // the RequestedModules list cannot be dropped. The pointer thus
-            // points to valid memory containing ModuleRequests; the pointer
-            // can be safely dereferenced while GC is not running (during GC a
-            // &mut reference to the list exists).
-            ptr: NonNull::from(unsafe { self.get(agent).get_requested_modules(agent) }),
-        }
-    }
-}
-
 impl<'a> From<Scoped<'a, SourceTextModule<'static>>> for Scoped<'a, AbstractModule<'static>> {
     fn from(value: Scoped<'a, SourceTextModule<'static>>) -> Self {
         Scoped::from_root_repr(value.into_root_repr())
@@ -477,7 +371,7 @@ impl<'a> From<Scoped<'a, SourceTextModule<'static>>> for Scoped<'a, AbstractModu
 }
 
 /// # [ImportEntry Record Fields](https://tc39.es/ecma262/#table-importentry-record-fields)
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct ImportEntryRecord<'a> {
     /// ### \[\[ModuleRequest]]
     ///
@@ -538,7 +432,7 @@ struct LocalExportEntryRecord<'a> {
 /// export { x } from "mod";
 /// export { v as x } from "mod";
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct IndirectExportEntryRecord<'a> {
     /// ### \[\[ExportName]]
     ///
@@ -1091,11 +985,10 @@ impl CyclicModuleSlots for SourceTextModule<'_> {
 
     /// ### \[\[AsyncParentModules]].
     fn get_async_parent_modules<'a>(self, agent: &'a Agent) -> &'a [SourceTextModule<'a>] {
-        unsafe {
-            core::mem::transmute::<&[SourceTextModule], &'a [SourceTextModule<'a>]>(
-                self.get(agent).cyclic_fields.get_async_parent_modules(),
-            )
-        }
+        self.unbind()
+            .get(agent)
+            .cyclic_fields
+            .get_async_parent_modules()
     }
 
     /// Append a CyclicModule to \[\[AsyncParentModules]].
@@ -1139,7 +1032,8 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
     ) -> JsResult<'a, ()> {
         let module = self.bind(gc);
         // 1. For each ExportEntry Record e of module.[[IndirectExportEntries]], do
-        for e in module.indirect_export_entries(agent) {
+        for entry_index in 0..module.indirect_export_entries(agent).len() {
+            let e = module.indirect_export_entries(agent)[entry_index];
             // a. Assert: e.[[ExportName]] is not null.
             // b. Let resolution be module.ResolveExport(e.[[ExportName]]).
             let resolution = module.resolve_export(agent, e.export_name, &mut vec![], gc);
@@ -1164,7 +1058,8 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
         // 6. Set module.[[Environment]] to env.
         module.set_environment(agent, env);
         // 7. For each ImportEntry Record in of module.[[ImportEntries]], do
-        for r#in in module.import_entries(agent) {
+        for entry_index in 0..module.import_entries(agent).len() {
+            let r#in = module.import_entries(agent)[entry_index];
             // a. Let importedModule be GetImportedModule(module, in.[[ModuleRequest]]).
             let imported_module = get_imported_module(agent, module, r#in.module_request, gc);
             // b. If in.[[ImportName]] is namespace-object, then
@@ -1355,7 +1250,8 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
         let env = module
             .environment(agent, gc)
             .expect("Attempted to bind environment of unlinked module");
-        for r#in in module.import_entries(agent) {
+        for entry_index in 0..module.import_entries(agent).len() {
+            let r#in = module.import_entries(agent)[entry_index];
             // NOTE: Spec-text from InitializeEnvironment to contrast with what
             // we're doing here.
             // a. Let importedModule be GetImportedModule(module, in.[[ModuleRequest]]).

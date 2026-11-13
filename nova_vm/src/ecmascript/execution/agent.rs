@@ -50,7 +50,7 @@ use crate::{
     ndt,
 };
 
-use core::{any::Any, cell::RefCell, ops::ControlFlow, ptr::NonNull};
+use core::{any::Any, cell::RefCell, ops::ControlFlow};
 use std::collections::TryReserveError;
 
 /// Creation options for [`GcAgent`].
@@ -885,8 +885,8 @@ pub struct Agent {
     pub(crate) stack_refs: RefCell<Vec<HeapRootData>>,
     /// Temporary storage for on-stack heap root collections.
     pub(crate) stack_ref_collections: RefCell<Vec<HeapRootCollection>>,
-    /// Temporary storage for on-stack VMs.
-    pub(crate) vm_stack: Vec<NonNull<Vm>>,
+    /// VMs suspended while their running code calls out of the interpreter.
+    pub(crate) vm_stack: Vec<Vm>,
     /// ### \[\[KeptAlive]]
     ///
     /// > Note: instead of storing objects in a list here, we only store a
@@ -1645,9 +1645,7 @@ impl HeapMarkAndSweep for Agent {
             .borrow()
             .iter()
             .for_each(|collection| collection.mark_values(queues));
-        vm_stack.iter().for_each(|vm_ptr| {
-            unsafe { vm_ptr.as_ref() }.mark_values(queues);
-        });
+        vm_stack.iter().for_each(|vm| vm.mark_values(queues));
         global_symbol_registry.mark_values(queues);
         let mut last_filled_global_value = None;
         heap.globals
@@ -1698,7 +1696,7 @@ impl HeapMarkAndSweep for Agent {
             .for_each(|entry| entry.sweep_values(compactions));
         vm_stack
             .iter_mut()
-            .for_each(|entry| unsafe { entry.as_mut().sweep_values(compactions) });
+            .for_each(|entry| entry.sweep_values(compactions));
         global_symbol_registry.sweep_values(compactions);
     }
 }

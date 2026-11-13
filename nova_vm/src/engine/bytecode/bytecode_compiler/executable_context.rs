@@ -146,7 +146,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
 
     pub(super) fn finish(self) -> Executable<'gc> {
         self.agent.heap.create(ExecutableHeapData {
-            instructions: self.instructions.into_boxed_slice(),
+            instructions: self.instructions.into(),
             caches: self.caches.unbind().into_boxed_slice(),
             constants: self.constants.unbind().into_boxed_slice(),
             shapes: self.shapes.unbind().into_boxed_slice(),

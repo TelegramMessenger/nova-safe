@@ -36,8 +36,6 @@ pub(crate) struct AbstractModuleRecord<'a> {
     host_defined: Option<HostDefined>,
 }
 
-unsafe impl Send for AbstractModuleRecord<'_> {}
-
 impl<'m> AbstractModuleRecord<'m> {
     pub(super) fn new(realm: Realm<'m>, host_defined: Option<HostDefined>) -> Self {
         Self {

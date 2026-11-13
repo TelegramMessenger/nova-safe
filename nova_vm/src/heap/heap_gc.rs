@@ -1747,16 +1747,6 @@ fn sweep(
                 );
             });
         }
-        if !ecmascript_functions.is_empty() {
-            s.spawn(|| {
-                sweep_heap_vector_values(
-                    ecmascript_functions,
-                    &compactions,
-                    &bits.ecmascript_functions,
-                    &bits.bits,
-                );
-            });
-        }
         if !embedder_objects.is_empty() {
             s.spawn(|| {
                 sweep_heap_vector_values(
@@ -1770,11 +1760,6 @@ fn sweep(
         if !errors.is_empty() {
             s.spawn(|| {
                 sweep_heap_vector_values(errors, &compactions, &bits.errors, &bits.bits);
-            });
-        }
-        if !executables.is_empty() {
-            s.spawn(|| {
-                sweep_heap_vector_values(executables, &compactions, &bits.executables, &bits.bits);
             });
         }
         if !finalization_registries.is_empty() {
@@ -1968,11 +1953,6 @@ fn sweep(
                 sweep_heap_vector_values(proxies, &compactions, &bits.proxies, &bits.bits);
             });
         }
-        if !realms.is_empty() {
-            s.spawn(|| {
-                sweep_heap_vector_values(realms, &compactions, &bits.realms, &bits.bits);
-            });
-        }
         #[cfg(feature = "regexp")]
         if !regexps.is_empty() {
             s.spawn(|| {
@@ -1988,11 +1968,6 @@ fn sweep(
                     &bits.regexp_string_iterators,
                     &bits.bits,
                 );
-            });
-        }
-        if !scripts.is_empty() {
-            s.spawn(|| {
-                sweep_heap_vector_values(scripts, &compactions, &bits.scripts, &bits.bits);
             });
         }
         #[cfg(feature = "set")]
@@ -2019,26 +1994,6 @@ fn sweep(
                     shared_array_buffers,
                     &compactions,
                     &bits.shared_array_buffers,
-                    &bits.bits,
-                );
-            });
-        }
-        if !source_text_module_records.is_empty() {
-            s.spawn(|| {
-                sweep_heap_vector_values(
-                    source_text_module_records,
-                    &compactions,
-                    &bits.source_text_module_records,
-                    &bits.bits,
-                );
-            });
-        }
-        if !source_codes.is_empty() {
-            s.spawn(|| {
-                sweep_heap_vector_values(
-                    source_codes,
-                    &compactions,
-                    &bits.source_codes,
                     &bits.bits,
                 );
             });
@@ -2110,6 +2065,26 @@ fn sweep(
                 sweep_heap_vector_values(weak_sets, &compactions, &bits.weak_sets, &bits.bits);
             });
         }
+
+        // These records hold host-defined `Rc`s and AST references that must
+        // not be touched or dropped on another thread: the calling thread
+        // sweeps them while the workers sweep the rest.
+        sweep_heap_vector_values(
+            ecmascript_functions,
+            &compactions,
+            &bits.ecmascript_functions,
+            &bits.bits,
+        );
+        sweep_heap_vector_values(executables, &compactions, &bits.executables, &bits.bits);
+        sweep_heap_vector_values(realms, &compactions, &bits.realms, &bits.bits);
+        sweep_heap_vector_values(scripts, &compactions, &bits.scripts, &bits.bits);
+        sweep_heap_vector_values(
+            source_text_module_records,
+            &compactions,
+            &bits.source_text_module_records,
+            &bits.bits,
+        );
+        sweep_heap_vector_values(source_codes, &compactions, &bits.source_codes, &bits.bits);
     });
 }
 
