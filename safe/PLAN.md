@@ -1,0 +1,73 @@
+# Nova without `unsafe`
+
+Goal: `#![forbid(unsafe_code)]` on `nova_vm` and `small_string`, so that no JavaScript input can reach undefined
+behaviour in the engine. A widget engine built on it then has no memory corruption to turn into code execution, and
+one Agent per widget keeps widgets apart.
+
+## What `unsafe` means in this fork
+
+Rust's meaning only: an operation that can cause undefined behaviour.
+
+Upstream also uses `unsafe` as a "be careful" marker for the garbage collector's protocol (binding handles to a
+`GcScope`, rooting, `Scoped::take`). Breaking that protocol makes a handle point at a slot that moved or was reused:
+the engine reads the wrong object of the same type, or an index check panics. That is a logic error inside one
+Agent's heap, never undefined behaviour, as long as every heap access is checked. So:
+
+1. A function that is `unsafe` only because of a contract (its body performs no unsafe operation) becomes a safe
+   function. Keep or reword its "## Safety" doc as "## Correctness".
+2. Every real unsafe operation is rewritten with safe code: checked indexing or `get`, `try_into`, `from_le_bytes` /
+   `to_le_bytes` on slices, `Vec<u8>` / `Box<[u8]>` instead of raw allocations, `expect("why")` instead of
+   `unwrap_unchecked`, `unreachable!()` instead of `unreachable_unchecked`, a `match` or a constructor instead of a
+   `transmute`, a safe constructor of the handle with the new lifetime instead of a lifetime `transmute`.
+3. Until the last unsafe operation is gone, the intermediate states are not sound on their own (a contract-only
+   function made safe may guard an unsafe operation elsewhere). That is expected on this branch; the end state is
+   what is checked.
+4. No `unsafe` moves into a helper crate, and no dependency is added to hide one. A dependency that keeps `unsafe`
+   inside (std, hashbrown, oxc) is listed in the final report, not worked around here.
+5. Behaviour must not change: test262 results, `cargo test` and the output of every corpus widget stay identical.
+   A slower checked path is fine; an O(1) operation must not become O(n).
+
+## Gate
+
+`safe/tools/gate.sh` (about 2 minutes, longer while other agents build): builds, runs test262 against
+`tests/expectations.json` (timeouts in either direction are noise under load), `cargo test`, and 501 corpus widgets
+whose Nova output must hash the same as `safe/baseline/widgets-nova.json`. Heap and GC work also runs
+`GATE_GC=1 safe/tools/gate.sh` (test262 with a GC between scripts, compared with
+`safe/baseline/test262-gc-unexpected.txt`).
+
+Never edit `tests/expectations.json`, `tests/metrics.json` or anything in `safe/baseline/` to make the gate pass.
+
+## Tools
+
+- `python3 -I safe/tools/unsafe_report.py . [--files]`: what is left.
+- `python3 -I safe/tools/contract_only_unsafe_fns.py`: `unsafe fn`s whose body has no unsafe operation.
+- After making functions safe: `cargo check --workspace --all-targets --message-format=json > /tmp/x.json; python3 -I
+  safe/tools/strip_unused_unsafe.py /tmp/x.json; cargo fmt` removes the now unneeded `unsafe { }` around their calls
+  (in any file) and the SAFETY comments that went with them. Repeat until `cargo check` is clean.
+
+## Areas
+
+Each area has an owner branch `safe-<area>` in its own worktree `../nova-<area>`. Edit only your files, except for
+removing now-unneeded `unsafe { }` wrappers at call sites anywhere (the strip tool).
+
+| Area | Files |
+|---|---|
+| a1-buffers | `types/spec/data_block.rs`, `builtins/array_buffer.rs`, `builtins/array_buffer/`, `builtins/data_view.rs`, `builtins/data_view/`, `builtins/shared_array_buffer.rs`, `builtins/structured_data/` (ArrayBuffer, SharedArrayBuffer, DataView, Atomics) |
+| a2-typed-arrays | `builtins/typed_array.rs`, `builtins/typed_array/`, `builtins/indexed_collections/typed_array_objects/` |
+| b-bindable | `engine/context.rs`, `engine/rootable.rs`, `engine/rootable/`, `heap/indexes.rs`, `types/language/value_vec.rs`, `types/language/object/property_key_vec.rs`, `builtins/builtin_function.rs`, and every `unsafe impl Bindable` / `Rootable` wherever it is |
+| c-heap | `heap.rs`, `heap/` (not `indexes.rs`), `builtins/ordinary/shape.rs`, `types/language/object/property_storage.rs`, `builtins/array.rs`, `builtins/indexed_collections/array_objects/` |
+| d-strings | `types/language/string.rs`, `types/language/string/`, `small_string/`, `types/language/bigint*`, `types/language/number*`, `types/language/object/property_key.rs`, `builtins/text_processing/`, `builtins/regexp/`, `builtins/structured_data/json_object.rs`, `abstract_operations/keyed_group.rs`, `abstract_operations/type_conversion.rs` |
+| e-scripts | `scripts_and_modules/`, `builtins/ecmascript_function.rs`, `engine/bytecode/`, `ecmascript/execution/`, `builtins/finalization_registry*`, `builtins/global_object.rs`, `builtins/fundamental_objects/function_objects/`, `syntax_directed_operations/`, `types/language/function/` |
+
+Paths are under `nova_vm/src/ecmascript/` unless they start with `engine/`, `heap` or `small_string/`.
+
+## Commits
+
+Small steps, each passing the gate. Commit as the repository's configured identity (`tmacos <>`) with
+`TZ=Asia/Dubai git commit`. No Co-Authored-By or "Generated with" lines. First line: what changed, imperative. Body:
+why the new code cannot reach undefined behaviour, and the unsafe count before and after.
+
+## Known engine bugs found by the widgets
+
+- `corpus/compat/notes-storage.html`: panic `assertion failed: begin <= end` in `wtf8` (`not_quite_std.rs:167`), a
+  string slice with reversed bounds. A logic bug caught by a check, not undefined behaviour.
