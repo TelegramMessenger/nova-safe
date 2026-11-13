@@ -611,16 +611,18 @@ impl<'a> Wtf8Str<'a> {
         }
     }
 
+    /// The lead surrogate the string ends with, if any.
     #[inline]
-    fn final_lead_surrogate(self) -> Option<u16> {
+    pub fn final_lead_surrogate(self) -> Option<u16> {
         match self.bytes {
             [.., 0xED, b2 @ 0xA0..=0xAF, b3] => Some(decode_surrogate(*b2, *b3)),
             _ => None,
         }
     }
 
+    /// The trail surrogate the string starts with, if any.
     #[inline]
-    fn initial_trail_surrogate(self) -> Option<u16> {
+    pub fn initial_trail_surrogate(self) -> Option<u16> {
         match self.bytes {
             [0xED, b2 @ 0xB0..=0xBF, b3, ..] => Some(decode_surrogate(*b2, *b3)),
             _ => None,

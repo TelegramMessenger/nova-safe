@@ -302,6 +302,7 @@ impl RegExpPrototype {
         // 11. If multiline is true, append the code unit 0x006D (LATIN SMALL LETTER M) to codeUnits.
         if multiline {
             code_units[i] = b'm';
+            i += 1;
         };
 
         // 12. Let dotAll be ToBoolean(? Get(R, "dotAll")).
@@ -368,7 +369,7 @@ impl RegExpPrototype {
 
         // 19. If sticky is true, append the code unit 0x0079 (LATIN SMALL LETTER Y) to codeUnits.
         if sticky {
-            code_units[i] = b'v';
+            code_units[i] = b'y';
             i += 1;
         };
 
@@ -939,6 +940,7 @@ impl RegExpPrototype {
                         .collect::<Vec<_>>();
                     replacer_args.insert(0, matched.get(agent).into());
                     replacer_args.push(Number::try_from(position).unwrap().into());
+                    replacer_args.push(s.get(agent).bind(gc.nogc()).into());
                     // ii. If namedCaptures is not undefined, then
                     if !named_captures.is_undefined() {
                         // 1. Append namedCaptures to replacerArgs.
@@ -1006,11 +1008,11 @@ impl RegExpPrototype {
                 //     accumulatedResult, the substring of S from
                 //     nextSourcePosition to position, and replacementString.
                 let s = s.get(agent).bind(gc.nogc());
-                let next_source_position_utf8 = s.utf8_index_(agent, next_source_position).unwrap();
-                let position_utf8 = s.utf8_index_(agent, position).unwrap();
-                accumulated_result.push_wtf8(
-                    s.as_wtf8_(agent)
-                        .slice(next_source_position_utf8, position_utf8),
+                s.push_utf16_substring(
+                    agent,
+                    &mut accumulated_result,
+                    next_source_position,
+                    position,
                 );
                 accumulated_result.push_wtf8(replacement_string.as_wtf8_(agent));
                 // iii. Set nextSourcePosition to position + matchLength.
@@ -1022,8 +1024,7 @@ impl RegExpPrototype {
             // 17. Return the string-concatenation of accumulatedResult and the
             // substring of S from nextSourcePosition.
             let s = s.get(agent).bind(gc.nogc());
-            let next_source_position_utf8 = s.utf8_index_(agent, next_source_position).unwrap();
-            accumulated_result.push_wtf8(s.as_wtf8_(agent).slice_from(next_source_position_utf8));
+            s.push_utf16_substring(agent, &mut accumulated_result, next_source_position, length_s);
         }
         Ok(String::from_wtf8_buf(agent, accumulated_result, gc.into_nogc()).into())
     }
@@ -1368,17 +1369,8 @@ impl RegExpPrototype {
                     // iv. Else,
                     let s_local = s.get(agent).bind(gc.nogc());
                     let a_local = a.get(agent).bind(gc.nogc());
-                    let p_utf8 = s_local
-                        .utf8_index_(agent, p)
-                        .expect("p splits two surrogates into unmatched pairs");
-                    let q_utf8 = s_local
-                        .utf8_index_(agent, q)
-                        .expect("q splits two surrogates into unmatched pairs");
                     // 1. Let T be the substring of S from p to q.
-                    let t = s_local.as_wtf8_(agent).slice(p_utf8, q_utf8);
-                    let mut t_buf = Wtf8Buf::with_capacity(t.len());
-                    t_buf.push_wtf8(t);
-                    let t = String::from_wtf8_buf(agent, t_buf, gc.nogc());
+                    let t = s_local.utf16_substring(agent, p, q, gc.nogc());
                     // 2. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(lengthA)), T).
                     if let Err(err) = a_local.push(agent, t.into()) {
                         return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
@@ -1439,14 +1431,8 @@ impl RegExpPrototype {
             a.push(agent, String::EMPTY_STRING.into())
         } else {
             let s = s.take(agent).bind(gc);
-            let p_utf8 = s
-                .utf8_index_(agent, p)
-                .expect("p splits two surrogates into unmatched pairs");
             // 20. Let T be the substring of S from p to size.
-            let t = s.as_wtf8_(agent).slice(p_utf8, size);
-            let mut t_buf = Wtf8Buf::with_capacity(t.len());
-            t_buf.push_wtf8(t);
-            let t = String::from_wtf8_buf(agent, t_buf, gc);
+            let t = s.utf16_substring(agent, p, size, gc);
             // 21. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(lengthA)), T).
             a.push(agent, t.into())
         };

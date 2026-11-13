@@ -103,13 +103,23 @@ Fixed (each in its own commit, results checked against QuickJS):
   `&'static` bytecode slice could outlive its Executable (e6a2c978); unreachable realms/scripts/modules dropped their
   host `Rc` on GC worker threads (024cc498).
 
+- `RegExp.prototype.flags` wrote "v" for "y" and lost "m". 94ad8292 (7 test262 tests pass).
+- `slice`/`substring`/`substr` lost lone surrogates and panicked on an index inside a surrogate pair; `substr` sliced
+  UTF-8 with UTF-16 indices. 3881720b.
+- Two small strings concatenated didn't join a surrogate pair. 21c508cc (3 test262 tests pass).
+- RegExp exec/replace/split/search/match used UTF-8 positions as UTF-16 ones, GetSubstitution expanded only templates
+  starting with "$" and panicked on `$'`, a functional replacer didn't get the string, empty matches inside a lone
+  surrogate panicked. a9b69dba (26 test262 tests pass).
+- RegExp captures went through `from_utf8_lossy` (unreachable today: the regex crate never matches surrogate bytes).
+  ad18c376.
+
 Open (each changes test262 or widget results, so each needs its own commit):
-- Two small strings concatenated don't join a surrogate pair: `"\uD83D" + "\uDE00" === "😀"` is false.
-- `slice`/`substring` lose lone surrogates (`"a\uD800bcdefghijk".slice(0,5).charCodeAt(1)` is 65533) and panic when an
-  index splits a surrogate pair (`"😀abc".slice(1)`).
-- RegExp replace on non-ASCII text uses UTF-8 positions as UTF-16 ones: `"éa wörld".replace(/w(ö)rld/g, "<$&>")` is
-  wrong, a similar case panics in `get_substitution`.
-- `/a/y.flags` is `"v"`.
-- RegExp captures go through `from_utf8_lossy`: a lone surrogate becomes three U+FFFD.
+- `indexOf`/`lastIndexOf`/`includes`/`startsWith`/`endsWith` panic on a position inside a surrogate pair
+  (`"😀abc".indexOf("a", 1)`).
+- `String.prototype.replace`/`replaceAll` with a string pattern ignore `$` patterns, go through `to_string_lossy` and
+  pass a byte offset to a replacer function.
+- RegExp: named groups are not filled in (`groups` is undefined); `.` and negated classes never match a lone
+  surrogate (the regex crate needs valid UTF-8); `\w` matches non-ASCII letters (`/\w/u` matches "é"); the `m` flag sets
+  `dot_matches_new_line` instead of `multi_line`.
 - `ArgumentsList::with_scoped` keeps a raw pointer to the caller's frame in the GC roots; a caught panic leaves it
   dangling (b-bindable round 2).

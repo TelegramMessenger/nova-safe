@@ -270,9 +270,6 @@ impl<'a> String<'a> {
         strings: impl AsRef<[Self]>,
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
-        // TODO: This function will need heavy changes once we support creating
-        // WTF-8 strings, since WTF-8 concatenation isn't byte concatenation.
-
         // We use this status enum so we can reuse one of the heap string inputs
         // if the output would be identical, and so we don't allocate at all
         // until it's clear we need a new heap string.
@@ -330,7 +327,11 @@ impl<'a> String<'a> {
                 }
                 Status::SmallString { data, len } => {
                     let string_len = string.len_(agent);
-                    if *len + string_len <= 7 {
+                    let joins_surrogate_pair = Wtf8Str::from_wtf8_bytes(&data[..*len])
+                        .final_lead_surrogate()
+                        .is_some()
+                        && string.as_wtf8_(agent).initial_trail_surrogate().is_some();
+                    if *len + string_len <= 7 && !joins_surrogate_pair {
                         let String::SmallString(smstr) = string else {
                             unreachable!()
                         };
@@ -356,6 +357,150 @@ impl<'a> String<'a> {
             }
             Status::String(string) => agent.heap.create(string).bind(gc),
         }
+    }
+
+    /// The WTF-8 byte range of the UTF-16 range from `from` to `to`, where
+    /// `from < to <= utf16_len`, with the trail surrogate before it when
+    /// `from` is inside a surrogate pair and the lead surrogate after it when
+    /// `to` is.
+    fn utf16_range_to_wtf8(
+        self,
+        agent: &impl StringHeapAccess,
+        from: usize,
+        to: usize,
+        utf16_len: usize,
+    ) -> (Option<CodePoint>, usize, usize, Option<CodePoint>) {
+        let (start, leading_trail) = match self.utf8_index_(agent, from) {
+            Some(start) => (start, None),
+            None => {
+                let pair_start = self
+                    .utf8_index_(agent, from - 1)
+                    .expect("a trail surrogate follows its lead");
+                (pair_start + 4, Some(self.char_code_at_(agent, from)))
+            }
+        };
+        let (end, trailing_lead) = if to == utf16_len {
+            (self.len_(agent), None)
+        } else {
+            match self.utf8_index_(agent, to) {
+                Some(end) => (end, None),
+                None => {
+                    let pair_start = self
+                        .utf8_index_(agent, to - 1)
+                        .expect("a trail surrogate follows its lead");
+                    (pair_start, Some(self.char_code_at_(agent, to - 1)))
+                }
+            }
+        };
+        (leading_trail, start, end, trailing_lead)
+    }
+
+    /// The substring from UTF-16 index `from` to `to`. An index inside a
+    /// surrogate pair keeps the half of the pair inside the range as a lone
+    /// surrogate.
+    ///
+    /// ## Panics
+    ///
+    /// If `to` is greater than the UTF-16 length of the string.
+    pub(crate) fn utf16_substring<'gc>(
+        self,
+        agent: &mut Agent,
+        from: usize,
+        to: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
+        if from >= to {
+            return String::EMPTY_STRING;
+        }
+        let utf16_len = self.utf16_len_(agent);
+        assert!(to <= utf16_len);
+        if from == 0 && to == utf16_len {
+            return self.unbind().bind(gc);
+        }
+        let (leading_trail, start, end, trailing_lead) =
+            self.utf16_range_to_wtf8(agent, from, to, utf16_len);
+        let middle = self.as_wtf8_(agent).slice(start, end);
+        if leading_trail.is_none()
+            && trailing_lead.is_none()
+            && let Ok(small) = String::try_from(middle)
+        {
+            return small;
+        }
+        let mut buf = Wtf8Buf::with_capacity(middle.len() + 6);
+        if let Some(trail) = leading_trail {
+            buf.push(trail);
+        }
+        buf.push_wtf8(middle);
+        if let Some(lead) = trailing_lead {
+            buf.push(lead);
+        }
+        agent.heap.create(buf).bind(gc)
+    }
+
+    /// Appends the substring from UTF-16 index `from` to `to` (clamped to the
+    /// length) to `buf`, like [`String::utf16_substring`].
+    pub(crate) fn push_utf16_substring(
+        self,
+        agent: &impl StringHeapAccess,
+        buf: &mut Wtf8Buf,
+        from: usize,
+        to: usize,
+    ) {
+        let utf16_len = self.utf16_len_(agent);
+        let to = to.min(utf16_len);
+        if from >= to {
+            return;
+        }
+        let (leading_trail, start, end, trailing_lead) =
+            self.utf16_range_to_wtf8(agent, from, to, utf16_len);
+        if let Some(trail) = leading_trail {
+            buf.push(trail);
+        }
+        buf.push_wtf8(self.as_wtf8_(agent).slice(start, end));
+        if let Some(lead) = trailing_lead {
+            buf.push(lead);
+        }
+    }
+
+    /// The UTF-16 index of the code point that byte `utf8_idx` is in (or the
+    /// UTF-16 length if it is past the end). The matcher can report an empty
+    /// match inside the three bytes of a lone surrogate.
+    pub(crate) fn utf16_index_of_byte_(self, agent: &impl StringHeapAccess, utf8_idx: usize) -> usize {
+        let bytes = self.as_bytes_(agent);
+        let mut utf8_idx = utf8_idx.min(bytes.len());
+        while utf8_idx > 0 && utf8_idx < bytes.len() && bytes[utf8_idx] & 0xC0 == 0x80 {
+            utf8_idx -= 1;
+        }
+        self.utf16_index_(agent, utf8_idx)
+    }
+
+    /// The substring from byte `start` to byte `end`, each moved back to the
+    /// start of the code point it is in.
+    pub(crate) fn wtf8_substring_<'gc>(
+        self,
+        agent: &mut Agent,
+        start: usize,
+        end: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
+        let wtf8 = self.as_wtf8_(agent);
+        let code_point_start = |mut index: usize| {
+            let bytes = wtf8.as_bytes();
+            index = index.min(bytes.len());
+            while index > 0 && index < bytes.len() && bytes[index] & 0xC0 == 0x80 {
+                index -= 1;
+            }
+            index
+        };
+        let start = code_point_start(start);
+        let end = code_point_start(end).max(start);
+        let substring = wtf8.slice(start, end);
+        if let Ok(small) = String::try_from(substring) {
+            return small;
+        }
+        let mut buf = Wtf8Buf::with_capacity(substring.len());
+        buf.push_wtf8(substring);
+        agent.heap.create(buf).bind(gc)
     }
 
     /// Byte length of the string.
