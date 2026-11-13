@@ -7,7 +7,7 @@ mod execute_instructions;
 
 use execute_instructions::*;
 
-use std::{hint::unreachable_unchecked, ptr::NonNull};
+use std::ptr::NonNull;
 use wtf8::Wtf8Buf;
 
 use crate::{
@@ -316,13 +316,12 @@ impl Vm {
             );
             match result {
                 Ok(ContinuationKind::Normal) => {}
-                // SAFETY: result is not Ok(ContinuationKind::Normal).
-                _ => unsafe {
+                _ => {
                     if let Some(r) = self.handle_execute_instruction_abnormal_result(agent, result)
                     {
                         return r.unbind().bind(gc.into_nogc());
                     }
-                },
+                }
             }
             agent.stack_refs.borrow_mut().truncate(stack_depth);
         }
@@ -330,19 +329,20 @@ impl Vm {
         ExecutionResult::Return(Value::Undefined)
     }
 
-    /// ## Safety
+    /// ## Panics
     ///
-    /// result must not be Ok(ContinuationKind::Normal).
+    /// If result is Ok(ContinuationKind::Normal).
     #[inline(never)]
     #[cold]
-    unsafe fn handle_execute_instruction_abnormal_result<'a>(
+    fn handle_execute_instruction_abnormal_result<'a>(
         &mut self,
         agent: &mut Agent,
         result: JsResult<'a, ContinuationKind>,
     ) -> Option<ExecutionResult<'a>> {
         match result {
-            // SAFETY: method only called if result is not normal.
-            Ok(ContinuationKind::Normal) => unsafe { unreachable_unchecked() },
+            Ok(ContinuationKind::Normal) => {
+                unreachable!("only called with an abnormal result")
+            }
             Ok(ContinuationKind::Return) => {
                 if agent.options.print_internals {
                     Self::print_exiting();

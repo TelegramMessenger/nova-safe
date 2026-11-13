@@ -97,10 +97,10 @@ impl<'fr> CleanupRecord<'fr> {
         }
     }
 
-    /// # Safety
+    /// ## Correctness
     ///
     /// FinalizationRegistry must be previously uninitialised.
-    pub(super) unsafe fn initialise(&mut self, realm: Realm, cleanup_callback: Function) {
+    pub(super) fn initialise(&mut self, realm: Realm, cleanup_callback: Function) {
         debug_assert_eq!(self.realm, Realm::_DEF);
         debug_assert_eq!(self.callback, Function::BuiltinProxyRevokerFunction);
         self.realm = realm.unbind();

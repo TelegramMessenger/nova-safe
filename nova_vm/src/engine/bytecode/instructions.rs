@@ -693,17 +693,34 @@ impl Instruction {
     }
 
     pub const fn as_u8(self) -> u8 {
-        // SAFETY: Transmute checks that Self is same size as u8.
-        unsafe { core::mem::transmute::<Self, u8>(self) }
+        self as u8
     }
 }
 
 #[derive(Clone, Copy)]
-union InstructionArgs {
-    none: (),
-    single_arg: u16,
-    two_args: [u16; 2],
-    double_arg: u32,
+struct InstructionArgs([u16; 2]);
+
+impl InstructionArgs {
+    const NONE: Self = Self([0, 0]);
+
+    fn from_double_arg(arg: u32) -> Self {
+        let [a, b, c, d] = arg.to_ne_bytes();
+        Self([u16::from_ne_bytes([a, b]), u16::from_ne_bytes([c, d])])
+    }
+
+    fn single_arg(self) -> u16 {
+        self.0[0]
+    }
+
+    fn two_args(self) -> [u16; 2] {
+        self.0
+    }
+
+    fn double_arg(self) -> u32 {
+        let [a, b] = self.0[0].to_ne_bytes();
+        let [c, d] = self.0[1].to_ne_bytes();
+        u32::from_ne_bytes([a, b, c, d])
+    }
 }
 
 impl core::fmt::Debug for InstructionArgs {
@@ -734,9 +751,7 @@ impl Instr {
         let arg_count = kind.argument_count() as usize;
 
         let cur_ip = *ip;
-        // SAFETY: we've read IP and now split at IP + 1. Thus IP < len,
-        // meaning that IP + 1 <= len.
-        let (_, bytes) = unsafe { instructions.split_at_unchecked(cur_ip) };
+        let bytes = &instructions[cur_ip..];
         match arg_count {
             0 => Some(Instr::new(kind)),
             1 => {
@@ -768,41 +783,37 @@ impl Instr {
     pub(crate) fn new(kind: Instruction) -> Self {
         Self {
             kind,
-            args: InstructionArgs { none: () },
+            args: InstructionArgs::NONE,
         }
     }
 
     pub(crate) fn new_with_arg(kind: Instruction, arg: u16) -> Self {
         Self {
             kind,
-            args: InstructionArgs { single_arg: arg },
+            args: InstructionArgs([arg, 0]),
         }
     }
 
     pub(crate) fn new_with_two_args(kind: Instruction, arg1: u16, arg2: u16) -> Self {
         Self {
             kind,
-            args: InstructionArgs {
-                two_args: [arg1, arg2],
-            },
+            args: InstructionArgs([arg1, arg2]),
         }
     }
 
     pub(crate) fn new_with_double_arg(kind: Instruction, arg: u32) -> Self {
         Self {
             kind,
-            args: InstructionArgs { double_arg: arg },
+            args: InstructionArgs::from_double_arg(arg),
         }
     }
 
     pub(crate) fn get_first_arg(&self) -> IndexType {
         match self.kind.argument_count() {
-            // SAFETY: one u16 arg is guaranteed.
-            1 => unsafe { self.args.single_arg },
+            1 => self.args.single_arg(),
             2 => {
                 debug_assert!(!self.kind.has_double_arg());
-                // SAFETY: two u16 args are guaranteed.
-                unsafe { self.args.two_args[0] }
+                self.args.two_args()[0]
             }
             _ => panic_no_argument(),
         }
@@ -816,8 +827,7 @@ impl Instr {
         match self.kind.argument_count() {
             2 => {
                 debug_assert!(!self.kind.has_double_arg());
-                // SAFETY: two u16 args are guaranteed.
-                unsafe { self.args.two_args[1] as usize }
+                self.args.two_args()[1] as usize
             }
             _ => panic_not_two_arguments(),
         }
@@ -825,12 +835,10 @@ impl Instr {
 
     pub(crate) fn get_first_bool(&self) -> bool {
         let first_arg = match self.kind.argument_count() {
-            // SAFETY: one u16 arg is guaranteed.
-            1 => unsafe { self.args.single_arg },
+            1 => self.args.single_arg(),
             2 => {
                 debug_assert!(!self.kind.has_double_arg());
-                // SAFETY: two u16 args are guaranteed.
-                unsafe { self.args.two_args[1] }
+                self.args.two_args()[1]
             }
             _ => panic_not_two_arguments(),
         };
@@ -845,8 +853,7 @@ impl Instr {
         match self.kind.argument_count() {
             2 => {
                 debug_assert!(!self.kind.has_double_arg());
-                // SAFETY: two u16 args are guaranteed.
-                let second_arg = unsafe { self.args.two_args[1] };
+                let second_arg = self.args.two_args()[1];
                 if second_arg == 0 || second_arg == 1 {
                     second_arg == 1
                 } else {
@@ -860,8 +867,7 @@ impl Instr {
     pub(crate) fn get_jump_slot(&self) -> usize {
         assert!(self.kind.has_jump_slot());
         assert_eq!(self.kind.argument_count(), 2);
-        // SAFETY: Instruction is a jump.
-        let jump = unsafe { self.args.double_arg };
+        let jump = self.args.double_arg();
         jump as usize
     }
 
@@ -877,8 +883,7 @@ impl Instr {
                 eprintln!("  {}: {:?}", ip, self.kind);
             }
             1 => {
-                // SAFETY: Instruction has a single argument.
-                let arg0 = unsafe { self.args.single_arg };
+                let arg0 = self.args.single_arg();
                 eprintln!(
                     "  {}: {:?}({})",
                     ip,
@@ -891,8 +896,7 @@ impl Instr {
                     let jump_slot = self.get_jump_slot();
                     eprintln!("  {}: {:?}({})", ip, self.kind, jump_slot);
                 } else {
-                    // SAFETY: Instruction has two arguments.
-                    let [arg0, arg1] = unsafe { self.args.two_args };
+                    let [arg0, arg1] = self.args.two_args();
                     eprintln!(
                         "  {}: {:?}({})",
                         ip,

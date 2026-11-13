@@ -14,11 +14,12 @@ use crate::{
         Agent, BUILTIN_STRING_MEMORY, Contains, ContainsSymbol, ECMAScriptCodeEvaluationState,
         Environment, ExceptionType, ExecutionContext, Function, JsResult,
         LexicallyScopedDeclaration, ParseResult, Primitive, PrivateEnvironment, Realm,
-        STRING_DISCRIMINANT, SourceCode, SourceCodeType, String, Value, VarScopedDeclaration,
-        builders::BuiltinFunctionBuilder, get_this_environment, instantiate_function_object,
-        is_trimmable_whitespace, new_declarative_environment, script_lexically_scoped_declarations,
-        script_var_declared_names, script_var_scoped_declarations, to_int32, to_int32_number,
-        to_number, to_number_primitive, to_string,
+        SMALL_STRING_DISCRIMINANT, STRING_DISCRIMINANT, SourceCode, SourceCodeType, String, Value,
+        VarScopedDeclaration, builders::BuiltinFunctionBuilder, get_this_environment,
+        instantiate_function_object, is_trimmable_whitespace, new_declarative_environment,
+        script_lexically_scoped_declarations, script_var_declared_names,
+        script_var_scoped_declarations, to_int32, to_int32_number, to_number, to_number_primitive,
+        to_string,
     },
     engine::{Bindable, Executable, GcScope, NoGcScope, Scopable, Vm, string_literal_to_wtf8},
     heap::{ArenaAccess, HeapIndexHandle, IntrinsicFunctionIndexes},
@@ -262,9 +263,7 @@ pub(crate) fn perform_eval<'gc>(
             // as the eval result.
             string_literal_to_wtf8(agent, &directives.last().unwrap().expression, gc.nogc()).into()
         };
-        // SAFETY: SourceCode was just parsed and found empty; even if it had
-        // been executed, it would do nothing.
-        unsafe { source_code.manually_drop(agent) };
+        source_code.manually_drop(agent);
         ndt::eval_evaluation_done!(|| id);
         return Ok(empty_result.unbind());
     }
@@ -427,8 +426,7 @@ pub(crate) fn perform_eval<'gc>(
                 // 30. If result is a normal completion and result.[[Value]] is empty, then
                 // a. Set result to NormalCompletion(undefined).
                 let result = Vm::execute(agent, exe.clone(), None, gc).into_js_result();
-                // SAFETY: No one can access the bytecode anymore.
-                unsafe { exe.take(agent).try_drop(agent) };
+                exe.take(agent).try_drop(agent);
                 result
             }
             Err(err) => Err(err.unbind().bind(gc.into_nogc())),
@@ -454,8 +452,10 @@ fn create_id(x: String) -> u64 {
             let [a, b, c, d] = s.to_ne_bytes();
             u64::from_ne_bytes([STRING_DISCRIMINANT, 0, 0, 0, a, b, c, d])
         }
-        // SAFETY: SmallString variant has initialised all 8 bytes.
-        String::SmallString(_) => unsafe { core::mem::transmute::<String, u64>(x) },
+        String::SmallString(s) => {
+            let [a, b, c, d, e, f, g] = *s.data();
+            u64::from_ne_bytes([SMALL_STRING_DISCRIMINANT, a, b, c, d, e, f, g])
+        }
     }
 }
 
@@ -1367,8 +1367,7 @@ impl GlobalObject {
                 // ii. If n < 256, then
                 if unescape_set(&c) {
                     // d. Set R to the string-concatenation of R and S.
-                    // SAFETY: checked as part of unescape_set
-                    r.push_char(unsafe { char::from_u32_unchecked(c as u32) });
+                    r.push_char(char::from(c));
                     continue;
                 }
                 // c. Else,
@@ -1463,8 +1462,7 @@ impl GlobalObject {
             if hex_digits.is_empty() || !hex_digits.iter().all(|b| b.is_ascii_hexdigit()) {
                 continue;
             }
-            // SAFETY: all digits are hex digits.
-            let hex_digits = unsafe { str::from_utf8_unchecked(hex_digits) };
+            let hex_digits = str::from_utf8(hex_digits).expect("hex digits are ASCII");
             // v. Let parseResult be ParseText(hexDigits, HexDigits[~Sep]).
             let parse_result = u32::from_str_radix(hex_digits, 16);
             // vi. If parseResult is a Parse Node, then
@@ -1476,8 +1474,7 @@ impl GlobalObject {
                 r.push_wtf8(string_wtf8.slice(previous_k, k));
 
                 // 2. Set C to the code unit whose numeric value is n.
-                // SAFETY: at most 4 hex digits -> never bigger than 0xFFFF.
-                r.push(unsafe { CodePoint::from_u32_unchecked(n) });
+                r.push(CodePoint::from_u32(n).expect("at most 4 hex digits"));
                 // 3. Set k to k + optionalAdvance.
                 previous_k = k + 1 + optional_advance;
             }

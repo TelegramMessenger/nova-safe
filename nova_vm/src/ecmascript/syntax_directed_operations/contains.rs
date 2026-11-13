@@ -50,15 +50,19 @@ impl Contains for ast::Function<'_> {
 impl Contains for FunctionAstRef<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
         let (params, body) = match self {
-            FunctionAstRef::Function(f) |
-            FunctionAstRef::AsyncFunction(f) |
-            FunctionAstRef::Generator(f) |
-            FunctionAstRef::AsyncGenerator(f) |
-            // SAFETY: FunctionAstRef cannot point to a TypeScript function
-            // declaration.
-            FunctionAstRef::ClassConstructor(f) => (f.params.as_ref(), unsafe { f.body.as_deref().unwrap_unchecked() }),
-            FunctionAstRef::Arrow(f) |
-            FunctionAstRef::AsyncArrow(f) => (f.params.as_ref(), &*f.body),
+            FunctionAstRef::Function(f)
+            | FunctionAstRef::AsyncFunction(f)
+            | FunctionAstRef::Generator(f)
+            | FunctionAstRef::AsyncGenerator(f)
+            | FunctionAstRef::ClassConstructor(f) => (
+                f.params.as_ref(),
+                f.body
+                    .as_deref()
+                    .expect("FunctionAstRef cannot point to a TypeScript function declaration"),
+            ),
+            FunctionAstRef::Arrow(f) | FunctionAstRef::AsyncArrow(f) => {
+                (f.params.as_ref(), &*f.body)
+            }
         };
         params.items.iter().any(|p| p.contains(symbol))
             || body.statements.iter().any(|st| st.contains(symbol))

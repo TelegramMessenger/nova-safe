@@ -263,7 +263,7 @@ impl<'e> PrivateEnvironment<'e> {
 
     /// Gets a PrivateName by offset in the Private Environment.
     ///
-    /// ## Safety
+    /// ## Correctness
     ///
     /// This method leaks out PrivateNames without checking if the caller has
     /// the right to access them. This should only be used when the caller
@@ -273,7 +273,7 @@ impl<'e> PrivateEnvironment<'e> {
     ///
     /// The method panics if the `offset` is outside the range of PrivateNames
     /// in the Private Environment.
-    pub(crate) unsafe fn get_private_name(self, agent: &Agent, offset: usize) -> PrivateName {
+    pub(crate) fn get_private_name(self, agent: &Agent, offset: usize) -> PrivateName {
         let data = self.get_data(agent);
         if offset >= data.names.len() {
             panic!("Attempted to get PrivateName outside the Private Environment's range");

@@ -365,9 +365,7 @@ pub fn script_evaluation<'a>(
                 .into_js_result()
                 .unbind()
                 .bind(gc.into_nogc());
-            // SAFETY: The bytecode is not accessible by anyone anymore and no one
-            // will try to re-run it.
-            unsafe { bytecode.take(agent).try_drop(agent) };
+            bytecode.take(agent).try_drop(agent);
             result
         }
         Err(err) => Err(err.unbind().bind(gc.into_nogc())),

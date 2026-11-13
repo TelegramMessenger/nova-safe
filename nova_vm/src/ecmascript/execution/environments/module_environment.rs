@@ -398,15 +398,14 @@ pub(crate) fn initialize_import_binding(
     n2: String,
     gc: NoGcScope,
 ) {
-    let direct_binding = env_rec.get_declarative_env(agent).get_binding_mut(agent, n);
-    let Some(direct_binding) = direct_binding else {
+    let declarative_env = env_rec.get_declarative_env(agent);
+    let Some(direct_binding) = declarative_env.get_binding(agent, n) else {
         // Note: if we have indirect binding to name, then it has already been
         // initialized as part of CreateImportBinding.
         return;
     };
     debug_assert!(!direct_binding.mutable);
     debug_assert!(direct_binding.strict);
-    let direct_binding_value = &mut direct_binding.value as *mut Option<Value<'static>>;
     let value = m
         .environment(agent, gc)
         .expect("Attempted to access unlinked module's environment")
@@ -415,10 +414,10 @@ pub(crate) fn initialize_import_binding(
         .expect("Direct binding target did not exist")
         .value
         .expect("Attempted to access uninitialized binding");
-    // SAFETY: m.environment, get_declarative_env and get_binding both perform
-    // no mutation on module environments; the direct_binding_value pointer
-    // still points to valid memory and has not been trampled with.
-    unsafe { *direct_binding_value = Some(value) };
+    declarative_env
+        .get_binding_mut(agent, n)
+        .expect("Direct binding was found above")
+        .value = Some(value.unbind());
     // 4. Return unused.
 }
 
