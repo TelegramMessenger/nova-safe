@@ -6,11 +6,13 @@
 
 mod abstract_operations;
 mod data;
+mod viewable_slice;
 
 use std::collections::hash_map::Entry;
 
 pub(crate) use abstract_operations::*;
 pub(crate) use data::*;
+pub(crate) use viewable_slice::*;
 
 #[cfg(feature = "shared-array-buffer")]
 use super::shared_array_buffer::SharedArrayBuffer;
@@ -20,8 +22,8 @@ use crate::{
     ecmascript::{
         Agent, JsResult, ProtoIntrinsics,
         types::{
-            ARRAY_BUFFER_DISCRIMINANT, InternalMethods, InternalSlots, Object, OrdinaryObject,
-            Value, Viewable, copy_data_block_bytes, create_byte_data_block,
+            ARRAY_BUFFER_DISCRIMINANT, DataBlock, InternalMethods, InternalSlots, Object,
+            OrdinaryObject, Value, Viewable, copy_data_block_bytes, create_byte_data_block,
         },
     },
     engine::{Bindable, HeapRootData, NoGcScope, bindable_handle},
@@ -154,62 +156,74 @@ impl<'ab> ArrayBuffer<'ab> {
         self.get_mut(agent).buffer.get_data_block_mut()
     }
 
-    /// Create a T slice from an ArrayBuffer and byte offset and length values.
+    /// Get temporary access to the data blocks of two different
+    /// ArrayBuffers: `source`'s as a slice of bytes and `target`'s as a
+    /// mutable slice of bytes.
     ///
+    /// Panics if `source` and `target` are the same ArrayBuffer.
+    #[inline]
+    pub(crate) fn as_slice_and_mut_slice<'b>(
+        agent: &'b mut Agent,
+        source: ArrayBuffer,
+        target: ArrayBuffer,
+    ) -> (&'b [u8], &'b mut [u8]) {
+        let (source_data, target_data) = Self::data_blocks(agent, source, target);
+        (source_data, target_data)
+    }
+
+    /// The data blocks of two different ArrayBuffers, `source`'s shared and
+    /// `target`'s exclusive.
+    ///
+    /// Panics if `source` and `target` are the same ArrayBuffer.
+    fn data_blocks<'b>(
+        agent: &'b mut Agent,
+        source: ArrayBuffer,
+        target: ArrayBuffer,
+    ) -> (&'b DataBlock, &'b mut DataBlock) {
+        let [source_data, target_data] = agent
+            .heap
+            .array_buffers
+            .get_disjoint_mut([source.get_index(), target.get_index()])
+            .expect("source and target must be different ArrayBuffers");
+        (
+            source_data.buffer.get_data_block(),
+            target_data.buffer.get_data_block_mut(),
+        )
+    }
+
+    /// View the bytes of an ArrayBuffer from `byte_offset`, either
+    /// `byte_length` of them or all the rest, as T's.
+    ///
+    /// The view is empty if the bytes are not all within the ArrayBuffer.
     /// This method should be used when looping over items of a TypedArray.
     pub(crate) fn as_viewable_slice<T: Viewable>(
         self,
         agent: &'ab Agent,
         byte_offset: usize,
         byte_length: Option<usize>,
-    ) -> &'ab [T] {
-        let byte_slice = self.as_slice(agent);
-        let byte_limit = byte_length.map(|byte_length| byte_offset.saturating_add(byte_length));
-        if byte_limit.unwrap_or(byte_offset) > byte_slice.len() {
-            return &[];
+    ) -> ViewableSlice<'ab, T> {
+        match viewed_byte_range(self.as_slice(agent).len(), byte_offset, byte_length) {
+            Some(range) => ViewableSlice::new(&self.as_slice(agent)[range]),
+            None => ViewableSlice::empty(),
         }
-        let byte_slice = if let Some(byte_limit) = byte_limit {
-            &byte_slice[byte_offset..byte_limit]
-        } else {
-            &byte_slice[byte_offset..]
-        };
-        // SAFETY: All bytes in byte_slice are initialized, and all bitwise
-        // combinations of T are valid values. Alignment of T's is
-        // guaranteed by align_to_mut itself.
-        let (head, slice, _) = unsafe { byte_slice.align_to::<T>() };
-        if !head.is_empty() {
-            panic!("ArrayBuffer is not properly aligned for T");
-        }
-        slice
     }
 
-    /// Create a T slice from an ArrayBuffer and byte offset and length values.
+    /// View the bytes of an ArrayBuffer from `byte_offset`, either
+    /// `byte_length` of them or all the rest, as T's.
     ///
+    /// The view is empty if the bytes are not all within the ArrayBuffer.
     /// This method should be used when looping over items of a TypedArray.
     pub(crate) fn as_mut_viewable_slice<T: Viewable>(
         self,
         agent: &'ab mut Agent,
         byte_offset: usize,
         byte_length: Option<usize>,
-    ) -> &'ab mut [T] {
-        let byte_slice = self.as_mut_slice(agent);
-        let byte_limit = byte_length.map(|byte_length| byte_offset.saturating_add(byte_length));
-        if byte_limit.unwrap_or(byte_offset) > byte_slice.len() {
-            return &mut [];
+    ) -> ViewableSliceMut<'ab, T> {
+        let bytes = self.as_mut_slice(agent);
+        match viewed_byte_range(bytes.len(), byte_offset, byte_length) {
+            Some(range) => ViewableSliceMut::new(&mut bytes[range]),
+            None => ViewableSliceMut::empty(),
         }
-        let byte_slice = if let Some(byte_limit) = byte_limit {
-            &mut byte_slice[byte_offset..byte_limit]
-        } else {
-            &mut byte_slice[byte_offset..]
-        };
-        // SAFETY: All bytes in byte_slice are initialized, and all bitwise
-        // combinations of T are valid values. Alignment of T's is
-        // guaranteed by align_to_mut itself.
-        let (head, slice, _) = unsafe { byte_slice.align_to_mut::<T>() };
-        if !head.is_empty() {
-            panic!("ArrayBuffer is not properly aligned for T");
-        }
-        slice
     }
 
     /// Copy data from `source` ArrayBuffer to this ArrayBuffer.
@@ -223,18 +237,31 @@ impl<'ab> ArrayBuffer<'ab> {
         count: usize,
     ) {
         debug_assert_ne!(self, source);
-        let array_buffers = &mut *agent.heap.array_buffers;
-        let (source_data, target_data) = if self.get_index() > source.get_index() {
-            let (before, after) = array_buffers.split_at_mut(self.get_index());
-            (&before[source.get_index()], &mut after[0])
-        } else {
-            let (before, after) = array_buffers.split_at_mut(source.get_index());
-            (&after[0], &mut before[self.get_index()])
-        };
-        let source_data = source_data.buffer.get_data_block();
-        let target_data = target_data.buffer.get_data_block_mut();
+        let (source_data, target_data) = Self::data_blocks(agent, source, self);
         copy_data_block_bytes(target_data, 0, source_data, first, count);
     }
+}
+
+/// The bytes of a buffer of `len` bytes that a view from `byte_offset` of
+/// `byte_length` bytes, or of all the rest, covers; None if they are not all
+/// within the buffer.
+#[inline(always)]
+pub(crate) fn viewed_byte_range(
+    len: usize,
+    byte_offset: usize,
+    byte_length: Option<usize>,
+) -> Option<core::ops::Range<usize>> {
+    let byte_limit = match byte_length {
+        Some(byte_length) => byte_offset.saturating_add(byte_length),
+        None => byte_offset,
+    };
+    if byte_limit > len {
+        return None;
+    }
+    Some(match byte_length {
+        Some(_) => byte_offset..byte_limit,
+        None => byte_offset..len,
+    })
 }
 
 impl<'a> InternalSlots<'a> for ArrayBuffer<'a> {
