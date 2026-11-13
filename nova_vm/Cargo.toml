@@ -36,7 +36,7 @@ soavec_derive = { workspace = true }
 nova_vm_derive = { path = "../nova_vm_derive", version = "1.0.0" }
 sonic-rs = { workspace = true, optional = true }
 unicode-normalization = { workspace = true }
-usdt = { workspace = true }
+usdt = { workspace = true, optional = true }
 wtf8 = { workspace = true }
 xsum = { workspace = true }
 temporal_rs = { workspace = true, optional = true }
@@ -65,6 +65,9 @@ shared-array-buffer = ["array-buffer"]
 weak-refs = []
 set = []
 typescript = []
+# DTrace / SystemTap USDT probes. The probe macros expand to `unsafe` code, so
+# a build with this feature cannot forbid `unsafe_code`.
+probes = ["dep:usdt"]
 temporal = ["dep:temporal_rs"]
 
 # Enables features defined by [Annex B](https://tc39.es/ecma262/#sec-additional-ecmascript-features-for-web-browsers)
@@ -101,4 +104,3 @@ proposal-temporal = ["temporal"]
 
 [build-dependencies]
 small_string = { path = "../small_string", version = "1.0.0" }
-usdt = { workspace = true }

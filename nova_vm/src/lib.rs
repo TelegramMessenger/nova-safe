@@ -91,6 +91,7 @@ pub mod engine;
 pub mod heap;
 
 /// DTrace / SystemTap USDT probes in Nova VM.
+#[cfg(feature = "probes")]
 #[usdt::provider(provider = "nova_vm")]
 mod ndt {
     // Start probes in alphabetical order.
@@ -116,6 +117,137 @@ mod ndt {
     fn script_evaluation_done(id: u64) {}
 }
 
+/// Without the `probes` feature every probe is a no-op that never calls its
+/// argument closure, as a disabled USDT probe does.
+#[cfg(not(feature = "probes"))]
+mod ndt {
+    macro_rules! builtin_call_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use builtin_call_start;
+
+    macro_rules! builtin_constructor_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use builtin_constructor_start;
+
+    macro_rules! eval_evaluation_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use eval_evaluation_start;
+
+    macro_rules! gc_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use gc_start;
+
+    macro_rules! javascript_call_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use javascript_call_start;
+
+    macro_rules! javascript_constructor_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use javascript_constructor_start;
+
+    macro_rules! job_evaluation_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use job_evaluation_start;
+
+    macro_rules! module_evaluation_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use module_evaluation_start;
+
+    macro_rules! script_evaluation_start {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use script_evaluation_start;
+
+    macro_rules! builtin_call_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use builtin_call_done;
+
+    macro_rules! builtin_constructor_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use builtin_constructor_done;
+
+    macro_rules! eval_evaluation_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use eval_evaluation_done;
+
+    macro_rules! gc_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use gc_done;
+
+    macro_rules! javascript_constructor_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use javascript_constructor_done;
+
+    macro_rules! javascript_call_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use javascript_call_done;
+
+    macro_rules! job_evaluation_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use job_evaluation_done;
+
+    macro_rules! module_evaluation_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use module_evaluation_done;
+
+    macro_rules! script_evaluation_done {
+        ($probe:expr) => {
+            let _ = $probe;
+        };
+    }
+    pub(crate) use script_evaluation_done;
+}
+
 /// Function that should be called as the very first thing in `fn main()` of any
 /// application using Nova JavaScript engine. This function registers USDT
 /// probes with the DTrace kernel module on OS's that have one and is required
@@ -126,4 +258,11 @@ mod ndt {
 /// ```
 ///
 /// # usdt documentation
+#[cfg(feature = "probes")]
 pub use usdt::register_probes;
+
+/// Without the `probes` feature there is nothing to register.
+#[cfg(not(feature = "probes"))]
+pub fn register_probes() -> Result<(), core::convert::Infallible> {
+    Ok(())
+}

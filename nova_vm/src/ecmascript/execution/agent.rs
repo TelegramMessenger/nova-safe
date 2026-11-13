@@ -289,7 +289,7 @@ impl Job {
     ///
     /// The execution of a Job never returns any result but it may throw an
     /// error value.
-    #[allow(unsafe_code)]
+    #[cfg_attr(feature = "probes", allow(unsafe_code))]
     pub fn run<'a>(self, agent: &mut Agent, gc: GcScope<'a, '_>) -> JsResult<'a, ()> {
         let mut id = 0;
         ndt::job_evaluation_start!(|| {

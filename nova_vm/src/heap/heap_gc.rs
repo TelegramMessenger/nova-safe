@@ -45,7 +45,7 @@ use crate::{
     ndt,
 };
 
-#[allow(unsafe_code)]
+#[cfg_attr(feature = "probes", allow(unsafe_code))]
 pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static>>], gc: GcScope) {
     ndt::gc_start!(|| ());
 

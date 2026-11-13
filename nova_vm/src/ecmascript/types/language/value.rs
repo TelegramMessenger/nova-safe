@@ -96,82 +96,85 @@ use core::{
 pub enum Value<'a> {
     /// ### [6.1.1 The Undefined Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-undefined-type)
     #[default]
-    Undefined = 1,
+    Undefined = UNDEFINED_DISCRIMINANT,
 
     /// ### [6.1.2 The Null Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-null-type)
-    Null,
+    Null = NULL_DISCRIMINANT,
 
     /// ### [6.1.3 The Boolean Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-boolean-type)
-    Boolean(bool),
+    Boolean(bool) = BOOLEAN_DISCRIMINANT,
 
     /// ### [6.1.4 The String Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-string-type)
     ///
     /// WTF-8 string on the heap. Accessing the data can only be done through
     /// the Agent. ECMAScript specification compliant WTF-16 indexing is
     /// implemented through an index mapping.
-    String(HeapString<'a>),
+    String(HeapString<'a>) = STRING_DISCRIMINANT,
     /// ### [6.1.4 The String Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-string-type)
     ///
     /// 7-byte WTF-8 string on the stack. End of the string is determined by the
     /// first 0xFF byte in the data. WTF-16 indexing is calculated on demand
     /// from the data.
-    SmallString(SmallString),
+    SmallString(SmallString) = SMALL_STRING_DISCRIMINANT,
 
     /// ### [6.1.5 The Symbol Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-symbol-type)
-    Symbol(Symbol<'a>),
+    Symbol(Symbol<'a>) = SYMBOL_DISCRIMINANT,
 
     /// ### [6.1.6.1 The Number Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-number-type)
     ///
     /// f64 on the heap. Accessing the data can only be done through the Agent.
-    Number(HeapNumber<'a>),
+    Number(HeapNumber<'a>) = NUMBER_DISCRIMINANT,
     /// ### [6.1.6.1 The Number Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-number-type)
     ///
     /// 54-bit signed integer on the stack.
-    Integer(SmallInteger),
+    Integer(SmallInteger) = INTEGER_DISCRIMINANT,
     /// ### [6.1.6.1 The Number Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-number-type)
     ///
     /// f64 with 8 trailing zeroes on the stack that are cut off to produce a
     /// 56-bit value.
-    SmallF64(SmallF64),
+    SmallF64(SmallF64) = FLOAT_DISCRIMINANT,
 
     /// ### [6.1.6.2 The BigInt Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-bigint-type)
     ///
     /// Unlimited size integer data on the heap. Accessing the data can only be
     /// done through the Agent.
-    BigInt(HeapBigInt<'a>),
+    BigInt(HeapBigInt<'a>) = BIGINT_DISCRIMINANT,
     /// ### [6.1.6.2 The BigInt Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-bigint-type)
     ///
     /// 56-bit signed integer on the stack.
-    SmallBigInt(SmallBigInt),
+    SmallBigInt(SmallBigInt) = SMALL_BIGINT_DISCRIMINANT,
 
     /// ### [6.1.7 The Object Type](https://tc39.es/ecma262/#sec-object-type)
-    Object(OrdinaryObject<'a>),
+    Object(OrdinaryObject<'a>) = OBJECT_DISCRIMINANT,
 
     // Functions
     /// ### [10.4.1 Bound Function Exotic Objects](https://tc39.es/ecma262/#sec-bound-function-exotic-objects)
-    BoundFunction(BoundFunction<'a>),
+    BoundFunction(BoundFunction<'a>) = BOUND_FUNCTION_DISCRIMINANT,
     /// ## [10.3 Built-in Function Objects](https://tc39.es/ecma262/#sec-built-in-function-objects)
-    BuiltinFunction(BuiltinFunction<'a>),
+    BuiltinFunction(BuiltinFunction<'a>) = BUILTIN_FUNCTION_DISCRIMINANT,
     /// ## [10.2 ECMAScript Function Objects](https://tc39.es/ecma262/#sec-ecmascript-function-objects)
-    ECMAScriptFunction(ECMAScriptFunction<'a>),
+    ECMAScriptFunction(ECMAScriptFunction<'a>) = ECMASCRIPT_FUNCTION_DISCRIMINANT,
     /// ### [4.4.36 built-in constructor](https://tc39.es/ecma262/#sec-built-in-constructor)
     ///
     /// A class built-in default constructor created in step 14 of
     /// ClassDefinitionEvaluation.
-    BuiltinConstructorFunction(BuiltinConstructorFunction<'a>),
+    BuiltinConstructorFunction(BuiltinConstructorFunction<'a>) =
+        BUILTIN_CONSTRUCTOR_FUNCTION_DISCRIMINANT,
     /// Special built-in functions created to resolve or reject native [`Promise`]
     /// objects.
     ///
     /// [`Promise`]: crate::ecmascript::Promise
-    BuiltinPromiseResolvingFunction(BuiltinPromiseResolvingFunction<'a>),
+    BuiltinPromiseResolvingFunction(BuiltinPromiseResolvingFunction<'a>) =
+        BUILTIN_PROMISE_RESOLVING_FUNCTION_DISCRIMINANT,
     /// Special functions created as part of `Promise.prototype.finally`.
-    BuiltinPromiseFinallyFunction(BuiltinPromiseFinallyFunction<'a>),
+    BuiltinPromiseFinallyFunction(BuiltinPromiseFinallyFunction<'a>) =
+        BUILTIN_PROMISE_FINALLY_FUNCTION_DISCRIMINANT,
     /// Placeholder.
-    BuiltinProxyRevokerFunction,
+    BuiltinProxyRevokerFunction = BUILTIN_PROXY_REVOKER_FUNCTION,
 
     /// Primitive objects are special objects that hold a primitive value in their
     /// internal data.
-    PrimitiveObject(PrimitiveObject<'a>),
+    PrimitiveObject(PrimitiveObject<'a>) = PRIMITIVE_OBJECT_DISCRIMINANT,
 
     // Well-known object types
     // Roughly corresponding to 6.1.7.4 Well-Known Intrinsic Objects
@@ -182,123 +185,123 @@ pub enum Value<'a> {
     ///
     /// An unmapped arguments object is an ordinary object with an additional
     /// internal slot \[\[ParameterMap]] whose value is always **undefined**.
-    Arguments(UnmappedArguments<'a>),
+    Arguments(UnmappedArguments<'a>) = ARGUMENTS_DISCRIMINANT,
     // TODO: MappedArguments(MappedArgumentsObject),
     /// ### [10.4.2 Array Exotic Objects](https://tc39.es/ecma262/#sec-array-exotic-objects)
-    Array(Array<'a>),
+    Array(Array<'a>) = ARRAY_DISCRIMINANT,
     #[cfg(feature = "date")]
     /// ## [21.4 Date Objects](https://tc39.es/ecma262/#sec-date-objects)
-    Date(Date<'a>),
+    Date(Date<'a>) = DATE_DISCRIMINANT,
     #[cfg(feature = "temporal")]
     /// # [8 Temporal.Instant Objects](https://tc39.es/proposal-temporal/#sec-temporal-instant-objects)
-    Instant(TemporalInstant<'a>),
+    Instant(TemporalInstant<'a>) = INSTANT_DISCRIMINANT,
     #[cfg(feature = "temporal")]
     /// # [7 Temporal.Duration Objects](https://tc39.es/proposal-temporal/#sec-temporal-duration-objects)
-    Duration(TemporalDuration<'a>),
+    Duration(TemporalDuration<'a>) = DURATION_DISCRIMINANT,
     #[cfg(feature = "temporal")]
     /// # [4 Temporal.PlainTime Objects](https://tc39.es/proposal-temporal/#sec-temporal-plaintime-objects)
-    PlainTime(TemporalPlainTime<'a>),
+    PlainTime(TemporalPlainTime<'a>) = PLAIN_TIME_DISCRIMINANT,
     /// ## [20.5 Error Objects](https://tc39.es/ecma262/#sec-error-objects)
-    Error(Error<'a>),
+    Error(Error<'a>) = ERROR_DISCRIMINANT,
     /// ## [26.2 FinalizationRegistry Objects](https://tc39.es/ecma262/#sec-finalization-registry-objects)
-    FinalizationRegistry(FinalizationRegistry<'a>),
+    FinalizationRegistry(FinalizationRegistry<'a>) = FINALIZATION_REGISTRY_DISCRIMINANT,
     /// ## [24.1 Map Objects](https://tc39.es/ecma262/#sec-map-objects)
-    Map(Map<'a>),
+    Map(Map<'a>) = MAP_DISCRIMINANT,
     /// ## [27.2 Promise Objects](https://tc39.es/ecma262/#sec-promise-objects)
-    Promise(Promise<'a>),
+    Promise(Promise<'a>) = PROMISE_DISCRIMINANT,
     /// ## [28.2 Proxy Objects](https://tc39.es/ecma262/#sec-proxy-objects)
-    Proxy(Proxy<'a>),
+    Proxy(Proxy<'a>) = PROXY_DISCRIMINANT,
     #[cfg(feature = "regexp")]
     /// ## [22.2 RegExp (Regular Expression) Objects](https://tc39.es/ecma262/#sec-regexp-regular-expression-objects)
-    RegExp(RegExp<'a>),
+    RegExp(RegExp<'a>) = REGEXP_DISCRIMINANT,
     #[cfg(feature = "set")]
     /// ## [24.2 Set Objects](https://tc39.es/ecma262/#sec-set-objects)
-    Set(Set<'a>),
+    Set(Set<'a>) = SET_DISCRIMINANT,
     #[cfg(feature = "weak-refs")]
     /// ## [24.3 WeakMap Objects](https://tc39.es/ecma262/#sec-weakmap-objects)
-    WeakMap(WeakMap<'a>),
+    WeakMap(WeakMap<'a>) = WEAK_MAP_DISCRIMINANT,
     #[cfg(feature = "weak-refs")]
     /// ## [26.1 WeakRef Objects](https://tc39.es/ecma262/#sec-weak-ref-objects)
-    WeakRef(WeakRef<'a>),
+    WeakRef(WeakRef<'a>) = WEAK_REF_DISCRIMINANT,
     #[cfg(feature = "weak-refs")]
     /// ## [24.4 WeakSet Objects](https://tc39.es/ecma262/#sec-weakset-objects)
-    WeakSet(WeakSet<'a>),
+    WeakSet(WeakSet<'a>) = WEAK_SET_DISCRIMINANT,
 
     /// ## [25.1 ArrayBuffer Objects](https://tc39.es/ecma262/#sec-arraybuffer-objects)
     #[cfg(feature = "array-buffer")]
-    ArrayBuffer(ArrayBuffer<'a>),
+    ArrayBuffer(ArrayBuffer<'a>) = ARRAY_BUFFER_DISCRIMINANT,
     /// ## [25.2 SharedArrayBuffer Objects](https://tc39.es/ecma262/#sec-sharedarraybuffer-objects)
     #[cfg(feature = "shared-array-buffer")]
-    SharedArrayBuffer(SharedArrayBuffer<'a>),
+    SharedArrayBuffer(SharedArrayBuffer<'a>) = SHARED_ARRAY_BUFFER_DISCRIMINANT,
     /// ## [25.3 DataView Objects](https://tc39.es/ecma262/#sec-dataview-objects)
     #[cfg(feature = "array-buffer")]
-    DataView(DataView<'a>),
+    DataView(DataView<'a>) = DATA_VIEW_DISCRIMINANT,
     /// ## [25.3 DataView Objects](https://tc39.es/ecma262/#sec-dataview-objects)
     ///
     /// A variant of DataView Objects viewing a SharedArrayBuffer.
     #[cfg(feature = "shared-array-buffer")]
-    SharedDataView(SharedDataView<'a>),
+    SharedDataView(SharedDataView<'a>) = SHARED_DATA_VIEW_DISCRIMINANT,
     // ### [23.2 TypedArray Objects](https://tc39.es/ecma262/#sec-typedarray-objects)
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.17 Int8Array ( . . . )](https://tc39.es/ecma262/#sec-int8array)
     ///
     /// An `i8` view into an ArrayBuffer.
-    Int8Array(Int8Array<'a>),
+    Int8Array(Int8Array<'a>) = INT_8_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.35 Uint8Array ( . . . )](https://tc39.es/ecma262/#sec-uint8array)
     ///
     /// A `u8` view into an ArrayBuffer.
-    Uint8Array(Uint8Array<'a>),
+    Uint8Array(Uint8Array<'a>) = UINT_8_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.36 Uint8ClampedArray ( . . . )](https://tc39.es/ecma262/#sec-uint8clampedarray)
     ///
     /// A `u8` view into an ArrayBuffer with clamping behaviour on assignment.
-    Uint8ClampedArray(Uint8ClampedArray<'a>),
+    Uint8ClampedArray(Uint8ClampedArray<'a>) = UINT_8_CLAMPED_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.18 Int16Array ( . . . )](https://tc39.es/ecma262/#sec-int16array)
     ///
     /// An `i16` view into an ArrayBuffer.
-    Int16Array(Int16Array<'a>),
+    Int16Array(Int16Array<'a>) = INT_16_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.37 Uint16Array ( . . . )](https://tc39.es/ecma262/#sec-uint16array)
     ///
     /// A `u16` view into an ArrayBuffer.
-    Uint16Array(Uint16Array<'a>),
+    Uint16Array(Uint16Array<'a>) = UINT_16_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.19 Int32Array ( . . . )](https://tc39.es/ecma262/#sec-int32array)
     ///
     /// An `i32` view into an ArrayBuffer.
-    Int32Array(Int32Array<'a>),
+    Int32Array(Int32Array<'a>) = INT_32_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.38 Uint32Array ( . . . )](https://tc39.es/ecma262/#sec-uint32array)
     ///
     /// A `u32` view into an ArrayBuffer.
-    Uint32Array(Uint32Array<'a>),
+    Uint32Array(Uint32Array<'a>) = UINT_32_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.5 BigInt64Array ( . . . )](https://tc39.es/ecma262/#sec-constructor-properties-of-the-global-object-bigint64array)
     ///
     /// An `i64` view into an ArrayBuffer.
-    BigInt64Array(BigInt64Array<'a>),
+    BigInt64Array(BigInt64Array<'a>) = BIGINT_64_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.6 BigUint64Array ( . . . )](https://tc39.es/ecma262/#sec-constructor-properties-of-the-global-object-biguint64array)
     ///
     /// A `u64` view into an ArrayBuffer.
-    BigUint64Array(BigUint64Array<'a>),
+    BigUint64Array(BigUint64Array<'a>) = BIGUINT_64_ARRAY_DISCRIMINANT,
     #[cfg(feature = "proposal-float16array")]
     /// ### [19.3.13 Float16Array ( . . . )](https://tc39.es/ecma262/#sec-float16array)
     ///
     /// An `f16` view into an ArrayBuffer.
-    Float16Array(Float16Array<'a>),
+    Float16Array(Float16Array<'a>) = FLOAT_16_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.13 Float32Array ( . . . )](https://tc39.es/ecma262/#sec-float32array)
     ///
     /// An `f32` view into an ArrayBuffer.
-    Float32Array(Float32Array<'a>),
+    Float32Array(Float32Array<'a>) = FLOAT_32_ARRAY_DISCRIMINANT,
     #[cfg(feature = "array-buffer")]
     /// ### [19.3.13 Float64Array ( . . . )](https://tc39.es/ecma262/#sec-float64array)
     ///
     /// An `f64` view into an ArrayBuffer.
-    Float64Array(Float64Array<'a>),
+    Float64Array(Float64Array<'a>) = FLOAT_64_ARRAY_DISCRIMINANT,
 
     // ### [23.2 TypedArray Objects](https://tc39.es/ecma262/#sec-typedarray-objects)
     //
@@ -307,88 +310,88 @@ pub enum Value<'a> {
     /// ### [19.3.17 Int8Array ( . . . )](https://tc39.es/ecma262/#sec-int8array)
     ///
     /// An `i8` view into a SharedArrayBuffer.
-    SharedInt8Array(SharedInt8Array<'a>),
+    SharedInt8Array(SharedInt8Array<'a>) = SHARED_INT_8_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.35 Uint8Array ( . . . )](https://tc39.es/ecma262/#sec-uint8array)
     ///
     /// A `u8` view into a SharedArrayBuffer.
-    SharedUint8Array(SharedUint8Array<'a>),
+    SharedUint8Array(SharedUint8Array<'a>) = SHARED_UINT_8_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.36 Uint8ClampedArray ( . . . )](https://tc39.es/ecma262/#sec-uint8clampedarray)
     ///
     /// A `u8` view into an ArrayBuffer with clamping behaviour o Sharedassignment.
-    SharedUint8ClampedArray(SharedUint8ClampedArray<'a>),
+    SharedUint8ClampedArray(SharedUint8ClampedArray<'a>) = SHARED_UINT_8_CLAMPED_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.18 Int16Array ( . . . )](https://tc39.es/ecma262/#sec-int16array)
     ///
     /// An `i16` view into a SharedArrayBuffer.
-    SharedInt16Array(SharedInt16Array<'a>),
+    SharedInt16Array(SharedInt16Array<'a>) = SHARED_INT_16_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.37 Uint16Array ( . . . )](https://tc39.es/ecma262/#sec-uint16array)
     ///
     /// A `u16` view into a SharedArrayBuffer.
-    SharedUint16Array(SharedUint16Array<'a>),
+    SharedUint16Array(SharedUint16Array<'a>) = SHARED_UINT_16_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.19 Int32Array ( . . . )](https://tc39.es/ecma262/#sec-int32array)
     ///
     /// An `i32` view into a SharedArrayBuffer.
-    SharedInt32Array(SharedInt32Array<'a>),
+    SharedInt32Array(SharedInt32Array<'a>) = SHARED_INT_32_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.38 Uint32Array ( . . . )](https://tc39.es/ecma262/#sec-uint32array)
     ///
     /// A `u32` view into a SharedArrayBuffer.
-    SharedUint32Array(SharedUint32Array<'a>),
+    SharedUint32Array(SharedUint32Array<'a>) = SHARED_UINT_32_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.5 BigInt64Array ( . . . )](https://tc39.es/ecma262/#sec-constructor-properties-of-the-global-object-bigint64array)
     ///
     /// An `i64` view into a SharedArrayBuffer.
-    SharedBigInt64Array(SharedBigInt64Array<'a>),
+    SharedBigInt64Array(SharedBigInt64Array<'a>) = SHARED_BIGINT_64_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.6 BigUint64Array ( . . . )](https://tc39.es/ecma262/#sec-constructor-properties-of-the-global-object-biguint64array)
     ///
     /// A `u64` view into a SharedArrayBuffer.
-    SharedBigUint64Array(SharedBigUint64Array<'a>),
+    SharedBigUint64Array(SharedBigUint64Array<'a>) = SHARED_BIGUINT_64_ARRAY_DISCRIMINANT,
     #[cfg(all(feature = "proposal-float16array", feature = "shared-array-buffer"))]
     /// ### [19.3.13 Float16Array ( . . . )](https://tc39.es/ecma262/#sec-float16array)
     ///
     /// An `f16` view into a SharedArrayBuffer.
-    SharedFloat16Array(SharedFloat16Array<'a>),
+    SharedFloat16Array(SharedFloat16Array<'a>) = SHARED_FLOAT_16_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.13 Float32Array ( . . . )](https://tc39.es/ecma262/#sec-float32array)
     ///
     /// An `f32` view into a SharedArrayBuffer.
-    SharedFloat32Array(SharedFloat32Array<'a>),
+    SharedFloat32Array(SharedFloat32Array<'a>) = SHARED_FLOAT_32_ARRAY_DISCRIMINANT,
     #[cfg(feature = "shared-array-buffer")]
     /// ### [19.3.13 Float64Array ( . . . )](https://tc39.es/ecma262/#sec-float64array)
     ///
     /// An `f64` view into a SharedArrayBuffer.
-    SharedFloat64Array(SharedFloat64Array<'a>),
+    SharedFloat64Array(SharedFloat64Array<'a>) = SHARED_FLOAT_64_ARRAY_DISCRIMINANT,
 
     // Iterator objects
     /// ## [27.6 AsyncGenerator Objects](https://tc39.es/ecma262/#sec-asyncgenerator-objects)
-    AsyncGenerator(AsyncGenerator<'a>),
+    AsyncGenerator(AsyncGenerator<'a>) = ASYNC_GENERATOR_DISCRIMINANT,
     /// ### [23.1.5 Array Iterator Objects](https://tc39.es/ecma262/#sec-array-iterator-objects)
-    ArrayIterator(ArrayIterator<'a>),
+    ArrayIterator(ArrayIterator<'a>) = ARRAY_ITERATOR_DISCRIMINANT,
     #[cfg(feature = "set")]
     /// ### [24.2.6 Set Iterator Objects](https://tc39.es/ecma262/#sec-set-iterator-objects)
-    SetIterator(SetIterator<'a>),
+    SetIterator(SetIterator<'a>) = SET_ITERATOR_DISCRIMINANT,
     #[cfg(feature = "set")]
     /// ### [24.1.5 Map Iterator Objects](https://tc39.es/ecma262/#sec-map-iterator-objects)
-    MapIterator(MapIterator<'a>),
+    MapIterator(MapIterator<'a>) = MAP_ITERATOR_DISCRIMINANT,
     /// ### [22.1.5 String Iterator Objects](https://tc39.es/ecma262/#sec-string-iterator-objects)
-    StringIterator(StringIterator<'a>),
+    StringIterator(StringIterator<'a>) = STRING_ITERATOR_DISCRIMINANT,
     #[cfg(feature = "regexp")]
     /// ### [22.2.9 RegExp String Iterator Objects](https://tc39.es/ecma262/#sec-regexp-string-iterator-objects)
-    RegExpStringIterator(RegExpStringIterator<'a>),
+    RegExpStringIterator(RegExpStringIterator<'a>) = REGEXP_STRING_ITERATOR_DISCRIMINANT,
     /// ## [27.5 Generator Objects](https://tc39.es/ecma262/#sec-generator-objects)
-    Generator(Generator<'a>),
+    Generator(Generator<'a>) = GENERATOR_DISCRIMINANT,
 
     /// ### [10.4.6 Module Namespace Exotic Objects](https://tc39.es/ecma262/#sec-module-namespace-exotic-objects)
-    Module(Module<'a>),
+    Module(Module<'a>) = MODULE_DISCRIMINANT,
 
     /// Embedder objects are intended for embedders to create objects with
     /// native data embedded into them.
-    EmbedderObject(EmbedderObject<'a>) = 0x7f,
+    EmbedderObject(EmbedderObject<'a>) = EMBEDDER_OBJECT_DISCRIMINANT,
 }
 
 /// We want to guarantee that all handles to JS values are register sized. This
@@ -398,185 +401,123 @@ const _VALUE_SIZE_IS_WORD: () = assert!(size_of::<Value>() == size_of::<usize>()
 /// arrays do not start requiring extra bookkeeping.
 const _OPTIONAL_VALUE_SIZE_IS_WORD: () = assert!(size_of::<Option<Value>>() == size_of::<usize>());
 
-#[allow(unsafe_code)]
-const fn value_discriminant(value: Value) -> u8 {
-    // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
-    // between `repr(C)` structs, each of which has the `u8` discriminant as its first
-    // field, so we can read the discriminant without offsetting the pointer.
-    unsafe { *(&value as *const Value).cast::<u8>() }
-}
-
-pub(crate) const UNDEFINED_DISCRIMINANT: u8 = value_discriminant(Value::Undefined);
-pub(crate) const NULL_DISCRIMINANT: u8 = value_discriminant(Value::Null);
-pub(crate) const BOOLEAN_DISCRIMINANT: u8 = value_discriminant(Value::Boolean(true));
-pub(crate) const STRING_DISCRIMINANT: u8 = value_discriminant(Value::String(HeapString::_DEF));
-pub(crate) const SMALL_STRING_DISCRIMINANT: u8 =
-    value_discriminant(Value::SmallString(SmallString::EMPTY));
-pub(crate) const SYMBOL_DISCRIMINANT: u8 = value_discriminant(Value::Symbol(Symbol::_DEF));
-pub(crate) const NUMBER_DISCRIMINANT: u8 = value_discriminant(Value::Number(HeapNumber::_DEF));
-pub(crate) const INTEGER_DISCRIMINANT: u8 =
-    value_discriminant(Value::Integer(SmallInteger::zero()));
-pub(crate) const FLOAT_DISCRIMINANT: u8 = value_discriminant(Value::SmallF64(SmallF64::_DEF));
-pub(crate) const BIGINT_DISCRIMINANT: u8 = value_discriminant(Value::BigInt(HeapBigInt::_DEF));
-pub(crate) const SMALL_BIGINT_DISCRIMINANT: u8 =
-    value_discriminant(Value::SmallBigInt(SmallBigInt::zero()));
-pub(crate) const OBJECT_DISCRIMINANT: u8 = value_discriminant(Value::Object(OrdinaryObject::_DEF));
-pub(crate) const ARRAY_DISCRIMINANT: u8 = value_discriminant(Value::Array(Array::_DEF));
+pub(crate) const UNDEFINED_DISCRIMINANT: u8 = 1;
+pub(crate) const NULL_DISCRIMINANT: u8 = 2;
+pub(crate) const BOOLEAN_DISCRIMINANT: u8 = 3;
+pub(crate) const STRING_DISCRIMINANT: u8 = 4;
+pub(crate) const SMALL_STRING_DISCRIMINANT: u8 = 5;
+pub(crate) const SYMBOL_DISCRIMINANT: u8 = 6;
+pub(crate) const NUMBER_DISCRIMINANT: u8 = 7;
+pub(crate) const INTEGER_DISCRIMINANT: u8 = 8;
+pub(crate) const FLOAT_DISCRIMINANT: u8 = 9;
+pub(crate) const BIGINT_DISCRIMINANT: u8 = 10;
+pub(crate) const SMALL_BIGINT_DISCRIMINANT: u8 = 11;
+pub(crate) const OBJECT_DISCRIMINANT: u8 = 12;
+pub(crate) const ARRAY_DISCRIMINANT: u8 = 22;
 #[cfg(feature = "date")]
-pub(crate) const DATE_DISCRIMINANT: u8 = value_discriminant(Value::Date(Date::_DEF));
+pub(crate) const DATE_DISCRIMINANT: u8 = 23;
 #[cfg(feature = "temporal")]
-pub(crate) const INSTANT_DISCRIMINANT: u8 =
-    value_discriminant(Value::Instant(TemporalInstant::_DEF));
+pub(crate) const INSTANT_DISCRIMINANT: u8 = 24;
 #[cfg(feature = "temporal")]
-pub(crate) const DURATION_DISCRIMINANT: u8 =
-    value_discriminant(Value::Duration(TemporalDuration::_DEF));
+pub(crate) const DURATION_DISCRIMINANT: u8 = 25;
 #[cfg(feature = "temporal")]
-pub(crate) const PLAIN_TIME_DISCRIMINANT: u8 =
-    value_discriminant(Value::PlainTime(TemporalPlainTime::_DEF));
-pub(crate) const ERROR_DISCRIMINANT: u8 = value_discriminant(Value::Error(Error::_DEF));
-pub(crate) const BUILTIN_FUNCTION_DISCRIMINANT: u8 =
-    value_discriminant(Value::BuiltinFunction(BuiltinFunction::_DEF));
-pub(crate) const ECMASCRIPT_FUNCTION_DISCRIMINANT: u8 =
-    value_discriminant(Value::ECMAScriptFunction(ECMAScriptFunction::_DEF));
-pub(crate) const BOUND_FUNCTION_DISCRIMINANT: u8 =
-    value_discriminant(Value::BoundFunction(BoundFunction::_DEF));
+pub(crate) const PLAIN_TIME_DISCRIMINANT: u8 = 26;
+pub(crate) const ERROR_DISCRIMINANT: u8 = 27;
+pub(crate) const BUILTIN_FUNCTION_DISCRIMINANT: u8 = 14;
+pub(crate) const ECMASCRIPT_FUNCTION_DISCRIMINANT: u8 = 15;
+pub(crate) const BOUND_FUNCTION_DISCRIMINANT: u8 = 13;
 #[cfg(feature = "regexp")]
-pub(crate) const REGEXP_DISCRIMINANT: u8 = value_discriminant(Value::RegExp(RegExp::_DEF));
+pub(crate) const REGEXP_DISCRIMINANT: u8 = 32;
 
-pub(crate) const BUILTIN_CONSTRUCTOR_FUNCTION_DISCRIMINANT: u8 = value_discriminant(
-    Value::BuiltinConstructorFunction(BuiltinConstructorFunction::_DEF),
-);
-pub(crate) const BUILTIN_PROMISE_RESOLVING_FUNCTION_DISCRIMINANT: u8 = value_discriminant(
-    Value::BuiltinPromiseResolvingFunction(BuiltinPromiseResolvingFunction::_DEF),
-);
-pub(crate) const BUILTIN_PROMISE_FINALLY_FUNCTION_DISCRIMINANT: u8 = value_discriminant(
-    Value::BuiltinPromiseFinallyFunction(BuiltinPromiseFinallyFunction::_DEF),
-);
-pub(crate) const BUILTIN_PROXY_REVOKER_FUNCTION: u8 =
-    value_discriminant(Value::BuiltinProxyRevokerFunction);
-pub(crate) const PRIMITIVE_OBJECT_DISCRIMINANT: u8 =
-    value_discriminant(Value::PrimitiveObject(PrimitiveObject::_DEF));
-pub(crate) const ARGUMENTS_DISCRIMINANT: u8 =
-    value_discriminant(Value::Arguments(UnmappedArguments::_DEF));
-pub(crate) const FINALIZATION_REGISTRY_DISCRIMINANT: u8 =
-    value_discriminant(Value::FinalizationRegistry(FinalizationRegistry::_DEF));
-pub(crate) const MAP_DISCRIMINANT: u8 = value_discriminant(Value::Map(Map::_DEF));
-pub(crate) const PROMISE_DISCRIMINANT: u8 = value_discriminant(Value::Promise(Promise::_DEF));
-pub(crate) const PROXY_DISCRIMINANT: u8 = value_discriminant(Value::Proxy(Proxy::_DEF));
+pub(crate) const BUILTIN_CONSTRUCTOR_FUNCTION_DISCRIMINANT: u8 = 16;
+pub(crate) const BUILTIN_PROMISE_RESOLVING_FUNCTION_DISCRIMINANT: u8 = 17;
+pub(crate) const BUILTIN_PROMISE_FINALLY_FUNCTION_DISCRIMINANT: u8 = 18;
+pub(crate) const BUILTIN_PROXY_REVOKER_FUNCTION: u8 = 19;
+pub(crate) const PRIMITIVE_OBJECT_DISCRIMINANT: u8 = 20;
+pub(crate) const ARGUMENTS_DISCRIMINANT: u8 = 21;
+pub(crate) const FINALIZATION_REGISTRY_DISCRIMINANT: u8 = 28;
+pub(crate) const MAP_DISCRIMINANT: u8 = 29;
+pub(crate) const PROMISE_DISCRIMINANT: u8 = 30;
+pub(crate) const PROXY_DISCRIMINANT: u8 = 31;
 #[cfg(feature = "set")]
-pub(crate) const SET_DISCRIMINANT: u8 = value_discriminant(Value::Set(Set::_DEF));
+pub(crate) const SET_DISCRIMINANT: u8 = 33;
 #[cfg(feature = "weak-refs")]
-pub(crate) const WEAK_MAP_DISCRIMINANT: u8 = value_discriminant(Value::WeakMap(WeakMap::_DEF));
+pub(crate) const WEAK_MAP_DISCRIMINANT: u8 = 34;
 #[cfg(feature = "weak-refs")]
-pub(crate) const WEAK_REF_DISCRIMINANT: u8 = value_discriminant(Value::WeakRef(WeakRef::_DEF));
+pub(crate) const WEAK_REF_DISCRIMINANT: u8 = 35;
 #[cfg(feature = "weak-refs")]
-pub(crate) const WEAK_SET_DISCRIMINANT: u8 = value_discriminant(Value::WeakSet(WeakSet::_DEF));
+pub(crate) const WEAK_SET_DISCRIMINANT: u8 = 36;
 
 #[cfg(feature = "array-buffer")]
-pub(crate) const ARRAY_BUFFER_DISCRIMINANT: u8 =
-    value_discriminant(Value::ArrayBuffer(ArrayBuffer::_DEF));
+pub(crate) const ARRAY_BUFFER_DISCRIMINANT: u8 = 37;
 #[cfg(feature = "array-buffer")]
-pub(crate) const DATA_VIEW_DISCRIMINANT: u8 = value_discriminant(Value::DataView(DataView::_DEF));
+pub(crate) const DATA_VIEW_DISCRIMINANT: u8 = 39;
 #[cfg(feature = "array-buffer")]
-pub(crate) const INT_8_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Int8Array(Int8Array::_DEF));
+pub(crate) const INT_8_ARRAY_DISCRIMINANT: u8 = 41;
 #[cfg(feature = "array-buffer")]
-pub(crate) const UINT_8_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Uint8Array(Uint8Array::_DEF));
+pub(crate) const UINT_8_ARRAY_DISCRIMINANT: u8 = 42;
 #[cfg(feature = "array-buffer")]
-pub(crate) const UINT_8_CLAMPED_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Uint8ClampedArray(Uint8ClampedArray::_DEF));
+pub(crate) const UINT_8_CLAMPED_ARRAY_DISCRIMINANT: u8 = 43;
 #[cfg(feature = "array-buffer")]
-pub(crate) const INT_16_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Int16Array(Int16Array::_DEF));
+pub(crate) const INT_16_ARRAY_DISCRIMINANT: u8 = 44;
 #[cfg(feature = "array-buffer")]
-pub(crate) const UINT_16_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Uint16Array(Uint16Array::_DEF));
+pub(crate) const UINT_16_ARRAY_DISCRIMINANT: u8 = 45;
 #[cfg(feature = "array-buffer")]
-pub(crate) const INT_32_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Int32Array(Int32Array::_DEF));
+pub(crate) const INT_32_ARRAY_DISCRIMINANT: u8 = 46;
 #[cfg(feature = "array-buffer")]
-pub(crate) const UINT_32_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Uint32Array(Uint32Array::_DEF));
+pub(crate) const UINT_32_ARRAY_DISCRIMINANT: u8 = 47;
 #[cfg(feature = "array-buffer")]
-pub(crate) const BIGINT_64_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::BigInt64Array(BigInt64Array::_DEF));
+pub(crate) const BIGINT_64_ARRAY_DISCRIMINANT: u8 = 48;
 #[cfg(feature = "array-buffer")]
-pub(crate) const BIGUINT_64_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::BigUint64Array(BigUint64Array::_DEF));
+pub(crate) const BIGUINT_64_ARRAY_DISCRIMINANT: u8 = 49;
 #[cfg(feature = "proposal-float16array")]
-pub(crate) const FLOAT_16_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Float16Array(Float16Array::_DEF));
+pub(crate) const FLOAT_16_ARRAY_DISCRIMINANT: u8 = 50;
 #[cfg(feature = "array-buffer")]
-pub(crate) const FLOAT_32_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Float32Array(Float32Array::_DEF));
+pub(crate) const FLOAT_32_ARRAY_DISCRIMINANT: u8 = 51;
 #[cfg(feature = "array-buffer")]
-pub(crate) const FLOAT_64_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::Float64Array(Float64Array::_DEF));
+pub(crate) const FLOAT_64_ARRAY_DISCRIMINANT: u8 = 52;
 
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_ARRAY_BUFFER_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedArrayBuffer(SharedArrayBuffer::_DEF));
+pub(crate) const SHARED_ARRAY_BUFFER_DISCRIMINANT: u8 = 38;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_DATA_VIEW_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedDataView(SharedDataView::_DEF));
+pub(crate) const SHARED_DATA_VIEW_DISCRIMINANT: u8 = 40;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_INT_8_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedInt8Array(SharedInt8Array::_DEF));
+pub(crate) const SHARED_INT_8_ARRAY_DISCRIMINANT: u8 = 53;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_UINT_8_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedUint8Array(SharedUint8Array::_DEF));
+pub(crate) const SHARED_UINT_8_ARRAY_DISCRIMINANT: u8 = 54;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_UINT_8_CLAMPED_ARRAY_DISCRIMINANT: u8 = value_discriminant(
-    Value::SharedUint8ClampedArray(SharedUint8ClampedArray::_DEF),
-);
+pub(crate) const SHARED_UINT_8_CLAMPED_ARRAY_DISCRIMINANT: u8 = 55;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_INT_16_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedInt16Array(SharedInt16Array::_DEF));
+pub(crate) const SHARED_INT_16_ARRAY_DISCRIMINANT: u8 = 56;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_UINT_16_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedUint16Array(SharedUint16Array::_DEF));
+pub(crate) const SHARED_UINT_16_ARRAY_DISCRIMINANT: u8 = 57;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_INT_32_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedInt32Array(SharedInt32Array::_DEF));
+pub(crate) const SHARED_INT_32_ARRAY_DISCRIMINANT: u8 = 58;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_UINT_32_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedUint32Array(SharedUint32Array::_DEF));
+pub(crate) const SHARED_UINT_32_ARRAY_DISCRIMINANT: u8 = 59;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_BIGINT_64_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedBigInt64Array(SharedBigInt64Array::_DEF));
+pub(crate) const SHARED_BIGINT_64_ARRAY_DISCRIMINANT: u8 = 60;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_BIGUINT_64_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedBigUint64Array(SharedBigUint64Array::_DEF));
+pub(crate) const SHARED_BIGUINT_64_ARRAY_DISCRIMINANT: u8 = 61;
 #[cfg(all(feature = "proposal-float16array", feature = "shared-array-buffer"))]
-pub(crate) const SHARED_FLOAT_16_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedFloat16Array(SharedFloat16Array::_DEF));
+pub(crate) const SHARED_FLOAT_16_ARRAY_DISCRIMINANT: u8 = 62;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_FLOAT_32_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedFloat32Array(SharedFloat32Array::_DEF));
+pub(crate) const SHARED_FLOAT_32_ARRAY_DISCRIMINANT: u8 = 63;
 #[cfg(feature = "shared-array-buffer")]
-pub(crate) const SHARED_FLOAT_64_ARRAY_DISCRIMINANT: u8 =
-    value_discriminant(Value::SharedFloat64Array(SharedFloat64Array::_DEF));
+pub(crate) const SHARED_FLOAT_64_ARRAY_DISCRIMINANT: u8 = 64;
 
-pub(crate) const ASYNC_GENERATOR_DISCRIMINANT: u8 =
-    value_discriminant(Value::AsyncGenerator(AsyncGenerator::_DEF));
-pub(crate) const ARRAY_ITERATOR_DISCRIMINANT: u8 =
-    value_discriminant(Value::ArrayIterator(ArrayIterator::_DEF));
+pub(crate) const ASYNC_GENERATOR_DISCRIMINANT: u8 = 65;
+pub(crate) const ARRAY_ITERATOR_DISCRIMINANT: u8 = 66;
 #[cfg(feature = "set")]
-pub(crate) const SET_ITERATOR_DISCRIMINANT: u8 =
-    value_discriminant(Value::SetIterator(SetIterator::_DEF));
+pub(crate) const SET_ITERATOR_DISCRIMINANT: u8 = 67;
 #[cfg(feature = "set")]
-pub(crate) const MAP_ITERATOR_DISCRIMINANT: u8 =
-    value_discriminant(Value::MapIterator(MapIterator::_DEF));
-pub(crate) const STRING_ITERATOR_DISCRIMINANT: u8 =
-    value_discriminant(Value::StringIterator(StringIterator::_DEF));
+pub(crate) const MAP_ITERATOR_DISCRIMINANT: u8 = 68;
+pub(crate) const STRING_ITERATOR_DISCRIMINANT: u8 = 69;
 #[cfg(feature = "regexp")]
-pub(crate) const REGEXP_STRING_ITERATOR_DISCRIMINANT: u8 =
-    value_discriminant(Value::RegExpStringIterator(RegExpStringIterator::_DEF));
-pub(crate) const GENERATOR_DISCRIMINANT: u8 = value_discriminant(Value::Generator(Generator::_DEF));
-pub(crate) const MODULE_DISCRIMINANT: u8 = value_discriminant(Value::Module(Module::_DEF));
-pub(crate) const EMBEDDER_OBJECT_DISCRIMINANT: u8 =
-    value_discriminant(Value::EmbedderObject(EmbedderObject::_DEF));
+pub(crate) const REGEXP_STRING_ITERATOR_DISCRIMINANT: u8 = 70;
+pub(crate) const GENERATOR_DISCRIMINANT: u8 = 71;
+pub(crate) const MODULE_DISCRIMINANT: u8 = 72;
+pub(crate) const EMBEDDER_OBJECT_DISCRIMINANT: u8 = 127;
 
 impl<'a> Value<'a> {
     /// Scope a stack-only Value. Stack-only Values are primitives that do not
