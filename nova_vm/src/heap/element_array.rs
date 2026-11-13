@@ -1828,13 +1828,13 @@ impl ElementArrays {
                         unreachable!()
                     }
                     ElementArrayKey::E2 => {
-                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                        e2pow2.get_descriptors_and_values_raw(index.unbind(), old_len)
                     }
                     ElementArrayKey::E3 => {
-                        e2pow8.get_descriptors_and_values_raw(index.unbind(), old_len)
+                        e2pow3.get_descriptors_and_values_raw(index.unbind(), old_len)
                     }
                     ElementArrayKey::E4 => {
-                        e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
+                        e2pow4.get_descriptors_and_values_raw(index.unbind(), old_len)
                     }
                     ElementArrayKey::E6 => {
                         e2pow6.get_descriptors_and_values_raw(index.unbind(), old_len)
