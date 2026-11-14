@@ -8,6 +8,7 @@ mod agent;
 mod default_host_hooks;
 mod environments;
 mod execution_context;
+mod limits;
 mod realm;
 #[cfg(feature = "weak-refs")]
 mod weak_key;
@@ -18,6 +19,7 @@ pub use agent::*;
 pub use default_host_hooks::*;
 pub(crate) use environments::*;
 pub(crate) use execution_context::*;
+pub use limits::*;
 pub use realm::*;
 #[cfg(feature = "weak-refs")]
 pub(crate) use weak_key::*;

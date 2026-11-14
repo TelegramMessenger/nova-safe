@@ -465,7 +465,11 @@ impl<'a> String<'a> {
     /// The UTF-16 index of the code point that byte `utf8_idx` is in (or the
     /// UTF-16 length if it is past the end). The matcher can report an empty
     /// match inside the three bytes of a lone surrogate.
-    pub(crate) fn utf16_index_of_byte_(self, agent: &impl StringHeapAccess, utf8_idx: usize) -> usize {
+    pub(crate) fn utf16_index_of_byte_(
+        self,
+        agent: &impl StringHeapAccess,
+        utf8_idx: usize,
+    ) -> usize {
         let bytes = self.as_bytes_(agent);
         let mut utf8_idx = utf8_idx.min(bytes.len());
         while utf8_idx > 0 && utf8_idx < bytes.len() && bytes[utf8_idx] & 0xC0 == 0x80 {
@@ -1042,8 +1046,8 @@ impl Scoped<'_, String<'static>> {
 
 impl<'a> CreateHeapData<(StringRecord, u64), String<'a>> for Heap {
     fn create(&mut self, (data, hash): (StringRecord, u64)) -> String<'a> {
+        self.alloc_counter += core::mem::size_of::<StringRecord>() + data.len();
         self.strings.push(data);
-        self.alloc_counter += core::mem::size_of::<StringRecord>();
         let index = BaseIndex::last(&self.strings);
         let s = HeapString(index);
         self.alloc_counter += core::mem::size_of::<HeapString>();

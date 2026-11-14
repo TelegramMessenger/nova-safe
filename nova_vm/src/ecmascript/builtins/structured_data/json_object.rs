@@ -89,17 +89,24 @@ impl JSONObject {
             .bind(gc.nogc());
 
         // 2. Parse StringToCodePoints(jsonString) as a JSON text as specified in ECMA-404. Throw a SyntaxError exception if it is not a valid JSON text as defined in that specification.
-        let json_value =
-            match sonic_rs::from_str::<sonic_rs::Value>(&json_string.to_string_lossy_(agent)) {
-                Ok(value) => value,
-                Err(error) => {
-                    return Err(agent.throw_exception(
-                        ExceptionType::SyntaxError,
-                        error.to_string(),
-                        gc.into_nogc(),
-                    ));
-                }
-            };
+        let json_text = json_string.to_string_lossy_(agent);
+        if json_nesting_depth(json_text.as_bytes()) > MAX_JSON_NESTING {
+            return Err(agent.throw_exception_with_static_message(
+                ExceptionType::RangeError,
+                "JSON nesting too deep",
+                gc.into_nogc(),
+            ));
+        }
+        let json_value = match sonic_rs::from_str::<sonic_rs::Value>(&json_text) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(agent.throw_exception(
+                    ExceptionType::SyntaxError,
+                    error.to_string(),
+                    gc.into_nogc(),
+                ));
+            }
+        };
 
         // 3. Let scriptString be the string-concatenation of "(", jsonString, and ");".
         // 4. Let script be ParseText(scriptString, Script).
@@ -485,6 +492,7 @@ fn internalize_json_property<'a>(
     reviver: Scoped<Function>,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, Value<'a>> {
+    agent.check_stack(gc.nogc()).unbind()?;
     // 1. Let val be ? Get(holder, name).
     let val = get(
         agent,
@@ -931,6 +939,7 @@ fn serialize_json_object<'a, 'b>(
     value: Object<'static>,
     mut gc: GcScope<'a, 'b>,
 ) -> JsResult<'a, ()> {
+    agent.check_stack(gc.nogc()).unbind()?;
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception
     //    because the structure is cyclical.
@@ -1096,6 +1105,7 @@ fn serialize_json_array<'a, 'b>(
     value: Object<'static>,
     mut gc: GcScope<'a, 'b>,
 ) -> JsResult<'a, ()> {
+    agent.check_stack(gc.nogc()).unbind()?;
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception because the structure is cyclical.
     if state.stack.iter(agent).any(|x| {
@@ -1258,4 +1268,38 @@ pub(crate) fn value_from_json<'gc>(
             object.into()
         }
     }
+}
+
+/// Deepest array and object nesting JSON.parse accepts: the parser and the
+/// conversion to JavaScript values recurse once per level.
+const MAX_JSON_NESTING: usize = 4096;
+
+/// The deepest nesting of arrays and objects in `text`, outside strings.
+fn json_nesting_depth(text: &[u8]) -> usize {
+    let mut depth = 0usize;
+    let mut max_depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &byte in text {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                max_depth = max_depth.max(depth);
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max_depth
 }

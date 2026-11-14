@@ -413,6 +413,7 @@ impl ArrayPrototype {
                 let mut k = 0;
                 // iv. Repeat, while k < len,
                 while k < len {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
                     // 1. Let Pk be ! ToString(𝔽(k)).
                     let pk = PropertyKey::Integer(k.try_into().unwrap());
                     // 2. Let exists be ? HasProperty(E, Pk).
@@ -776,6 +777,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 5. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -931,6 +933,7 @@ impl ArrayPrototype {
 
         // 11. Repeat, while k < final,
         while k < final_end {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Perform ? Set(O, Pk, value, true).
@@ -1021,6 +1024,7 @@ impl ArrayPrototype {
         let mut scoped_k_value: Scoped<Value> = Value::Undefined.scope_static(gc.nogc());
         // 7. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::from(SmallInteger::try_from(k).unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -1365,6 +1369,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 5. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -1520,6 +1525,7 @@ impl ArrayPrototype {
         };
         // 10. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let elementK be ? Get(O, ! ToString(𝔽(k))).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             let element_k = get(agent, o.get(agent), pk, gc.reborrow())
@@ -1652,6 +1658,7 @@ impl ArrayPrototype {
         };
         // 10. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -1710,7 +1717,7 @@ impl ArrayPrototype {
             separator.replace_self(agent, sep.unbind())
         };
         // 5. Let R be the empty String.
-        let mut r = Wtf8Buf::with_capacity(len * 10);
+        let mut r = Wtf8Buf::with_capacity(len.saturating_mul(10).min(1 << 20));
         // 6. Let k be 0.
         // 7. Repeat, while k < len,
         // b. Let element be ? Get(O, ! ToString(𝔽(k))).
@@ -1729,6 +1736,8 @@ impl ArrayPrototype {
             }
         }
         for k in 1..len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
+            agent.check_string_length(r.len(), gc.nogc()).unbind()?;
             // a. If k > 0, set R to the string-concatenation of R and sep.
             r.push_wtf8(separator.get(agent).as_wtf8_(agent));
             // b. Let element be ? Get(O, ! ToString(𝔽(k))).
@@ -1973,6 +1982,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 6. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -2314,6 +2324,7 @@ impl ArrayPrototype {
 
         // 9. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let k_int = k.try_into().unwrap();
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k_int);
@@ -2553,6 +2564,7 @@ impl ArrayPrototype {
         let mut lower: i64 = 0;
         // 5. Repeat, while lower ≠ middle,
         while lower != middle {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let upper be len - lower - 1.
             let upper = len - lower - 1;
             // b. Let upperP be ! ToString(𝔽(upper)).
@@ -2745,6 +2757,7 @@ impl ArrayPrototype {
         let mut k = 1;
         // 6. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let from be ! ToString(𝔽(k)).
             let from = k.try_into().unwrap();
             // b. Let to be ! ToString(𝔽(k - 1)).
@@ -2910,6 +2923,7 @@ impl ArrayPrototype {
                 let mut k = start;
                 let mut n = 0u32;
                 while k < end {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
                     // a. Let Pk be ! ToString(𝔽(k)).
                     // b. Let kPresent be ? HasProperty(O, Pk).
                     // c. If kPresent is true, then
@@ -3017,6 +3031,7 @@ impl ArrayPrototype {
         let mut n = 0u32;
         // 14. Repeat, while k < final,
         while k < final_end {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = k.try_into().unwrap();
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -3120,6 +3135,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 5. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = k.try_into().unwrap();
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -3329,6 +3345,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 14. Repeat, while k < actualDeleteCount,
         while k < actual_delete_count {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let from be ! ToString(𝔽(actualStart + k)).
             let from = (actual_start + k).try_into().unwrap();
             // b. If ? HasProperty(O, from) is true, then
@@ -3367,6 +3384,7 @@ impl ArrayPrototype {
                 k = actual_start;
                 // b. Repeat, while k < (len - actualDeleteCount),
                 while k < (len as usize - actual_delete_count) {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
                     // i. Let from be ! ToString(𝔽(k + actualDeleteCount)).
                     let from = (k + actual_delete_count).try_into().unwrap();
                     // ii. Let to be ! ToString(𝔽(k + itemCount)).
@@ -3527,6 +3545,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 6. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. If k > 0, set R to the string-concatenation of R and separator.
             if k > 0 {
                 r.push_str(separator);
@@ -3599,6 +3618,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 5. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             //    a. Let from be ! ToString(𝔽(len - k - 1)).
             let from = PropertyKey::Integer((len - k - 1).try_into().unwrap());
             //    b. Let Pk be ! ToString(𝔽(k)).
@@ -4075,6 +4095,7 @@ impl ArrayPrototype {
         let mut k = 0;
         // 9. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::try_from(k).unwrap();
             // b. If k = actualIndex, let fromValue be value.
@@ -4352,6 +4373,7 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
     if ascending {
         // a. Let indices be a List of the integers in the interval from 0 (inclusive) to len (exclusive), in ascending order.
         for k in 0..len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let result = match check(
                 agent,
                 o.clone(),
@@ -4374,6 +4396,7 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
         // 3. Else,
         // a. Let indices be a List of the integers in the interval from 0 (inclusive) to len (exclusive), in descending order.
         for k in (0..len).rev() {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let result = match check(
                 agent,
                 o.clone(),
@@ -4414,6 +4437,7 @@ fn flatten_into_array<'a>(
     this_arg: Option<Scoped<Value>>,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, usize> {
+    agent.check_stack(gc.nogc()).unbind()?;
     // 1. Assert: If mapperFunction is present, then IsCallable(mapperFunction) is true, thisArg is present, and depth is 1.
     assert!(mapper_function.is_none() || this_arg.is_some() && depth == Some(1));
     // 2. Let targetIndex be start.
@@ -4572,11 +4596,12 @@ fn sort_indexed_properties<'gc, 'scope, const SKIP_HOLES: bool>(
 ) -> JsResult<'gc, Vec<Value<'gc>>> {
     let obj = obj.scope(agent, gc.nogc());
     // 1. Let items be a new empty List.
-    let mut items = Vec::with_capacity(len);
+    let mut items = Vec::with_capacity(len.min(1 << 16));
     // 2. Let k be 0.
     let mut k = 0;
     // 3. Repeat, while k < len,
     while k < len {
+        agent.poll_interrupt(gc.nogc()).unbind()?;
         // a. Let Pk be ! ToString(𝔽(k)).
         let pk: PropertyKey<'static> = k.try_into().unwrap();
         // b. If holes is skip-holes, then

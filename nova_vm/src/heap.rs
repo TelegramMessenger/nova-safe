@@ -11,6 +11,7 @@ mod element_array;
 mod heap_bits;
 mod heap_constants;
 mod heap_gc;
+mod heap_size;
 mod indexes;
 mod object_entry;
 

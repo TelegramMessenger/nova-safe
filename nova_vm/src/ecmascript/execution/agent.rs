@@ -32,7 +32,7 @@ use crate::ecmascript::{WaitAsyncJob, WaitAsyncTimeoutJob};
 use crate::{
     ecmascript::{
         AbstractModuleMethods, Environment, ErrorHeapData, ExecutionContext, Function,
-        GraphLoadingStateRecord, HostDefined, ModuleRequest, Object, OrdinaryObject,
+        GraphLoadingStateRecord, HostDefined, Limits, ModuleRequest, Object, OrdinaryObject,
         PrivateEnvironment, PrivateName, Promise, PromiseReactionJob, PromiseResolveThenableJob,
         PropertyKey, PropertyLookupCache, Realm, RealmRecord, Reference, Referrer, ScriptOrModule,
         SourceCode, SourceTextModule, String, Symbol, Value, ValueRootRepr,
@@ -290,7 +290,7 @@ impl Job {
     /// The execution of a Job never returns any result but it may throw an
     /// error value.
     #[cfg_attr(feature = "probes", allow(unsafe_code))]
-    pub fn run<'a>(self, agent: &mut Agent, gc: GcScope<'a, '_>) -> JsResult<'a, ()> {
+    pub fn run<'a>(self, agent: &mut Agent, mut gc: GcScope<'a, '_>) -> JsResult<'a, ()> {
         let mut id = 0;
         ndt::job_evaluation_start!(|| {
             id = core::ptr::from_ref(&self).addr() as u64;
@@ -310,10 +310,10 @@ impl Job {
         }
 
         let result = match self.inner {
-            InnerJob::PromiseResolveThenable(job) => job.run(agent, gc),
-            InnerJob::PromiseReaction(job) => job.run(agent, gc),
+            InnerJob::PromiseResolveThenable(job) => job.run(agent, gc.reborrow()).unbind(),
+            InnerJob::PromiseReaction(job) => job.run(agent, gc.reborrow()).unbind(),
             #[cfg(feature = "atomics")]
-            InnerJob::WaitAsync(job) => job.run(agent, gc.into_nogc()),
+            InnerJob::WaitAsync(job) => job.run(agent, gc.nogc()).unbind(),
             #[cfg(feature = "atomics")]
             InnerJob::WaitAsyncTimeout(job) => {
                 job.run();
@@ -321,10 +321,18 @@ impl Job {
             }
             #[cfg(feature = "weak-refs")]
             InnerJob::FinalizationRegistry(job) => {
-                job.run(agent, gc);
+                job.run(agent, gc.reborrow());
                 Ok(())
             }
         };
+        // A job that swallowed a termination (a promise reaction rejecting
+        // its promise with it) still ends with it.
+        let result = if result.is_ok() && agent.termination().is_some() {
+            Err(agent.termination_error(gc.nogc()).unbind())
+        } else {
+            result
+        };
+        let result = result.bind(gc.into_nogc());
 
         if pushed_context {
             agent.execution_context_stack.pop();
@@ -364,6 +372,17 @@ pub enum GrowSharedArrayBufferResult {
 /// Trait the Nova JavaScript engine to interact with the embedder. The embedder
 /// calls methods are defined by the ECMAScript specification.
 pub trait HostHooks: core::fmt::Debug {
+    /// Asked every few thousand interpreter instructions and native loop
+    /// steps: returning true terminates the running script. The termination
+    /// cannot be caught by `try`/`catch`/`finally` or promise reactions; the
+    /// error reaches the embedder and [`Agent::take_termination`] returns
+    /// [`TerminationReason::Interrupted`](crate::ecmascript::TerminationReason::Interrupted).
+    ///
+    /// Called often: keep it to an atomic load.
+    fn check_interrupt(&self) -> bool {
+        false
+    }
+
     /// ### [19.2.1.2 HostEnsureCanCompileStrings ( calleeRealm )](https://tc39.es/ecma262/#sec-hostensurecancompilestrings)
     #[allow(unused_variables)]
     fn ensure_can_compile_strings<'a>(
@@ -716,6 +735,26 @@ impl RealmRoot {
 }
 
 impl GcAgent {
+    /// See [`Agent::set_heap_limit`].
+    pub fn set_heap_limit(&mut self, limit: Option<usize>) {
+        self.agent.set_heap_limit(limit);
+    }
+
+    /// See [`Agent::heap_size`].
+    pub fn heap_size(&self) -> usize {
+        self.agent.heap_size()
+    }
+
+    /// See [`Agent::set_stack_limit`].
+    pub fn set_stack_limit(&mut self, bytes: usize) {
+        self.agent.set_stack_limit(bytes);
+    }
+
+    /// See [`Agent::take_termination`].
+    pub fn take_termination(&mut self) -> Option<crate::ecmascript::TerminationReason> {
+        self.agent.take_termination()
+    }
+
     /// Create a new JavaScript engine.
     pub fn new(options: AgentOptions, host_hooks: &'static dyn HostHooks) -> Self {
         Self {
@@ -857,6 +896,7 @@ impl GcAgent {
             agent, realm_roots, ..
         } = self;
         heap_gc(agent, realm_roots, gc);
+        agent.after_gc();
     }
 }
 
@@ -892,6 +932,8 @@ pub struct Agent {
     pub(super) kept_alive: bool,
     /// Global counter for PrivateNames. This only ever grows.
     private_names_counter: u32,
+    /// Interrupt, heap limit and stack guard state.
+    pub(crate) limits: Limits,
     /// ### \[\[ModuleAsyncEvaluationCount]]
     ///
     /// Initially 0, used to assign unique incrementing values to the
@@ -916,6 +958,7 @@ impl Agent {
             kept_alive: false,
             private_names_counter: 0,
             module_async_evaluation_count: 0,
+            limits: Limits::default(),
         }
     }
 
@@ -939,15 +982,15 @@ impl Agent {
             .map(|(i, _)| Some(Realm::from_index(i)))
             .collect::<Vec<_>>();
         heap_gc(self, &mut root_realms, gc);
+        self.after_gc();
     }
 
     /// Checks if garbage collection should be performed based on the number of
     /// bytes allocated since last garbage collection.
     pub(crate) fn check_gc(&mut self) -> bool {
         // Perform garbage collection if over 2 MiB of allocations have been
-        // performed since last GC.
-        const ALLOC_COUNTER_LIMIT: usize = 1024 * 1024 * 2;
-        self.heap.alloc_counter > ALLOC_COUNTER_LIMIT
+        // performed since last GC, or less near the heap limit.
+        self.heap.alloc_counter > self.limits.gc_threshold
     }
 
     fn get_created_realm_root(&mut self) -> Realm<'static> {
@@ -1020,6 +1063,9 @@ impl Agent {
         F: for<'agent, 'gc, 'scope> FnOnce(&'agent mut Agent, GcScope<'gc, 'scope>) -> R,
     {
         let execution_stack_depth_before_call = self.execution_context_stack.len();
+        if execution_stack_depth_before_call == 0 {
+            self.enter_from_host();
+        }
         self.push_execution_context(ExecutionContext {
             ecmascript_code: None,
             function: None,
@@ -1049,6 +1095,9 @@ impl Agent {
     {
         let realm = job.realm.take().unwrap().take(self);
         let execution_stack_depth_before_call = self.execution_context_stack.len();
+        if execution_stack_depth_before_call == 0 {
+            self.enter_from_host();
+        }
         self.push_execution_context(ExecutionContext {
             ecmascript_code: None,
             function: None,
@@ -1211,9 +1260,9 @@ impl Agent {
     }
 
     pub(crate) fn check_call_depth<'gc>(&mut self, gc: NoGcScope<'gc, '_>) -> JsResult<'gc, ()> {
-        // Experimental number that caused stack overflow on local machine. A
-        // better limit creation logic would be nice.
-        if self.execution_context_stack.len() > 3500 {
+        // Experimental number that caused stack overflow on local machine;
+        // the native stack guard (Agent::set_stack_limit) is the real bound.
+        if self.execution_context_stack.len() > 3500 || self.stack_exhausted() {
             Err(self.throw_exception_with_static_message(
                 ExceptionType::RangeError,
                 "Maximum call stack size exceeded",
@@ -1629,6 +1678,7 @@ impl HeapMarkAndSweep for Agent {
                 kept_alive: _,
             private_names_counter: _,
             module_async_evaluation_count: _,
+            limits: _,
         } = self;
 
         execution_context_stack.iter().for_each(|ctx| {
@@ -1678,6 +1728,7 @@ impl HeapMarkAndSweep for Agent {
                 kept_alive: _,
             private_names_counter: _,
             module_async_evaluation_count: _,
+            limits: _,
         } = self;
 
         execution_context_stack

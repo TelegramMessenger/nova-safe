@@ -10,6 +10,9 @@ use unicode_normalization::{
 };
 use wtf8::{CodePoint, Wtf8Buf, Wtf8Str};
 
+use crate::ecmascript::{Object, get};
+#[cfg(feature = "regexp")]
+use crate::ecmascript::{get_object_method, invoke, reg_exp_create};
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinIntrinsic,
@@ -23,9 +26,6 @@ use crate::{
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{ArenaAccess, HeapIndexHandle, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
-use crate::ecmascript::{Object, get};
-#[cfg(feature = "regexp")]
-use crate::ecmascript::{get_object_method, invoke, reg_exp_create};
 
 pub(crate) struct StringPrototype;
 
@@ -1555,6 +1555,9 @@ impl StringPrototype {
             return Ok(s.unbind().into());
         }
 
+        agent
+            .check_string_length(s.utf16_len_(agent).saturating_mul(n as usize), gc.nogc())
+            .unbind()?;
         // 6. Return the String value that is made from n copies of S appended together.
         Ok(Value::from_string(
             agent,
@@ -2600,8 +2603,10 @@ impl StringPrototype {
         // 11. Return the substring of S from intStart to intEnd.
         let gc = gc.into_nogc();
         let s = scoped_s.get(agent).bind(gc);
-        Ok(s.utf16_substring(agent, int_start as usize, int_end as usize, gc)
-            .into())
+        Ok(
+            s.utf16_substring(agent, int_start as usize, int_end as usize, gc)
+                .into(),
+        )
     }
 
     /// ### [B.2.2.2 String.prototype.anchor ( name )](https://tc39.es/ecma262/#sec-string.prototype.anchor)

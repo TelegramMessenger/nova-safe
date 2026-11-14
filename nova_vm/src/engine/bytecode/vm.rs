@@ -138,7 +138,7 @@ impl SuspendedVm {
         }
         // Optimisation: Avoid unsuspending the Vm if we're just going to throw
         // out of it immediately.
-        if self.exception_jump_target_stack.is_empty() {
+        if self.exception_jump_target_stack.is_empty() || agent.termination().is_some() {
             let err = JsError::new(err.unbind());
             return ExecutionResult::Throw(err);
         }
@@ -301,9 +301,18 @@ impl Vm {
         executable: Scoped<Executable>,
         mut gc: GcScope<'gc, '_>,
     ) -> ExecutionResult<'gc> {
+        if agent.stack_exhausted() {
+            return ExecutionResult::Throw(agent.throw_stack_overflow(gc.into_nogc()));
+        }
         let stack_depth = agent.stack_refs.borrow().len();
         let instructions = executable.get_instructions(agent);
         while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
+            agent.limits.countdown -= 1;
+            if agent.limits.countdown == 0
+                && let Err(err) = agent.poll_interrupt_now(gc.nogc())
+            {
+                return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
+            }
             if agent.check_gc() {
                 self.trigger_gc(agent, gc.reborrow());
             }
@@ -329,6 +338,9 @@ impl Vm {
             agent.stack_refs.borrow_mut().truncate(stack_depth);
         }
 
+        if agent.termination().is_some() {
+            return ExecutionResult::Throw(agent.termination_error(gc.into_nogc()));
+        }
         ExecutionResult::Return(Value::Undefined)
     }
 
@@ -345,6 +357,11 @@ impl Vm {
         match result {
             Ok(ContinuationKind::Normal) => {
                 unreachable!("only called with an abnormal result")
+            }
+            Ok(ContinuationKind::Return) if agent.termination().is_some() => {
+                // A callee swallowed a termination (an async function
+                // rejecting its promise with it): end this frame with it too.
+                Some(ExecutionResult::Throw(JsError::new(Value::Undefined)))
             }
             Ok(ContinuationKind::Return) => {
                 if agent.options.print_internals {
@@ -428,6 +445,9 @@ impl Vm {
     #[cold]
     #[must_use]
     fn handle_error(&mut self, agent: &mut Agent, err: JsError) -> bool {
+        if agent.termination().is_some() {
+            return false;
+        }
         if let Some(handler) = self.exception_handler_stack.pop() {
             match handler {
                 ExceptionHandler::CatchBlock {

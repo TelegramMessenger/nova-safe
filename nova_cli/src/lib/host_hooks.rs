@@ -5,7 +5,7 @@
 //! The [`HostHooks`] implementation for the main thread.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     fmt::Debug,
     path::PathBuf,
@@ -39,6 +39,7 @@ pub struct CliHostHooks {
     pub(crate) receiver: mpsc::Receiver<ChildToHostMessage>,
     pub(crate) own_sender: mpsc::SyncSender<ChildToHostMessage>,
     pub(crate) child_senders: RefCell<Vec<mpsc::SyncSender<HostToChildMessage>>>,
+    interrupt_at: Cell<Option<Instant>>,
 }
 
 // RefCell doesn't implement Debug
@@ -65,7 +66,13 @@ impl CliHostHooks {
             receiver,
             own_sender: sender,
             child_senders: Default::default(),
+            interrupt_at: Cell::new(None),
         }
+    }
+
+    /// Interrupts the running script once `after` has passed.
+    pub fn set_interrupt_after(&self, after: Duration) {
+        self.interrupt_at.set(Some(Instant::now() + after));
     }
 
     pub fn add_child(&self, child_sender: mpsc::SyncSender<HostToChildMessage>) {
@@ -108,6 +115,12 @@ impl CliHostHooks {
 }
 
 impl HostHooks for CliHostHooks {
+    fn check_interrupt(&self) -> bool {
+        self.interrupt_at
+            .get()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
     fn enqueue_generic_job(&self, job: Job) {
         self.macrotask_queue.borrow_mut().push((None, job));
     }
