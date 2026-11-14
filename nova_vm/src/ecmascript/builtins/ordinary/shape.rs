@@ -321,6 +321,14 @@ impl<'a> ObjectShape<'a> {
         let len = self.len(agent) as usize;
         let cap = self.keys_capacity(agent);
         let keys_index = self.keys_index(agent);
+        // A storage above 2^16 keys holds only the keys in use: make room for
+        // one more so the next key can go in place.
+        if len < cap.capacity() as usize {
+            agent
+                .heap
+                .elements
+                .ensure_keys_len(cap, keys_index, len as u32 + 1)?;
+        }
         let keys_uninit = agent.heap.elements.get_keys_uninit_raw(cap, keys_index);
         let shape_record = if let Some(slot) = keys_uninit.get_mut(len)
             && *slot == FREE_KEY_SLOT

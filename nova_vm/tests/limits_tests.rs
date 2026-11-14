@@ -592,3 +592,26 @@ fn heap_estimate_counts_bytecode_environments_and_stacks() {
         assert!(grown > 10 * 1024 * 1024, "{grown}");
     });
 }
+
+#[test]
+fn large_dictionaries_take_memory_proportional_to_their_keys() {
+    on_big_stack(|| {
+        // Keys past 2^16 used to take a whole 2^24-key storage (128 MiB) plus
+        // a 2^24-slot value storage.
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(8 * 1024 * 1024));
+        assert_eq!(
+            engine.run(
+                "var dict = Object.fromEntries(Array.from({ length: 70000 }, (_, i) => ['k' + i, i])); dict.extra = 1; delete dict.k5; Object.keys(dict).length + ':' + dict.k69999 + ':' + ('k5' in dict) + ':' + dict.extra",
+                None
+            ),
+            Outcome::Value("70000:69999:false:1".into())
+        );
+        engine.agent.gc();
+        let size = engine.agent.heap_size();
+        assert!(size > 70_000 * 16, "{size}");
+        assert!(size < 6 * 1024 * 1024, "{size}");
+        engine.agent.set_heap_limit(None);
+        engine.assert_usable();
+    });
+}

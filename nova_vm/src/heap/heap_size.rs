@@ -118,7 +118,7 @@ impl Heap {
                 $(
                     let _ = $n;
                     total += e.$values.values.slot_count().saturating_mul(value_size);
-                    total += e.$keys.keys.len().saturating_mul($n).saturating_mul(key_size);
+                    total += e.$keys.keys.slot_count().saturating_mul(key_size);
                 )*
             };
         }

@@ -612,6 +612,8 @@ impl<'a> OrdinaryObject<'a> {
             .elements
             .allocate_elements_with_capacity(shape.values_capacity(agent))?;
         assert_eq!(cap, shape.values_capacity(agent));
+        let len = shape.len(agent);
+        agent.heap.elements.ensure_values_len(cap, values, len)?;
         Ok(agent.heap.create(ObjectRecord::new(shape, values)))
     }
 

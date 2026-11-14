@@ -1385,7 +1385,8 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
         assert!(len <= N);
         if self.dynamic {
             let source = self.storages.get(index).expect("Invalid storage index");
-            let total = source.len().max(len);
+            let len = len.min(source.len());
+            let total = source.len();
             let mut storage = Vec::new();
             storage.try_reserve(total)?;
             storage.extend_from_slice(&source[..len]);
@@ -1683,17 +1684,27 @@ pub(crate) const FREE_KEY_SLOT: PropertyKey<'static> =
     PropertyKey::PrivateName(PrivateName::from_u32(u32::MAX));
 
 /// Property key arrays of up to N keys
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[repr(transparent)]
 pub(crate) struct PropertyKeyArray<const N: usize> {
     pub keys: StridedVec<PropertyKey<'static>, N>,
+}
+
+impl<const N: usize> Default for PropertyKeyArray<N> {
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
 }
 
 impl<const N: usize> PropertyKeyArray<N> {
     pub(crate) fn with_capacity(cap: usize) -> Self {
         const { assert!(N.is_power_of_two()) }
         Self {
-            keys: StridedVec::with_capacity(cap),
+            keys: if N > DYNAMIC_STORAGE_SLOTS {
+                StridedVec::new_dynamic()
+            } else {
+                StridedVec::with_capacity(cap)
+            },
         }
     }
 
@@ -2427,12 +2438,12 @@ impl ElementArrays {
             .expect("Ridiculous amount of keys");
         let new_cap = ElementArrayKey::from(new_len);
         if new_cap == *cap {
-            return Ok(());
+            return self.ensure_keys_len(*cap, *index, new_len);
         }
         let new_index = self.grow_keys_internal(*cap, *index, new_cap, old_len);
         *index = new_index?;
         *cap = new_cap;
-        Ok(())
+        self.ensure_keys_len(new_cap, *index, new_len)
     }
 
     /// Allocates an empty elements storage that can hold `length` elements:
@@ -2456,7 +2467,9 @@ impl ElementArrays {
         Ok(elements)
     }
 
-    /// Allocates an empty elements storage with all the slots of `cap`.
+    /// Allocates an empty elements storage of the class `cap`. A dynamic
+    /// storage (above 2^16 slots) starts with no slots: grow it with
+    /// [`ElementArrays::ensure_values_len`] before use.
     pub(crate) fn allocate_elements_with_capacity(
         &mut self,
         cap: ElementArrayKey,
@@ -2467,8 +2480,32 @@ impl ElementArrays {
             len: 0,
             len_writable: true,
         };
-        self.ensure_values_len(cap, elements.elements_index, cap.capacity())?;
         Ok(elements)
+    }
+
+    /// Makes a dynamic key storage (the classes above 2^16 slots) hold at
+    /// least `len` slots, the new ones free. Other storages always hold all
+    /// their slots.
+    #[inline]
+    pub(crate) fn ensure_keys_len(
+        &mut self,
+        cap: ElementArrayKey,
+        index: PropertyKeyIndex,
+        len: u32,
+    ) -> Result<(), TryReserveError> {
+        match cap {
+            ElementArrayKey::E24 => {
+                self.k2pow24
+                    .keys
+                    .ensure_len(index.get_index(), len as usize, FREE_KEY_SLOT)
+            }
+            ElementArrayKey::E32 => {
+                self.k2pow32
+                    .keys
+                    .ensure_len(index.get_index(), len as usize, FREE_KEY_SLOT)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Makes a dynamic elements storage (the classes above 2^16 slots) hold
@@ -2548,6 +2585,7 @@ impl ElementArrays {
             ElementArrayKey::E24 => k2pow24.push(&[])?,
             ElementArrayKey::E32 => k2pow32.push(&[])?,
         };
+        self.ensure_keys_len(key, index, u32::try_from(capacity).unwrap_or(u32::MAX))?;
         Ok((key, index))
     }
 
@@ -2701,6 +2739,19 @@ impl ElementArrays {
         let new_cap = ElementArrayKey::from(len.checked_add(1).expect("Ridiculous amount of keys"));
         if new_cap.capacity() <= cap.capacity() {
             // We're within our capacity, mutate directly.
+            match cap {
+                ElementArrayKey::E24 => {
+                    k2pow24
+                        .keys
+                        .ensure_len(index.get_index(), *len as usize + 1, FREE_KEY_SLOT)?
+                }
+                ElementArrayKey::E32 => {
+                    k2pow32
+                        .keys
+                        .ensure_len(index.get_index(), *len as usize + 1, FREE_KEY_SLOT)?
+                }
+                _ => {}
+            }
             match cap {
                 ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => unreachable!(),
                 ElementArrayKey::E1 => k2pow1.push_key(*index, *len, key),
@@ -2941,7 +2992,13 @@ impl ElementArrays {
             // Change in capacity.
             self.grow_keys_internal(cap, index, new_cap, len)
         };
-        Ok((new_cap, new_index?))
+        let new_index = new_index?;
+        self.ensure_keys_len(
+            new_cap,
+            new_index,
+            u32::try_from(capacity).unwrap_or(u32::MAX),
+        )?;
+        Ok((new_cap, new_index))
     }
 
     pub(crate) fn realloc_values_with_removal<'a>(
