@@ -20,7 +20,7 @@ use crate::{
         unwrap_try_get_value,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
-    heap::{ArenaAccess, ArenaAccessMut, CreateHeapData, DirectArenaAccessMut},
+    heap::{ArenaAccessMut, CreateHeapData, DirectArenaAccessMut},
 };
 
 /// ### [22.2.3.1 RegExpCreate ( P, F )](https://tc39.es/ecma262/#sec-regexpcreate)
@@ -60,7 +60,7 @@ pub(crate) fn reg_exp_create_literal<'a>(
     // 1. Let obj be ! RegExpAlloc(%RegExp%).
     // 2. Return ? RegExpInitialize(obj, P, F).
     let f = f.unwrap_or(RegExpFlags::empty());
-    agent.heap.create(RegExpHeapData::new(agent, p, f)).bind(gc)
+    agent.heap.create(RegExpHeapData::new(p, f)).bind(gc)
 }
 
 /// ### [22.2.3.2 RegExpAlloc ( newTarget )](https://tc39.es/ecma262/#sec-regexpalloc)
@@ -234,7 +234,7 @@ pub(crate) fn reg_exp_initialize<'a>(
         data.original_flags = f;
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
-        data.reg_exp_matcher = Ok(reg_exp_matcher);
+        data.reg_exp_matcher = Some(Ok(reg_exp_matcher));
     }
 
     // 22. Perform ? Set(obj, "lastIndex", +0𝔽, true).
@@ -531,7 +531,10 @@ pub(crate) fn reg_exp_builtin_exec_prepare<'a>(
         last_index = 0;
     }
     // 8. Let matcher be R.[[RegExpMatcher]].
-    if let Err(err) = &r.get(agent).reg_exp_matcher {
+    if let Err(err) = r
+        .get_direct_mut(&mut agent.heap.regexps)
+        .matcher(&agent.heap.strings)
+    {
         let message = err.clone();
         return Err(agent.throw_exception(ExceptionType::SyntaxError, message, gc));
     };

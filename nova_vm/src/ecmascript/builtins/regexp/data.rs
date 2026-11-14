@@ -7,7 +7,7 @@ use regress::{ExecBudget, Flags, Match, MatchError, Regex};
 use wtf8::{Wtf8Buf, Wtf8Str};
 
 use crate::{
-    ecmascript::{OrdinaryObject, PropertyDescriptor, String, Value, execution::Agent},
+    ecmascript::{OrdinaryObject, PropertyDescriptor, String, Value},
     engine::Bindable,
     heap::{CompactionLists, HeapMarkAndSweep, StringHeapAccess, WorkQueues},
 };
@@ -168,7 +168,9 @@ impl RegExpExecError {
 #[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct RegExpHeapData<'a> {
     pub(super) object_index: Option<OrdinaryObject<'a>>,
-    pub(super) reg_exp_matcher: Result<Regex, std::string::String>,
+    /// \[\[RegExpMatcher]]; `None` until a literal's pattern is first used
+    /// (see [`RegExpHeapData::matcher`]).
+    pub(super) reg_exp_matcher: Option<Result<Regex, std::string::String>>,
     pub(super) original_source: String<'a>,
     pub(super) original_flags: RegExpFlags,
     pub(super) last_index: RegExpLastIndex,
@@ -205,17 +207,36 @@ impl<'a> RegExpHeapData<'a> {
         result.map_err(|err| err.to_string())
     }
 
-    pub(crate) fn new(agent: &Agent, source: String<'a>, flags: RegExpFlags) -> Self {
-        let regex = Self::compile_pattern(source.as_wtf8_(agent), flags);
+    /// A RegExp literal's data. Its pattern is compiled when it is first
+    /// used: compiling depends only on the source and flags, which nothing
+    /// changes without setting a new matcher, and a pattern that does not
+    /// compile is only reported when the RegExp is used.
+    pub(crate) fn new(source: String<'a>, flags: RegExpFlags) -> Self {
         Self {
             object_index: None,
-            reg_exp_matcher: regex,
+            reg_exp_matcher: None,
             original_source: source,
             original_flags: flags,
             last_index: RegExpLastIndex::ZERO,
             utf16_input_key: None,
             utf16_input: Vec::new(),
         }
+    }
+
+    /// \[\[RegExpMatcher]], compiled from \[\[OriginalSource]] and
+    /// \[\[OriginalFlags]] if this is its first use.
+    pub(super) fn matcher(
+        &mut self,
+        strings: &impl StringHeapAccess,
+    ) -> &Result<Regex, std::string::String> {
+        if self.reg_exp_matcher.is_none() {
+            let compiled =
+                Self::compile_pattern(self.original_source.as_wtf8_(strings), self.original_flags);
+            self.reg_exp_matcher = Some(compiled);
+        }
+        self.reg_exp_matcher
+            .as_ref()
+            .expect("the matcher was compiled above")
     }
 
     /// Searches `s` from UTF-16 index `start` (only at `start` if `sticky`).
@@ -234,6 +255,7 @@ impl<'a> RegExpHeapData<'a> {
         sticky: bool,
         poll: &mut dyn FnMut() -> bool,
     ) -> Result<Option<Match>, RegExpExecError> {
+        let _ = self.matcher(strings);
         let bytes = s.as_bytes_(strings);
         let utf16_len = s.utf16_len_(strings);
         let budget = ExecBudget {
@@ -246,7 +268,11 @@ impl<'a> RegExpHeapData<'a> {
             .original_flags
             .intersects(RegExpFlags::U | RegExpFlags::V);
         let result = if utf16_len == bytes.len() {
-            let matcher = self.reg_exp_matcher.as_ref().expect("a compiled pattern");
+            let matcher = self
+                .reg_exp_matcher
+                .as_ref()
+                .and_then(|matcher| matcher.as_ref().ok())
+                .expect("a compiled pattern");
             matcher.exec_ascii(bytes, start, sticky, budget)
         } else {
             if self.utf16_input_key != Some(s.unbind()) {
@@ -269,7 +295,11 @@ impl<'a> RegExpHeapData<'a> {
             } else {
                 start
             };
-            let matcher = self.reg_exp_matcher.as_ref().expect("a compiled pattern");
+            let matcher = self
+                .reg_exp_matcher
+                .as_ref()
+                .and_then(|matcher| matcher.as_ref().ok())
+                .expect("a compiled pattern");
             matcher.exec_utf16(units, start, sticky, budget)
         };
         result.map_err(|err| match err {
@@ -314,7 +344,7 @@ impl Default for RegExpHeapData<'_> {
     fn default() -> Self {
         Self {
             object_index: Default::default(),
-            reg_exp_matcher: Err(std::string::String::new()),
+            reg_exp_matcher: Some(Err(std::string::String::new())),
             original_source: String::EMPTY_STRING,
             original_flags: RegExpFlags::empty(),
             last_index: Default::default(),
