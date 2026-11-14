@@ -72,12 +72,24 @@ impl HeapMarkAndSweep for WeakMapRecord<'static> {
             weak_map_data: map,
             object_index,
         } = self;
-        let old_map = core::mem::replace(map, crate::hashing::map_with_capacity(map.len()));
-        for (key, mut value) in old_map {
-            if let Some(key) = key.sweep_weak_reference(compactions) {
-                value.sweep_values(compactions);
-                map.insert(key, value);
+        let mut moved = Vec::new();
+        map.retain(|key, value| {
+            let Some(new_key) = key.sweep_weak_reference(compactions) else {
+                return false;
+            };
+            value.sweep_values(compactions);
+            if new_key == *key {
+                true
+            } else {
+                moved.push((new_key, *value));
+                false
             }
+        });
+        for (key, value) in moved {
+            map.insert(key, value);
+        }
+        if map.capacity() > 4 * map.len() + 16 {
+            map.shrink_to(2 * map.len());
         }
         object_index.sweep_values(compactions);
     }

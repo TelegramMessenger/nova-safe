@@ -2,19 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#[cfg(feature = "regexp")]
-use crate::ecmascript::RegExpStringIterator;
-#[cfg(feature = "shared-array-buffer")]
-use crate::ecmascript::{SharedArrayBuffer, SharedVoidArray};
 #[cfg(feature = "array-buffer")]
 use crate::heap::heap_bits::sweep_side_table_values;
 use crate::{
     ecmascript::{
-        Agent, BUILTIN_STRINGS_LIST, BuiltinConstructorFunction, BuiltinPromiseFinallyFunction,
-        BuiltinPromiseResolvingFunction, DeclarativeEnvironment, ECMAScriptFunction, Environments,
-        FinalizationRegistry, FunctionEnvironment, GlobalEnvironment, ModuleEnvironment,
-        ModuleRequest, ObjectEnvironment, ObjectShape, PrivateEnvironment, PromiseGroup,
-        PromiseReaction, Realm, SourceTextModule,
+        Agent, BUILTIN_STRINGS_LIST, Environments, FinalizationRegistry, ObjectShape, Realm,
     },
     engine::{Bindable, GcScope},
     heap::{
@@ -213,1360 +205,596 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             key_offsets: _,
         } = elements;
 
-        if !queues.modules.is_empty() {
-            let mut module_marks = core::mem::take(&mut queues.modules);
-            module_marks.retain(|idx| !bits.modules.get_bit(idx.get_index(), &bits.bits));
-            module_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.modules.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    modules.get(index).mark_values(&mut queues);
-                }
-            });
-            module_marks.clear();
-            if queues.modules.is_empty() {
-                queues.modules = module_marks;
+        while let Some(idx) = queues.modules.pop() {
+            let index = idx.get_index();
+            if bits.modules.set_bit(index, &bits.bits) {
+                modules.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.scripts.is_empty() {
-            let mut script_marks = core::mem::take(&mut queues.scripts);
-            script_marks.retain(|idx| !bits.scripts.get_bit(idx.get_index(), &bits.bits));
-            script_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.scripts.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    scripts.get(index).mark_values(&mut queues);
-                }
-            });
-            script_marks.clear();
-            if queues.scripts.is_empty() {
-                queues.scripts = script_marks;
+        while let Some(idx) = queues.scripts.pop() {
+            let index = idx.get_index();
+            if bits.scripts.set_bit(index, &bits.bits) {
+                scripts.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.realms.is_empty() {
-            let mut realm_marks = core::mem::take(&mut queues.realms);
-            realm_marks.retain(|idx| !bits.realms.get_bit(idx.get_index(), &bits.bits));
-            realm_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.realms.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    realms.get(index).mark_values(&mut queues);
-                }
-            });
-            realm_marks.clear();
-            if queues.realms.is_empty() {
-                queues.realms = realm_marks;
+        while let Some(idx) = queues.realms.pop() {
+            let index = idx.get_index();
+            if bits.realms.set_bit(index, &bits.bits) {
+                realms.get(index).mark_values(&mut queues);
             }
         }
 
-        if !queues.declarative_environments.is_empty() {
-            let declarative_environment_marks: Box<[DeclarativeEnvironment]> = queues
-                .declarative_environments
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .declarative_environments
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            declarative_environment_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.declarative_environments.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    declarative_environments.get(index).mark_values(&mut queues);
-                }
-            });
+        while let Some(idx) = queues.declarative_environments.pop() {
+            let index = idx.get_index();
+            if bits.declarative_environments.set_bit(index, &bits.bits) {
+                declarative_environments.get(index).mark_values(&mut queues);
+            }
         }
 
-        if !queues.function_environments.is_empty() {
-            let function_environment_marks: Box<[FunctionEnvironment]> = queues
-                .function_environments
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .function_environments
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            function_environment_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.function_environments.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    function_environments.get(index).mark_values(&mut queues);
-                }
-            });
+        while let Some(idx) = queues.function_environments.pop() {
+            let index = idx.get_index();
+            if bits.function_environments.set_bit(index, &bits.bits) {
+                function_environments.get(index).mark_values(&mut queues);
+            }
         }
 
-        if !queues.global_environments.is_empty() {
-            let global_environment_marks: Box<[GlobalEnvironment]> = queues
-                .global_environments
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .global_environments
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            global_environment_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.global_environments.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    global_environments.get(index).mark_values(&mut queues);
-                }
-            });
+        while let Some(idx) = queues.global_environments.pop() {
+            let index = idx.get_index();
+            if bits.global_environments.set_bit(index, &bits.bits) {
+                global_environments.get(index).mark_values(&mut queues);
+            }
         }
 
-        if !queues.module_environments.is_empty() {
-            let module_environment_marks: Box<[ModuleEnvironment]> = queues
-                .module_environments
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .module_environments
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            module_environment_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.module_environments.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    module_environments.get(index).mark_values(&mut queues);
-                }
-            });
+        while let Some(idx) = queues.module_environments.pop() {
+            let index = idx.get_index();
+            if bits.module_environments.set_bit(index, &bits.bits) {
+                module_environments.get(index).mark_values(&mut queues);
+            }
         }
 
-        if !queues.object_environments.is_empty() {
-            let object_environment_marks: Box<[ObjectEnvironment]> = queues
-                .object_environments
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .object_environments
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            object_environment_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.object_environments.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    object_environments.get(index).mark_values(&mut queues);
-                }
-            });
+        while let Some(idx) = queues.object_environments.pop() {
+            let index = idx.get_index();
+            if bits.object_environments.set_bit(index, &bits.bits) {
+                object_environments.get(index).mark_values(&mut queues);
+            }
         }
 
-        if !queues.private_environments.is_empty() {
-            let private_environment_marks: Box<[PrivateEnvironment]> = queues
-                .private_environments
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .private_environments
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            private_environment_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.private_environments.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    private_environments.get(index).mark_values(&mut queues);
-                }
-            });
+        while let Some(idx) = queues.private_environments.pop() {
+            let index = idx.get_index();
+            if bits.private_environments.set_bit(index, &bits.bits) {
+                private_environments.get(index).mark_values(&mut queues);
+            }
         }
 
-        if !queues.arrays.is_empty() {
-            let mut array_marks = core::mem::take(&mut queues.arrays);
-            array_marks.retain(|idx| !bits.arrays.get_bit(idx.get_index(), &bits.bits));
-            array_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.arrays.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    arrays.get(index as u32).mark_values(&mut queues);
-                }
-            });
-            array_marks.clear();
-            if queues.arrays.is_empty() {
-                queues.arrays = array_marks;
+        while let Some(idx) = queues.arrays.pop() {
+            let index = idx.get_index();
+            if bits.arrays.set_bit(index, &bits.bits) {
+                arrays.get(index as u32).mark_values(&mut queues);
             }
         }
 
         #[cfg(feature = "array-buffer")]
         {
-            if !queues.array_buffers.is_empty() {
-                let mut array_buffer_marks = core::mem::take(&mut queues.array_buffers);
-                array_buffer_marks
-                    .retain(|idx| !bits.array_buffers.get_bit(idx.get_index(), &bits.bits));
-                array_buffer_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.array_buffers.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        array_buffers.get(index).mark_values(&mut queues);
-                    }
-                });
-                array_buffer_marks.clear();
-                if queues.array_buffers.is_empty() {
-                    queues.array_buffers = array_buffer_marks;
+            while let Some(idx) = queues.array_buffers.pop() {
+                let index = idx.get_index();
+                if bits.array_buffers.set_bit(index, &bits.bits) {
+                    array_buffers.get(index).mark_values(&mut queues);
                 }
             }
         }
 
-        if !queues.array_iterators.is_empty() {
-            let mut array_iterator_marks = core::mem::take(&mut queues.array_iterators);
-            array_iterator_marks
-                .retain(|idx| !bits.array_iterators.get_bit(idx.get_index(), &bits.bits));
-            array_iterator_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.array_iterators.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    array_iterators.get(index).mark_values(&mut queues);
-                }
-            });
-            array_iterator_marks.clear();
-            if queues.array_iterators.is_empty() {
-                queues.array_iterators = array_iterator_marks;
+        while let Some(idx) = queues.array_iterators.pop() {
+            let index = idx.get_index();
+            if bits.array_iterators.set_bit(index, &bits.bits) {
+                array_iterators.get(index).mark_values(&mut queues);
             }
         }
 
-        if !queues.async_generators.is_empty() {
-            let mut async_generator_marks = core::mem::take(&mut queues.async_generators);
-            async_generator_marks
-                .retain(|idx| !bits.async_generators.get_bit(idx.get_index(), &bits.bits));
-            async_generator_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.async_generators.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    async_generators.get(index).mark_values(&mut queues);
-                }
-            });
-            async_generator_marks.clear();
-            if queues.async_generators.is_empty() {
-                queues.async_generators = async_generator_marks;
+        while let Some(idx) = queues.async_generators.pop() {
+            let index = idx.get_index();
+            if bits.async_generators.set_bit(index, &bits.bits) {
+                async_generators.get(index).mark_values(&mut queues);
             }
         }
 
-        if !queues.await_reactions.is_empty() {
-            let mut await_reaction_marks = core::mem::take(&mut queues.await_reactions);
-            await_reaction_marks
-                .retain(|idx| !bits.await_reactions.get_bit(idx.get_index(), &bits.bits));
-            await_reaction_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.await_reactions.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    await_reactions.get(index).mark_values(&mut queues);
-                }
-            });
-            await_reaction_marks.clear();
-            if queues.await_reactions.is_empty() {
-                queues.await_reactions = await_reaction_marks;
+        while let Some(idx) = queues.await_reactions.pop() {
+            let index = idx.get_index();
+            if bits.await_reactions.set_bit(index, &bits.bits) {
+                await_reactions.get(index).mark_values(&mut queues);
             }
         }
 
-        if !queues.bigints.is_empty() {
-            let mut bigint_marks = core::mem::take(&mut queues.bigints);
-            bigint_marks.retain(|idx| !bits.bigints.get_bit(idx.get_index(), &bits.bits));
-            bigint_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.bigints.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    bigints.get(index).mark_values(&mut queues);
-                }
-            });
-            bigint_marks.clear();
-            if queues.bigints.is_empty() {
-                queues.bigints = bigint_marks;
+        while let Some(idx) = queues.bigints.pop() {
+            let index = idx.get_index();
+            if bits.bigints.set_bit(index, &bits.bits) {
+                bigints.get(index).mark_values(&mut queues);
             }
         }
 
-        if !queues.bound_functions.is_empty() {
-            let mut bound_function_marks = core::mem::take(&mut queues.bound_functions);
-            bound_function_marks
-                .retain(|idx| !bits.bound_functions.get_bit(idx.get_index(), &bits.bits));
-            bound_function_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.bound_functions.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    bound_functions.get(index).mark_values(&mut queues);
-                }
-            });
-            bound_function_marks.clear();
-            if queues.bound_functions.is_empty() {
-                queues.bound_functions = bound_function_marks;
+        while let Some(idx) = queues.bound_functions.pop() {
+            let index = idx.get_index();
+            if bits.bound_functions.set_bit(index, &bits.bits) {
+                bound_functions.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.ecmascript_functions.is_empty() {
-            let ecmascript_function_marks: Box<[ECMAScriptFunction]> = queues
-                .ecmascript_functions
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .ecmascript_functions
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            ecmascript_function_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.ecmascript_functions.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    ecmascript_functions.get(index).mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.errors.is_empty() {
-            let mut error_marks = core::mem::take(&mut queues.errors);
-            error_marks.retain(|idx| !bits.errors.get_bit(idx.get_index(), &bits.bits));
-            error_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.errors.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    errors.get(index).mark_values(&mut queues);
-                }
-            });
-            error_marks.clear();
-            if queues.errors.is_empty() {
-                queues.errors = error_marks;
+        while let Some(idx) = queues.ecmascript_functions.pop() {
+            let index = idx.get_index();
+            if bits.ecmascript_functions.set_bit(index, &bits.bits) {
+                ecmascript_functions.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.executables.is_empty() {
-            let mut executable_marks = core::mem::take(&mut queues.executables);
-            executable_marks.retain(|idx| !bits.executables.get_bit(idx.get_index(), &bits.bits));
-            executable_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.executables.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    executables.get(index).mark_values(&mut queues);
-                }
-            });
-            executable_marks.clear();
-            if queues.executables.is_empty() {
-                queues.executables = executable_marks;
+        while let Some(idx) = queues.errors.pop() {
+            let index = idx.get_index();
+            if bits.errors.set_bit(index, &bits.bits) {
+                errors.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.source_codes.is_empty() {
-            let mut source_code_marks = core::mem::take(&mut queues.source_codes);
-            source_code_marks.retain(|idx| !bits.source_codes.get_bit(idx.get_index(), &bits.bits));
-            source_code_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.source_codes.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    source_codes.get(index).mark_values(&mut queues);
-                }
-            });
-            source_code_marks.clear();
-            if queues.source_codes.is_empty() {
-                queues.source_codes = source_code_marks;
+        while let Some(idx) = queues.executables.pop() {
+            let index = idx.get_index();
+            if bits.executables.set_bit(index, &bits.bits) {
+                executables.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.builtin_constructors.is_empty() {
-            let builtin_constructors_marks: Box<[BuiltinConstructorFunction]> = queues
-                .builtin_constructors
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .builtin_constructors
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            builtin_constructors_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.builtin_constructors.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    builtin_constructors.get(index).mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.builtin_functions.is_empty() {
-            let mut builtin_functions_marks = core::mem::take(&mut queues.builtin_functions);
-            builtin_functions_marks
-                .retain(|idx| !bits.builtin_functions.get_bit(idx.get_index(), &bits.bits));
-            builtin_functions_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.builtin_functions.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    builtin_functions.get(index).mark_values(&mut queues);
-                }
-            });
-            builtin_functions_marks.clear();
-            if queues.builtin_functions.is_empty() {
-                queues.builtin_functions = builtin_functions_marks;
+        while let Some(idx) = queues.source_codes.pop() {
+            let index = idx.get_index();
+            if bits.source_codes.set_bit(index, &bits.bits) {
+                source_codes.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.caches.is_empty() {
-            let mut caches_marks = core::mem::take(&mut queues.caches);
-            caches_marks.retain(|idx| !bits.caches.get_bit(idx.get_index(), &bits.bits));
-            caches_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.caches.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    caches.mark_cache(index, &mut queues);
-                }
-            });
-            caches_marks.clear();
-            if queues.caches.is_empty() {
-                queues.caches = caches_marks;
+        while let Some(idx) = queues.builtin_constructors.pop() {
+            let index = idx.get_index();
+            if bits.builtin_constructors.set_bit(index, &bits.bits) {
+                builtin_constructors.get(index).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.builtin_functions.pop() {
+            let index = idx.get_index();
+            if bits.builtin_functions.set_bit(index, &bits.bits) {
+                builtin_functions.get(index).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.caches.pop() {
+            let index = idx.get_index();
+            if bits.caches.set_bit(index, &bits.bits) {
+                caches.mark_cache(index, &mut queues);
             }
         }
         #[cfg(feature = "array-buffer")]
-        if !queues.data_views.is_empty() {
-            let mut data_view_marks = core::mem::take(&mut queues.data_views);
-            data_view_marks.retain(|idx| !bits.data_views.get_bit(idx.get_index(), &bits.bits));
-            data_view_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.data_views.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    data_views.get(index).mark_values(&mut queues);
-                }
-            });
-            data_view_marks.clear();
-            if queues.data_views.is_empty() {
-                queues.data_views = data_view_marks;
+        while let Some(idx) = queues.data_views.pop() {
+            let index = idx.get_index();
+            if bits.data_views.set_bit(index, &bits.bits) {
+                data_views.get(index).mark_values(&mut queues);
             }
         }
 
         #[cfg(feature = "date")]
-        if !queues.dates.is_empty() {
-            let mut date_marks = core::mem::take(&mut queues.dates);
-            date_marks.retain(|idx| !bits.dates.get_bit(idx.get_index(), &bits.bits));
-            date_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.dates.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    dates.get(index).mark_values(&mut queues);
-                }
-            });
-            date_marks.clear();
-            if queues.dates.is_empty() {
-                queues.dates = date_marks;
+        while let Some(idx) = queues.dates.pop() {
+            let index = idx.get_index();
+            if bits.dates.set_bit(index, &bits.bits) {
+                dates.get(index).mark_values(&mut queues);
             }
         }
         #[cfg(feature = "temporal")]
         {
-            let mut instant_marks = core::mem::take(&mut queues.instants);
-            instant_marks.retain(|idx| !bits.instants.get_bit(idx.get_index(), &bits.bits));
-            instant_marks.iter().for_each(|&idx| {
+            while let Some(idx) = queues.instants.pop() {
                 let index = idx.get_index();
                 if bits.instants.set_bit(index, &bits.bits) {
-                    // Did mark.
                     instants.get(index).mark_values(&mut queues);
                 }
-            });
-            instant_marks.clear();
-            if queues.instants.is_empty() {
-                queues.instants = instant_marks;
             }
-            let mut duration_marks = core::mem::take(&mut queues.durations);
-            duration_marks.retain(|idx| !bits.durations.get_bit(idx.get_index(), &bits.bits));
-            duration_marks.iter().for_each(|&idx| {
+            while let Some(idx) = queues.durations.pop() {
                 let index = idx.get_index();
                 if bits.durations.set_bit(index, &bits.bits) {
-                    // Did mark.
                     durations.get(index).mark_values(&mut queues);
                 }
-            });
-            duration_marks.clear();
-            if queues.durations.is_empty() {
-                queues.durations = duration_marks;
             }
-            let mut plain_time_marks = core::mem::take(&mut queues.plain_times);
-            plain_time_marks.retain(|idx| !bits.plain_times.get_bit(idx.get_index(), &bits.bits));
-            plain_time_marks.iter().for_each(|&idx| {
+            while let Some(idx) = queues.plain_times.pop() {
                 let index = idx.get_index();
                 if bits.plain_times.set_bit(index, &bits.bits) {
-                    // Did mark.
                     plain_times.get(index).mark_values(&mut queues);
                 }
-            });
-            plain_time_marks.clear();
-            if queues.plain_times.is_empty() {
-                queues.plain_times = plain_time_marks;
             }
         }
 
-        if !queues.embedder_objects.is_empty() {
-            let mut embedder_object_marks = core::mem::take(&mut queues.embedder_objects);
-            embedder_object_marks
-                .retain(|idx| !bits.embedder_objects.get_bit(idx.get_index(), &bits.bits));
-            embedder_object_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.embedder_objects.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    embedder_objects.get(index).mark_values(&mut queues);
-                }
-            });
-            embedder_object_marks.clear();
-            if queues.embedder_objects.is_empty() {
-                queues.embedder_objects = embedder_object_marks;
+        while let Some(idx) = queues.embedder_objects.pop() {
+            let index = idx.get_index();
+            if bits.embedder_objects.set_bit(index, &bits.bits) {
+                embedder_objects.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.finalization_registries.is_empty() {
-            let finalization_registry_marks: Box<[FinalizationRegistry]> =
-                queues.finalization_registries.drain(..).collect();
-            if !finalization_registry_marks.is_empty() {
-                has_finalization_registries = true;
-            }
-            finalization_registry_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.finalization_registries.set_bit(index, &bits.bits) {
-                    // Did mark.
-
-                    finalization_registries
-                        .get(index as u32)
-                        .mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.generators.is_empty() {
-            let mut generator_marks = core::mem::take(&mut queues.generators);
-            generator_marks.retain(|idx| !bits.generators.get_bit(idx.get_index(), &bits.bits));
-            generator_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.generators.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    generators.get(index).mark_values(&mut queues);
-                }
-            });
-            generator_marks.clear();
-            if queues.generators.is_empty() {
-                queues.generators = generator_marks;
+        while let Some(idx) = queues.finalization_registries.pop() {
+            has_finalization_registries = true;
+            let index = idx.get_index();
+            if bits.finalization_registries.set_bit(index, &bits.bits) {
+                finalization_registries
+                    .get(index as u32)
+                    .mark_values(&mut queues);
             }
         }
-        if !queues.object_shapes.is_empty() {
-            let mut object_marks = core::mem::take(&mut queues.object_shapes);
-            object_marks.retain(|idx| !bits.object_shapes.get_bit(idx.get_index(), &bits.bits));
-            object_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.object_shapes.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    object_shapes.get(index).mark_values(&mut queues);
-                    object_shape_transitions.get(index).mark_values(&mut queues);
-                }
-            });
-            object_marks.clear();
-            if queues.object_shapes.is_empty() {
-                queues.object_shapes = object_marks;
+        while let Some(idx) = queues.generators.pop() {
+            let index = idx.get_index();
+            if bits.generators.set_bit(index, &bits.bits) {
+                generators.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.objects.is_empty() {
-            let mut object_marks = core::mem::take(&mut queues.objects);
-            object_marks.retain(|idx| !bits.objects.get_bit(idx.get_index(), &bits.bits));
-            object_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.objects.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    if let Some(rec) = objects.get(index) {
-                        rec.mark_values(&mut queues, &agent.heap.object_shapes);
-                    }
-                }
-            });
-            object_marks.clear();
-            if queues.objects.is_empty() {
-                queues.objects = object_marks;
+        while let Some(idx) = queues.object_shapes.pop() {
+            let index = idx.get_index();
+            if bits.object_shapes.set_bit(index, &bits.bits) {
+                object_shapes.get(index).mark_values(&mut queues);
+                object_shape_transitions.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.promises.is_empty() {
-            let mut promise_marks = core::mem::take(&mut queues.promises);
-            promise_marks.retain(|idx| !bits.promises.get_bit(idx.get_index(), &bits.bits));
-            promise_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.promises.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    promises.get(index).mark_values(&mut queues);
+        while let Some(idx) = queues.objects.pop() {
+            let index = idx.get_index();
+            if bits.objects.set_bit(index, &bits.bits) {
+                if let Some(rec) = objects.get(index) {
+                    rec.mark_values(&mut queues, &agent.heap.object_shapes);
                 }
-            });
-            promise_marks.clear();
-            if queues.promises.is_empty() {
-                queues.promises = promise_marks;
             }
         }
-        if !queues.promise_reaction_records.is_empty() {
-            let promise_reaction_record_marks: Box<[PromiseReaction]> = queues
-                .promise_reaction_records
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .promise_reaction_records
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            promise_reaction_record_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.promise_reaction_records.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    promise_reaction_records.get(index).mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.promise_group_records.is_empty() {
-            let promise_group_record_marks: Box<[PromiseGroup]> = queues
-                .promise_group_records
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .promise_group_records
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            promise_group_record_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.promise_group_records.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    promise_group_records.get(index).mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.promise_resolving_functions.is_empty() {
-            let promise_resolving_function_marks: Box<[BuiltinPromiseResolvingFunction]> = queues
-                .promise_resolving_functions
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .promise_resolving_functions
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            promise_resolving_function_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.promise_resolving_functions.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    promise_resolving_functions
-                        .get(index)
-                        .mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.promise_finally_functions.is_empty() {
-            let promise_finally_function_marks: Box<[BuiltinPromiseFinallyFunction]> = queues
-                .promise_finally_functions
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .promise_finally_functions
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            promise_finally_function_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.promise_finally_functions.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    promise_finally_functions
-                        .get(index)
-                        .mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.proxies.is_empty() {
-            let mut proxy_marks = core::mem::take(&mut queues.proxies);
-            proxy_marks.retain(|idx| !bits.proxies.get_bit(idx.get_index(), &bits.bits));
-            proxy_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.proxies.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    proxies.get(index).mark_values(&mut queues);
-                }
-            });
-            proxy_marks.clear();
-            if queues.proxies.is_empty() {
-                queues.proxies = proxy_marks;
+        while let Some(idx) = queues.promises.pop() {
+            let index = idx.get_index();
+            if bits.promises.set_bit(index, &bits.bits) {
+                promises.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.maps.is_empty() {
-            let mut map_marks = core::mem::take(&mut queues.maps);
-            map_marks.retain(|idx| !bits.maps.get_bit(idx.get_index(), &bits.bits));
-            map_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.maps.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    maps.get(index as u32).mark_values(&mut queues);
-                }
-            });
-            map_marks.clear();
-            if queues.maps.is_empty() {
-                queues.maps = map_marks;
+        while let Some(idx) = queues.promise_reaction_records.pop() {
+            let index = idx.get_index();
+            if bits.promise_reaction_records.set_bit(index, &bits.bits) {
+                promise_reaction_records.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.map_iterators.is_empty() {
-            let mut map_iterator_marks = core::mem::take(&mut queues.map_iterators);
-            map_iterator_marks
-                .retain(|idx| !bits.map_iterators.get_bit(idx.get_index(), &bits.bits));
-            map_iterator_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.map_iterators.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    map_iterators.get(index).mark_values(&mut queues);
-                }
-            });
-            map_iterator_marks.clear();
-            if queues.map_iterators.is_empty() {
-                queues.map_iterators = map_iterator_marks;
+        while let Some(idx) = queues.promise_group_records.pop() {
+            let index = idx.get_index();
+            if bits.promise_group_records.set_bit(index, &bits.bits) {
+                promise_group_records.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.module_request_records.is_empty() {
-            let module_request_record_marks: Box<[ModuleRequest]> = queues
-                .module_request_records
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .module_request_records
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            module_request_record_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.module_request_records.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    module_request_records.get(index).mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.numbers.is_empty() {
-            let mut number_marks = core::mem::take(&mut queues.numbers);
-            number_marks.retain(|idx| !bits.numbers.get_bit(idx.get_index(), &bits.bits));
-            number_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.numbers.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    numbers.get(index).mark_values(&mut queues);
-                }
-            });
-            number_marks.clear();
-            if queues.numbers.is_empty() {
-                queues.numbers = number_marks;
+        while let Some(idx) = queues.promise_resolving_functions.pop() {
+            let index = idx.get_index();
+            if bits.promise_resolving_functions.set_bit(index, &bits.bits) {
+                promise_resolving_functions
+                    .get(index)
+                    .mark_values(&mut queues);
             }
         }
-        if !queues.primitive_objects.is_empty() {
-            let mut primitive_object_marks = core::mem::take(&mut queues.primitive_objects);
-            primitive_object_marks
-                .retain(|idx| !bits.primitive_objects.get_bit(idx.get_index(), &bits.bits));
-            primitive_object_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.primitive_objects.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    primitive_objects.get(index).mark_values(&mut queues);
-                }
-            });
-            primitive_object_marks.clear();
-            if queues.primitive_objects.is_empty() {
-                queues.primitive_objects = primitive_object_marks;
+        while let Some(idx) = queues.promise_finally_functions.pop() {
+            let index = idx.get_index();
+            if bits.promise_finally_functions.set_bit(index, &bits.bits) {
+                promise_finally_functions
+                    .get(index)
+                    .mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.proxies.pop() {
+            let index = idx.get_index();
+            if bits.proxies.set_bit(index, &bits.bits) {
+                proxies.get(index).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.maps.pop() {
+            let index = idx.get_index();
+            if bits.maps.set_bit(index, &bits.bits) {
+                maps.get(index as u32).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.map_iterators.pop() {
+            let index = idx.get_index();
+            if bits.map_iterators.set_bit(index, &bits.bits) {
+                map_iterators.get(index).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.module_request_records.pop() {
+            let index = idx.get_index();
+            if bits.module_request_records.set_bit(index, &bits.bits) {
+                module_request_records.get(index).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.numbers.pop() {
+            let index = idx.get_index();
+            if bits.numbers.set_bit(index, &bits.bits) {
+                numbers.get(index).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.primitive_objects.pop() {
+            let index = idx.get_index();
+            if bits.primitive_objects.set_bit(index, &bits.bits) {
+                primitive_objects.get(index).mark_values(&mut queues);
             }
         }
         #[cfg(feature = "regexp")]
         {
-            if !queues.regexps.is_empty() {
-                let mut regexp_marks = core::mem::take(&mut queues.regexps);
-                regexp_marks.retain(|idx| !bits.regexps.get_bit(idx.get_index(), &bits.bits));
-                regexp_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.regexps.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        regexps.get(index).mark_values(&mut queues);
-                    }
-                });
-                regexp_marks.clear();
-                if queues.regexps.is_empty() {
-                    queues.regexps = regexp_marks;
+            while let Some(idx) = queues.regexps.pop() {
+                let index = idx.get_index();
+                if bits.regexps.set_bit(index, &bits.bits) {
+                    regexps.get(index).mark_values(&mut queues);
                 }
             }
-            if !queues.regexp_string_iterators.is_empty() {
-                let regexp_string_iterator_marks: Box<[RegExpStringIterator]> = queues
-                    .regexp_string_iterators
-                    .drain(..)
-                    .filter(|idx| {
-                        !bits
-                            .regexp_string_iterators
-                            .get_bit(idx.get_index(), &bits.bits)
-                    })
-                    .collect();
-                regexp_string_iterator_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.regexp_string_iterators.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        regexp_string_iterators.get(index).mark_values(&mut queues);
-                    }
-                });
+            while let Some(idx) = queues.regexp_string_iterators.pop() {
+                let index = idx.get_index();
+                if bits.regexp_string_iterators.set_bit(index, &bits.bits) {
+                    regexp_string_iterators.get(index).mark_values(&mut queues);
+                }
             }
         }
         #[cfg(feature = "set")]
         {
-            if !queues.sets.is_empty() {
-                let mut set_marks = core::mem::take(&mut queues.sets);
-                set_marks.retain(|idx| !bits.sets.get_bit(idx.get_index(), &bits.bits));
-                set_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.sets.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        sets.get(index as u32).mark_values(&mut queues);
-                    }
-                });
-                set_marks.clear();
-                if queues.sets.is_empty() {
-                    queues.sets = set_marks;
+            while let Some(idx) = queues.sets.pop() {
+                let index = idx.get_index();
+                if bits.sets.set_bit(index, &bits.bits) {
+                    sets.get(index as u32).mark_values(&mut queues);
                 }
             }
 
-            if !queues.set_iterators.is_empty() {
-                let mut set_iterator_marks = core::mem::take(&mut queues.set_iterators);
-                set_iterator_marks
-                    .retain(|idx| !bits.set_iterators.get_bit(idx.get_index(), &bits.bits));
-                set_iterator_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.set_iterators.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        set_iterators.get(index).mark_values(&mut queues);
-                    }
-                });
-                set_iterator_marks.clear();
-                if queues.set_iterators.is_empty() {
-                    queues.set_iterators = set_iterator_marks;
+            while let Some(idx) = queues.set_iterators.pop() {
+                let index = idx.get_index();
+                if bits.set_iterators.set_bit(index, &bits.bits) {
+                    set_iterators.get(index).mark_values(&mut queues);
                 }
             }
         }
         #[cfg(feature = "shared-array-buffer")]
         {
-            if !queues.shared_array_buffers.is_empty() {
-                let shared_array_buffer_marks: Box<[SharedArrayBuffer]> = queues
-                    .shared_array_buffers
-                    .drain(..)
-                    .filter(|idx| {
-                        !bits
-                            .shared_array_buffers
-                            .get_bit(idx.get_index(), &bits.bits)
-                    })
-                    .collect();
-                shared_array_buffer_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.shared_array_buffers.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        shared_array_buffers.get(index).mark_values(&mut queues);
-                    }
-                });
-            }
-            if !queues.shared_data_views.is_empty() {
-                let mut shared_data_view_marks = core::mem::take(&mut queues.shared_data_views);
-                shared_data_view_marks
-                    .retain(|idx| !bits.shared_data_views.get_bit(idx.get_index(), &bits.bits));
-                shared_data_view_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.shared_data_views.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        shared_data_views.get(index).mark_values(&mut queues);
-                    }
-                });
-                shared_data_view_marks.clear();
-                if queues.shared_data_views.is_empty() {
-                    queues.shared_data_views = shared_data_view_marks;
+            while let Some(idx) = queues.shared_array_buffers.pop() {
+                let index = idx.get_index();
+                if bits.shared_array_buffers.set_bit(index, &bits.bits) {
+                    shared_array_buffers.get(index).mark_values(&mut queues);
                 }
             }
-            if !queues.shared_typed_arrays.is_empty() {
-                let shared_typed_array_marks: Box<[SharedVoidArray]> = queues
-                    .shared_typed_arrays
-                    .drain(..)
-                    .filter(|idx| {
-                        !bits
-                            .shared_typed_arrays
-                            .get_bit(idx.get_index(), &bits.bits)
-                    })
-                    .collect();
-                shared_typed_array_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.shared_typed_arrays.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        shared_typed_arrays.get(index).mark_values(&mut queues);
-                    }
-                });
+            while let Some(idx) = queues.shared_data_views.pop() {
+                let index = idx.get_index();
+                if bits.shared_data_views.set_bit(index, &bits.bits) {
+                    shared_data_views.get(index).mark_values(&mut queues);
+                }
+            }
+            while let Some(idx) = queues.shared_typed_arrays.pop() {
+                let index = idx.get_index();
+                if bits.shared_typed_arrays.set_bit(index, &bits.bits) {
+                    shared_typed_arrays.get(index).mark_values(&mut queues);
+                }
             }
         }
-        if !queues.source_text_module_records.is_empty() {
-            let source_text_module_record_marks: Box<[SourceTextModule]> = queues
-                .source_text_module_records
-                .drain(..)
-                .filter(|idx| {
-                    !bits
-                        .source_text_module_records
-                        .get_bit(idx.get_index(), &bits.bits)
-                })
-                .collect();
-            source_text_module_record_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.source_text_module_records.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    source_text_module_records
-                        .get(index)
-                        .mark_values(&mut queues);
-                }
-            });
-        }
-        if !queues.string_iterators.is_empty() {
-            let mut string_generator_marks = core::mem::take(&mut queues.string_iterators);
-            string_generator_marks
-                .retain(|idx| !bits.string_iterators.get_bit(idx.get_index(), &bits.bits));
-            string_generator_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.string_iterators.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    string_iterators.get(index).mark_values(&mut queues);
-                }
-            });
-            string_generator_marks.clear();
-            if queues.string_iterators.is_empty() {
-                queues.string_iterators = string_generator_marks;
+        while let Some(idx) = queues.source_text_module_records.pop() {
+            let index = idx.get_index();
+            if bits.source_text_module_records.set_bit(index, &bits.bits) {
+                source_text_module_records
+                    .get(index)
+                    .mark_values(&mut queues);
             }
         }
-        if !queues.strings.is_empty() {
-            let mut string_marks = core::mem::take(&mut queues.strings);
-            string_marks.retain(|idx| !bits.strings.get_bit(idx.get_index(), &bits.bits));
-            string_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.strings.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    strings.get(index).mark_values(&mut queues);
-                }
-            });
-            string_marks.clear();
-            if queues.strings.is_empty() {
-                queues.strings = string_marks;
+        while let Some(idx) = queues.string_iterators.pop() {
+            let index = idx.get_index();
+            if bits.string_iterators.set_bit(index, &bits.bits) {
+                string_iterators.get(index).mark_values(&mut queues);
             }
         }
-        if !queues.symbols.is_empty() {
-            let mut symbol_marks = core::mem::take(&mut queues.symbols);
-            symbol_marks.retain(|idx| !bits.symbols.get_bit(idx.get_index(), &bits.bits));
-            symbol_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.symbols.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    symbols.get(index).mark_values(&mut queues);
-                }
-            });
-            symbol_marks.clear();
-            if queues.symbols.is_empty() {
-                queues.symbols = symbol_marks;
+        while let Some(idx) = queues.strings.pop() {
+            let index = idx.get_index();
+            if bits.strings.set_bit(index, &bits.bits) {
+                strings.get(index).mark_values(&mut queues);
+            }
+        }
+        while let Some(idx) = queues.symbols.pop() {
+            let index = idx.get_index();
+            if bits.symbols.set_bit(index, &bits.bits) {
+                symbols.get(index).mark_values(&mut queues);
             }
         }
         #[cfg(feature = "array-buffer")]
-        if !queues.typed_arrays.is_empty() {
-            let mut typed_arrays_marks = core::mem::take(&mut queues.typed_arrays);
-            typed_arrays_marks
-                .retain(|idx| !bits.typed_arrays.get_bit(idx.get_index(), &bits.bits));
-            typed_arrays_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.typed_arrays.set_bit(index, &bits.bits) {
-                    // Did mark.
-                    typed_arrays.get(index).mark_values(&mut queues);
-                }
-            });
-            typed_arrays_marks.clear();
-            if queues.typed_arrays.is_empty() {
-                queues.typed_arrays = typed_arrays_marks;
+        while let Some(idx) = queues.typed_arrays.pop() {
+            let index = idx.get_index();
+            if bits.typed_arrays.set_bit(index, &bits.bits) {
+                typed_arrays.get(index).mark_values(&mut queues);
             }
         }
         #[cfg(feature = "weak-refs")]
         {
-            if !queues.weak_maps.is_empty() {
-                let mut weak_map_marks = core::mem::take(&mut queues.weak_maps);
-                weak_map_marks.retain(|idx| !bits.weak_maps.get_bit(idx.get_index(), &bits.bits));
-                weak_map_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.weak_maps.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        weak_maps.get(index).mark_values(&mut queues);
-                    }
-                });
-                weak_map_marks.clear();
-                if queues.weak_maps.is_empty() {
-                    queues.weak_maps = weak_map_marks;
+            while let Some(idx) = queues.weak_maps.pop() {
+                let index = idx.get_index();
+                if bits.weak_maps.set_bit(index, &bits.bits) {
+                    weak_maps.get(index).mark_values(&mut queues);
                 }
             }
-            if !queues.weak_refs.is_empty() {
-                let mut weak_ref_marks = core::mem::take(&mut queues.weak_refs);
-                weak_ref_marks.retain(|idx| !bits.weak_refs.get_bit(idx.get_index(), &bits.bits));
-                weak_ref_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.weak_refs.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        weak_refs.get(index).mark_values(&mut queues);
-                    }
-                });
-                weak_ref_marks.clear();
-                if queues.weak_refs.is_empty() {
-                    queues.weak_refs = weak_ref_marks;
+            while let Some(idx) = queues.weak_refs.pop() {
+                let index = idx.get_index();
+                if bits.weak_refs.set_bit(index, &bits.bits) {
+                    weak_refs.get(index).mark_values(&mut queues);
                 }
             }
-            if !queues.weak_sets.is_empty() {
-                let mut weak_set_marks = core::mem::take(&mut queues.weak_sets);
-                weak_set_marks.retain(|idx| !bits.weak_sets.get_bit(idx.get_index(), &bits.bits));
-                weak_set_marks.iter().for_each(|&idx| {
-                    let index = idx.get_index();
-                    if bits.weak_sets.set_bit(index, &bits.bits) {
-                        // Did mark.
-                        weak_sets.get(index).mark_values(&mut queues);
-                    }
-                });
-                weak_set_marks.clear();
-                if queues.weak_sets.is_empty() {
-                    queues.weak_sets = weak_set_marks;
+            while let Some(idx) = queues.weak_sets.pop() {
+                let index = idx.get_index();
+                if bits.weak_sets.set_bit(index, &bits.bits) {
+                    weak_sets.get(index).mark_values(&mut queues);
                 }
             }
         }
 
-        if !queues.e_2_1.is_empty() {
-            let mut e_2_1_marks = core::mem::take(&mut queues.e_2_1);
-            e_2_1_marks.retain(|idx| !bits.e_2_1.get_bit(idx.get_index(), &bits.bits));
-            e_2_1_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_1.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow1.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow1.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_1.pop() {
+            let index = idx.get_index();
+            if bits.e_2_1.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow1.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_1_marks.clear();
-            if queues.e_2_1.is_empty() {
-                queues.e_2_1 = e_2_1_marks;
+                e2pow1.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_2.is_empty() {
-            let mut e_2_2_marks = core::mem::take(&mut queues.e_2_2);
-            e_2_2_marks.retain(|idx| !bits.e_2_2.get_bit(idx.get_index(), &bits.bits));
-            e_2_2_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_2.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow2.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow2.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_2.pop() {
+            let index = idx.get_index();
+            if bits.e_2_2.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow2.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_2_marks.clear();
-            if queues.e_2_2.is_empty() {
-                queues.e_2_2 = e_2_2_marks;
+                e2pow2.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_3.is_empty() {
-            let mut e_2_3_marks = core::mem::take(&mut queues.e_2_3);
-            e_2_3_marks.retain(|idx| !bits.e_2_3.get_bit(idx.get_index(), &bits.bits));
-            e_2_3_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_3.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow3.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow3.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_3.pop() {
+            let index = idx.get_index();
+            if bits.e_2_3.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow3.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_3_marks.clear();
-            if queues.e_2_3.is_empty() {
-                queues.e_2_3 = e_2_3_marks;
+                e2pow3.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_4.is_empty() {
-            let mut e_2_4_marks = core::mem::take(&mut queues.e_2_4);
-            e_2_4_marks.retain(|idx| !bits.e_2_4.get_bit(idx.get_index(), &bits.bits));
-            e_2_4_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_4.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow4.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow4.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_4.pop() {
+            let index = idx.get_index();
+            if bits.e_2_4.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow4.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_4_marks.clear();
-            if queues.e_2_4.is_empty() {
-                queues.e_2_4 = e_2_4_marks;
+                e2pow4.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_6.is_empty() {
-            let mut e_2_6_marks = core::mem::take(&mut queues.e_2_6);
-            e_2_6_marks.retain(|idx| !bits.e_2_6.get_bit(idx.get_index(), &bits.bits));
-            e_2_6_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_6.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow6.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow6.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_6.pop() {
+            let index = idx.get_index();
+            if bits.e_2_6.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow6.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_6_marks.clear();
-            if queues.e_2_6.is_empty() {
-                queues.e_2_6 = e_2_6_marks;
+                e2pow6.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_8.is_empty() {
-            let mut e_2_8_marks = core::mem::take(&mut queues.e_2_8);
-            e_2_8_marks.retain(|idx| !bits.e_2_8.get_bit(idx.get_index(), &bits.bits));
-            e_2_8_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_8.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow8.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow8.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_8.pop() {
+            let index = idx.get_index();
+            if bits.e_2_8.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow8.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_8_marks.clear();
-            if queues.e_2_8.is_empty() {
-                queues.e_2_8 = e_2_8_marks;
+                e2pow8.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_10.is_empty() {
-            let mut e_2_10_marks = core::mem::take(&mut queues.e_2_10);
-            e_2_10_marks.retain(|idx| !bits.e_2_10.get_bit(idx.get_index(), &bits.bits));
-            e_2_10_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_10.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow10.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow10.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_10.pop() {
+            let index = idx.get_index();
+            if bits.e_2_10.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow10.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_10_marks.clear();
-            if queues.e_2_10.is_empty() {
-                queues.e_2_10 = e_2_10_marks;
+                e2pow10.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_12.is_empty() {
-            let mut e_2_12_marks = core::mem::take(&mut queues.e_2_12);
-            e_2_12_marks.retain(|idx| !bits.e_2_12.get_bit(idx.get_index(), &bits.bits));
-            e_2_12_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_12.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow12.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow12.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_12.pop() {
+            let index = idx.get_index();
+            if bits.e_2_12.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow12.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_12_marks.clear();
-            if queues.e_2_12.is_empty() {
-                queues.e_2_12 = e_2_12_marks;
+                e2pow12.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_16.is_empty() {
-            let mut e_2_16_marks = core::mem::take(&mut queues.e_2_16);
-            e_2_16_marks.retain(|idx| !bits.e_2_16.get_bit(idx.get_index(), &bits.bits));
-            e_2_16_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_16.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow16.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow16.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_16.pop() {
+            let index = idx.get_index();
+            if bits.e_2_16.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow16.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_16_marks.clear();
-            if queues.e_2_16.is_empty() {
-                queues.e_2_16 = e_2_16_marks;
+                e2pow16.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_24.is_empty() {
-            let mut e_2_24_marks = core::mem::take(&mut queues.e_2_24);
-            e_2_24_marks.retain(|idx| !bits.e_2_24.get_bit(idx.get_index(), &bits.bits));
-            e_2_24_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_24.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow24.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow24.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_24.pop() {
+            let index = idx.get_index();
+            if bits.e_2_24.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow24.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_24_marks.clear();
-            if queues.e_2_24.is_empty() {
-                queues.e_2_24 = e_2_24_marks;
+                e2pow24.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
-        if !queues.e_2_32.is_empty() {
-            let mut e_2_32_marks = core::mem::take(&mut queues.e_2_32);
-            e_2_32_marks.retain(|idx| !bits.e_2_32.get_bit(idx.get_index(), &bits.bits));
-            e_2_32_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.e_2_32.set_bit(index, &bits.bits) {
-                    if let Some(descriptors) = e2pow32.descriptors.get(&idx) {
-                        mark_descriptors(descriptors, &mut queues);
-                    }
-                    e2pow32.values.get(index).mark_values(&mut queues);
-                } else {
-                    panic!("ElementsVector was not unique");
+        while let Some(idx) = queues.e_2_32.pop() {
+            let index = idx.get_index();
+            if bits.e_2_32.set_bit(index, &bits.bits) {
+                if let Some(descriptors) = e2pow32.descriptors.get(&idx) {
+                    mark_descriptors(descriptors, &mut queues);
                 }
-            });
-            e_2_32_marks.clear();
-            if queues.e_2_32.is_empty() {
-                queues.e_2_32 = e_2_32_marks;
+                e2pow32.values.get(index).mark_values(&mut queues);
+            } else if cfg!(debug_assertions) {
+                panic!("ElementsVector was not unique");
             }
         }
 
-        if !queues.k_2_4.is_empty() {
-            let mut k_2_4_marks = core::mem::take(&mut queues.k_2_4);
-            k_2_4_marks.retain(|idx| !bits.k_2_4.get_bit(idx.get_index(), &bits.bits));
-            k_2_4_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_4.set_bit(index, &bits.bits) {
-                    k2pow4.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_4_marks.clear();
-            if queues.k_2_4.is_empty() {
-                queues.k_2_4 = k_2_4_marks;
+        while let Some(idx) = queues.k_2_4.pop() {
+            let index = idx.get_index();
+            if bits.k_2_4.set_bit(index, &bits.bits) {
+                k2pow4.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_1.is_empty() {
-            let mut k_2_1_marks = core::mem::take(&mut queues.k_2_1);
-            k_2_1_marks.retain(|idx| !bits.k_2_1.get_bit(idx.get_index(), &bits.bits));
-            k_2_1_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_1.set_bit(index, &bits.bits) {
-                    k2pow1.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_1_marks.clear();
-            if queues.k_2_1.is_empty() {
-                queues.k_2_1 = k_2_1_marks;
+        while let Some(idx) = queues.k_2_1.pop() {
+            let index = idx.get_index();
+            if bits.k_2_1.set_bit(index, &bits.bits) {
+                k2pow1.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_2.is_empty() {
-            let mut k_2_2_marks = core::mem::take(&mut queues.k_2_2);
-            k_2_2_marks.retain(|idx| !bits.k_2_2.get_bit(idx.get_index(), &bits.bits));
-            k_2_2_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_2.set_bit(index, &bits.bits) {
-                    k2pow2.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_2_marks.clear();
-            if queues.k_2_2.is_empty() {
-                queues.k_2_2 = k_2_2_marks;
+        while let Some(idx) = queues.k_2_2.pop() {
+            let index = idx.get_index();
+            if bits.k_2_2.set_bit(index, &bits.bits) {
+                k2pow2.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_3.is_empty() {
-            let mut k_2_3_marks = core::mem::take(&mut queues.k_2_3);
-            k_2_3_marks.retain(|idx| !bits.k_2_3.get_bit(idx.get_index(), &bits.bits));
-            k_2_3_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_3.set_bit(index, &bits.bits) {
-                    k2pow3.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_3_marks.clear();
-            if queues.k_2_3.is_empty() {
-                queues.k_2_3 = k_2_3_marks;
+        while let Some(idx) = queues.k_2_3.pop() {
+            let index = idx.get_index();
+            if bits.k_2_3.set_bit(index, &bits.bits) {
+                k2pow3.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_6.is_empty() {
-            let mut k_2_6_marks = core::mem::take(&mut queues.k_2_6);
-            k_2_6_marks.retain(|idx| !bits.k_2_6.get_bit(idx.get_index(), &bits.bits));
-            k_2_6_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_6.set_bit(index, &bits.bits) {
-                    k2pow6.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_6_marks.clear();
-            if queues.k_2_6.is_empty() {
-                queues.k_2_6 = k_2_6_marks;
+        while let Some(idx) = queues.k_2_6.pop() {
+            let index = idx.get_index();
+            if bits.k_2_6.set_bit(index, &bits.bits) {
+                k2pow6.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_8.is_empty() {
-            let mut k_2_8_marks = core::mem::take(&mut queues.k_2_8);
-            k_2_8_marks.retain(|idx| !bits.k_2_8.get_bit(idx.get_index(), &bits.bits));
-            k_2_8_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_8.set_bit(index, &bits.bits) {
-                    k2pow8.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_8_marks.clear();
-            if queues.k_2_8.is_empty() {
-                queues.k_2_8 = k_2_8_marks;
+        while let Some(idx) = queues.k_2_8.pop() {
+            let index = idx.get_index();
+            if bits.k_2_8.set_bit(index, &bits.bits) {
+                k2pow8.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_10.is_empty() {
-            let mut k_2_10_marks = core::mem::take(&mut queues.k_2_10);
-            k_2_10_marks.retain(|idx| !bits.k_2_10.get_bit(idx.get_index(), &bits.bits));
-            k_2_10_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_10.set_bit(index, &bits.bits) {
-                    k2pow10.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_10_marks.clear();
-            if queues.k_2_10.is_empty() {
-                queues.k_2_10 = k_2_10_marks;
+        while let Some(idx) = queues.k_2_10.pop() {
+            let index = idx.get_index();
+            if bits.k_2_10.set_bit(index, &bits.bits) {
+                k2pow10.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_12.is_empty() {
-            let mut k_2_12_marks = core::mem::take(&mut queues.k_2_12);
-            k_2_12_marks.retain(|idx| !bits.k_2_12.get_bit(idx.get_index(), &bits.bits));
-            k_2_12_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_12.set_bit(index, &bits.bits) {
-                    k2pow12.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_12_marks.clear();
-            if queues.k_2_12.is_empty() {
-                queues.k_2_12 = k_2_12_marks;
+        while let Some(idx) = queues.k_2_12.pop() {
+            let index = idx.get_index();
+            if bits.k_2_12.set_bit(index, &bits.bits) {
+                k2pow12.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_16.is_empty() {
-            let mut k_2_16_marks = core::mem::take(&mut queues.k_2_16);
-            k_2_16_marks.retain(|idx| !bits.k_2_16.get_bit(idx.get_index(), &bits.bits));
-            k_2_16_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_16.set_bit(index, &bits.bits) {
-                    k2pow16.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_16_marks.clear();
-            if queues.k_2_16.is_empty() {
-                queues.k_2_16 = k_2_16_marks;
+        while let Some(idx) = queues.k_2_16.pop() {
+            let index = idx.get_index();
+            if bits.k_2_16.set_bit(index, &bits.bits) {
+                k2pow16.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_24.is_empty() {
-            let mut k_2_24_marks = core::mem::take(&mut queues.k_2_24);
-            k_2_24_marks.retain(|idx| !bits.k_2_24.get_bit(idx.get_index(), &bits.bits));
-            k_2_24_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_24.set_bit(index, &bits.bits) {
-                    k2pow24.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_24_marks.clear();
-            if queues.k_2_24.is_empty() {
-                queues.k_2_24 = k_2_24_marks;
+        while let Some(idx) = queues.k_2_24.pop() {
+            let index = idx.get_index();
+            if bits.k_2_24.set_bit(index, &bits.bits) {
+                k2pow24.keys.get(index).mark_values(&mut queues)
             }
         }
-        if !queues.k_2_32.is_empty() {
-            let mut k_2_32_marks = core::mem::take(&mut queues.k_2_32);
-            k_2_32_marks.retain(|idx| !bits.k_2_32.get_bit(idx.get_index(), &bits.bits));
-            k_2_32_marks.iter().for_each(|&idx| {
-                let index = idx.get_index();
-                if bits.k_2_32.set_bit(index, &bits.bits) {
-                    k2pow32.keys.get(index).mark_values(&mut queues)
-                }
-            });
-            k_2_32_marks.clear();
-            if queues.k_2_32.is_empty() {
-                queues.k_2_32 = k_2_32_marks;
+        while let Some(idx) = queues.k_2_32.pop() {
+            let index = idx.get_index();
+            if bits.k_2_32.set_bit(index, &bits.bits) {
+                k2pow32.keys.get(index).mark_values(&mut queues)
             }
         }
     }

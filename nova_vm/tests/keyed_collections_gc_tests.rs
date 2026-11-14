@@ -135,3 +135,47 @@ check("deep chain", deepValues.get(c).end, "deep");
 "#,
     );
 }
+
+#[cfg(feature = "weak-refs")]
+#[test]
+fn weak_map_entries_follow_compaction() {
+    let mut agent = GcAgent::new(AgentOptions::default(), &DefaultHostHooks);
+    let realm = agent.create_default_realm();
+    run(
+        &mut agent,
+        &realm,
+        r#"
+var early = Array.from({ length: 200 }, (_, i) => ({ early: i }));
+var garbage = Array.from({ length: 2000 }, (_, i) => ({ g: i }));
+var late = Array.from({ length: 2000 }, (_, i) => ({ late: i }));
+var wm = new WeakMap();
+for (const k of early) wm.set(k, { v: k.early });
+for (const k of late) wm.set(k, { v: -k.late });
+for (let i = 0; i < 500; i++) wm.set({ dead: i }, { v: i });
+var sym = Symbol("moved");
+wm.set(sym, "symbol value");
+garbage = null;
+late = late.filter((_, i) => i % 3 !== 0);
+"#,
+    );
+    agent.gc();
+    let check = r#"
+function check(name, actual, expected) {
+  if (actual !== expected) throw new Error(name + ": expected " + expected + ", got " + actual);
+}
+for (const k of early) check("early " + k.early, wm.get(k).v, k.early);
+for (const k of late) check("late " + k.late, wm.get(k).v, -k.late);
+check("symbol", wm.get(sym), "symbol value");
+check("missing", wm.has({ late: 1 }), false);
+"#;
+    run(&mut agent, &realm, check);
+    run(
+        &mut agent,
+        &realm,
+        "early = early.slice(100); for (const k of late) if (k.late % 2) wm.delete(k); late = late.filter(k => k.late % 2 === 0); var more = Array.from({ length: 1000 }, (_, i) => ({ m: i })); more = null;",
+    );
+    agent.gc();
+    run(&mut agent, &realm, check);
+    agent.gc();
+    run(&mut agent, &realm, check);
+}
