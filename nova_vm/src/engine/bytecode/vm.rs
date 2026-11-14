@@ -5,6 +5,8 @@
 mod binding_methods;
 mod execute_instructions;
 
+use core::cell::RefCell;
+
 use execute_instructions::*;
 
 use wtf8::Wtf8Buf;
@@ -171,6 +173,37 @@ impl SuspendedVm {
     }
 }
 
+const VM_STACK_POOL_LEN: usize = 32;
+const VM_STACK_POOL_MAX_CAPACITY: usize = 1024;
+
+type PooledVmStacks = (Vec<Value<'static>>, Vec<VmIteratorRecord<'static>>);
+
+thread_local! {
+    static VM_STACK_POOL: RefCell<Vec<PooledVmStacks>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Drop for Vm {
+    fn drop(&mut self) {
+        if self.stack.capacity() == 0
+            || self.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+            || self.iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+        {
+            return;
+        }
+        let mut stack = core::mem::take(&mut self.stack);
+        let mut iterator_stack = core::mem::take(&mut self.iterator_stack);
+        stack.clear();
+        iterator_stack.clear();
+        let _ = VM_STACK_POOL.try_with(|pool| {
+            if let Ok(mut pool) = pool.try_borrow_mut()
+                && pool.len() < VM_STACK_POOL_LEN
+            {
+                pool.push((stack, iterator_stack));
+            }
+        });
+    }
+}
+
 impl Vm {
     const EMPTY: Self = Self {
         ip: 0,
@@ -183,24 +216,30 @@ impl Vm {
     };
 
     fn new() -> Self {
+        let (stack, iterator_stack) = VM_STACK_POOL
+            .try_with(|pool| pool.try_borrow_mut().ok().and_then(|mut pool| pool.pop()))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| (Vec::with_capacity(32), Vec::new()));
         Self {
             ip: 0,
-            stack: Vec::with_capacity(32),
+            stack,
             reference_stack: Vec::new(),
-            iterator_stack: Vec::new(),
+            iterator_stack,
             exception_handler_stack: Vec::new(),
             result: None,
             reference: None,
         }
     }
 
-    fn suspend(self) -> SuspendedVm {
+    fn suspend(mut self) -> SuspendedVm {
         SuspendedVm {
             ip: self.ip,
-            stack: self.stack.into_boxed_slice(),
-            reference_stack: self.reference_stack.into_boxed_slice(),
-            iterator_stack: self.iterator_stack.into_boxed_slice(),
-            exception_jump_target_stack: self.exception_handler_stack.into_boxed_slice(),
+            stack: core::mem::take(&mut self.stack).into_boxed_slice(),
+            reference_stack: core::mem::take(&mut self.reference_stack).into_boxed_slice(),
+            iterator_stack: core::mem::take(&mut self.iterator_stack).into_boxed_slice(),
+            exception_jump_target_stack: core::mem::take(&mut self.exception_handler_stack)
+                .into_boxed_slice(),
         }
     }
 
