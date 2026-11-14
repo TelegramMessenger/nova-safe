@@ -897,11 +897,23 @@ impl RegExpPrototype {
             // f. Set position to the result of clamping position between 0 and lengthS.
             let position = position.into_i64().clamp(0, length_s as i64) as usize;
             // g. Let captures be a new empty List.
-            let mut captures =
-                Vec::with_capacity(n_captures as usize + if functional_replace { 3 } else { 0 });
+            // The list grows as captures come: `nCaptures` is the length an
+            // `exec` written by the script returned.
+            let mut captures = Vec::with_capacity(
+                (n_captures as usize).min(1024) + if functional_replace { 3 } else { 0 },
+            );
             // h. Let n be 1.
             // i. Repeat, while n ≤ nCaptures,
             for n in 1..=n_captures {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
+                if n % 4096 == 0 {
+                    agent
+                        .check_heap_limit(
+                            captures.len() * core::mem::size_of::<Option<Scoped<String>>>(),
+                            gc.nogc(),
+                        )
+                        .unbind()?;
+                }
                 // i. Let capN be ? Get(result, ! ToString(𝔽(n))).
                 let cap_n = get(
                     agent,
@@ -1027,6 +1039,9 @@ impl RegExpPrototype {
                     position,
                 );
                 accumulated_result.push_wtf8(replacement_string.as_wtf8_(agent));
+                agent
+                    .check_string_length(accumulated_result.len(), gc.nogc())
+                    .unbind()?;
                 // iii. Set nextSourcePosition to position + matchLength.
                 next_source_position = position + match_length;
             }

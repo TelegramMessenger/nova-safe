@@ -3192,6 +3192,10 @@ fn replace_string_matches<'gc, 'scope>(
         let str = string.get(agent);
         str.push_utf16_substring(agent, &mut result, end_of_last_match, p);
         result.push_wtf8(replacement.as_wtf8_(agent));
+        agent.poll_interrupt(gc.nogc()).unbind()?;
+        agent
+            .check_string_length(result.len(), gc.nogc())
+            .unbind()?;
         // e. Set endOfLastMatch to p + searchLength.
         end_of_last_match = p + search_length;
     }
@@ -3250,6 +3254,14 @@ pub(crate) fn get_substitution<'gc, 'scope>(
     let mut literal_start = 0;
     // 5. Repeat, while templateRemainder is not the empty String,
     while i < template.len() {
+        if template[i] == b'$' {
+            // Every "$1" can append the whole input: a template of many of
+            // them asks for a result the script sizes.
+            agent.poll_interrupt(gc.nogc()).unbind()?;
+            agent
+                .check_string_length(result.len(), gc.nogc())
+                .unbind()?;
+        }
         // a. NOTE: The following steps isolate ref (a prefix of
         //    templateRemainder), determine refReplacement (its replacement),
         //    and then append that replacement to result.

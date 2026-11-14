@@ -726,3 +726,79 @@ fn string_raw_with_a_huge_literal_count_is_bounded() {
         Outcome::Value("a1b2c".into())
     );
 }
+
+#[test]
+fn defining_far_array_indices_respects_the_heap_limit() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+        let over = thrown("RangeError: Out of memory: allocation over the heap limit");
+        for source in [
+            "Object.defineProperty([], '100000000', { value: 1 })",
+            "Object.defineProperties([], { 100000000: { value: 1 } })",
+            "Reflect.defineProperty([], '100000000', { value: 1 })",
+            "Object.assign([], { 100000000: 1 })",
+            "[].concat({ [Symbol.isConcatSpreadable]: true, length: 100000001, 100000000: 1 })",
+        ] {
+            assert_eq!(engine.run(source, None), over, "{source}");
+        }
+        assert_eq!(
+            engine.run(
+                "var a = []; a[1000] = 1; Object.defineProperty(a, '2000', { value: 2 }); a.length",
+                None
+            ),
+            Outcome::Value("2001".into())
+        );
+        engine.agent.set_heap_limit(None);
+        engine.assert_usable();
+    });
+}
+
+#[test]
+fn replace_with_script_sized_results_is_bounded() {
+    on_big_stack(|| {
+        assert_interrupted(
+            "var r = /a/; r.exec = function () { return { index: 0, length: 2 ** 53 - 1, 0: 'a' }; }; 'a'.replace(r, 'x')",
+        );
+        assert_interrupted(
+            "var r = /a/g; var n = 0; r.exec = function () { return n++ ? null : { index: 0, length: 2 ** 31, 0: 'a' }; }; 'a'.replace(r, () => 'x')",
+        );
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+        assert_eq!(
+            engine.run(
+                "function puff(x, n) { while (x.length < n) x += x; return x.substring(0, n); } var x = puff('1', 1 << 20); var rep = puff('$1', 1 << 16); x.replace(/(.+)/g, rep)",
+                Some(Duration::from_secs(60)),
+            ),
+            thrown("RangeError: Out of memory: allocation over the heap limit")
+        );
+        assert_eq!(
+            engine.run("'a-b-a'.replaceAll('a', '$&$&')", None),
+            Outcome::Value("aa-b-aa".into())
+        );
+        engine.agent.set_heap_limit(None);
+        engine.assert_usable();
+    });
+}
+
+#[test]
+fn rooted_handles_of_native_proxy_loops_count_toward_the_heap_limit() {
+    on_big_stack(|| {
+        for source in [
+            "var t = {}; var p = new Proxy(t, {}); Object.setPrototypeOf(t, p); p instanceof Function",
+            "Array.prototype.indexOf.call(new Proxy({ length: 2 ** 53 - 1 }, {}), 1)",
+            "Array.prototype.every.call(new Proxy({ length: 2 ** 53 - 1 }, {}), x => true)",
+        ] {
+            let mut engine = Engine::new();
+            engine.agent.set_heap_limit(Some(32 * 1024 * 1024));
+            let outcome = engine.run(source, Some(Duration::from_secs(120)));
+            assert_eq!(
+                outcome,
+                Outcome::Terminated(TerminationReason::OutOfMemory),
+                "{source}"
+            );
+            engine.agent.set_heap_limit(None);
+            engine.assert_usable();
+        }
+    });
+}
