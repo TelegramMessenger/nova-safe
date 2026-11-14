@@ -5,7 +5,7 @@
 
 use std::mem::{align_of, offset_of, size_of};
 
-use nonmax::NonMaxU32;
+use oxc_index::nonmax::NonMaxU32;
 
 use crate::{
     comment_node::*, module_record::*, number::*, operator::*, reference::*, scope::*, symbol::*,

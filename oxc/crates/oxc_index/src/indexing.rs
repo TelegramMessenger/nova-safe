@@ -1,4 +1,4 @@
-use crate::{Idx, IndexSlice};
+use crate::{Idx, IndexVec};
 
 mod private_slice_index {
     pub trait Sealed {}
@@ -10,11 +10,11 @@ mod private_slice_index {
 pub trait IdxSliceIndex<I: Idx, T>: private_slice_index::Sealed {
     type Output: ?Sized;
 
-    fn get(self, slice: &IndexSlice<I, [T]>) -> Option<&Self::Output>;
-    fn get_mut(self, slice: &mut IndexSlice<I, [T]>) -> Option<&mut Self::Output>;
+    fn get(self, slice: &[T]) -> Option<&Self::Output>;
+    fn get_mut(self, slice: &mut [T]) -> Option<&mut Self::Output>;
 
-    fn index(self, slice: &IndexSlice<I, [T]>) -> &Self::Output;
-    fn index_mut(self, slice: &mut IndexSlice<I, [T]>) -> &mut Self::Output;
+    fn index(self, slice: &[T]) -> &Self::Output;
+    fn index_mut(self, slice: &mut [T]) -> &mut Self::Output;
 }
 
 // Does this defeat the point of sealing?
@@ -24,49 +24,49 @@ impl<I: Idx, T> IdxSliceIndex<I, T> for I {
     type Output = T;
 
     #[inline]
-    fn get(self, slice: &IndexSlice<I, [T]>) -> Option<&Self::Output> {
-        slice.raw.get(self.index())
+    fn get(self, slice: &[T]) -> Option<&Self::Output> {
+        slice.get(self.index())
     }
 
     #[inline]
-    fn get_mut(self, slice: &mut IndexSlice<I, [T]>) -> Option<&mut Self::Output> {
-        slice.raw.get_mut(self.index())
+    fn get_mut(self, slice: &mut [T]) -> Option<&mut Self::Output> {
+        slice.get_mut(self.index())
     }
 
     #[inline]
-    fn index(self, slice: &IndexSlice<I, [T]>) -> &Self::Output {
-        &slice.raw[self.index()]
+    fn index(self, slice: &[T]) -> &Self::Output {
+        &slice[self.index()]
     }
 
     #[inline]
-    fn index_mut(self, slice: &mut IndexSlice<I, [T]>) -> &mut Self::Output {
-        &mut slice.raw[self.index()]
+    fn index_mut(self, slice: &mut [T]) -> &mut Self::Output {
+        &mut slice[self.index()]
     }
 }
 
 macro_rules! range_slice {
     ($r:ty) => {
         impl<I: Idx, T> IdxSliceIndex<I, T> for $r {
-            type Output = IndexSlice<I, [T]>;
+            type Output = [T];
 
             #[inline]
-            fn get(self, slice: &IndexSlice<I, [T]>) -> Option<&Self::Output> {
-                slice.raw.get(self.into_range()).map(IndexSlice::new)
+            fn get(self, slice: &[T]) -> Option<&Self::Output> {
+                slice.get(self.into_range())
             }
 
             #[inline]
-            fn get_mut(self, slice: &mut IndexSlice<I, [T]>) -> Option<&mut Self::Output> {
-                slice.raw.get_mut(self.into_range()).map(IndexSlice::new_mut)
+            fn get_mut(self, slice: &mut [T]) -> Option<&mut Self::Output> {
+                slice.get_mut(self.into_range())
             }
 
             #[inline]
-            fn index(self, slice: &IndexSlice<I, [T]>) -> &Self::Output {
-                IndexSlice::new(&slice.raw[self.into_range()])
+            fn index(self, slice: &[T]) -> &Self::Output {
+                &slice[self.into_range()]
             }
 
             #[inline]
-            fn index_mut(self, slice: &mut IndexSlice<I, [T]>) -> &mut Self::Output {
-                IndexSlice::new_mut(&mut slice.raw[self.into_range()])
+            fn index_mut(self, slice: &mut [T]) -> &mut Self::Output {
+                &mut slice[self.into_range()]
             }
         }
     };
@@ -86,25 +86,25 @@ range_slice!(core::ops::RangeToInclusive<I>);
 // range_slice!(core::ops::RangeFull);
 impl private_slice_index::Sealed for core::ops::RangeFull {}
 impl<I: Idx, T> IdxSliceIndex<I, T> for core::ops::RangeFull {
-    type Output = IndexSlice<I, [T]>;
+    type Output = [T];
 
     #[inline]
-    fn get(self, slice: &IndexSlice<I, [T]>) -> Option<&Self::Output> {
+    fn get(self, slice: &[T]) -> Option<&Self::Output> {
         Some(slice)
     }
 
     #[inline]
-    fn get_mut(self, slice: &mut IndexSlice<I, [T]>) -> Option<&mut Self::Output> {
+    fn get_mut(self, slice: &mut [T]) -> Option<&mut Self::Output> {
         Some(slice)
     }
 
     #[inline]
-    fn index(self, slice: &IndexSlice<I, [T]>) -> &Self::Output {
+    fn index(self, slice: &[T]) -> &Self::Output {
         slice
     }
 
     #[inline]
-    fn index_mut(self, slice: &mut IndexSlice<I, [T]>) -> &mut Self::Output {
+    fn index_mut(self, slice: &mut [T]) -> &mut Self::Output {
         slice
     }
 }
@@ -189,7 +189,7 @@ impl<I: Idx> IdxRangeBounds<I> for core::ops::RangeToInclusive<I> {
     }
 }
 
-impl<I, R, T> core::ops::Index<R> for IndexSlice<I, [T]>
+impl<I, R, T> core::ops::Index<R> for IndexVec<I, T>
 where
     I: Idx,
     R: IdxSliceIndex<I, T>,
@@ -198,17 +198,17 @@ where
 
     #[inline]
     fn index(&self, index: R) -> &R::Output {
-        index.index(self)
+        index.index(&self.raw)
     }
 }
 
-impl<I, R, T> core::ops::IndexMut<R> for IndexSlice<I, [T]>
+impl<I, R, T> core::ops::IndexMut<R> for IndexVec<I, T>
 where
     I: Idx,
     R: IdxSliceIndex<I, T>,
 {
     #[inline]
     fn index_mut(&mut self, index: R) -> &mut R::Output {
-        index.index_mut(self)
+        index.index_mut(&mut self.raw)
     }
 }

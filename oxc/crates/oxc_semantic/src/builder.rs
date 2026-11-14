@@ -32,7 +32,7 @@ use crate::{
     diagnostics::redeclaration,
     label::UnusedLabels,
     node::AstNodes,
-    scoping::{Bindings, Scoping},
+    scoping::Scoping,
     stats::Stats,
     unresolved_stack::UnresolvedReferences,
 };
@@ -808,17 +808,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         // Move all bindings from catch clause param scope to catch clause body scope
         // to make it easier to resolve references and check redeclare errors
         if self.scoping.scope_flags(parent_scope_id).is_catch_clause() {
-            let parent_bindings = self.scoping.cell.with_dependent_mut(|allocator, cell| {
-                if cell.bindings[parent_scope_id].is_empty() {
-                    None
-                } else {
-                    let mut parent_bindings = Bindings::new_in(allocator);
-                    mem::swap(&mut cell.bindings[parent_scope_id], &mut parent_bindings);
-                    let parent_symbol_ids = parent_bindings.values().copied().collect::<Vec<_>>();
-                    cell.bindings[self.current_scope_id] = parent_bindings;
-                    Some(parent_symbol_ids)
-                }
-            });
+            let parent_bindings =
+                self.scoping.move_catch_param_bindings(parent_scope_id, self.current_scope_id);
             if let Some(parent_bindings) = parent_bindings {
                 for symbol_id in parent_bindings {
                     self.scoping.set_symbol_scope_id(symbol_id, self.current_scope_id);

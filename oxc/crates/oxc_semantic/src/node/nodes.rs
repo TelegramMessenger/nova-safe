@@ -1,7 +1,7 @@
 use std::iter::FusedIterator;
 
 use oxc_ast::{AstKind, ast::Program};
-use oxc_index::{IndexSlice, IndexVec};
+use oxc_index::IndexVec;
 use oxc_syntax::{
     node::{NodeFlags, NodeId},
     scope::ScopeId,
@@ -319,12 +319,12 @@ impl<'a, 'n> IntoIterator for &'n AstNodes<'a> {
 #[derive(Debug, Clone)]
 pub struct AstNodeIdAncestorsIter<'n> {
     current_node_id: NodeId,
-    parent_ids: &'n IndexSlice<NodeId, [NodeId]>,
+    parent_ids: &'n IndexVec<NodeId, NodeId>,
 }
 
 impl<'n> AstNodeIdAncestorsIter<'n> {
     fn new(node_id: NodeId, nodes: &'n AstNodes<'_>) -> Self {
-        Self { current_node_id: node_id, parent_ids: nodes.parent_ids.as_slice() }
+        Self { current_node_id: node_id, parent_ids: &nodes.parent_ids }
     }
 }
 

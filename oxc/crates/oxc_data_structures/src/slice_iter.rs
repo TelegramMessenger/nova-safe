@@ -2,18 +2,16 @@
 //!
 //! Provides additional methods to inspect and advance iterators.
 //!
-//! See [`SliceIter`] and [`SliceIterMut`].
+//! See [`SliceIter`].
 
 // All methods boil down to just a few instructions.
 // https://godbolt.org/z/KrsTz9478
 #![expect(clippy::inline_always)]
 
 use std::{
-    ptr::NonNull,
+    mem,
     slice::{Iter, IterMut},
 };
-
-use crate::assert_unchecked;
 
 /// Extension trait for slice iterators.
 #[expect(private_bounds)]
@@ -38,14 +36,11 @@ pub trait SliceIter<'slice, T>: ExactSizeIterator + AsRef<[T]> + Sealed {
     where
         T: Copy;
 
-    /// Get next item without checking that iterator is not empty.
+    /// Get next item of an iterator that is not empty.
     ///
-    /// Equivalent to [`Iterator::next`] but does not check that iterator is not exhausted,
-    /// and therefore does not return an `Option`.
-    ///
-    /// # SAFETY
-    /// Iterator must not be empty.
-    unsafe fn next_unchecked(&mut self) -> Self::Item;
+    /// # Panics
+    /// Panics if the iterator is empty.
+    fn next_unchecked(&mut self) -> Self::Item;
 
     /// Advance iterator by `count` items.
     ///
@@ -54,15 +49,14 @@ pub trait SliceIter<'slice, T>: ExactSizeIterator + AsRef<[T]> + Sealed {
     #[inline]
     fn advance(&mut self, count: usize) {
         assert!(self.len() >= count, "Iterator does not have `count` items remaining");
-        // SAFETY: Just checked iterator contains at least `count` more items
-        unsafe { self.advance_unchecked(count) };
+        self.advance_unchecked(count);
     }
 
-    /// Advance iterator by `count` items, without bounds checks.
+    /// Advance iterator by `count` items.
     ///
-    /// # SAFETY
-    /// Iterator must contain at least `count` more items.
-    unsafe fn advance_unchecked(&mut self, count: usize);
+    /// # Panics
+    /// Panics if iterator does not contain at least `count` more items.
+    fn advance_unchecked(&mut self, count: usize);
 
     /// Advance iterator to end.
     #[inline(always)]
@@ -119,32 +113,14 @@ impl<'slice, T: 'slice> SliceIter<'slice, T> for Iter<'slice, T> {
         self.peek().copied()
     }
 
-    /// Get next item without checking that iterator is not empty.
-    ///
-    /// Equivalent to [`Iterator::next`] but does not check that iterator is not exhausted,
-    /// and therefore does not return an `Option`.
-    ///
-    /// # SAFETY
-    /// Iterator must not be empty.
     #[inline(always)]
-    unsafe fn next_unchecked(&mut self) -> &'slice T {
-        // Unchecked assertion removes the bounds check in `unwrap`.
-        // SAFETY: Caller guarantees iterator is not empty.
-        unsafe { assert_unchecked!(self.len() != 0) };
-        self.next().unwrap()
+    fn next_unchecked(&mut self) -> &'slice T {
+        self.next().expect("iterator is not empty")
     }
 
-    /// Advance iterator by `count` items, without bounds checks.
-    ///
-    /// # SAFETY
-    /// Iterator must contain at least `count` more items.
     #[inline(always)]
-    unsafe fn advance_unchecked(&mut self, count: usize) {
-        // This function boils down to just adding `count` to the current pointer (1 instruction).
-        // https://godbolt.org/z/hPT7T6YjY
-
-        // SAFETY: Caller guarantees there are at least `count` items remaining in the iterator
-        let slice = unsafe { self.as_slice().get_unchecked(count..) };
+    fn advance_unchecked(&mut self, count: usize) {
+        let slice = self.as_slice().get(count..).expect("iterator has `count` items remaining");
         *self = slice.iter();
     }
 }
@@ -177,67 +153,16 @@ impl<'slice, T: 'slice> SliceIter<'slice, T> for IterMut<'slice, T> {
         self.peek().copied()
     }
 
-    /// Get next item without checking that iterator is not empty.
-    ///
-    /// Equivalent to [`Iterator::next`] but does not check that iterator is not exhausted,
-    /// and therefore does not return an `Option`.
-    ///
-    /// # SAFETY
-    /// Iterator must not be empty.
     #[inline(always)]
-    unsafe fn next_unchecked(&mut self) -> &'slice mut T {
-        // Unchecked assertion removes the bounds check in `unwrap`.
-        // SAFETY: Caller guarantees iterator is not empty.
-        unsafe { assert_unchecked!(self.len() != 0) };
-        self.next().unwrap()
+    fn next_unchecked(&mut self) -> &'slice mut T {
+        self.next().expect("iterator is not empty")
     }
 
-    /// Advance iterator by `count` items, without bounds checks.
-    ///
-    /// # SAFETY
-    /// Iterator must contain at least `count` more items.
     #[inline(always)]
-    unsafe fn advance_unchecked(&mut self, count: usize) {
-        // This function boils down to just adding `count` to the current pointer (1 instruction).
-        // https://godbolt.org/z/hPT7T6YjY
-
-        // SAFETY: Caller guarantees there are at least `count` items remaining in the iterator
-        #[expect(unstable_name_collisions)]
-        let slice = unsafe { self.as_mut_slice().get_unchecked_mut(count..) };
-        // Extend the lifetime of the slice to `'slice`.
-        // SAFETY: This method takes `&mut self`, so no other references to remaining items
-        // in the iterator can exist, so no aliasing violations are possible.
-        // We immediately use this slice to create a new iterator, and the lifetime-extended slice
-        // does not escape this method.
-        let slice = unsafe { NonNull::from(slice).as_mut() };
-        *self = slice.iter_mut();
-    }
-}
-
-/// Extension trait for [`IterMut`] slice iterator.
-pub trait SliceIterMut<'slice, T>: SliceIter<'slice, T> {
-    /// Get the remaining items in the iterator as a mutable slice.
-    fn as_mut_slice(&mut self) -> &mut [T];
-}
-
-impl<'slice, T: 'slice> SliceIterMut<'slice, T> for IterMut<'slice, T> {
-    /// Get the remaining items in the iterator as a mutable slice.
-    ///
-    /// This method is present in standard library, but requires nightly Rust.
-    #[inline]
-    fn as_mut_slice(&mut self) -> &mut [T] {
-        // SAFETY: We create a temporary copy of the iterator, and convert it to a `&mut [T]` slice,
-        // but we don't hold a slice from the original iterator at the same time, and this method takes
-        // `&mut self`, so no other references to iterator's remaining items can exist.
-        // The returned slice borrows the iterator, so the iterator cannot be used to create any other
-        // references to items while the slice exists. Therefore, no aliasing violations are possible.
-        //
-        // `IterMut::into_slice` consumes and drops the copy of the iterator, but `IterMut` does not
-        // implement `Drop`, so that's not a problem.
-        unsafe {
-            let iter_copy = NonNull::from(self).read();
-            iter_copy.into_slice()
-        }
+    fn advance_unchecked(&mut self, count: usize) {
+        let slice = mem::take(self).into_slice();
+        let rest = slice.get_mut(count..).expect("iterator has `count` items remaining");
+        *self = rest.iter_mut();
     }
 }
 
@@ -297,13 +222,10 @@ mod test_iter {
     #[test]
     fn next_unchecked() {
         let mut iter = [11, 22, 33].iter();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            assert_eq!(iter.next_unchecked(), &11);
-            assert_eq!(iter.next_unchecked(), &22);
-            assert_eq!(iter.next_unchecked(), &33);
-            assert_eq!(iter.next(), None);
-        }
+        assert_eq!(iter.next_unchecked(), &11);
+        assert_eq!(iter.next_unchecked(), &22);
+        assert_eq!(iter.next_unchecked(), &33);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -335,32 +257,20 @@ mod test_iter {
     #[test]
     fn advance_unchecked() {
         let mut iter = [11, 22, 33].iter();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(0);
-            assert_eq!(iter.next(), Some(&11));
-        }
+        iter.advance_unchecked(0);
+        assert_eq!(iter.next(), Some(&11));
 
         let mut iter = [11, 22, 33].iter();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(1);
-            assert_eq!(iter.next(), Some(&22));
-        }
+        iter.advance_unchecked(1);
+        assert_eq!(iter.next(), Some(&22));
 
         let mut iter = [11, 22, 33].iter();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(2);
-            assert_eq!(iter.next(), Some(&33));
-        }
+        iter.advance_unchecked(2);
+        assert_eq!(iter.next(), Some(&33));
 
         let mut iter = [11, 22, 33].iter();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(3);
-            assert_eq!(iter.next(), None);
-        }
+        iter.advance_unchecked(3);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -483,13 +393,10 @@ mod test_iter_mut {
     fn next_unchecked() {
         let mut arr = [11, 22, 33];
         let mut iter = arr.iter_mut();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            assert_eq!(iter.next_unchecked(), &11);
-            assert_eq!(iter.next_unchecked(), &22);
-            assert_eq!(iter.next_unchecked(), &33);
-            assert_eq!(iter.next(), None);
-        }
+        assert_eq!(iter.next_unchecked(), &11);
+        assert_eq!(iter.next_unchecked(), &22);
+        assert_eq!(iter.next_unchecked(), &33);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -526,32 +433,20 @@ mod test_iter_mut {
         let mut arr = [11, 22, 33];
 
         let mut iter = arr.iter_mut();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(0);
-            assert_eq!(iter.next(), Some(&mut 11));
-        }
+        iter.advance_unchecked(0);
+        assert_eq!(iter.next(), Some(&mut 11));
 
         let mut iter = arr.iter_mut();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(1);
-            assert_eq!(iter.next(), Some(&mut 22));
-        }
+        iter.advance_unchecked(1);
+        assert_eq!(iter.next(), Some(&mut 22));
 
         let mut iter = arr.iter_mut();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(2);
-            assert_eq!(iter.next(), Some(&mut 33));
-        }
+        iter.advance_unchecked(2);
+        assert_eq!(iter.next(), Some(&mut 33));
 
         let mut iter = arr.iter_mut();
-        // SAFETY: `iter` contains 3 items
-        unsafe {
-            iter.advance_unchecked(3);
-            assert_eq!(iter.next(), None);
-        }
+        iter.advance_unchecked(3);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -627,29 +522,5 @@ mod test_iter_mut {
 
         iter.next();
         assert_eq!(iter.end_ptr() as usize, end_addr);
-    }
-
-    #[test]
-    #[expect(unstable_name_collisions)]
-    fn as_mut_slice() {
-        let mut slice = [11u32, 22, 33];
-        let mut iter = slice.iter_mut();
-
-        assert_eq!(iter.as_mut_slice(), &mut [11, 22, 33]);
-
-        assert_eq!(iter.next(), Some(&mut 11));
-        assert_eq!(iter.as_mut_slice(), &mut [22, 33]);
-
-        iter.as_mut_slice()[0] = 222;
-        iter.as_mut_slice()[1] = 333;
-        assert_eq!(iter.as_mut_slice(), &mut [222, 333]);
-
-        assert_eq!(iter.next(), Some(&mut 222));
-        assert_eq!(iter.as_mut_slice(), &mut [333]);
-
-        assert_eq!(iter.next(), Some(&mut 333));
-        assert_eq!(iter.as_mut_slice(), &mut []);
-
-        assert_eq!(iter.next(), None);
     }
 }

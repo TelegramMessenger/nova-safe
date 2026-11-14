@@ -51,7 +51,7 @@ pub use jsdoc::JSDocFinder;
 pub use node::{AstNode, AstNodes};
 #[cfg(feature = "jsdoc")]
 pub use oxc_jsdoc::{JSDoc, JSDocTag};
-pub use scoping::Scoping;
+pub use scoping::{Scoping, ScopingName};
 pub use stats::Stats;
 
 use class::ClassTable;

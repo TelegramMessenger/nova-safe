@@ -48,7 +48,6 @@ schemars = [
     "oxc_str/schemars",
 ]
 serialize = [
-    "compact_str/serde",
     "dep:serde",
     "oxc_estree/serialize",
     "oxc_str/serialize",
@@ -59,8 +58,6 @@ name = "oxc_span"
 path = "src/lib.rs"
 doctest = true
 
-[dependencies.compact_str]
-version = "0.9.0"
 
 [dependencies.oxc_allocator]
 path = "../oxc_allocator"

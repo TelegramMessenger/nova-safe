@@ -4,7 +4,6 @@ use std::{
     ops::Deref,
 };
 
-use compact_str::CompactString;
 #[cfg(feature = "serialize")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -16,12 +15,11 @@ pub const MAX_INLINE_LEN: usize = 16;
 /// [`CompactStr`] is immutable. Use [`CompactStr::into_string`] for a mutable
 /// [`String`].
 ///
-/// Currently implemented as just a wrapper around [`compact_str::CompactString`],
-/// but will be reduced in size with a custom implementation later.
+/// A `'static` string or an owned [`String`] (24 bytes, like the `compact_str` crate it replaces).
 ///
 /// [`Str`]: crate::Str
 #[derive(Clone, Eq, PartialOrd, Ord)]
-pub struct CompactStr(CompactString);
+pub struct CompactStr(Cow<'static, str>);
 
 impl CompactStr {
     /// Create a new [`CompactStr`].
@@ -31,7 +29,7 @@ impl CompactStr {
     /// compile time.
     #[inline]
     pub fn new(s: &str) -> Self {
-        Self(CompactString::new(s))
+        Self(Cow::Owned(s.to_owned()))
     }
 
     /// Create a [`CompactStr`] at compile time.
@@ -46,25 +44,19 @@ impl CompactStr {
     #[inline]
     pub const fn new_const(s: &'static str) -> Self {
         assert!(s.len() <= MAX_INLINE_LEN);
-        Self(CompactString::const_new(s))
+        Self(Cow::Borrowed(s))
     }
 
     /// Get string content as a `&str` slice.
     #[inline]
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        &self.0
     }
 
     /// Convert a [`CompactStr`] into a [`String`].
     #[inline]
     pub fn into_string(self) -> String {
-        self.0.into_string()
-    }
-
-    /// Convert a [`CompactStr`] into a [`CompactString`].
-    #[inline]
-    pub fn into_compact_string(self) -> CompactString {
-        self.0
+        self.0.into_owned()
     }
 
     /// Get length of [`CompactStr`].
@@ -82,19 +74,13 @@ impl CompactStr {
 
 impl From<&str> for CompactStr {
     fn from(s: &str) -> Self {
-        Self(CompactString::from(s))
+        Self::new(s)
     }
 }
 
 impl From<String> for CompactStr {
     fn from(s: String) -> Self {
-        Self(CompactString::from(s))
-    }
-}
-
-impl From<CompactString> for CompactStr {
-    fn from(s: CompactString) -> Self {
-        Self(s)
+        Self(Cow::Owned(s))
     }
 }
 
@@ -106,7 +92,7 @@ impl<'s> From<&'s CompactStr> for Cow<'s, str> {
 
 impl From<CompactStr> for Cow<'_, str> {
     fn from(value: CompactStr) -> Self {
-        value.0.into()
+        Cow::Owned(value.into_string())
     }
 }
 impl From<Cow<'_, str>> for CompactStr {
@@ -196,8 +182,8 @@ impl Serialize for CompactStr {
 #[cfg(feature = "serialize")]
 impl<'de> Deserialize<'de> for CompactStr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let compact_string = CompactString::deserialize(deserializer)?;
-        Ok(Self(compact_string))
+        let string = String::deserialize(deserializer)?;
+        Ok(Self::from(string))
     }
 }
 
@@ -242,14 +228,12 @@ impl schemars::JsonSchema for CompactStr {
 #[macro_export]
 macro_rules! format_compact_str {
     ($($arg:tt)*) => {
-        $crate::CompactStr::from($crate::__internal::format_compact!($($arg)*))
+        $crate::CompactStr::from(::std::format!($($arg)*))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use compact_str::CompactString;
-
     use super::CompactStr;
 
     #[test]
@@ -259,7 +243,7 @@ mod test {
         assert_eq!(&foo, "foo");
         assert_eq!("foo", foo);
         assert_eq!("foo", &foo);
-        assert_eq!(foo.into_compact_string(), CompactString::new("foo"));
+        assert_eq!(foo.into_string(), String::from("foo"));
     }
 
     #[test]

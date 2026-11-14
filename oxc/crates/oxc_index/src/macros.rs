@@ -195,7 +195,7 @@ macro_rules! unknown_define_index_type_option {
 }
 
 /// Generate the boilerplate for a newtyped index struct using NonMaxU32.
-/// This is a specialized version of `define_index_type!` for use with `NonMaxU32` from the `nonmax` crate.
+/// This is a specialized version of `define_index_type!` for use with [`NonMaxU32`](crate::nonmax::NonMaxU32).
 ///
 /// ## Usage
 ///
@@ -276,20 +276,20 @@ macro_rules! define_nonmax_u32_index_type {
 
             /// Create an index from a `usize` without bounds checking.
             ///
-            /// # Safety
-            /// The caller must ensure `value <= MAX_INDEX`.
+            /// # Panics
+            /// Panics if the value truncated to `u32` is `u32::MAX`.
             #[inline(always)]
             $v const fn from_usize_unchecked(value: usize) -> Self {
-                Self(unsafe { $crate::nonmax::NonMaxU32::new_unchecked(value as u32) })
+                Self($crate::nonmax::NonMaxU32::new_unchecked(value as u32))
             }
 
             /// Create an index from a raw `u32` without bounds checking.
             ///
-            /// # Safety
-            /// The caller must ensure the value is not `u32::MAX`.
+            /// # Panics
+            /// Panics if `raw` is `u32::MAX`.
             #[inline(always)]
             $v const fn from_raw_unchecked(raw: u32) -> Self {
-                Self(unsafe { $crate::nonmax::NonMaxU32::new_unchecked(raw) })
+                Self($crate::nonmax::NonMaxU32::new_unchecked(raw))
             }
 
             /// Create an index from a `usize` with bounds checking.
@@ -448,7 +448,7 @@ macro_rules! define_nonmax_u32_index_type {
             const MAX: usize = Self::MAX_INDEX;
 
             #[inline]
-            unsafe fn from_usize_unchecked(idx: usize) -> Self {
+            fn from_usize_unchecked(idx: usize) -> Self {
                 Self::from_usize_unchecked(idx)
             }
 
@@ -888,7 +888,7 @@ macro_rules! __define_index_type_inner {
             const MAX: usize = Self::MAX_INDEX;
 
             #[inline]
-            unsafe fn from_usize_unchecked(idx: usize) -> Self {
+            fn from_usize_unchecked(idx: usize) -> Self {
                 Self::from_usize_unchecked(idx)
             }
 

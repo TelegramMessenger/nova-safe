@@ -58,8 +58,6 @@ version = "2.10.0"
 [dependencies.cow-utils]
 version = "0.1.3"
 
-[dependencies.nonmax]
-version = "0.5.5"
 
 [dependencies.oxc_allocator]
 path = "../oxc_allocator"

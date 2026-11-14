@@ -1,5 +1,7 @@
 //! Data structures used across other oxc crates.
 
+#![forbid(unsafe_code)]
+
 #[cfg(feature = "assert_unchecked")]
 mod assert_unchecked;
 
@@ -23,3 +25,4 @@ pub mod slice_iter;
 
 #[cfg(feature = "stack")]
 pub mod stack;
+
