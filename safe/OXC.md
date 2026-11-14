@@ -26,6 +26,59 @@ a widget controls every byte it reads. Rust's std, including its HashMap (hashbr
   hashbrown. Same counting rule as TCB.md (keyword outside comments, `tests/` `benches/` `examples/` skipped,
   code for other targets counted).
 
+## Phase A (2026-11-14): the safe allocator
+
+Done, each step through the gate:
+- The nesting pre-scan now counts a call, an index or a tagged template after an operand as one more level. Before,
+  `f` + `()` x 50000 (likewise `a[0][0]...` and chains of tagged templates) passed the pre-scan and overflowed the
+  native stack of a release build in the semantic checker and the compiler, aborting the process. New tests: the
+  pre-scan counts the three chains; `nova_embed` parses, compiles, runs and drops the deepest tree of 17 shapes the
+  pre-scan lets through on the widget engine's 8 MB stack (64 MB in an unoptimized build: its bytecode compiler
+  frames overflow 8 MB at the deepest member chain, with or without this change).
+- nova's `parse_program` returns the `Program`; the caller keeps it in a local and `check_program` builds the
+  semantic data from a borrow of it (no `Allocator::alloc`).
+- `Visit<'a>` (oxc_ast_visit) and the regular-expression `Visit<'a>` take `&'a T`; the lifetime-transmuting
+  `alloc()` is gone and the semantic builder uses the references it gets. The serialize-only UTF-8 to UTF-16
+  converter is removed. oxc_ast_visit and oxc_regular_expression forbid `unsafe_code`.
+- The lexer pushes legacy octal escapes as `char`s.
+- oxc_allocator is the safe design below, with `#![forbid(unsafe_code)]`: 273 -> 0. `Vec::push_fast` is kept as
+  `push`. oxc_ast's generated `escape_template_element_raw` builds a `String` instead of writing through a raw
+  pointer, and the `discriminant!` const assertions are gone (they built enums around `Box::dangling()`).
+- Vendored oxc: 707 -> 409 `unsafe`; widget build 2668 -> 2370 (1587 without std's hashbrown). allocator-api2
+  stays in the tree only through nova's own hashbrown 0.17 default features (the dependencies track).
+
+Parse plus semantic check plus drop (`parsebench`), release, best of N, same machine and run:
+
+| input | arena | safe allocator |
+|---|---:|---:|
+| sandbox-bundle.js (598 KB) | 7.0 ms | 11.3 ms (+60%) |
+| 07-shop-06-shop-bare | 0.069 ms | 0.105 ms |
+| 08-analytics-10-bot-bare | 0.090 ms | 0.135 ms |
+| 12-motion-lab-02-mo-bare | 0.073 ms | 0.110 ms |
+| hostile/text-chaos | 0.015 ms | 0.024 ms |
+
+Same symbol and node counts. A widget's own scripts cost about 0.1 ms to parse against a median widget run of
+about 150 ms; the bundle is parsed once per process.
+
+Left in oxc_ast (4): `shared_enum_variants!`'s `as_*`/`as_*_mut` (and the `to_*` that call them) cast `&Parent` to
+`&Child` (`&Expression` to `&MemberExpression`, `&Argument` to `&Expression`, `&Statement` to `&Declaration`, ...);
+`AstKind::ty` reads the tag through a pointer (`generated/ast_kind.rs`); `ast_impl/literal.rs` has one
+`from_utf8_unchecked`. The casts are sound while both enums are `#[repr(C, u8)]` with equal discriminants, which
+the removed assertions checked and the explicit discriminants in `inherit_variants!` still give, but they are the
+next thing to go. Callers today (the build tells them all once `as_*` is removed): oxc_ast_visit's walks (18), oxc_ast
+itself (22), oxc_semantic (3), oxc_ecmascript (40, mostly `as_expression`/`to_expression` on arguments and
+array elements), nova (about 40). Two ways, both mechanical but wide:
+- nesting: `Argument::Expression(Expression<'a>)` instead of copying Expression's variants into Argument, so
+  `as_expression` is a `match` returning the inner reference. Every direct pattern on an inherited variant
+  (`Argument::Identifier(..)`) and the 48k lines of generated derives (`oxc_ast/src/generated/`) change; without
+  oxc's `ast_tools` generator that is a scripted rewrite of the generated files.
+- dispatch: keep the flat enums, remove `as_*`/`to_*`, and give callers a `match` that dispatches each inherited
+  variant to the per-node code (a `match_expression!`-style macro with a body), plus borrowed view enums where a
+  function needs "any member expression" (`visit_member_expression`, the semantic builder's two overrides).
+  nova's compiler already compiles per node type, so its `as_expression` sites become such a dispatch; oxc_ecmascript's
+  constant evaluation on `&Expression` is the hard part (it needs `&Expression` from an argument) and may be cut
+  instead: check which of its traits nova calls.
+
 ### Widget build, after phase 0
 
 | crate | version | source | unsafe | area |
@@ -117,10 +170,9 @@ A bump arena that hands out `&'a T` for any `T` cannot be written in safe Rust. 
     tree owned by `Program`, the visitor gets `&'a T` from `&'a Program<'a>` all the way down if `Visit` takes
     `it: &'a T` (oxc's `Visit<'a>` methods take `&T` today). Change the generator's signature for the visitor
     the semantic builder uses; nova's own walkers already hold `&'p` references.
-- Status: a prototype of the crate with `#![forbid(unsafe_code)]` compiles and passes its 18 unit tests
-  (string arena slot math, strings staying valid across 5000 allocations, ident hasher, take/dummy); it is in
-  the phase-0 scratch dir as `safe-allocator-wip.patch` (against `oxc/` at the vendoring commit). Next: the
-  `discriminant!`/`shared_enum_variants!` rewrite in oxc_ast, then oxc_parser, oxc_semantic and nova.
+- Status: landed in phase A (see above). `Box` (`#[repr(transparent)]`) and `Vec` wrap std's types
+  with a `PhantomData<&'a ()>`; `from_std`/`into_std` convert. The `HashMap`/`HashSet` wrappers keep
+  `into_keys`/`into_values`, `Deref` to hashbrown's table and the `*_in` constructors.
 - Risks:
   - Drop now recurses through the tree (the arena never dropped). Depth is bounded by nova's nesting
     pre-scan (`source_nesting.rs`, 3000, which counts operator chains too), and drop frames are smaller than the
@@ -233,7 +285,7 @@ never calls. Risk: none for nova's output if nova never formats through oxc; che
   from `oxc_ast`, `oxc_span`, `oxc_str`, `oxc_syntax` and `oxc_allocator` together with their `ESTree` impls.
 - `oxc_regular_expression` (1): its own `alloc` transmute in the visitor (area A's pattern).
 
-## Measurements
+## Measurements (phase 0)
 
 Parse plus semantic check (`Parser::parse` + `SemanticBuilder::with_check_syntax_error(true)`), release, best of
 N on a loaded machine, vendored oxc before the allocator change (phase-0 scratch `parse-before.txt`):
@@ -246,7 +298,7 @@ N on a loaded machine, vendored oxc before the allocator change (phase-0 scratch
 | 12-motion-lab-02-mo-bare | 8732 | 0.081 ms |
 | hostile/text-chaos | 1741 | 0.017 ms |
 
-Measure the same harness (`parsebench` in the phase-0 scratch dir) after area A lands.
+Phase A's table above has the numbers with the safe allocator.
 
 ## Order and parallel work
 
