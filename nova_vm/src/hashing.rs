@@ -71,6 +71,14 @@ impl Default for HandleState {
     }
 }
 
+impl HandleState {
+    /// The hash of one 64-bit word, as `hash_one(value)` would give it.
+    #[inline(always)]
+    pub(crate) fn hash_u64(&self, value: u64) -> u64 {
+        folded_multiply(self.k0 ^ value, self.k1)
+    }
+}
+
 impl BuildHasher for HandleState {
     type Hasher = HandleHasher;
 

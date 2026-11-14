@@ -178,6 +178,9 @@ pub(crate) struct Heap {
     pub(crate) strings: Vec<StringRecord>,
     pub(crate) string_lookup_table: HashTable<HeapString<'static>>,
     pub(crate) string_hasher: crate::hashing::RandomState,
+    /// Random keys under which Object Shape transition tables hash their
+    /// property keys by identity.
+    pub(crate) shape_key_hasher: crate::hashing::HandleState,
     /// Counts allocations for garbage collection triggering.
     pub(crate) alloc_counter: usize,
     /// Bytes of string data, ArrayBuffer data and keyed collection entries
@@ -316,6 +319,7 @@ impl Heap {
             string_iterators: Vec::with_capacity(0),
             string_lookup_table: HashTable::with_capacity(0),
             string_hasher: crate::hashing::RandomState::new(),
+            shape_key_hasher: crate::hashing::HandleState::default(),
             symbols: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
             typed_arrays: Vec::with_capacity(0),

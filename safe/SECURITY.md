@@ -41,7 +41,9 @@ file states what protects the process from a hostile script, what is trusted, an
   conversion), `memchr` (in-tree Two-Way search), `ahash`, `rand` and their dependencies (std SipHash, an in-tree
   hash under random per-map keys for maps keyed by engine handles, per-agent xorshift seeded from OS randomness), and
   in the widget build `temporal_rs` and SharedArrayBuffer/Atomics. A script can collide handle keys only by chance;
-  a flood slows only its own Agent, and the CPU limit ends it.
+  a flood slows only its own Agent, and the CPU limit ends it. Object Shape transition tables hash a property key by
+  identity (an injective 64-bit packing of small-string bytes, integer value, or heap index) with the same hash
+  under per-Agent random keys, and are rehashed when a garbage collection moves their keys.
 - A memory-safety bug was found in the removed `ryu-js`: `(4.2025059341068935e-46).toFixed(65)` returned bytes of an
   uninitialized stack buffer into a script string. Upstream Nova still has it.
 

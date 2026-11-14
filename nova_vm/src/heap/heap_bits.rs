@@ -1600,6 +1600,9 @@ impl Default for CompactionListBuilder {
 }
 
 pub(crate) struct CompactionLists {
+    /// The Agent's `Heap::shape_key_hasher`, for rehashing the tables keyed
+    /// by property key identity whose keys moved.
+    pub(crate) shape_key_hasher: crate::hashing::HandleState,
     #[cfg(feature = "array-buffer")]
     pub(crate) array_buffers: CompactionList,
     pub(crate) arrays: CompactionList,
@@ -1701,7 +1704,10 @@ pub(crate) struct CompactionLists {
 }
 
 impl CompactionLists {
-    pub(crate) fn create_from_bits(bits: &HeapBits) -> Self {
+    pub(crate) fn create_from_bits(
+        bits: &HeapBits,
+        shape_key_hasher: crate::hashing::HandleState,
+    ) -> Self {
         // TODO: Instead of each list creating its own Vecs, this
         // could instead be a singular Vec segmented into slices.
         // The total number of vector items needed for compactions can
@@ -1712,6 +1718,7 @@ impl CompactionLists {
         // areas can exist. We can use this mathematical bound to estimate a good
         // vector allocation.
         Self {
+            shape_key_hasher,
             modules: CompactionList::from_mark_bits(&bits.modules, &bits.bits),
             scripts: CompactionList::from_mark_bits(&bits.scripts, &bits.bits),
             realms: CompactionList::from_mark_bits(&bits.realms, &bits.bits),
