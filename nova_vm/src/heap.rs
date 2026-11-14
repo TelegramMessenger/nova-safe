@@ -229,44 +229,44 @@ impl Heap {
     pub(crate) fn new() -> Heap {
         let mut heap = Heap {
             #[cfg(feature = "array-buffer")]
-            array_buffers: Vec::with_capacity(1024),
+            array_buffers: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
             array_buffer_detach_keys: AHashMap::with_capacity(0),
-            arrays: SoAVec::with_capacity(1024).expect("Failed to allocate Heap"),
-            array_iterators: Vec::with_capacity(256),
+            arrays: SoAVec::with_capacity(0).expect("Failed to allocate Heap"),
+            array_iterators: Vec::with_capacity(0),
             async_generators: Vec::with_capacity(0),
-            await_reactions: Vec::with_capacity(1024),
-            bigints: Vec::with_capacity(1024),
-            bound_functions: Vec::with_capacity(256),
-            builtin_constructors: Vec::with_capacity(256),
-            builtin_functions: Vec::with_capacity(1024),
-            caches: Caches::with_capacity(1024),
+            await_reactions: Vec::with_capacity(0),
+            bigints: Vec::with_capacity(0),
+            bound_functions: Vec::with_capacity(0),
+            builtin_constructors: Vec::with_capacity(0),
+            builtin_functions: Vec::with_capacity(0),
+            caches: Caches::with_capacity(0),
             #[cfg(feature = "date")]
-            dates: Vec::with_capacity(1024),
+            dates: Vec::with_capacity(0),
             #[cfg(feature = "temporal")]
             instants: Vec::with_capacity(0),
             #[cfg(feature = "temporal")]
             durations: Vec::with_capacity(0),
             #[cfg(feature = "temporal")]
             plain_times: Vec::with_capacity(0),
-            ecmascript_functions: Vec::with_capacity(1024),
+            ecmascript_functions: Vec::with_capacity(0),
             elements: ElementArrays {
-                e2pow1: ElementArray2Pow1::with_capacity(1024),
-                e2pow2: ElementArray2Pow2::with_capacity(1024),
-                e2pow3: ElementArray2Pow3::with_capacity(1024),
-                e2pow4: ElementArray2Pow4::with_capacity(512),
-                e2pow6: ElementArray2Pow6::with_capacity(512),
+                e2pow1: ElementArray2Pow1::with_capacity(0),
+                e2pow2: ElementArray2Pow2::with_capacity(0),
+                e2pow3: ElementArray2Pow3::with_capacity(0),
+                e2pow4: ElementArray2Pow4::with_capacity(0),
+                e2pow6: ElementArray2Pow6::with_capacity(0),
                 e2pow8: ElementArray2Pow8::default(),
                 e2pow10: ElementArray2Pow10::default(),
                 e2pow12: ElementArray2Pow12::default(),
                 e2pow16: ElementArray2Pow16::default(),
                 e2pow24: ElementArray2Pow24::default(),
                 e2pow32: ElementArray2Pow32::default(),
-                k2pow1: PropertyKeyArray2Pow1::with_capacity(1024),
-                k2pow2: PropertyKeyArray2Pow2::with_capacity(1024),
-                k2pow3: PropertyKeyArray2Pow3::with_capacity(1024),
-                k2pow4: PropertyKeyArray2Pow4::with_capacity(512),
-                k2pow6: PropertyKeyArray2Pow6::with_capacity(512),
+                k2pow1: PropertyKeyArray2Pow1::with_capacity(0),
+                k2pow2: PropertyKeyArray2Pow2::with_capacity(0),
+                k2pow3: PropertyKeyArray2Pow3::with_capacity(0),
+                k2pow4: PropertyKeyArray2Pow4::with_capacity(0),
+                k2pow6: PropertyKeyArray2Pow6::with_capacity(0),
                 k2pow8: PropertyKeyArray2Pow8::default(),
                 k2pow10: PropertyKeyArray2Pow10::default(),
                 k2pow12: PropertyKeyArray2Pow12::default(),
@@ -276,22 +276,22 @@ impl Heap {
             },
             embedder_objects: Vec::with_capacity(0),
             environments: Default::default(),
-            errors: Vec::with_capacity(1024),
-            executables: Vec::with_capacity(1024),
+            errors: Vec::with_capacity(0),
+            executables: Vec::with_capacity(0),
             source_codes: Vec::with_capacity(0),
             finalization_registries: SoAVec::with_capacity(0).expect("Failed to allocate Heap"),
-            generators: Vec::with_capacity(1024),
-            globals: RefCell::new(Vec::with_capacity(1024)),
+            generators: Vec::with_capacity(0),
+            globals: RefCell::new(Vec::with_capacity(0)),
             free_globals: RefCell::new(Vec::new()),
-            maps: SoAVec::with_capacity(128).expect("Failed to allocate Heap"),
-            map_iterators: Vec::with_capacity(128),
+            maps: SoAVec::with_capacity(0).expect("Failed to allocate Heap"),
+            map_iterators: Vec::with_capacity(0),
             modules: Vec::with_capacity(0),
             module_request_records: Vec::with_capacity(0),
-            numbers: Vec::with_capacity(1024),
-            object_shapes: Vec::with_capacity(256),
-            object_shape_transitions: Vec::with_capacity(256),
-            prototype_shapes: PrototypeShapeTable::with_capacity(64),
-            objects: Vec::with_capacity(1024),
+            numbers: Vec::with_capacity(0),
+            object_shapes: Vec::with_capacity(0),
+            object_shape_transitions: Vec::with_capacity(0),
+            prototype_shapes: PrototypeShapeTable::with_capacity(0),
+            objects: Vec::with_capacity(0),
             primitive_objects: Vec::with_capacity(0),
             promise_reaction_records: Vec::with_capacity(0),
             promise_resolving_functions: Vec::with_capacity(0),
@@ -301,22 +301,22 @@ impl Heap {
             proxies: Vec::with_capacity(0),
             realms: Vec::with_capacity(1),
             #[cfg(feature = "regexp")]
-            regexps: Vec::with_capacity(1024),
+            regexps: Vec::with_capacity(0),
             #[cfg(feature = "regexp")]
             regexp_string_iterators: Vec::with_capacity(0),
             scripts: Vec::with_capacity(1),
             #[cfg(feature = "set")]
-            sets: SoAVec::with_capacity(128).expect("Failed to allocate Heap"),
+            sets: SoAVec::with_capacity(0).expect("Failed to allocate Heap"),
             #[cfg(feature = "set")]
-            set_iterators: Vec::with_capacity(128),
+            set_iterators: Vec::with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
             shared_array_buffers: Vec::with_capacity(0),
-            source_text_module_records: SourceTextModuleHeap(Vec::with_capacity(128)),
-            strings: Vec::with_capacity(1024),
+            source_text_module_records: SourceTextModuleHeap(Vec::with_capacity(0)),
+            strings: Vec::with_capacity(0),
             string_iterators: Vec::with_capacity(0),
-            string_lookup_table: HashTable::with_capacity(1024),
+            string_lookup_table: HashTable::with_capacity(0),
             string_hasher: crate::hashing::RandomState::new(),
-            symbols: Vec::with_capacity(1024),
+            symbols: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
             typed_arrays: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
@@ -365,7 +365,13 @@ impl Heap {
         for builtin_string in BUILTIN_STRINGS_LIST.iter() {
             let hash = string_hasher.hash_one(Wtf8Str::from_str(builtin_string));
             let data = StringRecord::from_static_str(builtin_string);
-            String::insert_string_with_hash(strings, string_lookup_table, data, hash);
+            String::insert_string_with_hash(
+                strings,
+                string_lookup_table,
+                string_hasher,
+                data,
+                hash,
+            );
         }
 
         heap.symbols.extend_from_slice(&[

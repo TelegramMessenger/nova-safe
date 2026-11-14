@@ -23,13 +23,12 @@ use crate::{
     engine::{Bindable, GcScope, NoGcScope},
     heap::{
         ArenaAccessSoA, ArenaAccessSoAMut, BaseIndex, CompactionLists, CreateHeapData,
-        ElementArrays, ElementDescriptor, ElementStorageMut, ElementStorageRef, ElementsVector,
-        Heap, HeapIndexHandle, HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues,
-        arena_vec_access,
+        ElementArrays, ElementDescriptor, ElementDescriptorMap, ElementStorageMut,
+        ElementStorageRef, ElementsVector, Heap, HeapIndexHandle, HeapMarkAndSweep,
+        HeapSweepWeakReference, WorkQueues, arena_vec_access,
     },
 };
 
-use crate::hashing::AHashMap;
 use soavec::SoAVec;
 
 use super::{
@@ -1179,7 +1178,7 @@ fn insert_element_descriptor(
         }
         Entry::Vacant(vacant_entry) => {
             agent.heap.alloc_counter += core::mem::size_of::<(u32, ElementDescriptor)>();
-            let mut descriptors = AHashMap::with_capacity(1);
+            let mut descriptors = ElementDescriptorMap::with_capacity(1);
             descriptors.insert(index, descriptor.unbind());
             vacant_entry.insert(descriptors);
         }
