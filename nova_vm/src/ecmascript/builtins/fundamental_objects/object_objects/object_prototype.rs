@@ -10,9 +10,9 @@ use crate::{
         InternalMethods, JsResult, Object, PrimitiveObjectData, PropertyKey, PropertyLookupCache,
         Realm, String, TryError, TryGetResult, Value, builders::OrdinaryObjectBuilder,
         handle_try_get_result, has_own_property, invoke, is_array, is_prototype_of_loop, to_object,
-        to_property_key, try_get,
+        to_property_key_complex, to_property_key_simple, try_get,
     },
-    engine::{Bindable, GcScope},
+    engine::{Bindable, GcScope, Scopable},
     heap::{ArenaAccess, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
@@ -75,6 +75,24 @@ impl Builtin for ObjectPrototypeValueOf {
     const BEHAVIOUR: Behaviour = Behaviour::Regular(ObjectPrototype::value_of);
 }
 
+/// ToPropertyKey(v), keeping the this value alive across the user code that
+/// the conversion may run.
+fn to_property_key_keeping_this<'gc>(
+    agent: &mut Agent,
+    v: Value,
+    this_value: Value,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, (PropertyKey<'gc>, Value<'gc>)> {
+    let v = v.bind(gc.nogc());
+    let this_value = this_value.bind(gc.nogc());
+    if let Some(p) = to_property_key_simple(agent, v, gc.nogc()) {
+        return Ok((p.unbind(), this_value.unbind()));
+    }
+    let scoped_this_value = this_value.scope(agent, gc.nogc());
+    let p = to_property_key_complex(agent, v.unbind(), gc.reborrow()).unbind()?;
+    Ok((p, scoped_this_value.get(agent)))
+}
+
 impl ObjectPrototype {
     fn has_own_property<'gc>(
         agent: &mut Agent,
@@ -82,9 +100,12 @@ impl ObjectPrototype {
         arguments: ArgumentsList,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
-        let p = to_property_key(agent, arguments.get(0), gc.reborrow())
-            .unbind()?
-            .bind(gc.nogc());
+        let this_value = this_value.bind(gc.nogc());
+        let v = arguments.get(0).bind(gc.nogc());
+        let (p, this_value) =
+            to_property_key_keeping_this(agent, v.unbind(), this_value.unbind(), gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc());
         let o = to_object(agent, this_value, gc.nogc())
             .unbind()?
             .bind(gc.nogc());
@@ -114,9 +135,12 @@ impl ObjectPrototype {
         arguments: ArgumentsList,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
-        let p = to_property_key(agent, arguments.get(0), gc.reborrow())
-            .unbind()?
-            .bind(gc.nogc());
+        let this_value = this_value.bind(gc.nogc());
+        let v = arguments.get(0).bind(gc.nogc());
+        let (p, this_value) =
+            to_property_key_keeping_this(agent, v.unbind(), this_value.unbind(), gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc());
         let o = to_object(agent, this_value, gc.nogc())
             .unbind()?
             .bind(gc.nogc());

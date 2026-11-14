@@ -63,15 +63,16 @@ impl RegExpConstructor {
         let scoped_pattern = pattern.scope(agent, gc.nogc());
         let scoped_flags = flags.scope(agent, gc.nogc());
         let flags_is_undefined = flags.is_undefined();
+        let scoped_new_target = new_target.map(|new_target| new_target.scope(agent, gc.nogc()));
         // 1. Let patternIsRegExp be ? IsRegExp(pattern).
         let pattern_is_reg_exp = is_reg_exp(agent, pattern.unbind(), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
         // 2. If NewTarget is undefined, then
-        let new_target = if let Some(new_target) = new_target {
+        let new_target = if let Some(new_target) = scoped_new_target {
             // 3. Else,
             // a. Let newTarget be NewTarget.
-            new_target
+            new_target.get(agent).bind(gc.nogc())
         } else {
             // a. Let newTarget be the active function object.
             let new_target = agent.active_function_object(gc.nogc());

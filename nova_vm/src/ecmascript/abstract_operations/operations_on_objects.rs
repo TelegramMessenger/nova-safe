@@ -675,9 +675,7 @@ pub(crate) fn call<'gc>(
                 && proxy.is_callable(agent, gc.nogc())
             {
                 let current_stack_size = agent.stack_refs.borrow().len();
-                let result = proxy
-                    .unbind()
-                    .internal_call(agent, v, arguments_list, gc);
+                let result = proxy.unbind().internal_call(agent, v, arguments_list, gc);
                 agent.stack_refs.borrow_mut().truncate(current_stack_size);
                 return result;
             }
@@ -737,8 +735,11 @@ pub(crate) fn set_integrity_level<'a, T: Level>(
     o: Object,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, bool> {
+    let o = o.bind(gc.nogc());
+    let scoped_o = o.scope(agent, gc.nogc());
     // 1. Let status be ? O.[[PreventExtensions]]().
     let status = o
+        .unbind()
         .internal_prevent_extensions(agent, gc.reborrow())
         .unbind()?;
     // 2. If status is false, return false.
@@ -746,11 +747,13 @@ pub(crate) fn set_integrity_level<'a, T: Level>(
         return Ok(false);
     }
     // 3. Let keys be ? O.[[OwnPropertyKeys]]().
-    let keys = o
+    let keys = scoped_o
+        .get(agent)
         .internal_own_property_keys(agent, gc.reborrow())
         .unbind()?
         .bind(gc.nogc());
     let keys = keys.unbind().bind(gc.nogc());
+    let o = scoped_o.get(agent).bind(gc.nogc());
     // 4. If level is SEALED, then
     if T::LEVEL == IntegrityLevel::Sealed {
         // a. For each element k of keys, do
@@ -788,7 +791,7 @@ pub(crate) fn set_integrity_level<'a, T: Level>(
             // i. Perform ? DefinePropertyOrThrow(O, k, PropertyDescriptor { [[Configurable]]: false }).
             define_property_or_throw(
                 agent,
-                o,
+                scoped_o.get(agent),
                 k.get(agent),
                 PropertyDescriptor {
                     configurable: Some(false),
@@ -859,7 +862,8 @@ pub(crate) fn set_integrity_level<'a, T: Level>(
             .collect::<Vec<_>>();
         for k in keys {
             // i. Let currentDesc be ? O.[[GetOwnProperty]](k).
-            let current_desc = o
+            let current_desc = scoped_o
+                .get(agent)
                 .internal_get_own_property(agent, k.get(agent), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
@@ -882,7 +886,14 @@ pub(crate) fn set_integrity_level<'a, T: Level>(
                     }
                 };
                 // 3. Perform ? DefinePropertyOrThrow(O, k, desc).
-                define_property_or_throw(agent, o, k.get(agent), desc, gc.reborrow()).unbind()?;
+                define_property_or_throw(
+                    agent,
+                    scoped_o.get(agent),
+                    k.get(agent),
+                    desc,
+                    gc.reborrow(),
+                )
+                .unbind()?;
             }
         }
     }
@@ -901,19 +912,26 @@ pub(crate) fn test_integrity_level<'a, T: Level>(
     o: Object,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, bool> {
+    let o = o.bind(gc.nogc());
+    let scoped_o = o.scope(agent, gc.nogc());
     // 1. Let extensible be ? IsExtensible(O).
     // 2. If extensible is true, return false.
     // 3. NOTE: If the object is extensible, none of its properties are examined.
-    if o.internal_is_extensible(agent, gc.reborrow()).unbind()? {
+    if o.unbind()
+        .internal_is_extensible(agent, gc.reborrow())
+        .unbind()?
+    {
         return Ok(false);
     }
 
     // 4. Let keys be ? O.[[OwnPropertyKeys]]().
-    let keys = o
+    let keys = scoped_o
+        .get(agent)
         .internal_own_property_keys(agent, gc.reborrow())
         .unbind()?
         .bind(gc.nogc());
     let keys = keys.unbind().bind(gc.nogc());
+    let o = scoped_o.get(agent).bind(gc.nogc());
 
     let mut broke = false;
     let mut i = 0;
@@ -954,7 +972,8 @@ pub(crate) fn test_integrity_level<'a, T: Level>(
     for k in keys {
         // a. Let currentDesc be ? O.[[GetOwnProperty]](k).
         // b. If currentDesc is not undefined, then
-        if let Some(current_desc) = o
+        if let Some(current_desc) = scoped_o
+            .get(agent)
             .internal_get_own_property(agent, k.get(agent), gc.reborrow())
             .unbind()?
             .bind(gc.nogc())
@@ -1106,9 +1125,10 @@ pub(crate) fn create_list_from_array_like<'gc>(
         }
         // TODO: TypedArrays
         _ if obj.is_object() => {
-            let object = Object::try_from(obj).unwrap();
+            let object = Object::try_from(obj).unwrap().bind(gc.nogc());
+            let scoped_object = object.scope(agent, gc.nogc());
             // 3. Let len be ? LengthOfArrayLike(obj).
-            let len = length_of_array_like(agent, object, gc.reborrow()).unbind()?;
+            let len = length_of_array_like(agent, object.unbind(), gc.reborrow()).unbind()?;
             let len = usize::try_from(len).unwrap();
             // 4. Let list be a new empty list.
             let mut list = Vec::<Value>::with_capacity(len).scope(agent, gc.nogc());
@@ -1119,7 +1139,7 @@ pub(crate) fn create_list_from_array_like<'gc>(
                 // b. Let next be ? Get(obj, indexName).
                 let next = get(
                     agent,
-                    object,
+                    scoped_object.get(agent),
                     PropertyKey::Integer(SmallInteger::try_from(i as u64).unwrap()),
                     gc.reborrow(),
                 )

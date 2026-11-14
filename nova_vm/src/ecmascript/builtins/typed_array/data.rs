@@ -214,7 +214,11 @@ impl HeapMarkAndSweep for TypedArrayRecord<'static> {
             array_length: _,
         } = self;
         object_index.mark_values(queues);
-        viewed_array_buffer.mark_values(queues);
+        // A view allocated before its buffer (user code can run in between)
+        // still holds the placeholder.
+        if *viewed_array_buffer != ArrayBuffer::_DEF {
+            viewed_array_buffer.mark_values(queues);
+        }
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
@@ -226,7 +230,9 @@ impl HeapMarkAndSweep for TypedArrayRecord<'static> {
             array_length: _,
         } = self;
         object_index.sweep_values(compactions);
-        viewed_array_buffer.sweep_values(compactions);
+        if *viewed_array_buffer != ArrayBuffer::_DEF {
+            viewed_array_buffer.sweep_values(compactions);
+        }
     }
 }
 
@@ -241,7 +247,11 @@ impl HeapMarkAndSweep for SharedTypedArrayRecord<'static> {
             array_length: _,
         } = self;
         object_index.mark_values(queues);
-        viewed_array_buffer.mark_values(queues);
+        // A view allocated before its buffer (user code can run in between)
+        // still holds the placeholder.
+        if *viewed_array_buffer != SharedArrayBuffer::_DEF {
+            viewed_array_buffer.mark_values(queues);
+        }
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
@@ -253,6 +263,8 @@ impl HeapMarkAndSweep for SharedTypedArrayRecord<'static> {
             array_length: _,
         } = self;
         object_index.sweep_values(compactions);
-        viewed_array_buffer.sweep_values(compactions);
+        if *viewed_array_buffer != SharedArrayBuffer::_DEF {
+            viewed_array_buffer.sweep_values(compactions);
+        }
     }
 }

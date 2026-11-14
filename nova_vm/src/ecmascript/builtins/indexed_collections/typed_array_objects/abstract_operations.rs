@@ -862,9 +862,12 @@ pub(crate) fn initialize_typed_array_from_array_like<'a, T: Viewable>(
     array_like: Object,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, ()> {
+    let o = o.bind(gc.nogc());
+    let array_like = array_like.bind(gc.nogc());
     let o = o.scope(agent, gc.nogc());
+    let scoped_array_like = array_like.scope(agent, gc.nogc());
     // 1. Let len be ? LengthOfArrayLike(arrayLike).
-    let len = length_of_array_like(agent, array_like, gc.reborrow()).unbind()? as usize;
+    let len = length_of_array_like(agent, array_like.unbind(), gc.reborrow()).unbind()? as usize;
 
     // 2. Perform ? AllocateTypedArrayBuffer(O, len).
     allocate_typed_array_buffer::<T>(agent, o.get(agent), len, gc.nogc()).unbind()?;
@@ -876,7 +879,7 @@ pub(crate) fn initialize_typed_array_from_array_like<'a, T: Viewable>(
         // a. Let Pk be ! ToString(𝔽(k)).
         let pk = PropertyKey::from(SmallInteger::try_from(k as i64).unwrap());
         // b. Let kValue be ? Get(arrayLike, Pk).
-        let k_value = get(agent, array_like, pk, gc.reborrow())
+        let k_value = get(agent, scoped_array_like.get(agent), pk, gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
         // c. Perform ? Set(O, Pk, kValue, true).

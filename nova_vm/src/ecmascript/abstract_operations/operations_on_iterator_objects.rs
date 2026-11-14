@@ -632,6 +632,9 @@ pub(crate) fn iterator_to_list<'a, 'b>(
     iterator_record: IteratorRecord,
     mut gc: GcScope<'a, 'b>,
 ) -> JsResult<'a, ScopedCollection<'b, Vec<Value<'static>>>> {
+    let iterator_record = iterator_record.bind(gc.nogc());
+    let iterator = iterator_record.iterator.scope(agent, gc.nogc());
+    let next_method = iterator_record.next_method.scope(agent, gc.nogc());
     // 1. Let values be a new empty List.
     let mut values = Vec::<Value>::new().scope(agent, gc.nogc());
 
@@ -639,9 +642,16 @@ pub(crate) fn iterator_to_list<'a, 'b>(
     // 3. Repeat, while next is not false,
     // a. Set next to ? IteratorStep(iteratorRecord).
     // b. If next is not false, then
-    while let Some(next) = iterator_step(agent, iterator_record, gc.reborrow())
-        .unbind()?
-        .bind(gc.nogc())
+    while let Some(next) = iterator_step(
+        agent,
+        IteratorRecord {
+            iterator: iterator.get(agent),
+            next_method: next_method.get(agent),
+        },
+        gc.reborrow(),
+    )
+    .unbind()?
+    .bind(gc.nogc())
     {
         // i. Let nextValue be ? IteratorValue(next).
         let next_value = iterator_value(agent, next.unbind(), gc.reborrow())
