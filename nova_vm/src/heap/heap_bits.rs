@@ -42,8 +42,7 @@ use crate::{
     },
     engine::Executable,
     heap::{
-        BaseIndex, ElementIndex, Heap, HeapIndexHandle, PropertyKeyIndex,
-        element_array::ElementDescriptor,
+        BaseIndex, ElementDescriptorMap, ElementIndex, Heap, HeapIndexHandle, PropertyKeyIndex,
     },
 };
 
@@ -2317,7 +2316,7 @@ impl<K: HeapMarkAndSweep + core::fmt::Debug + Copy + Hash + Eq + Ord, V: HeapSwe
 }
 
 pub(crate) fn mark_descriptors(
-    descriptors: &AHashMap<u32, ElementDescriptor<'static>>,
+    descriptors: &ElementDescriptorMap<'static>,
     queues: &mut WorkQueues,
 ) {
     for descriptor in descriptors.values() {
@@ -2381,7 +2380,7 @@ pub(crate) fn sweep_heap_soa_vector_values<T: SoAble>(
 }
 
 pub(crate) fn sweep_heap_elements_vector_descriptors(
-    descriptors: &mut AHashMap<ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
+    descriptors: &mut AHashMap<ElementIndex<'static>, ElementDescriptorMap<'static>>,
     compactions: &CompactionLists,
     self_compactions: &CompactionList,
     range: &BitRange,

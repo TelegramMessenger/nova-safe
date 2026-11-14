@@ -69,8 +69,6 @@
 
 use std::collections::TryReserveError;
 
-use crate::hashing::AHashMap;
-
 use crate::{
     ecmascript::{
         Agent, BUILTIN_STRING_MEMORY, InternalMethods, InternalSlots, Number, Object, ObjectRecord,
@@ -78,8 +76,8 @@ use crate::{
     },
     engine::{Bindable, HeapRootData, NoGcScope},
     heap::{
-        CompactionLists, DirectArenaAccess, ElementDescriptor, HeapMarkAndSweep,
-        HeapSweepWeakReference, WellKnownSymbols, WorkQueues,
+        CompactionLists, DirectArenaAccess, ElementDescriptor, ElementDescriptorMap,
+        HeapMarkAndSweep, HeapSweepWeakReference, WellKnownSymbols, WorkQueues,
     },
 };
 
@@ -144,7 +142,9 @@ fn create_unmapped_arguments_object_from_slice<'a>(
         .bind(gc);
     let storage = obj.get_elements_storage_mut(agent);
     let values = storage.values;
-    let descriptors = storage.descriptors.or_insert(AHashMap::with_capacity(3));
+    let descriptors = storage
+        .descriptors
+        .or_insert(ElementDescriptorMap::with_capacity(3));
 
     // 3. Set obj.[[ParameterMap]] to undefined.
     // 4. Perform ! DefinePropertyOrThrow(obj, "length", PropertyDescriptor {

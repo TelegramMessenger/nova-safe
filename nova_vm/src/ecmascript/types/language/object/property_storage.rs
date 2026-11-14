@@ -4,8 +4,6 @@
 
 use std::collections::{TryReserveError, hash_map::Entry};
 
-use crate::hashing::AHashMap;
-
 use crate::{
     ecmascript::{
         Agent, Caches, ExceptionType, JsResult, PrivateField, PrivateName, PropertyDescriptor,
@@ -13,7 +11,7 @@ use crate::{
     },
     engine::{Bindable, NoGcScope},
     heap::{
-        ArenaAccess, ArenaAccessMut, DirectArenaAccess, ElementIndex, Heap,
+        ArenaAccess, ArenaAccessMut, DirectArenaAccess, ElementDescriptorMap, ElementIndex, Heap,
         {
             ElementDescriptor, ElementStorageMut, ElementStorageUninit, PropertyStorageMut,
             PropertyStorageRef,
@@ -28,7 +26,7 @@ use super::{InternalSlots, Object, OrdinaryObject, PropertyKey};
 pub(crate) struct PropertyStorage<'a>(OrdinaryObject<'a>);
 
 fn verify_writable(
-    descriptors: Entry<'_, ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
+    descriptors: Entry<'_, ElementIndex<'static>, ElementDescriptorMap<'static>>,
     index: u32,
 ) -> bool {
     let Entry::Occupied(e) = descriptors else {
@@ -353,7 +351,7 @@ impl<'a> PropertyStorage<'a> {
                 *value_entry = value.unbind();
                 match (descriptors, element_descriptor) {
                     (e, Some(element_descriptor)) => {
-                        let e = e.or_insert_with(|| AHashMap::with_capacity(1));
+                        let e = e.or_insert_with(|| ElementDescriptorMap::with_capacity(1));
                         e.insert(index, element_descriptor.unbind());
                     }
                     (Entry::Occupied(mut e), None) => {
@@ -410,7 +408,7 @@ impl<'a> PropertyStorage<'a> {
         );
         values[old_len as usize] = value.unbind();
         if let Some(desc) = desc {
-            let descriptors = descriptors.or_insert_with(|| AHashMap::with_capacity(1));
+            let descriptors = descriptors.or_insert_with(|| ElementDescriptorMap::with_capacity(1));
             descriptors.insert(old_len, desc.unbind());
         }
         if old_shape == new_shape {

@@ -21,7 +21,7 @@ use std::collections::{TryReserveError, hash_map::Entry};
 /// Shared access to an element storage.
 pub(crate) struct ElementStorageRef<'a, 'gc> {
     pub values: &'a [Option<Value<'gc>>],
-    pub descriptors: Option<&'a AHashMap<u32, ElementDescriptor<'gc>>>,
+    pub descriptors: Option<&'a ElementDescriptorMap<'gc>>,
 }
 
 impl ElementStorageRef<'_, '_> {
@@ -34,20 +34,20 @@ impl ElementStorageRef<'_, '_> {
 /// Exclusive access to an element storage.
 pub(crate) struct ElementStorageMut<'a> {
     pub values: &'a mut [Option<Value<'static>>],
-    pub descriptors: Entry<'a, ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
+    pub descriptors: Entry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
 }
 /// Exclusive access to a full element storage, including uninitialised
 /// elements.
 pub(crate) struct ElementStorageUninit<'a> {
     pub values: &'a mut [Option<Value<'static>>],
-    pub descriptors: Entry<'a, ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
+    pub descriptors: Entry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
 }
 
 /// Shared access to an object's property storage.
 pub(crate) struct PropertyStorageRef<'a, 'gc> {
     pub keys: &'a [PropertyKey<'gc>],
     pub values: &'a [Option<Value<'gc>>],
-    pub descriptors: Option<&'a AHashMap<u32, ElementDescriptor<'gc>>>,
+    pub descriptors: Option<&'a ElementDescriptorMap<'gc>>,
 }
 
 impl<'a, 'gc> PropertyStorageRef<'a, 'gc> {
@@ -74,7 +74,7 @@ impl<'a, 'gc> PropertyStorageRef<'a, 'gc> {
 pub(crate) struct PropertyStorageMut<'a, 'gc> {
     pub keys: &'a [PropertyKey<'gc>],
     pub values: &'a mut [Option<Value<'static>>],
-    pub descriptors: Entry<'a, ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
+    pub descriptors: Entry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
 }
 
 impl<'a, 'gc> PropertyStorageMut<'a, 'gc> {
@@ -440,6 +440,185 @@ impl HeapMarkAndSweep for ElementsVector<'static> {
             ElementArrayKey::E24 => compactions.e_2_24.shift_index(elements_index),
             ElementArrayKey::E32 => compactions.e_2_32.shift_index(elements_index),
         };
+    }
+}
+
+/// The descriptors of one element storage's slots that are not plain
+/// writable, enumerable and configurable data properties, keyed by slot.
+/// Up to [`SMALL_DESCRIPTOR_MAP`] of them are kept in a vector searched
+/// linearly; past that, in a hash map, so that a script defining many slots
+/// does not make every definition linear.
+#[derive(Debug, Clone)]
+pub enum ElementDescriptorMap<'a> {
+    /// At most [`SMALL_DESCRIPTOR_MAP`] descriptors in insertion order.
+    Small(Vec<(u32, ElementDescriptor<'a>)>),
+    /// More descriptors, hashed by slot.
+    Large(AHashMap<u32, ElementDescriptor<'a>>),
+}
+
+const SMALL_DESCRIPTOR_MAP: usize = 8;
+
+impl Default for ElementDescriptorMap<'_> {
+    fn default() -> Self {
+        Self::Small(Vec::new())
+    }
+}
+
+impl<'a> FromIterator<(u32, ElementDescriptor<'a>)> for ElementDescriptorMap<'a> {
+    fn from_iter<I: IntoIterator<Item = (u32, ElementDescriptor<'a>)>>(iter: I) -> Self {
+        let mut map = Self::default();
+        for (key, value) in iter {
+            map.insert(key, value);
+        }
+        map
+    }
+}
+
+impl<'a> ElementDescriptorMap<'a> {
+    /// An empty map with room for `capacity` descriptors.
+    pub fn with_capacity(capacity: usize) -> Self {
+        if capacity > SMALL_DESCRIPTOR_MAP {
+            Self::Large(AHashMap::with_capacity(capacity))
+        } else {
+            Self::Small(Vec::with_capacity(capacity))
+        }
+    }
+
+    /// The number of descriptors.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Small(entries) => entries.len(),
+            Self::Large(map) => map.len(),
+        }
+    }
+
+    /// True if there are no descriptors.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The descriptor of slot `key`.
+    pub fn get(&self, key: &u32) -> Option<&ElementDescriptor<'a>> {
+        match self {
+            Self::Small(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            Self::Large(map) => map.get(key),
+        }
+    }
+
+    /// The descriptor of slot `key`, mutably.
+    pub fn get_mut(&mut self, key: &u32) -> Option<&mut ElementDescriptor<'a>> {
+        match self {
+            Self::Small(entries) => entries.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v),
+            Self::Large(map) => map.get_mut(key),
+        }
+    }
+
+    /// True if slot `key` has a descriptor.
+    pub fn contains_key(&self, key: &u32) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Sets the descriptor of slot `key`, returning the one it replaces.
+    pub fn insert(
+        &mut self,
+        key: u32,
+        value: ElementDescriptor<'a>,
+    ) -> Option<ElementDescriptor<'a>> {
+        match self {
+            Self::Small(entries) => {
+                if let Some((_, slot)) = entries.iter_mut().find(|(k, _)| *k == key) {
+                    return Some(core::mem::replace(slot, value));
+                }
+                if entries.len() < SMALL_DESCRIPTOR_MAP {
+                    entries.push((key, value));
+                    return None;
+                }
+                let mut map: AHashMap<u32, ElementDescriptor<'a>> =
+                    AHashMap::with_capacity(entries.len() + 1);
+                map.extend(entries.drain(..));
+                map.insert(key, value);
+                *self = Self::Large(map);
+                None
+            }
+            Self::Large(map) => map.insert(key, value),
+        }
+    }
+
+    /// Removes and returns the descriptor of slot `key`.
+    pub fn remove(&mut self, key: &u32) -> Option<ElementDescriptor<'a>> {
+        match self {
+            Self::Small(entries) => {
+                let position = entries.iter().position(|(k, _)| k == key)?;
+                Some(entries.remove(position).1)
+            }
+            Self::Large(map) => map.remove(key),
+        }
+    }
+
+    /// Makes room for `additional` more descriptors.
+    pub fn reserve(&mut self, additional: usize) {
+        match self {
+            Self::Small(entries) => {
+                if entries.len() + additional <= SMALL_DESCRIPTOR_MAP {
+                    entries.reserve(additional);
+                }
+            }
+            Self::Large(map) => map.reserve(additional),
+        }
+    }
+
+    /// Removes the entries whose key and descriptor `extract` accepts and
+    /// returns them.
+    pub fn extract_if(
+        &mut self,
+        mut extract: impl FnMut(&u32, &mut ElementDescriptor<'a>) -> bool,
+    ) -> std::vec::IntoIter<(u32, ElementDescriptor<'a>)> {
+        match self {
+            Self::Small(entries) => entries
+                .extract_if(.., |(k, v)| extract(k, v))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            Self::Large(map) => map
+                .extract_if(|k, v| extract(k, v))
+                .collect::<Vec<_>>()
+                .into_iter(),
+        }
+    }
+
+    /// The descriptors, in no particular order.
+    pub fn values(&self) -> impl Iterator<Item = &ElementDescriptor<'a>> {
+        let (small, large) = match self {
+            Self::Small(entries) => (Some(entries.iter().map(|(_, v)| v)), None),
+            Self::Large(map) => (None, Some(map.values())),
+        };
+        small
+            .into_iter()
+            .flatten()
+            .chain(large.into_iter().flatten())
+    }
+
+    /// The descriptors, mutably, in no particular order.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut ElementDescriptor<'a>> {
+        let (small, large) = match self {
+            Self::Small(entries) => (Some(entries.iter_mut().map(|(_, v)| v)), None),
+            Self::Large(map) => (None, Some(map.values_mut())),
+        };
+        small
+            .into_iter()
+            .flatten()
+            .chain(large.into_iter().flatten())
+    }
+
+    /// The slots and their descriptors, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &ElementDescriptor<'a>)> {
+        let (small, large) = match self {
+            Self::Small(entries) => (Some(entries.iter().map(|(k, v)| (k, v))), None),
+            Self::Large(map) => (None, Some(map.iter())),
+        };
+        small
+            .into_iter()
+            .flatten()
+            .chain(large.into_iter().flatten())
     }
 }
 
@@ -1505,7 +1684,7 @@ impl<const N: usize> IndexMut<PropertyKeyIndex<'_>> for StridedVec<PropertyKey<'
 #[derive(Debug)]
 pub(crate) struct ElementArray<const N: usize> {
     pub values: StridedVec<Option<Value<'static>>, N>,
-    pub descriptors: AHashMap<ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
+    pub descriptors: AHashMap<ElementIndex<'static>, ElementDescriptorMap<'static>>,
 }
 
 /// Element storages with more slots than this keep only the slots in use
@@ -1598,7 +1777,7 @@ impl<const N: usize> ElementArray<N> {
     fn push(
         &mut self,
         source: &[Option<Value>],
-        descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>>,
+        descriptors: Option<ElementDescriptorMap<'static>>,
     ) -> Result<ElementIndex<'static>, TryReserveError> {
         assert!(source.len() <= N);
         if descriptors.is_some() {
@@ -1642,7 +1821,7 @@ impl<const N: usize> ElementArray<N> {
                     let k = if *k > removal_index { k - 1 } else { *k };
                     (k, v.unbind())
                 })
-                .collect::<AHashMap<u32, ElementDescriptor>>();
+                .collect::<ElementDescriptorMap>();
             let inserted_new = self.descriptors.insert(key, descriptors).is_none();
             debug_assert!(inserted_new);
         }
@@ -1870,7 +2049,7 @@ impl ElementArrays {
         &mut self,
         key: ElementArrayKey,
         source: &[Option<Value>],
-        descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>>,
+        descriptors: Option<ElementDescriptorMap<'static>>,
     ) -> Result<ElementIndex<'static>, TryReserveError> {
         let ElementArrays {
             e2pow1,
@@ -2540,7 +2719,7 @@ impl ElementArrays {
         &mut self,
         length: usize,
         values: &[Option<Value>],
-        descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>>,
+        descriptors: Option<ElementDescriptorMap<'static>>,
     ) -> Result<ElementsVector<'static>, TryReserveError> {
         let cap = ElementArrayKey::from(length);
         let len = length as u32;
@@ -3605,7 +3784,7 @@ impl ElementArrays {
     ) -> Result<ElementsVector<'a>, TryReserveError> {
         let length = entries.len();
         let mut values: Vec<Option<Value>> = Vec::with_capacity(length);
-        let mut descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>> = None;
+        let mut descriptors: Option<ElementDescriptorMap<'static>> = None;
         entries.drain(..).enumerate().for_each(|(index, entry)| {
             let (_, maybe_descriptor, maybe_value) = entry;
             values.push(maybe_value);
@@ -3629,7 +3808,7 @@ impl ElementArrays {
         let length = entries.len();
         let mut keys: Vec<PropertyKey> = Vec::with_capacity(length);
         let mut values: Vec<Option<Value>> = Vec::with_capacity(length);
-        let mut descriptors: Option<AHashMap<u32, ElementDescriptor<'static>>> = None;
+        let mut descriptors: Option<ElementDescriptorMap<'static>> = None;
         for (index, entry) in entries.iter().enumerate() {
             let ObjectEntry { key, value } = entry;
             let (maybe_descriptor, maybe_value) =

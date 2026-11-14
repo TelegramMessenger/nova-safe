@@ -4,7 +4,6 @@
 
 //! ### [13.2.8 Template Literals](https://tc39.es/ecma262/#sec-template-literals)
 
-use crate::hashing::AHashMap;
 use oxc_ast::ast;
 
 use super::parsed_string_to_wtf8;
@@ -14,7 +13,7 @@ use crate::{
         String, Value, array_create, unwrap_try,
     },
     engine::{Bindable, NoGcScope},
-    heap::{ElementDescriptor, ObjectEntry, ObjectEntryPropertyDescriptor},
+    heap::{ElementDescriptor, ElementDescriptorMap, ObjectEntry, ObjectEntryPropertyDescriptor},
 };
 
 /// ### [13.2.8.4 GetTemplateObject ( templateLiteral )](https://tc39.es/ecma262/#sec-gettemplateobject)
@@ -141,7 +140,7 @@ fn define_read_only_elements(agent: &mut Agent, array: Array, values: Vec<Value<
     let elements = storage.values;
     let descriptors = storage
         .descriptors
-        .insert_entry(AHashMap::with_capacity(values.len()))
+        .insert_entry(ElementDescriptorMap::with_capacity(values.len()))
         .into_mut();
     for (prop, value) in values.into_iter().enumerate() {
         elements[prop] = Some(value);
