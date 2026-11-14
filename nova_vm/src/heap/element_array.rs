@@ -315,7 +315,7 @@ impl<'gc> ElementsVector<'gc> {
     ) -> Result<(), TryReserveError> {
         if new_len <= self.cap() {
             // Enough capacity present already
-            return Ok(());
+            return elements.ensure_values_len(self.cap, self.elements_index, new_len);
         }
 
         elements.reserve_elements(self, new_len)
@@ -329,6 +329,8 @@ impl<'gc> ElementsVector<'gc> {
     ) -> Result<(), TryReserveError> {
         if self.is_full() {
             self.reserve(elements, self.len() + 1)?;
+        } else {
+            elements.ensure_values_len(self.cap, self.elements_index, self.len + 1)?;
         }
         let next_over_end = match self.cap {
             ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => unreachable!(),
@@ -1215,14 +1217,26 @@ impl<'a> ElementDescriptor<'a> {
 ///
 /// A `Vec<[T; N]>` cannot grow without building a `[T; N]` on the stack, and
 /// `N` goes up to 2^32.
+///
+/// A *dynamic* StridedVec (the element values of the classes above 2^16
+/// slots) instead keeps every storage in a vector of its own that holds only
+/// the slots in use: its slices are shorter than `N`, and the users grow a
+/// storage with [`StridedVec::ensure_len`] before writing past its end. An
+/// array of 70 000 elements then takes 70 000 slots, not 2^24.
 #[derive(Debug)]
 pub(crate) struct StridedVec<T, const N: usize> {
     data: Vec<T>,
+    storages: Vec<Vec<T>>,
+    dynamic: bool,
 }
 
 impl<T, const N: usize> Default for StridedVec<T, N> {
     fn default() -> Self {
-        Self { data: Vec::new() }
+        Self {
+            data: Vec::new(),
+            storages: Vec::new(),
+            dynamic: false,
+        }
     }
 }
 
@@ -1233,18 +1247,42 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
                 cap.checked_mul(N)
                     .expect("Element storage capacity overflow"),
             ),
+            storages: Vec::new(),
+            dynamic: false,
+        }
+    }
+
+    /// An empty dynamic StridedVec (see the type's documentation).
+    fn new_dynamic() -> Self {
+        Self {
+            data: Vec::new(),
+            storages: Vec::new(),
+            dynamic: true,
         }
     }
 
     /// Number of storages.
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.data.len() / N
+        if self.dynamic {
+            self.storages.len()
+        } else {
+            self.data.len() / N
+        }
     }
 
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.len() == 0
+    }
+
+    /// Slots held by all storages, for the heap size estimate.
+    pub(crate) fn slot_count(&self) -> usize {
+        if self.dynamic {
+            self.storages.iter().map(Vec::capacity).sum()
+        } else {
+            self.data.len()
+        }
     }
 
     #[inline]
@@ -1253,21 +1291,57 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
         Some(start..start.checked_add(N)?)
     }
 
-    /// The storage at `index`, all `N` slots.
+    /// The storage at `index`: all `N` slots, or the slots in use of a
+    /// dynamic storage.
     #[inline]
     pub(crate) fn get(&self, index: usize) -> Option<&[T]> {
-        self.data.get(Self::range(index)?)
+        if self.dynamic {
+            self.storages.get(index).map(Vec::as_slice)
+        } else {
+            self.data.get(Self::range(index)?)
+        }
     }
 
-    /// The storage at `index` as mutable, all `N` slots.
+    /// The storage at `index` as mutable: all `N` slots, or the slots in use
+    /// of a dynamic storage.
     #[inline]
     pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut [T]> {
-        self.data.get_mut(Self::range(index)?)
+        if self.dynamic {
+            self.storages.get_mut(index).map(Vec::as_mut_slice)
+        } else {
+            self.data.get_mut(Self::range(index)?)
+        }
     }
 
-    /// All slots of all storages as one flat slice.
-    fn as_flat_mut(&mut self) -> &mut [T] {
-        &mut self.data
+    /// Makes the dynamic storage at `index` hold at least `len` slots, the
+    /// new ones set to `filler`. Growth is amortised by `Vec`. Does nothing
+    /// for a StridedVec that is not dynamic, whose storages have `N` slots.
+    pub(crate) fn ensure_len(
+        &mut self,
+        index: usize,
+        len: usize,
+        filler: T,
+    ) -> Result<(), TryReserveError> {
+        if !self.dynamic {
+            return Ok(());
+        }
+        let len = len.min(N);
+        let storage = self.storages.get_mut(index).expect("Invalid storage index");
+        if storage.len() < len {
+            storage.try_reserve(len - storage.len())?;
+            storage.resize(len, filler);
+        }
+        Ok(())
+    }
+
+    /// All slots of all storages as one flat slice; None for a dynamic
+    /// StridedVec.
+    fn as_flat_mut(&mut self) -> Option<&mut [T]> {
+        if self.dynamic {
+            None
+        } else {
+            Some(&mut self.data)
+        }
     }
 
     fn last_index<I: HeapIndexHandle>(&self) -> I {
@@ -1275,12 +1349,23 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
         I::from_index(self.len() - 1)
     }
 
-    /// Append a storage holding `items` followed by `filler` up to `N` slots.
+    /// Append a storage holding `items` followed by `filler` up to `N` slots
+    /// (a dynamic storage holds only `items`).
     fn try_push(
         &mut self,
         items: impl IntoIterator<Item = T>,
         filler: T,
     ) -> Result<usize, TryReserveError> {
+        if self.dynamic {
+            self.storages.try_reserve(1)?;
+            let mut storage = Vec::new();
+            for item in items.into_iter().take(N) {
+                storage.try_reserve(1)?;
+                storage.push(item);
+            }
+            self.storages.push(storage);
+            return Ok(self.storages.len() - 1);
+        }
         self.data.try_reserve(N)?;
         let start = self.data.len();
         self.data.extend(items.into_iter().take(N));
@@ -1289,7 +1374,8 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
     }
 
     /// Append a storage holding the first `len` slots of the storage at
-    /// `index`, followed by `filler` up to `N` slots.
+    /// `index`, followed by `filler` up to `N` slots (for a dynamic storage,
+    /// up to the source's length).
     fn try_push_within(
         &mut self,
         index: usize,
@@ -1297,6 +1383,17 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
         filler: T,
     ) -> Result<usize, TryReserveError> {
         assert!(len <= N);
+        if self.dynamic {
+            let source = self.storages.get(index).expect("Invalid storage index");
+            let total = source.len().max(len);
+            let mut storage = Vec::new();
+            storage.try_reserve(total)?;
+            storage.extend_from_slice(&source[..len]);
+            storage.resize(total, filler);
+            self.storages.try_reserve(1)?;
+            self.storages.push(storage);
+            return Ok(self.storages.len() - 1);
+        }
         let source = Self::range(index).expect("Invalid storage index");
         assert!(source.end <= self.data.len(), "Invalid storage index");
         self.data.try_reserve(N)?;
@@ -1307,8 +1404,17 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
         Ok(start / N)
     }
 
-    /// Append a copy of the storage at `index`, all `N` slots.
+    /// Append a copy of the storage at `index`, all its slots.
     fn push_copy(&mut self, index: usize) -> usize {
+        if self.dynamic {
+            let copy = self
+                .storages
+                .get(index)
+                .expect("Invalid storage index")
+                .clone();
+            self.storages.push(copy);
+            return self.storages.len() - 1;
+        }
         let source = Self::range(index).expect("Invalid storage index");
         let start = self.data.len();
         self.data.extend_from_within(source);
@@ -1318,6 +1424,10 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
     /// Keep only the storages for which `keep` returns true, moving the kept
     /// storages down in order.
     pub(crate) fn retain_mut(&mut self, mut keep: impl FnMut(&mut [T]) -> bool) {
+        if self.dynamic {
+            self.storages.retain_mut(|storage| keep(storage));
+            return;
+        }
         let count = self.len();
         let mut kept = 0;
         for index in 0..count {
@@ -1388,23 +1498,37 @@ impl<const N: usize> IndexMut<PropertyKeyIndex<'_>> for StridedVec<PropertyKey<'
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ElementArray<const N: usize> {
     pub values: StridedVec<Option<Value<'static>>, N>,
     pub descriptors: AHashMap<ElementIndex<'static>, AHashMap<u32, ElementDescriptor<'static>>>,
 }
 
+/// Element storages with more slots than this keep only the slots in use
+/// (see [`StridedVec`]).
+const DYNAMIC_STORAGE_SLOTS: usize = 1 << 16;
+
+impl<const N: usize> Default for ElementArray<N> {
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
+}
+
 impl<const N: usize> ElementArray<N> {
     /// All value slots of this backing store as one flat slice, with the
-    /// stride of one elements storage.
-    fn as_flat_mut(&mut self) -> (&mut [Option<Value<'static>>], usize) {
-        (self.values.as_flat_mut(), N)
+    /// stride of one elements storage; None if the storages are dynamic.
+    fn as_flat_mut(&mut self) -> Option<(&mut [Option<Value<'static>>], usize)> {
+        self.values.as_flat_mut().map(|flat| (flat, N))
     }
 
     pub(crate) fn with_capacity(cap: usize) -> Self {
         const { assert!(N.is_power_of_two()) }
         Self {
-            values: StridedVec::with_capacity(cap),
+            values: if N > DYNAMIC_STORAGE_SLOTS {
+                StridedVec::new_dynamic()
+            } else {
+                StridedVec::with_capacity(cap)
+            },
             descriptors: Default::default(),
         }
     }
@@ -1774,7 +1898,11 @@ impl ElementArrays {
     ) -> Result<(), TryReserveError> {
         if new_len <= elements_vector.cap.capacity() {
             // Already big enough, no need to grow
-            return Ok(());
+            return self.ensure_values_len(
+                elements_vector.cap,
+                elements_vector.elements_index,
+                new_len,
+            );
         }
         self.reserve_elements_raw(
             &mut elements_vector.elements_index,
@@ -2283,6 +2411,7 @@ impl ElementArrays {
         };
         *index = new_index?;
         *cap = new_key;
+        self.ensure_values_len(new_key, *index, new_len)?;
         Ok(())
     }
 
@@ -2306,24 +2435,65 @@ impl ElementArrays {
         Ok(())
     }
 
+    /// Allocates an empty elements storage that can hold `length` elements:
+    /// above 2^16, only `length` slots are allocated.
     pub(crate) fn allocate_elements_with_length(
         &mut self,
         length: usize,
     ) -> Result<ElementsVector<'static>, TryReserveError> {
         let cap = ElementArrayKey::from(length);
-        Self::allocate_elements_with_capacity(self, cap)
-    }
-
-    pub(crate) fn allocate_elements_with_capacity(
-        &mut self,
-        cap: ElementArrayKey,
-    ) -> Result<ElementsVector<'static>, TryReserveError> {
-        Ok(ElementsVector {
+        let elements = ElementsVector {
             elements_index: self.push_values(cap, &[], None)?,
             cap,
             len: 0,
             len_writable: true,
-        })
+        };
+        self.ensure_values_len(
+            cap,
+            elements.elements_index,
+            u32::try_from(length).unwrap_or(u32::MAX),
+        )?;
+        Ok(elements)
+    }
+
+    /// Allocates an empty elements storage with all the slots of `cap`.
+    pub(crate) fn allocate_elements_with_capacity(
+        &mut self,
+        cap: ElementArrayKey,
+    ) -> Result<ElementsVector<'static>, TryReserveError> {
+        let elements = ElementsVector {
+            elements_index: self.push_values(cap, &[], None)?,
+            cap,
+            len: 0,
+            len_writable: true,
+        };
+        self.ensure_values_len(cap, elements.elements_index, cap.capacity())?;
+        Ok(elements)
+    }
+
+    /// Makes a dynamic elements storage (the classes above 2^16 slots) hold
+    /// at least `len` slots, so that the first `len` slots can be read and
+    /// written. Other storages always hold all their slots.
+    #[inline]
+    pub(crate) fn ensure_values_len(
+        &mut self,
+        cap: ElementArrayKey,
+        index: ElementIndex,
+        len: u32,
+    ) -> Result<(), TryReserveError> {
+        match cap {
+            ElementArrayKey::E24 => {
+                self.e2pow24
+                    .values
+                    .ensure_len(index.get_index(), len as usize, None)
+            }
+            ElementArrayKey::E32 => {
+                self.e2pow32
+                    .values
+                    .ensure_len(index.get_index(), len as usize, None)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn allocate_object_property_storage(
@@ -2335,6 +2505,7 @@ impl ElementArrays {
         let cap = ElementArrayKey::from(length);
         let len = length as u32;
         let elements_index = self.push_values(cap, values, descriptors)?;
+        self.ensure_values_len(cap, elements_index, len)?;
         Ok(ElementsVector {
             elements_index,
             cap,
@@ -3574,6 +3745,14 @@ impl ElementArrays {
         }
         assert!(source_range.end <= source.len() as usize);
         assert!(count <= destination.len() as usize);
+        let dynamic =
+            |cap: ElementArrayKey| matches!(cap, ElementArrayKey::E24 | ElementArrayKey::E32);
+        if dynamic(source.cap) || dynamic(destination.cap) {
+            // Dynamic storages have no flat slice: copy through a buffer.
+            let buffer = self.get_values(source)[source_range].to_vec();
+            self.get_values_mut(destination)[..count].copy_from_slice(&buffer);
+            return;
+        }
         let ElementArrays {
             e2pow1,
             e2pow2,
@@ -3589,17 +3768,17 @@ impl ElementArrays {
             ..
         } = self;
         let mut stores: [Option<(&mut [Option<Value<'static>>], usize)>; 11] = [
-            Some(e2pow1.as_flat_mut()),
-            Some(e2pow2.as_flat_mut()),
-            Some(e2pow3.as_flat_mut()),
-            Some(e2pow4.as_flat_mut()),
-            Some(e2pow6.as_flat_mut()),
-            Some(e2pow8.as_flat_mut()),
-            Some(e2pow10.as_flat_mut()),
-            Some(e2pow12.as_flat_mut()),
-            Some(e2pow16.as_flat_mut()),
-            Some(e2pow24.as_flat_mut()),
-            Some(e2pow32.as_flat_mut()),
+            e2pow1.as_flat_mut(),
+            e2pow2.as_flat_mut(),
+            e2pow3.as_flat_mut(),
+            e2pow4.as_flat_mut(),
+            e2pow6.as_flat_mut(),
+            e2pow8.as_flat_mut(),
+            e2pow10.as_flat_mut(),
+            e2pow12.as_flat_mut(),
+            e2pow16.as_flat_mut(),
+            e2pow24.as_flat_mut(),
+            e2pow32.as_flat_mut(),
         ];
         let store_index = |cap: ElementArrayKey| match cap {
             ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => {

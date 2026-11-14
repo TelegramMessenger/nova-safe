@@ -73,7 +73,8 @@ impl Heap {
         macro_rules! storage {
             ($($values:ident, $keys:ident, $n:expr;)*) => {
                 $(
-                    total += e.$values.values.len().saturating_mul($n).saturating_mul(value_size);
+                    let _ = $n;
+                    total += e.$values.values.slot_count().saturating_mul(value_size);
                     total += e.$keys.keys.len().saturating_mul($n).saturating_mul(key_size);
                 )*
             };
