@@ -1142,7 +1142,7 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
         // 21. For each element d of varDeclarations, do
         {
             // 20. Let declaredVarNames be a new empty List.
-            let mut declared_var_names = AHashSet::new();
+            let mut declared_var_names = AHashSet::default();
             // a. For each element dn of the BoundNames of d, do
             for dn in var_names.iter() {
                 // i. If declaredVarNames does not contain dn, then
@@ -1518,7 +1518,7 @@ fn parse_module_body<'a>(
     // 4. Let importEntries be the ImportEntries of body.
     let mut import_entries: Vec<ImportEntryRecord> = vec![];
     // 5. Let importedBoundNames be ImportedLocalNames(importEntries).
-    let mut imported_bound_names = AHashSet::new();
+    let mut imported_bound_names = AHashSet::default();
     for ee in body.iter() {
         let Some(ee) = ee.as_module_declaration() else {
             continue;

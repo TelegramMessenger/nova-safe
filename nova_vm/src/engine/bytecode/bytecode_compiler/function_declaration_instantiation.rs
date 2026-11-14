@@ -69,7 +69,7 @@ pub(crate) fn instantiation<'s>(
     // 13. Let functionsToInitialize be a new empty List.
     // NOTE: the keys of `functions` will be `functionNames`, its values will be
     // `functionsToInitialize`.
-    let mut functions = AHashMap::new();
+    let mut functions = AHashMap::default();
     body.var_scoped_declarations(&mut |d| {
         // a. If d is neither a VariableDeclaration nor a ForBinding nor a
         //    BindingIdentifier, then
@@ -140,7 +140,7 @@ pub(crate) fn instantiation<'s>(
     // 5. Let parameterNames be the BoundNames of formals.
     // 6. If parameterNames has any duplicate entries, let hasDuplicates be
     //    true. Otherwise, let hasDuplicates be false.
-    let mut parameter_names = AHashSet::with_capacity(formals.parameters_count());
+    let mut parameter_names = crate::hashing::set_with_capacity(formals.parameters_count());
     let mut env_parameters = Vec::with_capacity(formals.parameters_count());
     let mut stack_parameters = Vec::with_capacity(if arguments_object_needed {
         0
@@ -344,7 +344,7 @@ pub(crate) fn instantiation<'s>(
         // environment in one go.
 
         // d. Let instantiatedVarNames be a new empty List.
-        let mut instantiated_var_names = AHashSet::new();
+        let mut instantiated_var_names = AHashSet::default();
         // e. For each element n of varNames, do
         body.var_declared_names(&mut |d| {
             let n = d.name;

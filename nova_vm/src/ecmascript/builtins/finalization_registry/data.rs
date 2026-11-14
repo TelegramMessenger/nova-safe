@@ -183,7 +183,7 @@ impl HeapMarkAndSweep for FinalizationRegistryRecordMut<'_, 'static> {
         }
         let old_cells = core::mem::replace(
             cells_weak_ref_target_to_held_value,
-            AHashMap::with_capacity(cells_weak_ref_target_to_held_value.len()),
+            crate::hashing::map_with_capacity(cells_weak_ref_target_to_held_value.len()),
         );
         for (weak_ref_target, mut held_value) in old_cells {
             held_value.sweep_values(compactions);
@@ -204,7 +204,7 @@ impl HeapMarkAndSweep for FinalizationRegistryRecordMut<'_, 'static> {
         }
         let old_token_map = core::mem::replace(
             cells_unregister_token_to_weak_ref_target,
-            AHashMap::with_capacity(cells_unregister_token_to_weak_ref_target.len()),
+            crate::hashing::map_with_capacity(cells_unregister_token_to_weak_ref_target.len()),
         );
         for (unregister_token, weak_ref_target) in old_token_map {
             let unregister_token = unregister_token.sweep_weak_reference(compactions);

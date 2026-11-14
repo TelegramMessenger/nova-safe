@@ -219,7 +219,7 @@ pub(crate) fn new_private_environment<'gc>(
         // [[OuterPrivateEnvironment]]: outerPrivEnv,
         outer_private_environment: outer_private_environment.unbind(),
         // [[Names]]: names
-        names: AHashMap::with_capacity(private_names_count),
+        names: crate::hashing::map_with_capacity(private_names_count),
         private_fields: vec![],
         first_private_name,
         // Note: we assume that all PrivateNames are instance fields.
