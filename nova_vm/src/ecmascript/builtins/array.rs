@@ -446,6 +446,9 @@ impl<'a> InternalMethods<'a> for Array<'a> {
                 if !length_writable {
                     return TryResult::Continue(false);
                 }
+                if let Err(err) = check_length_growth(agent, self, index.saturating_add(1), gc) {
+                    return TryResult::Break(TryError::Err(err));
+                }
                 let Heap {
                     elements,
                     arrays,

@@ -344,7 +344,7 @@ impl Agent {
         let Some(limit) = self.limits.heap_limit else {
             return false;
         };
-        if self.heap_size().saturating_add(bytes) <= limit {
+        if bytes == 0 || self.heap_size().saturating_add(bytes) <= limit {
             return false;
         }
         if self.limits.live_bytes_after_gc.saturating_add(bytes) > limit {

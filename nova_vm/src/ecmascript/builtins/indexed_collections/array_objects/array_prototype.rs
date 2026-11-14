@@ -652,6 +652,7 @@ impl ArrayPrototype {
         let mut to = to;
         // 18. Repeat, while count > 0,
         while count > 0 {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let fromKey be ! ToString(𝔽(from)).
             let from_key = PropertyKey::Integer(from.try_into().unwrap());
             // b. Let toKey be ! ToString(𝔽(to)).
@@ -1893,6 +1894,7 @@ impl ArrayPrototype {
 
         // 8. Repeat, while k ≥ 0,
         while k >= 0 {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
@@ -2293,6 +2295,7 @@ impl ArrayPrototype {
 
             // b. Repeat, while kPresent is false and k < len,
             while !k_present && k < len {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 // i. Let Pk be ! ToString(𝔽(k)).
                 let pk = PropertyKey::Integer(k.try_into().unwrap());
 
@@ -2458,6 +2461,7 @@ impl ArrayPrototype {
 
             // b. Repeat, while kPresent is false and k ≥ 0,
             while !k_present && k >= 0 {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 // i. Let Pk be ! ToString(𝔽(k)).
                 let pk = PropertyKey::try_from(k).unwrap();
 
@@ -2489,6 +2493,7 @@ impl ArrayPrototype {
 
         // 9. Repeat, while k ≥ 0,
         while k >= 0 {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::try_from(k).unwrap();
 
@@ -3252,6 +3257,7 @@ impl ArrayPrototype {
 
         // 10. Repeat, while j < len,
         for j in item_count..len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Perform ? DeletePropertyOrThrow(obj, ! ToString(𝔽(j))).
             delete_property_or_throw(agent, obj.get(agent), j.try_into().unwrap(), gc.reborrow())
                 .unbind()?;
@@ -3418,6 +3424,7 @@ impl ArrayPrototype {
                 k = len as usize;
                 // d. Repeat, while k > (len - actualDeleteCount + itemCount),
                 while k > (len as usize - actual_delete_count + item_count) {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
                     // i. Perform ? DeletePropertyOrThrow(O, ! ToString(𝔽(k - 1))).
                     delete_property_or_throw(
                         agent,
@@ -3436,6 +3443,7 @@ impl ArrayPrototype {
                 k = len as usize - actual_delete_count;
                 // b. Repeat, while k > actualStart,
                 while k > actual_start {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
                     // i. Let from be ! ToString(𝔽(k + actualDeleteCount - 1)).
                     let from = (k + actual_delete_count - 1).try_into().unwrap();
                     // ii. Let to be ! ToString(𝔽(k + itemCount - 1)).
@@ -3777,6 +3785,7 @@ impl ArrayPrototype {
         let mut r = actual_start + actual_skip_count;
         // 16. Repeat, while i < actualStart,
         while i < actual_start {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pi be ! ToString(𝔽(i)).
             let pi = i.try_into().unwrap();
             // b. Let iValue be ? Get(O, Pi).
@@ -3814,6 +3823,7 @@ impl ArrayPrototype {
         }
         // 18. Repeat, while i < newLen,
         while i < new_len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pi be ! ToString(𝔽(i)).
             let pi = i.try_into().unwrap();
             // b. Let from be ! ToString(𝔽(r)).
@@ -3942,6 +3952,7 @@ impl ArrayPrototype {
             let mut k = len;
             // c. Repeat, while k > 0,
             while k > 0 {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 // i. Let from be ! ToString(𝔽(k - 1)).
                 let from = (k - 1).try_into().unwrap();
                 // ii. Let to be ! ToString(𝔽(k + argCount - 1)).
@@ -4445,6 +4456,7 @@ fn flatten_into_array<'a>(
     // 3. Let sourceIndex be +0𝔽.
     // 4. Repeat, while ℝ(sourceIndex) < sourceLen,
     for source_index in 0..source_len {
+        agent.poll_interrupt(gc.nogc()).unbind()?;
         // a. Let P be ! ToString(sourceIndex).
         let source_index_number = Number::try_from(source_index).unwrap();
         let p = PropertyKey::try_from(source_index).unwrap();

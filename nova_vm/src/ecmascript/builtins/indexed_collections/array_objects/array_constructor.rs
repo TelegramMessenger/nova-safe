@@ -271,6 +271,7 @@ impl ArrayConstructor {
 
             // e. Repeat,
             loop {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 // NOTE: The actual max size of an array is u32::MAX
                 // i. If k ≥ 2**53 - 1, then
                 if k >= u32::MAX as usize {
@@ -408,6 +409,7 @@ impl ArrayConstructor {
 
         // 12. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let sk = SmallInteger::from(k as u32);
             // 𝔽(k)
             let fk = Number::from(sk).into();
