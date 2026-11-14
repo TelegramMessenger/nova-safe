@@ -324,9 +324,7 @@ impl Agent {
                 gc,
             ));
         }
-        if let Some(limit) = self.limits.heap_limit
-            && self.heap_size().saturating_add(bytes) > limit
-        {
+        if self.allocation_over_heap_limit(bytes) {
             return Err(self.throw_exception_with_static_message(
                 ExceptionType::RangeError,
                 "Out of memory: allocation over the heap limit",
@@ -334,6 +332,26 @@ impl Agent {
             ));
         }
         Ok(())
+    }
+
+    /// Whether `bytes` more cannot fit under the heap limit. The estimate
+    /// ([`Agent::heap_size`]) counts everything allocated since the last
+    /// collection, garbage included, so going over it only refuses when the
+    /// heap the last collection found live has no room either; otherwise the
+    /// next instruction collects, and the poll after it terminates the script
+    /// if the heap is still over the limit.
+    fn allocation_over_heap_limit(&mut self, bytes: usize) -> bool {
+        let Some(limit) = self.limits.heap_limit else {
+            return false;
+        };
+        if self.heap_size().saturating_add(bytes) <= limit {
+            return false;
+        }
+        if self.limits.live_bytes_after_gc.saturating_add(bytes) > limit {
+            return true;
+        }
+        self.limits.gc_threshold = 0;
+        false
     }
 
     /// Refuses an allocation of `bytes` that the heap limit does not leave
@@ -344,9 +362,7 @@ impl Agent {
         bytes: usize,
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, ()> {
-        if let Some(limit) = self.limits.heap_limit
-            && self.heap_size().saturating_add(bytes) > limit
-        {
+        if self.allocation_over_heap_limit(bytes) {
             return Err(self.throw_exception_with_static_message(
                 ExceptionType::RangeError,
                 "Out of memory: allocation over the heap limit",

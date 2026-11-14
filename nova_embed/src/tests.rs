@@ -639,3 +639,33 @@ fn engine_with_default() -> (Engine, ()) {
     let (engine, _) = engine();
     (engine, ())
 }
+
+#[test]
+fn garbage_does_not_refuse_an_allocation_under_the_heap_limit() {
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    assert_eq!(
+        engine.evaluate(
+            "var n = 0; for (var i = 0; i < 400; i++) { var s = 'x'.repeat(100000) + i; n += s.length; } var b = new ArrayBuffer(1 << 20); n + b.byteLength",
+            false
+        ),
+        Ok(Completion::Number(400.0 * 100_000.0 + 1090.0 + 1048576.0))
+    );
+    assert_eq!(
+        engine.evaluate("new ArrayBuffer(16 << 20)", false),
+        Err(Error::OutOfMemory)
+    );
+    assert_eq!(
+        engine.evaluate(
+            "try { new ArrayBuffer(16 << 20); 'no' } catch (e) { e.name }",
+            false
+        ),
+        Ok(Completion::String("RangeError".into()))
+    );
+    assert_eq!(
+        engine.evaluate(
+            "var keep = []; for (var i = 0; i < 100; i++) keep.push(new Float64Array(1 << 17));",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+}
