@@ -49,6 +49,18 @@ default = [
     "annex-b",
     "temporal",
 ]
+# The widget engine: no Temporal, no SharedArrayBuffer and Atomics (widgets
+# have no workers to share memory with).
+widget = [
+    "math",
+    "json",
+    "date",
+    "array-buffer",
+    "weak-refs",
+    "regexp",
+    "set",
+    "annex-b",
+]
 array-buffer = []
 atomics = ["array-buffer", "shared-array-buffer"]
 date = []
