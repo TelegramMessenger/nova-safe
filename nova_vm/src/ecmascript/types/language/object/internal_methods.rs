@@ -359,13 +359,19 @@ where
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
         let property_key = property_key.bind(gc.nogc());
+        let receiver = receiver.bind(gc.nogc());
         // 1. Return ? OrdinaryGet(O, P, Receiver).
         match self.get_backing_object(agent) {
-            Some(backing_object) => {
-                ordinary_get(agent, backing_object, property_key.unbind(), receiver, gc)
-            }
+            Some(backing_object) => ordinary_get(
+                agent,
+                backing_object,
+                property_key.unbind(),
+                receiver.unbind(),
+                gc,
+            ),
             None => {
                 let property_key = property_key.scope(agent, gc.nogc());
+                let receiver = receiver.scope(agent, gc.nogc());
                 // a. Let parent be ? O.[[GetPrototypeOf]]().
                 let Some(parent) = self
                     .internal_get_prototype_of(agent, gc.reborrow())
@@ -377,9 +383,12 @@ where
                 };
 
                 // c. Return ? parent.[[Get]](P, Receiver).
-                parent
-                    .unbind()
-                    .internal_get(agent, property_key.get(agent), receiver, gc)
+                parent.unbind().internal_get(
+                    agent,
+                    property_key.get(agent),
+                    receiver.get(agent),
+                    gc,
+                )
             }
         }
     }

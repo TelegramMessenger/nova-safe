@@ -1378,18 +1378,35 @@ pub(crate) fn ordinary_has_instance<'a, 'b>(
         return instanceof_operator(agent, o, bc.unbind(), gc);
     }
     // 3. If O is not an Object, return false.
-    let Ok(o) = Object::try_from(o.into()) else {
+    let Ok(mut o) = Object::try_from(o.into().bind(gc.nogc())) else {
         return Ok(false);
     };
     // 4. Let P be ? Get(C, "prototype").
-    let p = get(
+    let p = if let Some(p) = try_result_into_js(try_get_result_into_value(try_get(
         agent,
-        c.unbind(),
+        c,
         BUILTIN_STRING_MEMORY.prototype.into(),
-        gc.reborrow(),
-    )
+        None,
+        gc.nogc(),
+    )))
     .unbind()?
-    .bind(gc.nogc());
+    .bind(gc.nogc())
+    {
+        p
+    } else {
+        // The getter may run a collection: O must survive it.
+        let scoped_o = o.scope(agent, gc.nogc());
+        let p = get(
+            agent,
+            c.unbind(),
+            BUILTIN_STRING_MEMORY.prototype.into(),
+            gc.reborrow(),
+        )
+        .unbind()?
+        .bind(gc.nogc());
+        o = scoped_o.get(agent).bind(gc.nogc());
+        p
+    };
     // 5. If P is not an Object, throw a TypeError exception.
     let Ok(p) = Object::try_from(p) else {
         return Err(agent.throw_exception_with_static_message(

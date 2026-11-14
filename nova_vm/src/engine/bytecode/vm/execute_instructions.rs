@@ -416,7 +416,13 @@ pub(super) fn execute_object_define_property<'gc>(
     let object = vm.stack.last().unwrap().bind(gc.nogc());
     let object = Object::try_from(object).unwrap();
 
-    create_data_property_or_throw(agent, object.unbind(), key.unbind(), value.unbind(), gc)?;
+    let (object, key, value) = (object.unbind(), key.unbind(), value.unbind());
+    with_vm_gc(
+        agent,
+        vm,
+        |agent, gc| create_data_property_or_throw(agent, object, key, value, gc),
+        gc,
+    )?;
     Ok(())
 }
 

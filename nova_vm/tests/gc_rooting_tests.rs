@@ -326,3 +326,46 @@ check("load", Atomics.load(ta, { valueOf() { gc(); return 1; } }), 42);
 "#,
     );
 }
+
+#[test]
+fn object_binding_keeps_reference_across_getters() {
+    run_case(
+        "object binding patterns",
+        r#"
+function closure() { var q = 1; return function () { return q; }; }
+var junk = garbage(closure);
+function viaVar(obj) { var { x } = obj; return function () { return x; }; }
+function viaLet(obj) { let { x } = obj; return function () { return x; }; }
+function viaRest(obj) { var { ...r } = obj; return function () { return r; }; }
+function getter() { junk = null; gc(); return 42; }
+check("var", viaVar({ get x() { return getter(); } })(), 42);
+junk = garbage(closure);
+check("let", viaLet({ get x() { return getter(); } })(), 42);
+junk = garbage(closure);
+check("rest", viaRest({ get y() { return getter(); } })().y, 42);
+junk = garbage(closure);
+var proxy = new Proxy({ x: 7 }, { get(t, k) { junk = null; gc(); return Reflect.get(t, k); } });
+check("proxy", viaLet(proxy)(), 7);
+"#,
+    );
+}
+
+#[test]
+fn instanceof_keeps_object_across_prototype_getter() {
+    run_case(
+        "instanceof",
+        r#"
+var junk = garbage(() => []);
+var arr = [];
+junk = null;
+var C = () => {};
+Object.defineProperty(C, "prototype", { get() { gc(); return Array.prototype; } });
+check("instanceof getter", arr instanceof C, true);
+junk = garbage(() => ({}));
+var plain = {};
+junk = null;
+check("instanceof getter false", plain instanceof C, false);
+check("instanceof plain", [] instanceof Array, true);
+"#,
+    );
+}

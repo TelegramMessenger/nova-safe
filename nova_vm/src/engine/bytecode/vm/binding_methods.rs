@@ -77,7 +77,7 @@ pub(super) fn execute_simple_array_binding<'a>(
                             let mut iterator = ActiveIterator::new(agent, gc.nogc());
                             let capacity = iterator.remaining_length_estimate(agent).unwrap_or(0);
                             let rest = array_create(agent, 0, capacity, None, gc.nogc())
-                                .unwrap()
+                                .unbind()?
                                 .scope(agent, gc.nogc());
                             let mut idx = 0u32;
                             while let Some(result) = iterator
@@ -244,10 +244,10 @@ pub(super) fn execute_simple_object_binding<'a>(
                 }
             }
             Instruction::BindingPatternBind | Instruction::BindingPatternBindNamed => {
-                with_vm_gc(
+                let property_key = with_vm_gc(
                     agent,
                     vm,
-                    |agent, mut gc| {
+                    |agent, gc| {
                         let binding_id =
                             executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
                         let property_key = if instr.kind == Instruction::BindingPatternBind {
@@ -269,24 +269,34 @@ pub(super) fn execute_simple_object_binding<'a>(
                             binding_id.unbind(),
                             None,
                             environment.as_ref().map(|v| v.get(agent)),
-                            gc.reborrow(),
-                        )
-                        .unbind()?;
-                        let v = get(
-                            agent,
-                            object.get(agent),
-                            property_key.take(agent),
-                            gc.reborrow(),
-                        )
-                        .unbind()?
-                        .bind(gc.nogc());
+                            gc,
+                        )?;
+                        JsResult::Ok((lhs, property_key))
+                    },
+                    gc.reborrow(),
+                );
+                let (lhs, property_key) = property_key.unbind()?;
+                // The Get below can run user code: the Reference waits on the
+                // VM's reference stack, where the collector updates it.
+                vm.reference_stack.push(lhs);
+                let v = with_vm_gc(
+                    agent,
+                    vm,
+                    |agent, gc| get(agent, object.get(agent), property_key.take(agent), gc),
+                    gc.reborrow(),
+                )
+                .unbind();
+                let lhs = vm.reference_stack.pop().unwrap();
+                let v = v?;
+                with_vm_gc(
+                    agent,
+                    vm,
+                    |agent, gc| {
                         if environment.is_none() {
-                            put_value(agent, &lhs, v.unbind(), gc.reborrow()).unbind()?;
+                            put_value(agent, &lhs, v, gc)
                         } else {
-                            initialize_referenced_binding(agent, lhs, v.unbind(), gc.reborrow())
-                                .unbind()?
+                            initialize_referenced_binding(agent, lhs, v, gc)
                         }
-                        JsResult::Ok(())
                     },
                     gc.reborrow(),
                 )
@@ -339,46 +349,56 @@ pub(super) fn execute_simple_object_binding<'a>(
                 .unbind()?;
             }
             Instruction::BindingPatternBindRest => {
-                with_vm_gc(
+                // 1. Let lhs be ? ResolveBinding(StringValue of BindingIdentifier, environment).
+                let lhs = with_vm_gc(
                     agent,
                     vm,
-                    |agent, mut gc| {
-                        // 1. Let lhs be ? ResolveBinding(StringValue of BindingIdentifier, environment).
+                    |agent, gc| {
                         let binding_id =
                             executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
-                        let lhs = resolve_binding(
+                        resolve_binding(
                             agent,
                             binding_id.unbind(),
                             None,
                             environment.as_ref().map(|v| v.get(agent)),
-                            gc.reborrow(),
+                            gc,
                         )
-                        .unbind()?;
-                        // 2. Let restObj be OrdinaryObjectCreate(%Object.prototype%).
-                        // 3. Perform ? CopyDataProperties(restObj, value, excludedNames).
-                        let rest_obj = copy_data_properties_into_object(
+                    },
+                    gc.reborrow(),
+                )
+                .unbind()?;
+                // CopyDataProperties can run user code: the Reference waits on
+                // the VM's reference stack, where the collector updates it.
+                vm.reference_stack.push(lhs);
+                // 2. Let restObj be OrdinaryObjectCreate(%Object.prototype%).
+                // 3. Perform ? CopyDataProperties(restObj, value, excludedNames).
+                let rest_obj = with_vm_gc(
+                    agent,
+                    vm,
+                    |agent, gc| {
+                        copy_data_properties_into_object(
                             agent,
                             object.get(agent),
                             excluded_names,
-                            gc.reborrow(),
+                            gc,
                         )
-                        .unbind()?
-                        .bind(gc.nogc());
+                    },
+                    gc.reborrow(),
+                )
+                .unbind();
+                let lhs = vm.reference_stack.pop().unwrap();
+                let rest_obj = rest_obj?;
+                with_vm_gc(
+                    agent,
+                    vm,
+                    |agent, gc| {
                         // 4. If environment is undefined, return ? PutValue(lhs, restObj).
                         // 5. Return ? InitializeReferencedBinding(lhs, restObj).
                         if environment.is_none() {
-                            put_value(agent, &lhs, rest_obj.unbind().into(), gc.reborrow())
-                                .unbind()?;
+                            put_value(agent, &lhs, rest_obj.into(), gc)
                         } else {
-                            initialize_referenced_binding(
-                                agent,
-                                lhs,
-                                rest_obj.unbind().into(),
-                                gc.reborrow(),
-                            )
-                            .unbind()?;
+                            initialize_referenced_binding(agent, lhs, rest_obj.into(), gc)
                         }
-                        JsResult::Ok(())
                     },
                     gc.reborrow(),
                 )

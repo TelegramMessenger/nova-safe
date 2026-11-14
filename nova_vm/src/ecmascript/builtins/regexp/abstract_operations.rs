@@ -632,7 +632,7 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     let has_group_name = !full_match.group_names().is_empty();
     // 20. Let A be ! ArrayCreate(n + 1).
     // Note: we use n because it already contains the full-match group in it.
-    let a = array_create(agent, n, n, None, gc).unwrap();
+    let a = array_create(agent, n, n, None, gc)?;
     // 21. Assert: The mathematical value of A's "length" property is n + 1.
     debug_assert_eq!(a.len(agent) as usize, n);
     // 22. Perform ! CreateDataPropertyOrThrow(A, "index", 𝔽(lastIndex)).
