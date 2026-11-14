@@ -1,13 +1,8 @@
-/// A macro that generates a struct-of-arrays (SoA) container backed by a single allocation.
+/// A macro that generates a struct-of-arrays (SoA) container.
 ///
-/// Instead of N separate `IndexVec`s each with their own `ptr + len + capacity`,
-/// this generates a struct with:
-/// - A single allocation containing all field arrays contiguously
-/// - A single `len` and `cap` (stored as `u32`)
-/// - Per-field typed accessors with a single bounds check
-/// - A single capacity check on `push`
-///
-/// This is modeled on Zig's `MultiArrayList`.
+/// The generated struct holds one `Vec` per field and a single `len` (stored as `u32`), with
+/// per-field typed accessors (bounds-checked) and a `push` that appends to every field.
+/// Upstream oxc kept all fields in one raw allocation; this version is the same API on safe `Vec`s.
 ///
 /// # Usage
 ///
@@ -34,30 +29,10 @@ macro_rules! multi_index_vec {
     ) => {
         $(#[$meta])*
         $vis struct $name {
-            /// Pointer to the base of the single allocation.
-            /// Layout: `[Field1 × cap][Field2 × cap]...` with alignment padding between fields.
-            base: ::core::ptr::NonNull<u8>,
-            /// Cached pointers to the start of each field's array within the allocation.
-            $( $fname: ::core::ptr::NonNull<$fty>, )*
-            /// Number of elements currently stored.
+            $( $fname: ::std::vec::Vec<$fty>, )*
+            /// Number of elements currently stored (the length of every field's `Vec`).
             len: u32,
-            /// Total capacity of each field array.
-            cap: u32,
         }
-
-        // SAFETY: All data is fully owned by this struct. The raw pointers do not
-        // alias with any other pointers. This is equivalent to Vec's Send/Sync impls
-        // which are safe because Vec owns its data.
-        unsafe impl Send for $name
-        where
-            $( $fty: Send, )*
-        {}
-        // SAFETY: Immutable access to the data through `&self` does not allow mutation.
-        // Mutable access requires `&mut self` which guarantees exclusive access.
-        unsafe impl Sync for $name
-        where
-            $( $fty: Sync, )*
-        {}
 
         #[expect(clippy::allow_attributes, reason = "macro-generated methods may not all be used")]
         impl $name {
@@ -68,57 +43,12 @@ macro_rules! multi_index_vec {
                 <$idx as ::oxc_index::Idx>::MAX.saturating_add(1)
             }
 
-            /// Compute the memory layout for a given capacity.
-            /// Returns `None` if `cap == 0`.
-            fn compute_layout(cap: usize) -> Option<::core::alloc::Layout> {
-                if cap == 0 {
-                    return None;
-                }
-                let mut size = 0usize;
-                let mut max_align = 1usize;
-                $(
-                    let align = ::core::mem::align_of::<$fty>();
-                    if align > max_align { max_align = align; }
-                    size = (size + align - 1) & !(align - 1);
-                    size += ::core::mem::size_of::<$fty>().checked_mul(cap).expect("capacity overflow");
-                )*
-                Some(::core::alloc::Layout::from_size_align(size, max_align).expect("invalid layout"))
-            }
-
-            /// Set cached field pointers based on the base allocation pointer and capacity.
-            ///
-            /// # Safety
-            /// `base` must point to a valid allocation of the layout returned by
-            /// `compute_layout(cap)`. The allocation must be at least as aligned as
-            /// the maximum field alignment.
-            unsafe fn set_pointers(&mut self, base: *mut u8, cap: usize) {
-                let mut _offset = 0usize;
-                $(
-                    let align = ::core::mem::align_of::<$fty>();
-                    _offset = (_offset + align - 1) & !(align - 1);
-                    #[expect(clippy::cast_ptr_alignment)]
-                    {
-                        // SAFETY: `_offset` is within the allocation, and properly aligned
-                        // for `$fty` because `compute_layout` aligns each field's offset,
-                        // and the base pointer has at least `max_align` alignment.
-                        self.$fname = unsafe {
-                            ::core::ptr::NonNull::new_unchecked(
-                                base.add(_offset).cast::<$fty>()
-                            )
-                        };
-                    }
-                    _offset += ::core::mem::size_of::<$fty>() * cap;
-                )*
-            }
-
             /// Create a new empty container.
             #[inline]
             $vis fn new() -> Self {
                 Self {
-                    base: ::core::ptr::NonNull::dangling(),
-                    $( $fname: ::core::ptr::NonNull::dangling(), )*
+                    $( $fname: ::std::vec::Vec::new(), )*
                     len: 0,
-                    cap: 0,
                 }
             }
 
@@ -141,89 +71,23 @@ macro_rules! multi_index_vec {
                     required <= Self::max_len(),
                     "capacity exceeds index type range"
                 );
-                if required <= self.cap as usize {
-                    return;
-                }
-                self.grow_to(required);
-            }
-
-            /// Grow the allocation to hold at least `min_cap` elements.
-            fn grow_to(&mut self, min_cap: usize) {
-                let max_len = Self::max_len();
-                assert!(min_cap <= max_len, "capacity exceeds index type range");
-                let new_cap = if self.cap == 0 {
-                    min_cap.max(4)
-                } else {
-                    (self.cap as usize).checked_mul(2).expect("capacity overflow").max(min_cap)
-                }
-                .min(max_len);
-
-                let old_cap = self.cap as usize;
-                let old_len = self.len as usize;
-                let new_layout = Self::compute_layout(new_cap)
-                    .expect("new capacity must be > 0");
-
-                // SAFETY: All pointer arithmetic is within bounds of the allocations.
-                // Old data is copied field-by-field from the old allocation to the new one.
-                // The old allocation is freed after the copy.
-                unsafe {
-                    let new_base = ::std::alloc::alloc(new_layout);
-                    if new_base.is_null() {
-                        ::std::alloc::handle_alloc_error(new_layout);
-                    }
-
-                    // Copy old data to new allocation.
-                    if old_cap > 0 {
-                        let old_base = self.base.as_ptr();
-                        let mut _old_offset = 0usize;
-                        let mut _new_offset = 0usize;
-                        $(
-                            let align = ::core::mem::align_of::<$fty>();
-                            let elem_size = ::core::mem::size_of::<$fty>();
-                            _old_offset = (_old_offset + align - 1) & !(align - 1);
-                            _new_offset = (_new_offset + align - 1) & !(align - 1);
-                            ::core::ptr::copy_nonoverlapping(
-                                old_base.add(_old_offset),
-                                new_base.add(_new_offset),
-                                elem_size * old_len,
-                            );
-                            _old_offset += elem_size * old_cap;
-                            _new_offset += elem_size * new_cap;
-                        )*
-
-                        let old_layout = Self::compute_layout(old_cap).unwrap();
-                        ::std::alloc::dealloc(old_base, old_layout);
-                    }
-
-                    self.base = ::core::ptr::NonNull::new_unchecked(new_base);
-                    self.set_pointers(new_base, new_cap);
-                    self.cap = u32::try_from(new_cap).expect("capacity exceeds u32");
-                }
+                $( self.$fname.reserve(additional); )*
             }
 
             /// Push a new element to all field arrays. Returns the index of the new element.
             $vis fn push(&mut self, $( $fname: $fty ),*) -> $idx {
-                if self.len == self.cap {
-                    self.grow_to(self.len as usize + 1);
-                }
                 let idx = self.len as usize;
-                // SAFETY: `idx < cap` is guaranteed because we just grew if needed.
-                // The field pointers are valid and properly aligned for their types.
-                unsafe {
-                    $(
-                        self.$fname.as_ptr().add(idx).write($fname);
-                    )*
-                }
-                self.len += 1;
-                // SAFETY: `idx < len <= cap <= max_len = Idx::MAX + 1`, so `idx <= Idx::MAX`.
-                unsafe { <$idx as ::oxc_index::Idx>::from_usize_unchecked(idx) }
+                assert!(idx < Self::max_len(), "capacity exceeds index type range");
+                let new_len = u32::try_from(idx + 1).expect("capacity exceeds u32");
+                $( self.$fname.push($fname); )*
+                self.len = new_len;
+                <$idx as ::oxc_index::Idx>::from_usize(idx)
             }
 
             /// Iterate over all valid indices.
             $vis fn iter_ids(&self) -> impl Iterator<Item = $idx> {
                 let len = self.len as usize;
-                // SAFETY: Valid indices are `0..len`, and by invariant `len <= Idx::MAX + 1`.
-                (0..len).map(|i| unsafe { <$idx as ::oxc_index::Idx>::from_usize_unchecked(i) })
+                (0..len).map(<$idx as ::oxc_index::Idx>::from_usize)
             }
 
             #[inline(always)]
@@ -238,18 +102,14 @@ macro_rules! multi_index_vec {
                 #[inline]
                 $fvis fn $fname(&self, id: $idx) -> &$fty {
                     let idx = self.checked_idx(id);
-                    // SAFETY: `idx` is validated by `checked_idx`.
-                    // The pointer is aligned and valid for reads.
-                    unsafe { &*self.$fname.as_ptr().add(idx) }
+                    &self.$fname[idx]
                 }
 
                 #[inline]
                 #[allow(dead_code)]
                 $fvis fn $fname_mut(&mut self, id: $idx) -> &mut $fty {
                     let idx = self.checked_idx(id);
-                    // SAFETY: `idx` is validated by `checked_idx`.
-                    // The pointer is aligned and valid. `&mut self` guarantees no aliasing.
-                    unsafe { &mut *self.$fname.as_ptr().add(idx) }
+                    &mut self.$fname[idx]
                 }
             )*
         }
@@ -259,46 +119,9 @@ macro_rules! multi_index_vec {
             $( $fty: Clone, )*
         {
             fn clone(&self) -> Self {
-                let len = self.len as usize;
-                let mut result = Self::new();
-                if len > 0 {
-                    result.reserve(len);
-                    for i in 0..len {
-                        // SAFETY: `i < len`, and `len <= max_len = Idx::MAX + 1`,
-                        // so `i <= Idx::MAX`.
-                        let id = unsafe { <$idx as ::oxc_index::Idx>::from_usize_unchecked(i) };
-                        // `push` handles destination initialization and len updates,
-                        // so this remains panic-safe if a field clone panics.
-                        result.push(
-                            $( self.$fname(id).clone() ),*
-                        );
-                    }
-                }
-                result
-            }
-        }
-
-        impl Drop for $name {
-            fn drop(&mut self) {
-                if self.cap == 0 {
-                    return;
-                }
-                let len = self.len as usize;
-                $(
-                    if ::core::mem::needs_drop::<$fty>() {
-                        for i in 0..len {
-                            // SAFETY: `i < len <= cap`, so the pointer is within the allocation.
-                            // Each element is only dropped once.
-                            unsafe {
-                                ::core::ptr::drop_in_place(self.$fname.as_ptr().add(i));
-                            }
-                        }
-                    }
-                )*
-                let layout = Self::compute_layout(self.cap as usize).unwrap();
-                // SAFETY: `self.base` was allocated with this layout.
-                unsafe {
-                    ::std::alloc::dealloc(self.base.as_ptr(), layout);
+                Self {
+                    $( $fname: self.$fname.clone(), )*
+                    len: self.len,
                 }
             }
         }
@@ -313,7 +136,6 @@ macro_rules! multi_index_vec {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.debug_struct(stringify!($name))
                     .field("len", &self.len)
-                    .field("cap", &self.cap)
                     .finish()
             }
         }
