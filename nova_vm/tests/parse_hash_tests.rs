@@ -242,6 +242,24 @@ fn checks_over_many_names_scale_linearly() {
     );
 }
 
+/// `class extends ,` used to label its error with a span that ends before it
+/// starts, which overflowed in builds with overflow checks.
+#[test]
+fn a_missing_heritage_expression_does_not_overflow_a_span() {
+    for source_type in [SourceType::script(), SourceType::mjs()] {
+        for source in ["//\nx=class extends, ", "x=class extends, ", "class A extends , B {}"] {
+            let allocator = Allocator::new();
+            let ret = Parser::new(&allocator, source, source_type).parse();
+            assert!(!ret.errors.is_empty(), "{source:?}");
+            for error in &ret.errors {
+                for label in error.labels.iter().flatten() {
+                    assert!(label.offset() + label.len() <= source.len(), "{source:?}");
+                }
+            }
+        }
+    }
+}
+
 /// Binary, octal and hex BigInt literals carry their decimal value.
 #[test]
 fn bigint_literals_carry_their_decimal_value() {
