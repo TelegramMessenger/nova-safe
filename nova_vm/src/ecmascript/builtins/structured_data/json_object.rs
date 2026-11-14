@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use sonic_rs::{JsonContainerTrait, JsonValueTrait};
+mod json_parser;
+
 use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{
@@ -10,11 +11,11 @@ use crate::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, ExceptionType, Function,
         InternalMethods, JsResult, Number, Object, Primitive, PrimitiveObject, PrimitiveObjectData,
         PropertyDescriptor, PropertyKey, ProtoIntrinsics, Realm, ScopedPropertyKey, SmallInteger,
-        String, Value, array_create, builders::OrdinaryObjectBuilder, call_function,
-        create_data_property, enumerable_own_keys, get, get_v, is_array, is_callable,
-        length_of_array_like, ordinary_object_create_with_intrinsics, scoped_enumerable_own_keys,
+        String, Value, builders::OrdinaryObjectBuilder, call_function, create_data_property,
+        enumerable_own_keys, get, get_v, is_array, is_callable, length_of_array_like,
+        ordinary_object_create_with_intrinsics, scoped_enumerable_own_keys,
         to_integer_or_infinity_number, to_number, to_property_key, to_property_key_simple,
-        to_string, try_create_data_property, try_create_data_property_or_throw, unwrap_try,
+        to_string, try_create_data_property_or_throw, unwrap_try,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, ScopableCollection, Scoped, ScopedCollection,
@@ -89,24 +90,18 @@ impl JSONObject {
             .bind(gc.nogc());
 
         // 2. Parse StringToCodePoints(jsonString) as a JSON text as specified in ECMA-404. Throw a SyntaxError exception if it is not a valid JSON text as defined in that specification.
-        let json_value =
-            match sonic_rs::from_str::<sonic_rs::Value>(&json_string.to_string_lossy_(agent)) {
-                Ok(value) => value,
-                Err(error) => {
-                    return Err(agent.throw_exception(
-                        ExceptionType::SyntaxError,
-                        error.to_string(),
-                        gc.into_nogc(),
-                    ));
-                }
-            };
-
         // 3. Let scriptString be the string-concatenation of "(", jsonString, and ");".
         // 4. Let script be ParseText(scriptString, Script).
         // 5. NOTE: The early error rules defined in 13.2.5.1 have special handling for the above invocation of ParseText.
         // 6. Assert: script is a Parse Node.
         // 7. Let completion be Completion(Evaluation of script).
-        let completion = value_from_json(agent, &json_value, gc.nogc());
+        let json_bytes = json_string.as_bytes(agent).to_vec();
+        let completion = match json_parser::parse_json_text(agent, &json_bytes, gc.nogc()) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(agent.throw_exception(error.kind, error.message, gc.into_nogc()));
+            }
+        };
 
         // 8. NOTE: The PropertyDefinitionEvaluation semantics defined in 13.2.5.5 have special handling for the above evaluation.
         // 9. Let unfiltered be completion.[[Value]].
@@ -1216,46 +1211,4 @@ fn serialize_json_array<'a, 'b>(
     state.indent = step_back;
     // 13. Return final.
     Ok(())
-}
-
-pub(crate) fn value_from_json<'gc>(
-    agent: &mut Agent,
-    json: &sonic_rs::Value,
-    gc: NoGcScope<'gc, '_>,
-) -> Value<'gc> {
-    match json.get_type() {
-        sonic_rs::JsonType::Null => Value::Null,
-        sonic_rs::JsonType::Boolean => Value::Boolean(json.is_true()),
-        sonic_rs::JsonType::Number => Number::from_f64(agent, json.as_f64().unwrap(), gc).into(),
-        sonic_rs::JsonType::String => String::from_str(agent, json.as_str().unwrap(), gc).into(),
-        sonic_rs::JsonType::Array => {
-            let json_array = json.as_array().unwrap();
-            let len = json_array.len();
-            let array_obj = array_create(agent, len, len, None, gc).unwrap();
-            for (i, value) in json_array.iter().enumerate() {
-                let prop = PropertyKey::from(SmallInteger::try_from(i as i64).unwrap());
-                let js_value = value_from_json(agent, value, gc);
-                unwrap_try(try_create_data_property(
-                    agent, array_obj, prop, js_value, None, gc,
-                ));
-            }
-            array_obj.into()
-        }
-        sonic_rs::JsonType::Object => {
-            let json_object = json.as_object().unwrap();
-            let Object::Object(object) =
-                ordinary_object_create_with_intrinsics(agent, ProtoIntrinsics::Object, None, gc)
-            else {
-                unreachable!()
-            };
-            for (key, value) in json_object.iter() {
-                let prop = PropertyKey::from_str(agent, key, gc);
-                let js_value = value_from_json(agent, value, gc);
-                unwrap_try(try_create_data_property(
-                    agent, object, prop, js_value, None, gc,
-                ));
-            }
-            object.into()
-        }
-    }
 }
