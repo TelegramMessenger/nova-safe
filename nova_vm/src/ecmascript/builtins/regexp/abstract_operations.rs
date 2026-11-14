@@ -835,13 +835,12 @@ fn search(
     let host_hooks = agent.host_hooks;
     let limits = &mut agent.limits;
     let mut poll = || limits.should_terminate_matcher(host_hooks, heap_size, collectable);
-    r.get_direct_mut(&mut agent.heap.regexps).search(
-        &agent.heap.strings,
-        s,
-        last_index,
-        sticky,
-        &mut poll,
-    )
+    let data = r.get_direct_mut(&mut agent.heap.regexps);
+    let cached_before = data.utf16_input_bytes();
+    let result = data.search(&agent.heap.strings, s, last_index, sticky, &mut poll);
+    let grown = data.utf16_input_bytes().saturating_sub(cached_before);
+    agent.heap.data_bytes_since_gc += grown;
+    result
 }
 
 fn throw_exec_error<'a>(
