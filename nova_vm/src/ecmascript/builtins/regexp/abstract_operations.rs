@@ -576,7 +576,6 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     } = result.bind(gc);
     // 1. Let length be the length of S.
     let length = s.utf16_len_(agent);
-    let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     // 10. Let matchSucceeded be false.
     // 11. If fullUnicode is true, let input be StringToCodePoints(S).
     //     Otherwise, let input be a List whose elements are the code units
@@ -588,7 +587,7 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         // i. If global is true or sticky is true, then
         if global || sticky {
             // 1. Perform ? Set(R, "lastIndex", +0𝔽, true).
-            r_data.last_index = RegExpLastIndex::ZERO;
+            set_last_index(agent, r, RegExpLastIndex::ZERO, gc)?;
         }
         // ii. Return null.
         return Ok(None);
@@ -603,12 +602,11 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         Ok(result) => result,
         Err(err) => return Err(throw_exec_error(agent, err, gc)),
     };
-    let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     let Some(full_match) = result else {
         // i. If global is true or sticky is true, then
         if global || sticky {
             // 1. Perform ? Set(R, "lastIndex", +0𝔽, true).
-            r_data.last_index = RegExpLastIndex::ZERO;
+            set_last_index(agent, r, RegExpLastIndex::ZERO, gc)?;
         }
         // ii. Return null.
         return Ok(None);
@@ -623,7 +621,7 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     // 16. If global is true or sticky is true, then
     if global || sticky {
         // a. Perform ? Set(R, "lastIndex", 𝔽(e), true).
-        r_data.last_index = e.into();
+        set_last_index(agent, r, e.into(), gc)?;
     }
     // 17. Let n be the number of elements in r.[[Captures]].
     let n = full_match.captures.len() + 1;
@@ -774,12 +772,11 @@ pub(crate) fn reg_exp_builtin_test<'a>(
 
     // 1. Let length be the length of S.
     let length = s.utf16_len_(agent);
-    let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     if last_index > length {
         // i. If global is true or sticky is true, then
         if global || sticky {
             // 1. Perform ? Set(R, "lastIndex", +0𝔽, true).
-            r_data.last_index = RegExpLastIndex::ZERO;
+            set_last_index(agent, r, RegExpLastIndex::ZERO, gc)?;
         }
         // ii. Return null.
         return Ok(false);
@@ -788,20 +785,38 @@ pub(crate) fn reg_exp_builtin_test<'a>(
         Ok(result) => result,
         Err(err) => return Err(throw_exec_error(agent, err, gc)),
     };
-    let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     match result {
         Some(found) => {
             if global || sticky {
-                r_data.last_index = found.end().into();
+                set_last_index(agent, r, found.end().into(), gc)?;
             }
             Ok(true)
         }
         None => {
             if global || sticky {
-                r_data.last_index = RegExpLastIndex::ZERO;
+                set_last_index(agent, r, RegExpLastIndex::ZERO, gc)?;
             }
             Ok(false)
         }
+    }
+}
+
+/// Set(R, "lastIndex", value, true) for RegExpBuiltinExec: a TypeError when
+/// lastIndex was made non-writable.
+fn set_last_index<'a>(
+    agent: &mut Agent,
+    r: RegExp,
+    value: RegExpLastIndex,
+    gc: NoGcScope<'a, '_>,
+) -> JsResult<'a, ()> {
+    if r.set_last_index(agent, value, gc) {
+        Ok(())
+    } else {
+        Err(throw_set_error(
+            agent,
+            BUILTIN_STRING_MEMORY.lastIndex.to_property_key(),
+            gc,
+        ))
     }
 }
 
