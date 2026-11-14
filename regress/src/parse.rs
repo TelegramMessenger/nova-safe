@@ -2170,9 +2170,8 @@ mod duplicate_group_tests {
                     segments: (0..=next(3)).map(|depth| (depth, next(3))).collect(),
                 })
                 .collect();
-            let pairwise = (0..paths.len()).any(|i| {
-                ((i + 1)..paths.len()).any(|j| paths[i].conflicts_with(&paths[j]))
-            });
+            let pairwise = (0..paths.len())
+                .any(|i| ((i + 1)..paths.len()).any(|j| paths[i].conflicts_with(&paths[j])));
             assert_eq!(pairwise, AlternativePath::any_conflict(&paths));
         }
     }

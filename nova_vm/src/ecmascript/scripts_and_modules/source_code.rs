@@ -85,8 +85,14 @@ impl<'a> SourceCode<'a> {
         let host_hooks = agent.host_hooks;
         let interrupt = move || host_hooks.check_interrupt();
         let allocator = Allocator::new();
-        let program = parse_program(&allocator, &source_text, source_type, typescript, &interrupt)
-            .map_err(|errors| interrupted_errors(agent, errors))?;
+        let program = parse_program(
+            &allocator,
+            &source_text,
+            source_type,
+            typescript,
+            &interrupt,
+        )
+        .map_err(|errors| interrupted_errors(agent, errors))?;
         let (scoping, nodes) = check_program(&program, source_type, &interrupt)
             .map_err(|errors| interrupted_errors(agent, errors))?;
         let source_code = agent.heap.create(SourceCodeHeapData {
@@ -131,8 +137,14 @@ impl<'a> SourceCode<'a> {
         let host_hooks = agent.host_hooks;
         let interrupt = move || host_hooks.check_interrupt();
         let allocator = Allocator::new();
-        let program = parse_program(&allocator, &source_text, source_type, typescript, &interrupt)
-            .map_err(|errors| interrupted_errors(agent, errors))?;
+        let program = parse_program(
+            &allocator,
+            &source_text,
+            source_type,
+            typescript,
+            &interrupt,
+        )
+        .map_err(|errors| interrupted_errors(agent, errors))?;
         let (scoping, nodes) = check_program(&program, source_type, &interrupt)
             .map_err(|errors| interrupted_errors(agent, errors))?;
         let source_code = agent.heap.create(SourceCodeHeapData { source }).unbind();

@@ -200,7 +200,11 @@ fn regexp_time(pattern: &str) -> Duration {
             let started = Instant::now();
             let result = LiteralParser::new(&allocator, pattern, None, Options::default()).parse();
             let elapsed = started.elapsed();
-            assert!(result.is_ok(), "{:?}", result.err().map(|e| e.message.to_string()));
+            assert!(
+                result.is_ok(),
+                "{:?}",
+                result.err().map(|e| e.message.to_string())
+            );
             elapsed
         })
         .min()
@@ -247,7 +251,11 @@ fn checks_over_many_names_scale_linearly() {
 #[test]
 fn a_missing_heritage_expression_does_not_overflow_a_span() {
     for source_type in [SourceType::script(), SourceType::mjs()] {
-        for source in ["//\nx=class extends, ", "x=class extends, ", "class A extends , B {}"] {
+        for source in [
+            "//\nx=class extends, ",
+            "x=class extends, ",
+            "class A extends , B {}",
+        ] {
             let allocator = Allocator::new();
             let ret = Parser::new(&allocator, source, source_type).parse();
             assert!(!ret.errors.is_empty(), "{source:?}");
@@ -270,7 +278,10 @@ fn bigint_literals_carry_their_decimal_value() {
         ("0x0n".to_owned(), "0".to_owned()),
         ("0b1_0000_0000n".to_owned(), "256".to_owned()),
         ("0o777n".to_owned(), "511".to_owned()),
-        ("0xffff_ffff_ffff_ffffn".to_owned(), "18446744073709551615".to_owned()),
+        (
+            "0xffff_ffff_ffff_ffffn".to_owned(),
+            "18446744073709551615".to_owned(),
+        ),
         (
             format!("0x{digits}n"),
             BigUint::from_str_radix(&digits, 16).unwrap().to_string(),
