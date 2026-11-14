@@ -1,10 +1,7 @@
-#[cfg(feature = "serialize")]
-mod serialize;
-#[cfg(feature = "serialize")]
-pub use serialize::*;
+#![forbid(unsafe_code)]
 
-/// Placeholder for real `ESTree` trait when `serialize` feature not enabled.
+/// Marker trait for `#[generate_derive(ESTree)]`.
 ///
-/// Provided to support `#[generate_derive(ESTree)]`, without enabling the feature.
-#[cfg(not(feature = "serialize"))]
+/// nova-safe does not vendor upstream's ESTree serializer (the `serialize` module): nova never
+/// serializes an AST to JSON.
 pub trait ESTree {}
