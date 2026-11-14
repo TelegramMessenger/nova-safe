@@ -355,3 +355,33 @@ fn sloppy_eval_after_a_class_static_element() {
         "2,3,4,5,undefined,undefined,numbernumber"
     );
 }
+
+/// An Object Shape that shares the keys storage of a descendant with more
+/// keys (after `setPrototypeOf` and deletes) copies its keys into a smaller
+/// storage when a different key is added, instead of reaching
+/// `unreachable!()` in the keys storage's grow.
+#[test]
+fn adding_a_key_to_a_shape_that_shares_a_larger_keys_storage() {
+    let source = r#"
+        var log = [];
+        var p = { a: 1, b: 2, c: 3 };
+        Object.setPrototypeOf(p, null);
+        delete p.c;
+        delete p.b;
+        p.n = 4;
+        log.push(Object.keys(p).join(""));
+        var q = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 };
+        Object.setPrototypeOf(q, null);
+        for (var k of ["i", "h", "g", "f", "e", "d", "c", "b"]) delete q[k];
+        q.x = 1;
+        q.y = 2;
+        log.push(Object.keys(q).join(""), q.a + q.x + q.y);
+        var r = { a: 1, b: 2, c: 3, d: 4, e: 5 };
+        Object.setPrototypeOf(r, null);
+        delete r.e; delete r.d; delete r.c; delete r.b;
+        var child = Object.create(r);
+        r.z = 1;
+        log.push(Object.keys(r).join(""), child.a + child.z);
+    "#;
+    assert_eq!(run(source, "log.join()", None), "an,axy,4,az,2");
+}
