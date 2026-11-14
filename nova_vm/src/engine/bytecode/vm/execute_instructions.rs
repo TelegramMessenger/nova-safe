@@ -23,11 +23,11 @@ use crate::{
         make_method, new_class_static_element_environment, new_declarative_environment,
         new_private_environment, ordinary_function_create, ordinary_object_create_with_intrinsics,
         perform_eval, private_element_find, put_value, resolve_binding, resolve_private_identifier,
-        resolve_this_binding, set, set_function_name, throw_no_proxy_private_names,
-        throw_read_undefined_or_null_error, to_boolean, to_number, to_number_primitive, to_numeric,
-        to_numeric_primitive, to_object, to_property_key, to_property_key_complex,
-        to_property_key_primitive, to_property_key_simple, to_string, to_string_primitive,
-        try_copy_data_properties_into_object, try_create_data_property,
+        resolve_this_binding, return_pooled_arguments_vec, set, set_function_name,
+        throw_no_proxy_private_names, throw_read_undefined_or_null_error, to_boolean, to_number,
+        to_number_primitive, to_numeric, to_numeric_primitive, to_object, to_property_key,
+        to_property_key_complex, to_property_key_primitive, to_property_key_simple, to_string,
+        to_string_primitive, try_copy_data_properties_into_object, try_create_data_property,
         try_define_property_or_throw, try_get_value, try_has_property,
         try_initialize_referenced_binding, try_put_value, try_resolve_binding, try_result_into_js,
         try_result_into_option_js, unwrap_try,
@@ -1637,6 +1637,7 @@ pub(super) fn execute_evaluate_call<'gc>(
         },
         gc,
     );
+    return_pooled_arguments_vec(args);
     vm.result = Some(result?.unbind());
     Ok(())
 }

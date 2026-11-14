@@ -15,8 +15,8 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType, JsError,
         JsResult, Number, Object, Primitive, Promise, Reference, String, Value, call_function,
-        get_method, is_callable, ordinary_has_instance, to_boolean, to_numeric,
-        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
+        get_method, is_callable, ordinary_has_instance, take_pooled_arguments_vec, to_boolean,
+        to_numeric, to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
         try_get_object_method, try_result_into_option_js,
     },
     engine::{
@@ -374,7 +374,7 @@ impl Vm {
                     }
                 }
             }
-            agent.stack_refs.borrow_mut().truncate(stack_depth);
+            agent.stack_refs.get_mut().truncate(stack_depth);
         }
 
         if agent.termination().is_some() {
@@ -862,7 +862,7 @@ impl Vm {
             // Static number of arguments less than IndexType::MAX.
             let arg_count = instr_arg0 as usize;
             debug_assert!(self.stack.len() >= arg_count);
-            self.stack.split_off(self.stack.len() - arg_count)
+            self.split_off_call_args(arg_count)
         } else {
             // Dynamic number of arguments, or exactly IndexType::MAX or more
             // arguments. In this case the number of arguments is stored in the
@@ -873,11 +873,18 @@ impl Vm {
             };
             let arg_count = usize::try_from(integer.into_i64()).unwrap();
             debug_assert!(self.stack.len() > arg_count);
-            let args = self.stack.split_off(self.stack.len() - arg_count);
+            let args = self.split_off_call_args(arg_count);
             let integer_copy = self.stack.pop().unwrap();
             debug_assert_eq!(Value::Integer(integer), integer_copy);
             args
         }
+    }
+
+    fn split_off_call_args(&mut self, arg_count: usize) -> Vec<Value<'static>> {
+        let start = self.stack.len() - arg_count;
+        let args = take_pooled_arguments_vec(&self.stack[start..]);
+        self.stack.truncate(start);
+        args
     }
 
     /// Pop the active (top-most) iterator from the iterator stack.

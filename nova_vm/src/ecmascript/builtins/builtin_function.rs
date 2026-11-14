@@ -198,7 +198,7 @@ thread_local! {
     static ARGUMENTS_POOL: RefCell<Vec<Vec<Value<'static>>>> = const { RefCell::new(Vec::new()) };
 }
 
-fn take_pooled_arguments_vec(values: &[Value<'static>]) -> Vec<Value<'static>> {
+pub(crate) fn take_pooled_arguments_vec(values: &[Value<'static>]) -> Vec<Value<'static>> {
     if values.is_empty() {
         return Vec::new();
     }
@@ -209,7 +209,7 @@ fn take_pooled_arguments_vec(values: &[Value<'static>]) -> Vec<Value<'static>> {
     vec
 }
 
-fn return_pooled_arguments_vec(mut vec: Vec<Value<'static>>) {
+pub(crate) fn return_pooled_arguments_vec(mut vec: Vec<Value<'static>>) {
     if vec.capacity() == 0 || vec.capacity() > ARGUMENTS_POOL_MAX_CAPACITY {
         return;
     }
