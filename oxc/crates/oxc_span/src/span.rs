@@ -4,7 +4,7 @@ use std::{
     ops::{Index, IndexMut, Range},
 };
 
-use miette::{LabeledSpan, SourceOffset, SourceSpan};
+use oxc_diagnostics::{LabeledSpan, SourceSpan};
 #[cfg(feature = "serialize")]
 use serde::{Serialize, Serializer as SerdeSerializer, ser::SerializeMap};
 
@@ -561,7 +561,7 @@ impl From<Range<u32>> for Span {
 
 impl From<Span> for SourceSpan {
     fn from(val: Span) -> Self {
-        Self::new(SourceOffset::from(val.start as usize), val.size() as usize)
+        Self::new(val.start as usize, val.size() as usize)
     }
 }
 

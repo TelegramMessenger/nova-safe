@@ -1,4 +1,3 @@
-use memchr::memchr_iter;
 use rustc_hash::FxHashMap;
 
 use oxc_allocator::GetAddress;
@@ -432,7 +431,9 @@ pub fn check_string_literal(lit: &StringLiteral, ctx: &SemanticBuilder<'_>) {
             // This ensures any backslash found has at least one byte following it.
             let haystack = &raw_bytes[..raw_len - 1];
             let mut skip_next_backslash = false;
-            for backslash_index in memchr_iter(b'\\', haystack) {
+            for backslash_index in
+                haystack.iter().enumerate().filter_map(|(i, &b)| (b == b'\\').then_some(i))
+            {
                 if skip_next_backslash {
                     skip_next_backslash = false;
                     continue;

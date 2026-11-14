@@ -243,6 +243,14 @@ report in `nova_cli` prints `file:line:col: message` plus the source line, or ke
 Risks: error messages are part of observable behaviour (SyntaxError messages in widgets and test262 negative
 tests compare only the type, but widget output can print messages). Keep `message` byte-identical.
 
+Status (2026-11-15, done): `OxcDiagnostic` keeps its fields, builder methods and `Display`; `LabeledSpan`,
+`SourceSpan` and `Severity` are plain types in oxc_diagnostics (which forbids `unsafe_code`), and oxc_span converts
+a `Span` into them. The reporter and `DiagnosticService` are removed (no user in nova). `nova_cli` prints each
+message and, per label, `file:line:column`, the source line and an underline with the label text; its transmute
+to a `'static` source went with miette. Every diagnostic on 26977 test262 and bundle files (12345 errors, 263
+distinct messages: message, help, label offsets, lengths and texts) is byte-identical before and after.
+oxc-miette, percent-encoding, thiserror, unicode-width and unicode-segmentation left the build.
+
 ## Area E: numbers (`ryu` 27, `itoa` 16, `dragonbox_ecma` 20)
 
 `ryu`/`itoa` come only with compact_str (gone with area C). `dragonbox_ecma` is behind `oxc_syntax`'s
@@ -251,6 +259,11 @@ not need oxc's folding to print numbers. Approach: use nova's `number/text.rs` l
 ECMAScript shortest-digits rules), or turn the feature off and cut the callers in oxc_ecmascript that nova
 never calls. Risk: none for nova's output if nova never formats through oxc; check with a grep for
 `to_js_string` in nova and the gate.
+
+Status (2026-11-15): dragonbox_ecma is gone; `ToJsString for f64` in oxc_syntax is nova's `f64_to_js_string`
+(`oxc_syntax/src/number/to_js_string.rs`), identical to dragonbox_ecma on 26.2 million values including every
+tie candidate. `ryu` and `itoa` stay until area C replaces `CompactStr` (compact_str is their only user; oxc
+does not call them).
 
 ## Area F: small dependencies
 
@@ -266,6 +279,17 @@ never calls. Risk: none for nova's output if nova never formats through oxc; che
   `cow-utils` is a handful of calls (`cow_replace`, `cow_to_ascii_lowercase`) that std `Cow` code replaces;
   itertools is a few adapters in oxc_semantic (std iterators); phf maps (keyword tables) become `match`
   statements or sorted slices.
+
+Status (2026-11-15):
+- memchr: done. The lexer's three uses go through `oxc_parser/src/byte_search.rs` (safe `memchr`,
+  `memchr_iter`, `memmem::Finder` with the same names), the semantic checker's through a filtered iterator.
+  Comments (215384 on test262 and the bundles, with their kind and legal flag) are identical before and after.
+  memchr stays in the full workspace only through combine (temporal_rs), noyalib and serde_json.
+- bitflags, cow-utils, unicode-id-start: the root `Cargo.toml` patches them to copies in `oxc/vendor/` with
+  `#![forbid(unsafe_code)]`: checked indexing in unicode-id-start (same answers for every scalar value) and
+  cow-utils, bitflags without its `bytemuck` impls. Sources of the oxc crates are unchanged.
+- num-bigint 0.4, itertools/either and phf/siphasher moved to area G; unicode-normalization, num-bigint 0.5 and
+  num-traits are nova_vm's own dependencies (not this track).
 
 ## Area G: oxc_ast, oxc_ast_visit, oxc_semantic, oxc_ecmascript, oxc_syntax, oxc_str, oxc_estree, oxc_regular_expression
 

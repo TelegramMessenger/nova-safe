@@ -1,4 +1,4 @@
-use memchr::memchr;
+use crate::byte_search::memchr;
 
 use oxc_span::Span;
 use oxc_syntax::identifier::is_identifier_part;

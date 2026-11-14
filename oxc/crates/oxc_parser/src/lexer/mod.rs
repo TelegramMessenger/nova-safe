@@ -107,7 +107,7 @@ pub struct Lexer<'a, C: Config> {
     pub escaped_templates: FxHashMap<u32, Option<&'a str>>,
 
     /// `memchr` Finder for end of multi-line comments. Created lazily when first used.
-    multi_line_comment_end_finder: Option<memchr::memmem::Finder<'static>>,
+    multi_line_comment_end_finder: Option<crate::byte_search::memmem::Finder<'static>>,
 
     /// Collected tokens in source order.
     tokens: ArenaVec<'a, Token>,

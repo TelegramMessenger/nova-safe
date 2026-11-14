@@ -62,16 +62,16 @@ doctest = true
 [dependencies.compact_str]
 version = "0.9.0"
 
-[dependencies.miette]
-version = "2.7.1"
-package = "oxc-miette"
-
 [dependencies.oxc_allocator]
 path = "../oxc_allocator"
 version = "0.124.0"
 
 [dependencies.oxc_ast_macros]
 path = "../oxc_ast_macros"
+version = "0.124.0"
+
+[dependencies.oxc_diagnostics]
+path = "../oxc_diagnostics"
 version = "0.124.0"
 
 [dependencies.oxc_estree]

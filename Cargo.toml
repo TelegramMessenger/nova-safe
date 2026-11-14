@@ -22,7 +22,6 @@ ctrlc = "=3.5.2"
 hashbrown = "=0.17.1"
 num-bigint = { path = "num-bigint" }
 num-traits = "=0.2.19"
-oxc-miette = { version = "=2.7.1", features = ["fancy"] }
 oxc_allocator = { path = "oxc/crates/oxc_allocator" }
 oxc_ast = { path = "oxc/crates/oxc_ast" }
 oxc_diagnostics = { path = "oxc/crates/oxc_diagnostics" }
@@ -64,3 +63,9 @@ inherits = "dev"
 opt-level = 2
 lto = "thin"
 debug = "limited"
+
+# Copies of crates.io crates with their `unsafe` removed (safe/OXC.md, area F).
+[patch.crates-io]
+bitflags = { path = "oxc/vendor/bitflags" }
+cow-utils = { path = "oxc/vendor/cow-utils" }
+unicode-id-start = { path = "oxc/vendor/unicode-id-start" }

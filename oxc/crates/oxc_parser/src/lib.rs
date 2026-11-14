@@ -76,6 +76,7 @@ mod js;
 mod jsx;
 mod ts;
 
+mod byte_search;
 mod diagnostics;
 
 // Expose lexer only in benchmarks

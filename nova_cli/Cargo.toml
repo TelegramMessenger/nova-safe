@@ -28,8 +28,7 @@ ctrlc = { workspace = true }
 console = { workspace = true }
 nova_vm = { path = "../nova_vm" }
 oxc_ast = { workspace = true }
-oxc-miette = { workspace = true }
 oxc_parser = { workspace = true }
 oxc_semantic = { workspace = true }
 oxc_span = { workspace = true }
-oxc_diagnostics = { workspace = true, features = ["fancy"] }
+oxc_diagnostics = { workspace = true }
