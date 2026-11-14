@@ -385,7 +385,7 @@ pub(crate) fn string_to_number<'gc>(
         return Number::from_f64(agent, value, gc);
     }
 
-    if let Ok(result) = fast_float::parse(str) {
+    if let Some(result) = crate::ecmascript::string_to_f64_decimal(str) {
         Number::from_f64(agent, result, gc)
     } else {
         Number::nan()

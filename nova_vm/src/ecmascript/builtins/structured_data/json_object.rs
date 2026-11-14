@@ -796,9 +796,9 @@ fn serialize_json_property_value<'a, 'b>(
             let value = Number::try_from(value).unwrap();
             // a. If value is finite, return ! ToString(value).
             if value.is_finite_(agent) {
-                let mut buffer = ryu_js::Buffer::new();
-                let value = buffer.format(value.into_f64_(agent));
-                state.result.push_str(value);
+                state
+                    .result
+                    .push_str(&crate::ecmascript::f64_to_js_string(value.into_f64_(agent)));
             } else {
                 // b. Return "null".
                 state.result.push_str("null");

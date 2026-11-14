@@ -1014,30 +1014,9 @@ impl GlobalObject {
             return Ok(Value::neg_inf());
         }
 
-        if let Ok((f, len)) = fast_float::parse_partial::<f64, _>(trimmed_string) {
-            if len == 0 {
-                return Ok(Value::nan());
-            }
-
-            // NOTE: This check is used to prevent fast_float from parsing any
-            // other kinds of infinity strings as we have already checked for
-            // those which are valid javascript.
-            if f.is_infinite() {
-                let trimmed_string = &trimmed_string[..len];
-                if trimmed_string.eq_ignore_ascii_case("infinity")
-                    || trimmed_string.eq_ignore_ascii_case("+infinity")
-                    || trimmed_string.eq_ignore_ascii_case("-infinity")
-                    || trimmed_string.eq_ignore_ascii_case("inf")
-                    || trimmed_string.eq_ignore_ascii_case("+inf")
-                    || trimmed_string.eq_ignore_ascii_case("-inf")
-                {
-                    return Ok(Value::nan());
-                }
-            }
-
-            Ok(Value::from_f64(agent, f, gc.nogc()).unbind())
-        } else {
-            Ok(Value::nan())
+        match crate::ecmascript::parse_float_prefix(trimmed_string) {
+            Some(f) => Ok(Value::from_f64(agent, f, gc.nogc()).unbind()),
+            None => Ok(Value::nan()),
         }
     }
 

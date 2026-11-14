@@ -174,9 +174,8 @@ impl NumberPrototype {
         }
         // 7. Set x to ℝ(x).
         let x = x.into_f64_(agent);
-        let mut buffer = ryu_js::Buffer::new();
-        let string = buffer.format_to_fixed(x, f as u8);
-        Ok(Value::from_str(agent, string, gc))
+        let string = crate::ecmascript::f64_to_fixed(x, f as usize);
+        Ok(Value::from_string(agent, string, gc))
     }
 
     /// ### [21.1.3.4 Number.prototype.toLocaleString ( \[ reserved1 \[ , reserved2 \] \] )](https://tc39.es/ecma262/#sec-number.prototype.tolocalestring)

@@ -13,9 +13,7 @@ categories.workspace = true
 
 [dependencies]
 ahash = { workspace = true }
-fast-float = { workspace = true }
 hashbrown = { workspace = true }
-lexical = { workspace = true }
 memchr = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
@@ -30,7 +28,6 @@ oxc_span = { workspace = true }
 oxc_syntax = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true, optional = true }
-ryu-js = { workspace = true }
 small_string = { path = "../small_string", version = "1.0.0" }
 soavec = { workspace = true }
 soavec_derive = { workspace = true }
