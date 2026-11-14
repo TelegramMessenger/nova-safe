@@ -57,3 +57,8 @@ fn math_pow_round() {
 fn string_less_than_utf16() {
     run_test_source("stringLessThanUtf16.test.js");
 }
+
+#[test]
+fn bound_function_properties() {
+    run_test_source("boundFunctionProperties.test.js");
+}

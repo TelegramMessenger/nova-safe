@@ -8,11 +8,12 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinFunction,
         BuiltinIntrinsic, BuiltinIntrinsicConstructor, ExceptionType, Function, InternalSlots,
-        JsResult, Number, OrdinaryObject, PropertyKey, Realm, SetFunctionNamePrefix, String,
-        TryError, TryGetResult, TryResult, Value, bound_function_create,
-        builders::BuiltinFunctionBuilder, call_function, create_list_from_array_like,
-        handle_try_get_result, has_own_property, is_callable, ordinary_has_instance,
-        set_function_name, to_integer_or_infinity_number, try_get, try_has_own_property,
+        JsResult, Number, OrdinaryObject, PropertyDescriptor, PropertyKey, Realm,
+        SetFunctionNamePrefix, String, TryError, TryGetResult, TryResult, Value,
+        bound_function_create, builders::BuiltinFunctionBuilder, call_function,
+        create_list_from_array_like, handle_try_get_result, has_own_property, is_callable,
+        ordinary_has_instance, set_function_name, to_integer_or_infinity_number, try_get,
+        try_has_own_property,
     },
     engine::{Bindable, GcScope, Scopable},
     heap::{
@@ -274,6 +275,35 @@ impl FunctionPrototype {
         }
         // 7. Perform SetFunctionLength(F, L).
         f.get_mut(agent).length = u8::try_from(l).unwrap_or(u8::MAX);
+        // A length past the heap data's u8, or a bound function whose
+        // prototype is not %Function.prototype% (it has a backing object from
+        // its creation), keeps "length" as a property of the backing object.
+        if l > usize::from(u8::MAX) || f.get_backing_object(agent).is_some() {
+            let length = if l == usize::MAX {
+                Number::pos_inf()
+            } else {
+                Number::from_f64(agent, l as f64, gc.nogc())
+            };
+            let backing_object = f
+                .get_backing_object(agent)
+                .unwrap_or_else(|| f.create_backing_object(agent));
+            backing_object
+                .property_storage()
+                .set(
+                    agent,
+                    f.into(),
+                    BUILTIN_STRING_MEMORY.length.into(),
+                    PropertyDescriptor {
+                        value: Some(length.into()),
+                        writable: Some(false),
+                        enumerable: Some(false),
+                        configurable: Some(true),
+                        ..Default::default()
+                    },
+                    gc.nogc(),
+                )
+                .expect("Failed to allocate memory for the function length");
+        }
         // 8. Let targetName be ? Get(Target, "name").
         let target_name = try_get(
             agent,
@@ -293,7 +323,7 @@ impl FunctionPrototype {
                 let result = handle_try_get_result(
                     agent,
                     target.unbind(),
-                    BUILTIN_STRING_MEMORY.length.to_property_key(),
+                    BUILTIN_STRING_MEMORY.name.to_property_key(),
                     target_name.unbind(),
                     gc.reborrow(),
                 )

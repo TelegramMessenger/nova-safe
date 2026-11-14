@@ -1171,9 +1171,27 @@ pub(crate) fn set_function_name<'a>(
             let function = idx.get_mut(agent);
             // Note: It's possible that the bound function targeted a function
             // with a non-default prototype. In that case, object_index is
-            // already set.
+            // already set, and "name" is a property of it.
             assert!(function.name.is_none());
             function.name = Some(name.unbind());
+            if let Some(backing_object) = function.object_index {
+                backing_object
+                    .property_storage()
+                    .set(
+                        agent,
+                        idx.into(),
+                        BUILTIN_STRING_MEMORY.name.into(),
+                        PropertyDescriptor {
+                            value: Some(name.unbind().into()),
+                            writable: Some(false),
+                            enumerable: Some(false),
+                            configurable: Some(true),
+                            ..Default::default()
+                        },
+                        gc,
+                    )
+                    .expect("Failed to allocate memory for the function name");
+            }
         }
         Function::BuiltinFunction(_idx) => unreachable!(),
         Function::ECMAScriptFunction(idx) => {
