@@ -336,3 +336,22 @@ fn code_with_more_names_than_16_bit_indices() {
          Function: SyntaxError"
     );
 }
+
+#[test]
+fn sloppy_eval_after_a_class_static_element() {
+    let source = r#"
+        var log = [];
+        class A { static f = 1; static { var inBlock = 1; } }
+        log.push(eval("var afterClass = 2; afterClass"));
+        try { class C { static { throw 1; } } } catch (e) {}
+        log.push(eval("var afterThrow = 3; afterThrow"));
+        try { class D { static f = (() => { throw 2; })(); } } catch (e) {}
+        log.push(eval("var afterThrow2 = 4; afterThrow2"));
+        function g() { class F { static x = 1; } return eval("var inG = 5; inG"); }
+        log.push(g(), typeof inG, typeof inBlock, typeof afterClass + typeof afterThrow2);
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "2,3,4,5,undefined,undefined,numbernumber"
+    );
+}
