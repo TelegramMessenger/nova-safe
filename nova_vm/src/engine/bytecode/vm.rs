@@ -856,7 +856,7 @@ impl Vm {
             Instruction::IteratorPop => {
                 let _ = vm.pop_iterator(gc.into_nogc());
             }
-            Instruction::GetNewTarget => execute_get_new_target(agent, vm, gc.into_nogc()),
+            Instruction::GetNewTarget => execute_get_new_target(agent, vm, gc.into_nogc())?,
             Instruction::ImportCall => execute_import_call(agent, vm, gc),
             Instruction::ImportMeta => execute_import_meta(agent, vm, gc.into_nogc()),
             Instruction::VerifyIsObject => {

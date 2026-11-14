@@ -1732,6 +1732,23 @@ pub(super) fn execute_evaluate_new<'gc>(
     Ok(())
 }
 
+/// The error for code that finds no Function Environment Record where the
+/// grammar promises one (new.target or super outside a function or method).
+/// Early errors make this unreachable; a script must never turn it into a
+/// panic.
+#[cold]
+#[inline(never)]
+fn throw_missing_function_environment<'gc>(
+    agent: &mut Agent,
+    gc: NoGcScope<'gc, '_>,
+) -> crate::ecmascript::JsError<'gc> {
+    agent.throw_exception_with_static_message(
+        ExceptionType::SyntaxError,
+        "new.target or super is not available here",
+        gc,
+    )
+}
+
 pub(super) fn execute_evaluate_super<'gc>(
     agent: &mut Agent,
     vm: &mut Vm,
@@ -1739,18 +1756,18 @@ pub(super) fn execute_evaluate_super<'gc>(
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let Environment::Function(this_env) = get_this_environment(agent, gc.nogc()) else {
-        unreachable!();
+        return Err(throw_missing_function_environment(agent, gc.into_nogc()));
     };
     // 1. Let newTarget be GetNewTarget().
     // 2. Assert: newTarget is an Object.
+    let Some(Ok(new_target)) = this_env.get_new_target(agent).map(Function::try_from) else {
+        return Err(throw_missing_function_environment(agent, gc.into_nogc()));
+    };
     // 3. Let func be GetSuperConstructor().
     let (new_target, func) = {
-        let new_target = this_env.get_new_target(agent);
         let function_object = this_env.get_function_object(agent);
         (
-            Function::try_from(new_target.unwrap())
-                .unwrap()
-                .bind(gc.nogc()),
+            new_target.bind(gc.nogc()),
             unwrap_try(function_object.try_get_prototype_of(agent, gc.nogc())),
         )
     };
@@ -1797,7 +1814,7 @@ pub(super) fn execute_evaluate_super<'gc>(
     };
     // 7. Let thisER be GetThisEnvironment().
     let Environment::Function(this_er) = get_this_environment(agent, gc.nogc()) else {
-        unreachable!();
+        return Err(throw_missing_function_environment(agent, gc.into_nogc()));
     };
     // 8. Perform ? thisER.BindThisValue(result).
     this_er
@@ -1922,10 +1939,12 @@ pub(super) fn execute_make_super_property_reference_with_expression_key<'gc>(
     // 1. Let env be GetThisEnvironment().
     // 2. Assert: env.HasSuperBinding() is true.
     // 3. Assert: env is a Function Environment Record.
-    debug_assert!(env.has_super_binding(agent));
     let Environment::Function(env) = env else {
-        unreachable!()
+        return Err(throw_missing_function_environment(agent, gc));
     };
+    if !Environment::Function(env).has_super_binding(agent) {
+        return Err(throw_missing_function_environment(agent, gc));
+    }
     // 4. Let baseValue be GetSuperBase(env).
     let base_value = env.get_super_base(agent, gc);
 
@@ -1968,10 +1987,12 @@ pub(super) fn execute_make_super_property_reference_with_identifier_key<'gc>(
     // 1. Let env be GetThisEnvironment().
     // 2. Assert: env.HasSuperBinding() is true.
     // 3. Assert: env is a Function Environment Record.
-    assert!(env.has_super_binding(agent));
     let Environment::Function(env) = env else {
-        unreachable!()
+        return Err(throw_missing_function_environment(agent, gc));
     };
+    if !Environment::Function(env).has_super_binding(agent) {
+        return Err(throw_missing_function_environment(agent, gc));
+    }
     // 4. Let baseValue be GetSuperBase(env).
     let base_value = env.get_super_base(agent, gc);
     // 4. Let baseValue be GetSuperBase(env).
@@ -3020,12 +3041,16 @@ pub(super) fn execute_create_unmapped_arguments_object<'gc>(
     }
 }
 
-pub(super) fn execute_get_new_target(agent: &mut Agent, vm: &mut Vm, gc: NoGcScope) {
+pub(super) fn execute_get_new_target<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    gc: NoGcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
     // 1. Let envRec be GetThisEnvironment().
     let env_rec = get_this_environment(agent, gc);
     // 2. Assert: envRec has a [[NewTarget]] field.
     let Environment::Function(env_rec) = env_rec else {
-        unreachable!()
+        return Err(throw_missing_function_environment(agent, gc));
     };
     // 3. Return envRec.[[NewTarget]].
     vm.result = Some(
@@ -3034,6 +3059,7 @@ pub(super) fn execute_get_new_target(agent: &mut Agent, vm: &mut Vm, gc: NoGcSco
             .map_or(Value::Undefined, |v| v.into())
             .unbind(),
     );
+    Ok(())
 }
 
 pub(super) fn execute_import_call(agent: &mut Agent, vm: &mut Vm, gc: GcScope) {

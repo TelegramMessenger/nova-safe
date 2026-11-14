@@ -11,6 +11,7 @@ mod exports;
 mod finaliser_stack;
 mod for_in_of_statement;
 mod function_declaration_instantiation;
+mod function_environment_use;
 mod labelled_statement;
 mod template_literals;
 mod with_statement;
