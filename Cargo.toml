@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nova_cli", "nova_embed", "nova_embed_ffi", "nova_vm", "nova_vm_derive", "num-bigint", "regress", "small_string", "tests", "wtf8"]
+members = ["nova_cli", "nova_embed", "nova_embed_ffi", "nova_vm", "nova_vm_derive", "num-bigint", "num-traits", "regress", "small_string", "tests", "wtf8"]
 exclude = ["nova_lint", "oxc"]
 
 [workspace.package]
@@ -41,6 +41,9 @@ usdt = "=0.6.0"
 wtf8 = { path = "wtf8" }
 xsum = "=0.1.6"
 temporal_rs = "=0.2.6"
+
+[patch.crates-io]
+num-traits = { path = "num-traits" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "nova_lint" }]
