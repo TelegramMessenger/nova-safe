@@ -859,8 +859,8 @@ impl Instr {
     }
 
     pub(crate) fn get_jump_slot(&self) -> usize {
-        assert!(self.kind.has_jump_slot());
-        assert_eq!(self.kind.argument_count(), 2);
+        debug_assert!(self.kind.has_jump_slot());
+        debug_assert_eq!(self.kind.argument_count(), 2);
         let jump = self.args.double_arg();
         jump as usize
     }

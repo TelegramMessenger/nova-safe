@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use core::cell::Cell;
+
 use crate::hashing::AHashMap;
 
 use crate::{
@@ -27,7 +29,126 @@ pub(crate) struct DeclarativeEnvironmentRecord {
     outer_env: OuterEnv<'static>,
 
     /// The environment's bindings.
+    bindings: BindingMap,
+}
+
+/// Bindings in insertion order, searched linearly while there are few of
+/// them and through a hash index once there are more than
+/// [`LINEAR_BINDINGS`].
+#[derive(Debug, Clone, Default)]
+struct BindingMap {
+    entries: Vec<(String<'static>, Binding)>,
+    index: Option<AHashMap<String<'static>, u32>>,
+    last_found: Cell<u32>,
+}
+
+const LINEAR_BINDINGS: usize = 16;
+
+/// What the garbage collector's allocation counter charges for a Declarative
+/// Environment Record: the record's size when its bindings were a hash map,
+/// so that collections, and so what a WeakRef sees, happen at the same points.
+pub(crate) const DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE: usize =
+    core::mem::size_of::<Option<HashMapDeclarativeEnvironmentRecord>>();
+
+#[expect(dead_code)]
+struct HashMapDeclarativeEnvironmentRecord {
+    outer_env: OuterEnv<'static>,
     bindings: AHashMap<String<'static>, Binding>,
+}
+
+impl BindingMap {
+    #[inline]
+    fn position(&self, name: String) -> Option<usize> {
+        let name = name.unbind();
+        if let Some(index) = &self.index {
+            let last_found = self.last_found.get() as usize;
+            if self
+                .entries
+                .get(last_found)
+                .is_some_and(|(key, _)| *key == name)
+            {
+                return Some(last_found);
+            }
+            let position = *index.get(&name)?;
+            self.last_found.set(position);
+            Some(position as usize)
+        } else {
+            self.entries.iter().position(|(key, _)| *key == name)
+        }
+    }
+
+    #[inline]
+    fn contains_key(&self, name: String) -> bool {
+        self.position(name).is_some()
+    }
+
+    #[inline]
+    fn get(&self, name: String) -> Option<&Binding> {
+        let position = self.position(name)?;
+        self.entries.get(position).map(|(_, binding)| binding)
+    }
+
+    #[inline]
+    fn get_mut(&mut self, name: String) -> Option<&mut Binding> {
+        let position = self.position(name)?;
+        self.entries.get_mut(position).map(|(_, binding)| binding)
+    }
+
+    fn insert(&mut self, name: String, binding: Binding) {
+        let name = name.unbind();
+        if let Some(position) = self.position(name) {
+            self.entries[position].1 = binding;
+            return;
+        }
+        let position = u32::try_from(self.entries.len()).expect("too many bindings");
+        self.entries.push((name, binding));
+        if let Some(index) = &mut self.index {
+            index.insert(name, position);
+        } else if self.entries.len() > LINEAR_BINDINGS {
+            self.rebuild_index();
+        }
+    }
+
+    fn remove(&mut self, name: String) {
+        let Some(position) = self.position(name) else {
+            return;
+        };
+        self.entries.swap_remove(position);
+        if let Some(index) = &mut self.index {
+            index.remove(&name.unbind());
+            if let Some((moved, _)) = self.entries.get(position) {
+                index.insert(*moved, u32::try_from(position).expect("too many bindings"));
+            }
+        }
+    }
+
+    fn rebuild_index(&mut self) {
+        let mut index = AHashMap::default();
+        index.reserve(self.entries.len());
+        for (position, (key, _)) in self.entries.iter().enumerate() {
+            index.insert(*key, u32::try_from(position).expect("too many bindings"));
+        }
+        self.index = Some(index);
+    }
+}
+
+impl HeapMarkAndSweep for BindingMap {
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        for (key, binding) in &self.entries {
+            key.mark_values(queues);
+            binding.mark_values(queues);
+        }
+    }
+
+    fn sweep_values(&mut self, compactions: &CompactionLists) {
+        for (key, binding) in &mut self.entries {
+            key.sweep_values(compactions);
+            binding.sweep_values(compactions);
+        }
+        if self.index.is_some() {
+            self.rebuild_index();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -58,7 +179,7 @@ impl DeclarativeEnvironmentRecord {
         // 3. Return env.
         DeclarativeEnvironmentRecord {
             outer_env: outer_env.unbind(),
-            bindings: AHashMap::default(),
+            bindings: BindingMap::default(),
         }
     }
 
@@ -66,7 +187,7 @@ impl DeclarativeEnvironmentRecord {
     pub(super) fn has_binding(&self, name: String) -> bool {
         // 1. If envRec has a binding for N, return true.
         // 2. Return false.
-        self.bindings.contains_key(&name)
+        self.bindings.contains_key(name)
     }
     /// ### [9.1.1.1.2 CreateMutableBinding ( N, D )](https://tc39.es/ecma262/#sec-declarative-environment-records-createmutablebinding-n-d)
     pub(super) fn create_mutable_binding(&mut self, name: String, is_deletable: bool) {
@@ -112,7 +233,7 @@ impl DeclarativeEnvironmentRecord {
     /// ### [9.1.1.1.4 InitializeBinding ( N, V )](https://tc39.es/ecma262/#sec-declarative-environment-records-initializebinding-n-v)
     pub(super) fn initialize_binding(&mut self, name: String, value: Value) {
         // 1. Assert: envRec must have an uninitialized binding for N.
-        let binding = self.bindings.get_mut(&name.unbind()).unwrap();
+        let binding = self.bindings.get_mut(name).unwrap();
         debug_assert!(binding.value.is_none());
 
         // 2. Set the bound value for N in envRec to V.
@@ -130,7 +251,7 @@ impl DeclarativeEnvironmentRecord {
         _is_strict: bool,
     ) -> Option<Value<'static>> {
         // 1. Assert: envRec has a binding for N.
-        let binding = self.bindings.get(&name).unwrap();
+        let binding = self.bindings.get(name).unwrap();
 
         // 2. If the binding for N in envRec is an uninitialized binding, throw
         // a ReferenceError exception.
@@ -145,17 +266,17 @@ impl DeclarativeEnvironmentRecord {
     }
 
     pub(crate) fn get_binding(&self, name: String) -> Option<&Binding> {
-        self.bindings.get(&name.unbind())
+        self.bindings.get(name)
     }
 
     fn get_binding_mut(&mut self, name: String) -> Option<&mut Binding> {
-        self.bindings.get_mut(&name.unbind())
+        self.bindings.get_mut(name)
     }
 
     /// ### [9.1.1.1.7 DeleteBinding ( N )](https://tc39.es/ecma262/#sec-declarative-environment-records-deletebinding-n)
     pub(super) fn delete_binding(&mut self, name: String) -> bool {
         // 1. Assert: envRec has a binding for N.
-        let binding = self.bindings.get(&name).unwrap();
+        let binding = self.bindings.get(name).unwrap();
 
         // 2. If the binding for N in envRec cannot be deleted, return false.
         if !binding.deletable {
@@ -163,7 +284,7 @@ impl DeclarativeEnvironmentRecord {
         }
 
         // 3. Remove the binding for N from envRec.
-        self.bindings.remove(&name.unbind());
+        self.bindings.remove(name);
 
         // 4. Return true.
         true
@@ -296,7 +417,7 @@ impl<'e> DeclarativeEnvironment<'e> {
     ) -> JsResult<'a, ()> {
         let env_rec = self.get_mut(agent);
         // 1. If envRec does not have a binding for N, then
-        let Some(binding) = env_rec.bindings.get_mut(&name.unbind()) else {
+        let Some(binding) = env_rec.bindings.get_mut(name) else {
             // a. If S is true, throw a ReferenceError exception.
             if is_strict {
                 let error_message = format!(
@@ -449,7 +570,7 @@ pub(crate) fn new_declarative_environment<'a>(
 ) -> DeclarativeEnvironment<'a> {
     // 1. Let env be a new Declarative Environment Record containing no bindings.
     // 2. Set env.[[OuterEnv]] to E.
-    agent.heap.alloc_counter += core::mem::size_of::<Option<DeclarativeEnvironmentRecord>>();
+    agent.heap.alloc_counter += DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
     // 3. Return env.
     agent
         .heap

@@ -43,14 +43,20 @@ pub(super) fn execute_simple_array_binding<'a>(
             | Instruction::BindingPatternBindToIndex
             | Instruction::BindingPatternGetValue
             | Instruction::BindingPatternSkip => {
-                let result = with_vm_gc(
-                    agent,
-                    vm,
-                    |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
-                    gc.reborrow(),
-                )
-                .unbind()
-                .bind(gc.nogc());
+                let result = match vm.get_active_iterator() {
+                    VmIteratorRecord::SliceIterator(arguments) => {
+                        Ok(arguments.unshift(agent, gc.nogc()))
+                    }
+                    VmIteratorRecord::EmptySliceIterator => Ok(None),
+                    _ => with_vm_gc(
+                        agent,
+                        vm,
+                        |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
+                        gc.reborrow(),
+                    )
+                    .unbind()
+                    .bind(gc.nogc()),
+                };
 
                 result.map(|r| {
                     iterator_is_done = r.is_none();

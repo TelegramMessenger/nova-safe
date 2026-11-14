@@ -6,6 +6,7 @@ use std::ops::ControlFlow;
 
 use crate::hashing::AHashSet;
 
+use super::DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
 use crate::{
     ecmascript::{
         Agent, DeclarativeEnvironment, DeclarativeEnvironmentRecord, ExceptionType,
@@ -114,7 +115,7 @@ pub(crate) fn new_global_environment<'a>(
     // 2. Let dclRec be NewDeclarativeEnvironment(null).
     let dcl_rec = DeclarativeEnvironmentRecord::new(None);
     agent.heap.alloc_counter += core::mem::size_of::<Option<ObjectEnvironmentRecord>>()
-        + core::mem::size_of::<Option<DeclarativeEnvironmentRecord>>();
+        + DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
     let (object_record, declarative_record) = agent
         .heap
         .environments

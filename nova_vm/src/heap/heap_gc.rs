@@ -2,37 +2,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#[cfg(feature = "date")]
-use crate::ecmascript::Date;
-#[cfg(feature = "array-buffer")]
-use crate::ecmascript::{ArrayBuffer, DataView, VoidArray};
 #[cfg(feature = "regexp")]
-use crate::ecmascript::{RegExp, RegExpStringIterator};
-#[cfg(feature = "set")]
-use crate::ecmascript::{Set, SetIterator};
+use crate::ecmascript::RegExpStringIterator;
 #[cfg(feature = "shared-array-buffer")]
-use crate::ecmascript::{SharedArrayBuffer, SharedDataView, SharedVoidArray};
-#[cfg(feature = "temporal")]
-use crate::ecmascript::{TemporalDuration, TemporalInstant};
-#[cfg(feature = "weak-refs")]
-use crate::ecmascript::{WeakMap, WeakRef, WeakSet};
+use crate::ecmascript::{SharedArrayBuffer, SharedVoidArray};
 #[cfg(feature = "array-buffer")]
 use crate::heap::heap_bits::sweep_side_table_values;
 use crate::{
     ecmascript::{
-        Agent, Array, ArrayIterator, AsyncGenerator, AwaitReaction, BUILTIN_STRINGS_LIST,
-        BoundFunction, BuiltinConstructorFunction, BuiltinFunction, BuiltinPromiseFinallyFunction,
-        BuiltinPromiseResolvingFunction, DeclarativeEnvironment, ECMAScriptFunction,
-        EmbedderObject, Environments, Error, FinalizationRegistry, FunctionEnvironment, Generator,
-        GlobalEnvironment, HeapBigInt, HeapNumber, HeapString, Map, MapIterator, Module,
-        ModuleEnvironment, ModuleRequest, ObjectEnvironment, ObjectShape, OrdinaryObject,
-        PrimitiveObject, PrivateEnvironment, Promise, PromiseGroup, PromiseReaction,
-        PropertyLookupCache, Proxy, Realm, Script, SourceCode, SourceTextModule, StringIterator,
-        Symbol,
+        Agent, BUILTIN_STRINGS_LIST, BuiltinConstructorFunction, BuiltinPromiseFinallyFunction,
+        BuiltinPromiseResolvingFunction, DeclarativeEnvironment, ECMAScriptFunction, Environments,
+        FinalizationRegistry, FunctionEnvironment, GlobalEnvironment, ModuleEnvironment,
+        ModuleRequest, ObjectEnvironment, ObjectShape, PrivateEnvironment, PromiseGroup,
+        PromiseReaction, Realm, SourceTextModule,
     },
-    engine::{Bindable, Executable, GcScope},
+    engine::{Bindable, GcScope},
     heap::{
-        ElementIndex, Heap, HeapIndexHandle, PropertyKeyIndex, WellKnownSymbols,
+        Heap, HeapIndexHandle, WellKnownSymbols,
         element_array::ElementArrays,
         heap_bits::{
             CompactionLists, HeapBits, HeapMarkAndSweep, WorkQueues, mark_descriptors,
@@ -210,11 +196,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
         } = elements;
 
         if !queues.modules.is_empty() {
-            let mut module_marks: Box<[Module]> = queues
-                .modules
-                .drain(..)
-                .filter(|idx| !bits.modules.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut module_marks = core::mem::take(&mut queues.modules);
+            module_marks.retain(|idx| !bits.modules.get_bit(idx.get_index(), &bits.bits));
             module_marks.sort();
             module_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -223,13 +206,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     modules.get(index).mark_values(&mut queues);
                 }
             });
+            module_marks.clear();
+            if queues.modules.is_empty() {
+                queues.modules = module_marks;
+            }
         }
         if !queues.scripts.is_empty() {
-            let mut script_marks: Box<[Script]> = queues
-                .scripts
-                .drain(..)
-                .filter(|idx| !bits.scripts.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut script_marks = core::mem::take(&mut queues.scripts);
+            script_marks.retain(|idx| !bits.scripts.get_bit(idx.get_index(), &bits.bits));
             script_marks.sort();
             script_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -238,13 +222,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     scripts.get(index).mark_values(&mut queues);
                 }
             });
+            script_marks.clear();
+            if queues.scripts.is_empty() {
+                queues.scripts = script_marks;
+            }
         }
         if !queues.realms.is_empty() {
-            let mut realm_marks: Box<[Realm]> = queues
-                .realms
-                .drain(..)
-                .filter(|idx| !bits.realms.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut realm_marks = core::mem::take(&mut queues.realms);
+            realm_marks.retain(|idx| !bits.realms.get_bit(idx.get_index(), &bits.bits));
             realm_marks.sort();
             realm_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -253,6 +238,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     realms.get(index).mark_values(&mut queues);
                 }
             });
+            realm_marks.clear();
+            if queues.realms.is_empty() {
+                queues.realms = realm_marks;
+            }
         }
 
         if !queues.declarative_environments.is_empty() {
@@ -388,11 +377,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
         }
 
         if !queues.arrays.is_empty() {
-            let mut array_marks: Box<[Array]> = queues
-                .arrays
-                .drain(..)
-                .filter(|idx| !bits.arrays.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut array_marks = core::mem::take(&mut queues.arrays);
+            array_marks.retain(|idx| !bits.arrays.get_bit(idx.get_index(), &bits.bits));
             array_marks.sort();
             array_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -401,16 +387,18 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     arrays.get(index as u32).mark_values(&mut queues);
                 }
             });
+            array_marks.clear();
+            if queues.arrays.is_empty() {
+                queues.arrays = array_marks;
+            }
         }
 
         #[cfg(feature = "array-buffer")]
         {
             if !queues.array_buffers.is_empty() {
-                let mut array_buffer_marks: Box<[ArrayBuffer]> = queues
-                    .array_buffers
-                    .drain(..)
-                    .filter(|idx| !bits.array_buffers.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut array_buffer_marks = core::mem::take(&mut queues.array_buffers);
+                array_buffer_marks
+                    .retain(|idx| !bits.array_buffers.get_bit(idx.get_index(), &bits.bits));
                 array_buffer_marks.sort();
                 array_buffer_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -419,15 +407,17 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         array_buffers.get(index).mark_values(&mut queues);
                     }
                 });
+                array_buffer_marks.clear();
+                if queues.array_buffers.is_empty() {
+                    queues.array_buffers = array_buffer_marks;
+                }
             }
         }
 
         if !queues.array_iterators.is_empty() {
-            let mut array_iterator_marks: Box<[ArrayIterator]> = queues
-                .array_iterators
-                .drain(..)
-                .filter(|idx| !bits.array_iterators.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut array_iterator_marks = core::mem::take(&mut queues.array_iterators);
+            array_iterator_marks
+                .retain(|idx| !bits.array_iterators.get_bit(idx.get_index(), &bits.bits));
             array_iterator_marks.sort();
             array_iterator_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -436,14 +426,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     array_iterators.get(index).mark_values(&mut queues);
                 }
             });
+            array_iterator_marks.clear();
+            if queues.array_iterators.is_empty() {
+                queues.array_iterators = array_iterator_marks;
+            }
         }
 
         if !queues.async_generators.is_empty() {
-            let mut async_generator_marks: Box<[AsyncGenerator]> = queues
-                .async_generators
-                .drain(..)
-                .filter(|idx| !bits.async_generators.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut async_generator_marks = core::mem::take(&mut queues.async_generators);
+            async_generator_marks
+                .retain(|idx| !bits.async_generators.get_bit(idx.get_index(), &bits.bits));
             async_generator_marks.sort();
             async_generator_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -452,14 +444,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     async_generators.get(index).mark_values(&mut queues);
                 }
             });
+            async_generator_marks.clear();
+            if queues.async_generators.is_empty() {
+                queues.async_generators = async_generator_marks;
+            }
         }
 
         if !queues.await_reactions.is_empty() {
-            let mut await_reaction_marks: Box<[AwaitReaction]> = queues
-                .await_reactions
-                .drain(..)
-                .filter(|idx| !bits.await_reactions.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut await_reaction_marks = core::mem::take(&mut queues.await_reactions);
+            await_reaction_marks
+                .retain(|idx| !bits.await_reactions.get_bit(idx.get_index(), &bits.bits));
             await_reaction_marks.sort();
             await_reaction_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -468,14 +462,15 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     await_reactions.get(index).mark_values(&mut queues);
                 }
             });
+            await_reaction_marks.clear();
+            if queues.await_reactions.is_empty() {
+                queues.await_reactions = await_reaction_marks;
+            }
         }
 
         if !queues.bigints.is_empty() {
-            let mut bigint_marks: Box<[HeapBigInt]> = queues
-                .bigints
-                .drain(..)
-                .filter(|idx| !bits.bigints.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut bigint_marks = core::mem::take(&mut queues.bigints);
+            bigint_marks.retain(|idx| !bits.bigints.get_bit(idx.get_index(), &bits.bits));
             bigint_marks.sort();
             bigint_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -484,14 +479,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     bigints.get(index).mark_values(&mut queues);
                 }
             });
+            bigint_marks.clear();
+            if queues.bigints.is_empty() {
+                queues.bigints = bigint_marks;
+            }
         }
 
         if !queues.bound_functions.is_empty() {
-            let mut bound_function_marks: Box<[BoundFunction]> = queues
-                .bound_functions
-                .drain(..)
-                .filter(|idx| !bits.bound_functions.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut bound_function_marks = core::mem::take(&mut queues.bound_functions);
+            bound_function_marks
+                .retain(|idx| !bits.bound_functions.get_bit(idx.get_index(), &bits.bits));
             bound_function_marks.sort();
             bound_function_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -500,6 +497,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     bound_functions.get(index).mark_values(&mut queues);
                 }
             });
+            bound_function_marks.clear();
+            if queues.bound_functions.is_empty() {
+                queues.bound_functions = bound_function_marks;
+            }
         }
         if !queues.ecmascript_functions.is_empty() {
             let mut ecmascript_function_marks: Box<[ECMAScriptFunction]> = queues
@@ -521,11 +522,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             });
         }
         if !queues.errors.is_empty() {
-            let mut error_marks: Box<[Error]> = queues
-                .errors
-                .drain(..)
-                .filter(|idx| !bits.errors.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut error_marks = core::mem::take(&mut queues.errors);
+            error_marks.retain(|idx| !bits.errors.get_bit(idx.get_index(), &bits.bits));
             error_marks.sort();
             error_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -534,13 +532,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     errors.get(index).mark_values(&mut queues);
                 }
             });
+            error_marks.clear();
+            if queues.errors.is_empty() {
+                queues.errors = error_marks;
+            }
         }
         if !queues.executables.is_empty() {
-            let mut executable_marks: Box<[Executable]> = queues
-                .executables
-                .drain(..)
-                .filter(|idx| !bits.executables.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut executable_marks = core::mem::take(&mut queues.executables);
+            executable_marks.retain(|idx| !bits.executables.get_bit(idx.get_index(), &bits.bits));
             executable_marks.sort();
             executable_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -549,13 +548,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     executables.get(index).mark_values(&mut queues);
                 }
             });
+            executable_marks.clear();
+            if queues.executables.is_empty() {
+                queues.executables = executable_marks;
+            }
         }
         if !queues.source_codes.is_empty() {
-            let mut source_code_marks: Box<[SourceCode]> = queues
-                .source_codes
-                .drain(..)
-                .filter(|idx| !bits.source_codes.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut source_code_marks = core::mem::take(&mut queues.source_codes);
+            source_code_marks.retain(|idx| !bits.source_codes.get_bit(idx.get_index(), &bits.bits));
             source_code_marks.sort();
             source_code_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -564,6 +564,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     source_codes.get(index).mark_values(&mut queues);
                 }
             });
+            source_code_marks.clear();
+            if queues.source_codes.is_empty() {
+                queues.source_codes = source_code_marks;
+            }
         }
         if !queues.builtin_constructors.is_empty() {
             let mut builtin_constructors_marks: Box<[BuiltinConstructorFunction]> = queues
@@ -585,11 +589,9 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             });
         }
         if !queues.builtin_functions.is_empty() {
-            let mut builtin_functions_marks: Box<[BuiltinFunction]> = queues
-                .builtin_functions
-                .drain(..)
-                .filter(|idx| !bits.builtin_functions.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut builtin_functions_marks = core::mem::take(&mut queues.builtin_functions);
+            builtin_functions_marks
+                .retain(|idx| !bits.builtin_functions.get_bit(idx.get_index(), &bits.bits));
             builtin_functions_marks.sort();
             builtin_functions_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -598,13 +600,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     builtin_functions.get(index).mark_values(&mut queues);
                 }
             });
+            builtin_functions_marks.clear();
+            if queues.builtin_functions.is_empty() {
+                queues.builtin_functions = builtin_functions_marks;
+            }
         }
         if !queues.caches.is_empty() {
-            let mut caches_marks: Box<[PropertyLookupCache]> = queues
-                .caches
-                .drain(..)
-                .filter(|idx| !bits.caches.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut caches_marks = core::mem::take(&mut queues.caches);
+            caches_marks.retain(|idx| !bits.caches.get_bit(idx.get_index(), &bits.bits));
             caches_marks.sort();
             caches_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -613,14 +616,15 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     caches.mark_cache(index, &mut queues);
                 }
             });
+            caches_marks.clear();
+            if queues.caches.is_empty() {
+                queues.caches = caches_marks;
+            }
         }
         #[cfg(feature = "array-buffer")]
         if !queues.data_views.is_empty() {
-            let mut data_view_marks: Box<[DataView]> = queues
-                .data_views
-                .drain(..)
-                .filter(|idx| !bits.data_views.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut data_view_marks = core::mem::take(&mut queues.data_views);
+            data_view_marks.retain(|idx| !bits.data_views.get_bit(idx.get_index(), &bits.bits));
             data_view_marks.sort();
             data_view_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -629,15 +633,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     data_views.get(index).mark_values(&mut queues);
                 }
             });
+            data_view_marks.clear();
+            if queues.data_views.is_empty() {
+                queues.data_views = data_view_marks;
+            }
         }
 
         #[cfg(feature = "date")]
         if !queues.dates.is_empty() {
-            let mut date_marks: Box<[Date]> = queues
-                .dates
-                .drain(..)
-                .filter(|idx| !bits.dates.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut date_marks = core::mem::take(&mut queues.dates);
+            date_marks.retain(|idx| !bits.dates.get_bit(idx.get_index(), &bits.bits));
             date_marks.sort();
             date_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -646,16 +651,15 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     dates.get(index).mark_values(&mut queues);
                 }
             });
+            date_marks.clear();
+            if queues.dates.is_empty() {
+                queues.dates = date_marks;
+            }
         }
         #[cfg(feature = "temporal")]
         {
-            use crate::ecmascript::TemporalPlainTime;
-
-            let mut instant_marks: Box<[TemporalInstant]> = queues
-                .instants
-                .drain(..)
-                .filter(|idx| !bits.instants.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut instant_marks = core::mem::take(&mut queues.instants);
+            instant_marks.retain(|idx| !bits.instants.get_bit(idx.get_index(), &bits.bits));
             instant_marks.sort();
             instant_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -664,11 +668,12 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     instants.get(index).mark_values(&mut queues);
                 }
             });
-            let mut duration_marks: Box<[TemporalDuration]> = queues
-                .durations
-                .drain(..)
-                .filter(|idx| !bits.durations.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            instant_marks.clear();
+            if queues.instants.is_empty() {
+                queues.instants = instant_marks;
+            }
+            let mut duration_marks = core::mem::take(&mut queues.durations);
+            duration_marks.retain(|idx| !bits.durations.get_bit(idx.get_index(), &bits.bits));
             duration_marks.sort();
             duration_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -677,11 +682,12 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     durations.get(index).mark_values(&mut queues);
                 }
             });
-            let mut plain_time_marks: Box<[TemporalPlainTime]> = queues
-                .plain_times
-                .drain(..)
-                .filter(|idx| !bits.plain_times.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            duration_marks.clear();
+            if queues.durations.is_empty() {
+                queues.durations = duration_marks;
+            }
+            let mut plain_time_marks = core::mem::take(&mut queues.plain_times);
+            plain_time_marks.retain(|idx| !bits.plain_times.get_bit(idx.get_index(), &bits.bits));
             plain_time_marks.sort();
             plain_time_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -690,14 +696,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     plain_times.get(index).mark_values(&mut queues);
                 }
             });
+            plain_time_marks.clear();
+            if queues.plain_times.is_empty() {
+                queues.plain_times = plain_time_marks;
+            }
         }
 
         if !queues.embedder_objects.is_empty() {
-            let mut embedder_object_marks: Box<[EmbedderObject]> = queues
-                .embedder_objects
-                .drain(..)
-                .filter(|idx| !bits.embedder_objects.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut embedder_object_marks = core::mem::take(&mut queues.embedder_objects);
+            embedder_object_marks
+                .retain(|idx| !bits.embedder_objects.get_bit(idx.get_index(), &bits.bits));
             embedder_object_marks.sort();
             embedder_object_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -706,6 +714,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     embedder_objects.get(index).mark_values(&mut queues);
                 }
             });
+            embedder_object_marks.clear();
+            if queues.embedder_objects.is_empty() {
+                queues.embedder_objects = embedder_object_marks;
+            }
         }
         if !queues.finalization_registries.is_empty() {
             let mut finalization_registry_marks: Box<[FinalizationRegistry]> =
@@ -726,11 +738,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             });
         }
         if !queues.generators.is_empty() {
-            let mut generator_marks: Box<[Generator]> = queues
-                .generators
-                .drain(..)
-                .filter(|idx| !bits.generators.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut generator_marks = core::mem::take(&mut queues.generators);
+            generator_marks.retain(|idx| !bits.generators.get_bit(idx.get_index(), &bits.bits));
             generator_marks.sort();
             generator_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -739,13 +748,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     generators.get(index).mark_values(&mut queues);
                 }
             });
+            generator_marks.clear();
+            if queues.generators.is_empty() {
+                queues.generators = generator_marks;
+            }
         }
         if !queues.object_shapes.is_empty() {
-            let mut object_marks: Box<[ObjectShape]> = queues
-                .object_shapes
-                .drain(..)
-                .filter(|idx| !bits.object_shapes.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut object_marks = core::mem::take(&mut queues.object_shapes);
+            object_marks.retain(|idx| !bits.object_shapes.get_bit(idx.get_index(), &bits.bits));
             object_marks.sort();
             object_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -755,13 +765,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     object_shape_transitions.get(index).mark_values(&mut queues);
                 }
             });
+            object_marks.clear();
+            if queues.object_shapes.is_empty() {
+                queues.object_shapes = object_marks;
+            }
         }
         if !queues.objects.is_empty() {
-            let mut object_marks: Box<[OrdinaryObject]> = queues
-                .objects
-                .drain(..)
-                .filter(|idx| !bits.objects.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut object_marks = core::mem::take(&mut queues.objects);
+            object_marks.retain(|idx| !bits.objects.get_bit(idx.get_index(), &bits.bits));
             object_marks.sort();
             object_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -772,13 +783,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     }
                 }
             });
+            object_marks.clear();
+            if queues.objects.is_empty() {
+                queues.objects = object_marks;
+            }
         }
         if !queues.promises.is_empty() {
-            let mut promise_marks: Box<[Promise]> = queues
-                .promises
-                .drain(..)
-                .filter(|idx| !bits.promises.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut promise_marks = core::mem::take(&mut queues.promises);
+            promise_marks.retain(|idx| !bits.promises.get_bit(idx.get_index(), &bits.bits));
             promise_marks.sort();
             promise_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -787,6 +799,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     promises.get(index).mark_values(&mut queues);
                 }
             });
+            promise_marks.clear();
+            if queues.promises.is_empty() {
+                queues.promises = promise_marks;
+            }
         }
         if !queues.promise_reaction_records.is_empty() {
             let mut promise_reaction_record_marks: Box<[PromiseReaction]> = queues
@@ -870,11 +886,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             });
         }
         if !queues.proxies.is_empty() {
-            let mut proxy_marks: Box<[Proxy]> = queues
-                .proxies
-                .drain(..)
-                .filter(|idx| !bits.proxies.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut proxy_marks = core::mem::take(&mut queues.proxies);
+            proxy_marks.retain(|idx| !bits.proxies.get_bit(idx.get_index(), &bits.bits));
             proxy_marks.sort();
             proxy_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -883,13 +896,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     proxies.get(index).mark_values(&mut queues);
                 }
             });
+            proxy_marks.clear();
+            if queues.proxies.is_empty() {
+                queues.proxies = proxy_marks;
+            }
         }
         if !queues.maps.is_empty() {
-            let mut map_marks: Box<[Map]> = queues
-                .maps
-                .drain(..)
-                .filter(|idx| !bits.maps.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut map_marks = core::mem::take(&mut queues.maps);
+            map_marks.retain(|idx| !bits.maps.get_bit(idx.get_index(), &bits.bits));
             map_marks.sort();
             map_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -898,13 +912,15 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     maps.get(index as u32).mark_values(&mut queues);
                 }
             });
+            map_marks.clear();
+            if queues.maps.is_empty() {
+                queues.maps = map_marks;
+            }
         }
         if !queues.map_iterators.is_empty() {
-            let mut map_iterator_marks: Box<[MapIterator]> = queues
-                .map_iterators
-                .drain(..)
-                .filter(|idx| !bits.map_iterators.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut map_iterator_marks = core::mem::take(&mut queues.map_iterators);
+            map_iterator_marks
+                .retain(|idx| !bits.map_iterators.get_bit(idx.get_index(), &bits.bits));
             map_iterator_marks.sort();
             map_iterator_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -913,6 +929,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     map_iterators.get(index).mark_values(&mut queues);
                 }
             });
+            map_iterator_marks.clear();
+            if queues.map_iterators.is_empty() {
+                queues.map_iterators = map_iterator_marks;
+            }
         }
         if !queues.module_request_records.is_empty() {
             let mut module_request_record_marks: Box<[ModuleRequest]> = queues
@@ -934,11 +954,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             });
         }
         if !queues.numbers.is_empty() {
-            let mut number_marks: Box<[HeapNumber]> = queues
-                .numbers
-                .drain(..)
-                .filter(|idx| !bits.numbers.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut number_marks = core::mem::take(&mut queues.numbers);
+            number_marks.retain(|idx| !bits.numbers.get_bit(idx.get_index(), &bits.bits));
             number_marks.sort();
             number_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -947,13 +964,15 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     numbers.get(index).mark_values(&mut queues);
                 }
             });
+            number_marks.clear();
+            if queues.numbers.is_empty() {
+                queues.numbers = number_marks;
+            }
         }
         if !queues.primitive_objects.is_empty() {
-            let mut primitive_object_marks: Box<[PrimitiveObject]> = queues
-                .primitive_objects
-                .drain(..)
-                .filter(|idx| !bits.primitive_objects.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut primitive_object_marks = core::mem::take(&mut queues.primitive_objects);
+            primitive_object_marks
+                .retain(|idx| !bits.primitive_objects.get_bit(idx.get_index(), &bits.bits));
             primitive_object_marks.sort();
             primitive_object_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -962,15 +981,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     primitive_objects.get(index).mark_values(&mut queues);
                 }
             });
+            primitive_object_marks.clear();
+            if queues.primitive_objects.is_empty() {
+                queues.primitive_objects = primitive_object_marks;
+            }
         }
         #[cfg(feature = "regexp")]
         {
             if !queues.regexps.is_empty() {
-                let mut regexp_marks: Box<[RegExp]> = queues
-                    .regexps
-                    .drain(..)
-                    .filter(|idx| !bits.regexps.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut regexp_marks = core::mem::take(&mut queues.regexps);
+                regexp_marks.retain(|idx| !bits.regexps.get_bit(idx.get_index(), &bits.bits));
                 regexp_marks.sort();
                 regexp_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -979,6 +999,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         regexps.get(index).mark_values(&mut queues);
                     }
                 });
+                regexp_marks.clear();
+                if queues.regexps.is_empty() {
+                    queues.regexps = regexp_marks;
+                }
             }
             if !queues.regexp_string_iterators.is_empty() {
                 let mut regexp_string_iterator_marks: Box<[RegExpStringIterator]> = queues
@@ -1003,11 +1027,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
         #[cfg(feature = "set")]
         {
             if !queues.sets.is_empty() {
-                let mut set_marks: Box<[Set]> = queues
-                    .sets
-                    .drain(..)
-                    .filter(|idx| !bits.sets.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut set_marks = core::mem::take(&mut queues.sets);
+                set_marks.retain(|idx| !bits.sets.get_bit(idx.get_index(), &bits.bits));
                 set_marks.sort();
                 set_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -1016,14 +1037,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         sets.get(index as u32).mark_values(&mut queues);
                     }
                 });
+                set_marks.clear();
+                if queues.sets.is_empty() {
+                    queues.sets = set_marks;
+                }
             }
 
             if !queues.set_iterators.is_empty() {
-                let mut set_iterator_marks: Box<[SetIterator]> = queues
-                    .set_iterators
-                    .drain(..)
-                    .filter(|idx| !bits.set_iterators.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut set_iterator_marks = core::mem::take(&mut queues.set_iterators);
+                set_iterator_marks
+                    .retain(|idx| !bits.set_iterators.get_bit(idx.get_index(), &bits.bits));
                 set_iterator_marks.sort();
                 set_iterator_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -1032,6 +1055,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         set_iterators.get(index).mark_values(&mut queues);
                     }
                 });
+                set_iterator_marks.clear();
+                if queues.set_iterators.is_empty() {
+                    queues.set_iterators = set_iterator_marks;
+                }
             }
         }
         #[cfg(feature = "shared-array-buffer")]
@@ -1056,11 +1083,9 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                 });
             }
             if !queues.shared_data_views.is_empty() {
-                let mut shared_data_view_marks: Box<[SharedDataView]> = queues
-                    .shared_data_views
-                    .drain(..)
-                    .filter(|idx| !bits.shared_data_views.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut shared_data_view_marks = core::mem::take(&mut queues.shared_data_views);
+                shared_data_view_marks
+                    .retain(|idx| !bits.shared_data_views.get_bit(idx.get_index(), &bits.bits));
                 shared_data_view_marks.sort();
                 shared_data_view_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -1069,6 +1094,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         shared_data_views.get(index).mark_values(&mut queues);
                     }
                 });
+                shared_data_view_marks.clear();
+                if queues.shared_data_views.is_empty() {
+                    queues.shared_data_views = shared_data_view_marks;
+                }
             }
             if !queues.shared_typed_arrays.is_empty() {
                 let mut shared_typed_array_marks: Box<[SharedVoidArray]> = queues
@@ -1112,11 +1141,9 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             });
         }
         if !queues.string_iterators.is_empty() {
-            let mut string_generator_marks: Box<[StringIterator]> = queues
-                .string_iterators
-                .drain(..)
-                .filter(|idx| !bits.string_iterators.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut string_generator_marks = core::mem::take(&mut queues.string_iterators);
+            string_generator_marks
+                .retain(|idx| !bits.string_iterators.get_bit(idx.get_index(), &bits.bits));
             string_generator_marks.sort();
             string_generator_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1125,13 +1152,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     string_iterators.get(index).mark_values(&mut queues);
                 }
             });
+            string_generator_marks.clear();
+            if queues.string_iterators.is_empty() {
+                queues.string_iterators = string_generator_marks;
+            }
         }
         if !queues.strings.is_empty() {
-            let mut string_marks: Box<[HeapString]> = queues
-                .strings
-                .drain(..)
-                .filter(|idx| !bits.strings.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut string_marks = core::mem::take(&mut queues.strings);
+            string_marks.retain(|idx| !bits.strings.get_bit(idx.get_index(), &bits.bits));
             string_marks.sort();
             string_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1140,13 +1168,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     strings.get(index).mark_values(&mut queues);
                 }
             });
+            string_marks.clear();
+            if queues.strings.is_empty() {
+                queues.strings = string_marks;
+            }
         }
         if !queues.symbols.is_empty() {
-            let mut symbol_marks: Box<[Symbol]> = queues
-                .symbols
-                .drain(..)
-                .filter(|idx| !bits.symbols.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut symbol_marks = core::mem::take(&mut queues.symbols);
+            symbol_marks.retain(|idx| !bits.symbols.get_bit(idx.get_index(), &bits.bits));
             symbol_marks.sort();
             symbol_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1155,14 +1184,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     symbols.get(index).mark_values(&mut queues);
                 }
             });
+            symbol_marks.clear();
+            if queues.symbols.is_empty() {
+                queues.symbols = symbol_marks;
+            }
         }
         #[cfg(feature = "array-buffer")]
         if !queues.typed_arrays.is_empty() {
-            let mut typed_arrays_marks: Box<[VoidArray]> = queues
-                .typed_arrays
-                .drain(..)
-                .filter(|idx| !bits.typed_arrays.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut typed_arrays_marks = core::mem::take(&mut queues.typed_arrays);
+            typed_arrays_marks
+                .retain(|idx| !bits.typed_arrays.get_bit(idx.get_index(), &bits.bits));
             typed_arrays_marks.sort();
             typed_arrays_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1171,15 +1202,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     typed_arrays.get(index).mark_values(&mut queues);
                 }
             });
+            typed_arrays_marks.clear();
+            if queues.typed_arrays.is_empty() {
+                queues.typed_arrays = typed_arrays_marks;
+            }
         }
         #[cfg(feature = "weak-refs")]
         {
             if !queues.weak_maps.is_empty() {
-                let mut weak_map_marks: Box<[WeakMap]> = queues
-                    .weak_maps
-                    .drain(..)
-                    .filter(|idx| !bits.weak_maps.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut weak_map_marks = core::mem::take(&mut queues.weak_maps);
+                weak_map_marks.retain(|idx| !bits.weak_maps.get_bit(idx.get_index(), &bits.bits));
                 weak_map_marks.sort();
                 weak_map_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -1188,13 +1220,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         weak_maps.get(index).mark_values(&mut queues);
                     }
                 });
+                weak_map_marks.clear();
+                if queues.weak_maps.is_empty() {
+                    queues.weak_maps = weak_map_marks;
+                }
             }
             if !queues.weak_refs.is_empty() {
-                let mut weak_ref_marks: Box<[WeakRef]> = queues
-                    .weak_refs
-                    .drain(..)
-                    .filter(|idx| !bits.weak_refs.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut weak_ref_marks = core::mem::take(&mut queues.weak_refs);
+                weak_ref_marks.retain(|idx| !bits.weak_refs.get_bit(idx.get_index(), &bits.bits));
                 weak_ref_marks.sort();
                 weak_ref_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -1203,13 +1236,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         weak_refs.get(index).mark_values(&mut queues);
                     }
                 });
+                weak_ref_marks.clear();
+                if queues.weak_refs.is_empty() {
+                    queues.weak_refs = weak_ref_marks;
+                }
             }
             if !queues.weak_sets.is_empty() {
-                let mut weak_set_marks: Box<[WeakSet]> = queues
-                    .weak_sets
-                    .drain(..)
-                    .filter(|idx| !bits.weak_sets.get_bit(idx.get_index(), &bits.bits))
-                    .collect();
+                let mut weak_set_marks = core::mem::take(&mut queues.weak_sets);
+                weak_set_marks.retain(|idx| !bits.weak_sets.get_bit(idx.get_index(), &bits.bits));
                 weak_set_marks.sort();
                 weak_set_marks.iter().for_each(|&idx| {
                     let index = idx.get_index();
@@ -1218,15 +1252,16 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                         weak_sets.get(index).mark_values(&mut queues);
                     }
                 });
+                weak_set_marks.clear();
+                if queues.weak_sets.is_empty() {
+                    queues.weak_sets = weak_set_marks;
+                }
             }
         }
 
         if !queues.e_2_1.is_empty() {
-            let mut e_2_1_marks: Box<[ElementIndex]> = queues
-                .e_2_1
-                .drain(..)
-                .filter(|idx| !bits.e_2_1.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_1_marks = core::mem::take(&mut queues.e_2_1);
+            e_2_1_marks.retain(|idx| !bits.e_2_1.get_bit(idx.get_index(), &bits.bits));
             e_2_1_marks.sort();
             e_2_1_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1239,13 +1274,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_1_marks.clear();
+            if queues.e_2_1.is_empty() {
+                queues.e_2_1 = e_2_1_marks;
+            }
         }
         if !queues.e_2_2.is_empty() {
-            let mut e_2_2_marks: Box<[ElementIndex]> = queues
-                .e_2_2
-                .drain(..)
-                .filter(|idx| !bits.e_2_2.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_2_marks = core::mem::take(&mut queues.e_2_2);
+            e_2_2_marks.retain(|idx| !bits.e_2_2.get_bit(idx.get_index(), &bits.bits));
             e_2_2_marks.sort();
             e_2_2_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1258,13 +1294,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_2_marks.clear();
+            if queues.e_2_2.is_empty() {
+                queues.e_2_2 = e_2_2_marks;
+            }
         }
         if !queues.e_2_3.is_empty() {
-            let mut e_2_3_marks: Box<[ElementIndex]> = queues
-                .e_2_3
-                .drain(..)
-                .filter(|idx| !bits.e_2_3.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_3_marks = core::mem::take(&mut queues.e_2_3);
+            e_2_3_marks.retain(|idx| !bits.e_2_3.get_bit(idx.get_index(), &bits.bits));
             e_2_3_marks.sort();
             e_2_3_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1277,13 +1314,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_3_marks.clear();
+            if queues.e_2_3.is_empty() {
+                queues.e_2_3 = e_2_3_marks;
+            }
         }
         if !queues.e_2_4.is_empty() {
-            let mut e_2_4_marks: Box<[ElementIndex]> = queues
-                .e_2_4
-                .drain(..)
-                .filter(|idx| !bits.e_2_4.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_4_marks = core::mem::take(&mut queues.e_2_4);
+            e_2_4_marks.retain(|idx| !bits.e_2_4.get_bit(idx.get_index(), &bits.bits));
             e_2_4_marks.sort();
             e_2_4_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1296,13 +1334,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_4_marks.clear();
+            if queues.e_2_4.is_empty() {
+                queues.e_2_4 = e_2_4_marks;
+            }
         }
         if !queues.e_2_6.is_empty() {
-            let mut e_2_6_marks: Box<[ElementIndex]> = queues
-                .e_2_6
-                .drain(..)
-                .filter(|idx| !bits.e_2_6.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_6_marks = core::mem::take(&mut queues.e_2_6);
+            e_2_6_marks.retain(|idx| !bits.e_2_6.get_bit(idx.get_index(), &bits.bits));
             e_2_6_marks.sort();
             e_2_6_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1315,13 +1354,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_6_marks.clear();
+            if queues.e_2_6.is_empty() {
+                queues.e_2_6 = e_2_6_marks;
+            }
         }
         if !queues.e_2_8.is_empty() {
-            let mut e_2_8_marks: Box<[ElementIndex]> = queues
-                .e_2_8
-                .drain(..)
-                .filter(|idx| !bits.e_2_8.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_8_marks = core::mem::take(&mut queues.e_2_8);
+            e_2_8_marks.retain(|idx| !bits.e_2_8.get_bit(idx.get_index(), &bits.bits));
             e_2_8_marks.sort();
             e_2_8_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1334,13 +1374,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_8_marks.clear();
+            if queues.e_2_8.is_empty() {
+                queues.e_2_8 = e_2_8_marks;
+            }
         }
         if !queues.e_2_10.is_empty() {
-            let mut e_2_10_marks: Box<[ElementIndex]> = queues
-                .e_2_10
-                .drain(..)
-                .filter(|idx| !bits.e_2_10.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_10_marks = core::mem::take(&mut queues.e_2_10);
+            e_2_10_marks.retain(|idx| !bits.e_2_10.get_bit(idx.get_index(), &bits.bits));
             e_2_10_marks.sort();
             e_2_10_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1353,13 +1394,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_10_marks.clear();
+            if queues.e_2_10.is_empty() {
+                queues.e_2_10 = e_2_10_marks;
+            }
         }
         if !queues.e_2_12.is_empty() {
-            let mut e_2_12_marks: Box<[ElementIndex]> = queues
-                .e_2_12
-                .drain(..)
-                .filter(|idx| !bits.e_2_12.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_12_marks = core::mem::take(&mut queues.e_2_12);
+            e_2_12_marks.retain(|idx| !bits.e_2_12.get_bit(idx.get_index(), &bits.bits));
             e_2_12_marks.sort();
             e_2_12_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1372,13 +1414,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_12_marks.clear();
+            if queues.e_2_12.is_empty() {
+                queues.e_2_12 = e_2_12_marks;
+            }
         }
         if !queues.e_2_16.is_empty() {
-            let mut e_2_16_marks: Box<[ElementIndex]> = queues
-                .e_2_16
-                .drain(..)
-                .filter(|idx| !bits.e_2_16.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_16_marks = core::mem::take(&mut queues.e_2_16);
+            e_2_16_marks.retain(|idx| !bits.e_2_16.get_bit(idx.get_index(), &bits.bits));
             e_2_16_marks.sort();
             e_2_16_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1391,13 +1434,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_16_marks.clear();
+            if queues.e_2_16.is_empty() {
+                queues.e_2_16 = e_2_16_marks;
+            }
         }
         if !queues.e_2_24.is_empty() {
-            let mut e_2_24_marks: Box<[ElementIndex]> = queues
-                .e_2_24
-                .drain(..)
-                .filter(|idx| !bits.e_2_24.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_24_marks = core::mem::take(&mut queues.e_2_24);
+            e_2_24_marks.retain(|idx| !bits.e_2_24.get_bit(idx.get_index(), &bits.bits));
             e_2_24_marks.sort();
             e_2_24_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1410,13 +1454,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_24_marks.clear();
+            if queues.e_2_24.is_empty() {
+                queues.e_2_24 = e_2_24_marks;
+            }
         }
         if !queues.e_2_32.is_empty() {
-            let mut e_2_32_marks: Box<[ElementIndex]> = queues
-                .e_2_32
-                .drain(..)
-                .filter(|idx| !bits.e_2_32.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut e_2_32_marks = core::mem::take(&mut queues.e_2_32);
+            e_2_32_marks.retain(|idx| !bits.e_2_32.get_bit(idx.get_index(), &bits.bits));
             e_2_32_marks.sort();
             e_2_32_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1429,14 +1474,15 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     panic!("ElementsVector was not unique");
                 }
             });
+            e_2_32_marks.clear();
+            if queues.e_2_32.is_empty() {
+                queues.e_2_32 = e_2_32_marks;
+            }
         }
 
         if !queues.k_2_4.is_empty() {
-            let mut k_2_4_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_4
-                .drain(..)
-                .filter(|idx| !bits.k_2_4.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_4_marks = core::mem::take(&mut queues.k_2_4);
+            k_2_4_marks.retain(|idx| !bits.k_2_4.get_bit(idx.get_index(), &bits.bits));
             k_2_4_marks.sort();
             k_2_4_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1444,13 +1490,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow4.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_4_marks.clear();
+            if queues.k_2_4.is_empty() {
+                queues.k_2_4 = k_2_4_marks;
+            }
         }
         if !queues.k_2_1.is_empty() {
-            let mut k_2_1_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_1
-                .drain(..)
-                .filter(|idx| !bits.k_2_1.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_1_marks = core::mem::take(&mut queues.k_2_1);
+            k_2_1_marks.retain(|idx| !bits.k_2_1.get_bit(idx.get_index(), &bits.bits));
             k_2_1_marks.sort();
             k_2_1_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1458,13 +1505,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow1.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_1_marks.clear();
+            if queues.k_2_1.is_empty() {
+                queues.k_2_1 = k_2_1_marks;
+            }
         }
         if !queues.k_2_2.is_empty() {
-            let mut k_2_2_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_2
-                .drain(..)
-                .filter(|idx| !bits.k_2_2.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_2_marks = core::mem::take(&mut queues.k_2_2);
+            k_2_2_marks.retain(|idx| !bits.k_2_2.get_bit(idx.get_index(), &bits.bits));
             k_2_2_marks.sort();
             k_2_2_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1472,13 +1520,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow2.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_2_marks.clear();
+            if queues.k_2_2.is_empty() {
+                queues.k_2_2 = k_2_2_marks;
+            }
         }
         if !queues.k_2_3.is_empty() {
-            let mut k_2_3_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_3
-                .drain(..)
-                .filter(|idx| !bits.k_2_3.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_3_marks = core::mem::take(&mut queues.k_2_3);
+            k_2_3_marks.retain(|idx| !bits.k_2_3.get_bit(idx.get_index(), &bits.bits));
             k_2_3_marks.sort();
             k_2_3_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1486,13 +1535,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow3.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_3_marks.clear();
+            if queues.k_2_3.is_empty() {
+                queues.k_2_3 = k_2_3_marks;
+            }
         }
         if !queues.k_2_6.is_empty() {
-            let mut k_2_6_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_6
-                .drain(..)
-                .filter(|idx| !bits.k_2_6.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_6_marks = core::mem::take(&mut queues.k_2_6);
+            k_2_6_marks.retain(|idx| !bits.k_2_6.get_bit(idx.get_index(), &bits.bits));
             k_2_6_marks.sort();
             k_2_6_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1500,13 +1550,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow6.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_6_marks.clear();
+            if queues.k_2_6.is_empty() {
+                queues.k_2_6 = k_2_6_marks;
+            }
         }
         if !queues.k_2_8.is_empty() {
-            let mut k_2_8_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_8
-                .drain(..)
-                .filter(|idx| !bits.k_2_8.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_8_marks = core::mem::take(&mut queues.k_2_8);
+            k_2_8_marks.retain(|idx| !bits.k_2_8.get_bit(idx.get_index(), &bits.bits));
             k_2_8_marks.sort();
             k_2_8_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1514,13 +1565,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow8.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_8_marks.clear();
+            if queues.k_2_8.is_empty() {
+                queues.k_2_8 = k_2_8_marks;
+            }
         }
         if !queues.k_2_10.is_empty() {
-            let mut k_2_10_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_10
-                .drain(..)
-                .filter(|idx| !bits.k_2_10.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_10_marks = core::mem::take(&mut queues.k_2_10);
+            k_2_10_marks.retain(|idx| !bits.k_2_10.get_bit(idx.get_index(), &bits.bits));
             k_2_10_marks.sort();
             k_2_10_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1528,13 +1580,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow10.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_10_marks.clear();
+            if queues.k_2_10.is_empty() {
+                queues.k_2_10 = k_2_10_marks;
+            }
         }
         if !queues.k_2_12.is_empty() {
-            let mut k_2_12_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_12
-                .drain(..)
-                .filter(|idx| !bits.k_2_12.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_12_marks = core::mem::take(&mut queues.k_2_12);
+            k_2_12_marks.retain(|idx| !bits.k_2_12.get_bit(idx.get_index(), &bits.bits));
             k_2_12_marks.sort();
             k_2_12_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1542,13 +1595,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow12.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_12_marks.clear();
+            if queues.k_2_12.is_empty() {
+                queues.k_2_12 = k_2_12_marks;
+            }
         }
         if !queues.k_2_16.is_empty() {
-            let mut k_2_16_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_16
-                .drain(..)
-                .filter(|idx| !bits.k_2_16.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_16_marks = core::mem::take(&mut queues.k_2_16);
+            k_2_16_marks.retain(|idx| !bits.k_2_16.get_bit(idx.get_index(), &bits.bits));
             k_2_16_marks.sort();
             k_2_16_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1556,13 +1610,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow16.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_16_marks.clear();
+            if queues.k_2_16.is_empty() {
+                queues.k_2_16 = k_2_16_marks;
+            }
         }
         if !queues.k_2_24.is_empty() {
-            let mut k_2_24_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_24
-                .drain(..)
-                .filter(|idx| !bits.k_2_24.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_24_marks = core::mem::take(&mut queues.k_2_24);
+            k_2_24_marks.retain(|idx| !bits.k_2_24.get_bit(idx.get_index(), &bits.bits));
             k_2_24_marks.sort();
             k_2_24_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1570,13 +1625,14 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow24.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_24_marks.clear();
+            if queues.k_2_24.is_empty() {
+                queues.k_2_24 = k_2_24_marks;
+            }
         }
         if !queues.k_2_32.is_empty() {
-            let mut k_2_32_marks: Box<[PropertyKeyIndex]> = queues
-                .k_2_32
-                .drain(..)
-                .filter(|idx| !bits.k_2_32.get_bit(idx.get_index(), &bits.bits))
-                .collect();
+            let mut k_2_32_marks = core::mem::take(&mut queues.k_2_32);
+            k_2_32_marks.retain(|idx| !bits.k_2_32.get_bit(idx.get_index(), &bits.bits));
             k_2_32_marks.sort();
             k_2_32_marks.iter().for_each(|&idx| {
                 let index = idx.get_index();
@@ -1584,6 +1640,10 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     k2pow32.keys.get(index).mark_values(&mut queues)
                 }
             });
+            k_2_32_marks.clear();
+            if queues.k_2_32.is_empty() {
+                queues.k_2_32 = k_2_32_marks;
+            }
         }
     }
 
@@ -2445,7 +2505,7 @@ impl SequentialSweep {
 fn test_heap_gc() {
     use crate::engine::GcScope;
     use crate::{
-        ecmascript::{AgentOptions, DefaultHostHooks},
+        ecmascript::{AgentOptions, DefaultHostHooks, OrdinaryObject},
         engine::HeapRootData,
     };
 

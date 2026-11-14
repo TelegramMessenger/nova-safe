@@ -5,8 +5,6 @@
 mod binding_methods;
 mod execute_instructions;
 
-use core::cell::RefCell;
-
 use execute_instructions::*;
 
 use wtf8::Wtf8Buf;
@@ -15,8 +13,8 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType, JsError,
         JsResult, Number, Object, Primitive, Promise, Reference, String, Value, call_function,
-        get_method, is_callable, ordinary_has_instance, to_boolean, to_numeric,
-        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
+        get_method, is_callable, ordinary_has_instance, take_pooled_arguments_vec, to_boolean,
+        to_numeric, to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
         try_get_object_method, try_result_into_option_js,
     },
     engine::{
@@ -184,33 +182,7 @@ impl SuspendedVm {
 const VM_STACK_POOL_LEN: usize = 32;
 const VM_STACK_POOL_MAX_CAPACITY: usize = 1024;
 
-type PooledVmStacks = (Vec<Value<'static>>, Vec<VmIteratorRecord<'static>>);
-
-thread_local! {
-    static VM_STACK_POOL: RefCell<Vec<PooledVmStacks>> = const { RefCell::new(Vec::new()) };
-}
-
-impl Drop for Vm {
-    fn drop(&mut self) {
-        if self.stack.capacity() == 0
-            || self.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
-            || self.iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
-        {
-            return;
-        }
-        let mut stack = core::mem::take(&mut self.stack);
-        let mut iterator_stack = core::mem::take(&mut self.iterator_stack);
-        stack.clear();
-        iterator_stack.clear();
-        let _ = VM_STACK_POOL.try_with(|pool| {
-            if let Ok(mut pool) = pool.try_borrow_mut()
-                && pool.len() < VM_STACK_POOL_LEN
-            {
-                pool.push((stack, iterator_stack));
-            }
-        });
-    }
-}
+pub(crate) type PooledVmStacks = (Vec<Value<'static>>, Vec<VmIteratorRecord<'static>>);
 
 impl Vm {
     const EMPTY: Self = Self {
@@ -223,11 +195,10 @@ impl Vm {
         reference: None,
     };
 
-    fn new() -> Self {
-        let (stack, iterator_stack) = VM_STACK_POOL
-            .try_with(|pool| pool.try_borrow_mut().ok().and_then(|mut pool| pool.pop()))
-            .ok()
-            .flatten()
+    fn new(agent: &mut Agent) -> Self {
+        let (stack, iterator_stack) = agent
+            .vm_stack_pool
+            .pop()
             .unwrap_or_else(|| (Vec::with_capacity(32), Vec::new()));
         Self {
             ip: 0,
@@ -238,6 +209,21 @@ impl Vm {
             result: None,
             reference: None,
         }
+    }
+
+    fn recycle(mut self, agent: &mut Agent) {
+        if self.stack.capacity() == 0
+            || self.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+            || self.iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+            || agent.vm_stack_pool.len() >= VM_STACK_POOL_LEN
+        {
+            return;
+        }
+        let mut stack = core::mem::take(&mut self.stack);
+        let mut iterator_stack = core::mem::take(&mut self.iterator_stack);
+        stack.clear();
+        iterator_stack.clear();
+        agent.vm_stack_pool.push((stack, iterator_stack));
     }
 
     fn suspend(mut self) -> SuspendedVm {
@@ -270,7 +256,7 @@ impl Vm {
         arguments: Option<&mut [Value<'static>]>,
         gc: GcScope<'gc, '_>,
     ) -> ExecutionResult<'gc> {
-        let mut vm = Vm::new();
+        let mut vm = Vm::new(agent);
 
         if let Some(arguments) = arguments {
             ArgumentsList::from_mut_slice(arguments).with_scoped(
@@ -346,6 +332,17 @@ impl Vm {
         mut self,
         agent: &mut Agent,
         executable: Scoped<Executable>,
+        gc: GcScope<'gc, '_>,
+    ) -> ExecutionResult<'gc> {
+        let result = self.run(agent, executable, gc);
+        self.recycle(agent);
+        result
+    }
+
+    fn run<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        executable: Scoped<Executable>,
         mut gc: GcScope<'gc, '_>,
     ) -> ExecutionResult<'gc> {
         if agent.stack_exhausted() {
@@ -366,13 +363,8 @@ impl Vm {
             if agent.options.print_internals {
                 Self::print_executing(instr.kind);
             }
-            let result = Self::execute_instruction(
-                agent,
-                &mut self,
-                executable.clone(),
-                instr,
-                gc.reborrow(),
-            );
+            let result =
+                Self::execute_instruction(agent, self, executable.clone(), instr, gc.reborrow());
             match result {
                 Ok(ContinuationKind::Normal) => {}
                 _ => {
@@ -382,7 +374,7 @@ impl Vm {
                     }
                 }
             }
-            agent.stack_refs.borrow_mut().truncate(stack_depth);
+            agent.stack_refs.get_mut().truncate(stack_depth);
         }
 
         if agent.termination().is_some() {
@@ -864,13 +856,18 @@ impl Vm {
         Ok(ContinuationKind::Normal)
     }
 
-    fn get_call_args<'gc>(&mut self, instr: Instr, _gc: NoGcScope<'gc, '_>) -> Vec<Value<'gc>> {
+    fn get_call_args<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        instr: Instr,
+        _gc: NoGcScope<'gc, '_>,
+    ) -> Vec<Value<'gc>> {
         let instr_arg0 = instr.get_first_arg();
         if instr_arg0 != IndexType::MAX {
             // Static number of arguments less than IndexType::MAX.
             let arg_count = instr_arg0 as usize;
             debug_assert!(self.stack.len() >= arg_count);
-            self.stack.split_off(self.stack.len() - arg_count)
+            self.split_off_call_args(agent, arg_count)
         } else {
             // Dynamic number of arguments, or exactly IndexType::MAX or more
             // arguments. In this case the number of arguments is stored in the
@@ -881,11 +878,18 @@ impl Vm {
             };
             let arg_count = usize::try_from(integer.into_i64()).unwrap();
             debug_assert!(self.stack.len() > arg_count);
-            let args = self.stack.split_off(self.stack.len() - arg_count);
+            let args = self.split_off_call_args(agent, arg_count);
             let integer_copy = self.stack.pop().unwrap();
             debug_assert_eq!(Value::Integer(integer), integer_copy);
             args
         }
+    }
+
+    fn split_off_call_args(&mut self, agent: &mut Agent, arg_count: usize) -> Vec<Value<'static>> {
+        let start = self.stack.len() - arg_count;
+        let args = take_pooled_arguments_vec(agent, &self.stack[start..]);
+        self.stack.truncate(start);
+        args
     }
 
     /// Pop the active (top-most) iterator from the iterator stack.
