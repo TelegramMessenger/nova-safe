@@ -97,6 +97,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             finalization_registries,
             generators,
             globals: _,
+            free_globals: _,
             maps,
             map_iterators,
             modules,
@@ -1705,6 +1706,7 @@ fn sweep(
         weak_sets,
         alloc_counter,
         data_bytes_since_gc: _,
+        free_globals: _,
     } = &mut agent.heap;
     // Reset the allocation counter.
     *alloc_counter = 0;

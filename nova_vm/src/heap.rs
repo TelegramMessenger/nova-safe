@@ -44,6 +44,8 @@ use crate::ecmascript::{
 };
 #[cfg(feature = "weak-refs")]
 use crate::ecmascript::{WeakMapRecord, WeakRefHeapData, WeakSetHeapData};
+#[cfg(feature = "array-buffer")]
+use crate::hashing::AHashMap;
 use crate::{
     ecmascript::{
         Agent, ArrayHeapData, ArrayIteratorHeapData, AsyncGeneratorHeapData, AwaitReactionRecord,
@@ -60,8 +62,6 @@ use crate::{
     },
     engine::{ExecutableHeapData, HeapRootData},
 };
-#[cfg(feature = "array-buffer")]
-use crate::hashing::AHashMap;
 use hashbrown::HashTable;
 use soavec::{SoAVec, SoAble};
 use wtf8::{Wtf8Buf, Wtf8Str};
@@ -101,6 +101,10 @@ pub(crate) struct Heap {
     pub(crate) finalization_registries: SoAVec<FinalizationRegistryRecord<'static>>,
     pub(crate) generators: Vec<GeneratorHeapData<'static>>,
     pub(crate) globals: RefCell<Vec<HeapRootData>>,
+    /// Indexes of `globals` released by `Global::take`; an entry may be stale
+    /// (out of bounds after the GC truncated `globals`, or filled again), so
+    /// users check that the slot is empty.
+    pub(crate) free_globals: RefCell<Vec<u32>>,
     pub(crate) maps: SoAVec<MapHeapData<'static>>,
     pub(crate) map_iterators: Vec<MapIteratorHeapData<'static>>,
     pub(crate) numbers: Vec<NumberHeapData>,
@@ -275,6 +279,7 @@ impl Heap {
             finalization_registries: SoAVec::with_capacity(0).expect("Failed to allocate Heap"),
             generators: Vec::with_capacity(1024),
             globals: RefCell::new(Vec::with_capacity(1024)),
+            free_globals: RefCell::new(Vec::new()),
             maps: SoAVec::with_capacity(128).expect("Failed to allocate Heap"),
             map_iterators: Vec::with_capacity(128),
             modules: Vec::with_capacity(0),

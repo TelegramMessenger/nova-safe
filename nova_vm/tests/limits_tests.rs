@@ -404,3 +404,44 @@ fn heap_limit_terminates_growing_scripts() {
         }
     });
 }
+
+#[test]
+fn many_live_globals_are_cheap() {
+    on_big_stack(|| {
+        use nova_vm::{
+            ecmascript::{OrdinaryObject, Value},
+            engine::Global,
+        };
+        let mut engine = Engine::new();
+        let started = Instant::now();
+        engine.agent.run_in_realm(&engine.realm, |agent, _| {
+            let mut globals = Vec::new();
+            for _ in 0..100_000u32 {
+                let object: Value = OrdinaryObject::create_object(agent, None, &[])
+                    .expect("no GC needed")
+                    .into();
+                globals.push(Global::new(agent, object.unbind()));
+            }
+            let mut kept = Vec::new();
+            for (i, global) in globals.into_iter().enumerate() {
+                if i % 2 == 0 {
+                    let _ = global.take(agent);
+                } else {
+                    kept.push(global);
+                }
+            }
+            for _ in 0..100_000u32 {
+                let object: Value = OrdinaryObject::create_object(agent, None, &[])
+                    .expect("no GC needed")
+                    .into();
+                kept.push(Global::new(agent, object.unbind()));
+            }
+            for global in kept {
+                assert!(matches!(global.take(agent), Value::Object(_)));
+            }
+        });
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        engine.assert_usable();
+    });
+}

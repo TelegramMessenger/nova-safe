@@ -1711,6 +1711,10 @@ impl HeapMarkAndSweep for Agent {
                 .borrow_mut()
                 .truncate(last_filled_global_value + 1);
         }
+        let globals_len = heap.globals.borrow().len();
+        heap.free_globals
+            .borrow_mut()
+            .retain(|&index| (index as usize) < globals_len);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
