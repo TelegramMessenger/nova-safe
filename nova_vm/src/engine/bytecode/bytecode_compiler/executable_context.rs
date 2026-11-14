@@ -42,6 +42,9 @@ const WIDE_CONSTANTS_FROM: usize = 60_000;
 /// wide constants too, leaving the last indices for binding names.
 const WIDE_PROPERTY_NAMES_FROM: usize = 64_000;
 
+/// How many of the last instructions peephole fusion looks back at.
+const RECENT_INSTRUCTIONS: usize = 8;
+
 const TOO_MANY_NAMES: &str = "too many identifiers and constants in one function or script";
 const TOO_MANY_PROPERTY_NAMES: &str = "too many property names in one function or script";
 const TOO_MANY_FUNCTIONS: &str = "too many functions in one function or script";
@@ -62,6 +65,11 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     current_instruction_pointer_is_unreachable: bool,
     /// Instructions being built
     instructions: Vec<u8>,
+    /// Start offsets of the last instructions added since the last jump
+    /// target, most recent first: the window that peephole fusion may
+    /// combine.
+    recent: [usize; RECENT_INSTRUCTIONS],
+    recent_len: usize,
     /// Caches being built
     caches: Vec<PropertyLookupCache<'gc>>,
     cache_indexes: AHashMap<PropertyLookupCache<'gc>, usize>,
@@ -96,6 +104,8 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             current_value_stack_depth: 0,
             current_instruction_pointer_is_unreachable: false,
             instructions: Vec::new(),
+            recent: [0; RECENT_INSTRUCTIONS],
+            recent_len: 0,
             caches: Vec::new(),
             cache_indexes: AHashMap::default(),
             constants: Vec::new(),
@@ -199,6 +209,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.current_value_stack_depth = 0;
         self.current_instruction_pointer_is_unreachable = false;
         self.instructions.clear();
+        self.recent_len = 0;
         self.caches.clear();
         self.cache_indexes.clear();
         self.constants.clear();
@@ -271,7 +282,79 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 && !instruction.has_function_expression_index()
                 && !instruction.has_identifier_index()
         );
+        match instruction {
+            Instruction::Load => {
+                if let Some(start) = self.recent_instruction(0, Instruction::GetValueFromIndex) {
+                    self.instructions[start] = Instruction::LoadFromIndex.as_u8();
+                    return;
+                }
+                if let Some(start) = self.recent_instruction(0, Instruction::PushReference) {
+                    self.instructions[start] = Instruction::PushReferenceAndLoad.as_u8();
+                    return;
+                }
+            }
+            Instruction::IsStrictlyEqual => {
+                if let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant) {
+                    let operand = self.operand_bytes(constant);
+                    if let Some(load) = self.recent_instruction(1, Instruction::Load) {
+                        self.drop_recent_instructions(load, 2);
+                        self.push_instruction(Instruction::IsStrictlyEqualConstant);
+                        self.instructions.extend_from_slice(&operand);
+                        return;
+                    }
+                    if let Some(load) = self.recent_instruction(1, Instruction::LoadFromIndex) {
+                        self.instructions[load] = Instruction::GetValueFromIndex.as_u8();
+                        self.drop_recent_instructions(constant, 1);
+                        self.push_instruction(Instruction::IsStrictlyEqualConstant);
+                        self.instructions.extend_from_slice(&operand);
+                        return;
+                    }
+                }
+            }
+            Instruction::Return => {
+                while let Some(pop) = self.recent_instruction(0, Instruction::PopStack) {
+                    self.drop_recent_instructions(pop, 1);
+                }
+            }
+            _ => {}
+        }
         self.push_instruction(instruction);
+    }
+
+    /// The start of the `nth` most recent instruction if it is `kind`, is
+    /// not a jump target, and is followed only by the more recent ones.
+    fn recent_instruction(&self, nth: usize, kind: Instruction) -> Option<usize> {
+        if nth >= self.recent_len {
+            return None;
+        }
+        let start = self.recent[nth];
+        let end = if nth == 0 {
+            self.instructions.len()
+        } else {
+            self.recent[nth - 1]
+        };
+        if self.instructions.get(start) != Some(&kind.as_u8())
+            || start + 1 + 2 * kind.argument_count() as usize != end
+        {
+            return None;
+        }
+        Some(start)
+    }
+
+    fn operand_bytes(&self, start: usize) -> [u8; 2] {
+        [self.instructions[start + 1], self.instructions[start + 2]]
+    }
+
+    /// Removes the `count` most recent instructions, which start at `start`.
+    fn drop_recent_instructions(&mut self, start: usize, count: usize) {
+        debug_assert!(count <= self.recent_len && self.recent[count - 1] == start);
+        self.instructions.truncate(start);
+        self.recent.copy_within(count.., 0);
+        self.recent_len -= count;
+    }
+
+    fn forget_recent_instructions(&mut self) {
+        self.recent_len = 0;
     }
 
     pub(super) fn add_instruction_with_jump_slot(&mut self, instruction: Instruction) -> JumpIndex {
@@ -294,6 +377,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
 
     pub(super) fn get_jump_index_to_here(&mut self) -> JumpIndex {
         self.current_instruction_pointer_is_unreachable = false;
+        self.forget_recent_instructions();
         JumpIndex {
             index: self.instructions.len(),
         }
@@ -355,6 +439,14 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         immediate: usize,
     ) {
         debug_assert_eq!(instruction.argument_count(), 1);
+        if instruction == Instruction::EvaluateCall
+            && let Some(pop) = self.recent_instruction(0, Instruction::PopReference)
+        {
+            self.drop_recent_instructions(pop, 1);
+            self.push_instruction(Instruction::PopReferenceAndEvaluateCall);
+            self.add_index(immediate);
+            return;
+        }
         self.push_instruction(instruction);
         self.add_index(immediate);
     }
@@ -556,6 +648,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     }
 
     pub(super) fn set_jump_target_here(&mut self, jump: JumpIndex) {
+        self.forget_recent_instructions();
         if self.current_instruction_pointer_is_unreachable
             && jump.index == self.instructions.len().saturating_sub(4)
         {
@@ -620,6 +713,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     }
 
     fn push_instruction(&mut self, instruction: Instruction) {
+        self.recent.copy_within(..RECENT_INSTRUCTIONS - 1, 1);
+        self.recent[0] = self.instructions.len();
+        self.recent_len = (self.recent_len + 1).min(RECENT_INSTRUCTIONS);
         self.instructions.push(instruction.as_u8());
         self.current_instruction_pointer_is_unreachable = instruction.is_terminal();
     }

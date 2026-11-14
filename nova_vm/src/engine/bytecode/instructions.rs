@@ -89,6 +89,11 @@ pub(crate) enum Instruction {
     /// the top of the stack and the `propertyNameValue` in result register,
     /// and store the result in the reference register.
     EvaluatePropertyAccessWithExpressionKey,
+    /// GetValueFromIndex followed by Load: push a copy of the given stack
+    /// slot, leaving the result register empty.
+    LoadFromIndex,
+    /// PushReference followed by Load.
+    PushReferenceAndLoad,
 
     // === COLD INSTRUCTIONS ===
 
@@ -104,6 +109,10 @@ pub(crate) enum Instruction {
     /// Take the result value and the top stack value, compare them using
     /// IsStrictlyEqual() and store the result as the result value.
     IsStrictlyEqual,
+    /// Load, StoreConstant and IsStrictlyEqual: compare the result value with
+    /// a constant using IsStrictlyEqual() and store the result as the result
+    /// value.
+    IsStrictlyEqualConstant,
     /// Store true as the result value if the current result value is null or
     /// undefined, false otherwise.
     IsNullOrUndefined,
@@ -198,6 +207,8 @@ pub(crate) enum Instruction {
     /// popped from the stack (last to first) as an argument, and finally the
     /// function to call.
     EvaluateCall,
+    /// PopReference followed by EvaluateCall.
+    PopReferenceAndEvaluateCall,
     /// Store EvaluateNew() as the result value.
     ///
     /// This instruction has the number of argument values that need to be
@@ -585,11 +596,14 @@ impl Instruction {
             | Self::DirectEvalCall
             | Self::EnterPrivateEnvironment
             | Self::EvaluateCall
+            | Self::PopReferenceAndEvaluateCall
             | Self::EvaluateNew
             | Self::EvaluatePropertyAccessWithIdentifierKey
             | Self::EvaluateSuper
             | Self::GetValueWithCache
             | Self::GetValueWithCacheKeepReference
+            | Self::IsStrictlyEqualConstant
+            | Self::LoadFromIndex
             | Self::InstantiateArrowFunctionExpression
             | Self::InstantiateOrdinaryFunctionExpression
             | Self::LoadConstant
@@ -637,6 +651,7 @@ impl Instruction {
             Self::BindingPatternBindNamed
                 | Self::BindingPatternBindToIndex
                 | Self::BindingPatternGetValueNamed
+                | Self::IsStrictlyEqualConstant
                 | Self::LoadConstant
                 | Self::StoreConstant
         )
@@ -1131,6 +1146,10 @@ impl Instruction {
         const DELETE: u8 = Instruction::Delete.as_u8();
         const DIRECTEVALCALL: u8 = Instruction::DirectEvalCall.as_u8();
         const EVALUATECALL: u8 = Instruction::EvaluateCall.as_u8();
+        const LOADFROMINDEX: u8 = Instruction::LoadFromIndex.as_u8();
+        const PUSHREFERENCEANDLOAD: u8 = Instruction::PushReferenceAndLoad.as_u8();
+        const POPREFERENCEANDEVALUATECALL: u8 = Instruction::PopReferenceAndEvaluateCall.as_u8();
+        const ISSTRICTLYEQUALCONSTANT: u8 = Instruction::IsStrictlyEqualConstant.as_u8();
         const EVALUATENEW: u8 = Instruction::EvaluateNew.as_u8();
         const EVALUATESUPER: u8 = Instruction::EvaluateSuper.as_u8();
         const EVALUATEPROPERTYACCESSWITHEXPRESSIONKEY: u8 =
@@ -1298,6 +1317,10 @@ impl Instruction {
             DELETE => Some(Instruction::Delete),
             DIRECTEVALCALL => Some(Instruction::DirectEvalCall),
             EVALUATECALL => Some(Instruction::EvaluateCall),
+            LOADFROMINDEX => Some(Instruction::LoadFromIndex),
+            PUSHREFERENCEANDLOAD => Some(Instruction::PushReferenceAndLoad),
+            POPREFERENCEANDEVALUATECALL => Some(Instruction::PopReferenceAndEvaluateCall),
+            ISSTRICTLYEQUALCONSTANT => Some(Instruction::IsStrictlyEqualConstant),
             EVALUATENEW => Some(Instruction::EvaluateNew),
             EVALUATESUPER => Some(Instruction::EvaluateSuper),
             EVALUATEPROPERTYACCESSWITHEXPRESSIONKEY => {

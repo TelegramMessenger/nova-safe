@@ -597,6 +597,14 @@ impl Vm {
             Instruction::EvaluatePropertyAccessWithExpressionKey => {
                 execute_evaluate_property_access_with_expression_key(agent, vm, gc.into_nogc())
             }
+            Instruction::LoadFromIndex => {
+                vm.execute_store_from_index(instr.get_first_index());
+                vm.execute_load();
+            }
+            Instruction::PushReferenceAndLoad => {
+                vm.execute_push_reference();
+                vm.execute_load();
+            }
             _ => return Self::execute_cold_instruction(agent, vm, executable, instr, gc),
         }
 
@@ -635,7 +643,9 @@ impl Vm {
             | Instruction::PushReference
             | Instruction::PopReference
             | Instruction::EvaluatePropertyAccessWithIdentifierKey
-            | Instruction::EvaluatePropertyAccessWithExpressionKey => {
+            | Instruction::EvaluatePropertyAccessWithExpressionKey
+            | Instruction::LoadFromIndex
+            | Instruction::PushReferenceAndLoad => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }
             Instruction::Return => return Ok(ContinuationKind::Return),
@@ -645,6 +655,11 @@ impl Vm {
             }
             Instruction::Yield => return Ok(ContinuationKind::Yield),
             Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc.into_nogc()),
+            Instruction::IsStrictlyEqualConstant => {
+                vm.execute_load();
+                execute_store_constant(agent, vm, executable, instr, gc.nogc());
+                execute_is_strictly_equal(agent, vm, gc.into_nogc())
+            }
             Instruction::IsNullOrUndefined => vm.execute_is_null_or_undefined(),
             Instruction::IsNull => vm.execute_is_null(),
             Instruction::IsUndefined => vm.execute_is_undefined(),
@@ -696,6 +711,10 @@ impl Vm {
             Instruction::Delete => execute_delete(agent, vm, gc)?,
             Instruction::DirectEvalCall => execute_direct_eval_call(agent, vm, instr, gc)?,
             Instruction::EvaluateCall => execute_evaluate_call(agent, vm, instr, gc)?,
+            Instruction::PopReferenceAndEvaluateCall => {
+                vm.execute_pop_reference();
+                execute_evaluate_call(agent, vm, instr, gc)?
+            }
             Instruction::EvaluateNew => execute_evaluate_new(agent, vm, instr, gc)?,
             Instruction::EvaluateSuper => execute_evaluate_super(agent, vm, instr, gc)?,
             Instruction::MakePrivateReference => {
