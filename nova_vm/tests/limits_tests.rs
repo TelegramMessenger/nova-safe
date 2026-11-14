@@ -203,6 +203,7 @@ fn interrupt_ends_long_native_loops() {
         assert_interrupted("Array.prototype.indexOf.call({ length: 2 ** 53 - 1 }, 1)");
         assert_interrupted("Array.prototype.includes.call({ length: 2 ** 53 - 1 }, 1)");
         assert_interrupted("Array.prototype.fill.call({ length: 2 ** 53 - 1 }, 1)");
+        assert_interrupted("new Uint8Array({ length: 2 ** 26 })");
     });
 }
 

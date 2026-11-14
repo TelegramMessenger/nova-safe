@@ -828,6 +828,7 @@ pub(crate) fn initialize_typed_array_from_list<'a, T: Viewable>(
     // c. Remove the first element from values.
     // e. Set k to k + 1.
     for (k, k_value) in values.iter(agent).enumerate() {
+        agent.poll_interrupt(gc.nogc()).unbind()?;
         // a. Let Pk be ! ToString(𝔽(k)).
         let pk = PropertyKey::from(SmallInteger::try_from(k as i64).unwrap());
         let k_value = k_value.get(agent, gc.nogc());
@@ -875,6 +876,7 @@ pub(crate) fn initialize_typed_array_from_array_like<'a, T: Viewable>(
     let mut k = 0;
     // 4. Repeat, while k < len,
     while k < len {
+        agent.poll_interrupt(gc.nogc()).unbind()?;
         // a. Let Pk be ! ToString(𝔽(k)).
         let pk = PropertyKey::from(SmallInteger::try_from(k as i64).unwrap());
         // b. Let kValue be ? Get(arrayLike, Pk).
