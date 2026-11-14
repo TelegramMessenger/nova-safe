@@ -8,6 +8,7 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::RegExpFlags;
 use oxc_regular_expression::{LiteralParser, Options};
 
+use super::data::{MAX_PATTERN_NESTING, RegExpExecError, pattern_nesting};
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, ExceptionType, Function, JsResult,
@@ -185,6 +186,13 @@ pub(crate) fn reg_exp_initialize<'a>(
         Some(f_str.as_ref())
     };
 
+    if pattern_nesting(p.as_wtf8_(agent)) > MAX_PATTERN_NESTING {
+        return Err(agent.throw_exception_with_static_message(
+            ExceptionType::SyntaxError,
+            "regular expression is nested too deeply",
+            gc.into_nogc(),
+        ));
+    }
     let allocator = Allocator::new();
     // 13. Let parseResult be ParsePattern(patternText, u, v).
     match LiteralParser::new(
@@ -212,7 +220,12 @@ pub(crate) fn reg_exp_initialize<'a>(
     // 18. Let capturingGroupsCount be CountLeftCapturingParensWithin(parseResult).
     // 19. Let rer be the RegExp Record { [[IgnoreCase]]: i, [[Multiline]]: m, [[DotAll]]: s, [[Unicode]]: u, [[UnicodeSets]]: v, [[CapturingGroupsCount]]: capturingGroupsCount }.
     // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
-    let reg_exp_matcher = RegExpHeapData::compile_pattern(&p.to_string_lossy_(agent), f);
+    let reg_exp_matcher = match RegExpHeapData::compile_pattern(p.as_wtf8_(agent), f) {
+        Ok(matcher) => matcher,
+        Err(message) => {
+            return Err(agent.throw_exception(ExceptionType::SyntaxError, message, gc.into_nogc()));
+        }
+    };
     {
         let data = obj.get_mut(agent);
         // 16. Set obj.[[OriginalSource]] to P.
@@ -221,7 +234,7 @@ pub(crate) fn reg_exp_initialize<'a>(
         data.original_flags = f;
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
-        data.reg_exp_matcher = reg_exp_matcher;
+        data.reg_exp_matcher = Ok(reg_exp_matcher);
     }
 
     // 22. Perform ? Set(obj, "lastIndex", +0𝔽, true).
@@ -519,27 +532,12 @@ pub(crate) fn reg_exp_builtin_exec_prepare<'a>(
     }
     // 8. Let matcher be R.[[RegExpMatcher]].
     if let Err(err) = &r.get(agent).reg_exp_matcher {
-        return Err(agent.throw_exception(ExceptionType::SyntaxError, err.to_string(), gc));
+        let message = err.clone();
+        return Err(agent.throw_exception(ExceptionType::SyntaxError, message, gc));
     };
     // 9. If flags contains "u" or flags contains "v", let fullUnicode be true;
     //    else let fullUnicode be false.
     let full_unicode = (flags & (RegExpFlags::U | RegExpFlags::V)).bits() > 0;
-    // The matcher works on WTF-8 bytes: lastIndex becomes a byte index, past
-    // the end if lastIndex is past the end. A lastIndex inside a surrogate
-    // pair starts at the pair with fullUnicode and after it otherwise.
-    let utf16_length = s.utf16_len_(agent);
-    let last_index = if last_index > utf16_length {
-        usize::MAX
-    } else if last_index == utf16_length {
-        s.len_(agent)
-    } else if let Some(utf8_index) = s.utf8_index_(agent, last_index) {
-        utf8_index
-    } else {
-        let pair_start = s
-            .utf8_index_(agent, last_index - 1)
-            .expect("a trail surrogate follows its lead");
-        if full_unicode { pair_start } else { pair_start + 4 }
-    };
     Ok(RegExpExecBase {
         r,
         s,
@@ -573,18 +571,12 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         last_index,
         global,
         sticky,
-        has_indices,
+        has_indices: _,
         full_unicode: _,
     } = result.bind(gc);
     // 1. Let length be the length of S.
-    let length = s.len_(agent);
+    let length = s.utf16_len_(agent);
     let r_data = r.get_direct_mut(&mut agent.heap.regexps);
-    let s_bytes = s.as_bytes_(&agent.heap.strings);
-    // 8. Let matcher be R.[[RegExpMatcher]].
-    let matcher = r_data
-        .reg_exp_matcher
-        .as_mut()
-        .expect("reg_exp_builtin_exec_prepare sets the matcher");
     // 10. Let matchSucceeded be false.
     // 11. If fullUnicode is true, let input be StringToCodePoints(S).
     //     Otherwise, let input be a List whose elements are the code units
@@ -603,11 +595,14 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     }
     // b. Let inputIndex be the index into input of the character that was
     //    obtained from element lastIndex of S.
-    let input_index = last_index;
     // c. Let r be matcher(input, inputIndex).
-    let mut captures = matcher.capture_locations();
-    let result = matcher.captures_read_at(&mut captures, s_bytes, input_index);
     // d. If r is failure, then
+    //    i. If sticky is true, then [...] Return null.
+    //    ii. Set lastIndex to AdvanceStringIndex(S, lastIndex, fullUnicode).
+    let result = match r_data.search(&agent.heap.strings, s, last_index, sticky) {
+        Ok(result) => result,
+        Err(err) => return Err(throw_exec_error(agent, err, gc)),
+    };
     let Some(full_match) = result else {
         // i. If global is true or sticky is true, then
         if global || sticky {
@@ -617,43 +612,23 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         // ii. Return null.
         return Ok(None);
     };
-    // i. If sticky is true, then
-    if sticky && full_match.start() != last_index {
-        // sticky did match but not at the start position.
-        // 1. Perform ? Set(R, "lastIndex", +0𝔽, true).
-        r_data.last_index = RegExpLastIndex::ZERO;
-        // 2. Return null.
-        return Ok(None);
-        // ii. Set lastIndex to AdvanceStringIndex(S, lastIndex, fullUnicode).
-    }
-    let last_index = s.utf16_index_of_byte_(&agent.heap.strings, full_match.start());
+    let last_index = full_match.start();
     // e. Else,
     // i. Assert: r is a MatchState.
     // ii. Set matchSucceeded to true.
     // 14. Let e be r.[[EndIndex]].
-    let e = full_match.end();
     // 15. If fullUnicode is true, set e to GetStringIndex(S, e).
-    let e = s.utf16_index_of_byte_(&agent.heap.strings, e);
+    let e = full_match.end();
     // 16. If global is true or sticky is true, then
     if global || sticky {
         // a. Perform ? Set(R, "lastIndex", 𝔽(e), true).
         r_data.last_index = e.into();
     }
     // 17. Let n be the number of elements in r.[[Captures]].
-    let n = captures.len();
-    // 18. Assert: n = R.[[RegExpRecord]].[[CapturingGroupsCount]].
-    debug_assert_eq!(n, matcher.captures_len());
+    let n = full_match.captures.len() + 1;
     // 19. Assert: n < 2**32 - 1.
     debug_assert!(n < 2usize.pow(32) - 1);
-    let has_group_name = matcher.capture_names().any(|n| n.is_some());
-    let group_names: Vec<Option<std::string::String>> = if has_group_name {
-        matcher
-            .capture_names()
-            .map(|name| name.map(str::to_owned))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let has_group_name = !full_match.group_names().is_empty();
     // 20. Let A be ! ArrayCreate(n + 1).
     // Note: we use n because it already contains the full-match group in it.
     let a = array_create(agent, n, n, None, gc).unwrap();
@@ -680,7 +655,6 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     ));
     // 24. Let match be the Match Record { [[StartIndex]]: lastIndex, [[EndIndex]]: e }.
     // 25. Let indices be a new empty List.
-    // let mut indices = vec![];
     // 26. Let groupNames be a new empty List.
     // 27. Append match to indices.
     // 28. Let matchedSubstr be GetMatchString(S, match).
@@ -707,27 +681,17 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
         gc,
     ));
     // 33. Let matchedGroupNames be a new empty List.
-    // let mut matched_group_names = vec![];
+    let mut matched_group_names: Vec<&str> = Vec::new();
     // 34. For each integer i such that 1 ≤ i ≤ n, in ascending order, do
     for i in 0..n {
-        let capture_i = captures.get(i);
         // a. Let captureI be ith element of r.[[Captures]].
-        if has_indices {
-            // b. If captureI is undefined, then
-            //         i. Let capturedValue be undefined.
-            //         ii. Append undefined to indices.
-            // c. Else,
-            //         i. Let captureStart be captureI.[[StartIndex]].
-            //         ii. Let captureEnd be captureI.[[EndIndex]].
-            //         iii. If fullUnicode is true, then
-            //                 1. Set captureStart to GetStringIndex(S, captureStart).
-            //                 2. Set captureEnd to GetStringIndex(S, captureEnd).
-            //         iv. Let capture be the Match Record { [[StartIndex]]: captureStart, [[EndIndex]]: captureEnd }.
-            //         v. Let capturedValue be GetMatchString(S, capture).
-            //         vi. Append capture to indices.
-        }
-        let captured_value = if let Some((start, end)) = capture_i {
-            s.wtf8_substring_(agent, start, end, gc).into()
+        let capture_i = full_match.group(i);
+        // b. If captureI is undefined, then
+        //    i. Let capturedValue be undefined.
+        // c. Else,
+        //    v. Let capturedValue be GetMatchString(S, capture).
+        let captured_value = if let Some(range) = capture_i {
+            s.utf16_substring(agent, range.start, range.end, gc).into()
         } else {
             Value::Undefined
         };
@@ -741,20 +705,29 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
             gc,
         ));
         // e. If the ith capture of R was defined with a GroupName, then
-        //         i. Let s be the CapturingGroupName of that GroupName.
-        //         ii. If matchedGroupNames contains s, then
-        //                 1. Assert: capturedValue is undefined.
-        //                 2. Append undefined to groupNames.
-        //         iii. Else,
-        //                 1. If capturedValue is not undefined, append s to matchedGroupNames.
-        //                 2. NOTE: If there are multiple groups named s, groups may already have an s property at this point. However, because groups is an ordinary object whose properties are all writable data properties, the call to CreateDataPropertyOrThrow is nevertheless guaranteed to succeed.
-        //                 3. Perform ! CreateDataPropertyOrThrow(groups, s, capturedValue).
-        //                 4. Append s to groupNames.
-        // f. Else,
-        //         i. Append undefined to groupNames.
-        // NOTE: The matcher rejects duplicate group names, so step ii never
-        // applies.
-        if let (Some(groups), Some(Some(name))) = (groups, group_names.get(i)) {
+        let name = if i == 0 {
+            None
+        } else {
+            full_match
+                .group_names()
+                .get(i - 1)
+                .map(|name| name.as_ref())
+                .filter(|name| !name.is_empty())
+        };
+        if let (Some(groups), Some(name)) = (groups, name) {
+            // i. Let s be the CapturingGroupName of that GroupName.
+            // ii. If matchedGroupNames contains s, then
+            if matched_group_names.contains(&name) {
+                // 1. Assert: capturedValue is undefined.
+                // 2. Append undefined to groupNames.
+                continue;
+            }
+            // iii. Else,
+            // 1. If capturedValue is not undefined, append s to matchedGroupNames.
+            if !captured_value.is_undefined() {
+                matched_group_names.push(name);
+            }
+            // 3. Perform ! CreateDataPropertyOrThrow(groups, s, capturedValue).
             let name = String::from_str(agent, name, gc).to_property_key();
             unwrap_try(try_create_data_property_or_throw(
                 agent,
@@ -799,7 +772,7 @@ pub(crate) fn reg_exp_builtin_test<'a>(
     } = result.bind(gc);
 
     // 1. Let length be the length of S.
-    let length = s.len_(agent);
+    let length = s.utf16_len_(agent);
     let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     if last_index > length {
         // i. If global is true or sticky is true, then
@@ -810,51 +783,36 @@ pub(crate) fn reg_exp_builtin_test<'a>(
         // ii. Return null.
         return Ok(false);
     }
-    let s_bytes = s.as_bytes_(&agent.heap.strings);
-    // 8. Let matcher be R.[[RegExpMatcher]].
-    let matcher = r_data
-        .reg_exp_matcher
-        .as_mut()
-        .expect("reg_exp_builtin_exec_prepare sets the matcher");
-    // 10. Let matchSucceeded be false.
-    // 11. If fullUnicode is true, let input be StringToCodePoints(S).
-    //     Otherwise, let input be a List whose elements are the code units
-    //     that are the elements of S.
-    // 12. NOTE: Each element of input is considered to be a character.
-    // 13. Repeat, while matchSucceeded is false,
-    // c. Let r be matcher(input, inputIndex).
-    if global || sticky {
-        // Global and sticky flags can observe where we found a test result, so
-        // we need to actually find properly.
-        let result = matcher.find_at(s_bytes, last_index);
-        if let Some(result) = result {
-            if sticky && result.start() != last_index {
-                // sticky did match but not at the start position.
-                // 1. Perform ? Set(R, "lastIndex", +0𝔽, true).
-                r_data.last_index = RegExpLastIndex::ZERO;
-                // 2. Return null.
-                Ok(false)
-            } else {
-                // ii. Set lastIndex to AdvanceStringIndex(S, lastIndex, fullUnicode).
-                let e = result.end();
-                // 15. If fullUnicode is true, set e to GetStringIndex(S, e).
-                let e = s.utf16_index_of_byte_(&agent.heap.strings, e);
-                // 16. If global is true or sticky is true, then
-                // a. Perform ? Set(R, "lastIndex", 𝔽(e), true).
-                r_data.last_index = e.into();
-                Ok(true)
+    let result = match r_data.search(&agent.heap.strings, s, last_index, sticky) {
+        Ok(result) => result,
+        Err(err) => return Err(throw_exec_error(agent, err, gc)),
+    };
+    match result {
+        Some(found) => {
+            if global || sticky {
+                r_data.last_index = found.end().into();
             }
-        } else {
-            // No match.
-            r_data.last_index = RegExpLastIndex::ZERO;
+            Ok(true)
+        }
+        None => {
+            if global || sticky {
+                r_data.last_index = RegExpLastIndex::ZERO;
+            }
             Ok(false)
         }
-    } else {
-        // Otherwise we can simply try-match.
-        let result = matcher.is_match_at(s_bytes, last_index);
-        r_data.last_index = RegExpLastIndex::ZERO;
-        Ok(result)
     }
+}
+
+fn throw_exec_error<'a>(
+    agent: &mut Agent,
+    err: RegExpExecError,
+    gc: NoGcScope<'a, '_>,
+) -> crate::ecmascript::JsError<'a> {
+    let kind = match err {
+        RegExpExecError::TooComplex => ExceptionType::RangeError,
+        RegExpExecError::Interrupted => ExceptionType::Error,
+    };
+    agent.throw_exception_with_static_message(kind, err.message(), gc)
 }
 
 /// ### [22.2.7.3 AdvanceStringIndex ( S, index, unicode )](https://tc39.es/ecma262/#sec-advancestringindex)

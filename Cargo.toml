@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nova_cli", "nova_vm", "nova_vm_derive", "small_string", "tests", "wtf8"]
+members = ["nova_cli", "nova_vm", "nova_vm_derive", "regress", "small_string", "tests", "wtf8"]
 exclude = ["nova_lint"]
 
 [workspace.package]
@@ -44,7 +44,7 @@ oxc_syntax = "=0.124.0"
 proc-macro2 = "=1.0.107"
 quote = "=1.0.47"
 rand = "=0.10.3"
-regex = "=1.13.1"
+regress = { path = "regress", default-features = false, features = ["std", "utf16"] }
 ryu-js = "=1.0.3"
 soavec = "=0.2.0"
 soavec_derive = "=0.2.0"

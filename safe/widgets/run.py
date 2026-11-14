@@ -133,6 +133,9 @@ def main():
     parser.add_argument("--qjs")
     parser.add_argument("--record", help="run Nova only and store a hash of each widget's output")
     parser.add_argument("--expect", help="run Nova only and compare with a --record file")
+    parser.add_argument("--skip", help="a JSON file whose keys are widgets that --expect leaves out")
+    parser.add_argument("--progress", help="widget -> least number of leading items equal to QuickJS's; fails below it")
+    parser.add_argument("--record-progress", help="write the number of leading items equal to QuickJS's for each widget")
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
     parser.add_argument("--timeout", type=float, default=60)
@@ -142,6 +145,8 @@ def main():
     widgets = sorted({os.path.abspath(w) for w in args.widgets})
     workdir = tempfile.mkdtemp(prefix="nova-widgets-")
     results = []
+    if args.progress or args.record_progress:
+        return qjs_progress(args, widgets, workdir)
     if args.record or args.expect:
         return nova_only(args, widgets, workdir)
 
@@ -169,10 +174,42 @@ def fingerprint(run):
     return hashlib.sha256(json.dumps(run["out"], sort_keys=True).encode()).hexdigest()
 
 
+def matching_prefix(nova, qjs):
+    if nova["status"] != "ok" or qjs["status"] != "ok":
+        return -1
+    index = first_difference(nova["out"], qjs["out"])
+    return len(qjs["out"]) if index is None else index
+
+
+def qjs_progress(args, widgets, workdir):
+    if args.progress:
+        floor = json.load(open(args.progress))
+        widgets = sorted(floor)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        prefixes = list(pool.map(lambda w: matching_prefix(
+            run_one("nova", args.nova, args.bundle, w, workdir, args.timeout),
+            run_one("qjs", args.qjs, args.bundle, w, workdir, args.timeout)), widgets))
+    result = dict(zip(widgets, prefixes))
+    if args.record_progress:
+        json.dump(result, open(args.record_progress, "w"), indent=1, sort_keys=True)
+        print(json.dumps({"recorded": len(result)}))
+        return
+    worse = [w for w in widgets if result[w] < floor[w]]
+    better = [w for w in widgets if result[w] > floor[w]]
+    for w in worse:
+        print(f"WORSE {w}: {floor[w]} -> {result[w]} items equal to QuickJS")
+    for w in better:
+        print(f"better {w}: {floor[w]} -> {result[w]}")
+    print(json.dumps({"widgets": len(widgets), "worse": len(worse), "better": len(better)}))
+    if worse:
+        raise SystemExit(1)
+
+
 def nova_only(args, widgets, workdir):
     if args.expect:
         expected = json.load(open(args.expect))
-        widgets = [w for w in widgets if w in expected and not expected[w].startswith("timeout")]
+        skip = json.load(open(args.skip)) if args.skip else {}
+        widgets = [w for w in widgets if w in expected and w not in skip and not expected[w].startswith("timeout")]
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         runs = list(pool.map(lambda w: run_one("nova", args.nova, args.bundle, w, workdir, args.timeout), widgets))
     prints = {w: fingerprint(r) for w, r in zip(widgets, runs)}

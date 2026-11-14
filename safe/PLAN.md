@@ -42,6 +42,13 @@ each entry and says why it changed. Allowed: a test262 test that goes from Fail 
 what the specification says, and a widget whose output changes and now matches QuickJS (`safe/widgets/run.py` with
 `--qjs`). Never allowed: a test going from Pass to Fail, or a widget that differs from QuickJS.
 
+Widgets whose output changes because of a fix but still differ from QuickJS for an unrelated reason (the 30 that
+used to stop at a `regex parse error`) are not baselined. They are listed in
+`safe/baseline/widgets-qjs-progress.json` with the number of leading items their output shares with QuickJS's, and
+the gate fails if that number goes down for any of them. A compatibility fix may raise a widget's number (or move it
+to `widgets-nova.json` once it matches QuickJS), in its own commit. QuickJS for that check is built from the app's
+fork by `safe/tools/build-qjs.sh` into `target/qjs/`.
+
 ## Tools
 
 - `python3 -I safe/tools/unsafe_report.py . [--files]`: what is left.
