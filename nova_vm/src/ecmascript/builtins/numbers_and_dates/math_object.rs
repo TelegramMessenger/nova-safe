@@ -1323,7 +1323,9 @@ impl MathObject {
         }
 
         // 5. Return the integral Number closest to n, preferring the Number closer to +∞ in the case of a tie.
-        Ok(Value::from_f64(agent, n.round(), gc.into_nogc()))
+        let floor = n.floor();
+        let rounded = if n - floor >= 0.5 { floor + 1.0 } else { floor };
+        Ok(Value::from_f64(agent, rounded, gc.into_nogc()))
     }
 
     fn sign<'gc>(

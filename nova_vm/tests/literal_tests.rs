@@ -47,3 +47,8 @@ fn function_own_properties() {
 fn math_atan2_quadrants() {
     run_test_source("mathAtan2.test.js");
 }
+
+#[test]
+fn math_pow_round() {
+    run_test_source("mathPowRound.test.js");
+}
