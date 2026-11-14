@@ -448,3 +448,24 @@ fn set_iterator_visits_values_added_after_clear() {
         "[5,6],2,[[\"c\",\"c\"]],1 2 7,7,2,true,false,1"
     );
 }
+
+/// `codePointAt` on the second code unit of a surrogate pair that starts a
+/// heap string (longer than an inline string) read the pair's start from an
+/// index mapping that stores index 0 as `None`, and unwrapped it.
+#[test]
+fn code_point_at_inside_a_leading_surrogate_pair() {
+    let source = r#"
+        var log = [];
+        for (var s of ["\u{1F600}aaba", "\u{1F600}", "\u{1F600}\u{1F600}xyzw", "a\u{1F600}bcdef"]) {
+            var units = [];
+            for (var i = 0; i < s.length; i++) units.push(s.codePointAt(i), s.charCodeAt(i));
+            log.push(units.join(" "));
+        }
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "128512 55357 56832 56832 97 97 97 97 98 98 97 97,128512 55357 56832 56832,\
+         128512 55357 56832 56832 128512 55357 56832 56832 120 120 121 121 122 122 119 119,\
+         97 97 128512 55357 56832 56832 98 98 99 99 100 100 101 101 102 102"
+    );
+}
