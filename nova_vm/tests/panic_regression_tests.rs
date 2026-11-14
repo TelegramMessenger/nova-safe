@@ -240,3 +240,15 @@ fn unsupported_syntax_throws_a_syntax_error() {
         "SyntaxError,SyntaxError,SyntaxError"
     );
 }
+
+#[test]
+fn sloppy_block_function_declared_twice() {
+    let source = r#"
+        var out = [];
+        { function f() { return 1; } out.push(f()); }
+        { function f() { return 2; } function f() { return 3; } out.push(f()); }
+        { out.push(g()); function g() { return "a"; } function g() { return "b"; } }
+        (function () { { function k() { return 1; } function k() { return 2; } out.push(k()); } })();
+    "#;
+    assert_eq!(run(source, "out.join()", None), "1,3,b,2");
+}

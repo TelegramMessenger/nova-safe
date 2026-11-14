@@ -34,10 +34,40 @@ pub(super) fn instantiation<'s, 'gc>(
     cb: impl FnOnce(&mut CompileContext<'_, 's, 'gc, '_>) -> StatementResult<'gc>,
 ) -> StatementResult<'gc> {
     let mut block_prep = Vec::new();
+    // Annex B.3.2.6: sloppy code may declare a function twice in one block;
+    // the binding is created once and the later declarations set it.
+    let mut function_names: Vec<&'s str> = Vec::new();
+    let mut duplicate_names: Vec<&'s str> = Vec::new();
+    code.lexically_scoped_declarations(&mut |d| {
+        if let LexicallyScopedDeclaration::Function(decl) = d
+            && let Some(identifier) = &decl.id
+        {
+            let name = identifier.name.as_str();
+            if function_names.contains(&name) {
+                duplicate_names.push(name);
+            } else {
+                function_names.push(name);
+            }
+        }
+    });
+    let mut declared_duplicates: Vec<&'s str> = Vec::new();
     // 1. Let declarations be the LexicallyScopedDeclarations of code.
     // 2. Let privateEnv be the running execution context's PrivateEnvironment.
     // 3. For each element d of declarations, do
     code.lexically_scoped_declarations(&mut |d| {
+        if let LexicallyScopedDeclaration::Function(decl) = d
+            && let Some(identifier) = &decl.id
+            && duplicate_names.contains(&identifier.name.as_str())
+        {
+            handle_duplicate_block_function(
+                ctx,
+                &mut block_prep,
+                decl,
+                identifier.name.as_str(),
+                &mut declared_duplicates,
+            );
+            return;
+        }
         handle_block_lexically_scoped_declaration(ctx, &mut block_prep, d);
     });
 
@@ -134,6 +164,44 @@ fn handle_block_lexically_scoped_declaration<'s>(
                 );
             }
         }
+    }
+}
+
+/// A function declared more than once in a sloppy block lives in the
+/// block's environment: the first declaration creates and initializes the
+/// binding, the later ones set it (B.3.2.6 steps 3.b.iii and iv).
+fn handle_duplicate_block_function<'s>(
+    ctx: &mut CompileContext<'_, 's, '_, '_>,
+    block_prep: &mut Vec<BlockEnvPrep>,
+    decl: &'s oxc_ast::ast::Function<'s>,
+    name: &'s str,
+    declared: &mut Vec<&'s str>,
+) {
+    if !block_prep.iter().any(|p| p.is_env()) {
+        block_prep.push(BlockEnvPrep::Env(ctx.enter_lexical_scope()));
+    }
+    let dn = ctx.create_string(name);
+    let first = !declared.contains(&name);
+    if first {
+        declared.push(name);
+        // 1. If ! env.HasBinding(dn) is false, then
+        //    a. Perform ! env.CreateMutableBinding(dn, false).
+        ctx.add_instruction_with_identifier(
+            Instruction::CreateMutableBinding,
+            dn.to_property_key(),
+        );
+    }
+    // ii. Let fo be InstantiateFunctionObject of d with arguments env and privateEnv.
+    decl.compile(ctx);
+    ctx.add_instruction_with_identifier(Instruction::ResolveBinding, dn.to_property_key());
+    if first {
+        // iii. If the binding for fn in env is an uninitialized binding, then
+        //      1. Perform ! env.InitializeBinding(fn, fo).
+        ctx.add_instruction(Instruction::InitializeReferencedBinding);
+    } else {
+        // iv. Else,
+        //     2. Perform ! env.SetMutableBinding(fn, fo, false).
+        ctx.add_instruction(Instruction::PutValue);
     }
 }
 
