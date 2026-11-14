@@ -59,7 +59,7 @@ pub use clone_in::CloneIn;
 pub use convert::{FromIn, IntoIn};
 pub use hash_map::HashMap;
 pub use hash_set::HashSet;
-pub use ident_hasher::{IdentBuildHasher, ident_hash, pack_len_hash};
+pub use ident_hasher::IdentBuildHasher;
 pub use string_builder::StringBuilder;
 pub use take_in::{Dummy, TakeIn};
 pub use vec::Vec;

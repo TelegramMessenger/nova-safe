@@ -1,6 +1,4 @@
-use rustc_hash::FxHashMap;
-
-use oxc_allocator::GetAddress;
+use oxc_allocator::{GetAddress, IdentBuildHasher};
 use oxc_ast::{AstKind, ModuleDeclarationKind, ast::*};
 use oxc_ecmascript::{BoundNames, IsSimpleParameterList, PropName};
 use oxc_span::{GetSpan, ModuleKind, Span, best_match};
@@ -33,11 +31,14 @@ pub fn check_unresolved_exports(program: &Program<'_>, ctx: &SemanticBuilder<'_>
                 {
                     let names = available_names.get_or_insert_with(|| {
                         let root_scope_id = ctx.scoping.root_scope_id();
-                        ctx.scoping
+                        let mut bindings: Vec<_> = ctx
+                            .scoping
                             .get_bindings(root_scope_id)
-                            .keys()
-                            .map(crate::ScopingName::as_str)
-                            .collect()
+                            .iter()
+                            .map(|(name, &symbol_id)| (symbol_id, name.as_str()))
+                            .collect();
+                        bindings.sort_unstable_by_key(|&(symbol_id, _)| symbol_id);
+                        bindings.into_iter().map(|(_, name)| name).collect()
                     });
                     let suggestion =
                         best_match(&ident.name, names.iter().copied(), SUGGESTION_THRESHOLD);
@@ -61,7 +62,10 @@ pub fn check_import_value_redeclarations(ctx: &SemanticBuilder<'_>) {
     }
 
     let scope_id = ctx.scoping.root_scope_id();
-    for (_, &symbol_id) in ctx.scoping.get_bindings(scope_id) {
+    let mut symbol_ids: Vec<SymbolId> =
+        ctx.scoping.get_bindings(scope_id).values().copied().collect();
+    symbol_ids.sort_unstable();
+    for symbol_id in symbol_ids {
         let flags = ctx.scoping.symbol_flags(symbol_id);
         if !flags.contains(SymbolFlags::Import) {
             continue;
@@ -83,7 +87,7 @@ pub fn check_import_value_redeclarations(ctx: &SemanticBuilder<'_>) {
 pub fn check_duplicate_class_elements(ctx: &SemanticBuilder<'_>) {
     let classes = &ctx.class_table_builder.classes;
     classes.iter_enumerated().for_each(|(class_id, _)| {
-        let mut defined_elements = FxHashMap::default();
+        let mut defined_elements = std::collections::HashMap::with_hasher(IdentBuildHasher);
         let elements = &classes.elements[class_id];
         for (element_id, element) in elements.iter_enumerated() {
             if let Some(prev_element_id) = defined_elements.insert(&element.name, element_id) {

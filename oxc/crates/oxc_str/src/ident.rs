@@ -1,4 +1,4 @@
-//! Identifier string type with precomputed hash.
+//! Identifier string type.
 
 use std::{
     borrow::{Borrow, Cow},
@@ -20,9 +20,8 @@ use crate::{CompactStr, Str};
 /// An identifier string for oxc_allocator.
 ///
 /// nova-safe stores only the `&str` (16 bytes, as upstream's pointer plus packed length and
-/// hash). `Hash` hashes the `str`, so `Ident: Borrow<str>` holds under every hasher; under
-/// [`IdentBuildHasher`] that gives upstream's packed length and hash (`ident_hash` samples at
-/// most 16 bytes, so it is O(1)).
+/// hash). `Hash` hashes the `str`, so `Ident: Borrow<str>` holds under every hasher; maps keyed
+/// by identifiers use [`IdentBuildHasher`], std's SipHash-1-3 under random keys.
 ///
 /// Use [CompactStr] with [Ident::to_compact_str] or [Ident::into_compact_str] for
 /// the lifetimeless form.
@@ -38,10 +37,6 @@ impl<'a> Ident<'a> {
         self.text.len() as u32
     }
 
-    #[cfg(test)]
-    const fn ident_hash_value(&self) -> u32 {
-        oxc_allocator::ident_hash(self.text.as_bytes())
-    }
 
     /// Create a new [`Ident`] from a `&'a str`.
     #[inline(always)]
@@ -317,8 +312,7 @@ impl PartialEq<Str<'_>> for Ident<'_> {
 }
 
 impl hash::Hash for Ident<'_> {
-    /// Hash the `str`. Under [`IdentBuildHasher`] the result is upstream's: the packed length and
-    /// hash it wrote with `write_u64`.
+    /// Hash the `str`, as `Borrow<str>` requires.
     #[inline]
     fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
         hash::Hash::hash(self.text, hasher);
@@ -354,14 +348,14 @@ impl ESTree for Ident<'_> {
     }
 }
 
-/// Hash map keyed by [`Ident`], using precomputed ident hash.
+/// Hash map keyed by [`Ident`], under the keyed [`IdentBuildHasher`].
 pub type IdentHashMap<'a, V> = std::collections::HashMap<Ident<'a>, V, IdentBuildHasher>;
 
-/// Arena-allocated hash map keyed by [`Ident`], using precomputed ident hash.
+/// Arena-allocated hash map keyed by [`Ident`], under the keyed [`IdentBuildHasher`].
 pub type ArenaIdentHashMap<'alloc, V> =
     oxc_allocator::HashMap<'alloc, Ident<'alloc>, V, IdentBuildHasher>;
 
-/// Hash set of [`Ident`], using precomputed ident hash.
+/// Hash set of [`Ident`], under the keyed [`IdentBuildHasher`].
 pub type IdentHashSet<'a> = std::collections::HashSet<Ident<'a>, IdentBuildHasher>;
 
 pub const AGGREGATE_ERROR: Ident<'static> = Ident::new_const("AggregateError");
@@ -531,8 +525,7 @@ mod test {
         let cloned = original.clone_in(&allocator);
         assert_eq!(original.as_str(), cloned.as_str());
         assert_eq!(original, cloned);
-        // Verify hash is preserved (not recomputed from different pointer)
-        assert_eq!(original.ident_hash_value(), cloned.ident_hash_value());
+        assert_eq!(IdentBuildHasher.hash_one(original), IdentBuildHasher.hash_one(cloned));
     }
 
     #[test]

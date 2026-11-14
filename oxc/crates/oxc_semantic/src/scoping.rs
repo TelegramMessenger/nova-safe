@@ -9,8 +9,7 @@ use std::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use oxc_allocator::{
-    Allocator, CloneIn, HashMap as ArenaHashMap, IdentBuildHasher, Vec as ArenaVec, ident_hash,
-    pack_len_hash,
+    Allocator, CloneIn, HashMap as ArenaHashMap, IdentBuildHasher, Vec as ArenaVec,
 };
 use oxc_index::IndexVec;
 use oxc_span::{Ident, Span};
@@ -27,7 +26,7 @@ pub type Bindings<'a> = ArenaHashMap<'a, ScopingName, SymbolId, IdentBuildHasher
 pub type UnresolvedReferences<'a> =
     ArenaHashMap<'a, ScopingName, ArenaVec<'a, ReferenceId>, IdentBuildHasher>;
 
-/// A name that [`Scoping`] owns: the string of an [`Ident`] and its packed length and hash.
+/// A name that [`Scoping`] owns: the string of an [`Ident`].
 ///
 /// It hashes and compares like its `str` (and so like an `Ident` of it), so the maps of [`Scoping`]
 /// are searched with a `&str` through `Borrow<str>`. (Upstream oxc kept `Ident`s copied into an
@@ -35,14 +34,11 @@ pub type UnresolvedReferences<'a> =
 #[derive(Clone)]
 pub struct ScopingName {
     name: Box<str>,
-    len_and_hash: u64,
 }
 
 impl ScopingName {
-    #[expect(clippy::cast_possible_truncation)]
     fn new(name: &str) -> Self {
-        let len_and_hash = pack_len_hash(name.len() as u32, ident_hash(name.as_bytes()));
-        Self { name: name.into(), len_and_hash }
+        Self { name: name.into() }
     }
 
     /// The name as a `&str`.
@@ -61,7 +57,7 @@ impl ScopingName {
 impl PartialEq for ScopingName {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.len_and_hash == other.len_and_hash && self.name == other.name
+        self.name == other.name
     }
 }
 

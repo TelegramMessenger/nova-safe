@@ -1,7 +1,6 @@
-use oxc_allocator::{Box, Vec};
+use oxc_allocator::{Box, IdentBuildHasher, Vec};
 use oxc_ast::{NONE, ast::*};
 use oxc_span::GetSpan;
-use rustc_hash::FxHashMap;
 
 use super::FunctionKind;
 use crate::{
@@ -368,7 +367,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
         });
         self.expect(Kind::RCurly);
 
-        let mut keys = FxHashMap::default();
+        let mut keys = std::collections::HashMap::with_hasher(IdentBuildHasher);
         for e in &with_entries {
             let key = e.key.as_arena_str().as_str();
             let span = e.key.span();
