@@ -2924,8 +2924,27 @@ impl TypedArrayPrototype {
                 gc,
             ));
         };
+        // Note: converting index or value can shrink O; step 12 then reads
+        // undefined for the indices past its end, which ToBigInt rejects and
+        // ToNumber makes NaN.
+        let remaining =
+            make_typed_array_with_buffer_witness_record(agent, o, Ordering::SeqCst)
+                .typed_array_length(agent)
+                .min(len);
+        if remaining < len && o.is_bigint() {
+            return Err(agent.throw_exception_with_static_message(
+                ExceptionType::TypeError,
+                "Cannot convert undefined to a BigInt",
+                gc,
+            ));
+        }
         // 10. Let A be ? TypedArrayCreateSameType(O, « 𝔽(len) »).
         let a = o.typed_array_create_same_type_and_copy_data(agent, len, gc)?;
+        for k in remaining..len {
+            let pk = PropertyKey::try_from(k).unwrap();
+            let result = unwrap_try(a.try_set(agent, pk, Value::nan(), a.into(), None, gc));
+            debug_assert!(result.succeeded());
+        }
         // 11. Let k be 0.
         // 12. Repeat, while k < len
         //  a. Let Pk be ! ToString(𝔽(k)).

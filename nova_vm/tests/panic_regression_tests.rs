@@ -9,8 +9,8 @@ use std::{cell::RefCell, collections::VecDeque};
 
 use nova_vm::{
     ecmascript::{
-        Agent, AgentOptions, GcAgent, HostHooks, Job, Object, String,
-        parse_script, script_evaluation,
+        Agent, AgentOptions, GcAgent, HostHooks, Job, Object, String, parse_script,
+        script_evaluation,
     },
     engine::{Bindable, GcScope},
 };
@@ -178,4 +178,18 @@ fn typed_array_methods_survive_a_shrink_during_argument_conversion() {
         var slice = copied.slice({ valueOf() { copied.buffer.resize(5); return 2; } });
     "#;
     assert_eq!(run(source, "slice.join()", None), "3,4,5,0,0,0");
+}
+
+#[test]
+fn typed_array_with_reads_undefined_past_a_shrunk_end() {
+    let source = r#"
+        function shrunk(T, value) {
+            var b = new ArrayBuffer(3 * T.BYTES_PER_ELEMENT, { maxByteLength: 3 * T.BYTES_PER_ELEMENT });
+            var t = new T(b);
+            var index = { valueOf() { b.resize(T.BYTES_PER_ELEMENT); return 0; } };
+            try { return Array.from(t.with(index, value)).join(); } catch (e) { return e.constructor.name; }
+        }
+        var result = [shrunk(Int8Array, 9), shrunk(Float64Array, 9), shrunk(BigInt64Array, 9n)].join(" ");
+    "#;
+    assert_eq!(run(source, "result", None), "9,0,0 9,NaN,NaN TypeError");
 }
