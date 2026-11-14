@@ -382,20 +382,494 @@ mod parse_date {
             return dt as f64;
         }
 
-        // `toString` format: `Thu Jan 01 1970 00:00:00 GMT+0000`
-        // TODO:
-        // if let Ok(t) = OffsetDateTime::parse(&date, &format_description!("[weekday repr:short] [month repr:short] [day] [year] [hour]:[minute]:[second] GMT[offset_hour sign:mandatory][offset_minute][end]")) {
-        //     return Some(t.unix_timestamp() * 1000 + i64::from(t.millisecond()));
-        // }
+        // Every other format QuickJS accepts: `toString`
+        // (`Thu Jan 01 1970 00:00:00 GMT+0000 (Zone)`), `toUTCString`
+        // (`Thu, 01 Jan 1970 00:00:00 GMT`), RFC 2822 with offsets, US and
+        // slash dates, AM/PM and a few zone abbreviations.
+        legacy::parse(agent, date).unwrap_or(f64::NAN)
+    }
 
-        // `toUTCString` format: `Thu, 01 Jan 1970 00:00:00 GMT`
-        // TODO:
-        // if let Ok(t) = PrimitiveDateTime::parse(&date, &format_description!("[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT[end]")) {
-        //     let t = t.assume_utc();
-        //     return Some(t.unix_timestamp() * 1000 + i64::from(t.millisecond()));
-        // }
+    /// A port of QuickJS's `js_date_parse_isostring` and
+    /// `js_date_parse_otherstring`: the strings that are not exactly the Date
+    /// Time String Format are parsed as QuickJS (and, closely, V8) parse them.
+    mod legacy {
+        use super::*;
 
-        f64::NAN
+        const MONTH_NAMES: &[u8; 36] = b"JanFebMarAprMayJunJulAugSepOctNovDec";
+
+        const TZ_ABBREVIATIONS: [(&str, i32); 18] = [
+            ("GMT", 0),
+            ("UTC", 0),
+            ("UT", 0),
+            ("Z", 0),
+            ("EDT", -4 * 60),
+            ("EST", -5 * 60),
+            ("CDT", -5 * 60),
+            ("CST", -6 * 60),
+            ("MDT", -6 * 60),
+            ("MST", -7 * 60),
+            ("PDT", -7 * 60),
+            ("PST", -8 * 60),
+            ("WET", 0),
+            ("WEST", 60),
+            ("CET", 60),
+            ("CEST", 2 * 60),
+            ("EET", 2 * 60),
+            ("EEST", 3 * 60),
+        ];
+
+        /// The fields QuickJS fills: year, month (0-based once parsed), day,
+        /// hours, minutes, seconds, milliseconds, the zone offset in minutes.
+        #[derive(Default)]
+        struct Fields {
+            year: i64,
+            month: i64,
+            day: i64,
+            hour: i64,
+            minute: i64,
+            second: i64,
+            millisecond: i64,
+            offset: i64,
+            is_local: bool,
+        }
+
+        /// The input as bytes, with a 0 after the end, as QuickJS sees it:
+        /// white space other than U+2028 and U+2029 is a space, U+2212 MINUS
+        /// SIGN is '-' and other code units above 255 are 'x'. QuickJS looks
+        /// at the first 127 code units.
+        struct Input {
+            bytes: Vec<u8>,
+        }
+
+        impl Input {
+            fn new(date: &str) -> Self {
+                let mut bytes = Vec::with_capacity(date.len().min(127) + 1);
+                for unit in date.encode_utf16().take(127) {
+                    let byte = match unit {
+                        0x09..=0x0D
+                        | 0x20
+                        | 0xA0
+                        | 0x1680
+                        | 0x2000..=0x200A
+                        | 0x202F
+                        | 0x205F
+                        | 0x3000
+                        | 0xFEFF => b' ',
+                        0x2212 => b'-',
+                        0..=0xFF => unit as u8,
+                        _ => b'x',
+                    };
+                    bytes.push(byte);
+                }
+                bytes.push(0);
+                Self { bytes }
+            }
+
+            fn at(&self, p: usize) -> u8 {
+                self.bytes.get(p).copied().unwrap_or(0)
+            }
+
+            fn skip_char(&self, p: &mut usize, c: u8) -> bool {
+                if self.at(*p) == c {
+                    *p += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+
+            fn skip_spaces(&self, p: &mut usize) -> u8 {
+                while self.at(*p) == b' ' {
+                    *p += 1;
+                }
+                self.at(*p)
+            }
+
+            fn skip_separators(&self, p: &mut usize) {
+                while matches!(self.at(*p), b'-' | b'/' | b'.' | b',') {
+                    *p += 1;
+                }
+            }
+
+            fn skip_until(&self, p: &mut usize, stop: &[u8]) {
+                loop {
+                    let c = self.at(*p);
+                    if c == 0 || stop.contains(&c) {
+                        return;
+                    }
+                    *p += 1;
+                }
+            }
+
+            /// A run of digits (at most `max_digits` when not 0, at most
+            /// 999999999 in value).
+            fn digits(&self, p: &mut usize, min_digits: usize, max_digits: usize) -> Option<i64> {
+                let start = *p;
+                let mut q = *p;
+                let mut value = 0i64;
+                while self.at(q).is_ascii_digit() {
+                    if value >= 100_000_000 {
+                        return None;
+                    }
+                    value = value * 10 + i64::from(self.at(q) - b'0');
+                    q += 1;
+                    if q - start == max_digits {
+                        break;
+                    }
+                }
+                if q - start < min_digits {
+                    return None;
+                }
+                *p = q;
+                Some(value)
+            }
+
+            /// An optional fraction of a second, truncated to milliseconds.
+            fn milliseconds(&self, p: &mut usize) -> Option<i64> {
+                let c = self.at(*p);
+                if c != b'.' && c != b',' {
+                    return None;
+                }
+                let start = *p + 1;
+                let mut q = start;
+                let mut mul = 100;
+                let mut ms = 0;
+                while self.at(q).is_ascii_digit() {
+                    ms += i64::from(self.at(q) - b'0') * mul;
+                    mul /= 10;
+                    q += 1;
+                    if q - start == 9 {
+                        break;
+                    }
+                }
+                if q > start {
+                    *p = q;
+                    Some(ms)
+                } else {
+                    None
+                }
+            }
+
+            fn tz_offset(&self, p: &mut usize, strict: bool) -> Option<i64> {
+                let mut q = *p;
+                let sign = self.at(q);
+                q += 1;
+                let offset = if sign == b'+' || sign == b'-' {
+                    let start = q;
+                    let mut hh = self.digits(&mut q, 1, 0)?;
+                    let mut n = q - start;
+                    if strict && n != 2 && n != 4 {
+                        return None;
+                    }
+                    while n > 4 {
+                        n -= 2;
+                        hh /= 100;
+                    }
+                    let mm = if n > 2 {
+                        let mm = hh % 100;
+                        hh /= 100;
+                        mm
+                    } else if self.skip_char(&mut q, b':') {
+                        self.digits(&mut q, 2, 2)?
+                    } else {
+                        0
+                    };
+                    if hh > 23 || mm > 59 {
+                        return None;
+                    }
+                    let offset = hh * 60 + mm;
+                    if sign == b'+' { offset } else { -offset }
+                } else if sign == b'Z' {
+                    0
+                } else {
+                    return None;
+                };
+                *p = q;
+                Some(offset)
+            }
+
+            fn matches(&self, p: &mut usize, word: &str) -> bool {
+                let mut q = *p;
+                for &b in word.as_bytes() {
+                    if !self.at(q).eq_ignore_ascii_case(&b) {
+                        return false;
+                    }
+                    q += 1;
+                }
+                *p = q;
+                true
+            }
+
+            fn month(&self, p: &mut usize) -> Option<i64> {
+                for (n, name) in MONTH_NAMES.chunks(3).enumerate() {
+                    if (0..3).all(|i| self.at(*p + i).eq_ignore_ascii_case(&name[i])) {
+                        *p += 3;
+                        return Some(n as i64 + 1);
+                    }
+                }
+                None
+            }
+
+            fn tz_abbreviation(&self, p: &mut usize) -> Option<i64> {
+                TZ_ABBREVIATIONS
+                    .iter()
+                    .find(|(name, _)| self.matches(p, name))
+                    .map(|&(_, offset)| i64::from(offset))
+            }
+        }
+
+        fn two_digit_year(value: i64) -> i64 {
+            value + i64::from(value < 100) * 1900 + i64::from(value < 50) * 100
+        }
+
+        /// `js_date_parse_isostring`: the Date Time String Format with any
+        /// number of fraction digits.
+        fn iso_string(input: &Input) -> Option<Fields> {
+            let mut f = Fields {
+                day: 1,
+                ..Default::default()
+            };
+            let mut p = 0;
+            let sign = input.at(p);
+            if sign == b'-' || sign == b'+' {
+                p += 1;
+                let year = input.digits(&mut p, 6, 6)?;
+                if sign == b'-' {
+                    if year == 0 {
+                        return None;
+                    }
+                    f.year = -year;
+                } else {
+                    f.year = year;
+                }
+            } else {
+                f.year = input.digits(&mut p, 4, 4)?;
+            }
+            if input.skip_char(&mut p, b'-') {
+                f.month = input.digits(&mut p, 2, 2)?;
+                if f.month < 1 {
+                    return None;
+                }
+                f.month -= 1;
+                if input.skip_char(&mut p, b'-') {
+                    f.day = input.digits(&mut p, 2, 2)?;
+                    if f.day < 1 {
+                        return None;
+                    }
+                }
+            }
+            if input.skip_char(&mut p, b'T') {
+                f.is_local = true;
+                let hour_and_minute = input.digits(&mut p, 2, 2).and_then(|hour| {
+                    input.skip_char(&mut p, b':').then_some(())?;
+                    Some((hour, input.digits(&mut p, 2, 2)?))
+                });
+                let Some((hour, minute)) = hour_and_minute else {
+                    // A date followed by a 'T' and no time is invalid, and
+                    // no other format is tried.
+                    f.hour = 100;
+                    return Some(f);
+                };
+                f.hour = hour;
+                f.minute = minute;
+                if input.skip_char(&mut p, b':') {
+                    f.second = input.digits(&mut p, 2, 2)?;
+                    if let Some(ms) = input.milliseconds(&mut p) {
+                        f.millisecond = ms;
+                    }
+                }
+            }
+            if input.at(p) != 0 {
+                f.is_local = false;
+                f.offset = input.tz_offset(&mut p, true)?;
+            }
+            (input.at(p) == 0).then_some(f)
+        }
+
+        /// `js_date_parse_otherstring`: toString, toUTCString and the
+        /// other formats QuickJS reads.
+        fn other_string(input: &Input) -> Option<Fields> {
+            let mut f = Fields {
+                year: 2001,
+                month: 1,
+                day: 1,
+                is_local: true,
+                ..Default::default()
+            };
+            let mut num = [0i64; 3];
+            let mut num_index = 0;
+            let (mut has_year, mut has_mon, mut has_time) = (false, false, false);
+            let mut p = 0;
+            while input.skip_spaces(&mut p) != 0 {
+                let start = p;
+                let c = input.at(p);
+                if c == b'+' || c == b'-' {
+                    let mut q = p;
+                    if has_time && let Some(offset) = input.tz_offset(&mut q, false) {
+                        f.offset = offset;
+                        f.is_local = false;
+                        p = q;
+                    } else {
+                        p += 1;
+                        if let Some(value) = input.digits(&mut p, 1, 0) {
+                            if c == b'-' {
+                                if value == 0 {
+                                    return None;
+                                }
+                                f.year = -value;
+                            } else {
+                                f.year = value;
+                            }
+                            has_year = true;
+                        }
+                    }
+                } else if let Some(value) = input.digits(&mut p, 1, 0) {
+                    if input.skip_char(&mut p, b':') {
+                        f.hour = value;
+                        f.minute = input.digits(&mut p, 1, 2)?;
+                        if input.skip_char(&mut p, b':') {
+                            f.second = input.digits(&mut p, 1, 2)?;
+                            if let Some(ms) = input.milliseconds(&mut p) {
+                                f.millisecond = ms;
+                            }
+                        } else if input.at(p) != 0 && input.at(p) != b' ' {
+                            return None;
+                        }
+                        has_time = true;
+                    } else if p - start > 2 {
+                        f.year = value;
+                        has_year = true;
+                    } else if !(1..=31).contains(&value) {
+                        f.year = two_digit_year(value);
+                        has_year = true;
+                    } else {
+                        if num_index == 3 {
+                            return None;
+                        }
+                        num[num_index] = value;
+                        num_index += 1;
+                    }
+                } else if let Some(month) = input.month(&mut p) {
+                    f.month = month;
+                    has_mon = true;
+                    input.skip_until(&mut p, b"0123456789 -/(");
+                } else if has_time && input.matches(&mut p, "PM") {
+                    if f.hour != 12 {
+                        f.hour += 12;
+                    }
+                    continue;
+                } else if has_time && input.matches(&mut p, "AM") {
+                    if f.hour > 12 {
+                        return None;
+                    }
+                    if f.hour == 12 {
+                        f.hour -= 12;
+                    }
+                    continue;
+                } else if let Some(offset) = input.tz_abbreviation(&mut p) {
+                    f.offset = offset;
+                    f.is_local = false;
+                    continue;
+                } else if c == b'(' {
+                    // A parenthesized phrase, such as toString's zone name.
+                    let mut level = 0;
+                    loop {
+                        let c = input.at(p);
+                        if c == 0 {
+                            break;
+                        }
+                        p += 1;
+                        if c == b'(' {
+                            level += 1;
+                        } else if c == b')' {
+                            level -= 1;
+                        }
+                        if level == 0 {
+                            break;
+                        }
+                    }
+                    if level > 0 {
+                        return None;
+                    }
+                } else if c == b')' {
+                    return None;
+                } else {
+                    if has_year || has_mon || has_time || num_index > 0 {
+                        return None;
+                    }
+                    // A word before the date, such as a weekday.
+                    input.skip_until(&mut p, b" -/(");
+                }
+                input.skip_separators(&mut p);
+            }
+            if num_index + usize::from(has_year) + usize::from(has_mon) > 3 {
+                return None;
+            }
+            match num_index {
+                0 => {
+                    if !has_year {
+                        return None;
+                    }
+                }
+                1 => {
+                    if has_mon {
+                        f.day = num[0];
+                    } else {
+                        f.month = num[0];
+                    }
+                }
+                2 => {
+                    if has_year {
+                        f.month = num[0];
+                        f.day = num[1];
+                    } else if has_mon {
+                        f.year = two_digit_year(num[1]);
+                        f.day = num[0];
+                    } else {
+                        f.month = num[0];
+                        f.day = num[1];
+                    }
+                }
+                _ => {
+                    f.year = two_digit_year(num[2]);
+                    f.month = num[0];
+                    f.day = num[1];
+                }
+            }
+            if f.month < 1 || f.day < 1 {
+                return None;
+            }
+            f.month -= 1;
+            Some(f)
+        }
+
+        pub(super) fn parse(agent: &Agent, date: &str) -> Option<f64> {
+            let input = Input::new(date);
+            let f = iso_string(&input).or_else(|| other_string(&input))?;
+            // The fields' maximum values, and 24:00:00.000 as the only 24th hour.
+            if f.month > 11 || f.day > 31 || f.hour > 24 || f.minute > 59 || f.second > 59 {
+                return None;
+            }
+            if f.hour == 24 && (f.minute != 0 || f.second != 0 || f.millisecond != 0) {
+                return None;
+            }
+            let date = make_date(
+                make_day(f.year as f64, f.month as f64, f.day as f64),
+                make_time(
+                    f.hour as f64,
+                    f.minute as f64,
+                    f.second as f64,
+                    f.millisecond as f64,
+                ),
+            );
+            let date = if f.is_local {
+                utc(agent, date)
+            } else {
+                date - (f.offset as f64) * MS_PER_MINUTE
+            };
+            let clipped = DateValue::time_clip(date).get_i64()?;
+            Some(clipped as f64)
+        }
     }
 
     /// Parses a date string according to the [`Date Time String Format`][spec].
@@ -507,6 +981,9 @@ mod parse_date {
             if self.input.peek().is_some() {
                 return None;
             }
+            if self.hour == 24 && (self.minute != 0 || self.second != 0 || self.millisecond != 0) {
+                return None;
+            }
 
             let date = make_date(
                 make_day(self.year.into(), (self.month - 1).into(), self.day.into()),
@@ -525,6 +1002,9 @@ mod parse_date {
 
         fn finish_local(&mut self) -> Option<i64> {
             if self.input.peek().is_some() {
+                return None;
+            }
+            if self.hour == 24 && (self.minute != 0 || self.second != 0 || self.millisecond != 0) {
                 return None;
             }
 

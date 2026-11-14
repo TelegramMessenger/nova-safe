@@ -77,3 +77,8 @@ fn not_callable_message() {
 fn bigint_string_compare() {
     run_test_source("bigIntStringCompare.test.js");
 }
+
+#[test]
+fn date_parse_legacy_formats() {
+    run_test_source("dateParseLegacy.test.js");
+}
