@@ -26,6 +26,7 @@ mod hooks;
 mod limits;
 mod trampolines;
 mod values;
+mod web;
 
 use std::{
     cell::RefCell,
@@ -169,7 +170,8 @@ fn panic_text(payload: &(dyn core::any::Any + Send)) -> std::string::String {
 }
 
 impl Engine {
-    /// Creates an engine with one realm and the standard globals only.
+    /// Creates an engine with one realm, the standard globals, and `atob` and
+    /// `btoa` as a QuickJS context has them.
     pub fn new(options: EngineOptions, host: Box<dyn Host>) -> Result<Engine, Error> {
         let shared = Rc::new(Shared {
             host,
@@ -191,6 +193,7 @@ impl Engine {
                 None::<for<'a> fn(&mut Agent, GcScope<'a, '_>) -> Object<'a>>,
                 None::<fn(&mut Agent, Object, GcScope)>,
             );
+            agent.run_in_realm(&realm, web::install);
             let mut live = Box::new(Live {
                 agent,
                 realm,

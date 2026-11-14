@@ -669,3 +669,101 @@ fn garbage_does_not_refuse_an_allocation_under_the_heap_limit() {
         Err(Error::OutOfMemory)
     );
 }
+
+/// `atob` and `btoa` behave as quickjs-ng's (the expected text is what its
+/// `qjs` printed for the same script; only the engine's own messages for
+/// ToString(Symbol) and for `new` on a non-constructor differ), so the trusted validator decodes `data:`
+/// images on Nova as it does on QuickJS.
+#[test]
+fn atob_and_btoa_match_quickjs() {
+    let (mut engine, _) = engine();
+    let script = r#"var cases = [
+ ['atob()', () => atob()], ['btoa()', () => btoa()],
+ ['atob("a")', () => atob("a")], ['btoa("\\u0100")', () => btoa("Ā")],
+ ['atob(" R G 9 v\\n")', () => atob(" R G 9 v\n")], ['atob("Zm9v=")', () => atob("Zm9v=")],
+ ['atob("YQ")', () => atob("YQ")], ['atob("YQ=")', () => atob("YQ=")], ['atob("YQ==")', () => atob("YQ==")],
+ ['atob("YR==")', () => atob("YR==")], ['atob("====")', () => atob("====")], ['atob("Y===")', () => atob("Y===")],
+ ['atob("")', () => atob("")], ['atob("YQ==YQ==")', () => atob("YQ==YQ==")], ['atob("Y Q = =")', () => atob("Y Q = =")],
+ ['atob("\\u00a0YQ")', () => atob(" YQ")], ['atob("YQ\\v")', () => atob("YQ\v")], ['atob("-_")', () => atob("-_")],
+ ['atob(null)', () => atob(null)], ['atob(undefined)', () => atob(undefined)], ['atob(12)', () => atob(12)],
+ ['btoa(null)', () => btoa(null)], ['btoa(undefined)', () => btoa(undefined)], ['btoa("\\xff\\xfe\\x00")', () => btoa("\xff\xfe\x00")],
+ ['btoa("")', () => btoa("")], ['btoa("ab")', () => btoa("ab")], ['btoa({toString(){return "x"}})', () => btoa({toString(){return "x"}})],
+ ['atob(Symbol())', () => atob(Symbol())],
+ ['atob("/+8=")', () => atob("/+8=")], ['atob("AAAA")', () => atob("AAAA")],
+ ['new atob("")', () => new atob("")],
+ ['props', () => [atob.length, btoa.length, atob.name, btoa.name, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, "atob"), (k, v) => typeof v === "function" ? "fn" : v)].join(",")],
+];
+var out = [];
+for (var [label, f] of cases) {
+  try { var v = f(); out.push(label + " => " + (typeof v === "string" ? JSON.stringify(v) : String(v))); }
+  catch (e) { out.push(label + " THROWS " + (e && e.name) + " / " + (e && e.message) + " / instanceofError=" + (e instanceof Error) + (e && e.code !== undefined ? " code=" + e.code : "")); }
+}
+out.join("\n");
+"#;
+    let expected = r#"atob() THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+btoa() => "dW5kZWZpbmVk"
+atob("a") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+btoa("\u0100") THROWS InvalidCharacterError / String contains an invalid character / instanceofError=true code=5
+atob(" R G 9 v\n") => "Doo"
+atob("Zm9v=") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob("YQ") => "a"
+atob("YQ=") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob("YQ==") => "a"
+atob("YR==") => "a"
+atob("====") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob("Y===") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob("") => ""
+atob("YQ==YQ==") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob("Y Q = =") => "a"
+atob("\u00a0YQ") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob("YQ\v") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob("-_") THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob(null) => "ée"
+atob(undefined) THROWS InvalidCharacterError / The string to be decoded is not correctly encoded / instanceofError=true code=5
+atob(12) => "×"
+btoa(null) => "bnVsbA=="
+btoa(undefined) => "dW5kZWZpbmVk"
+btoa("\xff\xfe\x00") => "//4A"
+btoa("") => ""
+btoa("ab") => "YWI="
+btoa({toString(){return "x"}}) => "eA=="
+atob(Symbol()) THROWS TypeError / Cannot turn Symbol into string / instanceofError=true
+atob("/+8=") => "ÿï"
+atob("AAAA") => "\u0000\u0000\u0000"
+new atob("") THROWS TypeError / 'function atob() { [ native code ] }' is not a constructor. / instanceofError=true
+props => "1,1,atob,btoa,{\"value\":\"fn\",\"writable\":true,\"enumerable\":false,\"configurable\":true}""#;
+    let Ok(Completion::String(bytes)) = engine.evaluate(script, false) else {
+        panic!("the script did not complete with a string");
+    };
+    let got = std::string::String::from_utf8(bytes).expect("utf-8");
+    for (got, expected) in got.lines().zip(expected.lines()) {
+        assert_eq!(got, expected);
+    }
+    assert_eq!(got.lines().count(), expected.lines().count());
+}
+
+#[test]
+fn atob_and_btoa_can_be_replaced_and_deleted() {
+    let (mut engine, _) = engine();
+    assert_eq!(
+        engine.evaluate(
+            "const own = Object.keys(globalThis).includes('atob'); globalThis.btoa = (s) => 'mine:' + s; delete globalThis.atob; [own, typeof atob, btoa('x')].join()",
+            false
+        ),
+        Ok(Completion::String("false,undefined,mine:x".into()))
+    );
+}
+
+#[test]
+fn atob_decodes_a_large_body_in_linear_time() {
+    let (mut engine, _) = engine();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        engine.evaluate(
+            "const big = btoa('\\xff\\x00\\x7f'.repeat(1 << 20)); const back = atob(big); [big.length, back.length, back.charCodeAt(0), back.charCodeAt(back.length - 1)].join()",
+            false
+        ),
+        Ok(Completion::String("4194304,3145728,255,127".into()))
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
