@@ -1,0 +1,382 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+use std::{cell::RefCell, rc::Rc};
+
+use super::*;
+
+#[derive(Default)]
+struct Recorder {
+    calls: RefCell<Vec<(u32, Vec<HostArg>)>>,
+    reply: RefCell<Option<HostReturn>>,
+    panic_on: Option<u32>,
+}
+
+struct SharedRecorder(Rc<Recorder>);
+
+impl Host for SharedRecorder {
+    fn call(&self, id: u32, args: Vec<HostArg>) -> HostReturn {
+        if self.0.panic_on == Some(id) {
+            panic!("host asked to panic");
+        }
+        self.0.calls.borrow_mut().push((id, args));
+        self.0
+            .reply
+            .borrow()
+            .clone()
+            .unwrap_or(HostReturn::Undefined)
+    }
+}
+
+fn engine_with(recorder: Rc<Recorder>) -> Engine {
+    Engine::new(
+        EngineOptions {
+            memory_limit: 0,
+            stack_limit: 0,
+        },
+        Box::new(SharedRecorder(recorder)),
+    )
+    .expect("engine")
+}
+
+fn engine() -> (Engine, Rc<Recorder>) {
+    let recorder = Rc::new(Recorder::default());
+    (engine_with(recorder.clone()), recorder)
+}
+
+#[test]
+fn evaluates_sloppy_scripts() {
+    let (mut engine, _) = engine();
+    assert_eq!(
+        engine.evaluate("x = 20; var y = 22; x + y", false),
+        Ok(Completion::Number(42.0))
+    );
+    assert_eq!(
+        engine.evaluate(
+            "(function () { return this === globalThis ? 'b' + 'c' : 'strict'; })()",
+            false
+        ),
+        Ok(Completion::String("bc".into()))
+    );
+    assert_eq!(engine.evaluate("({})", false), Ok(Completion::Undefined));
+    assert_eq!(
+        engine.evaluate("('a\\ud83d' + '\\u00e9')", false),
+        Ok(Completion::String(b"a\xed\xa0\xbd\xc3\xa9".to_vec()))
+    );
+}
+
+#[test]
+fn reports_exceptions_as_text() {
+    let (mut engine, _) = engine();
+    assert_eq!(
+        engine.evaluate("throw new TypeError('nope')", false),
+        Err(Error::Exception("TypeError: nope".into()))
+    );
+    assert_eq!(
+        engine.evaluate("throw 'plain'", false),
+        Err(Error::Exception("plain".into()))
+    );
+    match engine.evaluate("let = = 1", false) {
+        Err(Error::Exception(text)) => assert!(text.starts_with("SyntaxError: "), "{text}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(engine.evaluate("1 + 1", false), Ok(Completion::Number(2.0)));
+}
+
+#[test]
+fn evaluates_modules_without_imports() {
+    let (mut engine, _) = engine();
+    assert_eq!(
+        engine.evaluate("globalThis.m = 7; export const a = 1;", true),
+        Ok(Completion::Undefined)
+    );
+    assert_eq!(engine.evaluate("m", false), Ok(Completion::Number(7.0)));
+    match engine.evaluate("import x from 'y'; globalThis.z = x;", true) {
+        Err(Error::Exception(text)) => assert!(text.contains("TypeError"), "{text}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn host_functions_receive_their_id_and_owned_arguments() {
+    let (mut engine, recorder) = engine();
+    engine
+        .register_function("__a", 70, 2, ArgumentMode::Values)
+        .unwrap();
+    engine
+        .register_function("__b", 71, 3, ArgumentMode::ValuesAndBytes)
+        .unwrap();
+    *recorder.reply.borrow_mut() = Some(HostReturn::String("ok".into()));
+    assert_eq!(
+        engine.evaluate("__a('s', 1.5, {}, new Int32Array(2))", false),
+        Ok(Completion::String("ok".into()))
+    );
+    engine
+        .evaluate(
+            "const b = new ArrayBuffer(24); const v = new Float64Array(b, 8, 2); v[0] = 1; v[1] = 2; __b(3, v, 'x'); __b(new Int32Array([1, -1]))",
+            false,
+        )
+        .unwrap();
+    let calls = recorder.calls.borrow();
+    assert_eq!(calls[0].0, 70);
+    assert_eq!(
+        calls[0].1,
+        vec![
+            HostArg::String("s".into()),
+            HostArg::Number(1.5),
+            HostArg::Other,
+            HostArg::Other
+        ]
+    );
+    assert_eq!(calls[1].0, 71);
+    let mut expected = 1f64.to_le_bytes().to_vec();
+    expected.extend_from_slice(&2f64.to_le_bytes());
+    assert_eq!(
+        calls[1].1,
+        vec![
+            HostArg::Number(3.0),
+            HostArg::Bytes {
+                kind: TypedArrayKind::Float64,
+                bytes: expected
+            },
+            HostArg::String("x".into())
+        ]
+    );
+    let mut ints = 1i32.to_le_bytes().to_vec();
+    ints.extend_from_slice(&(-1i32).to_le_bytes());
+    assert_eq!(
+        calls[2].1,
+        vec![HostArg::Bytes {
+            kind: TypedArrayKind::Int32,
+            bytes: ints
+        }]
+    );
+}
+
+#[test]
+fn host_functions_return_values() {
+    let (mut engine, recorder) = engine();
+    engine
+        .register_function("__h", 1, 0, ArgumentMode::Values)
+        .unwrap();
+    *recorder.reply.borrow_mut() = Some(HostReturn::ArrayBuffer(vec![1, 2, 3]));
+    assert_eq!(
+        engine.evaluate(
+            "const r = __h(); r instanceof ArrayBuffer ? new Uint8Array(r).join(',') : typeof r",
+            false
+        ),
+        Ok(Completion::String("1,2,3".into()))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::Null);
+    assert_eq!(
+        engine.evaluate("String(__h())", false),
+        Ok(Completion::String("null".into()))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::Number(2.5));
+    assert_eq!(
+        engine.evaluate("__h() * 2", false),
+        Ok(Completion::Number(5.0))
+    );
+}
+
+#[test]
+fn a_script_cannot_reach_or_forge_the_id() {
+    let (mut engine, recorder) = engine();
+    engine
+        .register_function("__a", 5, 0, ArgumentMode::Values)
+        .unwrap();
+    engine
+        .register_function("__b", 6, 0, ArgumentMode::Values)
+        .unwrap();
+    engine
+        .evaluate(
+            "const a = __a; Object.getOwnPropertyNames(a).join(); a.call({}); Reflect.apply(__b, null, []); a.bind(null)(); new Function('return 1')(); __b.id = 5; __b();",
+            false,
+        )
+        .unwrap();
+    let ids: Vec<u32> = recorder.calls.borrow().iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, vec![5, 6, 5, 6]);
+    assert_eq!(
+        engine.evaluate("Object.getOwnPropertyNames(__a).sort().join()", false),
+        Ok(Completion::String("length,name".into()))
+    );
+}
+
+#[test]
+fn captured_functions_survive_deleting_the_global() {
+    let (mut engine, _) = engine();
+    engine
+        .evaluate(
+            "var k = 'a'; function __d(x, y) { return k + x + y; }",
+            false,
+        )
+        .unwrap();
+    assert_eq!(engine.capture_global_function("__d"), Ok(true));
+    assert_eq!(engine.capture_global_function("k"), Ok(false));
+    engine
+        .evaluate("delete globalThis.__d; globalThis.__d = 1;", false)
+        .unwrap();
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        engine.call("__d", &["b", "c"]),
+        Ok(Completion::String("abc".into()))
+    );
+    assert_eq!(
+        engine.call("nothing", &[]),
+        Err(Error::NotAFunction("nothing".into()))
+    );
+    engine
+        .evaluate("function thrower() { throw new RangeError('r'); }", false)
+        .unwrap();
+    assert_eq!(
+        engine.call("thrower", &[]),
+        Err(Error::Exception("RangeError: r".into()))
+    );
+}
+
+#[test]
+fn promise_jobs_run_one_at_a_time() {
+    let (mut engine, _) = engine();
+    engine
+        .evaluate(
+            "globalThis.log = ''; Promise.resolve().then(() => { log += 'a'; }); Promise.reject(new Error('j')); Promise.resolve().then(() => { throw new Error('t'); }).catch(() => { log += 'c'; });",
+            false,
+        )
+        .unwrap();
+    assert!(engine.has_pending_job());
+    let mut errors = vec![];
+    let mut runs = 0;
+    loop {
+        match engine.run_pending_job() {
+            Ok(true) => runs += 1,
+            Ok(false) => break,
+            Err(error) => errors.push(error),
+        }
+    }
+    assert!(runs >= 2);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        engine.evaluate("log", false),
+        Ok(Completion::String("ac".into()))
+    );
+    assert!(!engine.has_pending_job());
+}
+
+#[test]
+fn jobs_without_a_realm_run() {
+    let (mut engine, _) = engine();
+    engine
+        .evaluate(
+            "globalThis.out = []; Promise.resolve(1).then(undefined).then((v) => out.push(v)); Promise.reject(2).then(null, undefined).catch((e) => out.push(e)); Promise.resolve(3).finally(5).then((v) => out.push(v));",
+            false,
+        )
+        .unwrap();
+    while engine
+        .run_pending_job()
+        .expect("no job fails or kills the engine")
+    {}
+    assert_eq!(
+        engine.evaluate("out.join()", false),
+        Ok(Completion::String("1,2,3".into()))
+    );
+}
+
+#[test]
+fn a_panic_kills_the_engine_for_good() {
+    let recorder = Rc::new(Recorder {
+        panic_on: Some(9),
+        ..Default::default()
+    });
+    let mut engine = engine_with(recorder);
+    engine
+        .register_function("__boom", 9, 0, ArgumentMode::Values)
+        .unwrap();
+    engine.evaluate("var alive = 1", false).unwrap();
+    match engine.evaluate("try { __boom() } catch (e) {}; 1", false) {
+        Err(Error::Dead(reason)) => assert!(reason.contains("host asked to panic"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(engine.dead_reason().is_some());
+    assert!(matches!(
+        engine.evaluate("alive", false),
+        Err(Error::Dead(_))
+    ));
+    assert!(matches!(engine.call("x", &[]), Err(Error::Dead(_))));
+    assert!(matches!(
+        engine.capture_global_function("x"),
+        Err(Error::Dead(_))
+    ));
+    assert!(matches!(engine.run_pending_job(), Err(Error::Dead(_))));
+    assert!(matches!(engine.collect_garbage(), Err(Error::Dead(_))));
+    assert!(!engine.has_pending_job());
+    assert_eq!(engine.memory_used(), 0);
+    let (mut other, _) = self::engine();
+    assert_eq!(other.evaluate("2", false), Ok(Completion::Number(2.0)));
+}
+
+#[test]
+fn engines_nest_and_stay_apart() {
+    struct Nested {
+        inner: RefCell<Engine>,
+    }
+    impl Host for Nested {
+        fn call(&self, _id: u32, args: Vec<HostArg>) -> HostReturn {
+            let HostArg::String(code) = &args[0] else {
+                return HostReturn::Undefined;
+            };
+            let code = core::str::from_utf8(code).expect("UTF-8");
+            match self.inner.borrow_mut().evaluate(code, false) {
+                Ok(Completion::Number(n)) => HostReturn::Number(n),
+                Ok(Completion::String(s)) => {
+                    HostReturn::String(String::from_utf8_lossy(&s).into_owned())
+                }
+                _ => HostReturn::Undefined,
+            }
+        }
+    }
+    let (inner, inner_recorder) = engine();
+    let mut inner = inner;
+    inner
+        .register_function("__inner", 3, 0, ArgumentMode::Values)
+        .unwrap();
+    inner.evaluate("var secret = 41", false).unwrap();
+    let mut outer = Engine::new(
+        EngineOptions {
+            memory_limit: 0,
+            stack_limit: 0,
+        },
+        Box::new(Nested {
+            inner: RefCell::new(inner),
+        }),
+    )
+    .unwrap();
+    outer
+        .register_function("__outer", 1, 1, ArgumentMode::Values)
+        .unwrap();
+    assert_eq!(
+        outer.evaluate("Promise.resolve().then(() => 0); __outer('__inner(); Promise.resolve().then(()=>0); secret + 1') + (typeof secret)", false),
+        Ok(Completion::String("42undefined".into()))
+    );
+    assert_eq!(inner_recorder.calls.borrow().len(), 1);
+    assert!(outer.has_pending_job());
+}
+
+#[test]
+fn registration_limits() {
+    let (mut engine, _) = engine();
+    for slot in 0..MAX_HOST_FUNCTIONS {
+        engine
+            .register_function(&format!("__f{slot}"), slot as u32, 0, ArgumentMode::Values)
+            .unwrap();
+    }
+    assert!(matches!(
+        engine.register_function("__extra", 0, 0, ArgumentMode::Values),
+        Err(Error::Invalid(_))
+    ));
+    let (mut engine, _) = self::engine();
+    assert!(matches!(
+        engine.register_function("", 0, 0, ArgumentMode::Values),
+        Err(Error::Invalid(_))
+    ));
+}

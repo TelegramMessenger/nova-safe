@@ -1,0 +1,26 @@
+[package]
+name = "nova_embed"
+description = "A small safe API for embedding Nova as a sandboxed script engine"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+nova_vm = { path = "../nova_vm", default-features = false, features = [
+    "math",
+    "json",
+    "date",
+    "array-buffer",
+    "shared-array-buffer",
+    "atomics",
+    "weak-refs",
+    "regexp",
+    "set",
+    "annex-b",
+] }

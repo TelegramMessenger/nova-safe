@@ -7,7 +7,7 @@ use core::{
     marker::PhantomData,
 };
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 
 use num_traits::Num;
 #[cfg(feature = "regexp")]
