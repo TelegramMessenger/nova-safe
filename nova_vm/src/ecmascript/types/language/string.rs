@@ -922,6 +922,7 @@ impl<'gc> String<'gc> {
                     String::String(Self::insert_string_with_hash(
                         strings,
                         string_lookup_table,
+                        string_hasher,
                         data,
                         hash,
                     ))
@@ -939,13 +940,16 @@ impl<'gc> String<'gc> {
     pub(crate) fn insert_string_with_hash(
         strings: &mut Vec<StringRecord>,
         string_lookup_table: &mut HashTable<HeapString<'static>>,
+        string_hasher: &crate::hashing::RandomState,
         data: StringRecord,
         hash: u64,
     ) -> HeapString<'static> {
         strings.push(data);
         let index = BaseIndex::last(strings);
         let s = HeapString(index);
-        string_lookup_table.insert_unique(hash, s, |_| hash);
+        string_lookup_table.insert_unique(hash, s, |s| {
+            string_hasher.hash_one(strings[s.get_index()].as_wtf8())
+        });
         s
     }
 

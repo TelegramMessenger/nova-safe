@@ -365,7 +365,7 @@ impl Heap {
         for builtin_string in BUILTIN_STRINGS_LIST.iter() {
             let hash = string_hasher.hash_one(Wtf8Str::from_str(builtin_string));
             let data = StringRecord::from_static_str(builtin_string);
-            String::insert_string_with_hash(strings, string_lookup_table, data, hash);
+            String::insert_string_with_hash(strings, string_lookup_table, string_hasher, data, hash);
         }
 
         heap.symbols.extend_from_slice(&[
