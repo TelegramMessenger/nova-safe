@@ -81,6 +81,7 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// The field initializers of a derived class with a constructor, run
     /// after each super call of the constructor.
     instance_initializer: Option<Executable<'gc>>,
+    environment_free: bool,
     /// Set when an index did not fit its bytecode operand: the executable
     /// is finished as one that throws this SyntaxError.
     too_many: Option<&'static str>,
@@ -105,6 +106,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             arrow_function_expressions: Vec::new(),
             class_initializer_bytecodes: Vec::new(),
             instance_initializer: None,
+            environment_free: false,
             too_many: None,
         }
     }
@@ -207,6 +209,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.arrow_function_expressions.clear();
         self.class_initializer_bytecodes.clear();
         self.instance_initializer = None;
+        self.environment_free = false;
         self.too_many = None;
         let message = self.create_string(message);
         self.add_instruction_with_constant(Instruction::StoreConstant, message);
@@ -255,6 +258,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 .map(|(exe, b)| (exe.unbind(), b))
                 .collect(),
             instance_initializer: self.instance_initializer.unbind(),
+            environment_free: self.environment_free,
             _gc: PhantomData,
         })
     }
@@ -599,6 +603,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     ) {
         self.class_initializer_bytecodes
             .push((Some(executable), has_constructor_parent));
+    }
+
+    pub(super) fn set_environment_free(&mut self, environment_free: bool) {
+        self.environment_free = environment_free;
     }
 
     pub(super) fn set_instance_initializer(&mut self, executable: Executable<'gc>) {

@@ -1124,7 +1124,16 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ///
     /// This is useful when the function body is part of a larger whole, namely
     /// with class constructors.
-    pub(crate) fn compile_function_body(&mut self, data: CompileFunctionBodyData<'script, '_>) {
+    pub(crate) fn set_environment_free(&mut self, environment_free: bool) {
+        self.executable.set_environment_free(environment_free);
+    }
+
+    /// Returns true if the function needs no Function Environment Record of
+    /// its own (see function_declaration_instantiation::instantiation).
+    pub(crate) fn compile_function_body(
+        &mut self,
+        data: CompileFunctionBodyData<'script, '_>,
+    ) -> bool {
         if self.executable.agent.options.print_internals {
             eprintln!();
             eprintln!("=== Compiling Function ===");
@@ -1134,7 +1143,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         let mut stack_variables =
             Vec::with_capacity(data.ast.formal_parameters().parameters_count());
 
-        function_declaration_instantiation::instantiation(
+        let environment_free = function_declaration_instantiation::instantiation(
             self,
             &mut stack_variables,
             data.ast,
@@ -1156,6 +1165,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         for stack_variable in stack_variables {
             stack_variable.exit(self);
         }
+        environment_free
     }
 
     /// A directive is an ExpressionStatement of a string literal: the value

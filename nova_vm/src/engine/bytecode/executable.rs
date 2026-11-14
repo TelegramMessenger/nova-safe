@@ -4,7 +4,7 @@
 
 use crate::{
     ecmascript::{
-        Agent, CompileFunctionBodyData, FunctionTemplate, ObjectShape, PropertyKey,
+        Agent, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, ObjectShape, PropertyKey,
         PropertyLookupCache, SourceCode, String, Value,
     },
     engine::{
@@ -123,6 +123,10 @@ pub(crate) struct ExecutableHeapData<'a> {
     /// The instance field and private method initializers of a derived class
     /// constructor: SuperCall runs them on the new `this` value.
     pub(crate) instance_initializer: Option<Executable<'static>>,
+    /// The function this executable is the body of runs without a Function
+    /// Environment Record of its own: see
+    /// function_declaration_instantiation::instantiation.
+    pub(crate) environment_free: bool,
     pub(crate) _gc: PhantomData<Value<'a>>,
 }
 
@@ -188,8 +192,13 @@ impl<'gc> Executable<'gc> {
         }
 
         let is_concise = data.ast.is_concise_body();
+        let can_be_environment_free = matches!(
+            data.ast,
+            FunctionAstRef::Function(_) | FunctionAstRef::Arrow(_)
+        );
 
-        ctx.compile_function_body(data);
+        let environment_free = ctx.compile_function_body(data);
+        ctx.set_environment_free(can_be_environment_free && environment_free);
 
         if is_concise {
             ctx.do_implicit_return();
@@ -498,6 +507,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
+            environment_free: _,
             _gc: _,
         } = self;
         instance_initializer.mark_values(queues);
@@ -521,6 +531,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
+            environment_free: _,
             _gc: _,
         } = self;
         instance_initializer.sweep_values(compactions);

@@ -194,6 +194,7 @@ struct CompiledExecutable {
     arrow_function_expressions: Box<[CompiledArrowFunctionExpression]>,
     class_initializer_bytecodes: Box<[(Option<u32>, bool)]>,
     instance_initializer: Option<u32>,
+    environment_free: bool,
 }
 
 #[derive(PartialEq)]
@@ -405,6 +406,7 @@ impl Exporter<'_> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
+            environment_free,
             _gc: _,
         } = executable.get(self.agent).clone();
 
@@ -479,6 +481,7 @@ impl Exporter<'_> {
             arrow_function_expressions: compiled_arrows.into_boxed_slice(),
             class_initializer_bytecodes: compiled_class_initializers.into_boxed_slice(),
             instance_initializer,
+            environment_free,
         });
         self.executable_ids.insert(index, id);
         self.in_progress.pop();
@@ -921,6 +924,7 @@ impl<'a> Importer<'_, 'a, '_> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
+            environment_free: compiled.environment_free,
             _gc: core::marker::PhantomData,
         })
     }

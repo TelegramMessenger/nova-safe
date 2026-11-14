@@ -439,6 +439,18 @@ impl<'a> FunctionInternalProperties<'a> for ECMAScriptFunction<'a> {
 
         // 1. Let callerContext be the running execution context.
         let _ = agent.running_execution_context();
+        if is_environment_free(agent, f) {
+            // OPTIMISATION: The function's Function Environment Record would
+            // hold no bindings and nothing in the function asks for its this
+            // binding, so the record is never observed: run the body directly
+            // in F.[[Environment]] and skip OrdinaryCallBindThis.
+            prepare_for_environment_free_call(agent, f, gc.nogc());
+            let result =
+                ordinary_call_evaluate_body(agent, f.unbind(), arguments_list.unbind(), gc);
+            let _callee_context = agent.pop_execution_context();
+            ndt::javascript_call_done!(|| id);
+            return result;
+        }
         // 2. Let calleeContext be PrepareForOrdinaryCall(F, undefined).
         let callee_context = prepare_for_ordinary_call(agent, f, None, gc.nogc());
         // This is step 4. or OrdinaryCallBindThis:
@@ -688,6 +700,41 @@ pub(crate) fn prepare_for_ordinary_call<'a>(
     // 13. NOTE: Any exception objects produced after this point are associated with calleeRealm.
     // 14. Return calleeContext.
     agent.running_execution_context()
+}
+
+/// True if a \[\[Call]] of F needs no Function Environment Record: F is not a
+/// class constructor and has no \[\[HomeObject]], and its body was compiled
+/// as environment free.
+#[inline]
+fn is_environment_free(agent: &Agent, f: ECMAScriptFunction) -> bool {
+    let data = f.get(agent);
+    let function = &data.ecmascript_function;
+    function.home_object.is_none()
+        && !function.constructor_status.is_class_constructor()
+        && data
+            .compiled_bytecode
+            .is_some_and(|executable| executable.get(agent).environment_free)
+}
+
+/// PrepareForOrdinaryCall for an environment free function: the callee
+/// context's LexicalEnvironment and VariableEnvironment are F.[[Environment]].
+fn prepare_for_environment_free_call(agent: &mut Agent, f: ECMAScriptFunction, gc: NoGcScope) {
+    let f = f.bind(gc);
+    let ecmascript_function_object = &f.get(agent).ecmascript_function;
+    let environment = ecmascript_function_object.environment.bind(gc);
+    let callee_context = ExecutionContext {
+        ecmascript_code: Some(ECMAScriptCodeEvaluationState {
+            lexical_environment: environment.unbind(),
+            variable_environment: environment.unbind(),
+            private_environment: ecmascript_function_object.private_environment.unbind(),
+            is_strict_mode: ecmascript_function_object.strict,
+            source_code: ecmascript_function_object.source_code.unbind(),
+        }),
+        function: Some(f.unbind().into()),
+        realm: ecmascript_function_object.realm.unbind(),
+        script_or_module: Some(ecmascript_function_object.script_or_module.unbind()),
+    };
+    agent.push_execution_context(callee_context);
 }
 
 /// ### [10.2.1.2 OrdinaryCallBindThis ( F, calleeContext, thisArgument )](https://tc39.es/ecma262/#sec-ordinarycallbindthis)
