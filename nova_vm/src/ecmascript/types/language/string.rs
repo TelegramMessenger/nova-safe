@@ -462,18 +462,6 @@ impl<'a> String<'a> {
         }
     }
 
-    /// The UTF-16 index of the code point that byte `utf8_idx` is in (or the
-    /// UTF-16 length if it is past the end). The matcher can report an empty
-    /// match inside the three bytes of a lone surrogate.
-    pub(crate) fn utf16_index_of_byte_(self, agent: &impl StringHeapAccess, utf8_idx: usize) -> usize {
-        let bytes = self.as_bytes_(agent);
-        let mut utf8_idx = utf8_idx.min(bytes.len());
-        while utf8_idx > 0 && utf8_idx < bytes.len() && bytes[utf8_idx] & 0xC0 == 0x80 {
-            utf8_idx -= 1;
-        }
-        self.utf16_index_(agent, utf8_idx)
-    }
-
     /// The substring from byte `start` to byte `end`, each moved back to the
     /// start of the code point it is in.
     pub(crate) fn wtf8_substring_<'gc>(
