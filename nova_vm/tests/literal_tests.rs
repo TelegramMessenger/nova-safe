@@ -52,3 +52,8 @@ fn math_atan2_quadrants() {
 fn math_pow_round() {
     run_test_source("mathPowRound.test.js");
 }
+
+#[test]
+fn string_less_than_utf16() {
+    run_test_source("stringLessThanUtf16.test.js");
+}
