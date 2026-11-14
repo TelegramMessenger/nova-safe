@@ -370,7 +370,6 @@
   "built-ins/DataView/prototype/setUint32/immutable-buffer.js": "FAIL",
   "built-ins/DataView/prototype/setUint8/immutable-buffer.js": "FAIL",
   "built-ins/Date/parse/time-value-maximum-range.js": "FAIL",
-  "built-ins/Date/parse/zero.js": "FAIL",
   "built-ins/Date/proto-from-ctor-realm-one.js": "FAIL",
   "built-ins/Date/proto-from-ctor-realm-two.js": "FAIL",
   "built-ins/Date/proto-from-ctor-realm-zero.js": "FAIL",
