@@ -1026,8 +1026,9 @@ impl Scoped<'_, String<'static>> {
 
 impl<'a> CreateHeapData<(StringRecord, u64), String<'a>> for Heap {
     fn create(&mut self, (data, hash): (StringRecord, u64)) -> String<'a> {
-        self.strings.push(data);
         self.alloc_counter += core::mem::size_of::<StringRecord>();
+        self.data_bytes_since_gc += data.len();
+        self.strings.push(data);
         let index = BaseIndex::last(&self.strings);
         let s = HeapString(index);
         self.alloc_counter += core::mem::size_of::<HeapString>();

@@ -17,6 +17,11 @@ pub fn print_result(agent: &mut Agent, result: JsResult<Value>, verbose: bool, g
                 println!("{result:?}");
             }
         }
+        Err(_) if agent.termination().is_some() => {
+            let reason = agent.take_termination().unwrap();
+            eprintln!("Terminated: {}", reason.message());
+            std::process::exit(1);
+        }
         Err(error) => {
             eprintln!(
                 "Uncaught exception: {}",

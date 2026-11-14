@@ -119,6 +119,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         agent: &mut Agent,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Option<Object<'gc>>> {
+        agent.check_stack(gc.nogc()).unbind()?;
         // 1. Perform ? ValidateNonRevokedProxy(O).
         // 2. Let target be O.[[ProxyTarget]].
         // 3. Let handler be O.[[ProxyHandler]].
@@ -238,6 +239,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         prototype: Option<Object>,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut prototype = prototype.bind(nogc);
         // 1. Perform ? ValidateNonRevokedProxy(O).
@@ -344,6 +346,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         agent: &mut Agent,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
+        agent.check_stack(gc.nogc()).unbind()?;
         // 1. Perform ? ValidateNonRevokedProxy(O).
         // 2. Let target be O.[[ProxyTarget]].
         // 3. Let handler be O.[[ProxyHandler]].
@@ -430,6 +433,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         agent: &mut Agent,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
+        agent.check_stack(gc.nogc()).unbind()?;
         // 1. Perform ? ValidateNonRevokedProxy(O).
         // 2. Let target be O.[[ProxyTarget]].
         // 3. Let handler be O.[[ProxyHandler]].
@@ -529,6 +533,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         property_key: PropertyKey,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Option<PropertyDescriptor<'gc>>> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut property_key = property_key.bind(nogc);
         // 1. Perform ? ValidateNonRevokedProxy(O).
@@ -740,6 +745,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         property_descriptor: PropertyDescriptor,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let o = self.bind(nogc);
         let property_key = property_key.scope(agent, nogc);
@@ -901,6 +907,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         property_key: PropertyKey,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut property_key = property_key.bind(nogc);
 
@@ -1047,6 +1054,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         receiver: Value,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut property_key = property_key.bind(nogc);
         let mut receiver = receiver.bind(nogc);
@@ -1183,6 +1191,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         receiver: Value,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut property_key = property_key.bind(nogc);
         let mut value = value.bind(nogc);
@@ -1318,6 +1327,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         property_key: PropertyKey,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut property_key = property_key.bind(nogc);
         // 1. Perform ? ValidateNonRevokedProxy(O).
@@ -1438,6 +1448,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         agent: &mut Agent,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Vec<PropertyKey<'gc>>> {
+        agent.check_stack(gc.nogc()).unbind()?;
         // 1. Perform ? ValidateNonRevokedProxy(O).
         // 2. Let target be O.[[ProxyTarget]].
         // 3. Let handler be O.[[ProxyHandler]].
@@ -1673,6 +1684,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         arguments_list: ArgumentsList,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut this_argument = this_argument.bind(nogc);
         let mut arguments_list = arguments_list.bind(nogc);
@@ -1755,6 +1767,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         new_target: Function,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Object<'gc>> {
+        agent.check_stack(gc.nogc()).unbind()?;
         let nogc = gc.nogc();
         let mut arguments_list = arguments_list.bind(gc.nogc());
         let mut new_target = new_target.bind(nogc);

@@ -130,6 +130,8 @@ impl SetPrototype {
             entry.insert(index);
             values.push(Some(value.unbind()));
         }
+        agent.heap.data_bytes_since_gc +=
+            core::mem::size_of::<Option<crate::ecmascript::Value>>() + 8;
         // i. Return S.
         // 6. Return S.
         Ok(s.into())

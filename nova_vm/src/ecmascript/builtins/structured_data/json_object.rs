@@ -480,6 +480,7 @@ fn internalize_json_property<'a>(
     reviver: Scoped<Function>,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, Value<'a>> {
+    agent.check_stack(gc.nogc()).unbind()?;
     // 1. Let val be ? Get(holder, name).
     let val = get(
         agent,
@@ -926,6 +927,7 @@ fn serialize_json_object<'a, 'b>(
     value: Object<'static>,
     mut gc: GcScope<'a, 'b>,
 ) -> JsResult<'a, ()> {
+    agent.check_stack(gc.nogc()).unbind()?;
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception
     //    because the structure is cyclical.
@@ -1091,6 +1093,7 @@ fn serialize_json_array<'a, 'b>(
     value: Object<'static>,
     mut gc: GcScope<'a, 'b>,
 ) -> JsResult<'a, ()> {
+    agent.check_stack(gc.nogc()).unbind()?;
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception because the structure is cyclical.
     if state.stack.iter(agent).any(|x| {

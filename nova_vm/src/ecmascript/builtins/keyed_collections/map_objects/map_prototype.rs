@@ -4,6 +4,10 @@
 
 use core::hash::Hasher;
 
+/// Bytes a Map entry holds (key, value and hash table slot), for the heap
+/// size estimate.
+const MAP_ENTRY_BYTES: usize = 2 * core::mem::size_of::<Option<crate::ecmascript::Value>>() + 8;
+
 use crate::hashing::AHasher;
 
 use crate::{
@@ -449,6 +453,7 @@ impl MapPrototype {
                 values.push(Some(value.unbind()));
             }
         }
+        agent.heap.data_bytes_since_gc += MAP_ENTRY_BYTES;
         // 7. Return M.
         Ok(m.into())
     }

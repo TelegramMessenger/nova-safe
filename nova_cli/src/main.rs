@@ -65,6 +65,18 @@ enum Command {
         /// Prints all internal data during evaluation.
         #[arg(short, long)]
         verbose: bool,
+
+        /// Terminates the script after this many milliseconds.
+        #[arg(long)]
+        interrupt_after_ms: Option<u64>,
+
+        /// Heap limit in bytes.
+        #[arg(long)]
+        heap_limit: Option<usize>,
+
+        /// Native stack the JavaScript code may use, in bytes.
+        #[arg(long)]
+        stack_limit: Option<usize>,
     },
 
     /// Runs the REPL
@@ -115,6 +127,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             nogc,
             expose_internals,
             paths,
+            interrupt_after_ms,
+            heap_limit,
+            stack_limit,
         } => {
             let config = InstanceConfig {
                 block: !no_block,
@@ -122,6 +137,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 verbose,
                 expose_internals,
                 strict: !no_strict,
+                interrupt_after_ms,
+                heap_limit,
+                stack_limit,
             };
             let mut instance = Instance::new(config);
 

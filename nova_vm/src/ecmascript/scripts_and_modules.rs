@@ -9,6 +9,7 @@ use crate::heap::{CompactionLists, HeapMarkAndSweep, WorkQueues};
 mod module;
 mod script;
 mod source_code;
+mod source_nesting;
 
 pub use module::*;
 pub use script::*;

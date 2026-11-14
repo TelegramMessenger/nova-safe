@@ -48,6 +48,13 @@ pub struct InstanceConfig {
     pub expose_internals: bool,
     /// Whether all scripts should be interpreted in strict mode. Default `false`.
     pub strict: bool,
+    /// Terminates the script after this many milliseconds. Default `None`.
+    pub interrupt_after_ms: Option<u64>,
+    /// Heap limit in bytes. Default `None`.
+    pub heap_limit: Option<usize>,
+    /// Native stack the JavaScript code may use, in bytes. Default: the
+    /// engine's default.
+    pub stack_limit: Option<usize>,
 }
 
 impl Default for InstanceConfig {
@@ -58,6 +65,9 @@ impl Default for InstanceConfig {
             block: true,
             expose_internals: false,
             strict: false,
+            interrupt_after_ms: None,
+            heap_limit: None,
+            stack_limit: None,
         }
     }
 }
@@ -141,6 +151,12 @@ impl Instance {
             create_global_this_value,
             initialize_global,
         );
+        agent.set_heap_limit(config.heap_limit);
+        // The main thread has 8 MiB of stack.
+        agent.set_stack_limit(config.stack_limit.unwrap_or(6 * 1024 * 1024));
+        if let Some(ms) = config.interrupt_after_ms {
+            host_hooks.set_interrupt_after(std::time::Duration::from_millis(ms));
+        }
 
         Self {
             config,

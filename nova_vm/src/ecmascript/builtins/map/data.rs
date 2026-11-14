@@ -273,3 +273,15 @@ impl HeapMarkAndSweep for MapHeapDataMut<'_, 'static> {
         }
     }
 }
+
+/// Bytes held by the entries of every Map, for the heap size estimate.
+pub(crate) fn map_entries_bytes(maps: &soavec::SoAVec<MapHeapData<'static>>) -> usize {
+    (0..maps.len())
+        .filter_map(|index| maps.get(index))
+        .map(|map| {
+            (map.keys.capacity() + map.values.capacity())
+                * core::mem::size_of::<Option<Value<'static>>>()
+                + map.keys.capacity() * 8
+        })
+        .sum()
+}

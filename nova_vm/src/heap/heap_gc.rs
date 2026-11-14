@@ -166,6 +166,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             #[cfg(feature = "weak-refs")]
             weak_sets,
             alloc_counter: _,
+            data_bytes_since_gc: _,
         } = &agent.heap;
         let Environments {
             declarative: declarative_environments,
@@ -1703,6 +1704,7 @@ fn sweep(
         #[cfg(feature = "weak-refs")]
         weak_sets,
         alloc_counter,
+        data_bytes_since_gc: _,
     } = &mut agent.heap;
     // Reset the allocation counter.
     *alloc_counter = 0;

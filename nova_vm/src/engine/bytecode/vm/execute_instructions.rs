@@ -355,7 +355,9 @@ pub(super) fn execute_apply_addition_binary_operator<'gc>(
     let result = if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
         Number::add(agent, lnum, rnum).into()
     } else if let (Ok(lstr), Ok(rstr)) = (String::try_from(lval), String::try_from(rval)) {
-        String::concat(agent, [lstr, rstr], gc.into_nogc()).into()
+        let gc = gc.into_nogc();
+        agent.check_concat_length(lstr, rstr, gc)?;
+        String::concat(agent, [lstr, rstr], gc).into()
     } else if let (Ok(lnum), Ok(rnum)) = (BigInt::try_from(lval), BigInt::try_from(rval)) {
         BigInt::add(agent, lnum, rnum).into()
     } else {

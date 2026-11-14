@@ -257,6 +257,11 @@ fn parse_program<'p>(
     source_type: SourceCodeType,
     typescript: bool,
 ) -> Result<ParsedProgram<'p>, Vec<OxcDiagnostic>> {
+    if super::source_nesting::source_nesting_too_deep(source_text) {
+        return Err(vec![OxcDiagnostic::error(
+            "Source text nests too deeply to be parsed",
+        )]);
+    }
     let parser_result = match source_type {
         SourceCodeType::Script { strict } | SourceCodeType::Eval { strict, .. } => {
             // Potentially strict script! We first parse and syntax check
