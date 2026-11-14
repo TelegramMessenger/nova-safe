@@ -56,7 +56,23 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
     agent.mark_values(&mut queues);
     let mut has_finalization_registries = false;
 
-    while !queues.is_empty() {
+    loop {
+        if queues.is_empty() {
+            if queues.pending_ephemerons.is_empty() {
+                break;
+            }
+            let new_values_to_mark = queues
+                .pending_ephemerons
+                .extract_if(.., |(key, _)| queues.bits.is_marked(key))
+                .map(|(_, value)| value)
+                .collect::<Vec<_>>();
+            for value in new_values_to_mark {
+                value.mark_values(&mut queues);
+            }
+            if queues.is_empty() {
+                break;
+            }
+        }
         let Heap {
             #[cfg(feature = "array-buffer")]
             array_buffers,
@@ -364,18 +380,6 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
                     private_environments.get(index).mark_values(&mut queues);
                 }
             });
-        }
-
-        if !queues.pending_ephemerons.is_empty() {
-            queues.pending_ephemerons.sort_by_key(|(key, _)| *key);
-            let new_values_to_mark = queues
-                .pending_ephemerons
-                .extract_if(.., |(key, _)| queues.bits.is_marked(key))
-                .map(|(_, value)| value)
-                .collect::<Vec<_>>();
-            for value in new_values_to_mark {
-                value.mark_values(&mut queues);
-            }
         }
 
         if !queues.arrays.is_empty() {
