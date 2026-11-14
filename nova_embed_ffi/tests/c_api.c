@@ -112,6 +112,22 @@ int main(void) {
     assert(nova_engine_set_memory_limit(engine, 16u << 20) == NOVA_OK);
     (void)nova_engine_memory_used(engine);
 
+    static const char compiled_source[] = "var k = (globalThis.k || 0) + 1; 'k' + k";
+    nova_script *script = nova_script_compile((const uint8_t *)compiled_source, sizeof compiled_source - 1, &out);
+    assert(script != NULL && out.kind == NOVA_VALUE_UNDEFINED);
+    assert(nova_engine_eval_script(engine, script, &out) == NOVA_OK);
+    expect_string(&out, "k1");
+    nova_result_free(&out);
+    assert(nova_engine_eval_script(engine, script, &out) == NOVA_OK);
+    expect_string(&out, "k2");
+    nova_result_free(&out);
+    assert(nova_engine_eval_script(engine, NULL, &out) == NOVA_INVALID);
+    nova_result_free(&out);
+    nova_script_free(script);
+    assert(nova_script_compile((const uint8_t *)"let = = 1", 9, &out) == NULL);
+    assert(out.kind == NOVA_VALUE_STRING);
+    nova_result_free(&out);
+
     nova_engine_free(engine);
     printf("c_api ok: %s\n", nova_embed_version());
     return 0;

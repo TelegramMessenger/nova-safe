@@ -37,9 +37,10 @@ use std::{
 
 use nova_vm::{
     ecmascript::{
-        Agent, AgentOptions, Behaviour, BuiltinFunctionArgs, Function, GcAgent, InternalMethods,
-        Job, Object, PropertyDescriptor, PropertyKey, RealmRoot, String as JsString, Value,
-        create_builtin_function, parse_module, parse_script, script_evaluation,
+        Agent, AgentOptions, Behaviour, BuiltinFunctionArgs, CompiledScript as VmCompiledScript,
+        Function, GcAgent, InternalMethods, Job, Object, PropertyDescriptor, PropertyKey,
+        RealmRoot, String as JsString, Value, create_builtin_function, parse_module, parse_script,
+        script_evaluation,
     },
     engine::{Bindable, GcScope, Global, Scopable},
 };
@@ -344,6 +345,23 @@ impl Engine {
         })
     }
 
+    /// Evaluates a script compiled by [`CompiledScript::compile`]: the same as
+    /// [`Engine::evaluate`] of its source as a sloppy script, without parsing
+    /// or compiling it again.
+    pub fn evaluate_compiled(&mut self, script: &CompiledScript) -> Result<Completion, Error> {
+        self.enter(|live, shared| {
+            let realm = &live.realm;
+            live.agent.run_in_realm(realm, |agent, mut gc| {
+                let realm = agent.current_realm(gc.nogc());
+                let script = script.script.instantiate(agent, realm, None, gc.nogc());
+                let result = script_evaluation(agent, script.unbind(), gc.reborrow())
+                    .unbind()
+                    .bind(gc.nogc());
+                values::completion(agent, shared, result.unbind(), gc)
+            })
+        })
+    }
+
     /// Keeps a reference to the global function `name`: [`Engine::call`] of
     /// that name uses it from then on, even after the global is deleted or
     /// replaced. Returns `false` when the global is not a function.
@@ -459,6 +477,52 @@ impl Engine {
             limits::set_heap_limit(&mut live.agent, bytes);
             Ok(())
         })
+    }
+}
+
+/// A sloppy script compiled once, for [`Engine::evaluate_compiled`] in any
+/// number of engines, on any thread. Immutable once compiled; it holds no
+/// handle into any engine and cannot be made from bytes.
+pub struct CompiledScript {
+    script: VmCompiledScript,
+}
+
+struct NoHost;
+
+impl Host for NoHost {
+    fn call(&self, _id: u32, _args: Vec<HostArg>) -> HostReturn {
+        HostReturn::Undefined
+    }
+}
+
+impl CompiledScript {
+    /// Parses and compiles `source` as a sloppy global script in an engine
+    /// of its own, which never runs it. A syntax error is
+    /// [`Error::Exception`], as [`Engine::evaluate`] reports it; code that
+    /// cannot be shared between engines is [`Error::Invalid`], and the
+    /// caller evaluates the source instead.
+    pub fn compile(source: &str) -> Result<CompiledScript, Error> {
+        let mut engine = Engine::new(
+            EngineOptions {
+                memory_limit: 0,
+                stack_limit: 0,
+            },
+            Box::new(NoHost),
+        )?;
+        let script = engine.enter(|live, _| {
+            let realm = &live.realm;
+            live.agent.run_in_realm(realm, |agent, gc| {
+                let source_text = JsString::from_str(agent, source, gc.nogc());
+                let realm = agent.current_realm(gc.nogc());
+                let script = match parse_script(agent, source_text, realm, false, None, gc.nogc()) {
+                    Ok(script) => script,
+                    Err(errors) => return Err(syntax_error(&errors)),
+                };
+                VmCompiledScript::export(agent, script, gc.nogc())
+                    .map_err(|error| Error::Invalid(error.to_string()))
+            })
+        })?;
+        Ok(CompiledScript { script })
     }
 }
 

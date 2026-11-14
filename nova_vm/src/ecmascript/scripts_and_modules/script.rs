@@ -29,6 +29,10 @@ use oxc_ecmascript::BoundNames;
 use oxc_semantic::{AstNodes, Scoping};
 use std::rc::Rc;
 
+mod compiled_script;
+
+pub use compiled_script::{CompiledScript, CompiledScriptError};
+
 /// Host defined data for an ECMAScript Agent, Script, or Module.
 pub type HostDefined = Rc<dyn Any>;
 
