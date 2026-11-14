@@ -26,8 +26,6 @@ oxc_span = { workspace = true }
 oxc_syntax = { workspace = true }
 regress = { workspace = true, optional = true }
 small_string = { path = "../small_string", version = "1.0.0" }
-soavec = { workspace = true }
-soavec_derive = { workspace = true }
 nova_vm_derive = { path = "../nova_vm_derive", version = "1.0.0" }
 unicode-normalization = { workspace = true }
 usdt = { workspace = true, optional = true }

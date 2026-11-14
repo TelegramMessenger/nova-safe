@@ -14,7 +14,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use hashbrown::HashTable;
-use soavec_derive::SoAble;
+use nova_vm_derive::SoAble;
 
 #[derive(Debug, Default, SoAble, Bindable)]
 pub(crate) struct MapHeapData<'a> {
@@ -175,7 +175,7 @@ pub(crate) fn sweep_keys_moved_an_object(
 }
 
 /// Bytes held by the entries of every Map, for the heap size estimate.
-pub(crate) fn map_entries_bytes(maps: &soavec::SoAVec<MapHeapData<'static>>) -> usize {
+pub(crate) fn map_entries_bytes(maps: &crate::heap::soa::SoAVec<MapHeapData<'static>>) -> usize {
     (0..maps.len())
         .filter_map(|index| maps.get(index))
         .map(|map| {

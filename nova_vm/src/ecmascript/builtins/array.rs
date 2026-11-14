@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-use soavec::SoAVec;
+use crate::heap::soa::SoAVec;
 
 use super::{
     PropertyLookupCache, ordinary_delete, ordinary_get, ordinary_get_own_property,

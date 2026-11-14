@@ -12,7 +12,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use hashbrown::HashTable;
-use soavec_derive::SoAble;
+use nova_vm_derive::SoAble;
 
 #[derive(Debug, Default, SoAble, Bindable)]
 pub(crate) struct SetHeapData<'a> {

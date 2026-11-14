@@ -35,8 +35,6 @@ oxc_syntax = { path = "oxc/crates/oxc_syntax" }
 proc-macro2 = "=1.0.107"
 quote = "=1.0.47"
 regress = { path = "regress", default-features = false, features = ["std", "utf16"] }
-soavec = "=0.2.0"
-soavec_derive = "=0.2.0"
 syn = "=2.0.119"
 unicode-normalization = "=0.1.26"
 usdt = "=0.6.0"

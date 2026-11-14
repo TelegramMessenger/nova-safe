@@ -7,7 +7,7 @@ mod data;
 pub(crate) use data::*;
 
 use hashbrown::HashTable;
-use soavec::SoAVec;
+use crate::heap::soa::SoAVec;
 
 use crate::{
     ecmascript::{
