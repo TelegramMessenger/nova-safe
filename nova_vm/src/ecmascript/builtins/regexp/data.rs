@@ -165,6 +165,17 @@ impl RegExpExecError {
     }
 }
 
+/// Memory compiling a pattern takes at its peak (oxc's parse, regress's
+/// IR and program) per byte of the pattern's source: measured at up to
+/// about 225 bytes per character (`aaaa…` and `a|a|…` of 1M characters took
+/// 235 and 465 MB), so 256 keeps a margin. A compile that this estimate
+/// does not leave room for under the heap limit is refused.
+pub(crate) const COMPILE_PEAK_BYTES_PER_BYTE: usize = 256;
+/// Memory a compiled program keeps while its RegExp lives, per byte of the
+/// pattern's source: measured at about 53 bytes per character (200 RegExps
+/// of 64K-character `a|a|…` patterns held 693 MB), so 64 keeps a margin.
+pub(crate) const PROGRAM_BYTES_PER_BYTE: usize = 64;
+
 #[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct RegExpHeapData<'a> {
     pub(super) object_index: Option<OrdinaryObject<'a>>,
@@ -176,6 +187,9 @@ pub(crate) struct RegExpHeapData<'a> {
     /// a global search over it converts it once.
     utf16_input_key: Option<String<'a>>,
     utf16_input: Vec<u16>,
+    /// The estimate of the memory the compiled program holds
+    /// ([`PROGRAM_BYTES_PER_BYTE`]), counted for the heap limit.
+    pub(super) program_bytes: usize,
 }
 
 impl<'a> RegExpHeapData<'a> {
@@ -183,6 +197,11 @@ impl<'a> RegExpHeapData<'a> {
     /// which lives as long as the RegExp: counted for the heap limit.
     pub(crate) fn utf16_input_bytes(&self) -> usize {
         self.utf16_input.capacity() * size_of::<u16>()
+    }
+
+    /// The estimate of the memory the compiled program holds.
+    pub(crate) fn program_bytes(&self) -> usize {
+        self.program_bytes
     }
 
     /// Compiles a pattern given as a JavaScript string. Without the `u` or
@@ -221,6 +240,7 @@ impl<'a> RegExpHeapData<'a> {
             last_index: RegExpLastIndex::ZERO,
             utf16_input_key: None,
             utf16_input: Vec::new(),
+            program_bytes: source.len_(agent).saturating_mul(PROGRAM_BYTES_PER_BYTE),
         }
     }
 
@@ -326,6 +346,7 @@ impl Default for RegExpHeapData<'_> {
             last_index: Default::default(),
             utf16_input_key: None,
             utf16_input: Vec::new(),
+            program_bytes: 0,
         }
     }
 }
@@ -340,6 +361,7 @@ impl HeapMarkAndSweep for RegExpHeapData<'static> {
             last_index: _,
             utf16_input_key,
             utf16_input: _,
+            program_bytes: _,
         } = self;
         object_index.mark_values(queues);
         original_source.mark_values(queues);
@@ -355,6 +377,7 @@ impl HeapMarkAndSweep for RegExpHeapData<'static> {
             last_index: _,
             utf16_input_key,
             utf16_input: _,
+            program_bytes: _,
         } = self;
         object_index.sweep_values(compactions);
         original_source.sweep_values(compactions);

@@ -432,6 +432,17 @@ fn huge_allocations_are_refused() {
             thrown("RangeError: Out of memory: allocation over the heap limit")
         );
         engine.assert_usable();
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+        assert_eq!(
+            engine.run("new RegExp('a'.repeat(1 << 20))", None),
+            thrown("RangeError: Out of memory: allocation over the heap limit")
+        );
+        assert_eq!(
+            engine.run("new RegExp('a|'.repeat(1 << 14)).test('a')", None),
+            Outcome::Value("true".into())
+        );
+        engine.assert_usable();
     });
 }
 
@@ -448,6 +459,7 @@ fn heap_limit_terminates_growing_scripts() {
             "let s = 'x'.repeat(1 << 20); for (;;) s = s + s;",
             "const s = 'a'.repeat(1 << 21); for (;;) s.replaceAll('', '');",
             "const a = []; for (;;) a.push((1n << 1000000n) + BigInt(a.length));",
+            "const p = 'a|'.repeat(1 << 14); const a = []; for (;;) a.push(new RegExp(p + a.length));",
             "const s = '\\u00e9'.repeat(1 << 18); const a = []; \
              for (;;) { const r = new RegExp('x' + a.length); r.exec(s); a.push(r); }",
         ] {

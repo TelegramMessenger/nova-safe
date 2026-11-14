@@ -113,7 +113,7 @@ impl Heap {
         {
             total += vec_bytes(&self.regexps);
             for regexp in self.regexps.iter() {
-                total += regexp.utf16_input_bytes();
+                total += regexp.utf16_input_bytes() + regexp.program_bytes();
             }
         }
         total += vec_bytes(&self.strings);
