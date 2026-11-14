@@ -1965,11 +1965,15 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
     ) -> JsResult<'gc, TypedArray<'gc>> {
         let byte_length = (len as u64).saturating_mul(self.typed_array_element_size() as u64);
         let mut data_block = create_byte_data_block(agent, byte_length, gc)?;
-        let source = self.as_slice(agent).slice(0..len);
-        let mut target = ViewableSliceMut::<T>::new(&mut data_block);
+        // The array may have shrunk below len while the caller's arguments
+        // were converted; the elements past its end stay zero.
+        let source = self.as_slice(agent);
+        let copied = len.min(source.len());
+        let source = source.slice(0..copied);
+        let target = ViewableSliceMut::<T>::new(&mut data_block);
         // The block holds exactly len T's.
         debug_assert!(target.len() == len);
-        target.copy_from(source);
+        target.into_slice(0..copied).copy_from(source);
         let result = typed_array_create_from_data_block(agent, self, data_block).bind(gc);
         Ok(result.cast::<T>().into())
     }

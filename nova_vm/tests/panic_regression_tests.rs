@@ -150,3 +150,32 @@ fn private_name_in_a_proxy_is_false() {
     "#;
     assert_eq!(run(source, "result", None), "false,true");
 }
+
+#[test]
+fn typed_array_methods_survive_a_shrink_during_argument_conversion() {
+    let source = r#"
+        var types = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array,
+            Uint32Array, Float32Array, Float64Array, BigInt64Array, BigUint64Array];
+        var calls = [
+            (t, v) => t.copyWithin(v, 0),
+            (t, v) => t.copyWithin(0, 1, v),
+            (t, v) => t.copyWithin(0, v),
+            (t, v) => t.slice(v),
+            (t, v) => t.slice(0, v),
+            (t, v) => t.with(v, 0),
+            (t, v) => t.with(1, { valueOf() { v.valueOf(); return 0; } }),
+        ];
+        var results = [];
+        for (var T of types) for (var call of calls) for (var shrinkTo of [0, 1, 3]) {
+            var b = new ArrayBuffer(8 * T.BYTES_PER_ELEMENT, { maxByteLength: 64 * T.BYTES_PER_ELEMENT });
+            var t = new T(b);
+            var once = false;
+            var v = { valueOf() { if (!once) { once = true; b.resize(shrinkTo * T.BYTES_PER_ELEMENT); } return 2; } };
+            try { results.push(call(t, v).length); } catch (e) { results.push(e.constructor.name); }
+        }
+        var copied = new Int8Array(new ArrayBuffer(8, { maxByteLength: 8 }));
+        copied.set([1, 2, 3, 4, 5, 6, 7, 8]);
+        var slice = copied.slice({ valueOf() { copied.buffer.resize(5); return 2; } });
+    "#;
+    assert_eq!(run(source, "slice.join()", None), "3,4,5,0,0,0");
+}

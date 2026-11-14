@@ -783,8 +783,14 @@ impl TypedArrayPrototype {
         // 17. If count > 0, then
         if count > 0 {
             // g. Set count to min(count, len - startIndex, len - targetIndex).
-            let count = count.min(new_len - start_index).min(new_len - target_index);
-            o.copy_within(agent, start_index, target_index, count)
+            // Note: the coercions of the arguments can shrink the array below
+            // startIndex or targetIndex; then nothing is copied.
+            let count = count
+                .min(new_len.saturating_sub(start_index))
+                .min(new_len.saturating_sub(target_index));
+            if count > 0 {
+                o.copy_within(agent, start_index, target_index, count)
+            }
         }
         Ok(o.into())
     }
@@ -838,7 +844,7 @@ impl TypedArrayPrototype {
         if ta_record.is_typed_array_out_of_bounds(agent) {
             return Err(agent.throw_exception_with_static_message(
                 ExceptionType::TypeError,
-                "Callback is not callable",
+                "TypedArray is out of bounds",
                 gc,
             ));
         }
@@ -2255,7 +2261,9 @@ impl TypedArrayPrototype {
                 // d. Set countBytes to max(endIndex - startIndex, 0).
                 count = end_index.saturating_sub(start_index);
             }
-            o.set_into_data_block(agent, &mut data_block, start_index, count);
+            if count > 0 {
+                o.set_into_data_block(agent, &mut data_block, start_index, count);
+            }
             for_any_typed_array!(
                 o,
                 o,
@@ -2296,7 +2304,11 @@ impl TypedArrayPrototype {
                 // d. Set countBytes to max(endIndex - startIndex, 0).
                 count = end_index.saturating_sub(start_index);
             }
-            a.slice(agent, o, start_index, count);
+            // Note: the species constructor can shrink O below startIndex;
+            // then nothing is copied.
+            if count > 0 {
+                a.slice(agent, o, start_index, count);
+            }
             a
         };
         // 15. Return A.
