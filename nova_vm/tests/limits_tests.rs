@@ -284,7 +284,7 @@ fn deep_data_in_native_recursion_throws() {
         );
         assert_eq!(
             engine.run("JSON.parse('['.repeat(1e6) + ']'.repeat(1e6))", None),
-            thrown("RangeError: JSON nesting too deep")
+            thrown("RangeError: JSON text is nested deeper than 5000 levels")
         );
         assert_eq!(
             engine.run(
