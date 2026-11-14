@@ -23,7 +23,8 @@ use crate::{
     engine::{Bindable, Executable, GcScope, NoGcScope, Scopable},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
-        HeapMarkAndSweep, HeapSweepWeakReference, WorkQueues, arena_vec_access,
+        HeapMarkAndSweep, HeapSweepWeakReference, ObjectEntry, ObjectEntryPropertyDescriptor,
+        WorkQueues, arena_vec_access,
     },
     ndt,
 };
@@ -893,27 +894,46 @@ pub(crate) fn ordinary_function_create<'gc>(
         compiled_bytecode: params.template.executable.unbind(),
         name: None,
     };
-    if let Some(function_prototype) = params.function_prototype
-        && function_prototype
-            != agent
-                .current_realm_record()
-                .intrinsics()
-                .function_prototype()
-                .into()
-    {
-        function.object_index = Some(
-            OrdinaryObject::create_object(agent, Some(function_prototype), &[])
-                .expect("Should perform GC here"),
-        );
-    }
-
     // 18. Set F.[[Fields]] to a new empty List.
     // 19. Set F.[[PrivateMethods]] to a new empty List.
     // 20. Set F.[[ClassFieldInitializerName]] to EMPTY.
     // 21. Let len be the ExpectedArgumentCount of ParameterList.
     let len = params.template.expected_argument_count as usize;
     // 22. Perform SetFunctionLength(F, len).
-    set_ecmascript_function_length(agent, &mut function, len, gc).unwrap();
+    function.length = u8::try_from(len).unwrap_or(u8::MAX);
+    // A function whose prototype is not %Function.prototype%, or whose length
+    // does not fit the heap data, keeps its properties in a backing object
+    // from the start. SetFunctionName adds "name" to it.
+    let function_prototype = params.function_prototype.filter(|function_prototype| {
+        *function_prototype
+            != agent
+                .current_realm_record()
+                .intrinsics()
+                .function_prototype()
+                .into()
+    });
+    if function_prototype.is_some() || len > usize::from(u8::MAX) {
+        let prototype = function_prototype.unwrap_or_else(|| {
+            agent
+                .current_realm_record()
+                .intrinsics()
+                .function_prototype()
+                .into()
+        });
+        let length_entry = ObjectEntry {
+            key: BUILTIN_STRING_MEMORY.length.into(),
+            value: ObjectEntryPropertyDescriptor::Data {
+                value: Value::try_from(len as f64).expect("a parameter count is a safe integer"),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+            },
+        };
+        function.object_index = Some(
+            OrdinaryObject::create_object(agent, Some(prototype), &[length_entry])
+                .expect("Should perform GC here"),
+        );
+    }
     // 23. Return F.
     agent.heap.create(function)
 }
@@ -1162,6 +1182,24 @@ pub(crate) fn set_function_name<'a>(
             assert!(function.name.is_none());
             // 6. Perform ! DefinePropertyOrThrow(F, "name", PropertyDescriptor { [[Value]]: name, [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }).
             function.name = Some(name.unbind());
+            if let Some(backing_object) = function.object_index {
+                backing_object
+                    .property_storage()
+                    .set(
+                        agent,
+                        idx.into(),
+                        BUILTIN_STRING_MEMORY.name.into(),
+                        PropertyDescriptor {
+                            value: Some(name.unbind().into()),
+                            writable: Some(false),
+                            enumerable: Some(false),
+                            configurable: Some(true),
+                            ..Default::default()
+                        },
+                        gc,
+                    )
+                    .expect("Failed to allocate memory for the function name");
+            }
             // 7. Return UNUSED.
         }
         Function::BuiltinConstructorFunction(_)
@@ -1169,29 +1207,6 @@ pub(crate) fn set_function_name<'a>(
         | Function::BuiltinPromiseFinallyFunction(_)
         | Function::BuiltinProxyRevokerFunction => unreachable!(),
     }
-}
-
-/// ### [10.2.10 SetFunctionLength ( F, length )](https://tc39.es/ecma262/#sec-setfunctionlength)
-fn set_ecmascript_function_length<'a>(
-    agent: &mut Agent,
-    function: &mut ECMAScriptFunctionHeapData,
-    length: usize,
-    gc: NoGcScope<'a, '_>,
-) -> JsResult<'a, ()> {
-    // TODO: 1. Assert: F is an extensible object that does not have a "length" own property.
-
-    // 2. Perform ! DefinePropertyOrThrow(F, "length", PropertyDescriptor { [[Value]]: 𝔽(length), [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }).
-    if length > u8::MAX as usize {
-        return Err(agent.throw_exception_with_static_message(
-            ExceptionType::SyntaxError,
-            "Too many arguments in function call (only 255 allowed)",
-            gc,
-        ));
-    }
-    function.length = length as u8;
-
-    // 3. Return unused.
-    Ok(())
 }
 
 impl HeapMarkAndSweep for ECMAScriptFunction<'static> {

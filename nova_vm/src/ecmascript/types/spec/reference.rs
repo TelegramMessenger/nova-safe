@@ -474,7 +474,7 @@ pub(crate) fn get_value<'gc>(
         | Reference::UnresolvableStrict(referenced_name) => {
             let gc = gc.into_nogc();
             let error_message = format!(
-                "Cannot access undeclared variable '{}'.",
+                "{} is not defined",
                 referenced_name.to_string_lossy_(agent)
             );
             Err(agent.throw_exception(ExceptionType::ReferenceError, error_message, gc))
@@ -760,7 +760,7 @@ pub(crate) fn try_get_value<'gc>(
         Reference::Unresolvable(referenced_name)
         | Reference::UnresolvableStrict(referenced_name) => {
             let error_message = format!(
-                "Cannot access undeclared variable '{}'.",
+                "{} is not defined",
                 referenced_name.to_string_lossy_(agent)
             );
             agent

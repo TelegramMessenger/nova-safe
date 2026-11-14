@@ -37,3 +37,13 @@ fn run_test_source(file_name: &str) {
 fn template_lone_surrogates() {
     run_test_source("templateLoneSurrogates.test.js");
 }
+
+#[test]
+fn function_own_properties() {
+    run_test_source("functionOwnProperties.test.js");
+}
+
+#[test]
+fn math_atan2_quadrants() {
+    run_test_source("mathAtan2.test.js");
+}
