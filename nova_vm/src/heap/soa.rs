@@ -32,6 +32,7 @@ pub(crate) trait SoAble: Sized {
     fn push(columns: &mut Self::Columns, value: Self);
     fn get(columns: &Self::Columns, index: usize) -> Option<Self::Ref<'_>>;
     fn get_mut(columns: &mut Self::Columns, index: usize) -> Option<Self::Mut<'_>>;
+    #[allow(dead_code)]
     fn as_slice(columns: &Self::Columns) -> Self::Slice<'_>;
     fn as_mut_slice(columns: &mut Self::Columns) -> Self::SliceMut<'_>;
     fn swap(columns: &mut Self::Columns, a: usize, b: usize);
@@ -87,11 +88,6 @@ impl<T: SoAble> SoAVec<T> {
     #[inline(always)]
     pub(crate) fn get_mut(&mut self, index: u32) -> Option<T::Mut<'_>> {
         T::get_mut(&mut self.columns, index as usize)
-    }
-
-    #[inline]
-    pub(crate) fn as_slice(&self) -> T::Slice<'_> {
-        T::as_slice(&self.columns)
     }
 
     #[inline]
