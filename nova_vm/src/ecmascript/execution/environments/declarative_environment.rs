@@ -57,6 +57,15 @@ struct HashMapDeclarativeEnvironmentRecord {
 }
 
 impl BindingMap {
+    /// Bytes held by the entries and the hash index, if any.
+    fn bytes(&self) -> usize {
+        let entries = self.entries.capacity() * core::mem::size_of::<(String<'static>, Binding)>();
+        let index = self.index.as_ref().map_or(0, |index| {
+            index.capacity() * (core::mem::size_of::<(String<'static>, u32)>() + 8)
+        });
+        entries + index
+    }
+
     #[inline]
     fn position(&self, name: String) -> Option<usize> {
         let name = name.unbind();
@@ -163,7 +172,7 @@ pub(crate) struct Binding {
 impl DeclarativeEnvironmentRecord {
     /// Bytes held by the bindings table, for the heap size estimate.
     pub(crate) fn bindings_bytes(&self) -> usize {
-        self.bindings.capacity() * (core::mem::size_of::<(String<'static>, Binding)>() + 8)
+        self.bindings.bytes()
     }
 }
 
