@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 
-use itertools::Itertools;
 use rustc_hash::FxHashMap;
 
 use oxc_ast::{AstKind, ast::*};
@@ -197,7 +196,9 @@ pub fn check_class<'a>(class: &Class<'a>, ctx: &SemanticBuilder<'a>) {
 
     if !class.r#declare && !ctx.in_declare_scope() {
         let mut is_in_overload_group = false;
-        for (a, b) in class.body.body.iter().map(Some).chain(vec![None]).tuple_windows() {
+        let elements: Vec<_> = class.body.body.iter().map(Some).chain([None]).collect();
+        for pair in elements.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
             if let Some(ClassElement::MethodDefinition(a)) = a
                 && !a.r#type.is_abstract()
                 && !a.optional

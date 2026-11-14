@@ -55,9 +55,6 @@ name = "oxc_semantic"
 path = "src/lib.rs"
 doctest = true
 
-[dependencies.itertools]
-version = "0.14.0"
-
 [dependencies.memchr]
 version = "2.7.6"
 
