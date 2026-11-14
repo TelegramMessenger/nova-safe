@@ -74,6 +74,8 @@ pub(crate) fn bound_function_create<'a>(
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, BoundFunction<'a>> {
     let mut target_function = target_function.bind(gc.nogc());
+    let mut bound_this = bound_this.bind(gc.nogc());
+    let mut scoped_bound_args = None;
     // 1. Let proto be ? targetFunction.[[GetPrototypeOf]]().
     let proto = if let TryResult::Continue(proto) =
         target_function.try_get_prototype_of(agent, gc.nogc())
@@ -81,12 +83,20 @@ pub(crate) fn bound_function_create<'a>(
         proto
     } else {
         let scoped_target_function = target_function.scope(agent, gc.nogc());
+        let scoped_bound_this = bound_this.scope(agent, gc.nogc());
+        scoped_bound_args = Some(
+            bound_args
+                .iter()
+                .map(|arg| arg.scope(agent, gc.nogc()))
+                .collect::<Vec<_>>(),
+        );
         let proto = target_function
             .unbind()
             .internal_get_prototype_of(agent, gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
         target_function = scoped_target_function.get(agent).bind(gc.nogc());
+        bound_this = scoped_bound_this.get(agent).bind(gc.nogc());
         proto
     };
     // 2. Let internalSlotsList be the list-concatenation of « [[Prototype]],
@@ -107,8 +117,18 @@ pub(crate) fn bound_function_create<'a>(
         }
     };
     elements.len = u32::try_from(bound_args.len()).unwrap();
-    for (slot, arg) in elements.get_mut(agent).iter_mut().zip(bound_args) {
-        *slot = Some(arg.unbind());
+    if let Some(scoped_bound_args) = scoped_bound_args {
+        let bound_args = scoped_bound_args
+            .iter()
+            .map(|arg| arg.get(agent))
+            .collect::<Vec<_>>();
+        for (slot, arg) in elements.get_mut(agent).iter_mut().zip(bound_args) {
+            *slot = Some(arg);
+        }
+    } else {
+        for (slot, arg) in elements.get_mut(agent).iter_mut().zip(bound_args) {
+            *slot = Some(arg.unbind());
+        }
     }
     let data = BoundFunctionHeapData {
         object_index: None,
