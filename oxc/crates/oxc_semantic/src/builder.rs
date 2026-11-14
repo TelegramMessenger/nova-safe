@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 
 use oxc_allocator::Address;
 use oxc_ast::{AstKind, ast::*};
-use oxc_ast_visit::Visit;
+use oxc_ast_visit::{Visit, walk::*};
 #[cfg(feature = "cfg")]
 use oxc_cfg::{
     ControlFlowGraphBuilder, CtxCursor, CtxFlags, EdgeType, ErrorEdgeKind, InstructionKind,
@@ -626,6 +626,17 @@ impl<'a> SemanticBuilder<'a> {
         span: Span,
     ) {
         self.scoping.add_symbol_redeclaration(symbol_id, flags, self.current_node_id, span);
+    }
+}
+
+impl SemanticBuilder<'_> {
+    /// Called before a simple assignment target (`a`, `a.b`, `a!`, ...) is visited.
+    fn enter_simple_assignment_target(&mut self) {
+        // Except that the read-write flags has been set in visit_assignment_expression
+        // and visit_update_expression, this is always a write-only reference here.
+        if !self.current_reference_flags.is_write() {
+            self.current_reference_flags = ReferenceFlags::Write;
+        }
     }
 }
 
@@ -2009,47 +2020,47 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_member_expression(&mut self, it: &'a MemberExpression<'a>) {
+    fn visit_computed_member_expression(&mut self, it: &'a ComputedMemberExpression<'a>) {
         // A.B = 1;
         // ^^^ Can't treat A as a Write reference since it's A's property(B) that changes.
         self.current_reference_flags -= ReferenceFlags::Write;
+        walk_computed_member_expression(self, it);
+    }
 
-        match it {
-            MemberExpression::ComputedMemberExpression(it) => {
-                self.visit_computed_member_expression(it);
-            }
-            MemberExpression::StaticMemberExpression(it) => self.visit_static_member_expression(it),
-            MemberExpression::PrivateFieldExpression(it) => self.visit_private_field_expression(it),
-        }
+    fn visit_static_member_expression(&mut self, it: &'a StaticMemberExpression<'a>) {
+        self.current_reference_flags -= ReferenceFlags::Write;
+        walk_static_member_expression(self, it);
+    }
+
+    fn visit_private_field_expression(&mut self, it: &'a PrivateFieldExpression<'a>) {
+        self.current_reference_flags -= ReferenceFlags::Write;
+        walk_private_field_expression(self, it);
     }
 
     fn visit_simple_assignment_target(&mut self, it: &'a SimpleAssignmentTarget<'a>) {
-        // Except that the read-write flags has been set in visit_assignment_expression
-        // and visit_update_expression, this is always a write-only reference here.
-        if !self.current_reference_flags.is_write() {
-            self.current_reference_flags = ReferenceFlags::Write;
-        }
+        self.enter_simple_assignment_target();
+        walk_simple_assignment_target(self, it);
+    }
 
-        match it {
-            SimpleAssignmentTarget::AssignmentTargetIdentifier(it) => {
-                self.visit_identifier_reference(it);
-            }
-            SimpleAssignmentTarget::TSAsExpression(it) => {
-                self.visit_ts_as_expression(it);
-            }
-            SimpleAssignmentTarget::TSSatisfiesExpression(it) => {
-                self.visit_ts_satisfies_expression(it);
-            }
-            SimpleAssignmentTarget::TSNonNullExpression(it) => {
-                self.visit_ts_non_null_expression(it);
-            }
-            SimpleAssignmentTarget::TSTypeAssertion(it) => {
-                self.visit_ts_type_assertion(it);
-            }
-            match_member_expression!(SimpleAssignmentTarget) => {
-                self.visit_member_expression(it.to_member_expression());
-            }
+    fn visit_assignment_target(&mut self, it: &'a AssignmentTarget<'a>) {
+        if matches!(it, match_simple_assignment_target!(AssignmentTarget)) {
+            self.enter_simple_assignment_target();
         }
+        walk_assignment_target(self, it);
+    }
+
+    fn visit_assignment_target_maybe_default(&mut self, it: &'a AssignmentTargetMaybeDefault<'a>) {
+        if matches!(it, match_simple_assignment_target!(AssignmentTargetMaybeDefault)) {
+            self.enter_simple_assignment_target();
+        }
+        walk_assignment_target_maybe_default(self, it);
+    }
+
+    fn visit_for_statement_left(&mut self, it: &'a ForStatementLeft<'a>) {
+        if matches!(it, match_simple_assignment_target!(ForStatementLeft)) {
+            self.enter_simple_assignment_target();
+        }
+        walk_for_statement_left(self, it);
     }
 
     fn visit_assignment_target_property_identifier(
@@ -2083,7 +2094,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
                 self.visit_identifier_reference(it);
             }
             match_expression!(ExportDefaultDeclarationKind) => {
-                self.visit_expression(it.to_expression());
+                walk_export_default_declaration_kind(self, it);
             }
         }
     }

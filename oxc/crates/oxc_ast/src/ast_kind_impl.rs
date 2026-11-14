@@ -439,9 +439,10 @@ impl AstKind<'_> {
             Self::NewExpression(n) => {
                 let callee = match &n.callee {
                     Expression::Identifier(id) => Some(id.name.as_str()),
-                    match_member_expression!(Expression) => {
-                        n.callee.to_member_expression().static_property_name()
-                    }
+                    match_member_expression!(Expression) => n
+                        .callee
+                        .as_member_expression()
+                        .and_then(|member| member.static_property_name()),
                     _ => None,
                 };
                 format!("NewExpression({})", callee.unwrap_or(&COMPUTED)).into()

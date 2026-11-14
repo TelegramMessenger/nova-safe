@@ -14,6 +14,8 @@ use crate::{
     },
 };
 use oxc_ast::ast;
+
+use super::AssignmentTargetVariants;
 use oxc_ecmascript::BoundNames;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +144,7 @@ fn for_in_of_body_evaluation<'s, 'gc>(
     let assignment_pattern = if destructuring && lhs_kind == LeftHandSideKind::Assignment {
         // a. Assert: lhs is a LeftHandSideExpression.
         // b. Let assignmentPattern be the AssignmentPattern that is covered by lhs.
-        Some(lhs.to_assignment_target_pattern())
+        Some(lhs)
     } else {
         None
     };
@@ -191,7 +193,7 @@ fn for_in_of_body_evaluation<'s, 'gc>(
                 // 1. If lhsKind is ASSIGNMENT, then
                 if lhs_kind == LeftHandSideKind::Assignment {
                     // a. Let status be Completion(DestructuringAssignmentEvaluation of assignmentPattern with argument nextValue).
-                    assignment_pattern.unwrap().compile(ctx)
+                    assignment_pattern.unwrap().compile_pattern_target(ctx)
                 } else {
                     // 2. Else,
                     // a. Assert: lhsKind is VAR-BINDING.
@@ -204,7 +206,7 @@ fn for_in_of_body_evaluation<'s, 'gc>(
                             let declaration = decl.declarations.first().unwrap();
                             declaration.id.compile(ctx)
                         }
-                        _ => lhs.as_assignment_target().unwrap().compile(ctx),
+                        _ => lhs.compile_assignment_target(ctx),
                     }
                 }
             } else {
@@ -226,7 +228,7 @@ fn for_in_of_body_evaluation<'s, 'gc>(
                         // a. Let status be Completion(PutValue(lhsRef.[[Value]], nextValue)).
                         lhs_ref.put_value(ctx, ValueOutput::Value)
                     }
-                    _ => lhs.to_assignment_target().compile(ctx),
+                    _ => lhs.compile_assignment_target(ctx),
                 }
             }
         }

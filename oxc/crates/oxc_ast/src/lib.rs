@@ -40,6 +40,7 @@
 //! [`Traverse`]: <https://github.com/oxc-project/oxc/tree/main/crates/oxc_traverse>
 //! [`Visit`]: <http://docs.rs/oxc_ast_visit>
 //! [`VisitMut`]: <http://docs.rs/oxc_ast_visit>
+#![forbid(unsafe_code)]
 
 #[cfg(feature = "serialize")]
 mod serialize;

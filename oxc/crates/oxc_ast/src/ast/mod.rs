@@ -131,7 +131,7 @@
 //! // Old
 //! if let Expression::MemberExpression(member_expr) = &expr { }
 //!
-//! // New
+//! // New (a borrowed view of the member expression variants)
 //! if let Some(member_expr) = expr.as_member_expression() { }
 //! ```
 //!
@@ -143,35 +143,21 @@
 //!     Expression::MemberExpression(member_expr) => visitor.visit(member_expr),
 //! }
 //!
-//! // New (exhaustive match)
+//! // New (exhaustive match on the inherited variants)
 //! match get_expression() {
-//!     expr @ match_member_expression!(Expression) => visitor.visit(expr.to_member_expression()),
-//! }
-//!
-//! // New (alternative)
-//! match get_expression() {
-//!     expr if expr.is_member_expression() => visitor.visit(expr.to_member_expression()),
+//!     Expression::ComputedMemberExpression(e) => visitor.visit_computed(e),
+//!     Expression::StaticMemberExpression(e) => visitor.visit_static(e),
+//!     Expression::PrivateFieldExpression(e) => visitor.visit_private_field(e),
 //! }
 //! ```
 //!
-//! ## Why `#[repr(C, u8)]` on enums?
+//! ## No casts between the enums
 //!
-//! `#[repr(C, u8)]` allows us to define the discriminants for variants in both the "inherited"
-//! and "inheritee" enums.
-//!
-//! The discriminants and "payloads" match between the 2 types for the inherited variants.
-//! Therefore `MemberExpression::ComputedMemberExpression` and `Expression::ComputedMemberExpression`
-//! have identical representations in memory, and a `MemberExpression` can be converted to an
-//! `Expression` with a zero-cost transmute.
-//!
-//! The APIs listed above use this property.
-//!
-//! It is **essential** that the discriminants and "payload" types match between the "inherited"
-//! and "inheritee" types, or using the APIs below would be instant UB.
-//! The `shared_enum_variants!` macro generates const assertions to ensure
-//! these invariants are upheld, and it will be caught at compile time if they don't.
-//!
-//! If you are seeing compile-time errors in `src/ast/macros.rs`, this will be the cause.
+//! Upstream oxc converts `&Expression` to `&MemberExpression` (and the like) with a pointer
+//! cast that relies on `#[repr(C, u8)]` and equal discriminants. nova-safe has no `unsafe`, so
+//! those `as_*`/`to_*` conversions are gone: owned values convert with `From`/`TryFrom`, and
+//! borrowed ones are matched variant by variant (`MemberExpressionRef` borrows the member
+//! expression variants).
 
 // Re-export AST types from other crates
 pub use oxc_span::{Language, LanguageVariant, ModuleKind, SourceType, Span, Str};

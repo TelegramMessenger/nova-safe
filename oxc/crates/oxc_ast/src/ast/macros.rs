@@ -735,14 +735,14 @@ pub(crate) use inherit_variants;
 /// "Parent" enum contains all the "child"'s variants, plus parent contains further other variants.
 /// e.g. `Statement` and `Declaration`.
 ///
-/// The discriminants and types of the shared variants must be identical between the 2 enums.
+/// The types of the shared variants must be identical between the 2 enums.
 /// All variants must have a `Box<_>` payload.
 /// Equality of types is guaranteed by `From` and `TryFrom` impls this macro creates.
 /// These will fail to compile if the types differ for any variant.
-/// Equality of discriminants is checked with a compile-time assertion.
 ///
-/// # SAFETY
-/// Both enums must be `#[repr(C, u8)]` or using this macro is unsound.
+/// There is no conversion from `&Parent` to `&Child`: the child's variants are not stored as a
+/// `Child` inside the parent, and nova-safe does not cast between the enums. Code that needs the
+/// child's behaviour on a parent value matches the inherited variants (`match_<child>!(Parent)`).
 ///
 /// # Expansion
 ///
@@ -762,11 +762,6 @@ pub(crate) use inherit_variants;
 /// expands to:
 ///
 /// ```ignore
-/// const _: () = {
-///     assert!(discriminant!(Statement::VariableDeclaration) == discriminant!(Declaration::VariableDeclaration));
-///     assert!(discriminant!(Statement::FunctionDeclaration) == discriminant!(Declaration::FunctionDeclaration));
-/// };
-///
 /// impl<'a> Statement<'a> {
 ///     /// Return if a `Statement` is a `Declaration`.
 ///     #[inline]
@@ -785,41 +780,6 @@ pub(crate) use inherit_variants;
 ///         Declaration::try_from(self).unwrap()
 ///     }
 ///
-///     /// Convert `&Statement` to `&Declaration`.
-///     #[inline]
-///     pub fn as_declaration(&self) -> Option<&Declaration<'a>> {
-///         if self.is_declaration() {
-///             Some(unsafe { &*(self as *const _ as *const Declaration) })
-///         } else {
-///             None
-///         }
-///     }
-///
-///     /// Convert `&mut Statement` to `&mut Declaration`.
-///     #[inline]
-///     pub fn as_declaration_mut(&mut self) -> Option<&mut Declaration<'a>> {
-///         if self.is_declaration() {
-///             Some(unsafe { &mut *(self as *mut _ as *mut Declaration) })
-///         } else {
-///             None
-///         }
-///     }
-///
-///     /// Convert `&Statement` to `&Declaration`.
-///     /// # Panic
-///     /// Panics if not convertible.
-///     #[inline]
-///     pub fn to_declaration(&self) -> &Declaration<'a> {
-///         self.as_declaration().unwrap()
-///     }
-///
-///     /// Convert `&mut Statement` to `&mut Declaration`.
-///     /// # Panic
-///     /// Panics if not convertible.
-///     #[inline]
-///     pub fn to_declaration_mut(&mut self) -> &mut Declaration<'a> {
-///         self.as_declaration_mut().unwrap()
-///     }
 /// }
 ///
 /// impl<'a> TryFrom<Statement<'a>> for Declaration<'a> {
@@ -856,8 +816,6 @@ macro_rules! shared_enum_variants {
         $to_child:ident, $to_child_mut:ident,
         [$($variant:ident),+ $(,)?]
     ) => {
-        // Ensure discriminants match for all variants between parent and child types
-
         impl<'a> $parent<'a> {
             #[doc = concat!("Return if a `", stringify!($parent), "` is a `", stringify!($child), "`.")]
             #[inline]
@@ -876,45 +834,6 @@ macro_rules! shared_enum_variants {
                 $child::try_from(self).unwrap()
             }
 
-            #[doc = concat!("Convert `&", stringify!($parent), "` to `&", stringify!($child), "`.")]
-            #[inline]
-            pub fn $as_child(&self) -> Option<&$child<'a>> {
-                if self.$is_child() {
-                    // SAFETY: Transmute is safe because discriminants + types are identical between
-                    // `$parent` and `$child` for $child variants
-                    Some(unsafe { &*std::ptr::from_ref(self).cast::<$child>() })
-                } else {
-                    None
-                }
-            }
-
-            #[doc = concat!("Convert `&mut ", stringify!($parent), "` to `&mut ", stringify!($child), "`.")]
-            #[inline]
-            pub fn $as_child_mut(&mut self) -> Option<&mut $child<'a>> {
-                if self.$is_child() {
-                    // SAFETY: Transmute is safe because discriminants + types are identical between
-                    // `$parent` and `$child` for $child variants
-                    Some(unsafe { &mut *std::ptr::from_mut(self).cast::<$child>() })
-                } else {
-                    None
-                }
-            }
-
-            #[doc = concat!("Convert `&", stringify!($parent), "` to `&", stringify!($child), "`.")]
-            #[doc = "# Panic"]
-            #[doc = "Panics if not convertible."]
-            #[inline]
-            pub fn $to_child(&self) -> &$child<'a> {
-                self.$as_child().unwrap()
-            }
-
-            #[doc = concat!("Convert `&mut ", stringify!($parent), "` to `&mut ", stringify!($child), "`.")]
-            #[doc = "# Panic"]
-            #[doc = "Panics if not convertible."]
-            #[inline]
-            pub fn $to_child_mut(&mut self) -> &mut $child<'a> {
-                self.$as_child_mut().unwrap()
-            }
         }
 
         impl<'a> TryFrom<$parent<'a>> for $child<'a> {

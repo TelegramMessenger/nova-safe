@@ -1520,11 +1520,8 @@ fn parse_module_body<'a>(
     // 5. Let importedBoundNames be ImportedLocalNames(importEntries).
     let mut imported_bound_names = AHashSet::default();
     for ee in body.iter() {
-        let Some(ee) = ee.as_module_declaration() else {
-            continue;
-        };
         match ee {
-            ast::ModuleDeclaration::ImportDeclaration(ee) => {
+            ast::Statement::ImportDeclaration(ee) => {
                 #[cfg(feature = "typescript")]
                 if ee.import_kind.is_type() {
                     continue;
@@ -1580,11 +1577,12 @@ fn parse_module_body<'a>(
                     };
                 }
             }
-            ast::ModuleDeclaration::ExportAllDeclaration(_)
-            | ast::ModuleDeclaration::ExportDefaultDeclaration(_)
-            | ast::ModuleDeclaration::ExportNamedDeclaration(_) => {}
-            ast::ModuleDeclaration::TSExportAssignment(_)
-            | ast::ModuleDeclaration::TSNamespaceExportDeclaration(_) => unreachable!(),
+            ast::Statement::ExportAllDeclaration(_)
+            | ast::Statement::ExportDefaultDeclaration(_)
+            | ast::Statement::ExportNamedDeclaration(_) => {}
+            ast::Statement::TSExportAssignment(_)
+            | ast::Statement::TSNamespaceExportDeclaration(_) => unreachable!(),
+            _ => continue,
         }
     }
     // 6. Let indirectExportEntries be a new empty List.
@@ -1596,12 +1594,9 @@ fn parse_module_body<'a>(
     // 9. Let exportEntries be the ExportEntries of body.
     // 10. For each ExportEntry Record ee of exportEntries, do
     for ee in body.iter() {
-        let Some(ee) = ee.as_module_declaration() else {
-            continue;
-        };
         match ee {
             // a. If ee.[[ModuleRequest]] is null, then
-            ast::ModuleDeclaration::ExportDefaultDeclaration(ee) => {
+            ast::Statement::ExportDefaultDeclaration(ee) => {
                 match &ee.declaration {
                     ast::ExportDefaultDeclarationKind::FunctionDeclaration(ee) => {
                         // ExportDeclaration : export default HoistableDeclaration
@@ -1712,7 +1707,7 @@ fn parse_module_body<'a>(
                     }
                 }
             }
-            ast::ModuleDeclaration::ExportNamedDeclaration(ee) => {
+            ast::Statement::ExportNamedDeclaration(ee) => {
                 if let Some(source) = &ee.source {
                     // export { a, b as c } from "source";
                     //  ExportSpecifier : ModuleExportName
@@ -1801,7 +1796,7 @@ fn parse_module_body<'a>(
                     }
                 }
             }
-            ast::ModuleDeclaration::ExportAllDeclaration(ee) => {
+            ast::Statement::ExportAllDeclaration(ee) => {
                 if let Some(exported) = &ee.exported {
                     // c. Else,
                     // i. Append ee to indirectExportEntries.
@@ -1824,9 +1819,10 @@ fn parse_module_body<'a>(
                     star_export_entries.push(module_request);
                 }
             }
-            ast::ModuleDeclaration::ImportDeclaration(_) => {}
-            ast::ModuleDeclaration::TSExportAssignment(_)
-            | ast::ModuleDeclaration::TSNamespaceExportDeclaration(_) => unreachable!(),
+            ast::Statement::ImportDeclaration(_) => {}
+            ast::Statement::TSExportAssignment(_)
+            | ast::Statement::TSNamespaceExportDeclaration(_) => unreachable!(),
+            _ => continue,
         }
     }
 

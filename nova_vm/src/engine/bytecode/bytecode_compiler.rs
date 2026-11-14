@@ -15,6 +15,7 @@ mod labelled_statement;
 mod template_literals;
 mod with_statement;
 
+pub(crate) use assignment::AssignmentTargetVariants;
 pub(crate) use compile_context::*;
 pub(crate) use executable_context::UNSUPPORTED_SYNTAX_IMMEDIATE;
 
@@ -654,6 +655,23 @@ pub(crate) fn is_reference(expression: &ast::Expression) -> bool {
             | ast::Expression::StaticMemberExpression(_)
             | ast::Expression::PrivateFieldExpression(_)
     )
+}
+
+/// `is_reference` of the `Expression` variants of a property key.
+fn property_key_is_reference(key: &ast::PropertyKey) -> bool {
+    match key {
+        ast::PropertyKey::Identifier(_)
+        | ast::PropertyKey::ComputedMemberExpression(_)
+        | ast::PropertyKey::StaticMemberExpression(_)
+        | ast::PropertyKey::PrivateFieldExpression(_) => true,
+        ast::PropertyKey::ParenthesizedExpression(e) => is_reference(&e.expression),
+        ast::PropertyKey::TSAsExpression(e) => is_reference(&e.expression),
+        ast::PropertyKey::TSSatisfiesExpression(e) => is_reference(&e.expression),
+        ast::PropertyKey::TSInstantiationExpression(e) => is_reference(&e.expression),
+        ast::PropertyKey::TSNonNullExpression(e) => is_reference(&e.expression),
+        ast::PropertyKey::TSTypeAssertion(e) => is_reference(&e.expression),
+        _ => false,
+    }
 }
 
 pub(crate) fn is_boolean_literal_true(expression: &ast::Expression) -> bool {
@@ -1396,11 +1414,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Object
                             }
                         }
                         _ => {
-                            let prop_key = prop.key.as_expression().unwrap();
-                            if is_reference(prop_key) {
+                            let prop_key = &prop.key;
+                            if property_key_is_reference(prop_key) {
                                 assert!(!is_proto_setter);
                             }
-                            if let Err(err) = prop_key.compile(ctx).and_then(|r| r.get_value(ctx)) {
+                            if let Err(err) =
+                                prop_key.compile_expression(ctx).and_then(|r| r.get_value(ctx))
+                            {
                                 obj.forget(ctx);
                                 return Err(err);
                             }
@@ -1511,7 +1531,18 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ArrayE
         let try_catch_block = if self
             .elements
             .iter()
-            .all(|e| e.is_elision() || e.as_expression().is_some_and(|e| e.is_literal()))
+            .all(|e| {
+                matches!(
+                    e,
+                    ast::ArrayExpressionElement::Elision(_)
+                        | ast::ArrayExpressionElement::BooleanLiteral(_)
+                        | ast::ArrayExpressionElement::NullLiteral(_)
+                        | ast::ArrayExpressionElement::NumericLiteral(_)
+                        | ast::ArrayExpressionElement::BigIntLiteral(_)
+                        | ast::ArrayExpressionElement::RegExpLiteral(_)
+                        | ast::ArrayExpressionElement::StringLiteral(_)
+                )
+            })
         {
             // Note: if all elements are elisions or literals, then the
             // whole ArrayExpression is infallible.
@@ -1542,8 +1573,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ArrayE
                     ctx.add_instruction(Instruction::ArrayElision);
                 }
                 _ => {
-                    let expression = ele.to_expression();
-                    if let Err(e) = expression.compile(ctx).and_then(|s| s.get_value(ctx)) {
+                    if let Err(e) = ele.compile_expression(ctx).and_then(|s| s.get_value(ctx)) {
                         err = Some(e);
                         break;
                     }
@@ -1656,11 +1686,9 @@ fn compile_arguments<'s>(
             ctx.set_jump_target_here(iteration_end);
             spread_iterator_throw_handlers.push(iterator.exit(ctx));
         } else {
-            let expression = argument.to_expression();
-
             // If a parameter evaluation unconditionally fails, the rest of the
             // parameters and the call itself become unreachable.
-            if let Err(err) = expression.compile(ctx).and_then(|s| s.get_value(ctx)) {
+            if let Err(err) = argument.compile_expression(ctx).and_then(|s| s.get_value(ctx)) {
                 for v in stack_values {
                     v.forget(ctx);
                 }
@@ -2664,93 +2692,135 @@ fn compile_create_iterator_result_object(ctx: &mut CompileContext, done: bool) {
     ctx.add_instruction_with_shape(Instruction::ObjectCreateWithShape, shape);
 }
 
-impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Expression<'s> {
-    type Output = Result<PlaceOrValue<'s, 'gc>, ExpressionError>;
-    fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        match self {
-            ast::Expression::ArrayExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::ArrowFunctionExpression(x) => {
-                x.compile(ctx);
+/// Compiles the `Expression` variants of `$ty`, an enum that inherits them (`Expression`,
+/// `Argument`, `ArrayExpressionElement`, `PropertyKey`, `ForStatementInit`,
+/// `ExportDefaultDeclarationKind`), without a cast between the enums.
+macro_rules! compile_expression_variants {
+    ($ty:ident, $node:expr, $ctx:expr) => {
+        match $node {
+            ast::$ty::ArrayExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::ArrowFunctionExpression(x) => {
+                x.compile($ctx);
                 Ok(ValueOutput::Value.into())
             }
-            ast::Expression::AssignmentExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::AwaitExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::BigIntLiteral(x) => Ok(x.compile(ctx).into()),
-            ast::Expression::BinaryExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::BooleanLiteral(x) => Ok(x.compile(ctx).into()),
-            ast::Expression::CallExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::ChainExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::ClassExpression(x) => {
-                x.compile(ctx)?;
+            ast::$ty::AssignmentExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::AwaitExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::BigIntLiteral(x) => Ok(x.compile($ctx).into()),
+            ast::$ty::BinaryExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::BooleanLiteral(x) => Ok(x.compile($ctx).into()),
+            ast::$ty::CallExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::ChainExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::ClassExpression(x) => {
+                x.compile($ctx)?;
                 Ok(ValueOutput::Value.into())
             }
-            ast::Expression::ComputedMemberExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::ConditionalExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::FunctionExpression(x) => {
-                x.compile(ctx);
+            ast::$ty::ComputedMemberExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::ConditionalExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::FunctionExpression(x) => {
+                x.compile($ctx);
                 Ok(ValueOutput::Value.into())
             }
-            ast::Expression::Identifier(x) => Ok(x.compile(ctx).into()),
-            ast::Expression::ImportExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::LogicalExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::MetaProperty(x) => {
-                x.compile(ctx);
+            ast::$ty::Identifier(x) => Ok(x.compile($ctx).into()),
+            ast::$ty::ImportExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::LogicalExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::MetaProperty(x) => {
+                x.compile($ctx);
                 Ok(ValueOutput::Value.into())
             }
-            ast::Expression::NewExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::NullLiteral(x) => Ok(x.compile(ctx).into()),
-            ast::Expression::NumericLiteral(x) => Ok(x.compile(ctx).into()),
-            ast::Expression::ObjectExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::ParenthesizedExpression(x) => x.compile(ctx),
-            ast::Expression::PrivateFieldExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::PrivateInExpression(x) => x.compile(ctx).map(Into::into),
+            ast::$ty::NewExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::NullLiteral(x) => Ok(x.compile($ctx).into()),
+            ast::$ty::NumericLiteral(x) => Ok(x.compile($ctx).into()),
+            ast::$ty::ObjectExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::ParenthesizedExpression(x) => x.compile($ctx),
+            ast::$ty::PrivateFieldExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::PrivateInExpression(x) => x.compile($ctx).map(Into::into),
             #[cfg(feature = "regexp")]
-            ast::Expression::RegExpLiteral(x) => {
-                x.compile(ctx);
+            ast::$ty::RegExpLiteral(x) => {
+                x.compile($ctx);
                 Ok(ValueOutput::Value.into())
             }
             #[cfg(not(feature = "regexp"))]
-            ast::Expression::RegExpLiteral(_) => unreachable!(),
-            ast::Expression::SequenceExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::StaticMemberExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::StringLiteral(x) => Ok(x.compile(ctx).into()),
-            ast::Expression::Super(x) => {
-                x.compile(ctx);
+            ast::$ty::RegExpLiteral(_) => unreachable!(),
+            ast::$ty::SequenceExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::StaticMemberExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::StringLiteral(x) => Ok(x.compile($ctx).into()),
+            ast::$ty::Super(x) => {
+                x.compile($ctx);
                 Ok(ValueOutput::Value.into())
             }
-            ast::Expression::TaggedTemplateExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::TemplateLiteral(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::ThisExpression(x) => {
-                x.compile(ctx);
+            ast::$ty::TaggedTemplateExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::TemplateLiteral(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::ThisExpression(x) => {
+                x.compile($ctx);
                 Ok(ValueOutput::Value.into())
             }
-            ast::Expression::UnaryExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::UpdateExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::YieldExpression(x) => x.compile(ctx).map(Into::into),
-            ast::Expression::V8IntrinsicExpression(_) => {
-                ctx.mark_unsupported("V8 intrinsic expressions are not supported");
+            ast::$ty::UnaryExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::UpdateExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::YieldExpression(x) => x.compile($ctx).map(Into::into),
+            ast::$ty::V8IntrinsicExpression(_) => {
+                $ctx.mark_unsupported("V8 intrinsic expressions are not supported");
                 Ok(ValueOutput::Value.into())
             }
             #[cfg(feature = "typescript")]
-            ast::Expression::TSAsExpression(x) => x.expression.compile(ctx),
+            ast::$ty::TSAsExpression(x) => x.expression.compile($ctx),
             #[cfg(feature = "typescript")]
-            ast::Expression::TSSatisfiesExpression(x) => x.expression.compile(ctx),
+            ast::$ty::TSSatisfiesExpression(x) => x.expression.compile($ctx),
             #[cfg(feature = "typescript")]
-            ast::Expression::TSNonNullExpression(x) => x.expression.compile(ctx),
+            ast::$ty::TSNonNullExpression(x) => x.expression.compile($ctx),
             #[cfg(feature = "typescript")]
-            ast::Expression::TSTypeAssertion(x) => x.expression.compile(ctx),
+            ast::$ty::TSTypeAssertion(x) => x.expression.compile($ctx),
             #[cfg(feature = "typescript")]
-            ast::Expression::TSInstantiationExpression(x) => x.expression.compile(ctx),
-            ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_) => unreachable!(),
+            ast::$ty::TSInstantiationExpression(x) => x.expression.compile($ctx),
+            ast::$ty::JSXElement(_) | ast::$ty::JSXFragment(_) => unreachable!(),
             #[cfg(not(feature = "typescript"))]
-            ast::Expression::TSTypeAssertion(_)
-            | ast::Expression::TSInstantiationExpression(_)
-            | ast::Expression::TSAsExpression(_)
-            | ast::Expression::TSNonNullExpression(_)
-            | ast::Expression::TSSatisfiesExpression(_) => {
+            ast::$ty::TSTypeAssertion(_)
+            | ast::$ty::TSInstantiationExpression(_)
+            | ast::$ty::TSAsExpression(_)
+            | ast::$ty::TSNonNullExpression(_)
+            | ast::$ty::TSSatisfiesExpression(_) => {
                 unreachable!()
             }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
         }
+    };
+}
+
+/// Evaluation of the `Expression` variants that an enum inherits.
+pub(crate) trait CompileExpressionVariants<'s> {
+    fn compile_expression<'a, 'gc, 'scope>(
+        &'s self,
+        ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+    ) -> Result<PlaceOrValue<'s, 'gc>, ExpressionError>;
+}
+
+macro_rules! impl_compile_expression_variants {
+    ($($ty:ident),*) => {
+        $(
+            impl<'s> CompileExpressionVariants<'s> for ast::$ty<'s> {
+                fn compile_expression<'a, 'gc, 'scope>(
+                    &'s self,
+                    ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+                ) -> Result<PlaceOrValue<'s, 'gc>, ExpressionError> {
+                    compile_expression_variants!($ty, self, ctx)
+                }
+            }
+        )*
+    };
+}
+
+impl_compile_expression_variants!(
+    Argument,
+    ArrayExpressionElement,
+    PropertyKey,
+    ForStatementInit,
+    ExportDefaultDeclarationKind
+);
+
+impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Expression<'s> {
+    type Output = Result<PlaceOrValue<'s, 'gc>, ExpressionError>;
+    fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
+        compile_expression_variants!(Expression, self, ctx)
     }
 }
 
@@ -3326,8 +3396,7 @@ fn complex_object_pattern<'s>(
                     // EvaluatePropertyAccessWithExpressionKey consumes it.
                     ctx.add_instruction(Instruction::StoreCopy);
                     let base_value_copy = ctx.load_to_stack();
-                    let expr = property.key.to_expression();
-                    let output = expr.compile(ctx).and_then(|r| r.get_value(ctx));
+                    let output = property.key.compile_expression(ctx).and_then(|r| r.get_value(ctx));
                     base_value_copy.forget(ctx);
                     let output = match output {
                         Ok(r) => r,
@@ -3767,8 +3836,7 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast
                     init.compile(ctx)
                 }
                 _ => {
-                    let expr = init.as_expression().unwrap();
-                    expr.compile(ctx).and_then(|r| r.get_value(ctx)).map(|_| ())
+                    init.compile_expression(ctx).and_then(|r| r.get_value(ctx)).map(|_| ())
                 }
             }
         } else {

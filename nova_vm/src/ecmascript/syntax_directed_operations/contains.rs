@@ -9,6 +9,66 @@ use oxc_span::Ident;
 
 use crate::ecmascript::builtins::FunctionAstRef;
 
+/// `Contains` of the `Expression` variants of `$ty`, an enum that inherits them, without a
+/// cast between the enums.
+macro_rules! expression_variants_contain {
+    ($ty:ident, $node:expr, $symbol:expr) => {
+        match $node {
+            ast::$ty::BooleanLiteral(_)
+            | ast::$ty::NullLiteral(_)
+            | ast::$ty::NumericLiteral(_)
+            | ast::$ty::BigIntLiteral(_)
+            | ast::$ty::RegExpLiteral(_)
+            | ast::$ty::StringLiteral(_) => false,
+            ast::$ty::TemplateLiteral(e) => e.contains($symbol),
+            ast::$ty::Identifier(i) => {
+                $symbol == ContainsSymbol::Arguments && i.name == Ident::new_const("arguments")
+            }
+            ast::$ty::MetaProperty(e) => e.contains($symbol),
+            ast::$ty::Super(e) => e.contains($symbol),
+            ast::$ty::ArrayExpression(e) => e.contains($symbol),
+            ast::$ty::ArrowFunctionExpression(f) if $symbol == ContainsSymbol::Arguments => {
+                f.contains($symbol)
+            }
+            ast::$ty::ArrowFunctionExpression(e) => e.contains($symbol),
+            ast::$ty::AssignmentExpression(e) => e.contains($symbol),
+            ast::$ty::AwaitExpression(e) => e.contains($symbol),
+            ast::$ty::BinaryExpression(e) => e.contains($symbol),
+            ast::$ty::CallExpression(e) => e.contains($symbol),
+            ast::$ty::ChainExpression(e) => e.contains($symbol),
+            ast::$ty::ClassExpression(e) => e.contains($symbol),
+            ast::$ty::ConditionalExpression(e) => e.contains($symbol),
+            ast::$ty::FunctionExpression(e) => e.contains($symbol),
+            ast::$ty::ImportExpression(e) => e.contains($symbol),
+            ast::$ty::LogicalExpression(e) => e.contains($symbol),
+            ast::$ty::NewExpression(e) => e.contains($symbol),
+            ast::$ty::ObjectExpression(e) => e.contains($symbol),
+            ast::$ty::ParenthesizedExpression(e) => e.contains($symbol),
+            ast::$ty::SequenceExpression(e) => e.contains($symbol),
+            ast::$ty::TaggedTemplateExpression(e) => e.contains($symbol),
+            ast::$ty::ThisExpression(e) => e.contains($symbol),
+            ast::$ty::UnaryExpression(e) => e.contains($symbol),
+            ast::$ty::UpdateExpression(e) => e.contains($symbol),
+            ast::$ty::YieldExpression(e) => e.contains($symbol),
+            ast::$ty::PrivateInExpression(e) => e.contains($symbol),
+            ast::$ty::JSXElement(_) | ast::$ty::JSXFragment(_) => unreachable!(),
+            ast::$ty::TSAsExpression(e) => e.expression.contains($symbol),
+            ast::$ty::TSSatisfiesExpression(e) => e.expression.contains($symbol),
+            ast::$ty::TSTypeAssertion(e) => e.expression.contains($symbol),
+            ast::$ty::TSNonNullExpression(e) => e.expression.contains($symbol),
+            ast::$ty::TSInstantiationExpression(e) => e.expression.contains($symbol),
+            ast::$ty::V8IntrinsicExpression(e) => {
+                e.arguments.iter().any(|e| e.contains($symbol))
+            }
+            ast::$ty::ComputedMemberExpression(e) => e.contains($symbol),
+            ast::$ty::StaticMemberExpression(e) => e.contains($symbol),
+            ast::$ty::PrivateFieldExpression(e) => e.contains($symbol),
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ContainsSymbol {
     Arguments,
@@ -208,7 +268,9 @@ impl Contains for ast::ChainElement<'_> {
         match self {
             ast::ChainElement::CallExpression(e) => e.contains(symbol),
             ast::ChainElement::TSNonNullExpression(e) => e.expression.contains(symbol),
-            _ => self.as_member_expression().unwrap().contains(symbol),
+            ast::ChainElement::ComputedMemberExpression(e) => e.contains(symbol),
+            ast::ChainElement::StaticMemberExpression(e) => e.contains(symbol),
+            ast::ChainElement::PrivateFieldExpression(e) => e.contains(symbol),
         }
     }
 }
@@ -238,7 +300,7 @@ impl Contains for ast::ArrayExpressionElement<'_> {
         match self {
             ast::ArrayExpressionElement::SpreadElement(e) => e.argument.contains(symbol),
             ast::ArrayExpressionElement::Elision(_) => false,
-            _ => self.as_expression().unwrap().contains(symbol),
+            _ => expression_variants_contain!(ArrayExpressionElement, self, symbol),
         }
     }
 }
@@ -251,12 +313,17 @@ impl Contains for ast::AssignmentExpression<'_> {
 
 impl Contains for ast::AssignmentTarget<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
-        if let Some(e) = self.as_simple_assignment_target() {
-            e.contains(symbol)
-        } else {
-            self.as_assignment_target_pattern()
-                .unwrap()
-                .contains(symbol)
+        match self {
+            ast::AssignmentTarget::AssignmentTargetIdentifier(_) => false,
+            ast::AssignmentTarget::TSAsExpression(e) => e.expression.contains(symbol),
+            ast::AssignmentTarget::TSSatisfiesExpression(e) => e.expression.contains(symbol),
+            ast::AssignmentTarget::TSNonNullExpression(e) => e.expression.contains(symbol),
+            ast::AssignmentTarget::TSTypeAssertion(e) => e.expression.contains(symbol),
+            ast::AssignmentTarget::ComputedMemberExpression(e) => e.contains(symbol),
+            ast::AssignmentTarget::StaticMemberExpression(e) => e.contains(symbol),
+            ast::AssignmentTarget::PrivateFieldExpression(e) => e.contains(symbol),
+            ast::AssignmentTarget::ArrayAssignmentTarget(e) => e.contains(symbol),
+            ast::AssignmentTarget::ObjectAssignmentTarget(e) => e.contains(symbol),
         }
     }
 }
@@ -269,7 +336,9 @@ impl Contains for ast::SimpleAssignmentTarget<'_> {
             ast::SimpleAssignmentTarget::TSSatisfiesExpression(e) => e.expression.contains(symbol),
             ast::SimpleAssignmentTarget::TSNonNullExpression(e) => e.expression.contains(symbol),
             ast::SimpleAssignmentTarget::TSTypeAssertion(e) => e.expression.contains(symbol),
-            _ => self.as_member_expression().unwrap().contains(symbol),
+            ast::SimpleAssignmentTarget::ComputedMemberExpression(e) => e.contains(symbol),
+            ast::SimpleAssignmentTarget::StaticMemberExpression(e) => e.contains(symbol),
+            ast::SimpleAssignmentTarget::PrivateFieldExpression(e) => e.contains(symbol),
         }
     }
 }
@@ -311,7 +380,20 @@ impl Contains for ast::AssignmentTargetMaybeDefault<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
         match self {
             ast::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(e) => e.contains(symbol),
-            _ => self.as_assignment_target().unwrap().contains(symbol),
+            ast::AssignmentTargetMaybeDefault::AssignmentTargetIdentifier(_) => false,
+            ast::AssignmentTargetMaybeDefault::TSAsExpression(e) => e.expression.contains(symbol),
+            ast::AssignmentTargetMaybeDefault::TSSatisfiesExpression(e) => {
+                e.expression.contains(symbol)
+            }
+            ast::AssignmentTargetMaybeDefault::TSNonNullExpression(e) => {
+                e.expression.contains(symbol)
+            }
+            ast::AssignmentTargetMaybeDefault::TSTypeAssertion(e) => e.expression.contains(symbol),
+            ast::AssignmentTargetMaybeDefault::ComputedMemberExpression(e) => e.contains(symbol),
+            ast::AssignmentTargetMaybeDefault::StaticMemberExpression(e) => e.contains(symbol),
+            ast::AssignmentTargetMaybeDefault::PrivateFieldExpression(e) => e.contains(symbol),
+            ast::AssignmentTargetMaybeDefault::ArrayAssignmentTarget(e) => e.contains(symbol),
+            ast::AssignmentTargetMaybeDefault::ObjectAssignmentTarget(e) => e.contains(symbol),
         }
     }
 }
@@ -386,7 +468,7 @@ impl Contains for ast::Argument<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
         match self {
             ast::Argument::SpreadElement(e) => e.argument.contains(symbol),
-            _ => self.as_expression().unwrap().contains(symbol),
+            _ => expression_variants_contain!(Argument, self, symbol),
         }
     }
 }
@@ -406,7 +488,7 @@ impl Contains for ast::PropertyKey<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
         match self {
             ast::PropertyKey::StaticIdentifier(_) | ast::PropertyKey::PrivateIdentifier(_) => false,
-            _ => self.as_expression().unwrap().contains(symbol),
+            _ => expression_variants_contain!(PropertyKey, self, symbol),
         }
     }
 }
@@ -478,57 +560,7 @@ impl Contains for ast::PrivateFieldExpression<'_> {
 
 impl Contains for ast::Expression<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
-        match self {
-            ast::Expression::BooleanLiteral(_)
-            | ast::Expression::NullLiteral(_)
-            | ast::Expression::NumericLiteral(_)
-            | ast::Expression::BigIntLiteral(_)
-            | ast::Expression::RegExpLiteral(_)
-            | ast::Expression::StringLiteral(_) => false,
-            ast::Expression::TemplateLiteral(e) => e.contains(symbol),
-            ast::Expression::Identifier(i) => {
-                symbol == ContainsSymbol::Arguments && i.name == Ident::new_const("arguments")
-            }
-            ast::Expression::MetaProperty(e) => e.contains(symbol),
-            ast::Expression::Super(e) => e.contains(symbol),
-            ast::Expression::ArrayExpression(e) => e.contains(symbol),
-            ast::Expression::ArrowFunctionExpression(f) if symbol == ContainsSymbol::Arguments => {
-                f.contains(symbol)
-            }
-            ast::Expression::ArrowFunctionExpression(e) => e.contains(symbol),
-            ast::Expression::AssignmentExpression(e) => e.contains(symbol),
-            ast::Expression::AwaitExpression(e) => e.contains(symbol),
-            ast::Expression::BinaryExpression(e) => e.contains(symbol),
-            ast::Expression::CallExpression(e) => e.contains(symbol),
-            ast::Expression::ChainExpression(e) => e.contains(symbol),
-            ast::Expression::ClassExpression(e) => e.contains(symbol),
-            ast::Expression::ConditionalExpression(e) => e.contains(symbol),
-            ast::Expression::FunctionExpression(e) => e.contains(symbol),
-            ast::Expression::ImportExpression(e) => e.contains(symbol),
-            ast::Expression::LogicalExpression(e) => e.contains(symbol),
-            ast::Expression::NewExpression(e) => e.contains(symbol),
-            ast::Expression::ObjectExpression(e) => e.contains(symbol),
-            ast::Expression::ParenthesizedExpression(e) => e.contains(symbol),
-            ast::Expression::SequenceExpression(e) => e.contains(symbol),
-            ast::Expression::TaggedTemplateExpression(e) => e.contains(symbol),
-            ast::Expression::ThisExpression(e) => e.contains(symbol),
-            ast::Expression::UnaryExpression(e) => e.contains(symbol),
-            ast::Expression::UpdateExpression(e) => e.contains(symbol),
-            ast::Expression::YieldExpression(e) => e.contains(symbol),
-            ast::Expression::PrivateInExpression(e) => e.contains(symbol),
-            ast::Expression::JSXElement(_) | ast::Expression::JSXFragment(_) => unreachable!(),
-            ast::Expression::TSAsExpression(e) => e.expression.contains(symbol),
-            ast::Expression::TSSatisfiesExpression(e) => e.expression.contains(symbol),
-            ast::Expression::TSTypeAssertion(e) => e.expression.contains(symbol),
-            ast::Expression::TSNonNullExpression(e) => e.expression.contains(symbol),
-            ast::Expression::TSInstantiationExpression(e) => e.expression.contains(symbol),
-            ast::Expression::V8IntrinsicExpression(e) => {
-                e.arguments.iter().any(|e| e.contains(symbol))
-            }
-            ast::Expression::ComputedMemberExpression(e) => e.contains(symbol),
-            ast::Expression::StaticMemberExpression(e) => e.contains(symbol),
-            ast::Expression::PrivateFieldExpression(e) => e.contains(symbol),
-        }
+        expression_variants_contain!(Expression, self, symbol)
     }
 }
 
@@ -554,7 +586,16 @@ impl Contains for ast::ForStatementLeft<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
         match self {
             ast::ForStatementLeft::VariableDeclaration(e) => e.contains(symbol),
-            _ => self.as_assignment_target().unwrap().contains(symbol),
+            ast::ForStatementLeft::AssignmentTargetIdentifier(_) => false,
+            ast::ForStatementLeft::TSAsExpression(e) => e.expression.contains(symbol),
+            ast::ForStatementLeft::TSSatisfiesExpression(e) => e.expression.contains(symbol),
+            ast::ForStatementLeft::TSNonNullExpression(e) => e.expression.contains(symbol),
+            ast::ForStatementLeft::TSTypeAssertion(e) => e.expression.contains(symbol),
+            ast::ForStatementLeft::ComputedMemberExpression(e) => e.contains(symbol),
+            ast::ForStatementLeft::StaticMemberExpression(e) => e.contains(symbol),
+            ast::ForStatementLeft::PrivateFieldExpression(e) => e.contains(symbol),
+            ast::ForStatementLeft::ArrayAssignmentTarget(e) => e.contains(symbol),
+            ast::ForStatementLeft::ObjectAssignmentTarget(e) => e.contains(symbol),
         }
     }
 }
@@ -578,7 +619,7 @@ impl Contains for ast::ForStatementInit<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
         match self {
             ast::ForStatementInit::VariableDeclaration(e) => e.contains(symbol),
-            _ => self.as_expression().unwrap().contains(symbol),
+            _ => expression_variants_contain!(ForStatementInit, self, symbol),
         }
     }
 }
@@ -705,7 +746,7 @@ impl Contains for ast::ExportDefaultDeclaration<'_> {
             ast::ExportDefaultDeclarationKind::FunctionDeclaration(f) => f.contains(symbol),
             ast::ExportDefaultDeclarationKind::ClassDeclaration(c) => c.contains(symbol),
             ast::ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => false,
-            _ => self.declaration.as_expression().unwrap().contains(symbol),
+            _ => expression_variants_contain!(ExportDefaultDeclarationKind, &self.declaration, symbol),
         }
     }
 }
