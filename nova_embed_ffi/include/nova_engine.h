@@ -119,7 +119,13 @@ typedef bool (*nova_interrupt_fn)(void *context);
 /* A new engine with one realm and the standard globals; NULL on failure, with
  * the reason in `error` (may be NULL). `host` is required, `interrupt` may be
  * NULL. Both must stay callable with `context` until nova_engine_free.
- * memory_limit and stack_limit are bytes, 0 for none / the default. */
+ * memory_limit: heap bytes (0: none); a script that goes past it ends with
+ * NOVA_OUT_OF_MEMORY. stack_limit: native stack bytes JavaScript may use,
+ * counted from the call into the engine (0: 1 MB); deeper calls throw a
+ * catchable RangeError. Leave a quarter of the thread's stack free (about
+ * 2.8 KB per JavaScript call level in a release build). The interrupt
+ * callback is polled every 4096 instructions and native loop steps: keep it
+ * to a flag or a cheap clock check. */
 nova_engine *nova_engine_new(size_t memory_limit, size_t stack_limit, nova_host_fn host,
                              nova_interrupt_fn interrupt, void *context, nova_result *error);
 

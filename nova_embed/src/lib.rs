@@ -28,7 +28,7 @@ mod trampolines;
 mod values;
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{HashMap, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
@@ -131,8 +131,6 @@ pub(crate) struct Shared {
     host: Box<dyn Host>,
     jobs: RefCell<VecDeque<Job>>,
     slots: RefCell<Vec<Slot>>,
-    interrupted: Cell<bool>,
-    out_of_memory: Cell<bool>,
 }
 
 struct Live {
@@ -170,8 +168,6 @@ impl Engine {
             host,
             jobs: RefCell::new(VecDeque::new()),
             slots: RefCell::new(Vec::new()),
-            interrupted: Cell::new(false),
-            out_of_memory: Cell::new(false),
         });
         let guard = EntryGuard::enter(shared.clone());
         let created = catch_unwind(AssertUnwindSafe(|| {
@@ -193,7 +189,7 @@ impl Engine {
                 realm,
                 captured: HashMap::new(),
             });
-            limits::apply(&mut live.agent, &live.realm, options);
+            limits::apply(&mut live.agent, options);
             live
         }));
         drop(guard);
@@ -230,8 +226,6 @@ impl Engine {
             State::Live(live) => live,
             State::Dead(reason) => return Err(Error::Dead(reason.clone())),
         };
-        self.shared.interrupted.set(false);
-        self.shared.out_of_memory.set(false);
         let guard = EntryGuard::enter(self.shared.clone());
         let shared = &*self.shared;
         let result = catch_unwind(AssertUnwindSafe(|| work(live, shared)));
@@ -442,7 +436,7 @@ impl Engine {
     pub fn memory_used(&mut self) -> usize {
         match &mut self.state {
             State::Live(live) => {
-                catch_unwind(AssertUnwindSafe(|| limits::heap_size(&mut live.agent))).unwrap_or(0)
+                catch_unwind(AssertUnwindSafe(|| limits::heap_size(&live.agent))).unwrap_or(0)
             }
             State::Dead(_) => 0,
         }
