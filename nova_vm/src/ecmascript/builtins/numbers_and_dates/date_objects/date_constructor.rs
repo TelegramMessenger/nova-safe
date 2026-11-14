@@ -736,11 +736,18 @@ mod parse_date {
                             return None;
                         }
                         has_time = true;
-                    } else if p - start > 2 {
-                        f.year = value;
-                        has_year = true;
-                    } else if !(1..=31).contains(&value) {
-                        f.year = two_digit_year(value);
+                    } else if p - start > 2 || !(1..=31).contains(&value) {
+                        // Unlike QuickJS, which keeps the last, a second year
+                        // makes the date invalid, as in V8 and SpiderMonkey
+                        // (test262's staging/sm/Date/two-digit-years.js).
+                        if has_year {
+                            return None;
+                        }
+                        f.year = if p - start > 2 {
+                            value
+                        } else {
+                            two_digit_year(value)
+                        };
                         has_year = true;
                     } else {
                         if num_index == 3 {
