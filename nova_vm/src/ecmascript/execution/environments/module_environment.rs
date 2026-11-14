@@ -4,6 +4,7 @@
 
 use crate::hashing::AHashMap;
 
+use super::DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
 use crate::{
     ecmascript::{
         AbstractModule, AbstractModuleSlots, Agent, ExceptionType, JsError, JsResult, String,
@@ -82,7 +83,7 @@ pub(crate) fn new_module_environment<'a>(
     gc: NoGcScope<'a, '_>,
 ) -> ModuleEnvironment<'a> {
     // 1. Let env be a new Module Environment Record containing no bindings.
-    agent.heap.alloc_counter += core::mem::size_of::<Option<DeclarativeEnvironmentRecord>>()
+    agent.heap.alloc_counter += DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE
         + core::mem::size_of::<Option<ModuleEnvironmentRecord>>();
     // 2. Set env.[[OuterEnv]] to E.
     let declarative_environment = agent

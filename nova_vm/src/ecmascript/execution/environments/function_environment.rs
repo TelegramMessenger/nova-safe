@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use super::DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
 use crate::{
     ecmascript::{
         Agent, DeclarativeEnvironment, DeclarativeEnvironmentRecord, ECMAScriptFunction,
@@ -139,7 +140,7 @@ pub(crate) fn new_function_environment<'a>(
     };
     // 7. Return env.
     agent.heap.alloc_counter += core::mem::size_of::<Option<FunctionEnvironmentRecord>>()
-        + core::mem::size_of::<Option<DeclarativeEnvironmentRecord>>();
+        + DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
     agent.heap.environments.push_function_environment(env, gc)
 }
 
@@ -178,7 +179,7 @@ pub(crate) fn new_class_static_element_environment<'a>(
     };
     // 7. Return env.
     agent.heap.alloc_counter += core::mem::size_of::<Option<FunctionEnvironmentRecord>>()
-        + core::mem::size_of::<Option<DeclarativeEnvironmentRecord>>();
+        + DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
     agent.heap.environments.push_function_environment(env, gc)
 }
 
@@ -194,7 +195,7 @@ pub(crate) fn new_class_field_initializer_environment<'a>(
         .environments
         .push_declarative_environment(DeclarativeEnvironmentRecord::new(Some(outer_env)), gc);
     agent.heap.alloc_counter += core::mem::size_of::<Option<FunctionEnvironmentRecord>>()
-        + core::mem::size_of::<Option<DeclarativeEnvironmentRecord>>();
+        + DECLARATIVE_ENVIRONMENT_RECORD_ALLOC_SIZE;
     agent.heap.environments.push_function_environment(
         FunctionEnvironmentRecord {
             this_value: Some(class_instance.unbind().into()),
