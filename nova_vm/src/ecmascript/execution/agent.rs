@@ -383,6 +383,16 @@ pub trait HostHooks: core::fmt::Debug {
         false
     }
 
+    /// Seconds east of UTC of the host's local time zone at `epoch_seconds`
+    /// (seconds since the epoch), daylight saving time included: the offset
+    /// of Date's local time. The default is UTC.
+    ///
+    /// Called by every local-time Date operation: keep it cheap.
+    #[allow(unused_variables)]
+    fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
+        0
+    }
+
     /// ### [19.2.1.2 HostEnsureCanCompileStrings ( calleeRealm )](https://tc39.es/ecma262/#sec-hostensurecancompilestrings)
     #[allow(unused_variables)]
     fn ensure_can_compile_strings<'a>(

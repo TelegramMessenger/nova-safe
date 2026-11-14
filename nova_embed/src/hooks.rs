@@ -67,6 +67,12 @@ impl HostHooks for EmbedHooks {
         current().is_some_and(|shared| shared.host.should_interrupt())
     }
 
+    fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
+        current().map_or(0, |shared| {
+            shared.host.local_time_zone_offset(epoch_seconds)
+        })
+    }
+
     fn enqueue_generic_job(&self, _job: Job) {
         // Only Atomics.waitAsync makes these, and the widget build has no
         // Atomics.

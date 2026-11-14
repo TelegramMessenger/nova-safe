@@ -65,6 +65,13 @@ pub trait Host {
     fn should_interrupt(&self) -> bool {
         false
     }
+
+    /// Seconds east of UTC of the local time zone at `epoch_seconds`,
+    /// daylight saving time included: Date's local time. The default is UTC.
+    fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
+        let _ = epoch_seconds;
+        0
+    }
 }
 
 /// Limits fixed when the engine is created.

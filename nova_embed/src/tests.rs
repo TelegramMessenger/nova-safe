@@ -595,3 +595,47 @@ fn a_backtracking_regexp_is_interrupted_and_cannot_catch_it() {
         Ok(Completion::String("bbb".into()))
     );
 }
+
+#[test]
+fn local_time_is_the_hosts_time_zone() {
+    struct Dubai;
+    impl Host for Dubai {
+        fn call(&self, _id: u32, _args: Vec<HostArg>) -> HostReturn {
+            HostReturn::Undefined
+        }
+        fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
+            if epoch_seconds >= 1_782_000_000 {
+                4 * 3600 + 30 * 60 + 59
+            } else {
+                4 * 3600
+            }
+        }
+    }
+    let mut engine = Engine::new(
+        EngineOptions {
+            memory_limit: 0,
+            stack_limit: 0,
+        },
+        Box::new(Dubai),
+    )
+    .unwrap();
+    assert_eq!(
+        engine.evaluate(
+            "var d = new Date(Date.UTC(2026, 0, 15, 8, 30)); [d.getHours(), d.getMinutes(), d.getTimezoneOffset(), d.toString(), new Date(2026, 0, 15, 12, 30).getTime() === d.getTime(), new Date(Date.UTC(2026, 6, 15)).getTimezoneOffset()].join('|')",
+            false
+        ),
+        Ok(Completion::String(
+            "12|30|-240|Thu Jan 15 2026 12:30:00 GMT+0400|true|-270".into()
+        ))
+    );
+    let (mut utc, _) = engine_with_default();
+    assert_eq!(
+        utc.evaluate("new Date(Date.UTC(2026, 0, 15, 8, 30)).getHours()", false),
+        Ok(Completion::Number(8.0))
+    );
+}
+
+fn engine_with_default() -> (Engine, ()) {
+    let (engine, _) = engine();
+    (engine, ())
+}

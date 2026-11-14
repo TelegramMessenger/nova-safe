@@ -97,6 +97,10 @@ impl CliChildHooks {
 }
 
 impl HostHooks for CliChildHooks {
+    fn local_time_zone_offset(&self, _epoch_seconds: i64) -> i32 {
+        crate::host_hooks::machine_time_zone_offset()
+    }
+
     fn enqueue_generic_job(&self, job: Job) {
         self.macrotask_queue.borrow_mut().push((None, job));
     }

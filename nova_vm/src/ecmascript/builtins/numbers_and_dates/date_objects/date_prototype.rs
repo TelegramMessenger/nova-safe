@@ -553,7 +553,7 @@ impl DatePrototype {
             time_within_day(t),
         );
         // 8. Let u be TimeClip(UTC(newDate)).
-        let u = DateValue::time_clip(utc(agent, new_date));
+        let u = DateValue::time_clip(utc_or_local_time::<UTC>(agent, new_date));
         // 9. Set dateObject.[[DateValue]] to u.
         date_object.get(agent).set_date_value(agent, u);
         // 10. Return u.
@@ -618,7 +618,7 @@ impl DatePrototype {
         // 8. Let newDate be MakeDate(MakeDay(y, m, dt), TimeWithinDay(t)).
         let new_date = make_date(make_day(y, m, dt), time_within_day(t));
         // 9. Let u be TimeClip(UTC(newDate)).
-        let u = DateValue::time_clip(utc(agent, new_date));
+        let u = DateValue::time_clip(utc_or_local_time::<UTC>(agent, new_date));
         // 10. Set dateObject.[[DateValue]] to u.
         date_object.get(agent).set_date_value(agent, u);
         // 11. Return u.
@@ -701,7 +701,7 @@ impl DatePrototype {
         // 13. Let date be MakeDate(Day(t), MakeTime(h, m, s, milli)).
         let date = make_date(day(t), make_time(h, m, s, milli));
         // 14. Let u be TimeClip(UTC(date)).
-        let u = DateValue::time_clip(utc(agent, date));
+        let u = DateValue::time_clip(utc_or_local_time::<UTC>(agent, date));
         // 15. Set dateObject.[[DateValue]] to u.
         date_object.get(agent).set_date_value(agent, u);
         // 16. Return u.
@@ -742,7 +742,7 @@ impl DatePrototype {
             ms,
         );
         // 8. Let u be TimeClip(UTC(MakeDate(Day(t), time))).
-        let u = DateValue::time_clip(utc(agent, make_date(day(t), time)));
+        let u = DateValue::time_clip(utc_or_local_time::<UTC>(agent, make_date(day(t), time)));
         // 9. Set dateObject.[[DateValue]] to u.
         date_object.get(agent).set_date_value(agent, u);
         // 10. Return u.
@@ -810,7 +810,7 @@ impl DatePrototype {
         // 11. Let date be MakeDate(Day(t), MakeTime(HourFromTime(t), m, s, milli)).
         let date = make_date(day(t), make_time(hour_from_time(t) as f64, m, s, milli));
         // 12. Let u be TimeClip(UTC(date)).
-        let u = DateValue::time_clip(utc(agent, date));
+        let u = DateValue::time_clip(utc_or_local_time::<UTC>(agent, date));
         // 13. Set dateObject.[[DateValue]] to u.
         date_object.get(agent).set_date_value(agent, u);
         // 14. Return u.
@@ -867,7 +867,7 @@ impl DatePrototype {
             time_within_day(t),
         );
         // 10. Let u be TimeClip(UTC(newDate)).
-        let u = DateValue::time_clip(utc(agent, new_date));
+        let u = DateValue::time_clip(utc_or_local_time::<UTC>(agent, new_date));
         // 11. Set dateObject.[[DateValue]] to u.
         date_object.get(agent).set_date_value(agent, u);
         // 12. Return u.
@@ -924,7 +924,7 @@ impl DatePrototype {
             make_time(hour_from_time(t) as f64, min_from_time(t) as f64, s, milli),
         );
         // 10. Let u be TimeClip(UTC(date)).
-        let u = DateValue::time_clip(utc(agent, date));
+        let u = DateValue::time_clip(utc_or_local_time::<UTC>(agent, date));
         // 11. Set dateObject.[[DateValue]] to u.
         date_object.get(agent).set_date_value(agent, u);
         // 12. Return u.
@@ -1711,177 +1711,6 @@ fn ms_from_time(t: f64) -> u16 {
     (t.rem_euclid(MS_PER_SECOND)) as u16
 }
 
-/// ### [21.4.1.18 GetUTCEpochNanoseconds ( year, month, day, hour, minute, second, millisecond, microsecond, nanosecond )](https://tc39.es/ecma262/#sec-getutcepochnanoseconds)
-///
-/// The abstract operation GetUTCEpochNanoseconds takes arguments year
-/// (an integer), month (an integer in the inclusive interval from 1 to 12),
-/// day (an integer in the inclusive interval from 1 to 31), hour (an integer
-/// in the inclusive interval from 0 to 23), minute (an integer in the
-/// inclusive interval from 0 to 59), second (an integer in the inclusive
-/// interval from 0 to 59), millisecond (an integer in the inclusive interval
-/// from 0 to 999), microsecond (an integer in the inclusive interval from 0 to
-/// 999), and nanosecond (an integer in the inclusive interval from 0 to 999)
-/// and returns a BigInt. The returned value represents a number of nanoseconds
-/// since the epoch that corresponds to the given ISO 8601 calendar date and
-/// wall-clock time in UTC.
-#[allow(clippy::too_many_arguments)]
-fn get_utc_epoch_nanoseconds(
-    year: i32,
-    month: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-    second: u8,
-    millisecond: u16,
-    microsecond: u16,
-    nanosecond: u16,
-) -> i64 {
-    // 1. Let date be MakeDay(𝔽(year), 𝔽(month - 1), 𝔽(day)).
-    let date = make_day(year as f64, (month - 1) as f64, day as f64);
-    // 2. Let time be MakeTime(𝔽(hour), 𝔽(minute), 𝔽(second), 𝔽(millisecond)).
-    let time = make_time(
-        hour as f64,
-        minute as f64,
-        second as f64,
-        millisecond as f64,
-    );
-    // 3. Let ms be MakeDate(date, time).
-    let ms = make_date(date, time);
-    // 4. Assert: ms is an integral Number.
-    assert!(ms.fract() == 0.0);
-    // 5. Return ℤ(ℝ(ms) × 10**6 + microsecond × 10**3 + nanosecond).
-    (ms * 1e6 + (microsecond as f64) * 1e3 + (nanosecond as f64)) as i64
-}
-
-/// ### [21.4.1.20 GetNamedTimeZoneEpochNanoseconds ( timeZoneIdentifier, year, month, day, hour, minute, second, millisecond, microsecond, nanosecond )](https://tc39.es/ecma262/#sec-getnamedtimezoneepochnanoseconds)
-///
-/// The implementation-defined abstract operation
-/// GetNamedTimeZoneEpochNanoseconds takes arguments timeZoneIdentifier (a
-/// String), year (an integer), month (an integer in the inclusive interval
-/// from 1 to 12), day (an integer in the inclusive interval from 1 to 31),
-/// hour (an integer in the inclusive interval from 0 to 23), minute (an
-/// integer in the inclusive interval from 0 to 59), second (an integer in the
-/// inclusive interval from 0 to 59), millisecond (an integer in the inclusive
-/// interval from 0 to 999), microsecond (an integer in the inclusive interval
-/// from 0 to 999), and nanosecond (an integer in the inclusive interval from 0
-/// to 999) and returns a List of BigInts. Each value in the returned List
-/// represents a number of nanoseconds since the epoch that corresponds to the
-/// given ISO 8601 calendar date and wall-clock time in the named time zone
-/// identified by timeZoneIdentifier.
-///
-/// When the input represents a local time occurring more than once because of
-/// a negative time zone transition (e.g. when daylight saving time ends or the
-/// time zone offset is decreased due to a time zone rule change), the returned
-/// List will have more than one element and will be sorted by ascending
-/// numerical value. When the input represents a local time skipped because of
-/// a positive time zone transition (e.g. when daylight saving time begins or
-/// the time zone offset is increased due to a time zone rule change), the
-/// returned List will be empty. Otherwise, the returned List will have one
-/// element.
-///
-/// The default implementation of GetNamedTimeZoneEpochNanoseconds, to be used
-/// for ECMAScript implementations that do not include local political rules
-/// for any time zones, performs the following steps when called:
-///
-/// > NOTE: It is required for time zone aware implementations (and recommended
-/// > for all others) to use the time zone information of the IANA Time Zone
-/// > Database https://www.iana.org/time-zones/.
-/// >
-/// > 1:30 AM on 5 November 2017 in America/New_York is repeated twice, so
-/// > GetNamedTimeZoneEpochNanoseconds("America/New_York", 2017, 11, 5, 1, 30,
-/// > 0, 0, 0, 0) would return a List of length 2 in which the first element
-/// > represents 05:30 UTC (corresponding with 01:30 US Eastern Daylight Time
-/// > at UTC offset -04:00) and the second element represents 06:30 UTC
-/// > (corresponding with 01:30 US Eastern Standard Time at UTC offset -05:00).
-/// >
-/// > 2:30 AM on 12 March 2017 in America/New_York does not exist, so
-/// > GetNamedTimeZoneEpochNanoseconds("America/New_York", 2017, 3, 12, 2, 30,
-/// > 0, 0, 0, 0) would return an empty List.
-#[allow(clippy::too_many_arguments)]
-fn get_named_time_zone_epoch_nanoseconds(
-    time_zone_identifier: &str,
-    year: i32,
-    month: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-    second: u8,
-    millisecond: u16,
-    microsecond: u16,
-    nanosecond: u16,
-) -> [i64; 1] {
-    // 1. Assert: timeZoneIdentifier is "UTC".
-    assert_eq!(time_zone_identifier, "UTC");
-    // 2. Let epochNanoseconds be GetUTCEpochNanoseconds(year, month, day, hour, minute, second, millisecond, microsecond, nanosecond).
-    let epoch_nanoseconds = get_utc_epoch_nanoseconds(
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        millisecond,
-        microsecond,
-        nanosecond,
-    );
-    // 3. Return « epochNanoseconds ».
-    [epoch_nanoseconds]
-}
-
-/// ### [21.4.1.21 GetNamedTimeZoneOffsetNanoseconds ( timeZoneIdentifier, epochNanoseconds )](https://tc39.es/ecma262/#sec-getnamedtimezoneoffsetnanoseconds)
-///
-/// The implementation-defined abstract operation
-/// GetNamedTimeZoneOffsetNanoseconds takes arguments timeZoneIdentifier (a
-/// String) and epochNanoseconds (a BigInt) and returns an integer.
-///
-/// The returned integer represents the offset from UTC of the named time zone
-/// identified by timeZoneIdentifier, at the instant corresponding with
-/// epochNanoseconds relative to the epoch, both in nanoseconds.
-///
-/// The default implementation of GetNamedTimeZoneOffsetNanoseconds, to be used
-/// for ECMAScript implementations that do not include local political rules
-/// for any time zones, performs the following steps when called:
-///
-/// > NOTE: Time zone offset values may be positive or negative.
-fn get_named_time_zone_offset_nanoseconds(
-    time_zone_identifier: &str,
-    _epoch_nanoseconds: i64,
-) -> f64 {
-    // 1. Assert: timeZoneIdentifier is "UTC".
-    assert_eq!(time_zone_identifier, "UTC");
-    // 2. Return 0.
-    0.0
-}
-
-/// ### [21.4.1.24 SystemTimeZoneIdentifier ( )](https://tc39.es/ecma262/#sec-systemtimezoneidentifier)
-///
-/// The implementation-defined abstract operation SystemTimeZoneIdentifier
-/// takes no arguments and returns a String. It returns a String representing
-/// the host environment's current time zone, which is either a String
-/// representing a UTC offset for which IsTimeZoneOffsetString returns true, or
-/// a primary time zone identifier.
-///
-/// > NOTE: To ensure the level of functionality that implementations commonly
-/// > provide in the methods of the Date object, it is recommended that
-/// > SystemTimeZoneIdentifier return an IANA time zone name corresponding to
-/// > the host environment's time zone setting, if such a thing exists.
-/// > GetNamedTimeZoneEpochNanoseconds and GetNamedTimeZoneOffsetNanoseconds
-/// > must reflect the local political rules for standard time and daylight
-/// > saving time in that time zone, if such rules exist.
-/// >
-/// > For example, if the host environment is a browser on a system where the
-/// > user has chosen US Eastern Time as their time zone,
-/// > SystemTimeZoneIdentifier returns "America/New_York".
-fn system_time_zone_identifier(_agent: &Agent) -> &'static str {
-    // 1. If the implementation only supports the UTC time zone, return "UTC".
-    // 2. Let systemTimeZoneString be the String representing the host environment's
-    // current time zone, either a primary time zone identifier or an offset time zone identifier.
-    // 3. Return systemTimeZoneString.
-
-    // TODO: implement this
-    "UTC"
-}
-
 /// ### [21.4.1.25 LocalTime ( t )](https://tc39.es/ecma262/#sec-localtime)
 ///
 /// The abstract operation LocalTime takes argument t (a finite time value) and
@@ -1907,28 +1736,36 @@ fn system_time_zone_identifier(_agent: &Agent) -> &'static str {
 /// > Correspondingly, UTC(LocalTime(tUTC)) is not necessarily always equal to tUTC.
 fn local_time(agent: &Agent, t: f64) -> f64 {
     // 1. Let systemTimeZoneIdentifier be SystemTimeZoneIdentifier().
-    let system_time_zone_identifier = system_time_zone_identifier(agent);
-    // 2. If IsTimeZoneOffsetString(systemTimeZoneIdentifier) is true, then
-    let offset_ns = if is_time_zone_offset_string(system_time_zone_identifier) {
-        // a. Let offsetNs be ParseTimeZoneOffsetString(systemTimeZoneIdentifier).
-        parse_time_zone_offset_string(system_time_zone_identifier)
-    }
-    // 3. Else,
-    else {
-        // a. Let offsetNs be GetNamedTimeZoneOffsetNanoseconds(systemTimeZoneIdentifier, ℤ(ℝ(t) × 10**6)).
-        get_named_time_zone_offset_nanoseconds(
-            system_time_zone_identifier,
-            (t * 1_000_000.0) as i64,
-        )
-    };
+    // 2-3. Let offsetNs be the host's offset at t (see local_offset_ms).
     // 4. Let offsetMs be truncate(offsetNs / 10**6).
-    let offset_ms = (offset_ns / 1_000_000.0).trunc();
+    let offset_ms = local_offset_ms(agent, t);
     // 5. Return t + 𝔽(offsetMs).
     t + offset_ms
 }
 
+/// The offset of the host's local time from UTC at the instant `t` (ms since
+/// the epoch, read as UTC), in whole minutes as milliseconds: what QuickJS
+/// reads from `localtime_r`, so that local dates agree with it, daylight
+/// saving time included.
+fn local_offset_ms(agent: &Agent, t: f64) -> f64 {
+    let seconds = (t / 1000.0).trunc();
+    if !seconds.is_finite() {
+        return 0.0;
+    }
+    let seconds = seconds.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
+    let offset_seconds = agent.host_hooks.local_time_zone_offset(seconds);
+    f64::from(offset_seconds / 60) * 60_000.0
+}
+
 fn local_or_utc_time<const UTC: bool>(agent: &mut Agent, t: f64) -> f64 {
     if UTC { t } else { local_time(agent, t) }
+}
+
+/// The time value of `t`, a local time for the local setters and already a
+/// time value for the UTC ones (`setUTCHours` and friends: step 13 of
+/// SetUTCHours is TimeClip(date), without UTC).
+fn utc_or_local_time<const UTC: bool>(agent: &Agent, t: f64) -> f64 {
+    if UTC { t } else { utc(agent, t) }
 }
 
 /// ### [21.4.1.26 UTC ( t )](https://tc39.es/ecma262/#sec-utc-t)
@@ -1973,62 +1810,10 @@ pub(super) fn utc(agent: &Agent, t: f64) -> f64 {
     if !t.is_finite() {
         return f64::NAN;
     }
-    // 2. Let systemTimeZoneIdentifier be SystemTimeZoneIdentifier().
-    let system_time_zone_identifier = system_time_zone_identifier(agent);
-    // 3. If IsTimeZoneOffsetString(systemTimeZoneIdentifier) is true, then
-    let offset_ns = if is_time_zone_offset_string(system_time_zone_identifier) {
-        // a. Let offsetNs be ParseTimeZoneOffsetString(systemTimeZoneIdentifier).
-        parse_time_zone_offset_string(system_time_zone_identifier)
-    }
-    // 4. Else,
-    else {
-        // a. Let possibleInstants be GetNamedTimeZoneEpochNanoseconds(systemTimeZoneIdentifier, ℝ(YearFromTime(t)), ℝ(MonthFromTime(t)) + 1, ℝ(DateFromTime(t)), ℝ(HourFromTime(t)), ℝ(MinFromTime(t)), ℝ(SecFromTime(t)), ℝ(msFromTime(t)), 0, 0).
-        let possible_instants = get_named_time_zone_epoch_nanoseconds(
-            system_time_zone_identifier,
-            year_from_time(t),
-            month_from_time(t) + 1,
-            date_from_time(t),
-            hour_from_time(t),
-            min_from_time(t),
-            sec_from_time(t),
-            ms_from_time(t),
-            0,
-            0,
-        );
-        // b. NOTE: The following steps ensure that when t represents local
-        // time repeating multiple times at a negative time zone transition
-        // (e.g. when the daylight saving time ends or the time zone offset is
-        // decreased due to a time zone rule change) or skipped local time at a
-        // positive time zone transition (e.g. when the daylight saving time
-        // starts or the time zone offset is increased due to a time zone rule
-        // change), t is interpreted using the time zone offset before the
-        // transition.
-        // c. If possibleInstants is not empty, then
-        let disambiguated_instant = if !possible_instants.is_empty() {
-            // i. Let disambiguatedInstant be possibleInstants[0].
-            possible_instants[0]
-        }
-        // d. Else,
-        else {
-            // i. NOTE: t represents a local time skipped at a positive time
-            // zone transition (e.g. due to daylight saving time starting or a
-            // time zone rule change increasing the UTC offset).
-            // ii. Let possibleInstantsBefore be
-            // GetNamedTimeZoneEpochNanoseconds(systemTimeZoneIdentifier, ℝ
-            // (YearFromTime(tBefore)), ℝ(MonthFromTime(tBefore)) + 1, ℝ
-            // (DateFromTime(tBefore)), ℝ(HourFromTime(tBefore)), ℝ(MinFromTime
-            // (tBefore)), ℝ(SecFromTime(tBefore)), ℝ(msFromTime(tBefore)), 0,
-            // 0), where tBefore is the largest integral Number < t for which
-            // possibleInstantsBefore is not empty (i.e., tBefore represents
-            // the last local time before the transition).
-            // iii. Let disambiguatedInstant be the last element of possibleInstantsBefore.
-            todo!()
-        };
-        // e. Let offsetNs be GetNamedTimeZoneOffsetNanoseconds(systemTimeZoneIdentifier, disambiguatedInstant).
-        get_named_time_zone_offset_nanoseconds(system_time_zone_identifier, disambiguated_instant)
-    };
-    // 5. Let offsetMs be truncate(offsetNs / 10**6).
-    let offset_ms = (offset_ns / 1_000_000.0).trunc();
+    // 2-5. Let offsetMs be the host's offset at t read as an instant, as
+    //      QuickJS does: a local time skipped or repeated at a transition
+    //      takes the offset in effect at that instant.
+    let offset_ms = local_offset_ms(agent, t);
     // 6. Return t - 𝔽(offsetMs).
     t - offset_ms
 }
@@ -2182,63 +1967,6 @@ pub(super) fn make_full_year(year: f64) -> f64 {
     truncated
 }
 
-/// ### [21.4.1.33.1 IsTimeZoneOffsetString ( offsetString )](https://tc39.es/ecma262/#sec-istimezoneoffsetstring)
-///
-/// The abstract operation IsTimeZoneOffsetString takes argument offsetString
-/// (a String) and returns a Boolean. The return value indicates whether
-/// offsetString conforms to the grammar given by UTCOffset. It performs the
-/// following steps when called:
-fn is_time_zone_offset_string(_offset_string: &str) -> bool {
-    // 1. Let parseResult be ParseText(offsetString, UTCOffset).
-    let parse_result: Result<(), ()> = Err(()); // TODO:
-    // 2. If parseResult is a List of errors, return false.
-    if parse_result.is_err() {
-        return false;
-    }
-    // 3. Return true.
-    true
-}
-
-/// ### [21.4.1.33.2 ParseTimeZoneOffsetString ( offsetString )](https://tc39.es/ecma262/#sec-parsetimezoneoffsetstring)
-///
-/// The abstract operation ParseTimeZoneOffsetString takes argument
-/// offsetString (a String) and returns an integer. The return value is the UTC
-/// offset, as a number of nanoseconds, that corresponds to the String
-/// offsetString.
-fn parse_time_zone_offset_string(_offset_string: &str) -> f64 {
-    // 1. Let parseResult be ParseText(offsetString, UTCOffset).
-    // 2. Assert: parseResult is not a List of errors.
-    // 3. Assert: parseResult contains a ASCIISign Parse Node.
-    // 4. Let parsedSign be the source text matched by the ASCIISign Parse Node contained within parseResult.
-    // 5. If parsedSign is the single code point U+002D (HYPHEN-MINUS), then
-    //    a. Let sign be -1.
-    // 6. Else,
-    //    a. Let sign be 1.
-    // 7. NOTE: Applications of StringToNumber below do not lose precision, since each of the parsed values is guaranteed to be a sufficiently short string of decimal digits.
-    // 8. Assert: parseResult contains an Hour Parse Node.
-    // 9. Let parsedHours be the source text matched by the Hour Parse Node contained within parseResult.
-    // 10. Let hours be ℝ(StringToNumber(CodePointsToString(parsedHours))).
-    // 11. If parseResult does not contain a MinuteSecond Parse Node, then
-    //     a. Let minutes be 0.
-    // 12. Else,
-    //     a. Let parsedMinutes be the source text matched by the first MinuteSecond Parse Node contained within parseResult.
-    //     b. Let minutes be ℝ(StringToNumber(CodePointsToString(parsedMinutes))).
-    // 13. If parseResult does not contain two MinuteSecond Parse Nodes, then
-    //     a. Let seconds be 0.
-    // 14. Else,
-    //     a. Let parsedSeconds be the source text matched by the second MinuteSecond Parse Node contained within parseResult.
-    //     b. Let seconds be ℝ(StringToNumber(CodePointsToString(parsedSeconds))).
-    // 15. If parseResult does not contain a TemporalDecimalFraction Parse Node, then
-    //     a. Let nanoseconds be 0.
-    // 16. Else,
-    //     a. Let parsedFraction be the source text matched by the TemporalDecimalFraction Parse Node contained within parseResult.
-    //     b. Let fraction be the string-concatenation of CodePointsToString(parsedFraction) and "000000000".
-    //     c. Let nanosecondsString be the substring of fraction from 1 to 10.
-    //     d. Let nanoseconds be ℝ(StringToNumber(nanosecondsString)).
-    // 17. Return sign × (((hours × 60 + minutes) × 60 + seconds) × 10**9 + nanoseconds).
-    todo!()
-}
-
 /// ### [21.4.4.41.1 TimeString ( tv )](https://tc39.es/ecma262/#sec-timestring)
 ///
 /// The abstract operation TimeString takes argument tv (a Number, but not NaN)
@@ -2304,23 +2032,8 @@ fn date_string(tv: f64) -> std::string::String {
 /// The abstract operation TimeZoneString takes argument tv (an integral
 /// Number) and returns a String.
 fn time_zone_string(agent: &Agent, tv: f64) -> std::string::String {
-    // 1. Let systemTimeZoneIdentifier be SystemTimeZoneIdentifier().
-    let system_time_zone_identifier = system_time_zone_identifier(agent);
-    // 2. If IsTimeZoneOffsetString(systemTimeZoneIdentifier) is true, then
-    let offset_ns = if is_time_zone_offset_string(system_time_zone_identifier) {
-        // a. Let offsetNs be ParseTimeZoneOffsetString(systemTimeZoneIdentifier).
-        parse_time_zone_offset_string(system_time_zone_identifier)
-    }
-    // 3. Else,
-    else {
-        // a. Let offsetNs be GetNamedTimeZoneOffsetNanoseconds(systemTimeZoneIdentifier, ℤ(ℝ(tv) × 10**6)).
-        get_named_time_zone_offset_nanoseconds(
-            system_time_zone_identifier,
-            (tv * 1_000_000.0) as i64,
-        )
-    };
-    // 4. Let offset be 𝔽(truncate(offsetNs / 10**6)).
-    let offset = (offset_ns / 1_000_000.0).trunc();
+    // 1-4. Let offset be the host's offset at tv, in milliseconds.
+    let offset = local_offset_ms(agent, tv);
     // 5. If offset is +0𝔽 or offset > +0𝔽, then
     let (offset_sign, abs_offset) = if offset >= 0.0 {
         // a. Let offsetSign be "+".

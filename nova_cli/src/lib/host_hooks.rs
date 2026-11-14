@@ -114,7 +114,37 @@ impl CliHostHooks {
     }
 }
 
+/// Seconds east of UTC of this machine's time zone, read once from `date +%z`
+/// (std has no time zone API; `date` honours `TZ`). 0 when that fails. One
+/// offset for every date: a time zone with daylight saving time gets the
+/// offset in effect when the program started.
+pub fn machine_time_zone_offset() -> i32 {
+    static OFFSET: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        let Ok(output) = std::process::Command::new("date").arg("+%z").output() else {
+            return 0;
+        };
+        let text = std::string::String::from_utf8_lossy(&output.stdout);
+        let text = text.trim();
+        let (sign, digits) = match text.as_bytes().first() {
+            Some(b'-') => (-1, &text[1..]),
+            Some(b'+') => (1, &text[1..]),
+            _ => return 0,
+        };
+        if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return 0;
+        }
+        let hours: i32 = digits[..2].parse().unwrap_or(0);
+        let minutes: i32 = digits[2..].parse().unwrap_or(0);
+        sign * (hours * 3600 + minutes * 60)
+    })
+}
+
 impl HostHooks for CliHostHooks {
+    fn local_time_zone_offset(&self, _epoch_seconds: i64) -> i32 {
+        machine_time_zone_offset()
+    }
+
     fn check_interrupt(&self) -> bool {
         self.interrupt_at
             .get()
