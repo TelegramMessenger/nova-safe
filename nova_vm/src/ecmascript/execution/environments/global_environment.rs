@@ -457,8 +457,11 @@ impl<'e> GlobalEnvironment<'e> {
         // 1. Let DclRec be envRec.[[DeclarativeRecord]].
         let dcl_rec = env_rec.declarative_record;
         // 2. If ! DclRec.HasBinding(N) is true, then
-        if dcl_rec.has_binding(agent, n) {
+        if let Some(binding) = dcl_rec.get_binding(agent, n) {
             // a. Return ? DclRec.GetBindingValue(N, S).
+            if let Some(value) = binding.value {
+                return TryResult::Continue(value.bind(gc));
+            }
             js_result_into_try(dcl_rec.get_binding_value(agent, n, s, gc))
         } else {
             // 3. Let ObjRec be envRec.[[ObjectRecord]].

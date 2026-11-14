@@ -235,6 +235,12 @@ pub(crate) fn new_class_field_initializer_environment<'a>(
     )
 }
 
+impl FunctionEnvironmentRecord {
+    pub(super) fn declarative_environment(&self) -> DeclarativeEnvironment<'static> {
+        self.declarative_environment
+    }
+}
+
 impl<'e> FunctionEnvironment<'e> {
     pub(crate) fn get_function_object(self, agent: &Agent) -> Function<'e> {
         self.get(agent).function_object
