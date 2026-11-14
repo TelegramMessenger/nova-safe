@@ -638,13 +638,15 @@ pub(crate) fn is_loosely_equal<'a>(
     // 9. If x is a Boolean, return ! IsLooselyEqual(! ToNumber(x), y).
     if let Ok(x) = bool::try_from(x) {
         let x = if x { 1 } else { 0 };
-        return Ok(is_loosely_equal(agent, x, y, gc).unwrap());
+        // Note: ToPrimitive of an Object y can throw, despite the `!`.
+        return is_loosely_equal(agent, x, y, gc);
     }
 
     // 10. If y is a Boolean, return ! IsLooselyEqual(x, ! ToNumber(y)).
     if let Ok(y) = bool::try_from(y) {
         let y = if y { 1 } else { 0 };
-        return Ok(is_loosely_equal(agent, x, y, gc).unwrap());
+        // Note: ToPrimitive of an Object y can throw, despite the `!`.
+        return is_loosely_equal(agent, x, y, gc);
     }
 
     // 11. If x is either a String, a Number, a BigInt, or a Symbol and y is an Object, return ! IsLooselyEqual(x, ? ToPrimitive(y)).
@@ -653,7 +655,7 @@ pub(crate) fn is_loosely_equal<'a>(
         let y = to_primitive(agent, y, None, gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        return Ok(is_loosely_equal(agent, x.get(agent), y.unbind(), gc).unwrap());
+        return is_loosely_equal(agent, x.get(agent), y.unbind(), gc);
     }
 
     // 12. If x is an Object and y is either a String, a Number, a BigInt, or a Symbol, return ! IsLooselyEqual(? ToPrimitive(x), y).
@@ -662,7 +664,7 @@ pub(crate) fn is_loosely_equal<'a>(
         let x = to_primitive(agent, x, None, gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        return Ok(is_loosely_equal(agent, x.unbind(), y.get(agent), gc).unwrap());
+        return is_loosely_equal(agent, x.unbind(), y.get(agent), gc);
     }
 
     // 13. If x is a BigInt and y is a Number, or if x is a Number and y is a BigInt, then
