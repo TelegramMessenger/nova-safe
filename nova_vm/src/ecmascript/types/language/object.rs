@@ -1019,6 +1019,19 @@ impl<'a> OrdinaryObject<'a> {
 }
 
 macro_rules! object_delegate {
+    // A Proxy's internal methods root handles (and its target's do too) that
+    // are dead once they return: drop them, so a native loop over a Proxy
+    // holds a bounded number of roots instead of one set per element.
+    (@rooted $value: ident, $method: ident, $agent: ident $(, $arg:expr)* $(,)?) => {
+        if let Self::Proxy(data) = $value {
+            let roots = $agent.stack_refs.borrow().len();
+            let result = data.$method($agent $(, $arg)*);
+            $agent.stack_refs.borrow_mut().truncate(roots);
+            result
+        } else {
+            object_delegate!($value, $method, $agent $(, $arg)*)
+        }
+    };
     ($value: ident, $method: ident, $($arg:expr),*) => {
         match $value {
             Self::Object(data) => data.$method($($arg),+),
@@ -1181,7 +1194,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         agent: &mut Agent,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Option<Object<'gc>>> {
-        object_delegate!(self, internal_get_prototype_of, agent, gc)
+        object_delegate!(@rooted self, internal_get_prototype_of, agent, gc)
     }
 
     fn try_set_prototype_of<'gc>(
@@ -1199,7 +1212,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         prototype: Option<Object>,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
-        object_delegate!(self, internal_set_prototype_of, agent, prototype, gc)
+        object_delegate!(@rooted self, internal_set_prototype_of, agent, prototype, gc)
     }
 
     fn try_is_extensible<'gc>(
@@ -1215,7 +1228,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         agent: &mut Agent,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
-        object_delegate!(self, internal_is_extensible, agent, gc)
+        object_delegate!(@rooted self, internal_is_extensible, agent, gc)
     }
 
     fn try_prevent_extensions<'gc>(
@@ -1231,7 +1244,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         agent: &mut Agent,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
-        object_delegate!(self, internal_prevent_extensions, agent, gc)
+        object_delegate!(@rooted self, internal_prevent_extensions, agent, gc)
     }
 
     fn try_get_own_property<'gc>(
@@ -1250,7 +1263,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         property_key: PropertyKey,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Option<PropertyDescriptor<'gc>>> {
-        object_delegate!(self, internal_get_own_property, agent, property_key, gc)
+        object_delegate!(@rooted self, internal_get_own_property, agent, property_key, gc)
     }
 
     fn try_define_own_property<'gc>(
@@ -1280,7 +1293,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
         object_delegate!(
-            self,
+            @rooted self,
             internal_define_own_property,
             agent,
             property_key,
@@ -1305,7 +1318,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         property_key: PropertyKey,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
-        object_delegate!(self, internal_has_property, agent, property_key, gc)
+        object_delegate!(@rooted self, internal_has_property, agent, property_key, gc)
     }
 
     fn try_get<'gc>(
@@ -1326,7 +1339,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         receiver: Value,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
-        object_delegate!(self, internal_get, agent, property_key, receiver, gc)
+        object_delegate!(@rooted self, internal_get, agent, property_key, receiver, gc)
     }
 
     fn try_set<'gc>(
@@ -1358,7 +1371,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         receiver: Value,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
-        object_delegate!(self, internal_set, agent, property_key, value, receiver, gc)
+        object_delegate!(@rooted self, internal_set, agent, property_key, value, receiver, gc)
     }
 
     fn try_delete<'gc>(
@@ -1376,7 +1389,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         property_key: PropertyKey,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
-        object_delegate!(self, internal_delete, agent, property_key, gc)
+        object_delegate!(@rooted self, internal_delete, agent, property_key, gc)
     }
 
     fn try_own_property_keys<'gc>(
@@ -1392,7 +1405,7 @@ impl<'a> InternalMethods<'a> for Object<'a> {
         agent: &mut Agent,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Vec<PropertyKey<'gc>>> {
-        object_delegate!(self, internal_own_property_keys, agent, gc)
+        object_delegate!(@rooted self, internal_own_property_keys, agent, gc)
     }
 
     fn get_own_property_at_offset<'gc>(

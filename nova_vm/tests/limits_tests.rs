@@ -811,8 +811,10 @@ fn replace_with_script_sized_results_is_bounded() {
 }
 
 #[test]
-fn rooted_handles_of_native_proxy_loops_count_toward_the_heap_limit() {
+fn native_loops_over_proxies_hold_bounded_roots() {
     on_big_stack(|| {
+        // Endless loops through trapless Proxies: their per-element roots are
+        // dropped, so they stay under the limit until the interrupt.
         for source in [
             "var t = {}; var p = new Proxy(t, {}); Object.setPrototypeOf(t, p); p instanceof Function",
             "Array.prototype.indexOf.call(new Proxy({ length: 2 ** 53 - 1 }, {}), 1)",
@@ -820,14 +822,38 @@ fn rooted_handles_of_native_proxy_loops_count_toward_the_heap_limit() {
         ] {
             let mut engine = Engine::new();
             engine.agent.set_heap_limit(Some(32 * 1024 * 1024));
-            let outcome = engine.run(source, Some(Duration::from_secs(120)));
+            let outcome = engine.run(source, Some(Duration::from_secs(2)));
             assert_eq!(
                 outcome,
-                Outcome::Terminated(TerminationReason::OutOfMemory),
+                Outcome::Terminated(TerminationReason::Interrupted),
                 "{source}"
             );
+            assert!(engine.agent.heap_size() < 32 * 1024 * 1024, "{source}");
             engine.agent.set_heap_limit(None);
             engine.assert_usable();
         }
+        // A loop that really grows still ends at the limit.
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(32 * 1024 * 1024));
+        assert_eq!(
+            engine.run(
+                "Array.from((function* () { for (;;) yield { a: 1 }; })())",
+                Some(Duration::from_secs(300)),
+            ),
+            Outcome::Terminated(TerminationReason::OutOfMemory)
+        );
+        // Builtins writing through a Proxy over a big array finish under a
+        // small limit (reactive proxies over chart data).
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(8 * 1024 * 1024));
+        assert_eq!(
+            engine.run(
+                "var base = []; for (var i = 0; i < 100000; i++) base.push(i); var p = new Proxy(base, {}); Array.prototype.fill.call(p, 2); Array.prototype.reverse.call(p); Array.prototype.copyWithin.call(p, 0, 1); Array.prototype.splice.call(p, 0, 1); Array.prototype.shift.call(p); Array.prototype.unshift.call(p, 1); p.length",
+                Some(Duration::from_secs(300)),
+            ),
+            Outcome::Value("99999".into())
+        );
+        engine.agent.set_heap_limit(None);
+        engine.assert_usable();
     });
 }
