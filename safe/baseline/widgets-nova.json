@@ -4,7 +4,7 @@
  "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/activation-pointer-capture.html": "c17eb4853a7384774416bcde6a7e34a90527cb3f95f84c69a4147bf67542822c",
  "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/activation-scroll-hover.html": "84698e154b3a8d244b17e2195dcfaeddb11dfbb4efc9b302339af2b41752237f",
  "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/activation-synthetic-input.html": "0d4fa10f84122739561cabe9ec886467966f852fdd9c22f6f5336a4a6163ba93",
- "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/activation-timers.html": "2d274d63a8e975403160c2c9161fd3b8f53f07fbaa72c7cd5049c4a6f3434b38",
+ "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/activation-timers.html": "e4300d2f01776d6986a21fb750c28ea0e440ced651375f079032be9e28bdae70",
  "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/activation-touch-swipe.html": "4c276044b0e9a928d63072250235cc6d5b2052e52155e00ffed5a1a25c8b1653",
  "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/api-anchor-autoclick.html": "a931eb17a6c89c085dcd8d5372f65d84c2f7309571438f166ccc7628c86bb629",
  "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/corpus/attacks/api-css-adopted.html": "00e51eacb4004a83ed933c20b36799b8e9aac318dd673910223edcdfdcf00559",
@@ -506,6 +506,6 @@
  "/Users/renoir/projects/Telegram/telegrammacos/tools/perflab/TwidgetLab/widgets/transition-modal.html": "e7f7c34415365cf6a3011136b0f2287638bbb614ff0336902c7e0c5cf854716e",
  "/Users/renoir/projects/Telegram/telegrammacos/tools/perflab/TwidgetLab/widgets/waapi-api.html": "ae52a68c3dcd1a85d5bbaf8ad6737675dd4bb58c178c34df226a1827d47d9a96",
  "/Users/renoir/projects/Telegram/telegrammacos/tools/perflab/TwidgetLab/widgets/waapi-css.html": "2b08de5d6d0665711f3002e4915d1ee8e8356e089a8fca6a3063c5cca814bd37",
- "/Users/renoir/projects/Telegram/telegrammacos/tools/perflab/TwidgetLab/widgets/waapi-events.html": "512a92e1d3b7c050b29dc9b54a5608175584908e3997235fe3e37cfbdd2175b0",
+ "/Users/renoir/projects/Telegram/telegrammacos/tools/perflab/TwidgetLab/widgets/waapi-events.html": "e235e638ddcf6f94b0b4c014886256edee8692cde8186ffefe4fa962a7d06282",
  "/Users/renoir/projects/Telegram/telegrammacos/tools/perflab/TwidgetLab/widgets/waapi-showcase.html": "194581d95c51fd8a5b3f346d65ee04fa96c7637be0c83cf2bc03177e0ffd7dcc"
 }
