@@ -1,4 +1,4 @@
-use memchr::memmem::Finder;
+use crate::byte_search::memmem::Finder;
 
 use oxc_ast::CommentKind;
 use oxc_syntax::line_terminator::is_line_terminator;

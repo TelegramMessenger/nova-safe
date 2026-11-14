@@ -1,4 +1,4 @@
-use memchr::memchr_iter;
+use crate::byte_search::memchr_iter;
 use oxc_ast::ast::{Comment, CommentContent, CommentKind, CommentPosition};
 use oxc_span::Span;
 
