@@ -254,6 +254,22 @@ fn sloppy_block_function_declared_twice() {
 }
 
 #[test]
+fn regexp_last_index_past_the_safe_integers() {
+    let source = r#"
+        var r = /./g;
+        var called = false;
+        r.exec = function () {
+            if (called) return null;
+            called = true;
+            r.lastIndex = 2 ** 54;
+            return { length: 1, 0: "", index: 0 };
+        };
+        r[Symbol.replace]("", "");
+    "#;
+    assert_eq!(run(source, "r.lastIndex", None), "9007199254740992");
+}
+
+#[test]
 fn scripts_with_more_constants_than_16_bit_indices() {
     let count = 70_000;
     let mut source = std::string::String::from("var a = [");
