@@ -103,13 +103,16 @@ fn stack_address() -> usize {
 }
 
 impl Limits {
-    fn update_gc_threshold(&mut self) {
+    /// `interval` is the collector's own pacing (Heap::gc_alloc_limit). Near
+    /// the heap limit the next collection comes sooner, so that the heap is
+    /// collected before a script is found over the limit.
+    fn update_gc_threshold(&mut self, interval: usize) {
         self.gc_threshold = match self.heap_limit {
             Some(limit) => {
                 let headroom = limit.saturating_sub(self.live_bytes_after_gc);
-                GC_ALLOCATION_INTERVAL.min(headroom.max(MIN_GC_ALLOCATION_INTERVAL))
+                interval.min(headroom.max(MIN_GC_ALLOCATION_INTERVAL))
             }
-            None => GC_ALLOCATION_INTERVAL,
+            None => interval,
         };
     }
 }
@@ -123,7 +126,7 @@ impl Agent {
     /// past it is refused with a RangeError before anything is allocated.
     pub fn set_heap_limit(&mut self, limit: Option<usize>) {
         self.limits.heap_limit = limit;
-        self.limits.update_gc_threshold();
+        self.limits.update_gc_threshold(self.heap.gc_alloc_limit);
     }
 
     /// The heap limit set with [`Agent::set_heap_limit`].
@@ -406,7 +409,7 @@ impl Agent {
     pub(crate) fn after_gc(&mut self) {
         self.heap.data_bytes_since_gc = 0;
         self.limits.live_bytes_after_gc = self.heap.estimate_live_bytes();
-        self.limits.update_gc_threshold();
+        self.limits.update_gc_threshold(self.heap.gc_alloc_limit);
         if let Some(limit) = self.limits.heap_limit
             && self.limits.live_bytes_after_gc > limit
         {

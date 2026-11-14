@@ -510,3 +510,26 @@ fn rebinding_does_not_grow_names_without_bound() {
         );
     });
 }
+
+#[test]
+fn heap_limit_holds_with_a_large_live_heap() {
+    on_big_stack(|| {
+        // A large live heap spaces collections further apart (16 bytes of
+        // allocation per live item); near the limit they must come sooner.
+        // (Arrays stay under 65536 elements: a longer one takes a storage
+        // slot of 2^24 elements.)
+        let mut engine = Engine::new();
+        let limit = 48 * 1024 * 1024;
+        engine.agent.set_heap_limit(Some(limit));
+        let outcome = engine.run(
+            "const keep = []; let chunk = []; for (let i = 0; ; i++) { chunk.push({ i }); if (chunk.length === 1000) { keep.push(chunk); chunk = []; } }",
+            Some(Duration::from_secs(60)),
+        );
+        assert_eq!(outcome, Outcome::Terminated(TerminationReason::OutOfMemory));
+        let size = engine.agent.heap_size();
+        // The allocation counter undercounts what the estimate finds live
+        // (element storage, property storage), so the last collection can
+        // find the heap past the limit by a part of the headroom it allowed.
+        assert!(size <= limit + limit / 2, "{size}");
+    });
+}

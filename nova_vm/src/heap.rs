@@ -184,6 +184,9 @@ pub(crate) struct Heap {
     /// allocated since the last garbage collection, for the heap limit. Not
     /// part of the garbage collector's pacing.
     pub(crate) data_bytes_since_gc: usize,
+    /// Allocation count after which the next garbage collection runs when no
+    /// heap limit is near.
+    pub(crate) gc_alloc_limit: usize,
 }
 
 pub(crate) trait CreateHeapData<T, F> {
@@ -350,6 +353,7 @@ impl Heap {
             weak_sets: Vec::with_capacity(0),
             alloc_counter: 0,
             data_bytes_since_gc: 0,
+            gc_alloc_limit: crate::heap::heap_gc::MIN_GC_ALLOC_LIMIT,
         };
 
         const {

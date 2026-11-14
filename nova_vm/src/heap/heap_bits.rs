@@ -574,6 +574,13 @@ pub(crate) struct WorkQueues<'a> {
 }
 
 impl HeapBits {
+    pub(crate) fn marked_count(&self) -> usize {
+        self.bits
+            .iter()
+            .map(|byte| byte.0.load(Ordering::Relaxed).count_ones() as usize)
+            .sum()
+    }
+
     pub(crate) fn new(heap: &Heap) -> Self {
         let mut bit_count = 0;
 
