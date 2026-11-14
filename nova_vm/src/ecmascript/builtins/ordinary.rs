@@ -8,11 +8,7 @@ mod shape;
 pub use caches::*;
 pub use shape::*;
 
-use std::{
-    collections::{TryReserveError, hash_map::Entry},
-    ops::ControlFlow,
-    vec,
-};
+use std::{collections::TryReserveError, ops::ControlFlow, vec};
 
 #[cfg(feature = "shared-array-buffer")]
 use crate::ecmascript::SharedDataViewRecord;
@@ -63,10 +59,10 @@ impl<'a> InternalMethods<'a> for OrdinaryObject<'a> {
     ) -> TryGetResult<'gc> {
         let offset = offset.get_property_offset();
         let obj = self.bind(gc);
-        let data = obj.get_elements_storage(agent);
-        if let Some(v) = data.values[offset as usize] {
+        if let Some(v) = obj.get_elements_values(agent)[offset as usize] {
             v.into()
         } else {
+            let data = obj.get_elements_storage(agent);
             let d = data
                 .descriptors
                 .and_then(|d| d.get(&(offset as u32)))
@@ -1361,18 +1357,12 @@ pub(crate) fn ordinary_set_at_offset<'a>(
 
     // OrdinarySetWithOwnDescriptor
     let offset = offset.get_property_offset();
-    let data = bo
-        .expect("OrdinarySet at offset with valid offset but no backing object")
-        .get_elements_storage_mut(agent);
-    if let Some(slot) = &mut data.values[offset as usize] {
+    let bo = bo.expect("OrdinarySet at offset with valid offset but no backing object");
+    let data = bo.get_elements_storage(agent);
+    let descriptor = data.descriptors.and_then(|d| d.get(&(offset as u32)));
+    if data.values[offset as usize].is_some() {
         // 2. If IsDataDescriptor(ownDesc) is true, then
-        let writable = match data.descriptors {
-            Entry::Occupied(e) => e
-                .get()
-                .get(&(offset as u32))
-                .is_none_or(|d| d.is_writable().unwrap()),
-            Entry::Vacant(_) => true,
-        };
+        let writable = descriptor.is_none_or(|d| d.is_writable().unwrap());
         if !writable {
             return SetResult::Unwritable.into();
         }
@@ -1380,17 +1370,14 @@ pub(crate) fn ordinary_set_at_offset<'a>(
             // ## 2.d.
             // iii. Let valueDesc be the PropertyDescriptor { [[Value]]: V }.
             // iv. Return ? Receiver.[[DefineOwnProperty]](P, valueDesc).
-            *slot = v.unbind();
+            bo.get_elements_values_mut(agent)[offset as usize] = Some(v.unbind());
             SetResult::Done.into()
         } else {
             // b. If Receiver is not an Object, return false.
             handle_super_set_inner(agent, p, v, receiver, None, gc)
         }
     } else {
-        let Entry::Occupied(e) = data.descriptors else {
-            unreachable!()
-        };
-        let d = e.get().get(&(offset as u32)).unwrap();
+        let d = descriptor.expect("an accessor property has a descriptor");
         debug_assert!(d.is_accessor_descriptor());
         d.setter_function(gc)
             .map_or(SetResult::Accessor, SetResult::Set)

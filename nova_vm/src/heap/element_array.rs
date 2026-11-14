@@ -1729,6 +1729,15 @@ impl<const N: usize> ElementArray<N> {
         &mut self.values[vector.elements_index][0..vector.len() as usize]
     }
 
+    #[inline]
+    fn get_values_mut_raw(
+        &mut self,
+        index: ElementIndex,
+        len: u32,
+    ) -> &mut [Option<Value<'static>>] {
+        &mut self.values[index][0..len as usize]
+    }
+
     fn get_descriptors_and_values_raw<'gc>(
         &self,
         index: ElementIndex<'gc>,
@@ -4103,6 +4112,86 @@ impl ElementArrays {
             ElementArrayKey::E16 => e2pow16.get_descriptors_and_values_raw(index, len),
             ElementArrayKey::E24 => e2pow24.get_descriptors_and_values_raw(index, len),
             ElementArrayKey::E32 => e2pow32.get_descriptors_and_values_raw(index, len),
+        }
+    }
+
+    /// Get shared access to the value slots of an elements storage, without
+    /// looking up its descriptors.
+    ///
+    /// Value slots with None are either array holes, or accessor properties.
+    pub(crate) fn get_element_values_raw(
+        &self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        len: u32,
+    ) -> &[Option<Value<'static>>] {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => &[],
+            ElementArrayKey::E1 => e2pow1.get_values_raw(index, len),
+            ElementArrayKey::E2 => e2pow2.get_values_raw(index, len),
+            ElementArrayKey::E3 => e2pow3.get_values_raw(index, len),
+            ElementArrayKey::E4 => e2pow4.get_values_raw(index, len),
+            ElementArrayKey::E6 => e2pow6.get_values_raw(index, len),
+            ElementArrayKey::E8 => e2pow8.get_values_raw(index, len),
+            ElementArrayKey::E10 => e2pow10.get_values_raw(index, len),
+            ElementArrayKey::E12 => e2pow12.get_values_raw(index, len),
+            ElementArrayKey::E16 => e2pow16.get_values_raw(index, len),
+            ElementArrayKey::E24 => e2pow24.get_values_raw(index, len),
+            ElementArrayKey::E32 => e2pow32.get_values_raw(index, len),
+        }
+    }
+
+    /// Get exclusive access to the value slots of an elements storage,
+    /// without looking up its descriptors.
+    ///
+    /// Value slots with None are either array holes, or accessor properties.
+    pub(crate) fn get_element_values_mut_raw(
+        &mut self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        len: u32,
+    ) -> &mut [Option<Value<'static>>] {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => &mut [],
+            ElementArrayKey::E1 => e2pow1.get_values_mut_raw(index, len),
+            ElementArrayKey::E2 => e2pow2.get_values_mut_raw(index, len),
+            ElementArrayKey::E3 => e2pow3.get_values_mut_raw(index, len),
+            ElementArrayKey::E4 => e2pow4.get_values_mut_raw(index, len),
+            ElementArrayKey::E6 => e2pow6.get_values_mut_raw(index, len),
+            ElementArrayKey::E8 => e2pow8.get_values_mut_raw(index, len),
+            ElementArrayKey::E10 => e2pow10.get_values_mut_raw(index, len),
+            ElementArrayKey::E12 => e2pow12.get_values_mut_raw(index, len),
+            ElementArrayKey::E16 => e2pow16.get_values_mut_raw(index, len),
+            ElementArrayKey::E24 => e2pow24.get_values_mut_raw(index, len),
+            ElementArrayKey::E32 => e2pow32.get_values_mut_raw(index, len),
         }
     }
 

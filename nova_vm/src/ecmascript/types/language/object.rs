@@ -497,6 +497,43 @@ impl<'a> OrdinaryObject<'a> {
         )
     }
 
+    /// The value slots of the Object's property storage, without its
+    /// descriptors: None is an accessor property.
+    pub(crate) fn get_elements_values<'b>(self, agent: &'b Agent) -> &'b [Option<Value<'a>>] {
+        let Heap {
+            elements,
+            objects,
+            object_shapes,
+            ..
+        } = &agent.heap;
+        let data = self.get_direct(objects);
+        elements.get_element_values_raw(
+            data.get_values(),
+            data.values_capacity(object_shapes),
+            data.len(object_shapes),
+        )
+    }
+
+    /// Exclusive access to the value slots of the Object's property storage,
+    /// without its descriptors.
+    pub(crate) fn get_elements_values_mut<'b>(
+        self,
+        agent: &'b mut Agent,
+    ) -> &'b mut [Option<Value<'static>>] {
+        let Heap {
+            elements,
+            objects,
+            object_shapes,
+            ..
+        } = &mut agent.heap;
+        let data = self.get_direct(objects);
+        elements.get_element_values_mut_raw(
+            data.get_values(),
+            data.values_capacity(object_shapes),
+            data.len(object_shapes),
+        )
+    }
+
     pub(crate) fn get_elements_storage_mut<'b>(
         self,
         agent: &'b mut Agent,
