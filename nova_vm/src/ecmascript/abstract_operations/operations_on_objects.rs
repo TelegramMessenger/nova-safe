@@ -669,7 +669,20 @@ pub(crate) fn call<'gc>(
     let arguments_list = arguments_list.unwrap_or_default();
     // 2. If IsCallable(F) is false, throw a TypeError exception.
     match is_callable(f, gc.nogc()) {
-        None => Err(throw_not_callable(agent, gc.into_nogc()).unbind()),
+        None => {
+            // A Proxy whose target is callable has a [[Call]] too.
+            if let Value::Proxy(proxy) = f
+                && proxy.is_callable(agent, gc.nogc())
+            {
+                let current_stack_size = agent.stack_refs.borrow().len();
+                let result = proxy
+                    .unbind()
+                    .internal_call(agent, v, arguments_list, gc);
+                agent.stack_refs.borrow_mut().truncate(current_stack_size);
+                return result;
+            }
+            Err(throw_not_callable(agent, gc.into_nogc()).unbind())
+        }
         // 3. Return ? F.[[Call]](V, argumentsList).
         Some(f) => {
             let current_stack_size = agent.stack_refs.borrow().len();

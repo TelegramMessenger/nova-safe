@@ -460,3 +460,33 @@ fn math_random_is_per_agent() {
         assert_ne!(a, c);
     });
 }
+
+#[test]
+fn callable_proxies_can_be_called() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        assert_eq!(
+            engine.run("new Proxy(function () { return 1; }, {})()", None),
+            Outcome::Value("1".into())
+        );
+        assert_eq!(
+            engine.run(
+                "new Proxy(new Proxy(function () { return 2; }, {}), {})()",
+                None
+            ),
+            Outcome::Value("2".into())
+        );
+        assert_eq!(
+            engine.run(
+                "var f = function () { return 7; }; for (let i = 0; i < 1e5; i++) f = new Proxy(f, {}); typeof f",
+                None
+            ),
+            Outcome::Value("function".into())
+        );
+        assert_eq!(
+            engine.run("f()", None),
+            thrown("RangeError: Maximum call stack size exceeded")
+        );
+        engine.assert_usable();
+    });
+}
