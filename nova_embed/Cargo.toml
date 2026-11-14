@@ -12,15 +12,4 @@ categories.workspace = true
 publish = false
 
 [dependencies]
-nova_vm = { path = "../nova_vm", default-features = false, features = [
-    "math",
-    "json",
-    "date",
-    "array-buffer",
-    "shared-array-buffer",
-    "atomics",
-    "weak-refs",
-    "regexp",
-    "set",
-    "annex-b",
-] }
+nova_vm = { path = "../nova_vm", default-features = false, features = ["widget"] }
