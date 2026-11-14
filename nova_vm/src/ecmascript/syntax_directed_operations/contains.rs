@@ -78,10 +78,6 @@ pub(crate) enum ContainsSymbol {
     SuperProperty,
     This,
     Yield,
-    /// Not a grammar symbol: true if an ArrowFunction in the code (directly or
-    /// through other arrows) refers to this, super or new.target, i.e. needs
-    /// the this binding of the code's Function Environment Record.
-    ArrowLexicalThis,
 }
 
 /// ## [8.5 Contains](https://tc39.es/ecma262/#sec-static-semantics-contains)
@@ -128,8 +124,17 @@ impl Contains for FunctionAstRef<'_> {
                 (f.params.as_ref(), &*f.body)
             }
         };
-        params.items.iter().any(|p| p.contains(symbol))
-            || body.statements.iter().any(|st| st.contains(symbol))
+        params.contains(symbol) || body.statements.iter().any(|st| st.contains(symbol))
+    }
+}
+
+impl Contains for ast::FormalParameters<'_> {
+    fn contains(&self, symbol: ContainsSymbol) -> bool {
+        self.items.iter().any(|p| p.contains(symbol))
+            || self
+                .rest
+                .as_ref()
+                .is_some_and(|rest| rest.rest.argument.contains(symbol))
     }
 }
 
@@ -161,20 +166,6 @@ impl Contains for ast::Class<'_> {
 impl Contains for ast::ArrowFunctionExpression<'_> {
     /// ArrowFunction : ArrowParameters => ConciseBody
     fn contains(&self, symbol: ContainsSymbol) -> bool {
-        if symbol == ContainsSymbol::ArrowLexicalThis {
-            return [
-                ContainsSymbol::This,
-                ContainsSymbol::SuperProperty,
-                ContainsSymbol::SuperCall,
-                ContainsSymbol::NewTarget,
-                ContainsSymbol::ArrowLexicalThis,
-            ]
-            .into_iter()
-            .any(|symbol| {
-                self.params.items.iter().any(|p| p.contains(symbol))
-                    || self.body.statements.iter().any(|st| st.contains(symbol))
-            });
-        }
         // 1. If symbol is not one of NewTarget, SuperProperty, SuperCall, super, or this,
         if !matches!(
             symbol,
@@ -187,7 +178,7 @@ impl Contains for ast::ArrowFunctionExpression<'_> {
             return false;
         }
         // 2. If ArrowParameters Contains symbol is true, return true.
-        if self.params.items.iter().any(|p| p.contains(symbol)) {
+        if self.params.contains(symbol) {
             return true;
         }
         // 3. Return ConciseBody Contains symbol.
@@ -215,10 +206,12 @@ impl Contains for ast::BindingPattern<'_> {
                     .any(|p| p.key.contains(symbol) || p.value.contains(symbol))
                     || e.rest.as_ref().is_some_and(|e| e.argument.contains(symbol))
             }
-            ast::BindingPattern::ArrayPattern(e) => e
-                .elements
-                .iter()
-                .any(|e| e.as_ref().is_some_and(|e| e.contains(symbol))),
+            ast::BindingPattern::ArrayPattern(e) => {
+                e.elements
+                    .iter()
+                    .any(|e| e.as_ref().is_some_and(|e| e.contains(symbol)))
+                    || e.rest.as_ref().is_some_and(|e| e.argument.contains(symbol))
+            }
             ast::BindingPattern::AssignmentPattern(e) => {
                 e.left.contains(symbol) || e.right.contains(symbol)
             }
@@ -431,13 +424,16 @@ impl Contains for ast::ObjectAssignmentTarget<'_> {
             ast::AssignmentTargetProperty::AssignmentTargetPropertyProperty(e) => {
                 e.contains(symbol)
             }
-        })
+        }) || self
+            .rest
+            .as_ref()
+            .is_some_and(|rest| rest.target.contains(symbol))
     }
 }
 
 impl Contains for ast::AssignmentTargetPropertyProperty<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
-        self.binding.contains(symbol)
+        self.name.contains(symbol) || self.binding.contains(symbol)
     }
 }
 

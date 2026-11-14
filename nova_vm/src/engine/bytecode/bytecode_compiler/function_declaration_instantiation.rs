@@ -11,9 +11,9 @@ use oxc_span::Ident;
 
 use crate::{
     ecmascript::{
-        BUILTIN_STRING_MEMORY, Contains, ContainsExpression, ContainsSymbol, FunctionAstRef,
-        LexicallyDeclaredNames, LexicallyScopedDeclaration, LexicallyScopedDeclarations, Value,
-        VarDeclaredNames, VarScopedDeclaration, VarScopedDeclarations,
+        BUILTIN_STRING_MEMORY, ContainsExpression, FunctionAstRef, LexicallyDeclaredNames,
+        LexicallyScopedDeclaration, LexicallyScopedDeclarations, Value, VarDeclaredNames,
+        VarScopedDeclaration, VarScopedDeclarations,
     },
     engine::{
         CallEnvironment, Instruction,
@@ -23,7 +23,9 @@ use crate::{
     },
 };
 
-use super::{CompileEvaluation, simple_array_pattern};
+use super::{
+    CompileEvaluation, function_environment_use::FunctionEnvironmentUse, simple_array_pattern,
+};
 
 /// ### [10.2.11 FunctionDeclarationInstantiation ( func, argumentsList )](https://tc39.es/ecma262/#sec-functiondeclarationinstantiation)
 ///
@@ -64,12 +66,10 @@ pub(crate) fn instantiation<'s>(
     strict: bool,
     is_lexical: bool,
 ) -> CallEnvironment {
+    let environment_use = FunctionEnvironmentUse::of(func);
     let mut this_free = strict
         && !ctx.scope_contains_direct_eval(func.scope_id())
-        && !Contains::contains(&func, ContainsSymbol::ArrowLexicalThis)
-        && !Contains::contains(&func, ContainsSymbol::NewTarget)
-        && !Contains::contains(&func, ContainsSymbol::SuperCall)
-        && !Contains::contains(&func, ContainsSymbol::SuperProperty);
+        && !environment_use.this_environment;
     // 1. Let calleeContext be the running execution context.
     // 2. Let code be func.[[ECMAScriptCode]].
     let body = func.ecmascript_code();
@@ -152,8 +152,8 @@ pub(crate) fn instantiation<'s>(
     // poisoned and the function contains no arguments references, then it's
     // impossible for users to detect the arguments object being missing.
     if arguments_object_needed {
-        arguments_object_needed = ctx.scope_contains_direct_eval(func.scope_id())
-            || Contains::contains(&func, ContainsSymbol::Arguments);
+        arguments_object_needed =
+            ctx.scope_contains_direct_eval(func.scope_id()) || environment_use.arguments;
     }
 
     // 5. Let parameterNames be the BoundNames of formals.

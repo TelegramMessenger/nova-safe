@@ -24,6 +24,7 @@ num-bigint = { path = "num-bigint" }
 num-traits = "=0.2.19"
 oxc_allocator = { path = "oxc/crates/oxc_allocator" }
 oxc_ast = { path = "oxc/crates/oxc_ast" }
+oxc_ast_visit = { path = "oxc/crates/oxc_ast_visit" }
 oxc_diagnostics = { path = "oxc/crates/oxc_diagnostics" }
 oxc_ecmascript = { path = "oxc/crates/oxc_ecmascript" }
 oxc_parser = { path = "oxc/crates/oxc_parser" }
