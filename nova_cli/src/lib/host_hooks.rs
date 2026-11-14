@@ -159,6 +159,10 @@ impl HostHooks for CliHostHooks {
         self.promise_job_queue.borrow_mut().push_back(job);
     }
 
+    fn enqueue_finalization_registry_cleanup_job(&self, job: Job) {
+        self.macrotask_queue.borrow_mut().push((None, job));
+    }
+
     fn enqueue_timeout_job(&self, timeout_job: Job, milliseconds: u64) {
         let deadline = Instant::now() + Duration::from_millis(milliseconds);
         self.macrotask_queue

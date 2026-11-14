@@ -11,7 +11,7 @@ use crate::{
         Agent, FinalizationRegistryCleanupJob, Function, InnerJob, InternalMethods, InternalSlots,
         Job, OrdinaryObject, ProtoIntrinsics, Realm, Value, WeakKey, object_handle,
     },
-    engine::Bindable,
+    engine::{Bindable, Global},
     heap::{
         ArenaAccessSoA, ArenaAccessSoAMut, CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep,
         HeapSweepWeakReference, WorkQueues, arena_vec_access, {BaseIndex, HeapIndexHandle},
@@ -51,14 +51,20 @@ impl<'fr> FinalizationRegistry<'fr> {
             .cleanup
             .push_cleanup_queue(queue.unbind());
         if do_request_cleanup {
+            let job = self.cleanup_job(agent);
             agent
                 .host_hooks
-                .enqueue_finalization_registry_cleanup_job(Job {
-                    realm: None,
-                    inner: InnerJob::FinalizationRegistry(FinalizationRegistryCleanupJob::new(
-                        agent, self,
-                    )),
-                });
+                .enqueue_finalization_registry_cleanup_job(job);
+        }
+    }
+
+    /// The cleanup job, run in the registry's realm: a host runs every job in
+    /// a realm.
+    fn cleanup_job(self, agent: &mut Agent) -> Job {
+        let realm = self.get(agent).cleanup.realm();
+        Job {
+            realm: Some(Global::new(agent, realm.unbind())),
+            inner: InnerJob::FinalizationRegistry(FinalizationRegistryCleanupJob::new(agent, self)),
         }
     }
 
@@ -80,14 +86,10 @@ impl<'fr> FinalizationRegistry<'fr> {
             })
             .collect::<Vec<_>>();
         for fr in frs_to_enqueue {
+            let job = fr.cleanup_job(agent);
             agent
                 .host_hooks
-                .enqueue_finalization_registry_cleanup_job(Job {
-                    realm: None,
-                    inner: InnerJob::FinalizationRegistry(FinalizationRegistryCleanupJob::new(
-                        agent, fr,
-                    )),
-                });
+                .enqueue_finalization_registry_cleanup_job(job);
         }
     }
 
