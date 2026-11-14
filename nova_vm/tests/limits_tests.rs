@@ -617,3 +617,102 @@ fn large_dictionaries_take_memory_proportional_to_their_keys() {
         engine.assert_usable();
     });
 }
+
+#[test]
+fn lists_sized_by_scripts_are_bounded() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        assert_eq!(
+            engine.run(
+                "Reflect.apply(function () {}, null, { length: 2 ** 53 - 1 })",
+                None
+            ),
+            thrown("RangeError: Too many arguments in function call (only 65535 allowed)")
+        );
+        assert_eq!(
+            engine.run(
+                "Function.prototype.apply.call(Math.max, null, { length: 2 ** 32 })",
+                None
+            ),
+            thrown("RangeError: Too many arguments in function call (only 65535 allowed)")
+        );
+        assert_eq!(
+            engine.run(
+                "Math.max.apply(null, Array.from({ length: 65535 }, (_, i) => i))",
+                None
+            ),
+            Outcome::Value("65534".into())
+        );
+        assert_eq!(
+            engine.run(
+                "Reflect.ownKeys(new Proxy({}, { ownKeys() { return { length: 2 ** 53 - 1 }; } }))",
+                None
+            ),
+            thrown(
+                "TypeError: proxy [[OwnPropertyKeys]] must return an array with only string and symbol elements"
+            )
+        );
+        let started = Instant::now();
+        assert_eq!(
+            engine.run(
+                "var keys = []; for (let i = 0; i < 100000; i++) keys.push('k' + i); Reflect.ownKeys(new Proxy({}, { ownKeys() { return keys; } })).length",
+                None
+            ),
+            Outcome::Value("100000".into())
+        );
+        assert!(started.elapsed() < Duration::from_secs(30));
+        engine.assert_usable();
+    });
+}
+
+#[test]
+fn array_length_growth_respects_the_heap_limit() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+        let over = thrown("RangeError: Out of memory: allocation over the heap limit");
+        assert_eq!(engine.run("[].length = 2 ** 32 - 1", None), over);
+        assert_eq!(engine.run("var a = []; a[2 ** 32 - 2] = 1", None), over);
+        assert_eq!(
+            engine.run(
+                "Object.defineProperty([], 'length', { value: 2 ** 32 - 1 })",
+                None
+            ),
+            over
+        );
+        assert_eq!(engine.run("var b = []; b.length = 2 ** 26", None), over);
+        assert_eq!(
+            engine.run("var c = []; c.length = 1000; c.length", None),
+            Outcome::Value("1000".into())
+        );
+        let outcome = engine.run(
+            "try { 'a'.repeat(2 ** 23).split(''); 'ok' } catch (e) { String(e) }",
+            Some(Duration::from_secs(60)),
+        );
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Value(_) | Outcome::Terminated(TerminationReason::OutOfMemory)
+            ),
+            "{outcome:?}"
+        );
+        engine.agent.set_heap_limit(None);
+        engine.assert_usable();
+    });
+}
+
+#[test]
+fn interrupt_ends_proxy_prototype_cycles_and_huge_array_likes() {
+    let cycle = "var t = {}; var p = new Proxy(t, {}); Object.setPrototypeOf(t, p);";
+    assert_interrupted(&format!("{cycle} p instanceof Function"));
+    assert_interrupted(&format!("{cycle} ({{}}).isPrototypeOf(p)"));
+    assert_interrupted(&format!("{cycle} for (var k in p) {{}}"));
+    assert_interrupted("Array.prototype.copyWithin.call({ length: 2 ** 53 - 1 }, 0, 1)");
+    assert_interrupted("Array.prototype.flat.call({ length: 2 ** 53 - 1 }, Infinity)");
+    assert_interrupted("Array.prototype.flatMap.call({ length: 2 ** 53 - 1 }, x => x)");
+    assert_interrupted("Array.prototype.lastIndexOf.call({ length: 2 ** 53 - 1 }, 1)");
+    assert_interrupted("Array.prototype.reduceRight.call({ length: 2 ** 53 - 1 }, (a, b) => a, 0)");
+    assert_interrupted(
+        "JSON.stringify({}, new Proxy([], { get: (t, k) => k === 'length' ? 2 ** 53 - 1 : undefined }))",
+    );
+}

@@ -822,6 +822,8 @@ pub(crate) fn create_shared_byte_data_block<'a>(
 ) -> JsResult<'a, SharedDataBlock> {
     let size = max_byte_length.unwrap_or(byte_length);
     assert!(byte_length <= size);
+    agent.check_allocation(usize::try_from(size).unwrap_or(usize::MAX), gc)?;
+    agent.heap.data_bytes_since_gc += size as usize;
     // 1. Let db be a new Shared Data Block value consisting of size bytes. If
     //    it is impossible to create such a Shared Data Block, throw a
     //    RangeError exception.

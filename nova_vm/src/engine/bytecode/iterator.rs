@@ -399,6 +399,8 @@ impl<'a> ObjectPropertiesIterator<'a> {
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Option<Value<'gc>>> {
         loop {
+            // A Proxy can make the prototype chain a cycle.
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             if !self.object_is_visited(agent) {
                 let keys = self
                     .object(agent, gc.nogc())
@@ -583,6 +585,9 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> TryResult<'gc, Option<Value<'gc>>> {
         loop {
+            if let Err(err) = agent.poll_interrupt(gc) {
+                return TryResult::Break(TryError::Err(err));
+            }
             let object = self.object.bind(gc);
             if !self.object_is_visited() {
                 let keys = object.try_own_property_keys(agent, gc)?;

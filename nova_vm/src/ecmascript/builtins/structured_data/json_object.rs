@@ -250,12 +250,16 @@ impl JSONObject {
                 // 2. Let len be ? LengthOfArrayLike(replacer).
                 let len = length_of_array_like(agent, replacer.unbind(), gc.reborrow()).unbind()?;
                 // 1. Set PropertyList to a new empty List.
-                property_list =
-                    Some(Vec::<PropertyKey>::with_capacity(len as usize).scope(agent, gc.nogc()));
+                // The list grows as entries come: `len` is the script's word.
+                property_list = Some(
+                    Vec::<PropertyKey>::with_capacity((len as usize).min(1024))
+                        .scope(agent, gc.nogc()),
+                );
                 // 3. Let k be 0.
                 // 4. Repeat, while k < len,
                 // h. Set k to k + 1.
                 for k in 0..len {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
                     // a. Let prop be ! ToString(𝔽(k)).
                     let prop = PropertyKey::from(SmallInteger::try_from(k).unwrap());
                     // b. Let v be ? Get(replacer, prop).
