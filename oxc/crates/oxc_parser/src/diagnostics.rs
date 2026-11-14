@@ -42,6 +42,11 @@ pub fn redeclaration(x0: &str, declare_span: Span, redeclare_span: Span) -> OxcD
 }
 
 #[cold]
+pub fn parse_interrupted() -> OxcDiagnostic {
+    OxcDiagnostic::error("Parsing interrupted")
+}
+
+#[cold]
 pub fn overlong_source() -> OxcDiagnostic {
     OxcDiagnostic::error("Source length exceeds 4 GiB limit")
 }

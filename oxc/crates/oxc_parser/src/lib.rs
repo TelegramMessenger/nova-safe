@@ -185,6 +185,10 @@ pub struct ParserReturn<'a> {
     /// [`errors`]: ParserReturn::errors
     pub panicked: bool,
 
+    /// The interrupt given to [`Parser::with_interrupt`] said stop: parsing ended early, and
+    /// `program` and `errors` say nothing about the source.
+    pub interrupted: bool,
+
     /// Whether the file is [flow](https://flow.org).
     pub is_flow_language: bool,
 }
@@ -251,6 +255,7 @@ pub struct Parser<'a, C: ParserConfig = NoTokensParserConfig> {
     source_type: SourceType,
     options: ParseOptions,
     config: C,
+    interrupt: Option<&'a dyn Fn() -> bool>,
 }
 
 impl<'a> Parser<'a> {
@@ -262,7 +267,14 @@ impl<'a> Parser<'a> {
     /// - `source_type`: Source type (e.g. JavaScript, TypeScript, JSX, ESM Module, Script)
     pub fn new(allocator: &'a Allocator, source_text: &'a str, source_type: SourceType) -> Self {
         let options = ParseOptions::default();
-        Self { allocator, source_text, source_type, options, config: NoTokensParserConfig }
+        Self {
+            allocator,
+            source_text,
+            source_type,
+            options,
+            config: NoTokensParserConfig,
+            interrupt: None,
+        }
     }
 }
 
@@ -285,7 +297,16 @@ impl<'a, C: ParserConfig> Parser<'a, C> {
             source_type: self.source_type,
             options: self.options,
             config,
+            interrupt: self.interrupt,
         }
+    }
+
+    /// Calls `interrupt` every few thousand tokens; when it returns true, parsing stops at once
+    /// and [`ParserReturn::interrupted`] is set.
+    #[must_use]
+    pub fn with_interrupt(mut self, interrupt: &'a dyn Fn() -> bool) -> Self {
+        self.interrupt = Some(interrupt);
+        self
     }
 }
 
@@ -332,7 +353,7 @@ mod parser_parse {
         /// See the [module-level documentation](crate) for examples and more information.
         pub fn parse(self) -> ParserReturn<'a> {
             let unique = UniquePromise::new();
-            let parser = ParserImpl::new(
+            let mut parser = ParserImpl::new(
                 self.allocator,
                 self.source_text,
                 self.source_type,
@@ -340,6 +361,9 @@ mod parser_parse {
                 self.config,
                 unique,
             );
+            if let Some(interrupt) = self.interrupt {
+                parser.lexer.set_interrupt(interrupt);
+            }
             parser.parse()
         }
 
@@ -364,7 +388,7 @@ mod parser_parse {
         /// If the source code being parsed has syntax errors.
         pub fn parse_expression(self) -> Result<Expression<'a>, Vec<OxcDiagnostic>> {
             let unique = UniquePromise::new();
-            let parser = ParserImpl::new(
+            let mut parser = ParserImpl::new(
                 self.allocator,
                 self.source_text,
                 self.source_type,
@@ -372,6 +396,9 @@ mod parser_parse {
                 self.config,
                 unique,
             );
+            if let Some(interrupt) = self.interrupt {
+                parser.lexer.set_interrupt(interrupt);
+            }
             parser.parse_expression()
         }
     }
@@ -467,6 +494,9 @@ impl<'a, C: ParserConfig> ParserImpl<'a, C> {
     #[inline]
     pub fn parse(mut self) -> ParserReturn<'a> {
         let mut program = self.parse_program();
+        if self.lexer.interrupted {
+            return self.interrupted_return();
+        }
         let mut panicked = false;
 
         if let Some(fatal_error) = self.fatal_error.take() {
@@ -540,7 +570,25 @@ impl<'a, C: ParserConfig> ParserImpl<'a, C> {
             irregular_whitespaces,
             tokens,
             panicked,
+            interrupted: false,
             is_flow_language,
+        }
+    }
+
+    #[cold]
+    fn interrupted_return(self) -> ParserReturn<'a> {
+        let mut program = Program::dummy(self.ast.allocator);
+        program.source_type = self.source_type;
+        program.source_text = self.source_text;
+        ParserReturn {
+            program,
+            module_record: ModuleRecord::new(self.ast.allocator),
+            errors: vec![diagnostics::parse_interrupted()],
+            irregular_whitespaces: Box::default(),
+            tokens: ArenaVec::new_in(self.ast.allocator),
+            panicked: true,
+            interrupted: true,
+            is_flow_language: false,
         }
     }
 
@@ -548,6 +596,9 @@ impl<'a, C: ParserConfig> ParserImpl<'a, C> {
         // initialize cur_token and prev_token by moving onto the first token
         self.bump_any();
         let expr = self.parse_expr();
+        if self.lexer.interrupted {
+            return Err(vec![diagnostics::parse_interrupted()]);
+        }
         if let Some(FatalError { error, .. }) = self.fatal_error.take() {
             return Err(vec![error]);
         }

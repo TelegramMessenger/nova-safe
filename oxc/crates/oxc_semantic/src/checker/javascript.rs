@@ -40,6 +40,9 @@ pub fn check_unresolved_exports(program: &Program<'_>, ctx: &SemanticBuilder<'_>
                         bindings.sort_unstable_by_key(|&(symbol_id, _)| symbol_id);
                         bindings.into_iter().map(|(_, name)| name).collect()
                     });
+                    if ctx.charge_work(u32::try_from(names.len()).unwrap_or(u32::MAX)) {
+                        return;
+                    }
                     let suggestion =
                         best_match(&ident.name, names.iter().copied(), SUGGESTION_THRESHOLD);
                     ctx.errors.borrow_mut().push(diagnostics::undefined_export(
@@ -359,9 +362,21 @@ fn check_private_identifier(ctx: &SemanticBuilder<'_>) {
     if let Some(class_id) = ctx.class_table_builder.current_class_id {
         let mut available_names: Option<Vec<&str>> = None;
         for reference in ctx.class_table_builder.classes.iter_private_identifiers(class_id) {
-            if !ctx.class_table_builder.classes.ancestors(class_id).any(|class_id| {
-                ctx.class_table_builder.classes.has_private_definition(class_id, reference.name)
-            }) {
+            let mut defined = false;
+            for ancestor_class_id in ctx.class_table_builder.classes.ancestors(class_id) {
+                if ctx.charge_work(1) {
+                    return;
+                }
+                if ctx
+                    .class_table_builder
+                    .classes
+                    .has_private_definition(ancestor_class_id, reference.name)
+                {
+                    defined = true;
+                    break;
+                }
+            }
+            if !defined {
                 let names = available_names.get_or_insert_with(|| {
                     let mut names = Vec::new();
                     for ancestor_class_id in ctx.class_table_builder.classes.ancestors(class_id) {
@@ -374,6 +389,9 @@ fn check_private_identifier(ctx: &SemanticBuilder<'_>) {
                     }
                     names
                 });
+                if ctx.charge_work(u32::try_from(names.len()).unwrap_or(u32::MAX)) {
+                    return;
+                }
                 let suggestion =
                     best_match(&reference.name, names.iter().copied(), SUGGESTION_THRESHOLD);
                 ctx.error(diagnostics::private_field_undeclared(
