@@ -171,17 +171,24 @@ pub(crate) fn create_dynamic_function<'a>(
             // Some of the parameters are non-primitives. This means we'll be
             // calling into JavaScript during this work.
             let scoped_constructor = constructor.scope(agent, gc.nogc());
-            let mut parameter_string_roots = Vec::with_capacity(parameter_args.len());
-            for param in parameter_args {
-                // Each parameter has to be rooted in case the next parameter
-                // or the body argument is the one that calls to JavaScript.
-                parameter_string_roots.push(
-                    to_string(agent, *param, gc.reborrow())
-                        .unbind()?
-                        .scope(agent, gc.nogc()),
-                );
+            // Every argument is rooted before the first conversion: any of
+            // them may call into JavaScript and trigger garbage collection.
+            let scoped_parameter_args = parameter_args
+                .iter()
+                .map(|param| param.scope(agent, gc.nogc()))
+                .collect::<Vec<_>>();
+            let scoped_body_arg = body_arg.scope(agent, gc.nogc());
+            let mut parameter_string_roots = Vec::with_capacity(scoped_parameter_args.len());
+            for param in scoped_parameter_args {
+                let param_string = to_string(agent, param.get(agent), gc.reborrow())
+                    .unbind()?
+                    .bind(gc.nogc());
+                parameter_string_roots.push(param.replace_self(agent, param_string.unbind()));
             }
-            let body_string_unbound = body_arg.to_string(agent, gc.reborrow()).unbind()?;
+            let body_string_unbound = scoped_body_arg
+                .get(agent)
+                .to_string(agent, gc.reborrow())
+                .unbind()?;
             // We've done all our potential JavaScript calling: Now we rest.
             let gc = gc.nogc();
             body_string = body_string_unbound.bind(gc);

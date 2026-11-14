@@ -195,12 +195,14 @@ pub(super) fn get_error_cause<'gc>(
     options: Value,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, Option<Value<'gc>>> {
+    let options = options.bind(gc.nogc());
     let Ok(options) = Object::try_from(options) else {
         return Ok(None);
     };
+    let scoped_options = options.scope(agent, gc.nogc());
     let key = PropertyKey::from(BUILTIN_STRING_MEMORY.cause);
-    if has_property(agent, options, key, gc.reborrow()).unbind()? {
-        Ok(Some(get(agent, options, key, gc)?))
+    if has_property(agent, options.unbind(), key, gc.reborrow()).unbind()? {
+        Ok(Some(get(agent, scoped_options.get(agent), key, gc)?))
     } else {
         Ok(None)
     }

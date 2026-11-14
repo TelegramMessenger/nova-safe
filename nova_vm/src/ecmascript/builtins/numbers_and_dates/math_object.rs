@@ -812,12 +812,7 @@ impl MathObject {
         let mut only_zero = true;
         let mut contains_infinity = false;
         let mut contains_nan = false;
-        for &arg in arguments.iter() {
-            // a. Let n be ? ToNumber(arg).
-            let n = to_number(agent, arg, gc.reborrow())
-                .unbind()?
-                .into_f64_(agent);
-
+        let mut coerce = |n: f64| {
             // 3. For each element number of coerced, do
             if n.is_infinite() {
                 // a. If number is either +∞𝔽 or -∞𝔽, return +∞𝔽.
@@ -830,6 +825,26 @@ impl MathObject {
                 only_zero = false;
                 // b. Append n to coerced.
                 sum_of_squares += n * n;
+            }
+        };
+        let arguments = arguments.bind(gc.nogc());
+        if arguments.iter().all(|arg| arg.is_number()) {
+            for &arg in arguments.iter() {
+                coerce(Number::try_from(arg).unwrap().into_f64_(agent));
+            }
+        } else {
+            // ToNumber of one argument may run user code and trigger garbage
+            // collection: root every argument first.
+            let scoped_arguments = arguments
+                .iter()
+                .map(|arg| arg.scope(agent, gc.nogc()))
+                .collect::<Vec<_>>();
+            for arg in scoped_arguments {
+                // a. Let n be ? ToNumber(arg).
+                let n = to_number(agent, arg.get(agent), gc.reborrow())
+                    .unbind()?
+                    .into_f64_(agent);
+                coerce(n);
             }
         }
 
@@ -2037,4 +2052,3 @@ fn min_slow_path<'a>(
     }
     Ok(contained_nan)
 }
-

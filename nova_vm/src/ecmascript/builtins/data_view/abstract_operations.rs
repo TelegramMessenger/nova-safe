@@ -270,6 +270,9 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
     value: Value,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, Value<'gc>> {
+    let view = view.bind(gc.nogc());
+    let request_index = request_index.bind(gc.nogc());
+    let mut value = value.bind(gc.nogc());
     // 1. Perform ? RequireInternalSlot(view, [[DataView]]).
     // 2. Assert: view has a [[ViewedArrayBuffer]] internal slot.
     let mut view = require_internal_slot_data_view(agent, view, gc.nogc())
@@ -283,8 +286,10 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
         res as usize
     } else {
         let scoped_view = view.scope(agent, gc.nogc());
-        let res = to_index(agent, request_index, gc.reborrow()).unbind()? as usize;
+        let scoped_value = value.scope(agent, gc.nogc());
+        let res = to_index(agent, request_index.unbind(), gc.reborrow()).unbind()? as usize;
         view = scoped_view.get(agent).bind(gc.nogc());
+        value = scoped_value.get(agent).bind(gc.nogc());
         res
     };
 
@@ -294,7 +299,7 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
             v.into()
         } else {
             let scoped_view = view.scope(agent, gc.nogc());
-            let v = to_big_int(agent, value, gc.reborrow())
+            let v = to_big_int(agent, value.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
             view = scoped_view.get(agent).bind(gc.nogc());
@@ -306,7 +311,7 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
             v.into()
         } else {
             let scoped_view = view.scope(agent, gc.nogc());
-            let v = to_number(agent, value, gc.reborrow())
+            let v = to_number(agent, value.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
             view = scoped_view.get(agent).bind(gc.nogc());

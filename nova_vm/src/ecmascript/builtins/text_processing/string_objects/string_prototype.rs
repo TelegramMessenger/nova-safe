@@ -641,14 +641,17 @@ impl StringPrototype {
             }
             (strings, nogc)
         } else {
+            let scoped_args = args
+                .iter()
+                .map(|arg| arg.scope(agent, gc.nogc()))
+                .collect::<Vec<_>>();
             let mut string_roots = Vec::with_capacity(args.len() + 1);
             string_roots.push(s.scope(agent, gc.nogc()));
-            for next in args.iter() {
-                string_roots.push(
-                    to_string(agent, *next, gc.reborrow())
-                        .unbind()?
-                        .scope(agent, gc.nogc()),
-                );
+            for next in scoped_args {
+                let next_string = to_string(agent, next.get(agent), gc.reborrow())
+                    .unbind()?
+                    .bind(gc.nogc());
+                string_roots.push(next.replace_self(agent, next_string.unbind()));
             }
             let nogc = gc.into_nogc();
             let strings = string_roots

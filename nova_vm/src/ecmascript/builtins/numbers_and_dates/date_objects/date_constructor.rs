@@ -65,7 +65,7 @@ impl DateConstructor {
         let arg5 = arguments.get(5).scope(agent, gc.nogc());
         let arg6 = arguments.get(6).scope(agent, gc.nogc());
         // 1. If NewTarget is undefined, then
-        let Some(new_target) = new_target else {
+        let Some(new_target) = new_target.bind(gc.nogc()) else {
             // a. Let now be the time value (UTC) identifying the current time.
             let now = DateValue::now();
             // b. Return ToDateString(now).
@@ -75,6 +75,7 @@ impl DateConstructor {
                 gc.into_nogc(),
             ));
         };
+        let new_target = new_target.scope(agent, gc.nogc());
         // 2. Let numberOfArgs be the number of elements in values.
         let number_of_args = arguments.len() as u32;
         let dv = match number_of_args {
@@ -179,7 +180,7 @@ impl DateConstructor {
         // 6. Let O be ? OrdinaryCreateFromConstructor(NewTarget, "%Date.prototype%", « [[DateValue]] »).
         let o = Date::try_from(ordinary_create_from_constructor(
             agent,
-            Function::try_from(new_target).unwrap(),
+            Function::try_from(new_target.get(agent)).unwrap(),
             ProtoIntrinsics::Date,
             gc,
         )?)

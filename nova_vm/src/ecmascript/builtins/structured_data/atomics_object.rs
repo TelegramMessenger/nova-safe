@@ -868,6 +868,14 @@ fn validate_atomic_access<'gc>(
 ) -> JsResult<'gc, usize> {
     // 1. Let length be TypedArrayLength(taRecord).
     let length = ta_record.typed_array_length(agent);
+    // NOTE: Steps 5 to 7 read fixed slots of the typed array; they are done
+    // before ToIndex, whose user code may move the typed array on the heap.
+    // 5. Let typedArray be taRecord.[[Object]].
+    let typed_array = ta_record.object;
+    // 6. Let elementSize be TypedArrayElementSize(typedArray).
+    let element_size = typed_array.typed_array_element_size();
+    // 7. Let offset be typedArray.[[ByteOffset]].
+    let offset = typed_array.byte_offset(agent);
     // 2. Let accessIndex be ? ToIndex(requestIndex).
     let access_index = to_index(agent, request_index, gc.reborrow()).unbind()?;
     // 3. Assert: accessIndex ≥ 0.
@@ -883,12 +891,6 @@ fn validate_atomic_access<'gc>(
         ));
     }
     let access_index = access_index as usize;
-    // 5. Let typedArray be taRecord.[[Object]].
-    let typed_array = ta_record.object;
-    // 6. Let elementSize be TypedArrayElementSize(typedArray).
-    let element_size = typed_array.typed_array_element_size();
-    // 7. Let offset be typedArray.[[ByteOffset]].
-    let offset = typed_array.byte_offset(agent);
     // 8. Return (accessIndex × elementSize) + offset.
     // NOTE: access_index has been checked to be within length of the
     // typed_array buffer, which means that its byte_offset must also be.

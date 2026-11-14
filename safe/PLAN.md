@@ -53,6 +53,13 @@ fork by `safe/tools/build-qjs.sh` into `target/qjs/`.
 
 - `python3 -I safe/tools/unsafe_report.py . [--files]`: what is left.
 - `python3 -I safe/tools/contract_only_unsafe_fns.py`: `unsafe fn`s whose body has no unsafe operation.
+- `safe/tools/gc_audit/run.sh [out-dir]` (about 2 minutes): handles that a `GcScope` function uses after a call that
+  can run JavaScript without rooting them. In a scratch worktree of HEAD it binds every handle parameter at entry and
+  lets the borrow checker report the uses after `gc.reborrow()`. After 281e0bfa it lists 8 functions, none a
+  reachable bug: `invoke`, the Array constructor, AsyncGenerator `throw` and `Value::string_repr` are false positives;
+  `ordinary_get`, `ordinary_set` and `set_default_global_bindings` only call internal methods that run no JavaScript;
+  `bound_function_create` keeps `bound_this` across a Proxy's getPrototypeOf trap, which `bind` cannot reach while it
+  rejects a callable Proxy. Parameters it cannot bind (generic `Self`, about 150) are not covered.
 - After making functions safe: `cargo check --workspace --all-targets --message-format=json > /tmp/x.json; python3 -I
   safe/tools/strip_unused_unsafe.py /tmp/x.json; cargo fmt` removes the now unneeded `unsafe { }` around their calls
   (in any file) and the SAFETY comments that went with them. Repeat until `cargo check` is clean.

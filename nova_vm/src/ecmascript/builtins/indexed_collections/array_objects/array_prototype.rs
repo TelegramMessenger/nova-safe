@@ -2147,60 +2147,68 @@ impl ArrayPrototype {
     fn push<'gc>(
         agent: &mut Agent,
         this_value: Value,
-        items: ArgumentsList,
-        mut gc: GcScope<'gc, '_>,
+        mut items: ArgumentsList,
+        gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
         // 1. Let O be ? ToObject(this value).
         let o = to_object(agent, this_value, gc.nogc())
             .unbind()?
             .scope(agent, gc.nogc());
-        // 2. Let len be ? LengthOfArrayLike(O).
-        let mut len = length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()?;
-        // 3. Let argCount be the number of elements in items.
-        let arg_count = items.len();
-        // 4. If len + argCount > 2**53 - 1, throw a TypeError exception.
-        if (len + arg_count as i64) > SmallInteger::MAX {
-            return Err(agent.throw_exception_with_static_message(
-                ExceptionType::TypeError,
-                "Array length overflow",
-                gc.into_nogc(),
-            ));
-        }
-        if let Object::Array(o) = o.get(agent) {
-            // Fast path: Reserve enough room in the array.
-            if let Err(err) = o.reserve(agent, arg_count as u32) {
-                return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
-            }
-        }
-        // 5. For each element E of items, do
-        for e in items.iter() {
-            // a. Perform ? Set(O, ! ToString(𝔽(len)), E, true).
-            set(
-                agent,
-                o.get(agent),
-                PropertyKey::Integer(len.try_into().unwrap()),
-                *e,
-                true,
-                gc.reborrow(),
-            )
-            .unbind()?;
-            // b. Set len to len + 1.
-            len += 1;
-        }
-        // 6. Perform ? Set(O, "length", 𝔽(len), true).
-        let len: Value = len.try_into().unwrap();
-        set(
+        // The items stay rooted while user code may run: in the length
+        // getter, a Proxy trap or a setter.
+        items.with_scoped(
             agent,
-            o.get(agent),
-            BUILTIN_STRING_MEMORY.length.into(),
-            len,
-            true,
-            gc.reborrow(),
-        )
-        .unbind()?;
+            |agent, items, mut gc| {
+                // 2. Let len be ? LengthOfArrayLike(O).
+                let mut len = length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()?;
+                // 3. Let argCount be the number of elements in items.
+                let arg_count = items.len(agent);
+                // 4. If len + argCount > 2**53 - 1, throw a TypeError exception.
+                if (len + arg_count as i64) > SmallInteger::MAX {
+                    return Err(agent.throw_exception_with_static_message(
+                        ExceptionType::TypeError,
+                        "Array length overflow",
+                        gc.into_nogc(),
+                    ));
+                }
+                if let Object::Array(o) = o.get(agent) {
+                    // Fast path: Reserve enough room in the array.
+                    if let Err(err) = o.reserve(agent, arg_count as u32) {
+                        return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
+                    }
+                }
+                // 5. For each element E of items, do
+                while let Some(e) = items.unshift(agent, gc.nogc()) {
+                    // a. Perform ? Set(O, ! ToString(𝔽(len)), E, true).
+                    set(
+                        agent,
+                        o.get(agent),
+                        PropertyKey::Integer(len.try_into().unwrap()),
+                        e.unbind(),
+                        true,
+                        gc.reborrow(),
+                    )
+                    .unbind()?;
+                    // b. Set len to len + 1.
+                    len += 1;
+                }
+                // 6. Perform ? Set(O, "length", 𝔽(len), true).
+                let len: Value = len.try_into().unwrap();
+                set(
+                    agent,
+                    o.get(agent),
+                    BUILTIN_STRING_MEMORY.length.into(),
+                    len,
+                    true,
+                    gc.reborrow(),
+                )
+                .unbind()?;
 
-        // 7. Return 𝔽(len).
-        Ok(len)
+                // 7. Return 𝔽(len).
+                Ok(len)
+            },
+            gc,
+        )
     }
 
     /// #### [23.1.3.24 Array.prototype.reduce ( callbackfn \[ , initialValue \] )](https://tc39.es/ecma262/indexed-collections.html#sec-array.prototype.reduce)
