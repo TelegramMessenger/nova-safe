@@ -160,10 +160,21 @@ pub(crate) fn source_nesting_depth(src: &[u8], limit: usize) -> usize {
                 regex_allowed = false;
             }
             b'`' => {
+                if !regex_allowed {
+                    // A tagged template: `` t`a``b` `` nests like a call.
+                    level!().ops += 1;
+                    current += 1;
+                }
                 in_template = true;
                 i += 1;
             }
             b'(' | b'[' | b'{' => {
+                if b != b'{' && !regex_allowed {
+                    // A call or an index after an operand: `f()()()` and
+                    // `a[0][0]` nest one level per pair of brackets.
+                    level!().ops += 1;
+                    current += 1;
+                }
                 levels.push(Level {
                     kind: b,
                     ops: 0,
@@ -242,4 +253,32 @@ pub(crate) fn source_nesting_depth(src: &[u8], limit: usize) -> usize {
         }
     }
     max
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn depth(src: &str) -> usize {
+        source_nesting_depth(src.as_bytes(), usize::MAX)
+    }
+
+    #[test]
+    fn call_index_and_tag_chains_count() {
+        for (name, src) in [
+            ("calls", format!("f{}", "()".repeat(5000))),
+            ("indexes", format!("a{}", "[0]".repeat(5000))),
+            ("tags", format!("t{}", "``".repeat(5000))),
+            ("calls after a string", format!("'s'{}", "[0]".repeat(5000))),
+        ] {
+            assert!(depth(&src) >= 5000, "{name}: {}", depth(&src));
+        }
+    }
+
+    #[test]
+    fn statements_and_arguments_reset_the_count() {
+        assert!(depth(&"f();".repeat(5000)) < 10);
+        assert!(depth(&format!("f({})", "a,".repeat(5000))) < 10);
+        assert!(depth("if (a) { f(x)[0] } else { g`t` }") < 10);
+    }
 }
