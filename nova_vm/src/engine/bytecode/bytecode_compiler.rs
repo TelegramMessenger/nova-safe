@@ -995,6 +995,15 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
     /// in `let foo` unlike type documentation states.
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         let identifier = ctx.create_string(self.name.as_str());
+        if !ctx.property_name_fits(identifier.to_property_key()) {
+            // Nearly more distinct names than a 16-bit operand can index (a
+            // large data table): the key is a wide constant, as in `base[key]`.
+            let base_value = ctx.load_to_stack();
+            ctx.add_instruction_with_constant(Instruction::StoreConstant, identifier);
+            base_value.forget(ctx);
+            ctx.add_instruction(Instruction::EvaluatePropertyAccessWithExpressionKey);
+            return Place::Member { name: None };
+        }
         ctx.add_instruction_with_identifier(
             Instruction::EvaluatePropertyAccessWithIdentifierKey,
             identifier.to_property_key(),

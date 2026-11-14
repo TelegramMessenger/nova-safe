@@ -960,6 +960,9 @@ pub struct Agent {
     /// xorshift128+ state of Math.random, seeded per Agent from std's
     /// OS-random SipHash keys.
     math_random_state: (u64, u64),
+    /// Set when code being compiled outgrew one of the bytecode's index
+    /// spaces ("too many ..."): the code that parsed it reports a SyntaxError.
+    pub(crate) compile_limit_error: Option<&'static str>,
 }
 
 impl Agent {
@@ -982,6 +985,7 @@ impl Agent {
             module_async_evaluation_count: 0,
             math_random_state: random_seed(),
             limits: Limits::default(),
+            compile_limit_error: None,
         }
     }
 
@@ -1716,6 +1720,7 @@ impl HeapMarkAndSweep for Agent {
             module_async_evaluation_count: _,
             math_random_state: _,
             limits: _,
+            compile_limit_error: _,
         } = self;
 
         execution_context_stack.iter().for_each(|ctx| {
@@ -1773,6 +1778,7 @@ impl HeapMarkAndSweep for Agent {
             module_async_evaluation_count: _,
             math_random_state: _,
             limits: _,
+            compile_limit_error: _,
         } = self;
 
         execution_context_stack

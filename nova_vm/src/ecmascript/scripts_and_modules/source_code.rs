@@ -89,7 +89,8 @@ impl<'a> SourceCode<'a> {
         });
         let (program, scoping, nodes) = (parsed.0, &parsed.1, &parsed.2);
         let is_strict = source_type.is_strict() || program.has_use_strict_directive();
-        Ok(f(
+        agent.compile_limit_error = None;
+        let result = f(
             agent,
             ParseResult {
                 source_code: source_code.bind(gc),
@@ -99,7 +100,13 @@ impl<'a> SourceCode<'a> {
                 nodes,
                 is_strict,
             },
-        ))
+        );
+        if let Some(message) = agent.compile_limit_error.take() {
+            // Code too large for the bytecode's operands, as QuickJS's "too
+            // many ..." errors; what was compiled is left to the collector.
+            return Err(vec![OxcDiagnostic::error(message)]);
+        }
+        Ok(result)
     }
 
     /// Like [`SourceCode::parse_source`], but `f` also gets the garbage

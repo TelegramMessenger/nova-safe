@@ -1343,7 +1343,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         instruction: Instruction,
         function_expression: FunctionExpression<'gc>,
         immediate: usize,
-    ) -> IndexType {
+    ) -> usize {
         self.executable
             .add_instruction_with_function_expression_and_immediate(
                 instruction,
@@ -1373,13 +1373,24 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.executable.set_jump_target_here(jump);
     }
 
-    pub(super) fn get_next_class_initializer_index(&self) -> IndexType {
-        self.executable.get_next_class_initializer_index()
+    /// Whether a member expression names the property `identifier` by a
+    /// 16-bit operand: code with tens of thousands of distinct property names
+    /// names the rest by a wide constant key.
+    pub(super) fn property_name_fits(&self, identifier: PropertyKey<'gc>) -> bool {
+        self.executable.property_name_fits(identifier)
+    }
+
+    pub(super) fn add_instruction_with_next_class_initializer_index(
+        &mut self,
+        instruction: Instruction,
+    ) {
+        self.executable
+            .add_instruction_with_next_class_initializer_index(instruction);
     }
 
     pub(super) fn set_function_expression_bytecode(
         &mut self,
-        index: IndexType,
+        index: usize,
         executable: Executable<'gc>,
     ) {
         self.executable

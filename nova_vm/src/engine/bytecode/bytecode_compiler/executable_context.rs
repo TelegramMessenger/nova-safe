@@ -37,6 +37,16 @@ pub(crate) const UNSUPPORTED_SYNTAX_IMMEDIATE: IndexType = IndexType::MAX;
 
 /// From this many constants on, new literal constants go to the wide table.
 const WIDE_CONSTANTS_FROM: usize = 60_000;
+/// From this many constants on, new property names in member expressions are
+/// wide constants too, leaving the last indices for binding names.
+const WIDE_PROPERTY_NAMES_FROM: usize = 64_000;
+
+const TOO_MANY_NAMES: &str = "too many identifiers and constants in one function or script";
+const TOO_MANY_PROPERTY_NAMES: &str = "too many property names in one function or script";
+const TOO_MANY_FUNCTIONS: &str = "too many functions in one function or script";
+const TOO_MANY_CLASSES: &str = "too many classes in one function or script";
+const TOO_MANY_OBJECT_LITERALS: &str = "too many object literals in one function or script";
+const TOO_MANY_VALUES: &str = "too many variables, arguments or values in one function or script";
 
 /// Context for executable creation only. This struct contains the things
 /// needed for adding instructions and nothing else, no scope tracking and
@@ -71,6 +81,9 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// The field initializers of a derived class with a constructor, run
     /// after each super call of the constructor.
     instance_initializer: Option<Executable<'gc>>,
+    /// Set when an index did not fit its bytecode operand: the executable
+    /// is finished as one that throws this SyntaxError.
+    too_many: Option<&'static str>,
 }
 
 impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
@@ -92,6 +105,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             arrow_function_expressions: Vec::new(),
             class_initializer_bytecodes: Vec::new(),
             instance_initializer: None,
+            too_many: None,
         }
     }
 
@@ -193,13 +207,25 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.arrow_function_expressions.clear();
         self.class_initializer_bytecodes.clear();
         self.instance_initializer = None;
+        self.too_many = None;
         let message = self.create_string(message);
         self.add_instruction_with_constant(Instruction::StoreConstant, message);
         self.add_instruction_with_immediate(Instruction::ThrowError, immediate);
-        self.finish()
+        self.build()
     }
 
     pub(super) fn finish(mut self) -> Executable<'gc> {
+        if let Some(message) = self.too_many.take() {
+            // The bytecode refers to entries by truncated indexes and must
+            // never run. The code that parsed this reports the SyntaxError;
+            // the stub throws it should anything still call this code.
+            self.agent.compile_limit_error.get_or_insert(message);
+            return self.finish_as_unsupported_stub(message);
+        }
+        self.build()
+    }
+
+    fn build(mut self) -> Executable<'gc> {
         for index in 0..self.function_expressions.len() {
             if self.function_expressions[index]
                 .template
@@ -289,6 +315,16 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         index
     }
 
+    /// Whether a member expression names the property `identifier` by a
+    /// 16-bit operand, rather than by a wide constant key.
+    pub(super) fn property_name_fits(&self, identifier: PropertyKey<'gc>) -> bool {
+        self.constants.len() < WIDE_PROPERTY_NAMES_FROM
+            || self
+                .constant_indexes
+                .get(&ConstantKey(identifier.into_value_unchecked()))
+                .is_some_and(|&index| IndexType::try_from(index).is_ok())
+    }
+
     pub(super) fn add_identifier(&mut self, identifier: PropertyKey<'gc>) -> usize {
         self.add_constant(identifier.into_value_unchecked())
     }
@@ -352,7 +388,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         }
         self.push_instruction(instruction);
         let constant = self.add_constant(constant);
-        self.add_index(constant);
+        self.add_index_of(constant, TOO_MANY_NAMES);
     }
 
     pub(super) fn add_instruction_with_identifier(
@@ -364,7 +400,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         debug_assert!(instruction.has_identifier_index());
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);
-        self.add_index(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
     }
 
     pub(super) fn add_instruction_with_cache(
@@ -376,7 +412,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         debug_assert!(instruction.has_cache_index());
         self.push_instruction(instruction);
         let cache = self.add_cache(cache);
-        self.add_index(cache);
+        self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
     }
 
     pub(super) fn add_instruction_with_identifier_and_cache(
@@ -389,9 +425,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         debug_assert!(instruction.has_identifier_index() && instruction.has_cache_index());
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);
-        self.add_index(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
         let cache = self.add_cache(cache);
-        self.add_index(cache);
+        self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
     }
 
     pub(super) fn add_instruction_with_identifier_and_constant(
@@ -404,9 +440,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         debug_assert!(instruction.has_identifier_index() && instruction.has_constant_index());
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);
-        self.add_index(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
         let constant = self.add_constant(constant.into());
-        self.add_index(constant);
+        self.add_index_of(constant, TOO_MANY_NAMES);
     }
 
     pub(super) fn add_instruction_with_identifier_and_immediate(
@@ -419,7 +455,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         debug_assert!(instruction.has_identifier_index());
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);
-        self.add_index(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
         self.add_index(immediate);
     }
 
@@ -446,7 +482,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.push_instruction(instruction);
         self.add_index(immediate);
         let constant = self.add_constant(constant);
-        self.add_index(constant)
+        self.add_index_of(constant, TOO_MANY_NAMES)
     }
 
     pub(super) fn add_instruction_with_function_expression(
@@ -459,7 +495,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.push_instruction(instruction);
         self.function_expressions.push(function_expression);
         let index = self.function_expressions.len() - 1;
-        self.add_index(index);
+        self.add_index_of(index, TOO_MANY_FUNCTIONS);
     }
 
     /// Add an Instruction that takes a function expression and an immediate
@@ -471,17 +507,15 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         instruction: Instruction,
         function_expression: FunctionExpression<'gc>,
         immediate: usize,
-    ) -> IndexType {
+    ) -> usize {
         debug_assert_eq!(instruction.argument_count(), 2);
         debug_assert!(instruction.has_function_expression_index());
         self.push_instruction(instruction);
         let index = self.function_expressions.len();
         self.function_expressions.push(function_expression);
-        self.add_index(index);
+        self.add_index_of(index, TOO_MANY_FUNCTIONS);
         self.add_index(immediate);
-        // Note: add_index would have panicked if this was not a lossless
-        // conversion.
-        index as IndexType
+        index
     }
 
     pub(super) fn add_instruction_with_shape(
@@ -493,7 +527,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         debug_assert!(instruction.has_shape_index());
         self.push_instruction(instruction);
         let shape = self.add_shape(shape);
-        self.add_index(shape);
+        self.add_index_of(shape, TOO_MANY_OBJECT_LITERALS);
     }
 
     pub(super) fn add_arrow_function_expression(
@@ -507,7 +541,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.arrow_function_expressions
             .push(arrow_function_expression);
         let index = self.arrow_function_expressions.len() - 1;
-        self.add_index(index);
+        self.add_index_of(index, TOO_MANY_FUNCTIONS);
     }
 
     pub(super) fn set_jump_target(&mut self, source: JumpIndex, target: JumpIndex) {
@@ -538,18 +572,24 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.current_instruction_pointer_is_unreachable = false;
     }
 
-    pub(super) fn get_next_class_initializer_index(&self) -> IndexType {
-        IndexType::try_from(self.class_initializer_bytecodes.len()).unwrap()
+    /// Adds an instruction whose immediate is the index of the next class
+    /// initializer: ClassDefineDefaultConstructor.
+    pub(super) fn add_instruction_with_next_class_initializer_index(
+        &mut self,
+        instruction: Instruction,
+    ) {
+        debug_assert_eq!(instruction.argument_count(), 1);
+        self.push_instruction(instruction);
+        let index = self.class_initializer_bytecodes.len();
+        self.add_index_of(index, TOO_MANY_CLASSES);
     }
 
     pub(super) fn set_function_expression_bytecode(
         &mut self,
-        index: IndexType,
+        index: usize,
         executable: Executable<'gc>,
     ) {
-        self.function_expressions[index as usize]
-            .template
-            .executable = Some(executable);
+        self.function_expressions[index].template.executable = Some(executable);
     }
 
     pub(super) fn add_class_initializer_bytecode(
@@ -576,13 +616,25 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     }
 
     fn add_index(&mut self, index: usize) {
-        let index = IndexType::try_from(index).expect("Immediate value is too large");
+        self.add_index_of(index, TOO_MANY_VALUES);
+    }
+
+    /// Adds a 16-bit operand. An index that does not fit marks the
+    /// executable as too large, with `too_many` as its SyntaxError.
+    fn add_index_of(&mut self, index: usize, too_many: &'static str) {
+        let index = IndexType::try_from(index).unwrap_or_else(|_| {
+            self.too_many.get_or_insert(too_many);
+            0
+        });
         let bytes: [u8; 2] = index.to_ne_bytes();
         self.instructions.extend_from_slice(&bytes);
     }
 
     fn add_double_index(&mut self, index: usize) {
-        let index = u32::try_from(index).expect("Immediate value is too large");
+        let index = u32::try_from(index).unwrap_or_else(|_| {
+            self.too_many.get_or_insert(TOO_MANY_VALUES);
+            0
+        });
         let bytes: [u8; 4] = index.to_ne_bytes();
         self.instructions.extend_from_slice(&bytes);
     }
