@@ -21,7 +21,6 @@ cliclack = "=0.5.6"
 console = "=0.16.6"
 ctrlc = "=3.5.2"
 hashbrown = "=0.17.1"
-memchr = "=2.8.3"
 num-bigint = "=0.5.1"
 num-traits = "=0.2.19"
 oxc-miette = { version = "=2.7.1", features = ["fancy"] }

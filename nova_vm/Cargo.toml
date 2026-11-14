@@ -14,7 +14,6 @@ categories.workspace = true
 [dependencies]
 ahash = { workspace = true }
 hashbrown = { workspace = true }
-memchr = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 oxc_allocator = { workspace = true }

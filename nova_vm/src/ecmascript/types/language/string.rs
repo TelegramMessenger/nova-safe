@@ -4,6 +4,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/builtin_strings.rs"));
 mod data;
+pub(crate) mod search;
 
 pub(crate) use data::*;
 
@@ -535,10 +536,7 @@ impl<'a> String<'a> {
         if !Self::searchable_as_bytes(needle) {
             let haystack = self.to_utf16_vec(agent);
             let needle = search.to_utf16_vec(agent);
-            return haystack[from..]
-                .windows(needle.len())
-                .position(|window| window == needle.as_slice())
-                .map(|index| from + index);
+            return search::find(&haystack[from..], &needle).map(|index| from + index);
         }
         let start = match self.utf8_index_(agent, from) {
             Some(start) => start,
@@ -549,7 +547,7 @@ impl<'a> String<'a> {
             }
         };
         let haystack = self.as_bytes_(agent);
-        memchr::memmem::find(&haystack[start..], needle.as_bytes())
+        search::find(&haystack[start..], needle.as_bytes())
             .map(|index| self.utf16_index_(agent, start + index))
     }
 
@@ -575,9 +573,7 @@ impl<'a> String<'a> {
         if !Self::searchable_as_bytes(needle) {
             let haystack = self.to_utf16_vec(agent);
             let needle = search.to_utf16_vec(agent);
-            return haystack[..from + needle.len()]
-                .windows(needle.len())
-                .rposition(|window| window == needle.as_slice());
+            return search::rfind(&haystack[..from + needle.len()], &needle);
         }
         let start = match self.utf8_index_(agent, from) {
             Some(start) => start,
@@ -587,7 +583,7 @@ impl<'a> String<'a> {
         };
         let haystack = self.as_bytes_(agent);
         let end = (start + needle.len()).min(haystack.len());
-        memchr::memmem::rfind(&haystack[..end], needle.as_bytes())
+        search::rfind(&haystack[..end], needle.as_bytes())
             .map(|index| self.utf16_index_(agent, index))
     }
 

@@ -1999,14 +1999,17 @@ impl StringPrototype {
             let ranges = {
                 let haystack = s.as_bytes_(agent);
                 let needle = r.as_bytes_(agent);
+                let searcher = crate::ecmascript::search::Searcher::new(needle);
                 let mut ranges = Vec::new();
                 let mut start = 0;
-                for found in memchr::memmem::find_iter(haystack, needle) {
+                let mut from = 0;
+                while let Some(found) = searcher.find_from(haystack, from) {
                     ranges.push((start, found));
                     if ranges.len() == limit {
                         break;
                     }
                     start = found + needle.len();
+                    from = found + needle.len().max(1);
                 }
                 if ranges.len() < limit {
                     ranges.push((start, haystack.len()));
