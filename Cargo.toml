@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nova_cli", "nova_embed", "nova_embed_ffi", "nova_vm", "nova_vm_derive", "num-bigint", "num-traits", "regress", "small_string", "tests", "wtf8"]
+members = ["nova_cli", "nova_embed", "nova_embed_ffi", "nova_vm", "nova_vm_derive", "num-bigint", "num-traits", "regress", "small_string", "tests", "unicode-normalization", "wtf8"]
 exclude = ["nova_lint", "oxc"]
 
 [workspace.package]
@@ -36,7 +36,7 @@ proc-macro2 = "=1.0.107"
 quote = "=1.0.47"
 regress = { path = "regress", default-features = false, features = ["std", "utf16"] }
 syn = "=2.0.119"
-unicode-normalization = "=0.1.26"
+unicode-normalization = { path = "unicode-normalization" }
 usdt = "=0.6.0"
 wtf8 = { path = "wtf8" }
 xsum = "=0.1.6"
