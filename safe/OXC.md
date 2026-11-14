@@ -3,7 +3,64 @@
 Goal: no `unsafe` in any crate that parses a widget's source text. The parser is the largest remaining attack surface:
 a widget controls every byte it reads. Rust's std, including its HashMap (hashbrown), stays trusted.
 
-## Where it stands (phase 0)
+## Where it stands (2026-11-15): no `unsafe` left
+
+Every vendored oxc crate forbids `unsafe_code`, and so do the copies in `oxc/vendor` (bitflags, cow-utils,
+unicode-id-start). The widget build links 28 crates and none has `unsafe` (`dep_unsafe_report.py`: total 0; the
+table is in `safe/TCB.md`, "Widget build now"). The only hash table code outside the workspace is std's own.
+
+| step | branch | `unsafe` out of the widget build |
+|---|---|---|
+| phase 0: vendor oxc 0.124.0 without fancy diagnostics (smallvec, the icu/zerovec family, 22 more crates) | safe-oxc | 567 (3235 -> 2668) |
+| A: a safe allocator, `Visit<'a>` with `&'a T`, the `Program` in a local | safe-oxc | 300: oxc_allocator 273, oxc_ast_visit 20, oxc_ast 4, oxc_parser 2, oxc_regular_expression 1 |
+| the engine's own dependencies: soavec, hashbrown 0.17 and foldhash, forks of num-bigint 0.5, num-traits, unicode-normalization | safe-deps | 629, and allocator-api2 (214) once oxc no longer needed it |
+| D, E, F: plain diagnostics, std number formatting, slice searches, safe copies of small crates | safe-oxc-def-small | 457: memchr 333, oxc-miette 89, dragonbox_ecma 20, cow-utils 7, percent-encoding 4, bitflags 2, unicode-id-start 2 |
+| B: the lexer on checked offsets | safe-oxc-b-lexer | 168: oxc_parser |
+| C: stacks, indexes, `CompactStr`, `Scoping`'s names | safe-oxc-c-data | 495: compact_str 159 with castaway 53, ryu 27, itoa 16 and static_assertions 1; oxc_data_structures 151; self_cell 34; oxc_index 29; oxc_semantic 15; nonmax 10 |
+| G: oxc_ast's enum casts, oxc_ecmascript, oxc_syntax, oxc_str, oxc_estree | safe-oxc-g-ast | 76: oxc_estree 17, phf and siphasher 12, itertools and either 12, oxc_ecmascript 10, num-bigint 0.4 8, oxc_syntax 7, oxc_str 5, oxc_semantic 3, oxc_ast 2 |
+| H: oxc's `HashMap` and `HashSet` on std's | safe-oxc-h-hashbrown | 329: hashbrown 0.16 |
+
+2668 `unsafe` in 55 crates at the start of the track, 0 in 28 now. Each step went through the gate (test262 against
+its expectations, also with a collection between scripts; the 501 corpus widgets hash the same) and a comparison of
+old and new output where the step could change it: tokens, AST and errors for the lexer, every diagnostic for the
+diagnostics, semantic dumps (nodes, references, symbols, scopes, errors) for the data structures, the AST casts and
+the hash maps, on the sandbox bundle, the widget scripts and test262.
+
+Area H: `oxc_allocator::HashMap`/`HashSet` wrap `std::collections::HashMap`/`HashSet`, and oxc_str's
+`IdentHashMap`/`IdentHashSet` are std maps. Lookups that went through hashbrown's `Equivalent` go through `Borrow`:
+`Ident: Borrow<str>` (as `ScopingName` already was), and `Ident` and `ScopingName` hash as their `str`. Under
+`IdentBuildHasher` that is the value they hashed to before (the packed length and hash), so every map sees the same
+hashes, and `Borrow`'s contract also holds under any other hasher. No caller used a hashbrown-only API; the unused
+`HashSet::from(HashMap)` is gone. std's map is the same SwissTable and iterates in the same order: on 54,332 inputs
+(53,910 test262 files, the sandbox bundle, the 6 parsebench inputs and 415 widget scripts) the scope digest with the raw
+iteration order of bindings and root unresolved references, the order-free digest and every parse and semantic
+error (message, labels, help, in order) are identical before and after.
+
+Parse plus semantic check plus drop (`parsebench`, release, best of 4 interleaved runs in one session; phase 0 is
+the arena build at d5f3b159):
+
+| input | phase 0 (arena) | before H (05f67fd6) | now |
+|---|---:|---:|---:|
+| sandbox-bundle.js (598 KB) | 5.16 ms | 7.55 ms | 7.64 ms |
+| 07-shop-06-shop-bare | 0.046 ms | 0.071 ms | 0.074 ms |
+| 08-analytics-10-bot-bare | 0.062 ms | 0.094 ms | 0.094 ms |
+| 12-motion-lab-02-mo-bare | 0.049 ms | 0.075 ms | 0.075 ms |
+| hostile/text-chaos | 0.011 ms | 0.016 ms | 0.017 ms |
+
+H itself is within noise (6 more interleaved rounds: bundle +0.3% best, +0.9% median; the scripts -1.1% to +1.4%).
+The whole track costs about +48% on the bundle and +50-60% on a widget's scripts, nearly all of it phase A's one
+allocation per node and string. The bundle is compiled once per process; a widget's own scripts take about 0.1 ms
+against a median widget run of about 150 ms.
+
+Left, not `unsafe`: `IdentBuildHasher` (upstream's) is unkeyed and samples at most 16 bytes of a name, so a script
+can make its identifiers collide (same length, same sampled bytes). 20,000 such `var` names (920 KB) take 1.85 s to
+parse and check, against 5 ms for as many distinct names; it grows with the square of the count, and the parser
+runs before the interrupt is ever polled. Same before this track (upstream oxc, hashbrown 0.16). The fix is a keyed
+hash for the identifier maps (std's `RandomState`), with the two checks that iterate the root scope's bindings
+(`check_unresolved_exports`'s suggestion, `check_import_value_redeclarations`' error order) made independent of the
+iteration order.
+
+## Phase 0 (where it stood after vendoring)
 
 - oxc 0.124.0 is vendored in `oxc/crates/<name>` (MIT, `oxc/LICENSE` and one copy per crate), with its tests,
   benches and dev-dependencies left out. The workspace points at the paths and excludes `oxc/` from its members,

@@ -27,13 +27,19 @@ file states what protects the process from a hostile script, what is trusted, an
 
 ## What is trusted (the trusted computing base)
 
-- `rustc`/LLVM and Rust's `std` (including std's copy of `hashbrown` behind HashMap). The engine no longer uses the
-  `hashbrown` crate directly; its hash tables with caller-supplied hashes are the in-tree `table.rs`.
-- The dependencies listed in `safe/TCB.md` with their `unsafe` counts. The largest is `oxc` (the JavaScript parser),
-  which parses script source; its own recursion is bounded by our nesting pre-scan. Replacing or auditing it is the
-  biggest remaining item.
-- `nova_embed_ffi` and the Swift wrapper `NovaEngine.swift` in widget-sandbox.
-- macOS's sandbox for the XPC service.
+Of the engine's Rust code, nothing but `std`, `rustc`/LLVM and the C ABI crate is trusted now:
+- `rustc`/LLVM and Rust's `std` (including std's copy of `hashbrown` behind `HashMap`). No crate of the widget build
+  uses the `hashbrown` crate: the engine's hash tables with caller-supplied hashes are the in-tree `table.rs`, and
+  the parser's maps wrap std's `HashMap`.
+- `nova_embed_ffi`, the C ABI (layer 2).
+
+Every other crate the engine links (28 in the widget build, `safe/TCB.md`) has no `unsafe`, and the compiler checks
+that: the parser stack (oxc 0.124.0, vendored in `oxc/crates`, `safe/OXC.md`), our forks, and four small registry
+crates (rustc-hash, num-integer, tinyvec, xsum) with no `unsafe` at all. A bug in the parser can reject or misread a
+script, or panic; it cannot touch memory it does not own. Its recursion is bounded by our nesting pre-scan.
+
+Outside the Rust build: the Swift wrapper `NovaEngine.swift` in widget-sandbox, and macOS's sandbox for the XPC
+service.
 
 ## Removed from the trusted base during this work
 
@@ -48,8 +54,11 @@ file states what protects the process from a hostile script, what is trusted, an
   bytes, integer value, or heap index) with the same hash under per-Agent random keys; a garbage collection rehashes
   the former and drops the latter.
 - `soavec` (in-tree `heap/soa.rs`), the `hashbrown` 0.17 crate and `foldhash` (in-tree `table.rs`), and
-  `unsafe`-free forks of `num-bigint` 0.5, `num-traits` and `unicode-normalization`: every crate with `unsafe` left
-  in the widget build now comes in through oxc (`safe/TCB.md`, "Widget build now").
+  `unsafe`-free forks of `num-bigint` 0.5, `num-traits` and `unicode-normalization`.
+- The parser stack: oxc's own 707 `unsafe` (bump allocator, lexer, stacks and indexes, AST casts, visitor lifetime
+  transmutes) and what it pulled in (hashbrown 0.16, allocator-api2, memchr, compact_str, miette, self_cell, the
+  icu/zerovec family and more). With the engine's dependencies, the widget build went from 2668 `unsafe` in 55
+  crates to 0 in 28 (`safe/OXC.md`, "Where it stands").
 - A memory-safety bug was found in the removed `ryu-js`: `(4.2025059341068935e-46).toFixed(65)` returned bytes of an
   uninitialized stack buffer into a script string. Upstream Nova still has it.
 
@@ -70,8 +79,8 @@ file states what protects the process from a hostile script, what is trusted, an
 
 ## What remains (honestly)
 
-- A bug in `rustc`, LLVM, `std` or a listed dependency could still break the guarantees; the sandbox is the wall
-  behind that.
+- A bug in `rustc`, LLVM, `std` or `nova_embed_ffi` could still break the guarantees; the sandbox is the wall behind
+  that.
 - Denial of service inside one widget (it burns its own CPU quota until the interrupt stops it).
 - Correctness differences against QuickJS: on the 501 corpus widgets, 497 produce exactly QuickJS's output; the other
   three differ in an error's stack text, in nova_cli's module-loader message, and in one case where Nova follows the
@@ -81,4 +90,7 @@ file states what protects the process from a hostile script, what is trusted, an
   pooled widget engine boots in about 22 ms against 8 ms) and keeps about 5.4 MiB of live malloc per engine after the
   sandbox bundle. Widgets stay inside the CPU limits; the heaviest test widgets use up to ~80% of the 500 ms task
   limit.
-- The parser (oxc) is trusted code with `unsafe`, bounded by the nesting pre-scan; a fork or audit is the next step.
+- The parser (oxc) has no `unsafe` left, but it runs before the interrupt is ever polled, so its running time is
+  bounded only by the source's size. Its identifier maps use upstream's unkeyed hash, which samples at most 16 bytes
+  of a name: a script with 20,000 colliding `var` names (920 KB) takes 1.85 s to parse, quadratic in the count. A
+  keyed hash for those maps is the next step (`safe/OXC.md`).

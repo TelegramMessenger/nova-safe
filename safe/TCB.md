@@ -4,6 +4,10 @@
 is not checked by the compiler is Rust's std and the `unsafe` inside the crates nova_vm depends on. This file lists
 those crates, how much `unsafe` each has, whether input from a script reaches it, and what was done about it.
 
+Now (2026-11-15): the widget build links 28 crates and none of them has `unsafe` ("Widget build now" below). What
+is left unchecked by the compiler is Rust's std (with its own copy of hashbrown behind `HashMap`), rustc/LLVM and the
+C ABI crate `nova_embed_ffi`.
+
 ## Method
 
 - Crates: `cargo tree -p nova_vm -e normal,no-proc-macro`, the code linked into the process. Proc-macro crates and
@@ -23,7 +27,8 @@ those crates, how much `unsafe` each has, whether input from a script reaches it
 | after, default features | 96 | 64 | 3953 |
 | after, `--no-default-features --features widget` | 81 | 58 | 3518 |
 | widget build after vendoring oxc (`dep_unsafe_report.py`, d5f3b159) | 55 | 38 | 2668 |
-| widget build now, engine dependencies replaced (see below) | 51 | 32 | 2039 |
+| widget build, engine dependencies replaced (0fd89576) | 51 | 32 | 2039 |
+| widget build now, the parser stack without `unsafe` (see below) | 28 | 0 | 0 |
 
 Removed from the tree: sonic-rs and its 7 dependencies (794), ryu-js, lexical (8 crates) and fast-float (187),
 ahash with zerocopy, once_cell, getrandom 0.3 and libc (1436), rand with rand_core, chacha20 and getrandom 0.4 (191).
@@ -67,19 +72,59 @@ Performance (release builds, best of several runs on a machine shared with five 
 
 ## What stays, and why
 
-- **std**: the base everything stands on.
-- **hashbrown** inside std (std's HashMap and HashSet). nova_vm no longer depends on the hashbrown crate; oxc's
-  allocator still links hashbrown 0.16 (329) with allocator-api2, which the parser track removes.
-- **oxc** (oxc_parser, oxc_allocator, oxc_ast, oxc_semantic, oxc_ecmascript, oxc_regular_expression and their
-  dependencies: compact_str, castaway, smallvec, num-bigint 0.4, the icu/zerovec family behind oxc-miette's
-  diagnostics): it parses the script source, which a widget controls entirely. 1722 `unsafe` in the crates only
-  oxc uses, plus its own hashbrown 0.16 (329) and memchr (333, shared with regex); replacing the parser is out of
-  scope for this track. The largest parts are the bump allocator
-  (oxc_allocator, 273), the lexer (oxc_parser, 170) and compact_str (159).
-- **regex** (regex, regex-automata, aho-corasick, memchr): the regexp track replaces it with an in-tree engine.
-- **Temporal** (temporal_rs and its dependencies): off in the widget build.
+- **std**: the base everything stands on, with its own copy of **hashbrown** behind `HashMap` and `HashSet`. No
+  crate of the widget build depends on the hashbrown crate any more: nova_vm's tables with caller-supplied hashes
+  are the in-tree `table.rs`, and oxc's `HashMap`/`HashSet` wrap std's.
+- **rustc/LLVM**, and **`nova_embed_ffi`**, the C ABI (SECURITY.md, layer 2).
+- **oxc** is vendored (`oxc/crates`) and every crate of it forbids `unsafe_code`; `safe/OXC.md` records how each
+  part was replaced. The four registry crates left in the widget build have no `unsafe`: rustc-hash (oxc's
+  FxHash), num-integer (num-bigint), tinyvec (unicode-normalization) and xsum (Math.sumPrecise).
+- **regex** (regex, regex-automata, aho-corasick, memchr): replaced by the in-tree regress fork.
+- **Temporal** (temporal_rs and its dependencies): off in the widget build. The default-features build (nova_cli,
+  tests) still links 17 registry crates with 1187 `unsafe` (`dep_unsafe_report.py . --default-features`), none of
+  them in the app's engine.
 
 ## Widget build now
+
+`python3 -I safe/tools/dep_unsafe_report.py . --markdown` after the parser track (branch safe-oxc-h-hashbrown):
+oxc's maps moved to std's `HashMap`, and hashbrown 0.16 (329), the last crate with `unsafe`, left the build.
+
+| crate | version | source | unsafe |
+|---|---|---|---:|
+| bitflags | 2.13.2 | vendored | 0 |
+| cow-utils | 0.1.3 | vendored | 0 |
+| nova_vm | 1.0.0 | workspace | 0 |
+| num-bigint | 0.5.1 | workspace | 0 |
+| num-integer | 0.1.47 | registry | 0 |
+| num-traits | 0.2.19 | workspace | 0 |
+| oxc_allocator | 0.124.0 | vendored | 0 |
+| oxc_ast | 0.124.0 | vendored | 0 |
+| oxc_ast_visit | 0.124.0 | vendored | 0 |
+| oxc_data_structures | 0.124.0 | vendored | 0 |
+| oxc_diagnostics | 0.124.0 | vendored | 0 |
+| oxc_ecmascript | 0.124.0 | vendored | 0 |
+| oxc_estree | 0.124.0 | vendored | 0 |
+| oxc_index | 4.1.0 | vendored | 0 |
+| oxc_parser | 0.124.0 | vendored | 0 |
+| oxc_regular_expression | 0.124.0 | vendored | 0 |
+| oxc_semantic | 0.124.0 | vendored | 0 |
+| oxc_span | 0.124.0 | vendored | 0 |
+| oxc_str | 0.124.0 | vendored | 0 |
+| oxc_syntax | 0.124.0 | vendored | 0 |
+| regress | 0.12.0 | workspace | 0 |
+| rustc-hash | 2.1.3 | registry | 0 |
+| small_string | 1.0.0 | workspace | 0 |
+| tinyvec | 1.13.3 | registry | 0 |
+| unicode-id-start | 1.5.0 | vendored | 0 |
+| unicode-normalization | 0.1.26 | workspace | 0 |
+| wtf8 | 1.0.0 | workspace | 0 |
+| xsum | 0.1.6 | registry | 0 |
+
+registry: 4 crates, 0 with unsafe; vendored (oxc/crates and oxc/vendor): 17 crates, 0 with unsafe; workspace: 7
+crates, 0 with unsafe. Total 0 `unsafe` in 28 crates. `nova_embed` and `nova_embed_ffi` add nothing else
+(`cargo tree -p nova_embed_ffi`). The parser track's steps and numbers are in `safe/OXC.md` ("Where it stands").
+
+## Widget build after the engine's own dependencies were replaced (0fd89576)
 
 `python3 -I safe/tools/dep_unsafe_report.py . --markdown` after the engine's own dependencies were replaced
 (soavec, hashbrown 0.17 and foldhash, num-bigint 0.5, num-traits, unicode-normalization: 629 `unsafe` fewer).
