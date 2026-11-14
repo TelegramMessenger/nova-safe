@@ -1420,6 +1420,11 @@ pub(crate) fn to_property_key_primitive<'a>(
 }
 
 pub(crate) fn parse_wtf8_to_integer_property_key(str: Wtf8Str<'_>) -> Option<PropertyKey<'static>> {
+    // Note: integer keys start with a digit or "-"; skip the UTF-8 check for
+    // every other name.
+    if !matches!(str.as_bytes().first(), Some(b'0'..=b'9' | b'-')) {
+        return None;
+    }
     if let Some(str) = str.as_str() {
         parse_string_to_integer_property_key(str)
     } else {

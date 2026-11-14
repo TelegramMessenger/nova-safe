@@ -124,6 +124,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             strings,
             string_lookup_table: _,
             string_hasher: _,
+            shape_key_hasher: _,
             symbols,
             #[cfg(feature = "array-buffer")]
             typed_arrays,
@@ -193,6 +194,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             k2pow16,
             k2pow24,
             k2pow32,
+            key_offsets: _,
         } = elements;
 
         if !queues.modules.is_empty() {
@@ -1663,7 +1665,7 @@ fn sweep(
     root_realms: &mut [Option<Realm<'static>>],
     _: GcScope,
 ) {
-    let compactions = CompactionLists::create_from_bits(bits);
+    let compactions = CompactionLists::create_from_bits(bits, agent.heap.shape_key_hasher);
 
     for realm in root_realms {
         realm.sweep_values(&compactions);
@@ -1736,6 +1738,7 @@ fn sweep(
         strings,
         string_lookup_table,
         string_hasher: _,
+        shape_key_hasher: _,
         symbols,
         #[cfg(feature = "array-buffer")]
         typed_arrays,
@@ -1810,7 +1813,9 @@ fn sweep(
         k2pow16,
         k2pow24,
         k2pow32,
+        key_offsets,
     } = elements;
+    key_offsets.clear();
 
     let mut globals = globals.borrow_mut();
     let globals_iter = globals.iter_mut();

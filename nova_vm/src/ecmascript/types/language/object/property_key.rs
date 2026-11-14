@@ -4,7 +4,7 @@
 
 use core::hash::{Hash, Hasher};
 
-use crate::hashing::AHasher;
+use crate::hashing::{AHasher, HandleState};
 use wtf8::{Wtf8Buf, Wtf8Str};
 
 use crate::{
@@ -15,8 +15,8 @@ use crate::{
     },
     engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable, Scoped},
     heap::{
-        ArenaAccess, CompactionLists, HeapMarkAndSweep, PropertyKeyHeapAccess, WellKnownSymbols,
-        WorkQueues,
+        ArenaAccess, CompactionLists, HeapIndexHandle, HeapMarkAndSweep, PropertyKeyHeapAccess,
+        WellKnownSymbols, WorkQueues,
     },
 };
 
@@ -257,6 +257,34 @@ impl<'a> PropertyKey<'a> {
     /// Returns true if the PropertyKey is a PrivateName.
     pub fn is_private_name(&self) -> bool {
         matches!(self, PropertyKey::PrivateName(_))
+    }
+
+    /// The key's identity as 64 bits: keys equal by `==` give equal bits
+    /// and different keys different bits. Heap strings and symbols are
+    /// identified by their heap index, which a garbage collection changes:
+    /// a table hashed by these bits must be rehashed when its keys move.
+    #[inline]
+    pub(crate) fn identity_bits(self) -> u64 {
+        #[inline(always)]
+        fn seven_bytes(data: [u8; 7]) -> u64 {
+            let mut word = [0u8; 8];
+            word[..7].copy_from_slice(&data);
+            u64::from_le_bytes(word)
+        }
+        let (discriminant, payload) = match self {
+            PropertyKey::Integer(n) => (INTEGER_DISCRIMINANT, seven_bytes(n.data)),
+            PropertyKey::SmallString(s) => (SMALL_STRING_DISCRIMINANT, seven_bytes(*s.data())),
+            PropertyKey::String(s) => (STRING_DISCRIMINANT, s.get_index() as u64),
+            PropertyKey::Symbol(s) => (SYMBOL_DISCRIMINANT, s.get_index() as u64),
+            PropertyKey::PrivateName(p) => (PRIVATE_NAME_DISCRIMINANT, u64::from(p.into_u32())),
+        };
+        (u64::from(discriminant) << 56) | payload
+    }
+
+    /// Hash of the key's identity under the given random keys.
+    #[inline]
+    pub(crate) fn identity_hash(self, state: &HandleState) -> u64 {
+        state.hash_u64(self.identity_bits())
     }
 
     pub(crate) fn heap_hash(self, agent: &impl PropertyKeyHeapAccess) -> u64 {

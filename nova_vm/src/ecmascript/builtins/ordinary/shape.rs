@@ -4,7 +4,7 @@
 
 use std::{cmp::Ordering, collections::TryReserveError, marker::PhantomData, num::NonZeroU32};
 
-use crate::hashing::AHashMap;
+use crate::hashing::{AHashMap, HandleState};
 use hashbrown::{HashTable, hash_table::Entry};
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
     heap::{
         ArenaAccess, ArenaAccessMut, CompactionLists, CreateHeapData, DirectArenaAccess,
         DirectArenaAccessMut, Heap, HeapMarkAndSweep, HeapSweepWeakReference,
-        IntrinsicObjectShapes, PropertyKeyHeap, WeakReference, WorkQueues,
+        IntrinsicObjectShapes, WeakReference, WorkQueues,
         {ElementArrayKey, ElementArrays, FREE_KEY_SLOT}, {HeapIndexHandle, PropertyKeyIndex},
     },
 };
@@ -185,7 +185,7 @@ impl<'a> ObjectShape<'a> {
         key: PropertyKey<'a>,
     ) -> Option<ObjectShape<'a>> {
         let transitions = &agent.heap.object_shape_transitions[self.get_index()];
-        let hash = key.heap_hash(agent);
+        let hash = key.identity_hash(&agent.heap.shape_key_hasher);
         transitions
             .table
             .find(hash, |(k, _)| *k == key)
@@ -265,13 +265,10 @@ impl<'a> ObjectShape<'a> {
 
     /// Add a transition from self to child by key.
     fn add_transition(self, agent: &mut Agent, key: PropertyKey<'a>, child: Self) {
+        let hasher = agent.heap.shape_key_hasher;
         let self_transitions =
             self.get_transitions_direct_mut(&mut agent.heap.object_shape_transitions);
-        self_transitions.insert(
-            key,
-            child,
-            &PropertyKeyHeap::new(&mut agent.heap.strings, &mut agent.heap.symbols),
-        );
+        self_transitions.insert(key, child, &hasher);
     }
 
     /// Mutate the Object Shape by pushing a key into the keys storage.
@@ -533,6 +530,7 @@ impl<'a> ObjectShape<'a> {
             .heap
             .elements
             .reserve_keys_raw(keys, keys_cap, *len, private_fields_count)?;
+        agent.heap.elements.key_offsets.invalidate(*keys_cap, *keys);
         let keys = agent.heap.elements.get_keys_uninit_raw(*keys_cap, *keys);
         keys.copy_within(
             insertion_index..*len as usize,
@@ -892,6 +890,10 @@ pub(crate) struct ObjectShapeTransitionMap<'a> {
     /// Hash table keyed by PropertyKeys, pointing to an ObjectShape that is
     /// reached by adding said property key to the current Shape.
     ///
+    /// Keys are hashed by identity ([`PropertyKey::identity_hash`]) under the
+    /// Agent's random `shape_key_hasher`; the table is rehashed when a
+    /// garbage collection moves its keys.
+    ///
     /// > NOTE 1: The table is unordered.
     ///
     /// > NOTE 2: The Shapes in the table are weakly held.
@@ -932,13 +934,13 @@ impl<'a> ObjectShapeTransitionMap<'a> {
     }
 
     /// Insert a new transition into
-    pub(crate) fn insert(&mut self, key: PropertyKey, shape: ObjectShape, heap: &PropertyKeyHeap) {
+    pub(crate) fn insert(&mut self, key: PropertyKey, shape: ObjectShape, hasher: &HandleState) {
         let key = key.unbind();
         let shape = shape.unbind();
-        let hash = key.heap_hash(heap);
+        let hash = key.identity_hash(hasher);
         match self
             .table
-            .entry(hash, |e| e.0 == key, |e| e.0.heap_hash(heap))
+            .entry(hash, |e| e.0 == key, |e| e.0.identity_hash(hasher))
         {
             Entry::Occupied(_) => {
                 unreachable!("Attempted to overwrite an existing Object Shape transition")
@@ -1221,6 +1223,7 @@ impl HeapMarkAndSweep for ObjectShapeTransitionMap<'static> {
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let Self { parent, table } = self;
         parent.sweep_values(compactions);
+        let mut keys_moved = false;
         table.retain(|(key, value)| {
             // Note: if our value was held strongly by someone else, then we
             // keep it in our transition table and sweep it and its key.
@@ -1228,10 +1231,22 @@ impl HeapMarkAndSweep for ObjectShapeTransitionMap<'static> {
                 // Otherwise, we drop it off the table, key and all.
                 return false;
             };
+            let old_key = *key;
             key.sweep_values(compactions);
+            keys_moved |= *key != old_key;
             *value = new_value;
             true
         });
+        if keys_moved {
+            // Note: keys are hashed by identity, which moved with them.
+            let hasher = &compactions.shape_key_hasher;
+            let entries = table.drain().collect::<Vec<_>>();
+            for entry in entries {
+                table.insert_unique(entry.0.identity_hash(hasher), entry, |e| {
+                    e.0.identity_hash(hasher)
+                });
+            }
+        }
     }
 }
 

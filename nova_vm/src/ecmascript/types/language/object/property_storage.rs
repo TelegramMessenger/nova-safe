@@ -12,6 +12,7 @@ use crate::{
     engine::{Bindable, NoGcScope},
     heap::{
         ArenaAccess, ArenaAccessMut, DirectArenaAccess, ElementDescriptorMap, ElementIndex, Heap,
+        KEY_OFFSETS_MIN_LEN,
         {
             ElementDescriptor, ElementStorageMut, ElementStorageUninit, PropertyStorageMut,
             PropertyStorageRef,
@@ -24,6 +25,22 @@ use super::{InternalSlots, Object, OrdinaryObject, PropertyKey};
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub(crate) struct PropertyStorage<'a>(OrdinaryObject<'a>);
+
+/// The offset of `key` among the keys of `object`'s shape.
+#[inline]
+fn find_key_offset(agent: &Agent, object: OrdinaryObject, key: PropertyKey) -> Option<usize> {
+    let shape = object.get_direct(&agent.heap.objects).get_shape();
+    let keys = shape.keys(&agent.heap.object_shapes, &agent.heap.elements);
+    if keys.len() < KEY_OFFSETS_MIN_LEN {
+        return keys.iter().position(|k| *k == key);
+    }
+    agent.heap.elements.key_offsets.find(
+        shape.keys_capacity(agent),
+        shape.keys_index(agent),
+        keys,
+        key,
+    )
+}
 
 fn verify_writable(
     descriptors: Entry<'_, ElementIndex<'static>, ElementDescriptorMap<'static>>,
@@ -308,11 +325,11 @@ impl<'a> PropertyStorage<'a> {
             values,
             descriptors,
         } = object.get_property_storage(agent);
-        let result = keys
-            .iter()
-            .enumerate()
-            .find(|(_, k)| **k == key)
-            .map(|res| res.0);
+        let result = if keys.len() < KEY_OFFSETS_MIN_LEN {
+            keys.iter().position(|k| *k == key)
+        } else {
+            find_key_offset(agent, object, key)
+        };
         result.map(|index| {
             let value = &values[index];
             let index = index as u32;
@@ -334,18 +351,15 @@ impl<'a> PropertyStorage<'a> {
         let value = descriptor.value;
         let element_descriptor = ElementDescriptor::from_property_descriptor(descriptor);
 
-        if let Some(PropertyStorageMut {
-            keys,
-            values,
-            descriptors,
-        }) = object.unbind().get_property_storage_mut(agent)
+        let result = find_key_offset(agent, object, key).map(|index| index as u32);
+        if let Some(index) = result
+            && let Some(PropertyStorageMut {
+                keys: _,
+                values,
+                descriptors,
+            }) = object.unbind().get_property_storage_mut(agent)
         {
-            let result = keys
-                .iter()
-                .enumerate()
-                .find(|(_, k)| **k == key)
-                .map(|res| res.0 as u32);
-            if let Some(index) = result {
+            {
                 // Mutating existing property.
                 let value_entry = values.get_mut(index as usize).unwrap();
                 *value_entry = value.unbind();
@@ -455,11 +469,12 @@ impl<'a> PropertyStorage<'a> {
 
         let keys = old_shape.keys(&agent.heap.object_shapes, &agent.heap.elements);
 
-        let result = keys
-            .iter()
-            .enumerate()
-            .find(|(_, k)| **k == key)
-            .map(|res| res.0);
+        let result = agent.heap.elements.key_offsets.find(
+            old_shape.keys_capacity(agent),
+            old_shape.keys_index(agent),
+            keys,
+            key,
+        );
         let Some(index) = result else {
             // No match; nothing to delete.
             return Ok(());
