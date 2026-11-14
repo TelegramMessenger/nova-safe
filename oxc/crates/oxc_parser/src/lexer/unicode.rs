@@ -234,11 +234,7 @@ impl<'a, C: Config> Lexer<'a, C> {
             }
         };
 
-        // Because of `b | 32` above, compiler cannot deduce that next byte is definitely ASCII
-        // so `next_byte_unchecked` is necessary to produce compact assembly, rather than `consume_char`.
-        // SAFETY: This code is only reachable if there is a byte remaining, and it's ASCII.
-        // Therefore it's safe to consume that byte, and will leave position on a UTF-8 char boundary.
-        unsafe { self.source.next_byte_unchecked() };
+        self.source.next_byte();
 
         Some(u32::from(value))
     }
@@ -301,21 +297,15 @@ impl<'a, C: Config> Lexer<'a, C> {
 
         let before_second = self.source.position();
 
-        // SAFETY: We checked above that next 2 chars are `\u`
-        unsafe {
-            self.source.next_byte_unchecked();
-            self.source.next_byte_unchecked();
-        }
+        self.source.next_byte();
+        self.source.next_byte();
 
         // The second code unit of a surrogate pair is always in the range from 0xDC00 to 0xDFFF,
         // and is called a low surrogate or a trail surrogate.
         if let Some(low) = self.hex_4_digits()
             && (MIN_LOW..=MAX_LOW).contains(&low)
+            && let Some(ch) = char::from_u32(pair_to_code_point(high, low))
         {
-            let code_point = pair_to_code_point(high, low);
-            // SAFETY: `high` and `low` have been checked to be in ranges which always yield a `code_point`
-            // which is a valid `char`
-            let ch = unsafe { char::from_u32_unchecked(code_point) };
             return Some(UnicodeEscape::SurrogatePair(ch));
         }
 
@@ -395,7 +385,6 @@ impl<'a, C: Config> Lexer<'a, C> {
                         if first_digit < 4 && matches!(self.peek_byte(), Some(b'0'..=b'7')) {
                             let digit = self.consume_char() as u8 - b'0';
                             value = value * 8 + digit;
-
                         }
                     }
 

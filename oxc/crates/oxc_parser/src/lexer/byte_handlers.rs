@@ -1,5 +1,3 @@
-use oxc_data_structures::assert_unchecked;
-
 use crate::{
     config::{LexerConfig as Config, NoTokensLexerConfig, RuntimeLexerConfig, TokensLexerConfig},
     diagnostics,
@@ -10,22 +8,19 @@ use super::{Kind, Lexer};
 impl<C: Config> Lexer<'_, C> {
     /// Handle next byte of source.
     ///
-    /// # SAFETY
-    ///
     /// * Lexer must not be at end of file.
     /// * `byte` must be next byte of source code, corresponding to current position of `lexer.source`.
     /// * Only byte handlers for ASCII characters may use the `ascii_byte_handler!()` macro.
     // `#[inline(always)]` to ensure is inlined into `read_next_token`
     #[expect(clippy::inline_always)]
     #[inline(always)]
-    pub(super) unsafe fn handle_byte(&mut self, byte: u8) -> Kind {
+    pub(super) fn handle_byte(&mut self, byte: u8) -> Kind {
         let byte_handlers = self.config.byte_handlers();
-        // SAFETY: Caller guarantees to uphold safety invariants
-        unsafe { byte_handlers[byte as usize](self) }
+        byte_handlers[byte as usize](self)
     }
 }
 
-pub type ByteHandler<C> = unsafe fn(&mut Lexer<'_, C>) -> Kind;
+pub type ByteHandler<C> = fn(&mut Lexer<'_, C>) -> Kind;
 pub type ByteHandlers<C> = [ByteHandler<C>; 256];
 
 /// Macro to create a lookup table mapping any incoming byte to a handler function defined below.
@@ -65,18 +60,6 @@ pub mod byte_handler_tables {
 
 /// Macro for defining byte handler for an ASCII character.
 ///
-/// Asserts that lexer is not at end of file, and that next char is ASCII.
-/// Where the handler is for an ASCII character, these assertions are self-evidently true.
-///
-/// These assertions produce no runtime code, but hint to the compiler that it can assume that
-/// next char is ASCII, and it uses that information to optimize the rest of the handler.
-/// e.g. `lexer.consume_char()` becomes just a single assembly instruction.
-/// Without the assertions, the compiler is unable to deduce the next char is ASCII, due to
-/// the indirection of the byte handlers jump table.
-///
-/// These assertions are unchecked (i.e. won't panic) and will cause UB if they're incorrect.
-///
-/// # SAFETY
 /// Only use this macro to define byte handlers for ASCII characters.
 ///
 /// ```rust,ignore
@@ -91,11 +74,6 @@ pub mod byte_handler_tables {
 /// ```rust,ignore
 /// #[expect(non_snake_case)]
 /// fn SPS<C: Config>(lexer: &mut Lexer<'_, C>) -> Kind {
-///     // SAFETY: This macro is only used for ASCII characters
-///     unsafe {
-///         assert_unchecked!(!lexer.source.is_eof());
-///         assert_unchecked!(lexer.source.peek_byte_unchecked() < 128);
-///     }
 ///     {
 ///         lexer.consume_char();
 ///         Kind::WhiteSpace
@@ -106,11 +84,6 @@ macro_rules! ascii_byte_handler {
     ($id:ident($lex:ident) $body:expr) => {
         #[expect(non_snake_case)]
         fn $id<C: Config>($lex: &mut Lexer<'_, C>) -> Kind {
-            // SAFETY: This macro is only used for ASCII characters
-            unsafe {
-                assert_unchecked!(!$lex.source.is_eof());
-                assert_unchecked!($lex.source.peek_byte_unchecked() < 128);
-            }
             $body
         }
     };
@@ -122,10 +95,6 @@ macro_rules! ascii_byte_handler {
 /// Macro calls `Lexer::identifier_name_handler` to get the text of the identifier,
 /// minus its first character.
 ///
-/// `Lexer::identifier_name_handler` is an unsafe function, but if byte being consumed is ASCII,
-/// its requirements are met.
-///
-/// # SAFETY
 /// Only use this macro to define byte handlers for ASCII characters.
 ///
 /// ```rust,ignore
@@ -141,8 +110,7 @@ macro_rules! ascii_byte_handler {
 /// ```rust,ignore
 /// #[expect(non_snake_case)]
 /// fn L_G<C: Config>(lexer: &mut Lexer<'_, C>) -> Kind {
-///     // SAFETY: This macro is only used for ASCII characters
-///     let id_without_first_char = unsafe { lexer.identifier_name_handler() };
+///     let id_without_first_char = lexer.identifier_name_handler();
 ///     match id_without_first_char {
 ///         "et" => Kind::Get,
 ///         "lobal" => Kind::Global,
@@ -154,8 +122,7 @@ macro_rules! ascii_identifier_handler {
     ($id:ident($str:ident) $body:expr) => {
         #[expect(non_snake_case)]
         fn $id<C: Config>(lexer: &mut Lexer<'_, C>) -> Kind {
-            // SAFETY: This macro is only used for ASCII characters
-            let $str = unsafe { lexer.identifier_name_handler() };
+            let $str = lexer.identifier_name_handler();
             $body
         }
     };
@@ -208,14 +175,12 @@ ascii_byte_handler!(EXL(lexer) {
 
 // "
 ascii_byte_handler!(QOD(lexer) {
-    // SAFETY: This function is only called for `"`
-    unsafe { lexer.read_string_literal_double_quote() }
+    lexer.read_string_literal_double_quote()
 });
 
 // '
 ascii_byte_handler!(QOS(lexer) {
-    // SAFETY: This function is only called for `'`
-    unsafe { lexer.read_string_literal_single_quote() }
+    lexer.read_string_literal_single_quote()
 });
 
 // #

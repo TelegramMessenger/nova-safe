@@ -42,7 +42,10 @@ xsum = "=0.1.6"
 temporal_rs = "=0.2.6"
 
 [patch.crates-io]
+bitflags = { path = "oxc/vendor/bitflags" }
+cow-utils = { path = "oxc/vendor/cow-utils" }
 num-traits = { path = "num-traits" }
+unicode-id-start = { path = "oxc/vendor/unicode-id-start" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "nova_lint" }]
@@ -65,7 +68,3 @@ lto = "thin"
 debug = "limited"
 
 # Copies of crates.io crates with their `unsafe` removed (safe/OXC.md, area F).
-[patch.crates-io]
-bitflags = { path = "oxc/vendor/bitflags" }
-cow-utils = { path = "oxc/vendor/cow-utils" }
-unicode-id-start = { path = "oxc/vendor/unicode-id-start" }

@@ -40,17 +40,11 @@ impl<'a, C: Config> Lexer<'a, C> {
     /// When Unicode or an escape is encountered, this function de-opts to paths which handle those
     /// cases, but those paths are marked `#[cold]` to keep the ASCII fast path as fast as possible.
     ///
-    /// The fast path uses pointers and unsafe code to minimize bounds checks etc.
-    /// The functions it delegates to for uncommon cases are both more complex, and less critical,
-    /// so they stick to safe code only.
-    ///
-    /// # SAFETY
     /// * `self.source` must not be exhausted (at least 1 char remaining).
     /// * Next char must be ASCII.
-    pub(super) unsafe fn identifier_name_handler(&mut self) -> &'a str {
+    pub(super) fn identifier_name_handler(&mut self) -> &'a str {
         // Advance past 1st byte.
-        // SAFETY: Caller guarantees not at EOF, and next byte is ASCII.
-        let after_first = unsafe { self.source.position().add(1) };
+        let after_first = self.source.position().add(1);
 
         // Consume bytes which are part of identifier
         let next_byte = byte_search! {
@@ -59,9 +53,7 @@ impl<'a, C: Config> Lexer<'a, C> {
             start: after_first,
             handle_eof: {
                 // Return identifier minus its first char.
-                // SAFETY: `lexer.source` is positioned at EOF, so there is no valid value
-                // of `after_first` which could be after current position.
-                return unsafe { self.source.str_from_pos_to_current_unchecked(after_first) };
+                return self.source.str_from_pos_to_current(after_first);
             },
         };
 
@@ -71,26 +63,19 @@ impl<'a, C: Config> Lexer<'a, C> {
         // as fast as possible.
         if !next_byte.is_ascii() {
             return cold_branch(|| {
-                // SAFETY: `after_first` is position after consuming 1 byte, so subtracting 1
-                // makes `start_pos` `source`'s position as it was at start of this function
-                let start_pos = unsafe { after_first.sub(1) };
+                let start_pos = after_first.sub(1);
                 &self.identifier_tail_unicode(start_pos)[1..]
             });
         }
         if next_byte == b'\\' {
             return cold_branch(|| {
-                // SAFETY: `after_first` is position after consuming 1 byte, so subtracting 1
-                // makes `start_pos` `source`'s position as it was at start of this function
-                let start_pos = unsafe { after_first.sub(1) };
+                let start_pos = after_first.sub(1);
                 &self.identifier_backslash(start_pos, false)[1..]
             });
         }
 
         // Return identifier minus its first char.
-        // SAFETY: `after_first` was position of `lexer.source` at start of this search.
-        // Searching only proceeds in forwards direction, so `lexer.source.position()`
-        // cannot be before `after_first`.
-        unsafe { self.source.str_from_pos_to_current_unchecked(after_first) }
+        self.source.str_from_pos_to_current(after_first)
     }
 
     /// Handle rest of identifier after first byte of a multi-byte Unicode char found.
@@ -228,14 +213,12 @@ impl<'a, C: Config> Lexer<'a, C> {
         }
 
         // Handle if not an ASCII identifier byte.
-        // SAFETY: Not at EOF, so safe to read a byte.
-        let b = unsafe { start_pos.read() };
+        let b = start_pos.read();
         if !is_identifier_start_ascii_byte(b) {
             return self.private_identifier_not_ascii_id();
         }
 
-        // SAFETY: Not at EOF, so can advance 1 byte without going out of bounds
-        let after_first = unsafe { start_pos.add(1) };
+        let after_first = start_pos.add(1);
 
         // Consume bytes which are part of identifier
         let next_byte = byte_search! {
@@ -253,18 +236,14 @@ impl<'a, C: Config> Lexer<'a, C> {
         // as fast as possible.
         if !next_byte.is_ascii() {
             return cold_branch(|| {
-                // SAFETY: `after_first` is position after consuming 1 byte, so subtracting 1
-                // makes `start_pos` `source`'s position as it was at start of this function
-                let start_pos = unsafe { after_first.sub(1) };
+                let start_pos = after_first.sub(1);
                 self.identifier_tail_unicode(start_pos);
                 Kind::PrivateIdentifier
             });
         }
         if next_byte == b'\\' {
             return cold_branch(|| {
-                // SAFETY: `after_first` is position after consuming 1 byte, so subtracting 1
-                // makes `start_pos` `source`'s position as it was at start of this function
-                let start_pos = unsafe { after_first.sub(1) };
+                let start_pos = after_first.sub(1);
                 self.identifier_backslash(start_pos, false);
                 Kind::PrivateIdentifier
             });
