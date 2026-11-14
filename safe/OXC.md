@@ -44,7 +44,7 @@ Done, each step through the gate:
 - oxc_allocator is the safe design below, with `#![forbid(unsafe_code)]`: 273 -> 0. `Vec::push_fast` is kept as
   `push`. oxc_ast's generated `escape_template_element_raw` builds a `String` instead of writing through a raw
   pointer, and the `discriminant!` const assertions are gone (they built enums around `Box::dangling()`).
-- Vendored oxc: 707 -> 409 `unsafe`; widget build 2668 -> 2370 (1587 without std's hashbrown). allocator-api2
+- Vendored oxc: 707 -> 407 `unsafe`; widget build 2668 -> 2368 (1585 without std's hashbrown). allocator-api2
   stays in the tree only through nova's own hashbrown 0.17 default features (the dependencies track).
 
 Parse plus semantic check plus drop (`parsebench`), release, best of N, same machine and run:
@@ -60,12 +60,13 @@ Parse plus semantic check plus drop (`parsebench`), release, best of N, same mac
 Same symbol and node counts. A widget's own scripts cost about 0.1 ms to parse against a median widget run of
 about 150 ms; the bundle is parsed once per process.
 
-Left in oxc_ast (4): `shared_enum_variants!`'s `as_*`/`as_*_mut` (and the `to_*` that call them) cast `&Parent` to
-`&Child` (`&Expression` to `&MemberExpression`, `&Argument` to `&Expression`, `&Statement` to `&Declaration`, ...);
-`AstKind::ty` reads the tag through a pointer (`generated/ast_kind.rs`); `ast_impl/literal.rs` has one
-`from_utf8_unchecked`. The casts are sound while both enums are `#[repr(C, u8)]` with equal discriminants, which
-the removed assertions checked and the explicit discriminants in `inherit_variants!` still give, but they are the
-next thing to go. Callers today (the build tells them all once `as_*` is removed): oxc_ast_visit's walks (18), oxc_ast
+`AstKind::ty` is a generated `match` (188 arms) instead of reading the tag through a pointer, and
+`RegExpFlags::to_inline_string` uses `InlineString::push` (checked) instead of `push_unchecked`.
+
+Left in oxc_ast (2): `shared_enum_variants!`'s `as_*`/`as_*_mut` (and the `to_*` that call them) cast `&Parent` to
+`&Child` (`&Expression` to `&MemberExpression`, `&Argument` to `&Expression`, `&Statement` to `&Declaration`, ...).
+The casts are sound while both enums are `#[repr(C, u8)]` with equal discriminants, which the removed assertions
+checked and the explicit discriminants in `inherit_variants!` still give, but they are the next thing to go. Callers today (the build tells them all once `as_*` is removed): oxc_ast_visit's walks (18), oxc_ast
 itself (22), oxc_semantic (3), oxc_ecmascript (40, mostly `as_expression`/`to_expression` on arguments and
 array elements), nova (about 40). Two ways, both mechanical but wide:
 - nesting: `Argument::Expression(Expression<'a>)` instead of copying Expression's variants into Argument, so
