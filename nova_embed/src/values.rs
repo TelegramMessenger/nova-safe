@@ -208,12 +208,18 @@ pub(crate) fn completion(
 
 /// The error for a thrown value: the engine's termination if it ended the
 /// script, else the exception's text.
-pub(crate) fn error(agent: &mut Agent, shared: &Shared, thrown: Value, gc: GcScope) -> Error {
-    if let Some(error) = limits::termination(shared) {
+pub(crate) fn error(agent: &mut Agent, _shared: &Shared, thrown: Value, gc: GcScope) -> Error {
+    if let Some(error) = limits::take_termination(agent) {
         return error;
     }
     let text = describe(agent, thrown, gc);
-    limits::termination(shared).unwrap_or(Error::Exception(text))
+    if let Some(error) = limits::take_termination(agent) {
+        return error;
+    }
+    if limits::is_allocation_refused(agent, &text) {
+        return Error::OutOfMemory;
+    }
+    Error::Exception(text)
 }
 
 fn string_property(

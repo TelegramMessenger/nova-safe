@@ -380,3 +380,262 @@ fn registration_limits() {
         Err(Error::Invalid(_))
     ));
 }
+
+struct Limited {
+    stop: Rc<core::cell::Cell<bool>>,
+    polls: Rc<core::cell::Cell<u32>>,
+}
+
+impl Host for Limited {
+    fn call(&self, _id: u32, _args: Vec<HostArg>) -> HostReturn {
+        self.stop.set(true);
+        HostReturn::Undefined
+    }
+    fn should_interrupt(&self) -> bool {
+        self.polls.set(self.polls.get() + 1);
+        self.stop.get()
+    }
+}
+
+fn limited(
+    memory_limit: usize,
+    stack_limit: usize,
+) -> (
+    Engine,
+    Rc<core::cell::Cell<bool>>,
+    Rc<core::cell::Cell<u32>>,
+) {
+    let stop = Rc::new(core::cell::Cell::new(false));
+    let polls = Rc::new(core::cell::Cell::new(0));
+    let engine = Engine::new(
+        EngineOptions {
+            memory_limit,
+            stack_limit,
+        },
+        Box::new(Limited {
+            stop: stop.clone(),
+            polls: polls.clone(),
+        }),
+    )
+    .unwrap();
+    (engine, stop, polls)
+}
+
+#[test]
+fn this_build_enforces_every_limit() {
+    assert_eq!(ENFORCED_LIMITS, LIMIT_INTERRUPT | LIMIT_HEAP | LIMIT_STACK);
+}
+
+#[test]
+fn an_endless_loop_is_interrupted_and_cannot_catch_it() {
+    let (mut engine, stop, polls) = limited(0, 0);
+    engine
+        .register_function("__stop", 1, 0, ArgumentMode::Values)
+        .unwrap();
+    stop.set(true);
+    assert_eq!(
+        engine.evaluate("for (;;) {}", false),
+        Err(Error::Interrupted)
+    );
+    assert!(polls.get() >= 1);
+    assert_eq!(
+        engine.evaluate(
+            "for (;;) { try { for (;;) {} } catch (e) {} finally { globalThis.ran = 1; } }",
+            false
+        ),
+        Err(Error::Interrupted)
+    );
+    stop.set(false);
+    assert_eq!(engine.evaluate("1 + 1", false), Ok(Completion::Number(2.0)));
+    assert_eq!(
+        engine.evaluate("__stop(); var n = 0; while (true) n++;", false),
+        Err(Error::Interrupted)
+    );
+    stop.set(false);
+    engine
+        .evaluate(
+            "function spin() { for (;;) {} } Promise.resolve().then(spin);",
+            false,
+        )
+        .unwrap();
+    stop.set(true);
+    assert_eq!(engine.run_pending_job(), Err(Error::Interrupted));
+    stop.set(false);
+    engine
+        .evaluate("globalThis.f = () => 'still alive'", false)
+        .unwrap();
+    assert_eq!(
+        engine.call("f", &[]),
+        Ok(Completion::String("still alive".into()))
+    );
+}
+
+#[test]
+fn the_heap_limit_ends_a_script_that_goes_past_it() {
+    let (mut engine, _, _) = limited(16 << 20, 0);
+    assert_eq!(
+        engine.evaluate(
+            "var keep = []; for (var i = 0; i < 100; i++) keep.push(new Float64Array(1 << 20));",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    assert!(engine.memory_used() > 0);
+    assert_eq!(
+        engine.evaluate(
+            "keep = null; var objects = []; for (;;) { try { objects.push({ n: objects.length, s: 'x' + objects.length }); } catch (e) {} }",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    engine.evaluate("objects = null", false).unwrap();
+    engine.collect_garbage().unwrap();
+    assert!(engine.memory_used() < 16 << 20);
+    assert_eq!(
+        engine.evaluate("[1, 2, 3].length", false),
+        Ok(Completion::Number(3.0))
+    );
+}
+
+#[test]
+fn memory_used_follows_the_heap() {
+    let (mut engine, _, _) = engine_pair();
+    let before = engine.memory_used();
+    assert!(before > 0);
+    engine
+        .evaluate(
+            "globalThis.big = Array.from({ length: 20000 }, (_, i) => ({ i, s: 'v' + i }));",
+            false,
+        )
+        .unwrap();
+    let grown = engine.memory_used();
+    assert!(grown > before + (1 << 20), "{before} -> {grown}");
+    engine.evaluate("globalThis.big = null", false).unwrap();
+    engine.collect_garbage().unwrap();
+    assert!(engine.memory_used() < grown / 2);
+}
+
+fn engine_pair() -> (Engine, (), ()) {
+    let (engine, _, _) = limited(0, 0);
+    (engine, (), ())
+}
+
+/// The reviewer's native-recursion probes, on a thread with an 8 MB stack and
+/// the stack limit a host derives from it: every one ends with a catchable
+/// error or a termination, never a stack overflow.
+#[test]
+fn deep_recursion_is_a_range_error_not_a_stack_overflow() {
+    const PROBES: &[&str] = &[
+        "function f() { return f() + 1; } f()",
+        "var f = function () {}; for (var i = 0; i < 1e5; i++) f = f.bind(null); f()",
+        "var p = { x: 1 }; for (var i = 0; i < 1e5; i++) p = new Proxy(p, {}); p.x",
+        "var a = []; for (var i = 0; i < 1e5; i++) a = [a]; JSON.stringify(a)",
+        "eval('['.repeat(1e4) + ']'.repeat(1e4))",
+        "eval('['.repeat(1e5) + ']'.repeat(1e5))",
+        "var o = {}; for (var i = 0; i < 1e5; i++) o = { o }; String(JSON.parse(JSON.stringify(o)))",
+        "function g(n) { return n ? [1].map(() => g(n - 1)) : 0; } g(1e6)",
+        "var s = { toString() { return '' + s; } }; '' + s",
+    ];
+    let results = std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(|| {
+            let mut out = vec![];
+            for probe in PROBES {
+                let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+                out.push((probe, engine.evaluate(probe, false), engine.memory_used()));
+                assert_eq!(
+                    engine.evaluate("1 + 1", false),
+                    Ok(Completion::Number(2.0)),
+                    "{probe}"
+                );
+            }
+            out
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    for (probe, result, used) in results {
+        match result {
+            Ok(_)
+            | Err(Error::Exception(_))
+            | Err(Error::Interrupted)
+            | Err(Error::OutOfMemory) => {}
+            other => panic!("{probe}: {other:?}"),
+        }
+        eprintln!("{probe}: {result:?} ({used} bytes)");
+    }
+}
+
+#[test]
+fn a_backtracking_regexp_is_interrupted_and_cannot_catch_it() {
+    let (mut engine, stop, polls) = limited(0, 0);
+    engine
+        .evaluate(
+            "var re = /(a+)+$/; var input = 'a'.repeat(28) + 'b';",
+            false,
+        )
+        .unwrap();
+    stop.set(true);
+    let before = polls.get();
+    assert_eq!(
+        engine.evaluate("for (;;) { try { re.test(input); } catch (e) {} }", false),
+        Err(Error::Interrupted)
+    );
+    assert_eq!(polls.get(), before + 1);
+    assert_eq!(
+        engine.evaluate(
+            "try { input.replace(re, 'x') } catch (e) { 'caught' }",
+            false
+        ),
+        Err(Error::Interrupted)
+    );
+    stop.set(false);
+    assert_eq!(
+        engine.evaluate("/b+/.exec('aabbb')[0]", false),
+        Ok(Completion::String("bbb".into()))
+    );
+}
+
+#[test]
+fn local_time_is_the_hosts_time_zone() {
+    struct Dubai;
+    impl Host for Dubai {
+        fn call(&self, _id: u32, _args: Vec<HostArg>) -> HostReturn {
+            HostReturn::Undefined
+        }
+        fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
+            if epoch_seconds >= 1_782_000_000 {
+                4 * 3600 + 30 * 60 + 59
+            } else {
+                4 * 3600
+            }
+        }
+    }
+    let mut engine = Engine::new(
+        EngineOptions {
+            memory_limit: 0,
+            stack_limit: 0,
+        },
+        Box::new(Dubai),
+    )
+    .unwrap();
+    assert_eq!(
+        engine.evaluate(
+            "var d = new Date(Date.UTC(2026, 0, 15, 8, 30)); [d.getHours(), d.getMinutes(), d.getTimezoneOffset(), d.toString(), new Date(2026, 0, 15, 12, 30).getTime() === d.getTime(), new Date(Date.UTC(2026, 6, 15)).getTimezoneOffset()].join('|')",
+            false
+        ),
+        Ok(Completion::String(
+            "12|30|-240|Thu Jan 15 2026 12:30:00 GMT+0400|true|-270".into()
+        ))
+    );
+    let (mut utc, _) = engine_with_default();
+    assert_eq!(
+        utc.evaluate("new Date(Date.UTC(2026, 0, 15, 8, 30)).getHours()", false),
+        Ok(Completion::Number(8.0))
+    );
+}
+
+fn engine_with_default() -> (Engine, ()) {
+    let (engine, _) = engine();
+    (engine, ())
+}

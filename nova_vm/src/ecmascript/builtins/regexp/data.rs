@@ -120,7 +120,7 @@ impl From<usize> for RegExpLastIndex {
 /// of running for years.
 const MAX_STEPS: u64 = 200_000_000;
 /// How many steps go between two host interrupt polls.
-const POLL_INTERVAL: u64 = 1 << 16;
+const POLL_INTERVAL: u64 = crate::ecmascript::POLL_INTERVAL as u64;
 /// The most entries of the backtracking stack (each a few machine words).
 const MAX_BACKTRACK_ENTRIES: usize = 4 << 20;
 
@@ -219,7 +219,9 @@ impl<'a> RegExpHeapData<'a> {
     }
 
     /// Searches `s` from UTF-16 index `start` (only at `start` if `sticky`).
-    /// The match and its captures are UTF-16 ranges.
+    /// The match and its captures are UTF-16 ranges. `poll` is called every
+    /// few thousand steps; returning true stops the search with
+    /// [`RegExpExecError::Interrupted`].
     ///
     /// ## Panics
     ///
@@ -230,21 +232,22 @@ impl<'a> RegExpHeapData<'a> {
         s: String<'_>,
         start: usize,
         sticky: bool,
+        poll: &mut dyn FnMut() -> bool,
     ) -> Result<Option<Match>, RegExpExecError> {
         let bytes = s.as_bytes_(strings);
         let utf16_len = s.utf16_len_(strings);
-        let budget = || ExecBudget {
+        let budget = ExecBudget {
             max_steps: MAX_STEPS,
             poll_interval: POLL_INTERVAL,
             max_backtrack_entries: MAX_BACKTRACK_ENTRIES,
-            poll: None,
+            poll: Some(poll),
         };
         let full_unicode = self
             .original_flags
             .intersects(RegExpFlags::U | RegExpFlags::V);
         let result = if utf16_len == bytes.len() {
             let matcher = self.reg_exp_matcher.as_ref().expect("a compiled pattern");
-            matcher.exec_ascii(bytes, start, sticky, budget())
+            matcher.exec_ascii(bytes, start, sticky, budget)
         } else {
             if self.utf16_input_key != Some(s.unbind()) {
                 self.utf16_input.clear();
@@ -267,7 +270,7 @@ impl<'a> RegExpHeapData<'a> {
                 start
             };
             let matcher = self.reg_exp_matcher.as_ref().expect("a compiled pattern");
-            matcher.exec_utf16(units, start, sticky, budget())
+            matcher.exec_utf16(units, start, sticky, budget)
         };
         result.map_err(|err| match err {
             MatchError::Interrupted => RegExpExecError::Interrupted,

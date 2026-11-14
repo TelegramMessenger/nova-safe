@@ -19,8 +19,12 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use core::{cell::RefCell, ffi::c_void, panic::AssertUnwindSafe};
-use std::{panic::catch_unwind, sync::LazyLock};
+use core::{
+    cell::{Cell, RefCell},
+    ffi::c_void,
+    panic::AssertUnwindSafe,
+};
+use std::{panic::catch_unwind, rc::Rc, sync::LazyLock};
 
 use nova_embed::{
     ArgumentMode, Completion, Engine, EngineOptions, Error, Host, HostArg, HostReturn,
@@ -86,16 +90,21 @@ pub struct NovaReturn {
 pub type NovaHostFn =
     Option<unsafe extern "C" fn(*mut c_void, u32, *const NovaArg, usize, *mut NovaReturn)>;
 pub type NovaInterruptFn = Option<unsafe extern "C" fn(*mut c_void) -> bool>;
+pub type NovaTimeZoneFn = Option<unsafe extern "C" fn(*mut c_void, i64) -> i32>;
 
 /// The opaque engine handle. The `RefCell` refuses a call made from inside
-/// one of the engine's own callbacks instead of aliasing the engine.
+/// one of the engine's own callbacks instead of aliasing the engine; a free
+/// requested from there waits for the outermost call to return.
 pub struct NovaEngine {
     engine: RefCell<Engine>,
+    time_zone: Rc<Cell<NovaTimeZoneFn>>,
+    free_requested: Cell<bool>,
 }
 
 struct CHost {
     call: unsafe extern "C" fn(*mut c_void, u32, *const NovaArg, usize, *mut NovaReturn),
     interrupt: NovaInterruptFn,
+    time_zone: Rc<Cell<NovaTimeZoneFn>>,
     context: *mut c_void,
 }
 
@@ -152,6 +161,16 @@ impl Host for CHost {
             // callable with its context for the engine's life.
             Some(interrupt) => unsafe { interrupt(self.context) },
             None => false,
+        }
+    }
+
+    fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
+        match self.time_zone.get() {
+            // SAFETY: `nova_engine_set_time_zone` requires the function to
+            // stay callable with the engine's context until the engine is
+            // freed or the function replaced.
+            Some(time_zone) => unsafe { time_zone(self.context, epoch_seconds) },
+            None => 0,
         }
     }
 }
@@ -270,8 +289,8 @@ unsafe fn with_engine(
     // SAFETY: non-null, from `nova_engine_new` (Box::into_raw) and not freed
     // by the caller's contract; only a shared reference is made, so a nested
     // call from a callback aliases nothing mutably.
-    let handle = unsafe { &*handle };
-    let Ok(mut engine) = handle.engine.try_borrow_mut() else {
+    let handle_ref = unsafe { &*handle };
+    let Ok(mut engine) = handle_ref.engine.try_borrow_mut() else {
         // SAFETY: forwarded contract.
         return unsafe {
             refuse(
@@ -283,14 +302,25 @@ unsafe fn with_engine(
     };
     let result = catch_unwind(AssertUnwindSafe(|| work(&mut engine)));
     drop(engine);
-    match result {
+    let status = match result {
         // SAFETY: forwarded contract.
         Ok(Ok(completion)) => unsafe { write_completion(out, completion) },
         // SAFETY: forwarded contract.
         Ok(Err(error)) => unsafe { write_error(out, error) },
         // SAFETY: forwarded contract.
         Err(_) => unsafe { refuse(out, NOVA_DEAD, "the engine's C interface panicked") },
+    };
+    if handle_ref.free_requested.get() {
+        // SAFETY: a callback of this call asked for the free
+        // (nova_engine_free), which the borrow held by this call deferred.
+        // That borrow is released, every nested call was refused, so this is
+        // the outermost call and nothing else refers to the engine; the
+        // pointer came from Box::into_raw, and neither it nor `handle_ref` is
+        // used after this.
+        let engine = unsafe { Box::from_raw(handle.cast_mut()) };
+        let _ = catch_unwind(AssertUnwindSafe(move || drop(engine)));
     }
+    status
 }
 
 /// Creates an engine; null on failure (with the reason in `error` if given).
@@ -313,6 +343,8 @@ pub unsafe extern "C" fn nova_engine_new(
         unsafe { refuse(error, NOVA_INVALID, "no host function callback") };
         return core::ptr::null_mut();
     };
+    let time_zone = Rc::new(Cell::new(None));
+    let host_time_zone = time_zone.clone();
     let created = catch_unwind(AssertUnwindSafe(|| {
         Engine::new(
             EngineOptions {
@@ -322,6 +354,7 @@ pub unsafe extern "C" fn nova_engine_new(
             Box::new(CHost {
                 call,
                 interrupt,
+                time_zone: host_time_zone,
                 context,
             }),
         )
@@ -332,6 +365,8 @@ pub unsafe extern "C" fn nova_engine_new(
             unsafe { write_result(error, NOVA_VALUE_UNDEFINED, 0.0, Vec::new()) };
             Box::into_raw(Box::new(NovaEngine {
                 engine: RefCell::new(engine),
+                time_zone,
+                free_requested: Cell::new(false),
             }))
         }
         Ok(Err(failure)) => {
@@ -347,12 +382,13 @@ pub unsafe extern "C" fn nova_engine_new(
     }
 }
 
-/// Frees an engine. Null is ignored; so is a call made from inside one of the
-/// engine's callbacks (the engine is then never freed).
+/// Frees an engine (null is ignored). From inside one of the engine's own
+/// callbacks the free waits until the outermost call into the engine returns;
+/// until then the engine refuses every call.
 ///
 /// # Safety
 /// `handle` must be null or a live handle from `nova_engine_new`, not used
-/// again afterwards.
+/// again afterwards (except by the calls in progress on this thread).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nova_engine_free(handle: *mut NovaEngine) {
     if handle.is_null() {
@@ -362,6 +398,7 @@ pub unsafe extern "C" fn nova_engine_free(handle: *mut NovaEngine) {
         // SAFETY: non-null and live by the contract; shared reference only.
         let shared = unsafe { &*handle };
         if shared.engine.try_borrow_mut().is_err() {
+            shared.free_requested.set(true);
             return;
         }
     }
@@ -602,6 +639,28 @@ pub unsafe extern "C" fn nova_engine_collect_garbage(handle: *const NovaEngine) 
             engine.collect_garbage().map(|()| Completion::Undefined)
         })
     }
+}
+
+/// Gives the engine the host's local time zone: `time_zone(context,
+/// epoch_seconds)` returns the seconds east of UTC at that instant (daylight
+/// saving time included). Null: UTC, the default.
+///
+/// # Safety
+/// `handle` must be null or a live handle; `time_zone` must stay callable
+/// with the engine's context until the engine is freed or the function is
+/// replaced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nova_engine_set_time_zone(
+    handle: *const NovaEngine,
+    time_zone: NovaTimeZoneFn,
+) -> i32 {
+    if handle.is_null() {
+        return NOVA_INVALID;
+    }
+    // SAFETY: non-null and live by the contract; shared reference only (the
+    // setting is a Cell, so this works from inside a callback too).
+    unsafe { &*handle }.time_zone.set(time_zone);
+    NOVA_OK
 }
 
 /// Frees the bytes of a result and empties it; a result freed twice, or one

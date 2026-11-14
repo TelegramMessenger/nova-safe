@@ -54,6 +54,16 @@ unsafe extern "C" fn host(
         }
     }
     let engine = context.engine.get();
+    if !engine.is_null() && id == 98 {
+        unsafe { nova_engine_free(engine as *mut NovaEngine) };
+        let mut out = blank();
+        assert_eq!(
+            unsafe { nova_engine_eval(engine, b"1".as_ptr(), 1, false, &mut out) },
+            NOVA_REFUSED
+        );
+        unsafe { nova_result_free(&mut out) };
+        context.engine.set(ptr::null());
+    }
     if !engine.is_null() && id == 99 {
         let mut out = blank();
         let status = unsafe { nova_engine_eval(engine, b"1".as_ptr(), 1, false, &mut out) };
@@ -63,7 +73,6 @@ unsafe extern "C" fn host(
             unsafe { nova_engine_set_memory_limit(engine, 1) },
             NOVA_REFUSED
         );
-        unsafe { nova_engine_free(engine as *mut NovaEngine) };
         context.refused.set(context.refused.get() + 1);
     }
     let mut rng = Rng(context.rng.get() ^ checksum ^ 0x9e37_79b9);
@@ -398,6 +407,54 @@ fn reentrant_calls_are_refused() {
         assert_eq!(out.number, 5.0);
         nova_result_free(&mut out);
         assert_eq!(context.refused.get(), 1);
+        assert_eq!(
+            nova_engine_register(
+                engine,
+                b"__free".as_ptr(),
+                6,
+                98,
+                0,
+                NOVA_ARGS_VALUES,
+                &mut out
+            ),
+            NOVA_OK
+        );
+        nova_result_free(&mut out);
+        let status = nova_engine_eval(engine, b"__free(); 6".as_ptr(), 11, false, &mut out);
+        assert_eq!(status, NOVA_OK);
+        assert_eq!(out.number, 6.0);
+        nova_result_free(&mut out);
+        assert_eq!(context.calls.get(), 2);
+        assert!(
+            context.engine.get().is_null(),
+            "freed when the eval returned"
+        );
+    }
+}
+
+unsafe extern "C" fn plus_four(_context: *mut c_void, _epoch_seconds: i64) -> i32 {
+    4 * 3600
+}
+
+#[test]
+fn the_time_zone_callback_sets_local_time() {
+    let mut out = blank();
+    unsafe {
+        let engine = nova_engine_new(0, 0, Some(host), None, ptr::null_mut(), ptr::null_mut());
+        let source = b"new Date(Date.UTC(2026, 0, 1, 20)).getHours()";
+        assert_eq!(
+            nova_engine_eval(engine, source.as_ptr(), source.len(), false, &mut out),
+            NOVA_OK
+        );
+        assert_eq!(out.number, 20.0);
+        assert_eq!(nova_engine_set_time_zone(engine, Some(plus_four)), NOVA_OK);
+        assert_eq!(
+            nova_engine_eval(engine, source.as_ptr(), source.len(), false, &mut out),
+            NOVA_OK
+        );
+        assert_eq!(out.number, 0.0);
+        assert_eq!(nova_engine_set_time_zone(engine, None), NOVA_OK);
+        assert_eq!(nova_engine_set_time_zone(ptr::null(), None), NOVA_INVALID);
         nova_engine_free(engine);
     }
 }

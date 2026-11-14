@@ -41,7 +41,8 @@ impl TerminationReason {
     }
 }
 
-/// Instructions (or native loop steps) between two interrupt polls.
+/// Instructions (or native loop steps, or RegExp matcher steps) between two
+/// interrupt polls.
 pub(crate) const POLL_INTERVAL: u32 = 4096;
 
 /// Allocations between two garbage collections when no heap limit is near.
@@ -103,6 +104,39 @@ fn stack_address() -> usize {
 }
 
 impl Limits {
+    /// [`Agent::should_terminate`] for a matcher that holds borrows of the
+    /// heap while it runs (the RegExp search): the host's interrupt and the
+    /// heap limit, with the heap's size taken before the search (it does not
+    /// allocate in the heap). `collectable` says whether a collection could
+    /// still bring the heap under the limit, in which case the next
+    /// instruction collects instead.
+    pub(crate) fn should_terminate_matcher(
+        &mut self,
+        host_hooks: &dyn crate::ecmascript::HostHooks,
+        heap_size: usize,
+        collectable: bool,
+    ) -> bool {
+        if self.termination.is_none() {
+            if host_hooks.check_interrupt() {
+                self.termination = Some(TerminationReason::Interrupted);
+            } else if let Some(limit) = self.heap_limit
+                && heap_size > limit
+            {
+                if collectable {
+                    self.gc_threshold = 0;
+                } else {
+                    self.termination = Some(TerminationReason::OutOfMemory);
+                }
+            }
+        }
+        if self.termination.is_some() {
+            self.countdown = 1;
+            true
+        } else {
+            false
+        }
+    }
+
     /// `interval` is the collector's own pacing (Heap::gc_alloc_limit). Near
     /// the heap limit the next collection comes sooner, so that the heap is
     /// collected before a script is found over the limit.

@@ -60,29 +60,22 @@ pub(crate) struct EmbedHooks;
 
 pub(crate) static HOOKS: EmbedHooks = EmbedHooks;
 
-impl EmbedHooks {
-    /// The interrupt poll. The limits track adds `HostHooks::check_interrupt`
-    /// with this signature; until it lands nothing calls this (see
-    /// `limits.rs`).
-    #[allow(dead_code)]
-    pub(crate) fn poll_interrupt(&self) -> bool {
-        let Some(shared) = current() else {
-            return false;
-        };
-        if shared.interrupted.get() {
-            return true;
-        }
-        let stop = shared.host.should_interrupt();
-        if stop {
-            shared.interrupted.set(true);
-        }
-        stop
-    }
-}
-
 impl HostHooks for EmbedHooks {
+    /// Polled by the engine every few thousand instructions: asks the running
+    /// engine's host.
+    fn check_interrupt(&self) -> bool {
+        current().is_some_and(|shared| shared.host.should_interrupt())
+    }
+
+    fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
+        current().map_or(0, |shared| {
+            shared.host.local_time_zone_offset(epoch_seconds)
+        })
+    }
+
     fn enqueue_generic_job(&self, _job: Job) {
-        // Only Atomics.waitAsync makes these, and this build has no Atomics.
+        // Only Atomics.waitAsync makes these, and the widget build has no
+        // Atomics.
     }
 
     fn enqueue_promise_job(&self, job: Job) {

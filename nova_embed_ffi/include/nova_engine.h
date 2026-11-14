@@ -14,10 +14,10 @@
  *   allowed. On NOVA_OK it holds the value (NOVA_VALUE_UNDEFINED, _STRING or
  *   _NUMBER); on any other status a NOVA_VALUE_STRING with the error text
  *   (the exception's "name: message", the missing function's name, a reason).
- * - The engine calls back only into the two callbacks given to
- *   nova_engine_new, on the calling thread, inside a call. A callback must not
- *   call into the same engine: such a call returns NOVA_REFUSED (and
- *   nova_engine_free does nothing).
+ * - The engine calls back only into its callbacks (host function, interrupt,
+ *   time zone), on the calling thread, inside a call. A call into the same
+ *   engine from a callback returns NOVA_REFUSED; nova_engine_free from there
+ *   is deferred until the outermost call returns.
  * - After NOVA_DEAD the engine never runs anything again; every call returns
  *   NOVA_DEAD. Free it. */
 
@@ -119,12 +119,29 @@ typedef bool (*nova_interrupt_fn)(void *context);
 /* A new engine with one realm and the standard globals; NULL on failure, with
  * the reason in `error` (may be NULL). `host` is required, `interrupt` may be
  * NULL. Both must stay callable with `context` until nova_engine_free.
- * memory_limit and stack_limit are bytes, 0 for none / the default. */
+ * memory_limit: heap bytes (0: none); a script that goes past it ends with
+ * NOVA_OUT_OF_MEMORY. stack_limit: native stack bytes JavaScript may use,
+ * counted from the call into the engine (0: 1 MB); deeper calls throw a
+ * catchable RangeError. Leave a quarter of the thread's stack free (about
+ * 2.8 KB per JavaScript call level in a release build). The interrupt
+ * callback is polled every 4096 instructions and native loop steps: keep it
+ * to a flag or a cheap clock check. */
 nova_engine *nova_engine_new(size_t memory_limit, size_t stack_limit, nova_host_fn host,
                              nova_interrupt_fn interrupt, void *context, nova_result *error);
 
-/* Frees the engine (NULL is ignored). Not from inside its callbacks. */
+/* Frees the engine (NULL is ignored). From inside one of its callbacks the
+ * free waits until the outermost call into the engine returns; until then
+ * every call into it is refused. */
 void nova_engine_free(nova_engine *engine);
+
+/* Seconds east of UTC of the host's local time zone at `epoch_seconds`,
+ * daylight saving time included (what localtime_r's tm_gmtoff says). */
+typedef int32_t (*nova_time_zone_fn)(void *context, int64_t epoch_seconds);
+
+/* Sets the local time zone of Date (NULL: UTC, the default). Called with the
+ * engine's context; it must stay callable until the engine is freed or it is
+ * replaced. */
+int32_t nova_engine_set_time_zone(const nova_engine *engine, nova_time_zone_fn time_zone);
 
 /* Defines the global `name` (1 to 64 bytes) as a writable, configurable host
  * function of `length` that calls `host` with `id`. */
