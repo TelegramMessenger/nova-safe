@@ -24,6 +24,9 @@ impl Heap {
         total += vec_bytes(&self.async_generators);
         total += vec_bytes(&self.await_reactions);
         total += vec_bytes(&self.bigints);
+        for bigint in self.bigints.iter() {
+            total += usize::try_from(bigint.data.bits() / 8).unwrap_or(usize::MAX);
+        }
         total += vec_bytes(&self.bound_functions);
         total += vec_bytes(&self.builtin_constructors);
         total += vec_bytes(&self.builtin_functions);
@@ -110,7 +113,7 @@ impl Heap {
         {
             total += vec_bytes(&self.regexps);
             for regexp in self.regexps.iter() {
-                total += regexp.utf16_input_bytes();
+                total += regexp.utf16_input_bytes() + regexp.program_bytes();
             }
         }
         total += vec_bytes(&self.strings);

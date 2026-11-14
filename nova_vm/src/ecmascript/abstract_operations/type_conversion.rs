@@ -1019,13 +1019,41 @@ pub(crate) fn string_to_big_int<'a>(
     // Left with digits only in a particular base
     let string_to_convert = if base.is_some() { &mv[2..] } else { mv };
 
+    // Refuse digits past crate::ecmascript::MAX_BIGINT_BITS before parsing them: each
+    // significant digit adds at least 1, 3, 3 or 4 bits (radix 2, 8, 10,
+    // 16), and parsing decimal digits takes time quadratic in their count.
+    let radix = base.unwrap_or(10);
+    let mut work = 0;
+    let unsigned = string_to_convert
+        .strip_prefix(['+', '-'])
+        .filter(|_| base.is_none())
+        .unwrap_or(string_to_convert);
+    if unsigned.bytes().all(|b| char::from(b).is_digit(radix)) {
+        let significant = unsigned.trim_start_matches('0').len() as u64;
+        let bits_per_digit = match radix {
+            2 => 1,
+            16 => 4,
+            _ => 3,
+        };
+        if significant.saturating_sub(1).saturating_mul(bits_per_digit)
+            >= crate::ecmascript::MAX_BIGINT_BITS
+        {
+            return Err(crate::ecmascript::throw_bigint_too_large(agent, nogc));
+        }
+        work = crate::ecmascript::bigint_work_steps(
+            significant.saturating_mul(bits_per_digit + 1),
+            significant.saturating_mul(bits_per_digit + 1),
+        );
+    }
+
     // 6. Return ℤ(mv).
     // Parse with the required radix calculated from the base
     let num_big_int =
         num_bigint::BigInt::parse_bytes(string_to_convert.as_bytes(), base.unwrap_or(10));
 
     if let Some(num_big_int) = num_big_int {
-        Ok(BigInt::from_num_bigint(agent, num_big_int))
+        agent.charge_steps(work);
+        BigInt::from_num_bigint(agent, num_big_int).check_size(agent, nogc)
     } else {
         let message =
             String::from_string(agent, format!("Cannot convert {literal} to a BigInt"), nogc);

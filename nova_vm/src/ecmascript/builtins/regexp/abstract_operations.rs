@@ -8,7 +8,10 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::RegExpFlags;
 use oxc_regular_expression::{LiteralParser, Options};
 
-use super::data::{MAX_PATTERN_NESTING, RegExpExecError, pattern_nesting};
+use super::data::{
+    COMPILE_PEAK_BYTES_PER_BYTE, MAX_PATTERN_NESTING, PROGRAM_BYTES_PER_BYTE, RegExpExecError,
+    pattern_nesting,
+};
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, ExceptionType, Function, JsResult,
@@ -60,7 +63,9 @@ pub(crate) fn reg_exp_create_literal<'a>(
     // 1. Let obj be ! RegExpAlloc(%RegExp%).
     // 2. Return ? RegExpInitialize(obj, P, F).
     let f = f.unwrap_or(RegExpFlags::empty());
-    agent.heap.create(RegExpHeapData::new(p, f)).bind(gc)
+    let data = RegExpHeapData::new(agent, p, f);
+    agent.heap.data_bytes_since_gc += data.program_bytes();
+    agent.heap.create(data).bind(gc)
 }
 
 /// ### [22.2.3.2 RegExpAlloc ( newTarget )](https://tc39.es/ecma262/#sec-regexpalloc)
@@ -161,6 +166,15 @@ pub(crate) fn reg_exp_initialize<'a>(
         let obj = obj.take(agent).bind(gc.nogc());
         (obj, p, f)
     };
+    // Refuse a pattern whose compile could take more memory than the heap
+    // limit leaves (see COMPILE_PEAK_BYTES_PER_BYTE).
+    let pattern_bytes = p.len_(agent);
+    agent
+        .check_heap_limit(
+            pattern_bytes.saturating_mul(COMPILE_PEAK_BYTES_PER_BYTE),
+            gc.nogc(),
+        )
+        .unbind()?;
     // 5. If F contains any code unit other than "d", "g", "i", "m", "s", "u",
     //    "v", or "y", or if F contains any code unit more than once, throw a
     //    SyntaxError exception.
@@ -235,7 +249,9 @@ pub(crate) fn reg_exp_initialize<'a>(
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
         data.reg_exp_matcher = Some(Ok(reg_exp_matcher));
+        data.program_bytes = pattern_bytes.saturating_mul(PROGRAM_BYTES_PER_BYTE);
     }
+    agent.heap.data_bytes_since_gc += pattern_bytes.saturating_mul(PROGRAM_BYTES_PER_BYTE);
 
     // 22. Perform ? Set(obj, "lastIndex", +0𝔽, true).
     if !obj.set_last_index(agent, RegExpLastIndex::ZERO, gc.nogc()) {

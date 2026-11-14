@@ -112,6 +112,11 @@ impl BigIntConstructor {
         if bits == 0 {
             return Ok(BigInt::zero().into());
         }
+        // A BigInt has at most crate::ecmascript::MAX_BIGINT_BITS bits, so it already fits in
+        // a wider signed width: no 2^bits divisor needs to be built.
+        if u64::from(bits) > crate::ecmascript::MAX_BIGINT_BITS {
+            return Ok(bigint.unbind().into());
+        }
 
         match 2i64.checked_pow(bits) {
             Some(divisor) => {
@@ -194,6 +199,17 @@ impl BigIntConstructor {
         let bigint = to_big_int(agent, bigint.get(agent), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
+        // Past crate::ecmascript::MAX_BIGINT_BITS a non-negative BigInt is its own result and a
+        // negative one becomes 2^bits + bigint, too large (as in QuickJS).
+        if u64::from(bits) > crate::ecmascript::MAX_BIGINT_BITS {
+            if bigint.is_negative(agent) {
+                return Err(crate::ecmascript::throw_bigint_too_large(
+                    agent,
+                    gc.into_nogc(),
+                ));
+            }
+            return Ok(bigint.unbind().into());
+        }
 
         match 2i64.checked_pow(bits) {
             Some(modulus) => match bigint {
