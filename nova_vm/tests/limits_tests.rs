@@ -401,6 +401,7 @@ fn heap_limit_terminates_growing_scripts() {
             "const m = new Map(); for (let i = 0; ; i++) m.set(i, i);",
             "const t = new Set(); for (let i = 0; ; i++) t.add(i);",
             "let s = 'x'.repeat(1 << 20); for (;;) s = s + s;",
+            "const s = 'a'.repeat(1 << 21); for (;;) s.replaceAll('', '');",
         ] {
             let mut engine = Engine::new();
             engine.agent.set_heap_limit(Some(8 * 1024 * 1024));
