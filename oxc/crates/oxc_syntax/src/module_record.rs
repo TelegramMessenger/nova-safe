@@ -1,6 +1,6 @@
 //! [ECMAScript Module Record](https://tc39.es/ecma262/#sec-abstract-module-records)
 
-use oxc_allocator::{Allocator, HashMap, Vec};
+use oxc_allocator::{Allocator, HashMap, IdentBuildHasher, Vec};
 use oxc_ast_macros::ast;
 use oxc_estree::ESTree;
 use oxc_span::{Span, Str};
@@ -27,7 +27,7 @@ pub struct ModuleRecord<'a> {
     ///   export ExportFromClause FromClause
     ///
     /// Keyed by ModuleSpecifier, valued by all node occurrences
-    pub requested_modules: HashMap<'a, Str<'a>, Vec<'a, RequestedModule>>,
+    pub requested_modules: HashMap<'a, Str<'a>, Vec<'a, RequestedModule>, IdentBuildHasher>,
 
     /// `[[ImportEntries]]`
     ///
@@ -55,7 +55,7 @@ pub struct ModuleRecord<'a> {
     pub star_export_entries: Vec<'a, ExportEntry<'a>>,
 
     /// Local exported bindings
-    pub exported_bindings: HashMap<'a, Str<'a>, Span>,
+    pub exported_bindings: HashMap<'a, Str<'a>, Span, IdentBuildHasher>,
 
     /// Dynamic import expressions `import(specifier)`.
     pub dynamic_imports: Vec<'a, DynamicImport>,

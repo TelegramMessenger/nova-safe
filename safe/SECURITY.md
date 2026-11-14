@@ -91,6 +91,10 @@ service.
   sandbox bundle. Widgets stay inside the CPU limits; the heaviest test widgets use up to ~80% of the 500 ms task
   limit.
 - The parser (oxc) has no `unsafe` left, but it runs before the interrupt is ever polled, so its running time is
-  bounded only by the source's size. Its identifier maps use upstream's unkeyed hash, which samples at most 16 bytes
-  of a name: a script with 20,000 colliding `var` names (920 KB) takes 1.85 s to parse, quadratic in the count. A
-  keyed hash for those maps is the next step (`safe/OXC.md`).
+  bounded only by the source's size. Hash flooding is fixed: every map in the parser and the semantic checker whose
+  key is script text hashes the whole key with SipHash-1-3 under random per-process keys (upstream's identifier hash
+  was unkeyed and read at most 16 bytes, and 20,000 colliding `var` names took 0.84-1.85 s; now 3.8 ms, as for
+  distinct names), and no diagnostic depends on the maps' iteration order (`safe/OXC.md`, "Hash flooding in the
+  parser"). Some checks are still quadratic without any hashing: a class with 20,000 private fields each referenced
+  once (440 KB) takes 0.4 s to parse and check, and regexp named groups and a module's exports have similar
+  pair-wise scans. A work budget in the parser, or an interrupt poll in the lexer, would bound them.

@@ -543,9 +543,16 @@ impl<'a> PatternParser<'a> {
             if let Some(name) = self.consume_group_name()? {
                 // [SS:EE] AtomEscape :: k GroupName
                 // It is a Syntax Error if GroupSpecifiersThatMatch(GroupName) is empty.
-                if !self.state.capturing_group_names.contains(name.as_str()) {
+                if !self.state.capturing_group_names.contains_key(name.as_str()) {
+                    let mut names: std::vec::Vec<(u32, &str)> = self
+                        .state
+                        .capturing_group_names
+                        .iter()
+                        .map(|(name, &order)| (order, name.as_str()))
+                        .collect();
+                    names.sort_unstable_by_key(|&(order, _)| order);
                     let names: std::vec::Vec<&str> =
-                        self.state.capturing_group_names.iter().map(Str::as_str).collect();
+                        names.into_iter().map(|(_, name)| name).collect();
                     return Err(diagnostics::invalid_named_reference(
                         self.span_factory.create(span_start, self.reader.offset()),
                         &names,

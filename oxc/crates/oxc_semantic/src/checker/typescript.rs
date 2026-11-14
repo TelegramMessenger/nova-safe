@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
-use rustc_hash::FxHashMap;
-
+use oxc_allocator::IdentBuildHasher;
 use oxc_ast::{AstKind, ast::*};
 use oxc_ecmascript::BoundNames;
 use oxc_span::{GetSpan, Span, Str};
@@ -103,7 +102,8 @@ pub fn check_formal_parameters(params: &FormalParameters, ctx: &SemanticBuilder<
 }
 
 fn check_duplicate_bound_names<'a, T: BoundNames<'a>>(bound_names: &T, ctx: &SemanticBuilder<'_>) {
-    let mut idents: FxHashMap<Str<'a>, Span> = FxHashMap::default();
+    let mut idents: std::collections::HashMap<Str<'a>, Span, IdentBuildHasher> =
+        std::collections::HashMap::with_hasher(IdentBuildHasher);
     bound_names.bound_names(&mut |ident| {
         if let Some(old_span) = idents.insert(ident.name.into(), ident.span) {
             ctx.error(diagnostics::redeclaration(&ident.name, old_span, ident.span));

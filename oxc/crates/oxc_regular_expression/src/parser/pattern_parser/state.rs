@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
+use oxc_allocator::IdentBuildHasher;
 use oxc_span::Str;
-use rustc_hash::FxHashSet;
 
 use crate::parser::reader::Reader;
 
@@ -13,8 +15,11 @@ pub struct State<'a> {
     pub named_capture_groups: bool,
     // Other states
     pub num_of_capturing_groups: u32,
-    pub capturing_group_names: FxHashSet<Str<'a>>,
+    /// Each group name and the position of its first occurrence among the names.
+    pub capturing_group_names: GroupNames<'a>,
 }
+
+pub type GroupNames<'a> = HashMap<Str<'a>, u32, IdentBuildHasher>;
 
 type DuplicatedNamedCapturingGroupOffsets = Vec<(u32, u32)>;
 
@@ -25,7 +30,7 @@ impl<'a> State<'a> {
             unicode_sets_mode,
             named_capture_groups: false,
             num_of_capturing_groups: 0,
-            capturing_group_names: FxHashSet::default(),
+            capturing_group_names: GroupNames::default(),
         }
     }
 
@@ -54,7 +59,7 @@ impl<'a> State<'a> {
 /// Returns: Result<(num_of_left_parens, capturing_group_names), duplicated_named_capturing_group_offsets>
 fn parse_capturing_groups<'a>(
     reader: &mut Reader<'a>,
-) -> Result<(u32, FxHashSet<Str<'a>>), DuplicatedNamedCapturingGroupOffsets> {
+) -> Result<(u32, GroupNames<'a>), DuplicatedNamedCapturingGroupOffsets> {
     // Count only normal CapturingGroup(named, unnamed)
     //   (?<name>...), (...)
     // IgnoreGroup, and LookaroundAssertions are ignored
@@ -64,7 +69,7 @@ fn parse_capturing_groups<'a>(
 
     // Track all named groups with their depth and alternative path
     let mut named_groups: Vec<NamedGroupInfo<'a>> = Vec::new();
-    let mut group_names: FxHashSet<Str<'a>> = FxHashSet::default();
+    let mut group_names = GroupNames::default();
 
     // Track alternatives and depth
     let mut tracker = AlternativeTracker::new();
@@ -137,7 +142,8 @@ fn parse_capturing_groups<'a>(
                         span: (span_start, span_end),
                         alternative_path,
                     });
-                    group_names.insert(group_name);
+                    let next = u32::try_from(group_names.len()).unwrap_or(u32::MAX);
+                    group_names.entry(group_name).or_insert(next);
 
                     continue;
                 }
