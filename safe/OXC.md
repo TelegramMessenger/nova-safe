@@ -207,6 +207,19 @@ Risks: the lexer is the hottest loop of the parser (expect 10-30% slower lexing 
 change that moves a position by one byte changes tokens, so test262 parser tests and the widget hashes are the
 check. Keep the work in small steps, one file at a time.
 
+Status (2026-11-15, branch safe-oxc-b-lexer): done, oxc_parser 168 -> 0 with `#![forbid(unsafe_code)]`; vendored
+oxc 407 -> 239, widget build 2368 -> 2200 (1417 without std's hashbrown). `Source` is the source `&str` plus a
+`usize` offset; `SourcePosition` is the source bytes plus an offset, so `pos.read()`/`add`/`slice` keep their
+call sites; every `&str` comes from `str` indexing, which panics rather than split a character. `byte_search!`
+reads checked 32-byte batches; the memchr calls are slice searches (memchr stays only through oxc_semantic);
+`Token` is a 16-byte struct of fields instead of a `u128` with transmutes; `Modifiers` keeps plain `u32` offsets.
+Checked against the old lexer (tokens, AST `Debug` and errors, as script, module and JSX, with and without token
+collection, identical; no panics in either): the bundle, 415 widget scripts, 53,910 test262 files, every 5th-byte
+prefix of 2,571 of those scripts, every 1499th-byte prefix of the bundle, and 1.2M generated odd inputs (lone
+surrogate escapes, every line terminator, BOMs, 100 KB identifiers and numbers, unterminated strings, templates,
+comments and JSX at end of input). Parse, best of 4 interleaved runs: bundle parse only 5.52 -> 5.78 ms (+4.7%),
+parse plus semantic 8.55 -> 8.76 ms (+2.5%), the widget scripts +0-4%.
+
 ## Area C: data structures and indexes
 
 Files: `oxc_data_structures` 151 (`stack/` 96: `Stack`, `NonEmptyStack`, `SparseStack` on raw pointers;
