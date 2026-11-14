@@ -10,6 +10,11 @@ BUNDLE=$WIDGET_SANDBOX/packages/ios/Sources/WidgetSandbox/WidgetJS/sandbox-bundl
 LOG=$(mktemp -d)
 status=0
 
+if [ ! -d tests/test262/test ]; then
+  echo "GATE FAIL: Test262 is not checked out; run: git submodule update --init --checkout tests/test262"
+  exit 1
+fi
+
 echo "== build"
 if ! cargo build --profile dev-fast -p nova_cli -p tests -q 2>"$LOG/build.txt"; then
   cat "$LOG/build.txt" | tail -40

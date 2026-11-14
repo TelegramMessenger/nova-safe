@@ -110,7 +110,7 @@ jobs:
           shared-key: test262
           save-if: ${{ github.ref == 'main' }}
       - name: Checkout test262 submodule
-        run: git submodule update --init
+        run: git submodule update --init --checkout tests/test262
       - name: Build nova cli
         run: cargo build -p nova_cli --profile dev-fast
       - name: Run Test262

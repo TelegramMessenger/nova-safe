@@ -95,8 +95,11 @@ When making changes, you'll thus often need to update or at least check the
 expectations. First make sure you have the git submodule checked out:
 
 ```sh
-git submodule update --init
+git submodule update --init --checkout tests/test262
 ```
+
+The submodule is marked `update = none`, so a recursive clone (such as Telegram's, which has this repository
+as a submodule) does not fetch Test262; `--checkout` fetches it here.
 
 Then running the tests can be done using the following command:
 
@@ -364,7 +367,8 @@ Some more long-term prospects and/or wild ideas:
 
 1. Clone this repository with submodules:
 
-   `git clone --recurse-submodules git@github.com:trynova/nova.git`
+   `git clone git@github.com:trynova/nova.git` and, inside it,
+   `git submodule update --init --checkout tests/test262`
 
 2. Execute the test262 runner:
 

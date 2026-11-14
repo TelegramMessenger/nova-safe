@@ -11,6 +11,10 @@
 #   safe/embed/build-xcframework.sh OUTPUT_DIR [BUILD_DIR]
 #
 # OUTPUT_DIR receives NovaEngineFFI.xcframework (replaced) and manifest.sha256.
+#
+# Dependencies come from the committed Cargo.lock (--locked): the versions
+# safe/TCB.md audits. Telegram for macOS has this repository as the submodule
+# submodules/nova and runs this script from core-xprojects/nova-engine.
 
 set -eu
 
@@ -47,7 +51,7 @@ build() {
         "$RUSTUP_BIN" target add "$target" >/dev/null 2>&1 || true
     fi
     NOVA_EMBED_COMMIT="$COMMIT" MACOSX_DEPLOYMENT_TARGET="$deployment" CARGO_TARGET_DIR="$BUILD_DIR/target" \
-        "$CARGO_BIN" build --package nova_embed_ffi --release --target "$target"
+        "$CARGO_BIN" build --package nova_embed_ffi --release --locked --target "$target"
     arch="$3"
     printf '_nova_*\n' > "$BUILD_DIR/exported-symbols.txt"
     if ! ld -r -arch "$arch" -platform_version macos "$deployment" "$deployment" \
@@ -95,7 +99,9 @@ xcodebuild -create-xcframework \
 
 (cd "$OUTPUT_DIR" && find NovaEngineFFI.xcframework -type f | LC_ALL=C sort | xargs shasum -a 256 > manifest.sha256)
 echo "nova commit: $COMMIT" > "$OUTPUT_DIR/BUILD_INFO"
-echo "rustc: $(rustc --version)" >> "$OUTPUT_DIR/BUILD_INFO"
+RUSTC_BIN="$(dirname "$CARGO_BIN")/rustc"
+[ -x "$RUSTC_BIN" ] || RUSTC_BIN=rustc
+echo "rustc: $("$RUSTC_BIN" --version)" >> "$OUTPUT_DIR/BUILD_INFO"
 
 lipo -info "$BUILD_DIR/libnova_embed_ffi.a"
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
