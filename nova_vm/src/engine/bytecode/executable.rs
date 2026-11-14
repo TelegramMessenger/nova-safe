@@ -123,11 +123,23 @@ pub(crate) struct ExecutableHeapData<'a> {
     /// The instance field and private method initializers of a derived class
     /// constructor: SuperCall runs them on the new `this` value.
     pub(crate) instance_initializer: Option<Executable<'static>>,
-    /// The function this executable is the body of runs without a Function
-    /// Environment Record of its own: see
-    /// function_declaration_instantiation::instantiation.
-    pub(crate) environment_free: bool,
+    /// The environment a \[\[Call]] of the function this executable is the body
+    /// of creates: see function_declaration_instantiation::instantiation.
+    pub(crate) call_environment: CallEnvironment,
     pub(crate) _gc: PhantomData<Value<'a>>,
+}
+
+/// The environment a \[\[Call]] of an ECMAScript function creates for its code.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallEnvironment {
+    /// A Function Environment Record: NewFunctionEnvironment(F, newTarget).
+    #[default]
+    Function,
+    /// A Declarative Environment Record for the function's bindings: nothing
+    /// asks for the this binding of a Function Environment Record.
+    Declarative,
+    /// None: the function's code runs in F.\[\[Environment]].
+    None,
 }
 
 impl<'gc> Executable<'gc> {
@@ -192,13 +204,15 @@ impl<'gc> Executable<'gc> {
         }
 
         let is_concise = data.ast.is_concise_body();
-        let can_be_environment_free = matches!(
+        let plain_function = matches!(
             data.ast,
             FunctionAstRef::Function(_) | FunctionAstRef::Arrow(_)
         );
 
-        let environment_free = ctx.compile_function_body(data);
-        ctx.set_environment_free(can_be_environment_free && environment_free);
+        let call_environment = ctx.compile_function_body(data);
+        if plain_function {
+            ctx.set_call_environment(call_environment);
+        }
 
         if is_concise {
             ctx.do_implicit_return();
@@ -507,7 +521,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
-            environment_free: _,
+            call_environment: _,
             _gc: _,
         } = self;
         instance_initializer.mark_values(queues);
@@ -531,7 +545,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
-            environment_free: _,
+            call_environment: _,
             _gc: _,
         } = self;
         instance_initializer.sweep_values(compactions);

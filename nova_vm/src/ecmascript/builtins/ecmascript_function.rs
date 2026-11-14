@@ -10,17 +10,17 @@ use oxc_span::Span;
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, ECMAScriptCodeEvaluationState,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, CallThisValue, ECMAScriptCodeEvaluationState,
         ECMAScriptFunctionHeapData, Environment, ExceptionType, ExecutionContext, Function,
         FunctionEnvironment, FunctionInternalProperties, InternalSlots, JsResult, Object,
         OrdinaryObject, PrivateEnvironment, PropertyDescriptor, PropertyKey, ProtoIntrinsics,
         Realm, ScriptOrModule, SourceCode, String, ThisBindingStatus, Value,
         evaluate_async_function_body, evaluate_async_generator_body, evaluate_function_body,
         evaluate_generator_body, function_handle, get_active_script_or_module,
-        new_function_environment, ordinary_create_from_constructor,
+        new_declarative_environment, new_function_environment, ordinary_create_from_constructor,
         ordinary_object_create_with_intrinsics, to_object,
     },
-    engine::{Bindable, Executable, GcScope, NoGcScope, Scopable},
+    engine::{Bindable, CallEnvironment, Executable, GcScope, NoGcScope, Scopable},
     heap::{
         ArenaAccess, ArenaAccessMut, BaseIndex, CompactionLists, CreateHeapData, Heap,
         HeapMarkAndSweep, HeapSweepWeakReference, ObjectEntry, ObjectEntryPropertyDescriptor,
@@ -439,12 +439,20 @@ impl<'a> FunctionInternalProperties<'a> for ECMAScriptFunction<'a> {
 
         // 1. Let callerContext be the running execution context.
         let _ = agent.running_execution_context();
-        if is_environment_free(agent, f) {
-            // OPTIMISATION: The function's Function Environment Record would
-            // hold no bindings and nothing in the function asks for its this
-            // binding, so the record is never observed: run the body directly
-            // in F.[[Environment]] and skip OrdinaryCallBindThis.
-            prepare_for_environment_free_call(agent, f, gc.nogc());
+        let call_environment = call_environment(agent, f);
+        if call_environment != CallEnvironment::Function {
+            // OPTIMISATION: Only the function's own code asks for the this
+            // binding of its Function Environment Record, so the record is
+            // never observed: keep the this value of a strict
+            // OrdinaryCallBindThis in the execution context, and the
+            // function's bindings, if any, in a Declarative Environment Record.
+            prepare_for_call_without_function_environment(
+                agent,
+                f,
+                this_argument,
+                call_environment == CallEnvironment::Declarative,
+                gc.nogc(),
+            );
             let result =
                 ordinary_call_evaluate_body(agent, f.unbind(), arguments_list.unbind(), gc);
             let _callee_context = agent.pop_execution_context();
@@ -685,6 +693,7 @@ pub(crate) fn prepare_for_ordinary_call<'a>(
             variable_environment: Environment::Function(local_env.unbind()),
             private_environment: private_environment.unbind(),
             is_strict_mode,
+            this_value: None,
             source_code: source_code.unbind(),
         }),
         // 3. Set the Function of calleeContext to F.
@@ -702,32 +711,61 @@ pub(crate) fn prepare_for_ordinary_call<'a>(
     agent.running_execution_context()
 }
 
-/// True if a \[\[Call]] of F needs no Function Environment Record: F is not a
-/// class constructor and has no \[\[HomeObject]], and its body was compiled
-/// as environment free.
+/// The environment a \[\[Call]] of F creates: a class constructor's call
+/// throws in a Function Environment Record, every other function's comes from
+/// its compiled body.
 #[inline]
-fn is_environment_free(agent: &Agent, f: ECMAScriptFunction) -> bool {
+fn call_environment(agent: &Agent, f: ECMAScriptFunction) -> CallEnvironment {
     let data = f.get(agent);
-    let function = &data.ecmascript_function;
-    function.home_object.is_none()
-        && !function.constructor_status.is_class_constructor()
-        && data
-            .compiled_bytecode
-            .is_some_and(|executable| executable.get(agent).environment_free)
+    if data
+        .ecmascript_function
+        .constructor_status
+        .is_class_constructor()
+    {
+        return CallEnvironment::Function;
+    }
+    data.compiled_bytecode
+        .map_or(CallEnvironment::Function, |executable| {
+            executable.get(agent).call_environment
+        })
 }
 
-/// PrepareForOrdinaryCall for an environment free function: the callee
-/// context's LexicalEnvironment and VariableEnvironment are F.[[Environment]].
-fn prepare_for_environment_free_call(agent: &mut Agent, f: ECMAScriptFunction, gc: NoGcScope) {
+/// PrepareForOrdinaryCall for a function whose call needs no Function
+/// Environment Record: the callee context's LexicalEnvironment and
+/// VariableEnvironment are F.[[Environment]], or a new Declarative Environment
+/// Record in it for the function's bindings. A function that does not take
+/// this lexically gets thisArgument as its this value, as a strict
+/// OrdinaryCallBindThis would bind it.
+fn prepare_for_call_without_function_environment(
+    agent: &mut Agent,
+    f: ECMAScriptFunction,
+    this_argument: Value,
+    declarative_environment: bool,
+    gc: NoGcScope,
+) {
     let f = f.bind(gc);
+    let outer_env = f.get(agent).ecmascript_function.environment.bind(gc);
+    let environment = if declarative_environment {
+        Environment::Declarative(new_declarative_environment(agent, Some(outer_env), gc))
+    } else {
+        outer_env
+    };
     let ecmascript_function_object = &f.get(agent).ecmascript_function;
-    let environment = ecmascript_function_object.environment.bind(gc);
+    debug_assert!(ecmascript_function_object.strict);
+    let this_value = match ecmascript_function_object.this_mode {
+        ThisMode::Lexical => None,
+        _ => Some(CallThisValue {
+            value: this_argument.unbind(),
+            variable_environment: environment.unbind(),
+        }),
+    };
     let callee_context = ExecutionContext {
         ecmascript_code: Some(ECMAScriptCodeEvaluationState {
             lexical_environment: environment.unbind(),
             variable_environment: environment.unbind(),
             private_environment: ecmascript_function_object.private_environment.unbind(),
             is_strict_mode: ecmascript_function_object.strict,
+            this_value,
             source_code: ecmascript_function_object.source_code.unbind(),
         }),
         function: Some(f.unbind().into()),

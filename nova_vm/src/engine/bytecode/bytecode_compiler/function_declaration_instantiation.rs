@@ -16,7 +16,7 @@ use crate::{
         VarDeclaredNames, VarScopedDeclaration, VarScopedDeclarations,
     },
     engine::{
-        Instruction,
+        CallEnvironment, Instruction,
         bytecode::bytecode_compiler::{
             CompileContext, ValueOutput, compile_context::StackVariable, variable_escapes_scope,
         },
@@ -49,21 +49,24 @@ use super::{CompileEvaluation, simple_array_pattern};
 /// > necessary for backwards compatibility with web browser implementations of
 /// > ECMAScript that predate ECMAScript 2015.
 ///
-/// Returns true if the function's own Function Environment Record can never
-/// be observed: the function is strict, binds every parameter, var and
-/// lexical declaration in a stack slot, has no parameter expressions, no
-/// arguments object and no direct eval, and neither it nor a nested arrow
-/// function refers to `this`, `new.target` or `super`.
+/// Returns the environment a \[\[Call]] of the function needs. Nothing can
+/// observe the Function Environment Record of a strict function with no
+/// parameter expressions, no arguments object and no direct eval, that does
+/// not refer to `new.target` or `super`, and in which no nested arrow function
+/// refers to `this`, `new.target` or `super`: such a function's call keeps
+/// the this value in the execution context, and a Declarative Environment
+/// Record holds its bindings, or no record at all when every parameter, var
+/// and lexical declaration lives in a stack slot.
 pub(crate) fn instantiation<'s>(
     ctx: &mut CompileContext<'_, 's, '_, '_>,
     stack_variables: &mut Vec<StackVariable>,
     func: FunctionAstRef<'s>,
     strict: bool,
     is_lexical: bool,
-) -> bool {
-    let mut environment_free = strict
+) -> CallEnvironment {
+    let mut this_free = strict
         && !ctx.scope_contains_direct_eval(func.scope_id())
-        && !Contains::contains(&func, ContainsSymbol::This)
+        && !Contains::contains(&func, ContainsSymbol::ArrowLexicalThis)
         && !Contains::contains(&func, ContainsSymbol::NewTarget)
         && !Contains::contains(&func, ContainsSymbol::SuperCall)
         && !Contains::contains(&func, ContainsSymbol::SuperProperty);
@@ -77,8 +80,9 @@ pub(crate) fn instantiation<'s>(
     // 8. Let hasParameterExpressions be ContainsExpression of formals.
     let has_parameter_expressions = formals.contains_expression();
     if has_parameter_expressions {
-        environment_free = false;
+        this_free = false;
     }
+    let mut bindings_in_environment = false;
 
     // 12. Let functionNames be a new empty List.
     // 13. Let functionsToInitialize be a new empty List.
@@ -164,7 +168,7 @@ pub(crate) fn instantiation<'s>(
     });
     let mut has_duplicates = false;
     if arguments_object_needed {
-        environment_free = false;
+        this_free = false;
     }
     formals.bound_names(&mut |identifier| {
         let added = parameter_names.insert(identifier.name);
@@ -204,7 +208,7 @@ pub(crate) fn instantiation<'s>(
         stack_variables.push(ctx.push_stack_variable(*param_name, false));
     }
     if !env_parameters.is_empty() {
-        environment_free = false;
+        bindings_in_environment = true;
     }
     for param_name in &env_parameters {
         // a. Let alreadyDeclared be ! env.HasBinding(paramName).
@@ -323,7 +327,7 @@ pub(crate) fn instantiation<'s>(
             // 1. Append n to instantiatedVarNames.
             let n_string = ctx.create_string(&n);
             if variable_escapes_scope(ctx, d) {
-                environment_free = false;
+                bindings_in_environment = true;
                 // 2. Perform ! env.CreateMutableBinding(n, false).
                 ctx.add_instruction_with_identifier(
                     Instruction::CreateMutableBinding,
@@ -479,7 +483,7 @@ pub(crate) fn instantiation<'s>(
             }
         });
         if lexical_in_environment.get() || create_default_export {
-            environment_free = false;
+            bindings_in_environment = true;
         }
         if create_default_export {
             let dn = BUILTIN_STRING_MEMORY._default_;
@@ -501,5 +505,11 @@ pub(crate) fn instantiation<'s>(
         let f = f.id.as_ref().unwrap().compile(ctx);
         f.put_value(ctx, ValueOutput::Value).unwrap();
     }
-    environment_free
+    if !this_free {
+        CallEnvironment::Function
+    } else if bindings_in_environment {
+        CallEnvironment::Declarative
+    } else {
+        CallEnvironment::None
+    }
 }

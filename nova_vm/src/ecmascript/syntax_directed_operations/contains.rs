@@ -78,6 +78,10 @@ pub(crate) enum ContainsSymbol {
     SuperProperty,
     This,
     Yield,
+    /// Not a grammar symbol: true if an ArrowFunction in the code (directly or
+    /// through other arrows) refers to this, super or new.target, i.e. needs
+    /// the this binding of the code's Function Environment Record.
+    ArrowLexicalThis,
 }
 
 /// ## [8.5 Contains](https://tc39.es/ecma262/#sec-static-semantics-contains)
@@ -157,6 +161,20 @@ impl Contains for ast::Class<'_> {
 impl Contains for ast::ArrowFunctionExpression<'_> {
     /// ArrowFunction : ArrowParameters => ConciseBody
     fn contains(&self, symbol: ContainsSymbol) -> bool {
+        if symbol == ContainsSymbol::ArrowLexicalThis {
+            return [
+                ContainsSymbol::This,
+                ContainsSymbol::SuperProperty,
+                ContainsSymbol::SuperCall,
+                ContainsSymbol::NewTarget,
+                ContainsSymbol::ArrowLexicalThis,
+            ]
+            .into_iter()
+            .any(|symbol| {
+                self.params.items.iter().any(|p| p.contains(symbol))
+                    || self.body.statements.iter().any(|st| st.contains(symbol))
+            });
+        }
         // 1. If symbol is not one of NewTarget, SuperProperty, SuperCall, super, or this,
         if !matches!(
             symbol,

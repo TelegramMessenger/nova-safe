@@ -12,6 +12,36 @@ use crate::{
 // TODO: Remove this.
 pub(crate) type ECMAScriptCode = ECMAScriptCodeEvaluationState;
 
+/// The this value of a call that has no Function Environment Record.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CallThisValue {
+    pub(crate) value: Value<'static>,
+    /// The VariableEnvironment of the call. A class static block evaluated in
+    /// the call's execution context replaces it with an environment that has
+    /// its own this binding; the this value only holds while it is current.
+    pub(crate) variable_environment: Environment<'static>,
+}
+
+impl HeapMarkAndSweep for CallThisValue {
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        let Self {
+            value,
+            variable_environment,
+        } = self;
+        value.mark_values(queues);
+        variable_environment.mark_values(queues);
+    }
+
+    fn sweep_values(&mut self, compactions: &CompactionLists) {
+        let Self {
+            value,
+            variable_environment,
+        } = self;
+        value.sweep_values(compactions);
+        variable_environment.sweep_values(compactions);
+    }
+}
+
 /// # [code evaluation state](https://tc39.es/ecma262/#table-state-components-for-all-execution-contexts)
 ///
 /// ECMAScript code execution contexts have the additional state components
@@ -41,6 +71,11 @@ pub(crate) struct ECMAScriptCodeEvaluationState {
     /// [`ECMAScriptCodeEvaluationState`] to track whether some ECMAScript code
     /// is in strict mode.
     pub(crate) is_strict_mode: bool,
+
+    /// Nova specific: the this value of a call to a strict function that runs
+    /// without a Function Environment Record of its own. None in every other
+    /// execution context.
+    pub(crate) this_value: Option<CallThisValue>,
 
     /// Nova-specific piece of data that identifiers in which source code the
     /// currently evaluated code was defined in. Note that this is also
@@ -101,8 +136,10 @@ impl HeapMarkAndSweep for ECMAScriptCodeEvaluationState {
             variable_environment,
             private_environment,
             is_strict_mode: _,
+            this_value,
             source_code,
         } = self;
+        this_value.mark_values(queues);
         lexical_environment.mark_values(queues);
         variable_environment.mark_values(queues);
         private_environment.mark_values(queues);
@@ -115,8 +152,10 @@ impl HeapMarkAndSweep for ECMAScriptCodeEvaluationState {
             variable_environment,
             private_environment,
             is_strict_mode: _,
+            this_value,
             source_code,
         } = self;
+        this_value.sweep_values(compactions);
         lexical_environment.sweep_values(compactions);
         variable_environment.sweep_values(compactions);
         private_environment.sweep_values(compactions);
@@ -157,6 +196,12 @@ pub(crate) fn resolve_this_binding<'a>(
     agent: &mut Agent,
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, Value<'a>> {
+    if let Some(code) = agent.running_execution_context().ecmascript_code.as_ref()
+        && let Some(this_value) = code.this_value
+        && this_value.variable_environment == code.variable_environment
+    {
+        return Ok(this_value.value.bind(gc));
+    }
     // 1. Let envRec be GetThisEnvironment().
     let env_rec = get_this_environment(agent, gc);
     // 2. Return ? envRec.GetThisBinding().

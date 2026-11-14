@@ -442,6 +442,8 @@ pub fn script_evaluation<'a>(
 
             is_strict_mode,
 
+            this_value: None,
+
             source_code: source_code.unbind(),
         }),
     };

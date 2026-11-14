@@ -2853,6 +2853,7 @@ pub(crate) fn initialize_instance_elements<'a>(
                 variable_environment: Environment::Function(decl_env.unbind()),
                 private_environment: outer_priv_env.unbind(),
                 is_strict_mode: true,
+                this_value: None,
                 source_code: source_code.unbind(),
             }),
             function: Some(f.unbind()),
