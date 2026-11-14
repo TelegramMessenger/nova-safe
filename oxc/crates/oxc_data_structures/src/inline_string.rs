@@ -5,8 +5,6 @@ use std::{
     ops::{Add, AddAssign, Deref},
 };
 
-use crate::assert_unchecked;
-
 /// Short inline string.
 ///
 /// `CAPACITY` determines the maximum length of the string.
@@ -77,26 +75,19 @@ impl<const CAPACITY: usize, Len: UnsignedInt> InlineString<CAPACITY, Len> {
     /// * `byte` is >= 128 (not an ASCII character).
     #[inline]
     pub fn push(&mut self, byte: u8) {
-        assert!(self.len.to_usize() < CAPACITY);
         assert!(byte.is_ascii());
-
-        // SAFETY: We just checked the safety constraints
-        unsafe { self.push_unchecked(byte) }
+        let len = self.len.to_usize();
+        *self.bytes.get_mut(len).expect("InlineString is full") = byte;
+        self.len += Len::from_usize(1);
     }
 
-    /// Push a byte to the string, without checks.
+    /// Push a byte to the string. Same as [`InlineString::push`]: the checks stay.
     ///
-    /// # SAFETY
-    /// * Must not push more than `CAPACITY` bytes.
-    /// * `byte` must be < 128 (an ASCII character).
+    /// # Panics
+    /// Panics if the string is full or `byte` is not ASCII.
     #[inline]
-    pub unsafe fn push_unchecked(&mut self, byte: u8) {
-        debug_assert!(self.len.to_usize() < CAPACITY);
-        debug_assert!(byte.is_ascii());
-
-        // SAFETY: Caller guarantees not pushing more than `CAPACITY` bytes, so `len` is in bounds
-        unsafe { *self.bytes.get_unchecked_mut(self.len.to_usize()) = byte };
-        self.len += Len::from_usize(1);
+    pub fn push_unchecked(&mut self, byte: u8) {
+        self.push(byte);
     }
 
     /// Get length of string as `Len`.
@@ -120,25 +111,15 @@ impl<const CAPACITY: usize, Len: UnsignedInt> InlineString<CAPACITY, Len> {
     /// Get string as `&str` slice.
     #[inline]
     pub fn as_str(&self) -> &str {
-        // SAFETY: If safety conditions of `push_unchecked` have been upheld,
-        // `self.len <= CAPACITY`, and contents of slice of `bytes` is a valid UTF-8 string
-        unsafe {
-            assert_unchecked!(self.len.to_usize() <= CAPACITY);
-            let slice = &self.bytes[..self.len.to_usize()];
-            std::str::from_utf8_unchecked(slice)
-        }
+        std::str::from_utf8(&self.bytes[..self.len.to_usize()])
+            .expect("InlineString holds a `&str` and ASCII bytes")
     }
 
     /// Get string as `&mut str` slice.
     #[inline]
     pub fn as_mut_str(&mut self) -> &mut str {
-        // SAFETY: If safety conditions of `push_unchecked` have been upheld,
-        // `self.len <= CAPACITY`, and contents of slice of `bytes` is a valid UTF-8 string
-        unsafe {
-            assert_unchecked!(self.len.to_usize() <= CAPACITY);
-            let slice = &mut self.bytes[..self.len.to_usize()];
-            std::str::from_utf8_unchecked_mut(slice)
-        }
+        std::str::from_utf8_mut(&mut self.bytes[..self.len.to_usize()])
+            .expect("InlineString holds a `&str` and ASCII bytes")
     }
 }
 

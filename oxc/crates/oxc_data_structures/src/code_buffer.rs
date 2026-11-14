@@ -1,8 +1,6 @@
 //! A string builder for constructing source code.
 
-use std::{iter, ptr};
-
-use crate::assert_unchecked;
+use std::iter;
 
 /// Character to use for indentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -209,16 +207,25 @@ impl CodeBuffer {
     /// ```
     #[inline]
     #[must_use = "Peeking is pointless if the peeked char isn't used"]
-    #[expect(clippy::missing_panics_doc)] // No panic possible in release mode
+    #[expect(clippy::missing_panics_doc)]
     pub fn peek_nth_char_back(&self, n: usize) -> Option<char> {
-        let s = if cfg!(debug_assertions) {
-            std::str::from_utf8(&self.buf).unwrap()
-        } else {
-            // SAFETY: All safe methods of `CodeBuffer` ensure `buf` is valid UTF-8
-            unsafe { std::str::from_utf8_unchecked(&self.buf) }
-        };
-
-        s.chars().nth_back(n)
+        let mut end = self.buf.len();
+        let mut remaining = n;
+        loop {
+            if end == 0 {
+                return None;
+            }
+            let mut start = end - 1;
+            while start > 0 && end - start < 4 && (self.buf[start] & 0xC0) == 0x80 {
+                start -= 1;
+            }
+            if remaining == 0 {
+                let s = std::str::from_utf8(&self.buf[start..end]).expect("CodeBuffer holds UTF-8");
+                return s.chars().next();
+            }
+            remaining -= 1;
+            end = start;
+        }
     }
 
     /// Peek the `n`th byte from the end of the buffer.
@@ -277,8 +284,7 @@ impl CodeBuffer {
         // get optimized away by the compiler. e.g. `code_buffer.print_ascii_byte(b' ')`.
         assert!(byte.is_ascii(), "byte {byte} is not ASCII");
 
-        // SAFETY: `byte` is an ASCII character
-        unsafe { self.print_byte_unchecked(byte) }
+        self.print_byte_unchecked(byte);
     }
 
     /// Push a byte to the buffer, without checking that the buffer still represents a valid
@@ -291,7 +297,8 @@ impl CodeBuffer {
     ///
     /// If you are not certain, you may use [`print_char`] as a safe alternative.
     ///
-    /// # SAFETY
+    /// # Correctness
+    /// Not checked here: a broken promise makes `into_string` panic (no undefined behaviour).
     /// The caller must ensure that, after 1 or more sequential calls, the buffer represents
     /// a valid UTF-8 string.
     ///
@@ -306,17 +313,17 @@ impl CodeBuffer {
     /// let mut code = CodeBuffer::new();
     /// // Safe: 'a' is a valid ASCII character. Its UTF-8 representation only
     /// // requires a single byte.
-    /// unsafe { code.print_byte_unchecked(b'a') };
+    /// code.print_byte_unchecked(b'a');
     ///
     /// let not_ascii = '⚓';
     /// let bytes = not_ascii.to_string().into_bytes();
     /// // Safe: after this loop completes, `code` returns to a valid state.
     /// for byte in bytes {
-    ///     unsafe { code.print_byte_unchecked(byte) };
+    ///     code.print_byte_unchecked(byte);
     /// }
     ///
-    /// // NOT SAFE: `ch` exceeds the ASCII segment range. `code` is no longer valid UTF-8
-    /// // unsafe { code.print_byte_unchecked(0xFF) };
+    /// // Wrong: `0xFF` is never valid UTF-8; `into_string` would panic.
+    /// // code.print_byte_unchecked(0xFF);
     /// ```
     ///
     /// [`print_ascii_byte`]: CodeBuffer::print_ascii_byte
@@ -324,7 +331,7 @@ impl CodeBuffer {
     /// [`into_string`]: CodeBuffer::into_string
     /// [`print_bytes_unchecked`]: CodeBuffer::print_bytes_unchecked
     #[inline]
-    pub unsafe fn print_byte_unchecked(&mut self, byte: u8) {
+    pub fn print_byte_unchecked(&mut self, byte: u8) {
         // By default, `self.buf.push(byte)` results in quite verbose assembly, because the default
         // branch is for the "buf is full to capacity" case.
         //
@@ -340,10 +347,6 @@ impl CodeBuffer {
         #[inline(never)]
         fn push_slow(code_buffer: &mut CodeBuffer, byte: u8) {
             let buf = &mut code_buffer.buf;
-            // SAFETY: We only call this function below if `buf.len() == buf.capacity()`.
-            // This function is not inlined, so we need this assertion to assist compiler to
-            // understand this fact.
-            unsafe { assert_unchecked!(buf.len() == buf.capacity()) }
             buf.push(byte);
         }
 
@@ -421,7 +424,8 @@ impl CodeBuffer {
 
     /// Print a slice of bytes, without checking that the buffer still contains a valid UTF-8 string.
     ///
-    /// # SAFETY
+    /// # Correctness
+    /// Not checked here: a broken promise makes `into_string` panic (no undefined behaviour).
     ///
     /// The caller must ensure that, after 1 or more sequential calls, the buffer represents
     /// a valid UTF-8 string.
@@ -437,15 +441,12 @@ impl CodeBuffer {
     /// # use oxc_data_structures::code_buffer::CodeBuffer;
     /// let mut code = CodeBuffer::new();
     ///
-    /// // SAFETY: All bytes in this slice are ASCII
-    /// unsafe {
-    ///     code.print_bytes_unchecked("abcd".as_bytes());
-    /// }
+    /// code.print_bytes_unchecked("abcd".as_bytes());
     /// ```
     ///
     /// [`into_string`]: CodeBuffer::into_string
     #[inline]
-    pub unsafe fn print_bytes_unchecked(&mut self, bytes: &[u8]) {
+    pub fn print_bytes_unchecked(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
     }
 
@@ -506,8 +507,6 @@ impl CodeBuffer {
         #[expect(clippy::checked_conversions)]
         let total_strings_len = strings.iter().fold(0usize, |total_len, s| {
             let len = s.len();
-            // SAFETY: `&str`s have maximum length of `isize::MAX`
-            unsafe { assert_unchecked!(len <= (isize::MAX as usize)) };
             total_len.checked_add(len).unwrap()
         });
 
@@ -515,75 +514,31 @@ impl CodeBuffer {
         // is inlined, so that compiler has knowledge to remove the overflow checks above.
         // When some of `strings` are static, this function is usually only a few instructions.
         // Compiler can choose whether or not to inline `print_strs_array_with_total_len`.
-        // SAFETY: `total_strings_len` has been calculated correctly above.
-        unsafe { self.print_strs_array_with_total_len(strings, total_strings_len) }
+        self.print_strs_array_with_total_len(strings, total_strings_len);
     }
 
     /// Print a series of strings into the buffer, with provided `total_strings_len`.
     ///
-    /// # SAFETY
+    /// # Correctness
+    /// Not checked here: a broken promise makes `into_string` panic (no undefined behaviour).
     /// `total_strings_len` must be the total length of all `strings` concatenated.
-    unsafe fn print_strs_array_with_total_len<const N: usize>(
+    fn print_strs_array_with_total_len<const N: usize>(
         &mut self,
         strings: [&str; N],
         total_strings_len: usize,
     ) {
-        // Reserve `total_strings_len` bytes for the strings to be written into
         self.reserve(total_strings_len);
-
-        // Write each string into `buf`, without bounds checks
-
-        let current_len = self.buf.len();
-        // SAFETY: `buf.ptr + buf.len` is within bounds of `buf`'s allocation.
-        let start_ptr = unsafe { self.buf.as_mut_ptr().add(current_len) };
-        let mut dst_ptr = start_ptr;
-
-        // Get new length of `buf` after all `strings` are written.
-        // `current_len + total_strings_len` must be `<= isize::MAX` otherwise `self.reserve(total_strings_len)`
-        // would have panicked. Therefore this addition cannot wrap around.
-        let new_len = current_len + total_strings_len;
-
-        #[cfg(not(debug_assertions))]
-        // SAFETY: `new_len` is original length of `buf` plus the total length of all strings concatenated.
-        // We're going to write those strings into `buf`, so all bytes in `buf` up to `new_len` will be initialized.
-        // In release mode, nothing in the code in the rest of this function can panic, so we can write the new length
-        // early, which should be a little bit cheaper than writing it after, as the register containing `new_len`
-        // is now free, and can be re-used in the code below.
-        unsafe {
-            self.buf.set_len(new_len);
-        }
-
+        let start_len = self.buf.len();
         for str in strings {
-            let src_ptr = str.as_ptr();
-            let len = str.len();
-
-            // SAFETY:
-            // `src` is obtained from a `&str` with length `len`, so is valid for reading `len` bytes.
-            // `dst_ptr` must be within bounds of `buf`'s allocation, because we reserved sufficient space.
-            // for all the strings. So is `dst_ptr + len`.
-            // `u8` has no alignment requirements, so `src_ptr` and `dst_ptr` are sufficiently aligned.
-            // No overlapping, because we're copying from an existing `&str` to newly reserved space in `buf`.
-            unsafe { ptr::copy_nonoverlapping(src_ptr, dst_ptr, len) };
-
-            // SAFETY: We allocated sufficient capacity for all the strings concatenated.
-            // So `dst_ptr.add(len)` cannot go out of bounds.
-            dst_ptr = unsafe { dst_ptr.add(len) };
+            self.buf.extend_from_slice(str.as_bytes());
         }
-
-        debug_assert_eq!(dst_ptr as usize - start_ptr as usize, total_strings_len);
-
-        #[cfg(debug_assertions)]
-        // SAFETY: `new_len` is original length of `buf` plus the total length of all strings concatenated.
-        // We've written those strings into `buf`, so all bytes in `buf` up to `new_len` are now initialized.
-        // In debug mode, we need to write the new length last, because the `debug_assert!` above could panic.
-        unsafe {
-            self.buf.set_len(new_len);
-        }
+        debug_assert_eq!(self.buf.len() - start_len, total_strings_len);
     }
 
     /// Print a sequence of bytes, without checking that the buffer still contains a valid UTF-8 string.
     ///
-    /// # SAFETY
+    /// # Correctness
+    /// Not checked here: a broken promise makes `into_string` panic (no undefined behaviour).
     ///
     /// The caller must ensure that, after 1 or more sequential calls, the buffer represents
     /// a valid UTF-8 string.
@@ -599,15 +554,12 @@ impl CodeBuffer {
     /// # use oxc_data_structures::code_buffer::CodeBuffer;
     /// let mut code = CodeBuffer::new();
     ///
-    /// // SAFETY: All values yielded by this iterator are ASCII bytes
-    /// unsafe {
-    ///     code.print_bytes_iter_unchecked(std::iter::repeat_n(b' ', 20));
-    /// }
+    /// code.print_bytes_iter_unchecked(std::iter::repeat_n(b' ', 20));
     /// ```
     ///
     /// [`into_string`]: CodeBuffer::into_string
     #[inline]
-    pub unsafe fn print_bytes_iter_unchecked<I: IntoIterator<Item = u8>>(&mut self, bytes: I) {
+    pub fn print_bytes_iter_unchecked<I: IntoIterator<Item = u8>>(&mut self, bytes: I) {
         self.buf.extend(bytes);
     }
 
@@ -655,19 +607,7 @@ impl CodeBuffer {
             return;
         }
 
-        // Write 32 bytes of the indent character into buffer.
-        // On x86_64, this is 5 SIMD instructions (32 byte copy).
-        // SAFETY: We checked there are at least 32 bytes spare capacity.
-        unsafe {
-            let ptr = self.buf.as_mut_ptr().add(len).cast::<[u8; CHUNK_SIZE]>();
-            ptr.write([self.indent_char as u8; CHUNK_SIZE]);
-        }
-
-        // Update length of buffer.
-        // SAFETY: We checked there's at least 32 bytes spare capacity, and `bytes <= 32`,
-        // so `len + bytes` cannot exceed capacity.
-        // `len` cannot exceed `isize::MAX`, so `len + bytes` cannot wrap around.
-        unsafe { self.buf.set_len(len + bytes) };
+        self.buf.extend_from_slice(&[self.indent_char as u8; CHUNK_SIZE][..bytes]);
     }
 
     /// Remove trailing whitespace (spaces and tabs) from the buffer.
@@ -710,12 +650,7 @@ impl CodeBuffer {
     #[must_use]
     #[inline]
     pub fn into_string(self) -> String {
-        if cfg!(debug_assertions) {
-            String::from_utf8(self.buf).unwrap()
-        } else {
-            // SAFETY: All methods of `CodeBuffer` ensure `buf` is valid UTF-8
-            unsafe { String::from_utf8_unchecked(self.buf) }
-        }
+        String::from_utf8(self.buf).expect("CodeBuffer holds UTF-8")
     }
 }
 
@@ -781,12 +716,9 @@ mod test {
     #[expect(clippy::byte_char_slices)]
     fn print_byte_unchecked() {
         let mut code = CodeBuffer::new();
-        // SAFETY: These bytes are all ASCII
-        unsafe {
-            code.print_byte_unchecked(b'f');
-            code.print_byte_unchecked(b'o');
-            code.print_byte_unchecked(b'o');
-        }
+        code.print_byte_unchecked(b'f');
+        code.print_byte_unchecked(b'o');
+        code.print_byte_unchecked(b'o');
 
         assert_eq!(code.len(), 3);
         assert_eq!(code.as_bytes(), &[b'f', b'o', b'o']);
@@ -797,8 +729,7 @@ mod test {
     #[expect(clippy::byte_char_slices)]
     fn print_bytes_unchecked() {
         let mut code = CodeBuffer::new();
-        // SAFETY: These bytes are all ASCII
-        unsafe { code.print_bytes_unchecked(b"foo") };
+        code.print_bytes_unchecked(b"foo");
 
         assert_eq!(code.len(), 3);
         assert_eq!(code.as_bytes(), &[b'f', b'o', b'o']);
@@ -834,8 +765,7 @@ mod test {
     #[expect(clippy::byte_char_slices)]
     fn print_bytes_iter_unchecked() {
         let mut code = CodeBuffer::new();
-        // SAFETY: These bytes are all ASCII
-        unsafe { code.print_bytes_iter_unchecked([b'f', b'o', b'o']) };
+        code.print_bytes_iter_unchecked([b'f', b'o', b'o']);
 
         assert_eq!(code.len(), 3);
         assert_eq!(code.as_bytes(), &[b'f', b'o', b'o']);
