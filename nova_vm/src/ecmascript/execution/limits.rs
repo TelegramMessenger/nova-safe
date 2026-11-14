@@ -53,6 +53,14 @@ const GC_ALLOCATION_INTERVAL: usize = 2 * 1024 * 1024;
 /// a heap close to its limit does not collect on every allocation.
 const MIN_GC_ALLOCATION_INTERVAL: usize = 256 * 1024;
 
+/// A heap whose live bytes are past twice [`GC_ALLOCATION_INTERVAL`] waits
+/// for allocations of half its live bytes before the next collection, up to
+/// this many: a collection costs in proportion to the live heap, so a few
+/// megabytes of live bytecode, shapes and strings are not marked and
+/// compacted again after every 2 MiB. The cap keeps the garbage that waits
+/// between collections (and the size of a process) close to what it was.
+const MAX_LIVE_BYTES_GC_ALLOCATION_INTERVAL: usize = 4 * 1024 * 1024;
+
 /// Native stack the JavaScript code of one host entry may use when the
 /// embedder does not say.
 ///
@@ -503,6 +511,9 @@ impl Agent {
     pub(crate) fn after_gc(&mut self) {
         self.heap.data_bytes_since_gc = 0;
         self.limits.live_bytes_after_gc = self.heap.estimate_live_bytes();
+        self.heap.gc_alloc_limit = self.heap.gc_alloc_limit.max(
+            (self.limits.live_bytes_after_gc / 2).min(MAX_LIVE_BYTES_GC_ALLOCATION_INTERVAL),
+        );
         self.limits.update_gc_threshold(self.heap.gc_alloc_limit);
         if let Some(limit) = self.limits.heap_limit
             && self.limits.live_bytes_after_gc > limit

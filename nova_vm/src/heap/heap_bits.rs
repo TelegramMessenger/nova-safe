@@ -12,7 +12,6 @@ use crate::hashing::AHashMap;
 use crate::hashing::AHashSet;
 use crate::table::HashTable;
 use crate::heap::soa::{SoAVec, SoAble};
-use nova_vm_derive::SoAble;
 
 #[cfg(feature = "date")]
 use crate::ecmascript::Date;
@@ -73,11 +72,6 @@ impl BitRange {
         self.0.len()
     }
 
-    #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Set a bit and return true if it was not already set.
     pub(crate) fn get_bit(&self, index: usize, bits: &[AtomicBits]) -> bool {
         let index = self.0.start + index;
@@ -94,6 +88,29 @@ impl BitRange {
         let bit_index = (index % 8) as u8;
         let bits = &bits[byte_index];
         bits.set_bit(BitOffset::new(bit_index))
+    }
+
+    /// The mark bits of `count` (at most 64) items of the range from item
+    /// `first` on, item `first` in the lowest bit.
+    pub(crate) fn load_word(&self, first: usize, count: usize, bits: &[AtomicBits]) -> u64 {
+        debug_assert!(count <= 64 && first + count <= self.len());
+        if count == 0 {
+            return 0;
+        }
+        let start = self.0.start + first;
+        let first_byte = start / 8;
+        let shift = start % 8;
+        let last_byte = (start + count - 1) / 8;
+        let mut word = 0u128;
+        for (i, byte) in bits[first_byte..=last_byte].iter().enumerate() {
+            word |= u128::from(byte.0.load(Ordering::Relaxed)) << (8 * i);
+        }
+        let word = (word >> shift) as u64;
+        if count == 64 {
+            word
+        } else {
+            word & ((1u64 << count) - 1)
+        }
     }
 
     pub(crate) fn mark_range(&self, range_to_mark: Range<u32>, bits: &mut [AtomicBits]) {
@@ -113,41 +130,12 @@ impl BitRange {
     }
 
     pub(crate) fn iter<'a>(&self, bits: &'a [AtomicBits]) -> BitRangeIterator<'a> {
-        let (byte_range, bit_range) = BitOffset::from_range(&self.0);
-        let bits = &bits[byte_range.start..byte_range.end];
-        BitRangeIterator { bits, bit_range }
-    }
-
-    #[inline]
-    pub(crate) fn for_each_byte(
-        &self,
-        marks: &[AtomicBits],
-        mut cb: impl FnMut(&AtomicBits, Option<BitIterator>),
-    ) {
-        let (byte_range, bit_range) = BitOffset::from_range(&self.0);
-        let mut marks = &marks[byte_range.start..byte_range.end];
-        debug_assert!(!marks.is_empty());
-        if marks.len() == 1 && !bit_range.start.is_zero() && !bit_range.end.is_zero() {
-            cb(&marks[0], Some(BitIterator::from_range(bit_range)));
-            return;
-        }
-        if !bit_range.start.is_zero() {
-            let (first, m) = marks.split_first().unwrap();
-            marks = m;
-            cb(first, Some(BitIterator::from_offset(bit_range.start)));
-        }
-        let mut end = None;
-        if !bit_range.end.is_zero()
-            && let Some((last, m)) = marks.split_last()
-        {
-            marks = m;
-            end = Some(last);
-        }
-        for mark_byte in marks {
-            cb(mark_byte, None);
-        }
-        if let Some(end) = end {
-            cb(end, Some(BitIterator::until_offset(bit_range.end)));
+        BitRangeIterator {
+            range: self.clone(),
+            bits,
+            next: 0,
+            word: 0,
+            word_left: 0,
         }
     }
 
@@ -188,37 +176,37 @@ impl BitRange {
 }
 
 pub(crate) struct BitRangeIterator<'a> {
+    range: BitRange,
     bits: &'a [AtomicBits],
-    bit_range: Range<BitOffset>,
+    /// The item of the range whose bit the next word starts with.
+    next: usize,
+    /// Bits of the current word not yet yielded, the next one lowest.
+    word: u64,
+    word_left: usize,
 }
 
 impl<'a> Iterator for BitRangeIterator<'a> {
     type Item = bool;
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let mut hint = self.bits.len() * 8;
-        if !self.bit_range.start.is_zero() {
-            // Reduce before-start bits.
-            hint -= self.bit_range.start.0 as usize;
-        }
-        if !self.bit_range.end.is_zero() {
-            // Reduce after-end bits.
-            hint -= (8 - self.bit_range.end.0) as usize;
-        }
+        let hint = self.word_left + (self.range.len() - self.next);
         (hint, Some(hint))
     }
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let byte = self.bits.first()?;
-        let value = byte.get_bit(self.bit_range.start.advance());
-        if self.bits.len() == 1 && self.bit_range.start == self.bit_range.end {
-            // We've reached the end of our bit range.
-            self.bits = &[];
-        } else if self.bit_range.start.is_zero() {
-            // We've passed the last bit of the current byte and need to
-            // advance further.
-            self.bits = self.bits.split_first().unwrap().1;
+        if self.word_left == 0 {
+            let count = (self.range.len() - self.next).min(64);
+            if count == 0 {
+                return None;
+            }
+            self.word = self.range.load_word(self.next, count, self.bits);
+            self.word_left = count;
+            self.next += count;
         }
+        let value = self.word & 1 != 0;
+        self.word >>= 1;
+        self.word_left -= 1;
         Some(value)
     }
 }
@@ -228,10 +216,13 @@ impl ExactSizeIterator for BitRangeIterator<'_> {}
 impl core::fmt::Debug for BitRangeIterator<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let clone = Self {
+            range: self.range.clone(),
             bits: self.bits,
-            bit_range: self.bit_range.clone(),
+            next: self.next,
+            word: self.word,
+            word_left: self.word_left,
         };
-        let result = clone.fold(String::with_capacity(self.bits.len()), |a, b| {
+        let result = clone.fold(String::new(), |a, b| {
             a + if b { "1" } else { "0" }
         });
         f.debug_struct("BitRangeIterator")
@@ -1335,24 +1326,26 @@ impl<'a> WorkQueues<'a> {
     }
 }
 
-#[repr(transparent)]
+/// Where each item of one heap vector moves when the collection compacts it:
+/// the mark bits of the vector, 64 items per word, and the number of live
+/// items before each word. An item's new index is the number of live items
+/// before it, which a word lookup and a population count give in constant
+/// time.
 pub(crate) struct CompactionList {
-    shifts: SoAVec<ShiftData>,
+    /// Mark bits of the vector; bits past its end are zero. Empty when no
+    /// item dies, so that every index stays.
+    words: Box<[u64]>,
+    /// Live items before each word of `words`.
+    live_before: Box<[u32]>,
+    /// Dead items in the whole vector.
+    dead: u32,
 }
 
 impl core::fmt::Debug for CompactionList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let slices = self.shifts.as_slice();
-
-        f.debug_list()
-            .entries(
-                slices
-                    .index
-                    .iter()
-                    .as_slice()
-                    .iter()
-                    .zip(slices.shift.iter()),
-            )
+        f.debug_struct("CompactionList")
+            .field("words", &self.words.len())
+            .field("dead", &self.dead)
             .finish()
     }
 }
@@ -1360,83 +1353,42 @@ impl core::fmt::Debug for CompactionList {
 impl CompactionList {
     /// Perform a shift on a strongly held reference index. Returns a shifted
     /// index.
+    #[inline]
     fn shift_strong_u32_index(&self, index: u32) -> u32 {
-        if self.shifts.is_empty() {
-            // If there are no shifts, then all items stay where they are.
+        if self.dead == 0 {
+            // If nothing died, then all items stay where they are.
             return index;
         }
-        let ShiftDataSlice {
-            index: indexes,
-            shift: shifts,
-        } = self.shifts.as_slice();
-        match indexes.binary_search(&index) {
-            Ok(exact_index) => {
-                // An exact match means we have the exact correct index to get
-                // our shift from.
-                index - shifts[exact_index]
+        let i = index as usize;
+        match self.words.get(i / 64) {
+            Some(&word) => {
+                let below = word & ((1u64 << (i % 64)) - 1);
+                self.live_before[i / 64] + below.count_ones()
             }
-            Err(upper_bound_index) => {
-                // Otherwise we find an upper-bound index; it can be zero.
-                let own_location = upper_bound_index.checked_sub(1);
-                // If the upper-bound index is zero, then our shift amount is
-                // zero as well.
-                index - own_location.map(|i| shifts[i]).unwrap_or(0)
-            }
+            // One past the end of the vector (an end bound) or beyond: every
+            // dead item is below it.
+            None => index - self.dead,
         }
     }
 
     /// Shift a weakly held bare u32 reference index. Returns a new index if
     /// the reference target is live, otherwise returns None.
+    #[inline]
     pub(crate) fn shift_weak_u32_index(&self, index: u32) -> Option<u32> {
-        // If there are no shift indexes, then all values are live.
-        if self.shifts.is_empty() {
+        if self.dead == 0 {
             return Some(index);
         }
-        let ShiftDataSlice {
-            index: indexes,
-            shift: shifts,
-        } = self.shifts.as_slice();
-        // Find the place in the indexes list where our index is or should be
-        // placed to maintain order.
-        let found_index = indexes.binary_search(&index);
-        let insertion_index = match found_index {
-            Ok(exact_index) => {
-                // If we found an exact index then it means that our index is
-                // necessarily live and we just need to shift it down by the
-                // appropriate amount.
-                let shift_amount = shifts[exact_index];
-                return Some(index - shift_amount);
+        let i = index as usize;
+        match self.words.get(i / 64) {
+            Some(&word) => {
+                let bit = 1u64 << (i % 64);
+                if word & bit == 0 {
+                    None
+                } else {
+                    Some(self.live_before[i / 64] + (word & (bit - 1)).count_ones())
+                }
             }
-            Err(i) => i,
-        };
-        // It's possible that our index is at the "top shift" position.
-        // In that case our index is necessarily alive.
-        if insertion_index == indexes.len() {
-            let own_shift_amount = *shifts.last().unwrap();
-            return Some(index - own_shift_amount);
-        }
-        // This is the lowest index that could overwrite our index...
-        let upper_bound = indexes[insertion_index];
-        // ... and this is how much it shifts down.
-        let upper_bound_shift_amount = shifts[insertion_index];
-        // After the shift, it ends up at this index.
-        let post_shift_upper_bound = upper_bound - upper_bound_shift_amount;
-        // Our own shift amount is found in the next slot below the insertion
-        // index; the insertion index can be zero so we do a checked sub here.
-        let own_location = insertion_index.checked_sub(1);
-        // If insertion index is zero then our index does not shift but can
-        // still be overwritten.
-        let own_shift_amount = own_location.map(|i| shifts[i]).unwrap_or(0);
-        let post_shift_index = index - own_shift_amount;
-
-        // If the post-shift upper bound shifts to be less or equal than our
-        // post-shift index, then it means that we're being overwritten and are
-        // no longer live.
-        if post_shift_upper_bound <= post_shift_index {
-            None
-        } else {
-            // Otherwise, we're still live with the post-shift index value.
-            Some(post_shift_index)
+            None => Some(index - self.dead),
         }
     }
 
@@ -1485,116 +1437,31 @@ impl CompactionList {
         Some(NonZeroU32::MIN.saturating_add(base_index))
     }
 
-    fn build(shifts: SoAVec<ShiftData>) -> Self {
-        Self { shifts }
-    }
-
     pub(crate) fn from_mark_bits(range: &BitRange, marks: &[AtomicBits]) -> Self {
-        let mut builder = CompactionListBuilder::with_bits_length(range.len() as u32);
-        if range.is_empty() {
-            return builder.done();
+        let len = range.len();
+        let word_count = len.div_ceil(64);
+        let mut words = Vec::with_capacity(word_count);
+        let mut live_before = Vec::with_capacity(word_count);
+        let mut live = 0u32;
+        for word_index in 0..word_count {
+            let first = word_index * 64;
+            let word = range.load_word(first, (len - first).min(64), marks);
+            live_before.push(live);
+            live += word.count_ones();
+            words.push(word);
         }
-        range.for_each_byte(marks, |mark_byte, bit_iterator| {
-            if let Some(bit_iterator) = bit_iterator {
-                for bit_offset in bit_iterator {
-                    if mark_byte.get_bit(bit_offset) {
-                        builder.mark_used();
-                    } else {
-                        builder.mark_unused();
-                    }
-                }
-            } else {
-                for bit_offset in 0..8 {
-                    if mark_byte.get_bit(BitOffset::new(bit_offset)) {
-                        builder.mark_used();
-                    } else {
-                        builder.mark_unused();
-                    }
-                }
-            }
-        });
-        builder.done()
-    }
-}
-
-#[derive(Debug, Clone, Copy, SoAble)]
-pub(crate) struct ShiftData {
-    /// Starting from this index...
-    pub(crate) index: u32,
-    /// ...shift reference values down by this much.
-    pub(crate) shift: u32,
-}
-
-pub(crate) struct CompactionListBuilder {
-    shifts: SoAVec<ShiftData>,
-    current_index: u32,
-    current_shift: u32,
-    current_used: bool,
-}
-
-impl CompactionListBuilder {
-    fn with_bits_length(bits_length: u32) -> Self {
-        // Note: the maximum possible size of the indexes and shifts vectors is
-        // half the bits length; this happens if every other bit is 1.
-        // It's unlikely that we find this case, so we halve that for a fairly
-        // conservative guess.
-        let capacity = bits_length / 4;
+        let dead = u32::try_from(len).expect("heap vectors hold at most u32::MAX items") - live;
+        if dead == 0 {
+            return Self {
+                words: Box::default(),
+                live_before: Box::default(),
+                dead,
+            };
+        }
         Self {
-            shifts: SoAVec::with_capacity(capacity).unwrap(),
-            current_index: 0,
-            current_shift: 0,
-            current_used: true,
-        }
-    }
-
-    /// Add current index to indexes with the current shift.
-    fn add_current_index(&mut self) {
-        let index = self.current_index;
-        let shift = self.current_shift;
-        assert!(
-            self.shifts.is_empty()
-                || *self.shifts.get(self.shifts.len() - 1).unwrap().index < index
-                    && *self.shifts.get(self.shifts.len() - 1).unwrap().shift < shift
-        );
-        self.shifts.push(ShiftData { index, shift }).unwrap();
-    }
-
-    fn mark_used(&mut self) {
-        if !self.current_used {
-            self.add_current_index();
-            self.current_used = true;
-        }
-        self.current_index += 1;
-    }
-
-    fn mark_unused(&mut self) {
-        if self.current_used {
-            self.current_used = false;
-        }
-        self.current_shift += 1;
-        self.current_index += 1;
-    }
-
-    fn done(mut self) -> CompactionList {
-        // When building compactions is done, it's possible that the end of the
-        // data contains dropped values; we must add an "end-cap" where the
-        // start index is equal to the length of the data vector (and thus
-        // unreachable; no reference can point to the end of the vector) and
-        // where the shift value is such that it overwrites the dropped values.
-        if !self.current_used {
-            self.add_current_index();
-        }
-        CompactionList::build(self.shifts)
-    }
-}
-
-impl Default for CompactionListBuilder {
-    fn default() -> Self {
-        Self {
-            shifts: SoAVec::with_capacity(16).unwrap(),
-            current_index: 0,
-            current_shift: 0,
-            current_used: true,
+            words: words.into_boxed_slice(),
+            live_before: live_before.into_boxed_slice(),
+            dead,
         }
     }
 }
@@ -2482,4 +2349,57 @@ where
             false
         }
     });
+}
+
+#[test]
+fn compaction_list_matches_live_counts() {
+    let mut seed = 0x2545_f491_u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    for (start, len, density) in [
+        (0usize, 0usize, 2u32),
+        (3, 1, 2),
+        (5, 63, 2),
+        (0, 64, 1),
+        (7, 64, 2),
+        (11, 65, 4),
+        (13, 300, 2),
+        (1, 1000, 16),
+        (0, 1000, 0),
+    ] {
+        let bits: Box<[AtomicBits]> = (0..(start + len).div_ceil(8) + 2)
+            .map(|_| AtomicBits::default())
+            .collect();
+        let range = BitRange::from_range(start..start + len);
+        let mut marked = Vec::with_capacity(len);
+        for i in 0..len {
+            let live = density == 0 || next() % density != 0;
+            if live {
+                range.set_bit(i, &bits);
+            }
+            marked.push(live);
+        }
+        assert_eq!(range.iter(&bits).collect::<Vec<_>>(), marked);
+        let list = CompactionList::from_mark_bits(&range, &bits);
+        let mut live_before = 0u32;
+        for (i, &live) in marked.iter().enumerate() {
+            let index = i as u32;
+            if live {
+                let mut shifted = index;
+                list.shift_u32_index(&mut shifted);
+                assert_eq!(shifted, live_before);
+                assert_eq!(list.shift_weak_u32_index(index), Some(live_before));
+                live_before += 1;
+            } else {
+                assert_eq!(list.shift_weak_u32_index(index), None);
+            }
+        }
+        let mut end = len as u32;
+        list.shift_u32_index(&mut end);
+        assert_eq!(end, live_before);
+    }
 }
