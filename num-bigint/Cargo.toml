@@ -1,0 +1,17 @@
+[package]
+name = "num-bigint"
+version = "0.5.1"
+authors = ["The Rust Project Developers"]
+description = "Big integer implementation for Rust (Nova's fork: no unsafe)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rust-num/num-bigint"
+edition = "2021"
+publish = false
+
+[features]
+default = ["std"]
+std = ["num-integer/std", "num-traits/std"]
+
+[dependencies]
+num-integer = { version = "0.1.46", default-features = false, features = ["i128"] }
+num-traits = { version = "0.2.18", default-features = false, features = ["i128"] }
