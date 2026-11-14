@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::thread;
-
 #[cfg(feature = "date")]
 use crate::ecmascript::Date;
 #[cfg(feature = "array-buffer")]
@@ -1384,7 +1382,8 @@ fn sweep(
 
     let mut globals = globals.borrow_mut();
     let globals_iter = globals.iter_mut();
-    thread::scope(|s| {
+    {
+        let s = SequentialSweep;
         s.spawn(|| {
             prototype_shapes.sweep_values(&compactions);
         });
@@ -2042,9 +2041,6 @@ fn sweep(
             });
         }
 
-        // These records hold host-defined `Rc`s and AST references that must
-        // not be touched or dropped on another thread: the calling thread
-        // sweeps them while the workers sweep the rest.
         sweep_heap_vector_values(
             ecmascript_functions,
             &compactions,
@@ -2061,7 +2057,16 @@ fn sweep(
             &bits.bits,
         );
         sweep_heap_vector_values(source_codes, &compactions, &bits.source_codes, &bits.bits);
-    });
+    }
+}
+
+struct SequentialSweep;
+
+impl SequentialSweep {
+    #[inline(always)]
+    fn spawn(&self, sweep: impl FnOnce()) {
+        sweep()
+    }
 }
 
 #[test]
