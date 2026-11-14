@@ -37,27 +37,51 @@ pub fn print_result(agent: &mut Agent, result: JsResult<Value>, verbose: bool, g
     }
 }
 
-/// Exit the program with parse errors.
+/// Exit the program with parse errors: each error's message, then the
+/// position, source line and underline of each of its labels.
 pub fn exit_with_parse_errors(errors: Vec<OxcDiagnostic>, source_path: &str, source: &str) -> ! {
     assert!(!errors.is_empty());
-
-    // This seems to be needed for color and Unicode output.
-    miette::set_hook(Box::new(|_| {
-        Box::new(oxc_diagnostics::GraphicalReportHandler::new())
-    }))
-    .unwrap();
-
-    // SAFETY: This function never returns, so `source`'s lifetime must last for
-    // the duration of the program.
-    let source: &'static str = unsafe { std::mem::transmute(source) };
-    let named_source = miette::NamedSource::new(source_path, source);
 
     eprintln!("SyntaxError:");
 
     for error in errors {
-        let report = error.with_source_code(named_source.clone());
-        eprintln!("{report:?}");
+        eprintln!("  x {}", error.message);
+        for label in error.labels.iter().flatten() {
+            print_label(source_path, source, label.offset(), label.len(), label.label());
+        }
+        if let Some(help) = &error.help {
+            eprintln!("  help: {help}");
+        }
+        if let Some(note) = &error.note {
+            eprintln!("  note: {note}");
+        }
     }
 
     std::process::exit(1);
+}
+
+fn print_label(source_path: &str, source: &str, offset: usize, len: usize, label: Option<&str>) {
+    let offset = floor_char_boundary(source, offset);
+    let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = source[offset..].find('\n').map_or(source.len(), |i| offset + i);
+    let line = source[line_start..line_end].trim_end_matches('\r');
+    let line_number = source[..line_start].matches('\n').count() + 1;
+    let column = source[line_start..offset].chars().count() + 1;
+    eprintln!("   ,-[{source_path}:{line_number}:{column}]");
+    eprintln!("   | {line}");
+    let indent = source[line_start..offset].chars().count();
+    let end = floor_char_boundary(source, offset.saturating_add(len)).min(line_start + line.len());
+    let width = source[offset..end.max(offset)].chars().count().max(1);
+    match label {
+        Some(label) => eprintln!("   | {}{} {label}", " ".repeat(indent), "^".repeat(width)),
+        None => eprintln!("   | {}{}", " ".repeat(indent), "^".repeat(width)),
+    }
+}
+
+fn floor_char_boundary(source: &str, index: usize) -> usize {
+    let mut index = index.min(source.len());
+    while !source.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }

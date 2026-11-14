@@ -38,24 +38,10 @@ categories = [
 license = "MIT"
 repository = "https://github.com/oxc-project/oxc"
 
-[features]
-default = []
-fancy = ["miette/fancy-no-syscall"]
-
 [lib]
 name = "oxc_diagnostics"
 path = "src/lib.rs"
 doctest = false
-
-[dependencies.cow-utils]
-version = "0.1.3"
-
-[dependencies.miette]
-version = "2.7.1"
-package = "oxc-miette"
-
-[dependencies.percent-encoding]
-version = "2.3.2"
 
 [lints.clippy]
 allow_attributes = "warn"

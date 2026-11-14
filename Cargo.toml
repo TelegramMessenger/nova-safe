@@ -22,7 +22,6 @@ ctrlc = "=3.5.2"
 hashbrown = "=0.17.1"
 num-bigint = "=0.5.1"
 num-traits = "=0.2.19"
-oxc-miette = { version = "=2.7.1", features = ["fancy"] }
 oxc_allocator = { path = "oxc/crates/oxc_allocator" }
 oxc_ast = { path = "oxc/crates/oxc_ast" }
 oxc_diagnostics = { path = "oxc/crates/oxc_diagnostics" }

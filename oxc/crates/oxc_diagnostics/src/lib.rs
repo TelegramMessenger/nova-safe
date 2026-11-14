@@ -1,8 +1,7 @@
 //! Error data types and utilities for handling/reporting them.
 //!
 //! The main type in this module is [`OxcDiagnostic`], which is used by all other oxc tools to
-//! report problems. It implements [miette]'s [`Diagnostic`] trait, making it compatible with other
-//! tooling you may be using.
+//! report problems: a message, labelled source spans, help and note text, a severity and a code.
 //!
 //! ```rust,ignore
 //! use oxc_diagnostics::{OxcDiagnostic, Result};
@@ -11,42 +10,8 @@
 //!     Ok(())
 //! }
 //! ```
-//!
-//! See the [miette] documentation for more information on how to interact with diagnostics.
-//!
-//! ## Reporting
-//! If you are writing your own tools that may produce their own errors, you can use
-//! [`DiagnosticService`] to format and render them to a string or a stream. It can receive
-//! [`Error`]s over a multi-producer, single consumer
-//!
-//! ```rust,ignore
-//! use std::{path::PathBuf, sync::Arc, thread};
-//! use oxc_diagnostics::{DiagnosticService, Error, OxcDiagnostic, GraphicalReportHandler, NamedSource};
-//!
-//! fn my_tool() -> Result<()> {
-//!     try_something().map_err(|e| OxcDiagnostic::error(e.to_string()))?;
-//!     Ok(())
-//! }
-//!
-//! let (mut service, sender) = DiagnosticService::new(Box::new(GraphicalReportHandler::new()));
-//!
-//! thread::spawn(move || {
-//!     let file_path_being_processed = PathBuf::from("file.txt");
-//!     let file_being_processed = Arc::new(NamedSource::new(file_path_being_processed.clone()));
-//!
-//!     for _ in 0..10 {
-//!         if let Err(diagnostic) = my_tool() {
-//!             let report = diagnostic.with_source_code(Arc::clone(&file_being_processed));
-//!             sender.send((file_path_being_processed, vec![Error::new(e)]));
-//!         }
-//!         // The service will stop when all senders are dropped
-//!     }
-//! });
-//!
-//! service.run();
-//! ```
 
-mod service;
+#![forbid(unsafe_code)]
 
 use std::{
     borrow::Cow,
@@ -54,19 +19,104 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-pub mod reporter;
-
-pub use crate::service::{DiagnosticSender, DiagnosticService};
-
-pub type Error = miette::Error;
-pub type Severity = miette::Severity;
-
 pub type Result<T> = std::result::Result<T, OxcDiagnostic>;
 
-use miette::{Diagnostic, SourceCode};
-#[cfg(feature = "fancy")]
-pub use miette::{GraphicalReportHandler, GraphicalTheme};
-pub use miette::{LabeledSpan, NamedSource};
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Severity {
+    Advice,
+    Warning,
+    #[default]
+    Error,
+}
+
+/// A byte range of the source text: `offset` and `len` in bytes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceSpan {
+    offset: usize,
+    length: usize,
+}
+
+impl SourceSpan {
+    pub const fn new(offset: usize, length: usize) -> Self {
+        Self { offset, length }
+    }
+
+    pub const fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub const fn len(&self) -> usize {
+        self.length
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+}
+
+impl From<(usize, usize)> for SourceSpan {
+    fn from((offset, length): (usize, usize)) -> Self {
+        Self::new(offset, length)
+    }
+}
+
+/// A [`SourceSpan`] with an optional label; a primary label marks the main location.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LabeledSpan {
+    label: Option<String>,
+    span: SourceSpan,
+    primary: bool,
+}
+
+impl LabeledSpan {
+    pub const fn new(label: Option<String>, offset: usize, len: usize) -> Self {
+        Self { label, span: SourceSpan::new(offset, len), primary: false }
+    }
+
+    pub fn new_with_span(label: Option<String>, span: impl Into<SourceSpan>) -> Self {
+        Self { label, span: span.into(), primary: false }
+    }
+
+    pub fn new_primary_with_span(label: Option<String>, span: impl Into<SourceSpan>) -> Self {
+        Self { label, span: span.into(), primary: true }
+    }
+
+    pub fn at(span: impl Into<SourceSpan>, label: impl Into<String>) -> Self {
+        Self::new_with_span(Some(label.into()), span)
+    }
+
+    pub fn underline(span: impl Into<SourceSpan>) -> Self {
+        Self::new_with_span(None, span)
+    }
+
+    pub fn set_label(&mut self, label: Option<String>) {
+        self.label = label;
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    pub const fn inner(&self) -> &SourceSpan {
+        &self.span
+    }
+
+    pub const fn offset(&self) -> usize {
+        self.span.offset()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.span.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.span.is_empty()
+    }
+
+    pub const fn primary(&self) -> bool {
+        self.primary
+    }
+}
 
 /// Describes an error or warning that occurred.
 ///
@@ -134,49 +184,6 @@ impl Display for OxcDiagnostic {
 }
 
 impl std::error::Error for OxcDiagnostic {}
-
-impl Diagnostic for OxcDiagnostic {
-    /// The secondary help message.
-    fn help<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
-        self.help.as_ref().map(Box::new).map(|c| c as Box<dyn Display>)
-    }
-
-    /// A note for the diagnostic.
-    ///
-    /// Similar to rustc - intended for additional explanation and information,
-    /// e.g. why an error was emitted, how to turn it off.
-    fn note<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
-        self.note.as_ref().map(Box::new).map(|c| c as Box<dyn Display>)
-    }
-
-    /// The severity level of this diagnostic.
-    ///
-    /// Diagnostics with missing severity levels should be treated as [errors](Severity::Error).
-    fn severity(&self) -> Option<Severity> {
-        Some(self.severity)
-    }
-
-    /// Labels covering problematic portions of source code.
-    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
-        self.labels
-            .as_ref()
-            .map(|ls| ls.iter().cloned())
-            .map(Box::new)
-            .map(|b| b as Box<dyn Iterator<Item = LabeledSpan>>)
-    }
-
-    /// An error code uniquely identifying this diagnostic.
-    ///
-    /// Note that codes may be scoped, which will be rendered as `scope(code)`.
-    fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
-        self.code.is_some().then(|| Box::new(&self.code) as Box<dyn Display>)
-    }
-
-    /// A URL that provides more information about the problem that occurred.
-    fn url<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
-        self.url.as_ref().map(Box::new).map(|c| c as Box<dyn Display>)
-    }
-}
 
 impl OxcDiagnostic {
     /// Create new an error-level [`OxcDiagnostic`].
@@ -362,13 +369,6 @@ impl OxcDiagnostic {
     pub fn with_url<S: Into<Cow<'static, str>>>(mut self, url: S) -> Self {
         self.inner.url = Some(url.into());
         self
-    }
-
-    /// Add source code to this diagnostic and convert it into an [`Error`].
-    ///
-    /// You should use a [`NamedSource`] if you have a file name as well as the source code.
-    pub fn with_source_code<T: SourceCode + Send + Sync + 'static>(self, code: T) -> Error {
-        Error::from(self).with_source_code(code)
     }
 
     /// Consumes the diagnostic and returns the inner owned data.
