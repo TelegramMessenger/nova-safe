@@ -1287,7 +1287,8 @@ impl MathObject {
         _: ArgumentsList,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
-        Ok(Value::from_f64(agent, random_f64(), gc.into_nogc()))
+        let number = agent.next_random_f64();
+        Ok(Value::from_f64(agent, number, gc.into_nogc()))
     }
 
     fn round<'gc>(
@@ -2035,24 +2036,3 @@ fn min_slow_path<'a>(
     Ok(contained_nan)
 }
 
-/// A number in [0, 1) from xorshift128+ (as V8's Math.random), one generator
-/// per thread, seeded from std's random SipHash keys.
-fn random_f64() -> f64 {
-    use std::{
-        cell::Cell,
-        hash::{BuildHasher, RandomState},
-    };
-    thread_local! {
-        static STATE: Cell<(u64, u64)> = Cell::new({
-            let keys = RandomState::new();
-            (keys.hash_one(0u64) | 1, keys.hash_one(1u64))
-        });
-    }
-    STATE.with(|state| {
-        let (mut s1, s0) = state.get();
-        s1 ^= s1 << 23;
-        let next = s1 ^ s0 ^ (s1 >> 17) ^ (s0 >> 26);
-        state.set((s0, next));
-        (next.wrapping_add(s0) >> 11) as f64 / (1u64 << 53) as f64
-    })
-}

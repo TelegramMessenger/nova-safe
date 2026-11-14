@@ -445,3 +445,18 @@ fn many_live_globals_are_cheap() {
         engine.assert_usable();
     });
 }
+
+#[test]
+fn math_random_is_per_agent() {
+    on_big_stack(|| {
+        let source = "var r = []; for (let i = 0; i < 4; i++) { const x = Math.random(); if (!(x >= 0 && x < 1)) throw x; r.push(x); } r.join()";
+        let mut first = Engine::new();
+        let mut second = Engine::new();
+        let a = first.run(source, None);
+        let b = second.run(source, None);
+        let c = first.run(source, None);
+        assert!(matches!(a, Outcome::Value(_)), "{a:?}");
+        assert_ne!(a, b, "two Agents on one thread share a Math.random stream");
+        assert_ne!(a, c);
+    });
+}
