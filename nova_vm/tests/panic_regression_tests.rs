@@ -414,3 +414,37 @@ fn typed_array_filter_species_of_another_element_type() {
          Float32Array 0.5 2"
     );
 }
+
+/// `Set.prototype.clear` keeps the list of entries (as EMPTY), so an
+/// iterator suspended in it goes on to the values added after the clear, as
+/// the spec, QuickJS and Map do. Truncating the list ended the iteration and
+/// tripped a debug assertion in the iterator's `next`.
+#[test]
+fn set_iterator_visits_values_added_after_clear() {
+    let source = r#"
+        var log = [];
+        var s = new Set([1, 2, 3, 4]);
+        var it = s.values();
+        it.next(); it.next(); it.next();
+        s.clear();
+        s.add(5); s.add(6);
+        log.push(JSON.stringify([...it]), s.size);
+        var e = new Set(["a", "b"]);
+        var entries = e.entries();
+        entries.next();
+        e.clear();
+        e.add("c");
+        log.push(JSON.stringify([...entries]));
+        var f = new Set([1, 2, 3]);
+        var seen = [];
+        f.forEach(function (v) { seen.push(v); if (v === 2) { f.clear(); f.add(7); } });
+        log.push(seen.join(" "), [...f].join(" "));
+        var g = new Set([1, 2]);
+        for (var i = 0; i < 3; i++) { g.clear(); g.add(i); }
+        log.push([...g].join(" "), g.has(2), g.has(0), g.size);
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "[5,6],2,[[\"c\",\"c\"]],1 2 7,7,2,true,false,1"
+    );
+}

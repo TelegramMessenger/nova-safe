@@ -164,7 +164,7 @@ impl SetPrototype {
         // element whose value is EMPTY.
         let data = s.get_mut(agent);
         data.set_data.borrow_mut().clear();
-        data.values.clear();
+        data.values.fill(None);
         // 4. Return undefined.
         Ok(Value::Undefined)
     }
