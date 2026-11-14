@@ -123,6 +123,11 @@ impl<T> HashTable<T> {
         self.items as usize
     }
 
+    /// Bytes of the table's own storage, for the heap size estimate.
+    pub(crate) fn allocation_bytes(&self) -> usize {
+        self.groups.capacity() * core::mem::size_of::<Group<T>>()
+    }
+
     #[inline(always)]
     pub(crate) fn is_empty(&self) -> bool {
         self.items == 0

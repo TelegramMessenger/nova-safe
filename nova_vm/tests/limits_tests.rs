@@ -482,6 +482,28 @@ fn heap_limit_terminates_growing_scripts() {
 }
 
 #[test]
+fn map_and_set_tables_count_at_their_size() {
+    on_big_stack(|| {
+        for (collection, add) in [("Set", "add(i)"), ("Map", "set(i, i)")] {
+            let mut engine = Engine::new();
+            engine.agent.gc();
+            let empty = engine.agent.heap_size();
+            let source = format!(
+                "globalThis.c = new {collection}(); for (let i = 0; i < 7169; i++) c.{add}; c.size"
+            );
+            assert_eq!(engine.run(&source, None), Outcome::Value("7169".into()));
+            engine.agent.gc();
+            let grown = engine.agent.heap_size() - empty;
+            let table = 2048 * (8 + 8 * 8);
+            assert!(
+                grown >= table + 7169 * 8,
+                "{collection} of 7169 entries counted at {grown} bytes"
+            );
+        }
+    });
+}
+
+#[test]
 fn many_live_globals_are_cheap() {
     on_big_stack(|| {
         use nova_vm::{

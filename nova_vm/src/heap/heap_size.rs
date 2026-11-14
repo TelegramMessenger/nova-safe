@@ -53,7 +53,11 @@ impl Heap {
             total += self.sets.len() as usize * 64;
             for index in 0..self.sets.len() {
                 if let Some(set) = self.sets.get(index) {
-                    total += set.values.capacity() * (size_of::<Option<Value<'static>>>() + 8);
+                    total += set.values.capacity() * size_of::<Option<Value<'static>>>();
+                    total += set.set_data.try_borrow().map_or_else(
+                        |_| set.values.capacity() * 24,
+                        |table| table.allocation_bytes(),
+                    );
                 }
             }
         }

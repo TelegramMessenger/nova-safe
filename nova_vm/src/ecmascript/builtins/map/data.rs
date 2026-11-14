@@ -181,7 +181,10 @@ pub(crate) fn map_entries_bytes(maps: &crate::heap::soa::SoAVec<MapHeapData<'sta
         .map(|map| {
             (map.keys.capacity() + map.values.capacity())
                 * core::mem::size_of::<Option<Value<'static>>>()
-                + map.keys.capacity() * 8
+                + map.map_data.try_borrow().map_or_else(
+                    |_| map.keys.capacity() * 24,
+                    |table| table.allocation_bytes(),
+                )
         })
         .sum()
 }
