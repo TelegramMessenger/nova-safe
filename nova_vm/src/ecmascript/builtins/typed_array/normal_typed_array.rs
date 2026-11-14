@@ -1546,19 +1546,40 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         let buffer = a.viewed_array_buffer(agent);
         match buffer {
             AnyArrayBuffer::ArrayBuffer(ab) => {
+                let Ok(target) = TypedArray::try_from(a) else {
+                    unreachable!()
+                };
+                // A species constructor may return any type with the same
+                // content type: the kept elements then convert as Set does.
+                let same_type = for_normal_typed_array!(
+                    target,
+                    _ta,
+                    core::any::TypeId::of::<Target>() == core::any::TypeId::of::<T>(),
+                    Target
+                );
                 let is_resizable = buffer.is_resizable(agent);
                 let byte_length = buffer.byte_length(agent, Ordering::Unordered);
 
-                if byte_offset == 0 && !is_resizable && byte_length == expected_byte_length {
+                if same_type
+                    && byte_offset == 0
+                    && !is_resizable
+                    && byte_length == expected_byte_length
+                {
                     // User cannot detect the switcharoo!
                     let db = ab.get_mut(agent).get_data_block_mut();
                     core::mem::swap(db, &mut kept);
                 } else {
-                    let dst =
-                        ViewableSliceMut::<T>::new(&mut ab.as_mut_slice(agent)[byte_offset..]);
-                    let kept_slice = ViewableSlice::<T>::new(&kept);
-                    dst.into_slice(0..captured)
-                        .copy_from(kept_slice.slice(0..captured));
+                    let bytes = ab.as_mut_slice(agent);
+                    let kept_bytes = &kept[..expected_byte_length];
+                    for_normal_typed_array!(
+                        target,
+                        _ta,
+                        copy_between_typed_arrays::<T, Target>(
+                            kept_bytes,
+                            view_bytes_mut::<Target>(bytes, byte_offset).into_slice(0..captured)
+                        ),
+                        Target
+                    );
                 }
             }
             #[cfg(feature = "shared-array-buffer")]

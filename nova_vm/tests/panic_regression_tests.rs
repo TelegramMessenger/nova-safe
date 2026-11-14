@@ -385,3 +385,32 @@ fn adding_a_key_to_a_shape_that_shares_a_larger_keys_storage() {
     "#;
     assert_eq!(run(source, "log.join()", None), "an,axy,4,az,2");
 }
+
+/// `%TypedArray%.prototype.filter` whose species constructor returns a
+/// typed array of another element type converts the kept elements as `Set`
+/// does, instead of copying raw bytes (a slice index panic when the result's
+/// elements are smaller).
+#[test]
+fn typed_array_filter_species_of_another_element_type() {
+    let source = r#"
+        var log = [];
+        function species(ta, C) {
+            ta.constructor = { [Symbol.species]: function (n) { return new C(n); } };
+            return ta;
+        }
+        function show(r) { log.push(r.constructor.name + " " + Array.from(r).join(" ")); }
+        show(species(new Uint16Array([1, 2, 3, 300, 5, 6, 7, 8, 9]), Uint8Array).filter(() => true));
+        show(species(new Int8Array([-1, 2, -128]), Float64Array).filter(() => true));
+        show(species(new Uint16Array([65535, 1]), Int16Array).filter(() => true));
+        show(species(new Float64Array([1.5, -2, 300]), Uint8ClampedArray).filter(() => true));
+        show(species(new BigInt64Array([-1n, 5n]), BigUint64Array).filter(() => true));
+        show(species(new Uint8Array([1, 2, 3, 4]), Uint16Array).filter((x) => x & 1));
+        show(species(new Float32Array([0.5, 2]), Float32Array).filter(() => true));
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "Uint8Array 1 2 3 44 5 6 7 8 9,Float64Array -1 2 -128,Int16Array -1 1,\
+         Uint8ClampedArray 2 0 255,BigUint64Array 18446744073709551615 5,Uint16Array 1 3,\
+         Float32Array 0.5 2"
+    );
+}
