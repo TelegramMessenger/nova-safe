@@ -73,3 +73,65 @@ fn map_and_set_lookups_survive_compaction() {
     agent.gc();
     run(&mut agent, &realm, CHECK);
 }
+
+#[cfg(feature = "weak-refs")]
+#[test]
+fn weak_map_ephemeron_chains_survive_collection() {
+    let mut agent = GcAgent::new(AgentOptions::default(), &DefaultHostHooks);
+    let realm = agent.create_default_realm();
+    run(
+        &mut agent,
+        &realm,
+        r#"
+var maps = Array.from({ length: 6 }, () => new WeakMap());
+var head = { n: 0 };
+var k = head;
+for (let i = 0; i < 6; i++) {
+  const next = { n: i + 1 };
+  maps[5 - i].set(k, { next, payload: "v" + i });
+  k = next;
+}
+maps[0].set(k, { n: 99 });
+maps[2].set({}, { lost: true });
+var deepRoot = { d: 0 };
+var cur = deepRoot;
+for (let i = 1; i < 2000; i++) { const nxt = { d: i }; cur.next = nxt; cur = nxt; }
+var tailMap = new WeakMap();
+tailMap.set(cur, { tail: "found" });
+cur = null;
+var sym = Symbol("weak key");
+var symMap = new WeakMap();
+symMap.set(sym, { s: "sym" });
+var tailKey = { t: 1 };
+var deepValues = new WeakMap();
+var chainKey = tailKey;
+for (let i = 0; i < 50; i++) { const nextKey = { i }; deepValues.set(chainKey, nextKey); chainKey = nextKey; }
+deepValues.set(chainKey, { end: "deep" });
+chainKey = null;
+"#,
+    );
+    agent.gc();
+    run(
+        &mut agent,
+        &realm,
+        r#"
+function check(name, actual, expected) {
+  if (actual !== expected) throw new Error(name + ": expected " + expected + ", got " + actual);
+}
+var walk = head;
+for (let i = 0; i < 6; i++) {
+  const v = maps[5 - i].get(walk);
+  check("payload " + i, v.payload, "v" + i);
+  walk = v.next;
+}
+check("leaf", maps[0].get(walk).n, 99);
+var t = deepRoot;
+while (t.next) t = t.next;
+check("tail", tailMap.get(t).tail, "found");
+check("symbol key", symMap.get(sym).s, "sym");
+var c = tailKey;
+for (let i = 0; i < 50; i++) c = deepValues.get(c);
+check("deep chain", deepValues.get(c).end, "deep");
+"#,
+    );
+}

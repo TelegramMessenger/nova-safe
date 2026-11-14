@@ -7,10 +7,10 @@ use std::marker::PhantomData;
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, Array, AsyncFromSyncIteratorPrototype, BUILTIN_STRING_MEMORY,
-        ExceptionType, InternalMethods, IteratorRecord, JsError, JsResult, Object, OrdinaryObject,
-        Promise, PropertyKey, PropertyKeySet, ScopedArgumentsList, TryError, TryGetResult,
-        TryResult, Value, call_function, create_async_from_sync_iterator,
+        Agent, ArgumentsList, Array, ArrayIteratorPrototype, AsyncFromSyncIteratorPrototype,
+        BUILTIN_STRING_MEMORY, ExceptionType, InternalMethods, IteratorRecord, JsError, JsResult,
+        Object, OrdinaryObject, Promise, PropertyKey, PropertyKeySet, ScopedArgumentsList,
+        TryError, TryGetResult, TryResult, Value, call_function, create_async_from_sync_iterator,
         create_iter_result_object, get, get_iterator_from_method, get_method, get_object_method,
         throw_not_callable, to_boolean, try_get,
     },
@@ -855,6 +855,20 @@ impl<'a> GenericIterator<'a> {
         let iter = self.get(agent);
         let next_method = iter.next_method.bind(gc.nogc());
         let iterator = iter.iterator.bind(gc.nogc());
+
+        // The original %ArrayIteratorPrototype%.next on an Array Iterator
+        // only wraps its step in a fresh iterator result object, whose own
+        // "done" and "value" data properties IteratorStepValue then reads.
+        if let Object::ArrayIterator(array_iterator) = iterator
+            && next_method
+                == agent
+                    .current_realm_record()
+                    .intrinsics()
+                    .array_iterator_prototype_next()
+                    .into()
+        {
+            return ArrayIteratorPrototype::step(agent, array_iterator.unbind(), gc);
+        }
 
         let result = call_function(
             agent,

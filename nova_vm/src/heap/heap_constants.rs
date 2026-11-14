@@ -271,6 +271,7 @@ pub(crate) enum IntrinsicFunctionIndexes {
     // +===================================================================================+
     // | Plain functions: These do not have a corresponding object index reserved for them |
     // +===================================================================================+
+    ArrayIteratorPrototypeNext,
     ArrayPrototypeSort,
     ArrayPrototypeToString,
     ArrayPrototypeValues,

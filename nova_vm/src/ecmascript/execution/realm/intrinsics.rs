@@ -724,6 +724,12 @@ impl Intrinsics {
             .get_builtin_function(self.builtin_function_index_base)
     }
 
+    /// %ArrayIteratorPrototype%.next
+    pub(crate) const fn array_iterator_prototype_next(&self) -> BuiltinFunction<'static> {
+        IntrinsicFunctionIndexes::ArrayIteratorPrototypeNext
+            .get_builtin_function(self.builtin_function_index_base)
+    }
+
     /// %Array.prototype.values%
     pub(crate) const fn array_prototype_values(&self) -> BuiltinFunction<'static> {
         IntrinsicFunctionIndexes::ArrayPrototypeValues

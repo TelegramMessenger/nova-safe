@@ -9,13 +9,13 @@ use crate::ecmascript::Ordering;
 use crate::ecmascript::builtins::{AnyTypedArray, make_typed_array_with_buffer_witness_record};
 use crate::{
     ecmascript::{
-        ARRAY_INDEX_RANGE, Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin,
-        CollectionIteratorKind, ExceptionType, InternalSlots, JsResult, Object, Realm, String,
-        Value, builders::OrdinaryObjectBuilder, create_array_from_list, create_iter_result_object,
-        get, length_of_array_like,
+        ARRAY_INDEX_RANGE, Agent, ArgumentsList, ArrayIterator, BUILTIN_STRING_MEMORY, Behaviour,
+        Builtin, BuiltinIntrinsic, CollectionIteratorKind, ExceptionType, InternalSlots, JsResult,
+        Object, Realm, String, Value, builders::OrdinaryObjectBuilder, create_array_from_list,
+        create_iter_result_object, get, length_of_array_like,
     },
     engine::{Bindable, GcScope, Scopable},
-    heap::{ArenaAccess, ArenaAccessMut, WellKnownSymbols},
+    heap::{ArenaAccess, ArenaAccessMut, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
 pub(crate) struct ArrayIteratorPrototype;
@@ -27,6 +27,9 @@ impl Builtin for ArrayIteratorPrototypeNext {
     const LENGTH: u8 = 0;
 
     const BEHAVIOUR: Behaviour = Behaviour::Regular(ArrayIteratorPrototype::next);
+}
+impl BuiltinIntrinsic for ArrayIteratorPrototypeNext {
+    const INDEX: IntrinsicFunctionIndexes = IntrinsicFunctionIndexes::ArrayIteratorPrototypeNext;
 }
 
 impl ArrayIteratorPrototype {
@@ -46,13 +49,34 @@ impl ArrayIteratorPrototype {
                 gc.into_nogc(),
             ));
         };
+        let iterator = iterator.bind(gc.nogc());
+        let result = Self::step(agent, iterator.unbind(), gc.reborrow())
+            .unbind()?
+            .bind(gc.nogc());
+        // vii. Perform ? GeneratorYield(CreateIteratorResultObject(result, false)).
+        create_iter_result_object(
+            agent,
+            result.unwrap_or(Value::Undefined).unbind(),
+            result.is_none(),
+            gc.into_nogc(),
+        )
+        .map(|o| o.into())
+    }
+
+    /// One step of the generator closure of CreateArrayIterator: the value
+    /// %ArrayIteratorPrototype%.next would wrap in an iterator result object,
+    /// or None when it reports done.
+    pub(crate) fn step<'gc>(
+        agent: &mut Agent,
+        iterator: ArrayIterator,
+        mut gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Option<Value<'gc>>> {
         let mut iterator = iterator.bind(gc.nogc());
 
         // 23.1.5.1 CreateArrayIterator ( array, kind ), step 1. b
         // NOTE: We set `array` to None when the generator in the spec text has returned.
         let Some(array) = iterator.get(agent).array else {
-            return create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc())
-                .map(|o| o.into());
+            return Ok(None);
         };
         let mut array = array.bind(gc.nogc());
 
@@ -102,8 +126,7 @@ impl ArrayIteratorPrototype {
         // iii. If index ≥ len, return NormalCompletion(undefined).
         if iterator.get(agent).next_index >= len {
             iterator.get_mut(agent).array = None;
-            return create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc())
-                .map(|o| o.into());
+            return Ok(None);
         }
 
         // iv. Let indexNumber be 𝔽(index).
@@ -176,8 +199,7 @@ impl ArrayIteratorPrototype {
             }
         };
 
-        // vii. Perform ? GeneratorYield(CreateIteratorResultObject(result, false)).
-        create_iter_result_object(agent, result.unbind(), false, gc.into_nogc()).map(|o| o.into())
+        Ok(Some(result.unbind()))
     }
 
     pub(crate) fn create_intrinsic(agent: &mut Agent, realm: Realm<'static>) {
@@ -188,7 +210,7 @@ impl ArrayIteratorPrototype {
         OrdinaryObjectBuilder::new_intrinsic_object(agent, realm, this)
             .with_property_capacity(2)
             .with_prototype(iterator_prototype)
-            .with_builtin_function_property::<ArrayIteratorPrototypeNext>()
+            .with_builtin_intrinsic_function_property::<ArrayIteratorPrototypeNext>()
             .with_property(|builder| {
                 builder
                     .with_key(WellKnownSymbols::ToStringTag.into())
