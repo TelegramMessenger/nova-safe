@@ -1,7 +1,12 @@
 #!/bin/sh
 # Builds NovaEngineFFI.xcframework (nova_embed_ffi as a static library with its
 # header and module map) for macOS: arm64 from 11.0 and x86_64 from 10.13, release
-# with fat LTO, debug info and local symbols stripped.
+# with fat LTO and without debug info.
+#
+# Each architecture's library is prelinked into one object that exports only the
+# nova_* functions: the Rust standard library inside it (rust_eh_personality and
+# friends) stays private, so the library links next to another Rust static
+# library, such as the app's MTProto engine, without duplicate symbols.
 #
 #   safe/embed/build-xcframework.sh OUTPUT_DIR [BUILD_DIR]
 #
@@ -43,12 +48,28 @@ build() {
     fi
     NOVA_EMBED_COMMIT="$COMMIT" MACOSX_DEPLOYMENT_TARGET="$deployment" CARGO_TARGET_DIR="$BUILD_DIR/target" \
         "$CARGO_BIN" build --package nova_embed_ffi --release --target "$target"
-    cp "$BUILD_DIR/target/$target/release/libnova_embed_ffi.a" "$BUILD_DIR/libnova_embed_ffi-$target.a"
-    strip -S -x "$BUILD_DIR/libnova_embed_ffi-$target.a" 2>/dev/null
+    arch="$3"
+    printf '_nova_*\n' > "$BUILD_DIR/exported-symbols.txt"
+    if ! ld -r -arch "$arch" -platform_version macos "$deployment" "$deployment" \
+        -exported_symbols_list "$BUILD_DIR/exported-symbols.txt" \
+        -all_load "$BUILD_DIR/target/$target/release/libnova_embed_ffi.a" \
+        -o "$BUILD_DIR/nova_embed_ffi-$target.o" 2> "$BUILD_DIR/ld-$target.log"; then
+        cat "$BUILD_DIR/ld-$target.log"
+        exit 1
+    fi
+    strip -S "$BUILD_DIR/nova_embed_ffi-$target.o"
+    rm -f "$BUILD_DIR/libnova_embed_ffi-$target.a"
+    libtool -static -o "$BUILD_DIR/libnova_embed_ffi-$target.a" "$BUILD_DIR/nova_embed_ffi-$target.o"
+    exported="$(nm -gU "$BUILD_DIR/libnova_embed_ffi-$target.a" | awk 'NF == 3 { print $3 }' | grep -v '^_nova_' || true)"
+    if [ -n "$exported" ]; then
+        echo "symbols other than nova_* are exported for $target:"
+        echo "$exported"
+        exit 1
+    fi
 }
 
-build aarch64-apple-darwin 11.0
-build x86_64-apple-darwin 10.13
+build aarch64-apple-darwin 11.0 arm64
+build x86_64-apple-darwin 10.13 x86_64
 
 lipo -create \
     "$BUILD_DIR/libnova_embed_ffi-aarch64-apple-darwin.a" \
