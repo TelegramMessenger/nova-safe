@@ -27,7 +27,8 @@ use core::{
 use std::{panic::catch_unwind, rc::Rc, sync::LazyLock};
 
 use nova_embed::{
-    ArgumentMode, Completion, Engine, EngineOptions, Error, Host, HostArg, HostReturn,
+    ArgumentMode, CompiledScript, Completion, Engine, EngineOptions, Error, Host, HostArg,
+    HostReturn,
 };
 
 pub const NOVA_OK: i32 = 0;
@@ -464,6 +465,95 @@ pub unsafe extern "C" fn nova_engine_eval(
     };
     // SAFETY: forwarded contract.
     unsafe { with_engine(handle, out, |engine| engine.evaluate(&source, as_module)) }
+}
+
+/// A script compiled once for any number of engines (`nova_script_compile`);
+/// immutable, so engines on different threads may evaluate it at once.
+pub struct NovaScript {
+    script: CompiledScript,
+}
+
+/// Compiles UTF-8 `source` as a sloppy script; null on failure, with the
+/// reason in `error` (NOVA_EXCEPTION: a SyntaxError, as `nova_engine_eval`
+/// reports it; NOVA_INVALID: code that cannot be shared between engines, to
+/// be evaluated from source instead).
+///
+/// # Safety
+/// `source` readable for `source_len` bytes; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nova_script_compile(
+    source: *const u8,
+    source_len: usize,
+    error: *mut NovaResult,
+) -> *mut NovaScript {
+    // SAFETY: forwarded contract.
+    let Some(source) = (unsafe { read_utf8(source, source_len) }) else {
+        // SAFETY: forwarded contract.
+        unsafe { refuse(error, NOVA_INVALID, "the source is not UTF-8") };
+        return core::ptr::null_mut();
+    };
+    match catch_unwind(AssertUnwindSafe(|| CompiledScript::compile(&source))) {
+        Ok(Ok(script)) => {
+            // SAFETY: forwarded contract.
+            unsafe { write_result(error, NOVA_VALUE_UNDEFINED, 0.0, Vec::new()) };
+            Box::into_raw(Box::new(NovaScript { script }))
+        }
+        Ok(Err(failure)) => {
+            // SAFETY: forwarded contract.
+            unsafe { write_error(error, failure) };
+            core::ptr::null_mut()
+        }
+        Err(_) => {
+            // SAFETY: forwarded contract.
+            unsafe { refuse(error, NOVA_DEAD, "the engine panicked while it compiled") };
+            core::ptr::null_mut()
+        }
+    }
+}
+
+/// Frees a compiled script (null is ignored).
+///
+/// # Safety
+/// `script` must be null or a live pointer from `nova_script_compile` that no
+/// call is using, and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nova_script_free(script: *mut NovaScript) {
+    if script.is_null() {
+        return;
+    }
+    // SAFETY: from Box::into_raw in nova_script_compile and, by the contract,
+    // live, unused by any call and freed only here, so this is its only owner.
+    let script = unsafe { Box::from_raw(script) };
+    let _ = catch_unwind(AssertUnwindSafe(move || drop(script)));
+}
+
+/// Evaluates a compiled script as `nova_engine_eval` evaluates its source as a
+/// sloppy script.
+///
+/// # Safety
+/// `handle` as for every engine call; `script` null or a live pointer from
+/// `nova_script_compile` not freed during the call (other threads may use it
+/// meanwhile); `out` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nova_engine_eval_script(
+    handle: *const NovaEngine,
+    script: *const NovaScript,
+    out: *mut NovaResult,
+) -> i32 {
+    if script.is_null() {
+        // SAFETY: forwarded contract.
+        return unsafe { refuse(out, NOVA_INVALID, "no script") };
+    }
+    // SAFETY: non-null, from nova_script_compile and live for the call by the
+    // contract; only a shared reference is made, and NovaScript is immutable
+    // and Sync, so other threads reading it meanwhile alias nothing mutably.
+    let script = unsafe { &*script };
+    // SAFETY: forwarded contract.
+    unsafe {
+        with_engine(handle, out, |engine| {
+            engine.evaluate_compiled(&script.script)
+        })
+    }
 }
 
 /// Keeps a private reference to the global function `name`. `*captured` is

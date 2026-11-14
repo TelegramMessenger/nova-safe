@@ -458,3 +458,73 @@ fn the_time_zone_callback_sets_local_time() {
         nova_engine_free(engine);
     }
 }
+
+unsafe extern "C" fn quiet_host(
+    _context: *mut c_void,
+    _id: u32,
+    _args: *const NovaArg,
+    _argc: usize,
+    _ret: *mut NovaReturn,
+) {
+}
+
+#[test]
+fn compiled_scripts_evaluate_in_many_engines() {
+    let source = b"var n = (globalThis.n || 0) + 1; `n=${n}`";
+    let mut out = blank();
+    let script = unsafe { nova_script_compile(source.as_ptr(), source.len(), &mut out) };
+    assert!(!script.is_null());
+    assert_eq!(out.kind, NOVA_VALUE_UNDEFINED);
+    let shared = script as usize;
+    std::thread::scope(|scope| {
+        for _ in 0..3 {
+            scope.spawn(move || unsafe {
+                let script = shared as *const NovaScript;
+                let mut out = blank();
+                let engine =
+                    nova_engine_new(0, 0, Some(quiet_host), None, ptr::null_mut(), &mut out);
+                assert!(!engine.is_null());
+                for expected in ["n=1", "n=2"] {
+                    assert_eq!(nova_engine_eval_script(engine, script, &mut out), NOVA_OK);
+                    assert_eq!(text(&out), expected);
+                    nova_result_free(&mut out);
+                }
+                nova_engine_free(engine);
+            });
+        }
+    });
+    unsafe {
+        assert_eq!(
+            nova_engine_eval_script(ptr::null(), script, &mut out),
+            NOVA_INVALID
+        );
+        nova_result_free(&mut out);
+        let engine = nova_engine_new(0, 0, Some(quiet_host), None, ptr::null_mut(), &mut out);
+        assert_eq!(
+            nova_engine_eval_script(engine, ptr::null(), &mut out),
+            NOVA_INVALID
+        );
+        assert_eq!(text(&out), "no script");
+        nova_result_free(&mut out);
+        nova_engine_free(engine);
+        nova_script_free(script);
+        nova_script_free(ptr::null_mut());
+    }
+}
+
+#[test]
+fn compile_errors_are_reported() {
+    let mut out = blank();
+    unsafe {
+        let script = nova_script_compile(b"let = = 1".as_ptr(), 9, &mut out);
+        assert!(script.is_null());
+        assert!(text(&out).starts_with("SyntaxError: "), "{}", text(&out));
+        nova_result_free(&mut out);
+        let script = nova_script_compile(b"\xff".as_ptr(), 1, &mut out);
+        assert!(script.is_null());
+        assert_eq!(text(&out), "the source is not UTF-8");
+        nova_result_free(&mut out);
+        let script = nova_script_compile(ptr::null(), 3, ptr::null_mut());
+        assert!(script.is_null());
+    }
+}

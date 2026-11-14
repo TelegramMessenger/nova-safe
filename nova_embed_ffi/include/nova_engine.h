@@ -153,6 +153,21 @@ int32_t nova_engine_register(const nova_engine *engine, const uint8_t *name, siz
 int32_t nova_engine_eval(const nova_engine *engine, const uint8_t *source, size_t source_len, bool as_module,
                          nova_result *out);
 
+/* A script compiled once and evaluated by any number of engines without
+ * parsing it again: for the host's own trusted bundles. It is immutable, so
+ * engines on different threads may evaluate the same one at once; it holds no
+ * engine state and cannot be made from bytes. */
+typedef struct nova_script nova_script;
+/* Compiles `source` as a sloppy global script; NULL on failure, with the
+ * reason in `error` (may be NULL): NOVA_EXCEPTION for a SyntaxError (the text
+ * nova_engine_eval gives), NOVA_INVALID for code that cannot be shared between
+ * engines (evaluate the source with nova_engine_eval instead). */
+nova_script *nova_script_compile(const uint8_t *source, size_t source_len, nova_result *error);
+/* Evaluates a compiled script: the same as nova_engine_eval of its source with
+ * as_module false. `script` must not be freed during the call. */
+int32_t nova_engine_eval_script(const nova_engine *engine, const nova_script *script, nova_result *out);
+/* Frees a compiled script (NULL is ignored) once no call uses it. */
+void nova_script_free(nova_script *script);
 /* Keeps a private reference to the global function `name`, which
  * nova_engine_call uses from then on even after the global is deleted.
  * `*captured` (may be NULL) says whether the global was a function. */
