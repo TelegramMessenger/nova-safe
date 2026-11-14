@@ -77,7 +77,7 @@ pub(super) fn execute_simple_array_binding<'a>(
                             let mut iterator = ActiveIterator::new(agent, gc.nogc());
                             let capacity = iterator.remaining_length_estimate(agent).unwrap_or(0);
                             let rest = array_create(agent, 0, capacity, None, gc.nogc())
-                                .unwrap()
+                                .unbind()?
                                 .scope(agent, gc.nogc());
                             let mut idx = 0u32;
                             while let Some(result) = iterator

@@ -702,6 +702,35 @@ fn array_length_growth_respects_the_heap_limit() {
 }
 
 #[test]
+fn infallible_allocations_near_the_heap_limit_do_not_panic() {
+    on_big_stack(|| {
+        let template = format!(
+            "(function (strings) {{ return strings.length + ' ' + strings.raw.length; }})`{}`",
+            "b${1}".repeat(60000)
+        );
+        let rest = "var big = new Array(200000).fill(0); var [first, ...rest] = big; rest.length";
+        for limit in [100_000, 400_000, 1_000_000, 2_500_000] {
+            for source in [template.as_str(), rest] {
+                let mut engine = Engine::new();
+                engine.agent.set_heap_limit(Some(limit));
+                let outcome = engine.run(source, None);
+                assert!(
+                    matches!(
+                        &outcome,
+                        Outcome::Value(_)
+                            | Outcome::Thrown(_)
+                            | Outcome::Terminated(TerminationReason::OutOfMemory)
+                    ),
+                    "{limit}: {outcome:?}"
+                );
+                engine.agent.set_heap_limit(None);
+                engine.assert_usable();
+            }
+        }
+    });
+}
+
+#[test]
 fn interrupt_ends_proxy_prototype_cycles_and_huge_array_likes() {
     let cycle = "var t = {}; var p = new Proxy(t, {}); Object.setPrototypeOf(t, p);";
     assert_interrupted(&format!("{cycle} p instanceof Function"));

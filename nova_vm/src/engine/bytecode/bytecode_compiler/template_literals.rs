@@ -9,12 +9,32 @@ use oxc_ast::ast;
 use super::parsed_string_to_wtf8;
 use crate::{
     ecmascript::{
-        Agent, Array, BUILTIN_STRING_MEMORY, InternalMethods, InternalSlots, OrdinaryObject,
-        String, Value, array_create, unwrap_try,
+        Agent, Array, ArrayHeapData, BUILTIN_STRING_MEMORY, InternalMethods, InternalSlots,
+        OrdinaryObject, String, Value, unwrap_try,
     },
     engine::{Bindable, NoGcScope},
-    heap::{ElementDescriptor, ElementDescriptorMap, ObjectEntry, ObjectEntryPropertyDescriptor},
+    heap::{
+        CreateHeapData, ElementDescriptor, ElementDescriptorMap, ObjectEntry,
+        ObjectEntryPropertyDescriptor,
+    },
 };
+
+/// ArrayCreate(count) for a template object. Unlike `array_create`, a large
+/// count is not checked against the heap limit up front: the compiler has no
+/// way to throw that error, and the parts are bounded by the template's source
+/// text, which is already in memory.
+fn create_template_array<'a>(agent: &mut Agent, len: usize, gc: NoGcScope<'a, '_>) -> Array<'a> {
+    let mut elements = agent
+        .heap
+        .elements
+        .allocate_elements_with_length(len)
+        .expect("template object elements");
+    elements.len = u32::try_from(len).expect("a template has fewer than 2^32 parts");
+    agent.heap.create(ArrayHeapData {
+        object_index: None,
+        elements: elements.bind(gc),
+    })
+}
 
 /// ### [13.2.8.4 GetTemplateObject ( templateLiteral )](https://tc39.es/ecma262/#sec-gettemplateobject)
 ///
@@ -38,9 +58,9 @@ pub(super) fn get_template_object<'a>(
     let len = template_literal.quasis.len();
     debug_assert!(len < 2usize.pow(32));
     // 9. Let template be ! ArrayCreate(count).
-    let template = array_create(agent, len, len, None, gc).unwrap();
+    let template = create_template_array(agent, len, gc);
     // 10. Let rawObj be ! ArrayCreate(count).
-    let raw_obj = array_create(agent, len, len, None, gc).unwrap();
+    let raw_obj = create_template_array(agent, len, gc);
     // 11. Let index be 0.
     // 12. Repeat, while index < count,
 
