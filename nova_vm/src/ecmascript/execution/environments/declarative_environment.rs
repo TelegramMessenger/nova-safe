@@ -12,7 +12,9 @@ use crate::{
         OuterEnv, String, Value,
     },
     engine::{Bindable, NoGcScope},
-    heap::{ArenaAccess, ArenaAccessMut, CompactionLists, HeapMarkAndSweep, WorkQueues},
+    heap::{
+        ArenaAccess, ArenaAccessMut, CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues,
+    },
 };
 
 /// ### [9.1.1.1 Declarative Environment Records](https://tc39.es/ecma262/#sec-declarative-environment-records)
@@ -38,8 +40,47 @@ pub(crate) struct DeclarativeEnvironmentRecord {
 #[derive(Debug, Clone, Default)]
 struct BindingMap {
     entries: Vec<(String<'static>, Binding)>,
-    index: Option<AHashMap<String<'static>, u32>>,
+    index: Option<Box<BindingIndex>>,
     last_found: Cell<u32>,
+}
+
+/// The hash index of a large [`BindingMap`] and a 256-bit filter over its
+/// names. A clear filter bit proves that a name is absent, so a lookup that
+/// misses (a global object name such as `Math` tried against the global
+/// lexical record first) usually skips hashing. Bits are only ever set until
+/// the index is rebuilt, so the filter can claim a name that is gone but
+/// never miss one that is present.
+#[derive(Debug, Clone)]
+struct BindingIndex {
+    map: AHashMap<String<'static>, u32>,
+    filter: [u64; 4],
+}
+
+impl BindingIndex {
+    #[inline]
+    fn filter_bit(name: String<'static>) -> usize {
+        let key = match name {
+            String::String(name) => u64::from(name.get_index_u32()),
+            String::SmallString(name) => {
+                let mut bytes = [0u8; 8];
+                bytes[..7].copy_from_slice(name.data());
+                u64::from_le_bytes(bytes) | (1 << 63)
+            }
+        };
+        (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize
+    }
+
+    #[inline]
+    fn may_contain(&self, name: String<'static>) -> bool {
+        let bit = Self::filter_bit(name);
+        self.filter[bit / 64] & (1 << (bit % 64)) != 0
+    }
+
+    fn insert(&mut self, name: String<'static>, position: u32) {
+        let bit = Self::filter_bit(name);
+        self.filter[bit / 64] |= 1 << (bit % 64);
+        self.map.insert(name, position);
+    }
 }
 
 const LINEAR_BINDINGS: usize = 16;
@@ -61,7 +102,7 @@ impl BindingMap {
     fn bytes(&self) -> usize {
         let entries = self.entries.capacity() * core::mem::size_of::<(String<'static>, Binding)>();
         let index = self.index.as_ref().map_or(0, |index| {
-            index.capacity() * (core::mem::size_of::<(String<'static>, u32)>() + 8)
+            index.map.capacity() * (core::mem::size_of::<(String<'static>, u32)>() + 8)
         });
         entries + index
     }
@@ -78,7 +119,10 @@ impl BindingMap {
             {
                 return Some(last_found);
             }
-            let position = *index.get(&name)?;
+            if !index.may_contain(name) {
+                return None;
+            }
+            let position = *index.map.get(&name)?;
             self.last_found.set(position);
             Some(position as usize)
         } else {
@@ -124,7 +168,7 @@ impl BindingMap {
         };
         self.entries.swap_remove(position);
         if let Some(index) = &mut self.index {
-            index.remove(&name.unbind());
+            index.map.remove(&name.unbind());
             if let Some((moved, _)) = self.entries.get(position) {
                 index.insert(*moved, u32::try_from(position).expect("too many bindings"));
             }
@@ -132,12 +176,16 @@ impl BindingMap {
     }
 
     fn rebuild_index(&mut self) {
-        let mut index = AHashMap::default();
-        index.reserve(self.entries.len());
+        let mut map = AHashMap::default();
+        map.reserve(self.entries.len());
+        let mut index = BindingIndex {
+            map,
+            filter: [0; 4],
+        };
         for (position, (key, _)) in self.entries.iter().enumerate() {
             index.insert(*key, u32::try_from(position).expect("too many bindings"));
         }
-        self.index = Some(index);
+        self.index = Some(Box::new(index));
     }
 }
 
