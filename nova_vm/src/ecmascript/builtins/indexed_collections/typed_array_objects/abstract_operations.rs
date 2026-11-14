@@ -697,7 +697,6 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
 
     // 6. If IsDetachedBuffer(buffer) is true, throw a TypeError exception.
     if buffer.is_detached(agent) {
-        eprintln!("{buffer:?}");
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,
             "attempting to access detached ArrayBuffer",
