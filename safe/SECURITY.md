@@ -6,7 +6,8 @@ file states what protects the process from a hostile script, what is trusted, an
 ## Layers
 
 1. **No memory-unsafe code in the engine.** `nova_vm`, `small_string`, `wtf8`, `regress` (our fork of the regress
-   RegExp engine), `nova_vm_derive` and `nova_embed` carry `#![forbid(unsafe_code)]`; the compiler rejects any
+   RegExp engine), `num-bigint`, `num-traits` and `unicode-normalization` (our forks), `nova_vm_derive` and
+   `nova_embed` carry `#![forbid(unsafe_code)]`; the compiler rejects any
    `unsafe` in them (`nova_vm` only allows it with the opt-in `probes` feature, for DTrace probe macros; release
    builds for the app leave it off). A logic bug in the engine can make a script compute a wrong value, throw, or
    panic; it cannot read or write memory it does not own. `safe/tools/unsafe_report.py` counts what is left: 0.
@@ -26,7 +27,8 @@ file states what protects the process from a hostile script, what is trusted, an
 
 ## What is trusted (the trusted computing base)
 
-- `rustc`/LLVM and Rust's `std` (including `hashbrown`, which is std's own HashMap).
+- `rustc`/LLVM and Rust's `std` (including std's copy of `hashbrown` behind HashMap). The engine no longer uses the
+  `hashbrown` crate directly; its hash tables with caller-supplied hashes are the in-tree `table.rs`.
 - The dependencies listed in `safe/TCB.md` with their `unsafe` counts. The largest is `oxc` (the JavaScript parser),
   which parses script source; its own recursion is bounded by our nesting pre-scan. Replacing or auditing it is the
   biggest remaining item.
@@ -42,6 +44,9 @@ file states what protects the process from a hostile script, what is trusted, an
   hash under random per-map keys for maps keyed by engine handles, per-agent xorshift seeded from OS randomness), and
   in the widget build `temporal_rs` and SharedArrayBuffer/Atomics. A script can collide handle keys only by chance;
   a flood slows only its own Agent, and the CPU limit ends it.
+- `soavec` (in-tree `heap/soa.rs`), the `hashbrown` 0.17 crate and `foldhash` (in-tree `table.rs`), and
+  `unsafe`-free forks of `num-bigint` 0.5, `num-traits` and `unicode-normalization`: every crate with `unsafe` left
+  in the widget build now comes in through oxc (`safe/TCB.md`, "Widget build now").
 - A memory-safety bug was found in the removed `ryu-js`: `(4.2025059341068935e-46).toFixed(65)` returned bytes of an
   uninitialized stack buffer into a script string. Upstream Nova still has it.
 
