@@ -182,10 +182,17 @@ impl NumberPrototype {
     fn to_locale_string<'gc>(
         agent: &mut Agent,
         this_value: Value,
-        arguments: ArgumentsList,
+        _: ArgumentsList,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
-        Self::to_string(agent, this_value, arguments, gc)
+        // Without ECMA-402 the locales and options are ignored: they are not
+        // toString's radix.
+        Self::to_string(
+            agent,
+            this_value,
+            ArgumentsList::from_mut_slice(&mut []),
+            gc,
+        )
     }
 
     /// ### [21.1.3.5 Number.prototype.toPrecision ( precision )](https://tc39.es/ecma262/#sec-number.prototype.toprecision)

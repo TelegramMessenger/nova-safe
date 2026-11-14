@@ -270,6 +270,13 @@ fn regexp_last_index_past_the_safe_integers() {
 }
 
 #[test]
+fn number_to_locale_string_ignores_locales() {
+    let source =
+        r#"var result = [(1234.5).toLocaleString("de"), (12n).toLocaleString("de", {})].join();"#;
+    assert_eq!(run(source, "result", None), "1234.5,12");
+}
+
+#[test]
 fn scripts_with_more_constants_than_16_bit_indices() {
     let count = 70_000;
     let mut source = std::string::String::from("var a = [");
