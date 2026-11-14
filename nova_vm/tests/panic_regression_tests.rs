@@ -204,3 +204,17 @@ fn json_stringify_replacer_key_conversion_throws() {
     "#;
     assert_eq!(run(source, "result", None), "caught no key");
 }
+
+#[test]
+fn unsupported_syntax_throws_a_syntax_error() {
+    let source = r#"
+        var out = [];
+        for (var code of ["class A { accessor x = 1; }", "class B { accessor #x = 1; }", "{ using y = null; }"]) {
+            try { eval(code); out.push("ran"); } catch (e) { out.push(e.constructor.name); }
+        }
+    "#;
+    assert_eq!(
+        run(source, "out.join()", None),
+        "SyntaxError,SyntaxError,SyntaxError"
+    );
+}

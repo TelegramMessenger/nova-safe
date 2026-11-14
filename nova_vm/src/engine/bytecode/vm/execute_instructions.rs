@@ -2371,7 +2371,8 @@ pub(super) fn execute_throw_error<'gc>(
     let exception_type_immediate = instr.get_first_arg();
     let message = String::try_from(vm.result.take().unwrap()).unwrap();
     if exception_type_immediate == crate::engine::bytecode::UNSUPPORTED_SYNTAX_IMMEDIATE {
-        panic!("not yet implemented: {}", message.to_string_lossy_(agent));
+        // Code the compiler does not support compiles to a stub that throws.
+        return Err(agent.throw_exception_with_message(ExceptionType::SyntaxError, message, gc));
     }
 
     let exception_type = ExceptionType::try_from(exception_type_immediate).unwrap();

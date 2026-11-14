@@ -4,6 +4,7 @@
 
 use std::{cell::Cell, collections::hash_map::Entry};
 
+use crate::hashing::{AHashMap, AHashSet};
 use crate::{
     ecmascript::{
         BUILTIN_STRING_MEMORY, CompileFunctionBodyData, ExceptionType, FunctionAstRef,
@@ -16,7 +17,6 @@ use crate::{
         bytecode::{CompileEvaluation, bytecode_compiler::variable_escapes_scope},
     },
 };
-use crate::hashing::{AHashMap, AHashSet};
 use oxc_ast::ast::{self, MethodDefinitionKind};
 use oxc_ecmascript::{BoundNames, PrivateBoundIdentifiers, PropName};
 
@@ -291,7 +291,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                         instance_private_methods.push((dn, &**method));
                     }
                 } else {
-                    unreachable!()
+                    // An auto-accessor (`accessor #x`): not supported, the
+                    // class compiles to code that throws a SyntaxError.
+                    ctx.mark_unsupported("Class auto-accessors are not supported");
+                    continue;
                 }
                 // i. If classPrivateEnvironment.[[Names]] contains a Private
                 //    Name pn such that pn.[[Description]] is dn, then
@@ -525,13 +528,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                         }
                     }
                 }
-                #[cfg(feature = "typescript")]
                 ast::ClassElement::AccessorProperty(_) => {
-                    ctx.mark_unsupported("Class accessor properties are not supported");
+                    ctx.mark_unsupported("Class auto-accessors are not supported");
                     continue;
                 }
-                #[cfg(not(feature = "typescript"))]
-                ast::ClassElement::AccessorProperty(_) => unreachable!(),
                 #[cfg(feature = "typescript")]
                 ast::ClassElement::TSIndexSignature(_) => {
                     ctx.mark_unsupported("TypeScript index signatures are not supported");
