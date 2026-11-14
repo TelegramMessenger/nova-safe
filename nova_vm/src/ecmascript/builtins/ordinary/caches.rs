@@ -48,6 +48,16 @@ impl<'a> Caches<'a> {
         }
     }
 
+    /// Every property lookup cache that `PropertyLookupCache::new` handed
+    /// out, with its property key.
+    pub(crate) fn property_lookup_cache_keys(
+        &self,
+    ) -> impl Iterator<Item = (PropertyLookupCache<'a>, PropertyKey<'a>)> + '_ {
+        self.property_lookup_cache_lookup_table
+            .iter()
+            .map(|(key, cache)| (cache.0, *key))
+    }
+
     /// Invalidate property lookup caches on intrinsic shape property addition.
     ///
     /// When such a additions happens, it means that:

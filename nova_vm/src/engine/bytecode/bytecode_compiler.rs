@@ -38,6 +38,7 @@ use oxc_ast::ast;
 use oxc_ecmascript::BoundNames;
 use oxc_semantic::{NodeId, ScopeFlags, SymbolFlags};
 use oxc_syntax::operator::{BinaryOperator, UnaryOperator};
+pub(crate) use template_literals::create_template_object;
 use template_literals::get_template_object;
 use wtf8::{CodePoint, Wtf8Buf};
 

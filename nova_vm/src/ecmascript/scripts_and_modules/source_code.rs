@@ -142,6 +142,32 @@ impl<'a> SourceCode<'a> {
         ))
     }
 
+    /// The SourceCode that [`SourceCode::parse_source`] makes of a UTF-8
+    /// source text, for a script compiled from the same text in another
+    /// agent: function source spans index into the same string.
+    pub(crate) fn from_source_text(
+        agent: &mut Agent,
+        source_text: &str,
+        gc: NoGcScope<'a, '_>,
+    ) -> Self {
+        let source = match String::from_str(agent, source_text, gc) {
+            String::String(source) => source,
+            String::SmallString(_) => {
+                let data = format!("{source_text}          ");
+                let String::String(source) = String::from_string(agent, data, gc) else {
+                    unreachable!()
+                };
+                source
+            }
+        };
+        agent
+            .heap
+            .create(SourceCodeHeapData {
+                source: source.unbind(),
+            })
+            .bind(gc)
+    }
+
     /// Manually drop a SourceCode.
     ///
     /// ## Correctness

@@ -57,10 +57,6 @@ pub(super) fn get_template_object<'a>(
     // 8. Assert: count ≤ 2**32 - 1.
     let len = template_literal.quasis.len();
     debug_assert!(len < 2usize.pow(32));
-    // 9. Let template be ! ArrayCreate(count).
-    let template = create_template_array(agent, len, gc);
-    // 10. Let rawObj be ! ArrayCreate(count).
-    let raw_obj = create_template_array(agent, len, gc);
     // 11. Let index be 0.
     // 12. Repeat, while index < count,
 
@@ -109,6 +105,23 @@ pub(super) fn get_template_object<'a>(
             .unbind()
             .into();
     }
+    create_template_object(agent, cooked_values, raw_values, gc)
+}
+
+/// The rest of GetTemplateObject: the template object of the given cooked
+/// (strings or undefined) and raw strings.
+pub(crate) fn create_template_object<'a>(
+    agent: &mut Agent,
+    cooked_values: Vec<Value<'static>>,
+    raw_values: Vec<Value<'static>>,
+    gc: NoGcScope<'a, '_>,
+) -> Array<'a> {
+    let len = cooked_values.len();
+    debug_assert_eq!(len, raw_values.len());
+    // 9. Let template be ! ArrayCreate(count).
+    let template = create_template_array(agent, len, gc);
+    // 10. Let rawObj be ! ArrayCreate(count).
+    let raw_obj = create_template_array(agent, len, gc);
     // c. Perform ! DefinePropertyOrThrow(template, prop,
     //    PropertyDescriptor {
     //        [[Value]]: cookedValue, [[Writable]]: false,

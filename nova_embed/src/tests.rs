@@ -797,3 +797,111 @@ fn btoa_past_the_heap_limit_ends_the_script_as_pad_end_does() {
     );
     assert_eq!(btoa, outcomes("s.padEnd(12 << 20)"));
 }
+
+const COMPILED_TRICKY: &str = r#"
+var out = [];
+function f(a, b = 1, ...c) { return a + b; }
+out.push(f.toString(), f.name, f.length);
+const g = function named() {}; out.push(g.name, g.toString(), (() => {}).name);
+class A { #p = 1; static s = 'st'; x = 5; get p() { return this.#p; } #m() { return 2 } m() { return this.#m(); } }
+class B extends A { constructor() { super(); this.y = 3; } z = 7; }
+const b = new B(); out.push(b.p, b.m(), b.x, b.y, b.z, A.s, String(B));
+function tag(s) { return s; }
+function site() { return tag`a${1}b\x`; }
+out.push(site() === site(), site().raw.join('|'), Object.isFrozen(site()));
+function re() { return /a(?<n>b+)c/giu; } out.push(re() === re(), re().flags, re().test('xABBC'));
+out.push(12345678901234567890n, 1e300, "a string longer than seven bytes", ({ __proto__: null, k: 1 }).k);
+var declared = 1; let lexical = 2;
+globalThis.later = () => lexical + declared;
+out.map(String).join('\n')
+"#;
+
+const GLOBALS_FINGERPRINT: &str = "Object.getOwnPropertyNames(globalThis).sort().map((k) => { \
+    const v = globalThis[k]; \
+    return k + ':' + typeof v + (typeof v === 'function' ? ':' + v.name + '/' + v.length + '/' + String(v).length : ''); \
+}).join('\\n')";
+
+fn compare_compiled(source: &str, after: &[&str]) {
+    let compiled = CompiledScript::compile(source).expect("compiles");
+    let (mut parsed, _) = engine();
+    let (mut instantiated, _) = engine();
+    assert_eq!(
+        instantiated.evaluate_compiled(&compiled),
+        parsed.evaluate(source, false)
+    );
+    for script in after {
+        assert_eq!(
+            instantiated.evaluate(script, false),
+            parsed.evaluate(script, false),
+            "{script}"
+        );
+    }
+}
+
+#[test]
+fn compiled_scripts_evaluate_as_their_source() {
+    compare_compiled(
+        COMPILED_TRICKY,
+        &["later()", "lexical", GLOBALS_FINGERPRINT],
+    );
+    compare_compiled("'use strict'; var x = 1; x + 1", &["x"]);
+    compare_compiled("throw new RangeError('at the top')", &["1"]);
+    compare_compiled("", &[]);
+}
+
+#[test]
+fn a_compiled_script_runs_in_many_engines_and_threads() {
+    let compiled = CompiledScript::compile("var n = (globalThis.n || 0) + 1; `n=${n}`").unwrap();
+    let (mut first, _) = engine();
+    for expected in ["n=1", "n=2"] {
+        assert_eq!(
+            first.evaluate_compiled(&compiled),
+            Ok(Completion::String(expected.into()))
+        );
+    }
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                let (mut other, _) = engine();
+                assert_eq!(
+                    other.evaluate_compiled(&compiled),
+                    Ok(Completion::String("n=1".into()))
+                );
+            });
+        }
+    });
+}
+
+#[test]
+fn compile_reports_syntax_errors_as_evaluate_does() {
+    let (mut engine, _) = engine();
+    let compiled = CompiledScript::compile("let = = 1");
+    assert!(compiled.is_err());
+    assert_eq!(compiled.err(), engine.evaluate("let = = 1", false).err());
+}
+
+/// The widget sandbox's bundles, when this checkout sits next to the
+/// Telegram one (or NOVA_WIDGET_JS names their folder).
+fn widget_bundle(name: &str) -> Option<std::string::String> {
+    let folder = std::env::var("NOVA_WIDGET_JS").unwrap_or_else(|_| {
+        "/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox/packages/ios/Sources/WidgetSandbox/WidgetJS".to_owned()
+    });
+    std::fs::read_to_string(std::path::Path::new(&folder).join(name)).ok()
+}
+
+#[test]
+fn compiled_widget_bundles_evaluate_as_their_source() {
+    for name in ["sandbox-bundle.js", "validator-bundle.js"] {
+        let Some(source) = widget_bundle(name) else {
+            eprintln!("skipped: {name} not found");
+            continue;
+        };
+        compare_compiled(
+            &source,
+            &[
+                GLOBALS_FINGERPRINT,
+                "typeof __twDispatch === 'function' ? String(__twDispatch('nothing', '{}')) : 'none'",
+            ],
+        );
+    }
+}
