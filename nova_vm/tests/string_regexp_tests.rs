@@ -92,3 +92,8 @@ fn regexp_to_string() {
 fn regexp_compile() {
     run_test_source("regExpCompile.test.js");
 }
+
+#[test]
+fn regexp_last_index_receiver() {
+    run_test_source("regExpLastIndexReceiver.test.js");
+}

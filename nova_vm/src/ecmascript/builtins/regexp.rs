@@ -10,7 +10,7 @@ pub(crate) use data::*;
 
 use crate::{
     ecmascript::{
-        Agent, JsResult, ProtoIntrinsics, TryResult,
+        Agent, JsResult, ProtoIntrinsics, TryResult, js_result_into_try,
         types::{
             BUILTIN_STRING_MEMORY, InternalMethods, InternalSlots, OrdinaryObject,
             PropertyDescriptor, PropertyKey, SetResult, String, TryGetResult, TryHasResult, Value,
@@ -28,8 +28,9 @@ use crate::{
 use oxc_ast::ast::RegExpFlags;
 
 use super::ordinary::{
-    PropertyLookupCache, ordinary_get_own_property, ordinary_has_property, ordinary_set,
-    ordinary_try_get, ordinary_try_has_property, ordinary_try_set,
+    PropertyLookupCache, ordinary_define_own_property, ordinary_get_own_property,
+    ordinary_has_property, ordinary_set, ordinary_try_get, ordinary_try_has_property,
+    ordinary_try_set,
 };
 
 /// ## [22.2 RegExp (Regular Expression) Objects](https://tc39.es/ecma262/#sec-regexp-regular-expression-objects)
@@ -54,6 +55,12 @@ object_handle!(RegExp);
 arena_vec_access!(RegExp, 'a, RegExpHeapData, regexps);
 
 impl<'a> RegExp<'a> {
+    /// The fast paths for "lastIndex" write this RegExp; [[Set]] with another
+    /// receiver is the ordinary one, which writes the receiver.
+    fn is_receiver(self, receiver: Value) -> bool {
+        matches!(receiver, Value::RegExp(r) if r.unbind() == self.unbind())
+    }
+
     /// Fast-path for RegExp object debug stringifying; this does not take into
     /// account any prototype-modifications.
     #[inline(always)]
@@ -191,6 +198,39 @@ impl<'a> InternalMethods<'a> for RegExp<'a> {
         }
     }
 
+    fn try_define_own_property<'gc>(
+        self,
+        agent: &mut Agent,
+        property_key: PropertyKey,
+        property_descriptor: PropertyDescriptor,
+        cache: Option<PropertyLookupCache>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> TryResult<'gc, bool> {
+        let backing_object = self
+            .get_backing_object(agent)
+            .unwrap_or_else(|| self.create_backing_object(agent));
+        let new_last_index = (property_key == BUILTIN_STRING_MEMORY.lastIndex.into())
+            .then_some(property_descriptor.value)
+            .flatten();
+        let result = js_result_into_try(ordinary_define_own_property(
+            agent,
+            self.into(),
+            backing_object,
+            property_key,
+            property_descriptor,
+            cache,
+            gc,
+        ));
+        // [[Get]] reads lastIndex from the RegExp's own slot first: a define
+        // that changed the value must update it.
+        if let Some(value) = new_last_index
+            && matches!(result, core::ops::ControlFlow::Continue(true))
+        {
+            self.get_mut(agent).last_index = RegExpLastIndex::from_value(value);
+        }
+        result
+    }
+
     fn try_has_property<'gc>(
         self,
         agent: &mut Agent,
@@ -302,7 +342,7 @@ impl<'a> InternalMethods<'a> for RegExp<'a> {
         cache: Option<PropertyLookupCache>,
         gc: NoGcScope<'gc, '_>,
     ) -> TryResult<'gc, SetResult<'gc>> {
-        if property_key == BUILTIN_STRING_MEMORY.lastIndex.into() {
+        if property_key == BUILTIN_STRING_MEMORY.lastIndex.into() && self.is_receiver(receiver) {
             // If we're setting the last index and we have a backing object,
             // then we set the value there first and observe the result.
             let new_last_index = RegExpLastIndex::from_value(value);
@@ -363,7 +403,7 @@ impl<'a> InternalMethods<'a> for RegExp<'a> {
         receiver: Value,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, bool> {
-        if property_key == BUILTIN_STRING_MEMORY.lastIndex.into() {
+        if property_key == BUILTIN_STRING_MEMORY.lastIndex.into() && self.is_receiver(receiver) {
             // Note: lastIndex is an unconfigurable data property: It cannot
             // become a getter or setter and will thus never call into
             // JavaScript.
