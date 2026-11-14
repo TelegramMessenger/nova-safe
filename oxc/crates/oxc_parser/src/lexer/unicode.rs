@@ -396,20 +396,11 @@ impl<'a, C: Config> Lexer<'a, C> {
                             let digit = self.consume_char() as u8 - b'0';
                             value = value * 8 + digit;
 
-                            if value >= 128 {
-                                // `value` is between 128 and 255. UTF-8 representation is:
-                                // 128-191: `0xC2`, followed by code point value.
-                                // 192-255: `0xC3`, followed by code point value - 64.
-                                let bytes = [0xC0 + first_digit, value & 0b1011_1111];
-                                // SAFETY: `bytes` is a valid 2-byte UTF-8 sequence
-                                unsafe { text.push_bytes_unchecked(&bytes) };
-                                return;
-                            }
                         }
                     }
 
-                    // SAFETY: `value` is in range 0 to `((1 * 8) + 7) * 8 + 7` (127) i.e. ASCII
-                    unsafe { text.push_byte_unchecked(value) };
+                    // `value` is at most 0o377: the code point U+0000 to U+00FF.
+                    text.push(char::from(value));
                 }
                 '0' if in_template && self.peek_byte().is_some_and(|b| b.is_ascii_digit()) => {
                     self.consume_char();
