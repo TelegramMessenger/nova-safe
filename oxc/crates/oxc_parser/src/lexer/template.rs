@@ -1,4 +1,4 @@
-use std::{cmp::max, str};
+use std::cmp::max;
 
 use oxc_allocator::StringBuilder;
 
@@ -49,15 +49,12 @@ impl<'a, C: Config> Lexer<'a, C> {
             continue_if: (next_byte, pos) {
                 match next_byte {
                     b'$' => {
-                        // SAFETY: Next byte is `$` which is ASCII, so after it is a UTF-8 char boundary
-                        let after_dollar = unsafe { pos.add(1) };
+                        let after_dollar = pos.add(1);
                         if after_dollar.is_not_end_of(&self.source) {
                             // If `${`, exit.
-                            // SAFETY: Have checked there's at least 1 further byte to read.
-                            if unsafe { after_dollar.read() } == b'{' {
+                            if after_dollar.read() == b'{' {
                                 // Skip `${` and stop searching.
-                                // SAFETY: Consuming `${` leaves `pos` on a UTF-8 char boundary.
-                                pos = unsafe { pos.add(2) };
+                                pos = pos.add(2);
                                 false
                             } else {
                                 // Not `${`. Continue searching.
@@ -71,22 +68,17 @@ impl<'a, C: Config> Lexer<'a, C> {
                     },
                     b'`' => {
                         // Skip '`' and stop searching.
-                        // SAFETY: Char at `pos` is '`', so `pos + 1` is a UTF-8 char boundary.
-                        pos = unsafe { pos.add(1) };
+                        pos = pos.add(1);
                         ret = tail;
                         false
                     },
                     b'\r' => {
-                        // SAFETY: Byte at `pos` is `\r`.
-                        // `pos` has only been advanced relative to `self.source.position()`.
-                        return unsafe { self.template_literal_carriage_return(pos, substitute, tail) };
+                        return self.template_literal_carriage_return(pos, substitute, tail);
                     }
                     _ => {
                         // `TEMPLATE_LITERAL_TABLE` only matches `$`, '`', `\r` and `\`
                         debug_assert!(next_byte == b'\\');
-                        // SAFETY: Byte at `pos` is `\`.
-                        // `pos` has only been advanced relative to `self.source.position()`.
-                        return unsafe { self.template_literal_backslash(pos, substitute, tail) };
+                        return self.template_literal_backslash(pos, substitute, tail);
                     }
                 }
             },
@@ -101,22 +93,19 @@ impl<'a, C: Config> Lexer<'a, C> {
 
     /// Consume rest of template literal after a `\r` is found.
     ///
-    /// # SAFETY
     /// * Byte at `pos` must be `\r`.
     /// * `pos` must not be before `self.source.position()`.
-    unsafe fn template_literal_carriage_return(
+    fn template_literal_carriage_return(
         &mut self,
         mut pos: SourcePosition<'a>,
         substitute: Kind,
         tail: Kind,
     ) -> Kind {
         // Create arena string to hold modified template literal, containing up to before `\r`.
-        // SAFETY: Caller guarantees `pos` is not before `self.source.position()`.
-        let mut str = unsafe { self.template_literal_create_string(pos) };
+        let mut str = self.template_literal_create_string(pos);
 
         // Skip `\r`.
-        // SAFETY: Caller guarantees byte at `pos` is `\r`, so `pos + 1` is a UTF-8 char boundary.
-        pos = unsafe { pos.add(1) };
+        pos = pos.add(1);
 
         // If at EOF, exit. This illegal in valid JS, so cold branch.
         if pos.is_end_of(&self.source) {
@@ -131,15 +120,13 @@ impl<'a, C: Config> Lexer<'a, C> {
         let chunk_start = pos;
 
         // Either `\r` alone or `\r\n` needs to be converted to `\n`.
-        // SAFETY: Have checked not at EOF.
-        if unsafe { pos.read() } == b'\n' {
+        if pos.read() == b'\n' {
             // We have `\r\n`.
             // Start next search after the `\n`.
             // `chunk_start` is before the `\n`, so no need to push an `\n` to `str` here.
             // The `\n` is first char of next chunk, so it'll get pushed to `str` later on
             // when that next chunk is pushed.
-            // SAFETY: `\n` is ASCII, so advancing past it leaves `pos` on a UTF-8 char boundary.
-            pos = unsafe { pos.add(1) };
+            pos = pos.add(1);
         } else {
             // We have a lone `\r`.
             // Convert it to `\n` by pushing an `\n` to `str`.
@@ -148,29 +135,25 @@ impl<'a, C: Config> Lexer<'a, C> {
             str.push('\n');
         }
 
-        // SAFETY: `chunk_start` is not after `pos`
-        unsafe { self.template_literal_escaped(str, pos, chunk_start, true, substitute, tail) }
+        self.template_literal_escaped(str, pos, chunk_start, true, substitute, tail)
     }
 
     /// Consume rest of template literal after a `\` escape is found.
     ///
-    /// # SAFETY
     /// * Byte at `pos` must be `\`.
     /// * `pos` must not be before `self.source.position()`.
-    unsafe fn template_literal_backslash(
+    fn template_literal_backslash(
         &mut self,
         pos: SourcePosition<'a>,
         substitute: Kind,
         tail: Kind,
     ) -> Kind {
         // Create arena string to hold modified template literal, containing up to before `\`.
-        // SAFETY: Caller guarantees `pos` is not before `self.source.position()`.
-        let mut str = unsafe { self.template_literal_create_string(pos) };
+        let mut str = self.template_literal_create_string(pos);
 
         // Decode escape sequence into `str`.
         // `read_string_escape_sequence` expects `self.source` to be positioned after `\`.
-        // SAFETY: Caller guarantees next byte is `\`, which is ASCII, so `pos + 1` is UTF-8 char boundary.
-        let after_backslash = unsafe { pos.add(1) };
+        let after_backslash = pos.add(1);
         self.source.set_position(after_backslash);
 
         let mut is_valid_escape_sequence = true;
@@ -178,29 +161,24 @@ impl<'a, C: Config> Lexer<'a, C> {
 
         // Continue search after escape
         let after_escape = self.source.position();
-        // SAFETY: `pos` and `chunk_start` are the same
-        unsafe {
-            self.template_literal_escaped(
-                str,
-                after_escape,
-                after_escape,
-                is_valid_escape_sequence,
-                substitute,
-                tail,
-            )
-        }
+        self.template_literal_escaped(
+            str,
+            after_escape,
+            after_escape,
+            is_valid_escape_sequence,
+            substitute,
+            tail,
+        )
     }
 
     /// Create arena string for modified template literal, containing the template literal up to `pos`.
     ///
-    /// # SAFETY
     /// `pos` must not be before `self.source.position()`
-    unsafe fn template_literal_create_string(&self, pos: SourcePosition<'a>) -> StringBuilder<'a> {
+    fn template_literal_create_string(&self, pos: SourcePosition<'a>) -> StringBuilder<'a> {
         // Create arena string to hold modified template literal.
         // We don't know how long template literal will end up being. Take a guess that total length
         // will be double what we've seen so far, or `MIN_ESCAPED_TEMPLATE_LIT_LEN` minimum.
-        // SAFETY: Caller guarantees `pos` is not before `self.source.position()`.
-        let so_far = unsafe { self.source.str_from_current_to_pos_unchecked(pos) };
+        let so_far = self.source.str_from_current_to_pos(pos);
         let capacity = max(so_far.len() * 2, MIN_ESCAPED_TEMPLATE_LIT_LEN);
         let mut str = StringBuilder::with_capacity_in(capacity, self.allocator);
         str.push_str(so_far);
@@ -209,9 +187,8 @@ impl<'a, C: Config> Lexer<'a, C> {
 
     /// Process template literal after `\r` or `\` found.
     ///
-    /// # SAFETY
     /// `chunk_start` must not be after `pos`.
-    unsafe fn template_literal_escaped(
+    fn template_literal_escaped(
         &mut self,
         mut str: StringBuilder<'a>,
         pos: SourcePosition<'a>,
@@ -228,23 +205,16 @@ impl<'a, C: Config> Lexer<'a, C> {
             start: pos,
             continue_if: (next_byte, pos) {
                 if next_byte == b'$' {
-                    // SAFETY: Next byte is `$` which is ASCII, so after it is a UTF-8 char boundary
-                    let after_dollar = unsafe {pos.add(1)};
+                    let after_dollar = pos.add(1);
                     if after_dollar.is_not_end_of(&self.source) {
                         // If `${`, exit.
-                        // SAFETY: Have checked there's at least 1 further byte to read.
-                        if unsafe {after_dollar.read()} == b'{' {
+                        if after_dollar.read() == b'{' {
                             // Add last chunk to `str`.
-                            // SAFETY: Caller guarantees `chunk_start` is not after `pos` at start of
-                            // this function. `pos` only increases during searching.
-                            // Where `chunk_start` is updated, it's always before or equal to `pos`.
-                            // So `chunk_start` cannot be after `pos`.
-                            let chunk = unsafe {self.source.str_between_positions_unchecked(chunk_start, pos)};
+                            let chunk = self.source.str_between_positions(chunk_start, pos);
                             str.push_str(chunk);
 
                             // Skip `${` and stop searching.
-                            // SAFETY: Consuming `${` leaves `pos` on a UTF-8 char boundary.
-                            pos = unsafe {pos.add(2)};
+                            pos = pos.add(2);
                             false
                         } else {
                             // Not `${`. Continue searching.
@@ -258,33 +228,23 @@ impl<'a, C: Config> Lexer<'a, C> {
                 } else {
                     // Next byte is '`', `\r`, `\`, or first byte of lossy replacement character.
                     // Add chunk up to before this char to `str`.
-                    // SAFETY: Caller guarantees `chunk_start` is not after `pos` at start of
-                    // this function. `pos` only increases during searching.
-                    // Where `chunk_start` is updated, it's always before or equal to `pos`.
-                    // So `chunk_start` cannot be after `pos`.
-                    let chunk = unsafe {self.source.str_between_positions_unchecked(chunk_start, pos)};
+                    let chunk = self.source.str_between_positions(chunk_start, pos);
                     str.push_str(chunk);
 
                     match next_byte {
                         b'`' => {
                             // Skip '`' and stop searching.
-                            // SAFETY: Byte at `pos` is '`' (ASCII), so `pos + 1` is a UTF-8 char boundary.
-                            pos = unsafe {pos.add(1)};
+                            pos = pos.add(1);
                             ret = tail;
                             false
                         }
                         b'\r' => {
                             // Set next chunk to start after `\r`.
-                            // SAFETY: Next byte is `\r` which is ASCII, so after it is a UTF-8 char boundary.
-                            // This temporarily puts `chunk_start` 1 byte after `pos`, but `byte_search!` macro
-                            // increments `pos` when return `true` from `continue_if`, so `pos` will be
-                            // brought up to `chunk_start` again.
-                            chunk_start = unsafe {pos.add(1)};
+                            chunk_start = pos.add(1);
 
                             if chunk_start.is_not_end_of(&self.source) {
                                 // Either `\r` alone or `\r\n` needs to be converted to `\n`.
-                                // SAFETY: Have checked not at EOF.
-                                if unsafe {chunk_start.read()} == b'\n' {
+                                if chunk_start.read() == b'\n' {
                                     // We have `\r\n`.
                                     // Start next search after the `\n`.
                                     // `chunk_start` is before the `\n`, so no need to push an `\n`
@@ -315,8 +275,7 @@ impl<'a, C: Config> Lexer<'a, C> {
                         b'\\' => {
                             // Decode escape sequence into `str`.
                             // `read_string_escape_sequence` expects `self.source` to be positioned after `\`.
-                            // SAFETY: Next byte is `\`, which is ASCII, so `pos + 1` is UTF-8 char boundary.
-                            let after_backslash = unsafe {pos.add(1)};
+                            let after_backslash = pos.add(1);
                             self.source.set_position(after_backslash);
                             self.read_string_escape_sequence(&mut str, true, &mut is_valid_escape_sequence);
 
@@ -327,9 +286,7 @@ impl<'a, C: Config> Lexer<'a, C> {
                             // Continue search after escape sequence.
                             // NB: `byte_search!` macro increments `pos` when return `true`,
                             // so need to subtract 1 here to counteract that.
-                            // SAFETY: Added 1 to `pos` above, and checked `chunk_start` hasn't moved
-                            // backwards from that, so subtracting 1 again is within bounds.
-                            pos = unsafe {chunk_start.sub(1)};
+                            pos = chunk_start.sub(1);
 
                             // Continue searching
                             true
@@ -339,34 +296,20 @@ impl<'a, C: Config> Lexer<'a, C> {
                             // or first byte of lossy replacement character
                             debug_assert!(next_byte == LOSSY_REPLACEMENT_CHAR_FIRST_BYTE);
 
-                            // SAFETY: 0xEF is always first byte of a 3-byte UTF-8 character,
-                            // so there must be 2 more bytes to read
-                            let next2 = unsafe { pos.add(1).read2() };
+                            let next2 = pos.add(1).read2();
                             if next2 == [LOSSY_REPLACEMENT_CHAR_BYTES[1], LOSSY_REPLACEMENT_CHAR_BYTES[2]]
                                 && self.token.lone_surrogates()
                             {
                                 str.push_str("\u{FFFD}fffd");
                             } else {
-                                let bytes = [LOSSY_REPLACEMENT_CHAR_FIRST_BYTE, next2[0], next2[1]];
-                                // SAFETY: 0xEF is always first byte of a 3-byte UTF-8 character,
-                                // so these 3 bytes must comprise a valid UTF-8 string
-                                let s = unsafe { str::from_utf8_unchecked(&bytes) };
-                                str.push_str(s);
+                                str.push_str(self.source.str_between_positions(pos, pos.add(3)));
                             }
 
                             // Advance past this character.
-                            // SAFETY: Character is 3 bytes, so `pos + 2` is in bounds.
-                            // Note: `byte_search!` macro already advances `pos` by 1, so only
-                            // advance by 2 here, so that in total we skip 3 bytes.
-                            pos = unsafe { pos.add(2) };
+                            pos = pos.add(2);
 
                             // Set next chunk to start after this character.
-                            // SAFETY: It's a 3 byte character, and we added 2 to `pos` above,
-                            // so `pos + 1` must be a UTF-8 char boundary.
-                            // This temporarily puts `chunk_start` 1 byte after `pos`, but `byte_search!` macro
-                            // increments `pos` when return `true` from `continue_if`, so `pos` will be
-                            // brought up to `chunk_start` again.
-                            chunk_start = unsafe { pos.add(1) };
+                            chunk_start = pos.add(1);
 
                             // Continue searching
                             true

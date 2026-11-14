@@ -43,7 +43,6 @@ static SINGLE_QUOTE_ESCAPED_MATCH_TABLE: SafeByteMatchTable = safe_byte_match_ta
 
 /// Macro to handle a string literal.
 ///
-/// # SAFETY
 /// `$delimiter` must be an ASCII byte.
 /// Next char in `lexer.source` must be ASCII.
 /// `$table` must be a `SafeByteMatchTable`.
@@ -53,12 +52,10 @@ macro_rules! handle_string_literal {
         debug_assert!($delimiter.is_ascii());
 
         if $lexer.context == LexerContext::JsxAttributeValue {
-            // SAFETY: Caller guarantees `$delimiter` is ASCII, and next char is ASCII
             return $lexer.read_jsx_string_literal($delimiter);
         }
 
         // Skip opening quote.
-        // SAFETY: Caller guarantees next byte is ASCII, so safe to advance past it.
         let after_opening_quote = $lexer.source.position().add(1);
 
         // Consume bytes which are part of string
@@ -76,9 +73,7 @@ macro_rules! handle_string_literal {
         // Either end of string found, or a line break, or `\` escape.
         match next_byte {
             $delimiter => {
-                // SAFETY: Macro user guarantees delimiter is ASCII, so consuming it cannot move
-                // `lexer.source` off a UTF-8 character boundary.
-                $lexer.source.next_byte_unchecked();
+                $lexer.source.next_byte();
                 Kind::Str
             }
             b'\\' => cold_branch(|| {
@@ -132,12 +127,10 @@ macro_rules! handle_string_literal_escape {
             while let Some(b) = $lexer.peek_byte() {
                 match b {
                     b if !$table.matches(b) => {
-                        // SAFETY: A byte is available, as we just peeked it.
-                        // This may put `source`'s position on a UTF-8 continuation byte, which violates
-                        // `Source`'s invariant temporarily, but the guarantees of `SafeByteMatchTable`
-                        // mean `!table.matches(b)` on this branch prevents exiting this loop until
-                        // `source` is positioned on a UTF-8 character boundary again.
-                        $lexer.source.next_byte_unchecked();
+                        // This may put `source`'s position on a UTF-8 continuation byte, but the
+                        // guarantees of `SafeByteMatchTable` mean `!table.matches(b)` on this branch
+                        // prevents exiting this loop until `source` is on a character boundary again.
+                        $lexer.source.next_byte();
                     }
                     b if b == $delimiter => {
                         // End of string found. Push last chunk to `str`.
@@ -145,9 +138,7 @@ macro_rules! handle_string_literal_escape {
                         str.push_str(chunk);
 
                         // Consume closing quote.
-                        // SAFETY: Caller guarantees delimiter is ASCII, so consuming it cannot move
-                        // `lexer.source` off a UTF-8 character boundary
-                        $lexer.source.next_byte_unchecked();
+                        $lexer.source.next_byte();
                         break 'outer;
                     }
                     b'\\' => {
@@ -163,11 +154,10 @@ macro_rules! handle_string_literal_escape {
                         // Output it as `\u{FFFD}fffd`.
                         // Cold branch because this should be very rare in real-world code.
 
-                        // SAFETY: A byte is available, as we just peeked it, and it's 0xEF.
-                        // 0xEF is always 1st byte of a 3-byte Unicode sequence, so safe to consume 3 bytes.
-                        $lexer.source.next_byte_unchecked();
-                        let next1 = $lexer.source.next_byte_unchecked();
-                        let next2 = $lexer.source.next_byte_unchecked();
+                        // 0xEF is always 1st byte of a 3-byte Unicode sequence.
+                        $lexer.source.next_byte();
+                        let next1 = $lexer.source.next_byte();
+                        let next2 = $lexer.source.next_byte();
                         if $lexer.token.lone_surrogates()
                             && [next1, next2] == [LOSSY_REPLACEMENT_CHAR_BYTES[1], LOSSY_REPLACEMENT_CHAR_BYTES[2]]
                         {
@@ -204,35 +194,25 @@ macro_rules! handle_string_literal_escape {
 /// 12.9.4 String Literals
 impl<'a, C: Config> Lexer<'a, C> {
     /// Read string literal delimited with `"`.
-    /// # SAFETY
     /// Next character must be `"`.
-    pub(super) unsafe fn read_string_literal_double_quote(&mut self) -> Kind {
-        // SAFETY: Caller guarantees next char is `"`, which is ASCII.
-        // b'"' is an ASCII byte. `DOUBLE_QUOTE_STRING_END_TABLE` is a `SafeByteMatchTable`.
-        unsafe {
-            handle_string_literal!(
-                self,
-                b'"',
-                DOUBLE_QUOTE_STRING_END_TABLE,
-                DOUBLE_QUOTE_ESCAPED_MATCH_TABLE
-            )
-        }
+    pub(super) fn read_string_literal_double_quote(&mut self) -> Kind {
+        handle_string_literal!(
+            self,
+            b'"',
+            DOUBLE_QUOTE_STRING_END_TABLE,
+            DOUBLE_QUOTE_ESCAPED_MATCH_TABLE
+        )
     }
 
     /// Read string literal delimited with `'`.
-    /// # SAFETY
     /// Next character must be `'`.
-    pub(super) unsafe fn read_string_literal_single_quote(&mut self) -> Kind {
-        // SAFETY: Caller guarantees next char is `'`, which is ASCII.
-        // b'\'' is an ASCII byte. `SINGLE_QUOTE_STRING_END_TABLE` is a `SafeByteMatchTable`.
-        unsafe {
-            handle_string_literal!(
-                self,
-                b'\'',
-                SINGLE_QUOTE_STRING_END_TABLE,
-                SINGLE_QUOTE_ESCAPED_MATCH_TABLE
-            )
-        }
+    pub(super) fn read_string_literal_single_quote(&mut self) -> Kind {
+        handle_string_literal!(
+            self,
+            b'\'',
+            SINGLE_QUOTE_STRING_END_TABLE,
+            SINGLE_QUOTE_ESCAPED_MATCH_TABLE
+        )
     }
 
     /// Save the string if it is escaped

@@ -106,9 +106,6 @@ pub struct Lexer<'a, C: Config> {
     /// `None` is saved when the string contains an invalid escape sequence.
     pub escaped_templates: FxHashMap<u32, Option<&'a str>>,
 
-    /// `memchr` Finder for end of multi-line comments. Created lazily when first used.
-    multi_line_comment_end_finder: Option<memchr::memmem::Finder<'static>>,
-
     /// Collected tokens in source order.
     tokens: ArenaVec<'a, Token>,
 
@@ -160,7 +157,6 @@ impl<'a, C: Config> Lexer<'a, C> {
             trivia_builder: TriviaBuilder::default(),
             escaped_strings: FxHashMap::default(),
             escaped_templates: FxHashMap::default(),
-            multi_line_comment_end_finder: None,
             tokens,
             config,
         }
@@ -258,8 +254,7 @@ impl<'a, C: Config> Lexer<'a, C> {
         // HashbangComment ::
         //     `#!` SingleLineCommentChars?
         if let Some([b'#', b'!']) = self.peek_2_bytes() {
-            // SAFETY: Next 2 bytes are `#!`
-            let kind = unsafe { self.read_hashbang_comment() };
+            let kind = self.read_hashbang_comment();
             // Hashbangs are not included in tokens
             self.finish_next_inner(kind, FinishTokenMode::Discard)
         } else {
@@ -460,8 +455,7 @@ impl<'a, C: Config> Lexer<'a, C> {
         // TODO: can be replaced by `std::ascii:Char` once stabilized.
         // https://github.com/rust-lang/rust/issues/110998
         assert!(b.is_ascii());
-        // SAFETY: `b` is a valid ASCII char.
-        unsafe { self.source.advance_if_ascii_eq(b) }
+        self.source.advance_if_ascii_eq(b)
     }
 
     fn current_offset(&self) -> Span {
@@ -491,31 +485,25 @@ impl<'a, C: Config> Lexer<'a, C> {
             // Can only do this if there are at least 2 bytes left in source.
             // If there aren't 2 bytes left, delegate to `read_next_token_at_end` (cold branch).
             let mut pos = self.source.position();
-            // SAFETY: `source.end()` is always equal to or after `source.position()`
-            let remaining_bytes = unsafe { end_pos.offset_from(pos) };
+            let remaining_bytes = end_pos.offset_from(pos);
             if remaining_bytes >= 2 {
                 // Read next byte.
-                // SAFETY: There are at least 2 bytes remaining in source.
-                let byte = unsafe { pos.read() };
+                let byte = pos.read();
 
                 // If next byte is a space, advance by 1 byte.
                 // Do this with maths, instead of a branch.
                 let is_space = byte == b' ';
-                // SAFETY: There are at least 2 bytes remaining in source, so advancing 1 byte cannot be out of bounds
-                pos = unsafe { pos.add(usize::from(is_space)) };
+                pos = pos.add(usize::from(is_space));
                 self.source.set_position(pos);
 
                 // Read next byte again, in case we skipped a space.
-                // SAFETY: We checked above that there were at least 2 bytes to read,
-                // and we skipped a maximum of 1 byte, so there's still at least 1 byte left to read.
-                let byte = unsafe { pos.read() };
+                let byte = pos.read();
 
                 // Set token start
                 let offset = self.source.offset_of(pos);
                 self.token.set_start(offset);
 
-                // SAFETY: `byte` is byte value at current position in source
-                let kind = unsafe { self.handle_byte(byte) };
+                let kind = self.handle_byte(byte);
                 if kind != Kind::Skip {
                     return kind;
                 }
@@ -535,8 +523,7 @@ impl<'a, C: Config> Lexer<'a, C> {
         self.token.set_start(offset);
 
         if let Some(byte) = self.peek_byte() {
-            // SAFETY: `byte` is byte value at current position in source
-            let kind = unsafe { self.handle_byte(byte) };
+            let kind = self.handle_byte(byte);
             if kind != Kind::Skip {
                 return kind;
             }

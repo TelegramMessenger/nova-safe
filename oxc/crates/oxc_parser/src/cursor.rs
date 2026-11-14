@@ -53,20 +53,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
     #[inline]
     pub(crate) fn token_source(&self, token: &Token) -> &'a str {
         let span = token.span();
-        if cfg!(debug_assertions) {
-            &self.source_text[span.start as usize..span.end as usize]
-        } else {
-            // SAFETY:
-            // Span comes from the lexer, which ensures:
-            // * `start` and `end` are in bounds of source text.
-            // * `end >= start`.
-            // * `start` and `end` are both on UTF-8 char boundaries.
-            // * `self.source_text` is same text that `Token`s are generated from.
-            //
-            // TODO: I (@overlookmotel) don't think we should really be doing this.
-            // We don't have static guarantees of these properties.
-            unsafe { self.source_text.get_unchecked(span.start as usize..span.end as usize) }
-        }
+        &self.source_text[span.start as usize..span.end as usize]
     }
 
     /// Get current string

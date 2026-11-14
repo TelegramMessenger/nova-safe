@@ -1,7 +1,6 @@
 use std::{
     fmt::{self, Debug, Display},
     iter,
-    mem::{self, MaybeUninit},
     num::NonZeroU16,
 };
 
@@ -60,19 +59,15 @@ mod modifiers {
         /// Bitfield of which modifier kinds are present.
         kinds: ModifierKinds,
         /// Start offset for each modifier, indexed by `ModifierKind` discriminant.
-        /// Entries whose corresponding bit is set in `kinds` are initialized, other entries may not be.
-        /// Therefore it is only safe to assume that `offsets[kind as usize]` is initialized if `kinds.contains(kind)`.
-        offsets: [MaybeUninit<u32>; ModifierKind::VARIANTS.len()],
+        /// Only entries whose corresponding bit is set in `kinds` are meaningful; others are 0.
+        offsets: [u32; ModifierKind::VARIANTS.len()],
     }
 
     impl Modifiers {
         /// Create an empty set of modifiers.
         #[inline]
         pub const fn empty() -> Self {
-            Self {
-                kinds: ModifierKinds::none(),
-                offsets: [MaybeUninit::uninit(); ModifierKind::VARIANTS.len()],
-            }
+            Self { kinds: ModifierKinds::none(), offsets: [0; ModifierKind::VARIANTS.len()] }
         }
 
         /// Create a set of modifiers from a single modifier.
@@ -88,7 +83,7 @@ mod modifiers {
         #[inline]
         pub(super) const fn add(&mut self, kind: ModifierKind, start: u32) {
             self.kinds = self.kinds.with(kind);
-            self.offsets[kind as usize] = MaybeUninit::new(start);
+            self.offsets[kind as usize] = start;
         }
 
         #[inline]
@@ -106,10 +101,7 @@ mod modifiers {
         /// Order follows discriminant order (not source order).
         pub fn iter(&self) -> impl Iterator<Item = Modifier> {
             self.kinds.iter().map(|kind| {
-                // SAFETY: Bits in `kinds` are set and the corresponding offset in `offsets` are initialized together
-                // (in `add` method). `kinds.iter()` only yields kinds whose bit is set. So `offsets[kind as usize]`
-                // must be initialized.
-                let start = unsafe { self.offsets[kind as usize].assume_init() };
+                let start = self.offsets[kind as usize];
                 Modifier::new(start, kind)
             })
         }
@@ -117,9 +109,7 @@ mod modifiers {
         /// Look up a specific modifier by [`ModifierKind`].
         pub fn get(&self, kind: ModifierKind) -> Option<Modifier> {
             if self.kinds.contains(kind) {
-                // SAFETY: Bits in `kinds` are set and the corresponding offset in `offsets` are initialized together
-                // (in `add` method). Here, bit for `kind` is set, so `offsets[kind as usize]` must be initialized.
-                let start = unsafe { self.offsets[kind as usize].assume_init() };
+                let start = self.offsets[kind as usize];
                 Some(Modifier::new(start, kind))
             } else {
                 None
@@ -219,18 +209,19 @@ static MODIFIER_LENGTHS: [u8; ModifierKind::VARIANTS.len()] = {
 };
 
 impl ModifierKind {
-    /// Convert `usize` to [`ModifierKind`] without checks.
+    /// Convert a discriminant to [`ModifierKind`].
     ///
-    /// # SAFETY
-    /// `value` must be a valid discriminant for [`ModifierKind`].
+    /// Panics if `value` is not a discriminant of [`ModifierKind`].
     #[inline]
-    unsafe fn from_usize_unchecked(value: usize) -> Self {
-        debug_assert!(Self::VARIANTS.iter().any(|&kind| kind as usize == value));
-        // SAFETY: Caller guarantees `value` is a valid discriminant for `ModifierKind`
-        #[expect(clippy::cast_possible_truncation)]
-        unsafe {
-            mem::transmute::<u8, Self>(value as u8)
-        }
+    fn from_usize(value: usize) -> Self {
+        const _: () = {
+            let mut i = 0;
+            while i < ModifierKind::VARIANTS.len() {
+                assert!(ModifierKind::VARIANTS[i] as usize == i);
+                i += 1;
+            }
+        };
+        Self::VARIANTS[value]
     }
 
     /// Get this modifier keyword.
@@ -387,8 +378,7 @@ mod modifier_kinds {
                 // Unset the bit
                 remaining &= remaining - 1;
 
-                // SAFETY: All other methods ensure that only bits for valid `ModifierKind`s are set
-                let kind = unsafe { ModifierKind::from_usize_unchecked(bit as usize) };
+                let kind = ModifierKind::from_usize(bit as usize);
                 Some(kind)
             })
         }

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Oxc Parser for JavaScript and TypeScript
 //!
 //! Oxc's [`Parser`] has full support for
@@ -887,57 +888,10 @@ mod test {
     #[cfg(not(miri))]
     #[test]
     fn overlong_source() {
-        use std::{
-            alloc::{self, Layout},
-            ptr::NonNull,
-            slice, str,
-        };
-
-        /// A string that has a length of `MAX_LEN + 1`, and is entirely zeros.
-        ///
-        /// We need to create a `&str` with `MAX_LEN + 1` length, but don't want to write 4 GiB of data,
-        /// as it's too slow. This type uses `alloc_zeroed` which on most platforms will just create zeroed pages
-        /// without actually writing any data, and so is much faster.
-        struct ZeroedString {
-            ptr: NonNull<u8>,
-        }
-
-        impl ZeroedString {
-            const LEN: usize = MAX_LEN + 1;
-            const PAGE_SIZE: usize = 4096;
-            const LAYOUT: Layout = match Layout::from_size_align(Self::LEN, Self::PAGE_SIZE) {
-                Ok(layout) => layout,
-                Err(_) => panic!("Failed to create layout"),
-            };
-
-            fn new() -> Self {
-                // SAFETY: `LAYOUT` is valid and non-zero size.
-                let ptr = unsafe { alloc::alloc_zeroed(Self::LAYOUT) };
-                let Some(ptr) = NonNull::new(ptr) else {
-                    panic!("Failed to allocate {} bytes", Self::LEN);
-                };
-                Self { ptr }
-            }
-
-            fn as_str(&self) -> &str {
-                // SAFETY: `self.ptr` is pointer to start of `LEN` initialized and zeroed bytes.
-                // A slice consisting entirely of zeros is valid UTF-8.
-                unsafe {
-                    str::from_utf8_unchecked(slice::from_raw_parts(self.ptr.as_ptr(), Self::LEN))
-                }
-            }
-        }
-
-        impl Drop for ZeroedString {
-            fn drop(&mut self) {
-                // SAFETY: `self.ptr` is address of an allocation made with `LAYOUT`
-                unsafe { alloc::dealloc(self.ptr.as_ptr(), Self::LAYOUT) };
-            }
-        }
-
-        // Create long source text (MAX_LEN + 1 bytes)
-        let zeroed_string = ZeroedString::new();
-        let source_text = zeroed_string.as_str();
+        // Create long source text (MAX_LEN + 1 bytes). `vec!` of zeros asks the allocator for
+        // zeroed pages, and a string of zeros is valid UTF-8.
+        let source_text = String::from_utf8(vec![0u8; MAX_LEN + 1]).unwrap();
+        let source_text = source_text.as_str();
 
         // Attempt to parse the source text
         let allocator = Allocator::default();

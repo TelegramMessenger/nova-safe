@@ -27,9 +27,7 @@ pub fn parse_int(s: &str, kind: Kind, has_sep: bool) -> Result<f64, &'static str
             // Octals always begin with `0`. Trim off leading `0`, `0o` or `0O`.
             let second_byte = s.as_bytes()[1];
             let s = if second_byte == b'o' || second_byte == b'O' {
-                // SAFETY: We just checked that 2nd byte is ASCII, so slicing off 2 bytes
-                // must be in bounds and on a UTF-8 character boundary.
-                unsafe { s.get_unchecked(2..) }
+                &s[2..]
             } else {
                 &s[1..] // legacy octal
             };

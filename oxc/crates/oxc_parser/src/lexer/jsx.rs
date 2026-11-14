@@ -1,5 +1,3 @@
-use memchr::memchr;
-
 use oxc_span::Span;
 use oxc_syntax::identifier::is_identifier_part;
 
@@ -28,22 +26,18 @@ static JSX_CHILD_END_TABLE: SafeByteMatchTable =
 ///   `SourceCharacter` but not one of `HTMLCharacterReference`
 impl<C: Config> Lexer<'_, C> {
     /// Read JSX string literal.
-    /// # SAFETY
     /// * `delimiter` must be an ASCII character.
     /// * Next char in `lexer.source` must be ASCII.
-    pub(super) unsafe fn read_jsx_string_literal(&mut self, delimiter: u8) -> Kind {
+    pub(super) fn read_jsx_string_literal(&mut self, delimiter: u8) -> Kind {
         debug_assert!(delimiter.is_ascii());
 
         // Skip opening quote
-        // SAFETY: Caller guarantees next byte is ASCII, so `.add(1)` is a UTF-8 char boundary
-        let after_opening_quote = unsafe { self.source.position().add(1) };
+        let after_opening_quote = self.source.position().add(1);
         let remaining = self.source.str_from_pos_to_end(after_opening_quote);
 
-        let len = memchr(delimiter, remaining.as_bytes());
+        let len = remaining.as_bytes().iter().position(|&b| b == delimiter);
         if let Some(len) = len {
-            // SAFETY: `after_opening_quote` + `len` is position of delimiter.
-            // Caller guarantees delimiter is ASCII, so 1 byte after it is a UTF-8 char boundary.
-            let after_closing_quote = unsafe { after_opening_quote.add(len + 1) };
+            let after_closing_quote = after_opening_quote.add(len + 1);
             self.source.set_position(after_closing_quote);
             Kind::Str
         } else {

@@ -1107,7 +1107,6 @@ version = "0.124.0"
 dependencies = [
  "bitflags",
  "cow-utils",
- "memchr",
  "num-bigint 0.4.8",
  "num-traits",
  "oxc_allocator",
