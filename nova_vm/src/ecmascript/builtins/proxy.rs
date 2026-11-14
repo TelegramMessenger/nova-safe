@@ -8,8 +8,6 @@ mod data;
 pub(crate) use abstract_operations::*;
 pub(crate) use data::*;
 
-use crate::hashing::AHashSet;
-
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, ExceptionType, Function, InternalMethods,
@@ -1546,7 +1544,7 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
             .bind(gc.nogc());
         // 13. Assert: targetKeys contains no duplicate entries.
         debug_assert!({
-            let mut seen = AHashSet::with_capacity(target_keys.len());
+            let mut seen = crate::hashing::set_with_capacity(target_keys.len());
             let mut all_unique = true;
             for key in target_keys.iter() {
                 if seen.contains(key) {

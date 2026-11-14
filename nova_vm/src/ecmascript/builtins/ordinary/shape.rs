@@ -964,7 +964,7 @@ impl PrototypeShapeTable {
     /// Create a new PrototypeShapeTable with the given capacity.
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
-            table: AHashMap::with_capacity(capacity),
+            table: crate::hashing::map_with_capacity(capacity),
         }
     }
 

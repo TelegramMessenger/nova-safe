@@ -694,7 +694,7 @@ fn eval_declaration_instantiation<'a>(
     }
 
     // 11. Let declaredVarNames be a new empty List.
-    let mut declared_var_names_strings = AHashSet::with_capacity(var_declarations.len());
+    let mut declared_var_names_strings = crate::hashing::set_with_capacity(var_declarations.len());
     let mut declared_var_names = Vec::with_capacity(var_declarations.len());
 
     // 12. For each element d of varDeclarations, do

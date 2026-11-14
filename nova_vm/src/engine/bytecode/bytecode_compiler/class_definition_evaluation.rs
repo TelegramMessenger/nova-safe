@@ -251,7 +251,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                 })
             })
             .collect::<Box<[_]>>();
-        let mut private_name_lookup_map = AHashMap::with_capacity(private_bound_identifiers.len());
+        let mut private_name_lookup_map =
+            crate::hashing::map_with_capacity(private_bound_identifiers.len());
 
         let mut instance_private_fields = vec![];
         let mut instance_private_methods = vec![];
@@ -1045,7 +1046,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Static
         // 13. Let functionsToInitialize be a new empty List.
         // NOTE: the keys of `functions` will be `functionNames`, its values will be
         // `functionsToInitialize`.
-        let mut functions = AHashMap::new();
+        let mut functions = AHashMap::default();
         self.var_scoped_declarations(&mut |d| {
             // a. If d is neither a VariableDeclaration nor a ForBinding nor a BindingIdentifier, then
             let VarScopedDeclaration::Function(d) = d else {
@@ -1064,7 +1065,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Static
         // 27. If hasParameterExpressions is false, then
         // a. NOTE: Only a single Environment Record is needed for the parameters and top-level vars.
         // b. Let instantiatedVarNames be a copy of the List parameterBindings.
-        let mut instantiated_var_names = AHashSet::new();
+        let mut instantiated_var_names = AHashSet::default();
         let mut block_prep: Vec<BlockEnvPrep> = vec![];
 
         // c. For each element n of varNames, do

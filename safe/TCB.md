@@ -38,7 +38,7 @@ tzif, ...), SharedArrayBuffer and Atomics.
 | lexical (toString(radix)) | `number/text.rs`: integer digits, V8's algorithm for fractions | numbers |
 | fast-float (Number(string), parseFloat) | `number/text.rs` literal scanner + std `str::parse::<f64>` | strings |
 | memchr (indexOf, lastIndexOf, includes, split) | `types/language/string/search.rs`: Two-Way, O(n + m), u8 and u16 | both strings |
-| ahash (heap strings, property keys, Map/Set keys, side tables) | `hashing.rs`: std SipHash-1-3 with random keys | keys |
+| ahash (heap strings, property keys, Map/Set keys, side tables) | `hashing.rs`: std SipHash-1-3 with random keys for string contents, property keys and Map/Set keys; maps keyed by engine handles (side tables, bindings, descriptors) use a multiply-fold hash under random per-map keys | keys |
 | rand (Math.random) | xorshift128+ per thread, seeded from std's `RandomState` (`math_object.rs`) | none |
 
 Bugs found in what was replaced:

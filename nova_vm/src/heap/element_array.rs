@@ -478,7 +478,7 @@ impl<'a> ElementDescriptorMap<'a> {
     /// An empty map with room for `capacity` descriptors.
     pub fn with_capacity(capacity: usize) -> Self {
         if capacity > SMALL_DESCRIPTOR_MAP {
-            Self::Large(AHashMap::with_capacity(capacity))
+            Self::Large(crate::hashing::map_with_capacity(capacity))
         } else {
             Self::Small(Vec::with_capacity(capacity))
         }
@@ -534,7 +534,7 @@ impl<'a> ElementDescriptorMap<'a> {
                     return None;
                 }
                 let mut map: AHashMap<u32, ElementDescriptor<'a>> =
-                    AHashMap::with_capacity(entries.len() + 1);
+                    crate::hashing::map_with_capacity(entries.len() + 1);
                 map.extend(entries.drain(..));
                 map.insert(key, value);
                 *self = Self::Large(map);

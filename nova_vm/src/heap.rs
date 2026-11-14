@@ -231,7 +231,7 @@ impl Heap {
             #[cfg(feature = "array-buffer")]
             array_buffers: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
-            array_buffer_detach_keys: AHashMap::with_capacity(0),
+            array_buffer_detach_keys: crate::hashing::map_with_capacity(0),
             arrays: SoAVec::with_capacity(0).expect("Failed to allocate Heap"),
             array_iterators: Vec::with_capacity(0),
             async_generators: Vec::with_capacity(0),
@@ -320,31 +320,31 @@ impl Heap {
             #[cfg(feature = "array-buffer")]
             typed_arrays: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
-            typed_array_byte_lengths: AHashMap::with_capacity(0),
+            typed_array_byte_lengths: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "array-buffer")]
-            typed_array_byte_offsets: AHashMap::with_capacity(0),
+            typed_array_byte_offsets: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "array-buffer")]
-            typed_array_array_lengths: AHashMap::with_capacity(0),
+            typed_array_array_lengths: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "array-buffer")]
             data_views: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
-            data_view_byte_lengths: AHashMap::with_capacity(0),
+            data_view_byte_lengths: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "array-buffer")]
-            data_view_byte_offsets: AHashMap::with_capacity(0),
+            data_view_byte_offsets: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
             shared_typed_arrays: Vec::with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
-            shared_typed_array_byte_lengths: AHashMap::with_capacity(0),
+            shared_typed_array_byte_lengths: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
-            shared_typed_array_byte_offsets: AHashMap::with_capacity(0),
+            shared_typed_array_byte_offsets: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
-            shared_typed_array_array_lengths: AHashMap::with_capacity(0),
+            shared_typed_array_array_lengths: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
             shared_data_views: Vec::with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
-            shared_data_view_byte_lengths: AHashMap::with_capacity(0),
+            shared_data_view_byte_lengths: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "shared-array-buffer")]
-            shared_data_view_byte_offsets: AHashMap::with_capacity(0),
+            shared_data_view_byte_offsets: crate::hashing::map_with_capacity(0),
             #[cfg(feature = "weak-refs")]
             weak_maps: Vec::with_capacity(0),
             #[cfg(feature = "weak-refs")]
