@@ -67,3 +67,8 @@ fn bound_function_properties() {
 fn generator_prototype() {
     run_test_source("generatorPrototype.test.js");
 }
+
+#[test]
+fn not_callable_message() {
+    run_test_source("notCallableMessage.test.js");
+}
