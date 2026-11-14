@@ -100,14 +100,84 @@ Normal input pays for SipHash: sandbox-bundle.js 7.69 -> 7.95 ms (+3.4%, best of
 widget scripts +1-4%. A keyed folded multiply over every byte (nova_vm's `HandleState` construction) measured +0.3% on
 the bundle, but its resistance to collisions without the key is an argument, not a proof, so the parser uses SipHash.
 
-Still super-linear, not through hashing (bounded by the source size, before the interrupt):
-- private names: `ClassTable::get_element_ids` (per `#x` reference, in the class builder) and
-  `has_private_definition` scan all elements of the class: a class with 20,000 private fields each referenced once
-  (440 KB) takes 400 ms to parse and check, 10,000 take 154 ms;
-- `parse_capturing_groups` compares each named group with every earlier one (regexp literals and `new RegExp`);
-- modules only: `check_unresolved_exports` runs `best_match` over every root name for each undefined export, and
-  `ModuleRecordBuilder::resolve_export_entries` searches the import entries linearly for each export.
-A parser work budget (or an interrupt poll in the lexer) would bound all of these; see `safe/SECURITY.md`.
+Still super-linear, not through hashing, at the time: private names (`get_element_ids`, `has_private_definition`),
+regexp named groups (`parse_capturing_groups`), and in modules `check_unresolved_exports` and
+`resolve_export_entries`. The next section removes or bounds them.
+
+### The parse obeys the CPU limit (2026-11-15, branch safe-parse-budget)
+
+The parser and the semantic checker poll a host interrupt, so a parse ends at the widget's CPU limit like any running
+script, and the pair-wise checks found so far are linear.
+
+- **Budget.** `Parser::with_interrupt(&dyn Fn() -> bool)` and `SemanticBuilder::with_interrupt` take a plain closure
+  (no unsafe, no global, no thread-local). The lexer calls it every 4,096 tokens or 64 KiB of source
+  (`TOKENS_PER_POLL`, `BYTES_PER_POLL`; tokens re-lexed after a rewind count again); when it says stop, every further
+  token is `Eof`, `parse` returns a dummy program, one error "Parsing interrupted" and `ParserReturn::interrupted`.
+  The semantic builder calls it every 4,096 nodes and while long checks run (`charge_work`: the ancestor walk and the
+  name-suggestion searches of undeclared private names and undefined exports); when it says stop, the checks stop,
+  `visit_statement`/`visit_expression` skip the rest of the program, and `SemanticBuilderReturn::interrupted` is set.
+- **Nova.** `source_code.rs` passes `agent.host_hooks.check_interrupt` to both (scripts, modules, direct and indirect
+  `eval`, `Function`/`new Function`: all go through `parse_source`). An interrupted parse terminates the Agent with
+  `TerminationReason::Interrupted`, as the instruction loop does: `eval` and `Function` return the termination error,
+  which no `catch` sees, and nova_embed's `evaluate` returns `Error::Interrupted` instead of a SyntaxError. The engine
+  stays usable (the next host entry clears the termination). `nova_embed/src/tests.rs`,
+  `parsing_obeys_the_interrupt`: a class with 4,000 undeclared private names, as a script, a module, through
+  `eval` (sloppy, strict, indirect), `new Function` and `Function` with parameters, under a 150 ms deadline: every one
+  ends with `Interrupted`, uncatchable, and `1 + 1` works after each.
+- **Linear checks** (same diagnostics, same order; the digest below):
+  - private names: `ClassTable` keeps each class's private element ids by name (keyed `IdentBuildHasher`);
+    `get_element_ids` and `has_private_definition` look the name up instead of scanning the class;
+  - `resolve_export_entries` finds an export's import entry in a map from local name to its first import entry;
+  - `parse_capturing_groups` keeps one trie of alternative paths per group name; each node knows the first group
+    ending there and below it, so the first earlier group that conflicts is found in O(depth) (a unit test checks it
+    against the pair-wise rule on random paths);
+  - regress's `check_duplicate_conflicts` sorts each name's paths and compares neighbours (a path that starts with P
+    sorts right after P); a unit test checks it against every pair.
+- **BigInt literals.** The unsafe-removal round had replaced `BigInt::from_str_radix(..).to_string()` with base-10^18
+  limbs in u128, quadratic with a slow constant (hex 1 MB: 0.27 s -> 6.6 s). `parse_big_int` uses the in-tree
+  num-bigint 0.5 fork again (`BigUint`, already in the build, no unsafe): back to upstream's speed, same strings
+  (`bigint_literals_carry_their_decimal_value`, and the digest now includes every BigInt value).
+- **Span overflow.** `parse_extends_clause` built a heritage node after a failed expression parse, with a span that
+  ended before it started; `//\nx=class extends, ` overflowed in `Span::size` in builds with overflow checks (the
+  gate's and test262's). It now stops at the fatal error; the error that label belonged to was dropped with the fatal
+  error anyway, so the diagnostics are the same (`a_missing_heritage_expression_does_not_overflow_a_span`).
+
+Checked: the semantic digest on the 54,332 inputs, now also with every BigInt literal's value, the oxc regexp parse
+result (and error) of every regexp literal and the module record's import/local/indirect/star entries, is identical to
+the base (56ef9334). `nova_vm/tests/parse_hash_tests.rs`, `checks_over_many_names_scale_linearly`: private names,
+exports of imports, distinct group names and one group name in many alternatives, n against 4n.
+
+Parse plus semantic check (`dg`, release, one run, machine loaded by the gate; the `new RegExp` rows are nova_cli at
+6cc6ac55 against now; no interrupt set, so the second table's rows are what the budget now cuts off at the CPU limit):
+
+| input | base | now |
+|---|---:|---:|
+| 20,000 private fields each read once (440 KB) | 465 ms | 11 ms |
+| 25,000 private fields (reviewer's priv25k, 500 KB) | 904 ms | 10 ms |
+| module, 20,000 imports exported again (258 KB) | 242 ms | 12 ms |
+| hex BigInt, 400 KB | 2,550 ms | 92 ms |
+| hex BigInt, 1 MB | 7,856 ms | 378 ms |
+| `new RegExp`, one name in 20,000 alternatives (nova_cli, run time) | 507-653 ms | 15 ms (173 ms with oxc's trie alone) |
+| `new RegExp`, 20,000 distinct names (nova_cli, run time) | 193-247 ms | 20-24 ms |
+
+| error-path input, no interrupt | base | now |
+|---|---:|---:|
+| module, 10,000 undefined exports next to 10,000 vars (158 KB) | 7.8 s | 7.8-11 s |
+| class, 5,000 fields and 5,000 undeclared private names (93 KB) | 2.1 s | 2.1-5.5 s |
+
+Normal parse speed (interleaved with the base, 4 rounds of 30): sandbox-bundle.js best 9.10 -> 9.31 ms, mean 10.16
+-> 10.20 ms (+0.4%); the widget scripts within noise (+-5% on 0.1 ms).
+
+Left:
+- The name-suggestion searches (`best_match` over every candidate for each undeclared private name and each
+  undefined export) are still quadratic; they only run on scripts that fail to parse, and the budget charges every
+  candidate, so they end at the CPU limit. Making them linear would need an index for edit distance 2.
+- A single token is lexed whole: a huge string, template or comment (as large as the heap allows a string passed to
+  `eval`) is scanned before the next poll; this is linear.
+- A hex/octal/binary BigInt literal's decimal value is computed in one num-bigint call that does not poll
+  (super-linear: about 0.3 s for 1 MB of hex digits). nova_vm compiles BigInt literals from `raw`, and needs the
+  decimal only for class element and property names; computing it lazily there would remove the cost.
+- Nova's bytecode compiler does not poll; it is linear in the AST except where noted in its own code.
 
 ## Phase 0 (where it stood after vendoring)
 
