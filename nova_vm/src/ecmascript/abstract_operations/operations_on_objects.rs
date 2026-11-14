@@ -675,9 +675,7 @@ pub(crate) fn call<'gc>(
                 && proxy.is_callable(agent, gc.nogc())
             {
                 let current_stack_size = agent.stack_refs.borrow().len();
-                let result = proxy
-                    .unbind()
-                    .internal_call(agent, v, arguments_list, gc);
+                let result = proxy.unbind().internal_call(agent, v, arguments_list, gc);
                 agent.stack_refs.borrow_mut().truncate(current_stack_size);
                 return result;
             }
@@ -982,6 +980,23 @@ pub(crate) fn test_integrity_level<'a, T: Level>(
 /// The abstract operation CreateArrayFromList takes argument elements (a List
 /// of ECMAScript language values) and returns an Array. It is used to create
 /// an Array whose elements are provided by elements.
+/// ArrayCreate for a list that already exists. A list too long for the heap
+/// limit ends the script (OutOfMemory) and gets an empty array, which the
+/// terminated script never sees.
+fn array_create_from_list_length<'a>(
+    agent: &mut Agent,
+    len: usize,
+    gc: NoGcScope<'a, '_>,
+) -> Array<'a> {
+    match array_create(agent, len, len, None, gc) {
+        Ok(array) => array,
+        Err(_) => {
+            agent.terminate(crate::ecmascript::TerminationReason::OutOfMemory);
+            array_create(agent, 0, 0, None, gc).expect("an empty array is always created")
+        }
+    }
+}
+
 pub(crate) fn create_array_from_list<'a>(
     agent: &mut Agent,
     elements: &[Value],
@@ -989,7 +1004,7 @@ pub(crate) fn create_array_from_list<'a>(
 ) -> Array<'a> {
     let len = elements.len();
     // 1. Let array be ! ArrayCreate(0).
-    let array = array_create(agent, len, len, None, gc).unwrap();
+    let array = array_create_from_list_length(agent, len, gc);
     for (slot, element) in array.as_mut_slice(agent).iter_mut().zip(elements) {
         *slot = Some(element.unbind());
     }
@@ -1009,7 +1024,7 @@ pub(crate) fn create_array_from_scoped_list<'a>(
     let elements = elements.take(agent).bind(gc);
     let len = elements.len();
     // 1. Let array be ! ArrayCreate(0).
-    let array = array_create(agent, len, len, None, gc).unwrap();
+    let array = array_create_from_list_length(agent, len, gc);
     let slice = array.as_mut_slice(agent).iter_mut().zip(elements);
     {
         for (target, el) in slice {
@@ -1080,6 +1095,20 @@ pub(crate) fn try_length_of_array_like<'a>(
     try_to_length(agent, property, gc)
 }
 
+/// Longest argument list CreateListFromArrayLike builds (`apply`,
+/// `Reflect.apply`, `Reflect.construct`), as in QuickJS.
+const MAX_ARGUMENTS: usize = 65535;
+
+#[cold]
+#[inline(never)]
+fn throw_too_many_arguments<'a>(agent: &mut Agent, gc: NoGcScope<'a, '_>) -> JsError<'a> {
+    agent.throw_exception_with_static_message(
+        ExceptionType::RangeError,
+        "Too many arguments in function call (only 65535 allowed)",
+        gc,
+    )
+}
+
 /// ### [7.3.19 CreateListFromArrayLike ( obj [ , elementTypes ] )](https://tc39.es/ecma262/#sec-createlistfromarraylike)
 ///
 /// The abstract operation CreateListFromArrayLike takes argument obj (an ECMAScript language value)
@@ -1098,6 +1127,9 @@ pub(crate) fn create_list_from_array_like<'gc>(
     match obj {
         Value::Array(array) if array.is_simple(agent) => {
             let gc = gc.into_nogc();
+            if array.len(agent) as usize > MAX_ARGUMENTS {
+                return Err(throw_too_many_arguments(agent, gc));
+            }
             Ok(array
                 .as_slice(agent)
                 .iter()
@@ -1110,11 +1142,15 @@ pub(crate) fn create_list_from_array_like<'gc>(
             // 3. Let len be ? LengthOfArrayLike(obj).
             let len = length_of_array_like(agent, object, gc.reborrow()).unbind()?;
             let len = usize::try_from(len).unwrap();
+            if len > MAX_ARGUMENTS {
+                return Err(throw_too_many_arguments(agent, gc.into_nogc()));
+            }
             // 4. Let list be a new empty list.
             let mut list = Vec::<Value>::with_capacity(len).scope(agent, gc.nogc());
             // 5. Let index be 0.
             // 6. Repeat, while index < len,
             for i in 0..len {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 // a. Let indexName be ! ToString(𝔽(index)).
                 // b. Let next be ? Get(obj, indexName).
                 let next = get(
@@ -1170,11 +1206,18 @@ pub(crate) fn create_property_key_list_from_array_like<'a, 'b>(
     let len = length_of_array_like(agent, object.unbind(), gc.reborrow()).unbind()?;
     let len = usize::try_from(len).unwrap();
     // 4. Let list be a new empty List.
-    let mut list = Vec::<PropertyKey>::with_capacity(len).scope(agent, gc.nogc());
+    // The list grows as keys come: `len` is the script's word only.
+    let mut list = Vec::<PropertyKey>::with_capacity(len.min(1024)).scope(agent, gc.nogc());
     // 5. Let index be 0.
     let mut index = 0;
     // 6. Repeat, while index < len,
     while index < len {
+        agent.poll_interrupt(gc.nogc()).unbind()?;
+        if index % 4096 == 4095 {
+            agent
+                .check_heap_limit(index * core::mem::size_of::<PropertyKey>(), gc.nogc())
+                .unbind()?;
+        }
         let next = get(
             agent,
             scoped_object.get(agent).unbind(),
@@ -1482,6 +1525,11 @@ pub(crate) fn is_prototype_of_loop<'a>(
     {
         let gc = gc.nogc();
         loop {
+            // A Proxy can make the prototype chain a cycle.
+            if agent.poll_interrupt(gc).is_err() {
+                // The termination is thrown again by the poll below.
+                break;
+            }
             let proto = v.try_get_prototype_of(agent, gc);
             let TryResult::Continue(proto) = proto else {
                 break;
@@ -1498,6 +1546,7 @@ pub(crate) fn is_prototype_of_loop<'a>(
     }
     let o = o.scope(agent, gc.nogc());
     loop {
+        agent.poll_interrupt(gc.nogc()).unbind()?;
         let proto = v
             .unbind()
             .internal_get_prototype_of(agent, gc.reborrow())

@@ -8,8 +8,6 @@ mod data;
 pub(crate) use abstract_operations::*;
 pub(crate) use data::*;
 
-use std::collections::VecDeque;
-
 use crate::hashing::AHashSet;
 
 use crate::{
@@ -1516,10 +1514,15 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         .unbind()?
         .bind(gc.nogc());
         // 9. If trapResult contains any duplicate entries, throw a TypeError exception.
-        let mut unique_trap_results = Vec::with_capacity(trap_result.len(agent));
+        // A hash set: the trap decides how many keys there are.
+        let mut unique_trap_results = crate::hashing::AHashSet::with_capacity_and_hasher(
+            trap_result.len(agent),
+            Default::default(),
+        );
         for value in trap_result.iter(agent) {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let p = value.get(agent, gc.nogc());
-            if unique_trap_results.contains(&p) {
+            if !unique_trap_results.insert(p) {
                 let message = format!(
                     "proxy [[OwnPropertyKeys]] can't report property '{}' more than once",
                     p.as_display(agent),
@@ -1530,8 +1533,8 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
                     gc.into_nogc(),
                 ));
             }
-            unique_trap_results.push(p);
         }
+        drop(unique_trap_results);
         // 10. Let extensibleTarget be ? IsExtensible(target).
         let extensible_target =
             is_extensible(agent, scoped_target.get(agent), gc.reborrow()).unbind()?;
@@ -1593,7 +1596,8 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
         let target_configurable_keys = target_configurable_keys.take(agent);
         let target_nonconfigurable_keys = target_nonconfigurable_keys.take(agent);
         // 18. Let uncheckedResultKeys be a List whose elements are the elements of trapResult.
-        let mut unchecked_result_keys = VecDeque::from(trap_result.clone());
+        let mut unchecked_result_keys: crate::hashing::AHashSet<PropertyKey> =
+            trap_result.iter().copied().collect();
         // 19. For each element key of targetNonconfigurableKeys, do
         for key in target_nonconfigurable_keys {
             // a. If uncheckedResultKeys does not contain key, throw a TypeError exception.
@@ -1607,13 +1611,8 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
                     gc,
                 ));
             }
-            if let Some(pos) = unchecked_result_keys
-                .iter()
-                .position(|unchecked_key| *unchecked_key == key)
-            {
-                // b. Remove the key from uncheckedResultKeys
-                unchecked_result_keys.remove(pos);
-            }
+            // b. Remove the key from uncheckedResultKeys
+            unchecked_result_keys.remove(&key);
         }
         // 20. If extensibleTarget is true, return trapResult.
         if extensible_target {
@@ -1629,13 +1628,8 @@ impl<'a> InternalMethods<'a> for Proxy<'a> {
                     gc,
                 ));
             }
-            if let Some(pos) = unchecked_result_keys
-                .iter()
-                .position(|unchecked_key| *unchecked_key == key)
-            {
-                // b. Remove the key from uncheckedResultKeys
-                unchecked_result_keys.remove(pos);
-            }
+            // b. Remove the key from uncheckedResultKeys
+            unchecked_result_keys.remove(&key);
         }
         // 22. If uncheckedResultKeys is not empty, throw a TypeError exception.
         if !unchecked_result_keys.is_empty() {

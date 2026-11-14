@@ -58,10 +58,14 @@ pub(crate) fn array_create<'a>(
     };
     // 3. Let A be MakeBasicObject(« [[Prototype]], [[Extensible]] »).
     // 5. Set A.[[DefineOwnProperty]] as specified in 10.4.2.1.
-    agent.check_heap_limit(
-        capacity.saturating_mul(core::mem::size_of::<Option<crate::ecmascript::Value>>()),
-        gc,
-    )?;
+    // Small arrays are left to the collector and the poll: callers that
+    // cannot fail (template objects, RegExp results) create them.
+    if capacity > 4096 {
+        agent.check_heap_limit(
+            capacity.saturating_mul(core::mem::size_of::<Option<crate::ecmascript::Value>>()),
+            gc,
+        )?;
+    }
     let mut elements = match agent.heap.elements.allocate_elements_with_length(capacity) {
         Ok(e) => e,
         Err(err) => {
@@ -220,6 +224,7 @@ pub(crate) fn array_set_length<'a>(
     }
     let gc = gc.into_nogc();
     let a = a.get(agent).bind(gc);
+    check_length_growth(agent, a, new_len, gc)?;
     // 6. Set newLenDesc.[[Value]] to newLen.
     // 7. Let oldLenDesc be OrdinaryGetOwnProperty(A, "length").
     array_set_length_handling(
@@ -254,6 +259,9 @@ pub(crate) fn array_try_set_length<'gc>(
     // 5. If SameValueZero(newLen, numberLen) is false, throw a RangeError exception.
     if !Number::same_value_zero_(agent, number_len, new_len.into()) {
         return TryError::GcError.into();
+    }
+    if let Err(err) = check_length_growth(agent, a, new_len, gc) {
+        return TryResult::Break(TryError::Err(err));
     }
     // 6. Set newLenDesc.[[Value]] to newLen.
     // 7. Let oldLenDesc be OrdinaryGetOwnProperty(A, "length").
@@ -290,6 +298,27 @@ fn array_set_length_no_value_field(agent: &mut Agent, a: Array, desc: PropertyDe
         a.set_length_readonly(agent);
     }
     true
+}
+
+/// Refuses growing an array's length to `new_len` when the holes it stores
+/// would not fit under the heap limit, before they are allocated.
+pub(crate) fn check_length_growth<'a>(
+    agent: &mut Agent,
+    a: Array,
+    new_len: u32,
+    gc: NoGcScope<'a, '_>,
+) -> JsResult<'a, ()> {
+    let old_len = a.len(agent);
+    // Small growth (a push) is left to the collector and the poll: the
+    // infallible callers that append elements must not see an error here.
+    if new_len > old_len.saturating_add(4096) {
+        let growth = (new_len - old_len) as usize;
+        agent.check_heap_limit(
+            growth.saturating_mul(core::mem::size_of::<Option<crate::ecmascript::Value>>()),
+            gc,
+        )?;
+    }
+    Ok(())
 }
 
 pub(crate) fn array_set_length_handling(

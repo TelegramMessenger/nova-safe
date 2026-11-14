@@ -225,6 +225,7 @@ impl TypedArrayIntrinsicObject {
         let mut k = 0;
         // 12. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let sk = SmallInteger::from(k as u32);
             // 𝔽(k)
             let fk = Number::from(sk).into();
@@ -308,6 +309,7 @@ impl TypedArrayIntrinsicObject {
                 // 6. Repeat, while k < len,
                 let scoped_new_obj = new_obj.scope(agent, gc.nogc());
                 for k in 0..len {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
                     // a. Let kValue be items[k].
                     let k_value = arguments.get(agent, k as u32, gc.nogc());
                     // b. Let Pk be ! ToString(𝔽(k)).
@@ -905,6 +907,7 @@ impl TypedArrayPrototype {
         let mut k = 0;
         // 6. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::from(SmallInteger::from(k as u32));
             // b. Let kValue be ! Get(O, Pk).
@@ -1283,6 +1286,7 @@ impl TypedArrayPrototype {
         let mut k = 0;
         // 6. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk: PropertyKey = k.try_into().unwrap();
             // b. Let kValue be ! Get(O, Pk).
@@ -1382,6 +1386,7 @@ impl TypedArrayPrototype {
         let k = calculate_relative_index(n, len);
         // 11. Repeat, while k < len,
         for k in k..len {
+            agent.poll_interrupt(gc)?;
             // a. Let elementK be ! Get(O, ! ToString(𝔽(k))).
             let element_k = unwrap_try_get_value_or_unset(try_get(
                 agent,
@@ -1529,9 +1534,10 @@ impl TypedArrayPrototype {
                 // If TypedArray is out of bounds then every Get(O, k) returns
                 // undefined. The result is a string comprising only of
                 // separators.
-                let sep = sep_string.as_wtf8_(agent).to_owned();
                 let count = len.saturating_sub(1);
-                let byte_count = count * sep.len();
+                let byte_count = count.saturating_mul(sep_string.as_wtf8_(agent).len());
+                agent.check_string_length(byte_count, gc.nogc()).unbind()?;
+                let sep = sep_string.as_wtf8_(agent).to_owned();
                 let mut buf = Wtf8Buf::with_capacity(byte_count);
                 for _ in 0..count {
                     buf.push_wtf8(sep);
@@ -1556,6 +1562,10 @@ impl TypedArrayPrototype {
         // 7. Let k be 0.
         // 8. Repeat, while k < len,
         for k in 0..len {
+            agent.poll_interrupt(gc)?;
+            if k % 4096 == 4095 {
+                agent.check_string_length(r.len(), gc)?;
+            }
             // a. If k > 0, set R to the string-concatenation of R and sep.
             if k > 0 {
                 r.push_wtf8(&sep);
@@ -1813,6 +1823,7 @@ impl TypedArrayPrototype {
         let scoped_o = o.scope(agent, gc.nogc());
         // 10. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let k_int = k.try_into().unwrap();
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k_int);
@@ -1913,6 +1924,7 @@ impl TypedArrayPrototype {
         let scoped_o = o.scope(agent, gc.nogc());
         // 10. Repeat, while k >= 0,
         while let Some(l) = k {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             let k_int = l.try_into().unwrap();
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k_int);
@@ -2141,6 +2153,7 @@ impl TypedArrayPrototype {
             // 8. Let k be 0.
             // 9. Repeat, while k < srcLength,
             for k in 0..src_length {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 // a. Let Pk be ! ToString(𝔽(k)).
                 let pk = PropertyKey::try_from(k).unwrap();
                 // b. Let value be ? Get(src, Pk).
@@ -2383,6 +2396,7 @@ impl TypedArrayPrototype {
         let mut k = 0;
         // 6. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::from(SmallInteger::from(k as u32));
             // b. Let kValue be ! Get(O, Pk).
@@ -2677,6 +2691,7 @@ impl TypedArrayPrototype {
         let mut k = 0;
         // 6. Repeat, while k < len,
         while k < len {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. If k > 0, set R to the string-concatenation of R and separator.
             if k > 0 {
                 r.push_str(separator);

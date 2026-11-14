@@ -223,6 +223,11 @@ impl ArrayBufferPrototype {
         // this method as in-place growth or shrinkage.
         // 14. Set O.[[ArrayBufferData]] to newBlock.
         // 15. Set O.[[ArrayBufferByteLength]] to newByteLength.
+        let growth = new_byte_length.saturating_sub(o.byte_length(agent));
+        if growth > 0 {
+            agent.check_allocation(growth, gc.nogc()).unbind()?;
+            agent.heap.data_bytes_since_gc += growth;
+        }
         o.resize(agent, new_byte_length);
 
         // 16. Return undefined.
