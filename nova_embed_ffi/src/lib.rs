@@ -699,6 +699,14 @@ static VERSION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// Which limits the engine enforces: NOVA_LIMIT_INTERRUPT (the interrupt
+/// callback is polled), NOVA_LIMIT_HEAP (the memory limit), NOVA_LIMIT_STACK
+/// (deep recursion is a RangeError).
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_embed_limits() -> u32 {
+    nova_embed::ENFORCED_LIMITS
+}
+
 /// The library's version and the Nova commit it was built from: a
 /// NUL-terminated string that lives as long as the process.
 #[unsafe(no_mangle)]

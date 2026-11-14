@@ -171,6 +171,17 @@ void nova_return_number(nova_return *ret, double number);
 void nova_return_string(nova_return *ret, const uint8_t *ptr, size_t len);
 void nova_return_bytes(nova_return *ret, const uint8_t *ptr, size_t len);
 
+/* Which limits this build enforces. Without NOVA_LIMIT_INTERRUPT a script that
+ * never ends is never stopped; without NOVA_LIMIT_HEAP the memory limit is not
+ * enforced; without NOVA_LIMIT_STACK deep recursion overflows the native stack
+ * (the process stops). */
+enum {
+    NOVA_LIMIT_INTERRUPT = 1,
+    NOVA_LIMIT_HEAP = 2,
+    NOVA_LIMIT_STACK = 4,
+};
+uint32_t nova_embed_limits(void);
+
 /* "nova_embed <version> (nova <commit>)", static. */
 const char *nova_embed_version(void);
 

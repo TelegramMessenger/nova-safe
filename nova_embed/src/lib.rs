@@ -43,6 +43,7 @@ use nova_vm::{
     engine::{Bindable, GcScope, Global, Scopable},
 };
 
+pub use limits::{ENFORCED as ENFORCED_LIMITS, LIMIT_HEAP, LIMIT_INTERRUPT, LIMIT_STACK};
 pub use values::{Completion, HostArg, HostReturn, TypedArrayKind};
 
 use hooks::{EntryGuard, HOOKS};

@@ -18,6 +18,17 @@ use nova_vm::ecmascript::{GcAgent, RealmRoot};
 
 use crate::{EngineOptions, Error, Shared};
 
+/// [`Host::should_interrupt`](crate::Host::should_interrupt) is polled while scripts run.
+pub const LIMIT_INTERRUPT: u32 = 1;
+/// The memory limit ends a script that goes past it.
+pub const LIMIT_HEAP: u32 = 2;
+/// Deep recursion is a `RangeError`, not a native stack overflow.
+pub const LIMIT_STACK: u32 = 4;
+
+/// Which limits this build enforces; every bit is set once the limits track
+/// is merged and wired here.
+pub const ENFORCED: u32 = 0;
+
 pub(crate) fn apply(agent: &mut GcAgent, _realm: &RealmRoot, options: EngineOptions) {
     set_heap_limit(agent, options.memory_limit);
 }
