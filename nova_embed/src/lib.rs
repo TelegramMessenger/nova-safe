@@ -415,10 +415,17 @@ impl Engine {
                 State::Dead(reason) => Err(Error::Dead(reason.clone())),
             };
         };
+        // A promise job runs in the engine's realm, as a microtask after a
+        // script: its own realm, when it has one, is entered by `Job::run`. A
+        // job without one (a reaction whose handler was not callable) is
+        // valid; `GcAgent::run_job` is for macrotasks and requires one.
         self.enter(|live, shared| {
-            live.agent.run_job(job, |agent, result, gc| match result {
-                Ok(()) => Ok(true),
-                Err(error) => Err(values::error(agent, shared, error.value().unbind(), gc)),
+            let realm = &live.realm;
+            live.agent.run_in_realm(realm, |agent, mut gc| {
+                match job.run(agent, gc.reborrow()).unbind().bind(gc.nogc()) {
+                    Ok(()) => Ok(true),
+                    Err(error) => Err(values::error(agent, shared, error.value().unbind(), gc)),
+                }
             })
         })
     }

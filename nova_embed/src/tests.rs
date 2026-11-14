@@ -264,6 +264,25 @@ fn promise_jobs_run_one_at_a_time() {
 }
 
 #[test]
+fn jobs_without_a_realm_run() {
+    let (mut engine, _) = engine();
+    engine
+        .evaluate(
+            "globalThis.out = []; Promise.resolve(1).then(undefined).then((v) => out.push(v)); Promise.reject(2).then(null, undefined).catch((e) => out.push(e)); Promise.resolve(3).finally(5).then((v) => out.push(v));",
+            false,
+        )
+        .unwrap();
+    while engine
+        .run_pending_job()
+        .expect("no job fails or kills the engine")
+    {}
+    assert_eq!(
+        engine.evaluate("out.join()", false),
+        Ok(Completion::String("1,2,3".into()))
+    );
+}
+
+#[test]
 fn a_panic_kills_the_engine_for_good() {
     let recorder = Rc::new(Recorder {
         panic_on: Some(9),
