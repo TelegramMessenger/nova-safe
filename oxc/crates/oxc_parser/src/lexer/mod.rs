@@ -111,7 +111,20 @@ pub struct Lexer<'a, C: Config> {
 
     /// Config
     pub(crate) config: C,
+
+    /// Asked every [`TOKENS_PER_POLL`] tokens or [`BYTES_PER_POLL`] bytes whether to stop.
+    interrupt: Option<&'a dyn Fn() -> bool>,
+    budget_countdown: u32,
+    budget_next_offset: u32,
+    /// The interrupt said stop: every further token is `Eof`.
+    pub(crate) interrupted: bool,
 }
+
+/// Tokens lexed between two calls of the parse interrupt.
+pub const TOKENS_PER_POLL: u32 = 4096;
+
+/// Source bytes lexed between two calls of the parse interrupt.
+pub const BYTES_PER_POLL: u32 = 64 * 1024;
 
 impl<'a, C: Config> Lexer<'a, C> {
     /// Create new `Lexer`.
@@ -159,6 +172,31 @@ impl<'a, C: Config> Lexer<'a, C> {
             escaped_templates: FxHashMap::default(),
             tokens,
             config,
+            interrupt: None,
+            budget_countdown: TOKENS_PER_POLL,
+            budget_next_offset: BYTES_PER_POLL,
+            interrupted: false,
+        }
+    }
+
+    pub(crate) fn set_interrupt(&mut self, interrupt: &'a dyn Fn() -> bool) {
+        self.interrupt = Some(interrupt);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn poll_budget(&mut self) {
+        self.budget_countdown = TOKENS_PER_POLL;
+        self.budget_next_offset = self.offset().saturating_add(BYTES_PER_POLL);
+        if !self.interrupted
+            && let Some(interrupt) = self.interrupt
+            && interrupt()
+        {
+            self.interrupted = true;
+        }
+        if self.interrupted {
+            self.budget_countdown = 1;
+            self.advance_to_end();
         }
     }
 
@@ -266,6 +304,10 @@ impl<'a, C: Config> Lexer<'a, C> {
     /// Read next token in file.
     /// Use `first_token` for first token, and this method for all further tokens.
     pub fn next_token(&mut self) -> Token {
+        self.budget_countdown -= 1;
+        if self.budget_countdown == 0 || self.offset() >= self.budget_next_offset {
+            self.poll_budget();
+        }
         let kind = self.read_next_token();
         self.finish_next(kind)
     }

@@ -256,6 +256,10 @@ pub(crate) fn perform_eval<'gc>(
     let result = match parse_result {
         Ok(result) => result.bind(gc.into_nogc()),
         Err(errors) => {
+            if agent.termination().is_some() {
+                ndt::eval_evaluation_done!(|| id);
+                return Err(agent.termination_error(gc.into_nogc()));
+            }
             let message = format!(
                 "Invalid eval source text: {}",
                 errors.first().unwrap().message

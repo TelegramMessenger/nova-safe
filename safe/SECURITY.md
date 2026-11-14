@@ -17,8 +17,8 @@ file states what protects the process from a hostile script, what is trusted, an
    `catch_unwind` and a panic marks the engine dead (never touched again). Only `nova_*` symbols are exported.
 3. **One engine per widget, no shared state between engines.** Each widget has its own Agent and heap. Host function
    ids live in Rust, never in the JS heap; the hook stack is per call and per thread.
-4. **Resource limits** (so a script can only hurt itself): an interrupt polled every 4096 instructions and inside
-   long native loops ends a script with a termination no `try`/`catch`/`finally` can stop; a heap limit; a native
+4. **Resource limits** (so a script can only hurt itself): an interrupt polled every 4096 instructions, inside
+   long native loops and while parsing ends a script with a termination no `try`/`catch`/`finally` can stop; a heap limit; a native
    stack guard that turns deep recursion (JS calls, bound functions, Proxy chains, JSON, `flat`, generators) into a
    catchable `RangeError`; a nesting pre-scan that turns too-deep source into a `SyntaxError` before the parser runs;
    huge single allocations refused before allocating; RegExp matching with a step budget (no ReDoS hang).
@@ -90,11 +90,12 @@ service.
   pooled widget engine boots in about 22 ms against 8 ms) and keeps about 5.4 MiB of live malloc per engine after the
   sandbox bundle. Widgets stay inside the CPU limits; the heaviest test widgets use up to ~80% of the 500 ms task
   limit.
-- The parser (oxc) has no `unsafe` left, but it runs before the interrupt is ever polled, so its running time is
-  bounded only by the source's size. Hash flooding is fixed: every map in the parser and the semantic checker whose
-  key is script text hashes the whole key with SipHash-1-3 under random per-process keys (upstream's identifier hash
-  was unkeyed and read at most 16 bytes, and 20,000 colliding `var` names took 0.84-1.85 s; now 3.8 ms, as for
-  distinct names), and no diagnostic depends on the maps' iteration order (`safe/OXC.md`, "Hash flooding in the
-  parser"). Some checks are still quadratic without any hashing: a class with 20,000 private fields each referenced
-  once (440 KB) takes 0.4 s to parse and check, and regexp named groups and a module's exports have similar
-  pair-wise scans. A work budget in the parser, or an interrupt poll in the lexer, would bound them.
+- The parser (oxc) has no `unsafe` left. It polls the interrupt: the lexer every 4,096 tokens or 64 KiB, the semantic
+  checker every 4,096 nodes and inside its long checks, so a parse (script, module, `eval`, `Function`) ends at the CPU
+  limit with the same uncatchable termination as a running script (`safe/OXC.md`, "The parse obeys the CPU limit").
+  Hash flooding is fixed: every map in the parser and the semantic checker whose key is script text hashes the whole
+  key with SipHash-1-3 under random per-process keys, and no diagnostic depends on the maps' iteration order. The
+  pair-wise scans over private names, regexp group names (in oxc and in regress, so `new RegExp` too) and a module's
+  exports are linear now. Not polled, but linear or bounded: lexing one huge token, and one hex/octal/binary BigInt
+  literal's decimal conversion (num-bigint, about 0.3 s for 1 MB of digits). The name suggestions of failing scripts
+  stay quadratic but are polled.

@@ -401,6 +401,18 @@ impl AlternativePath {
     /// Example:
     ///   - [(0, 0)] and [(0, 0), (1, 0)] conflict (second is nested within first)
     ///   - [(0, 0)] and [(0, 1)] don't conflict (different alternatives at depth 0)
+    /// Whether any two of `paths` conflict. Two paths conflict when one is a
+    /// prefix of the other; in sorted order every path that starts with a
+    /// path P follows P directly, so comparing neighbours finds a conflicting
+    /// pair if any exists.
+    fn any_conflict(paths: &[AlternativePath]) -> bool {
+        let mut sorted: Vec<&[(usize, usize)]> =
+            paths.iter().map(|path| path.segments.as_slice()).collect();
+        sorted.sort_unstable();
+        sorted.windows(2).any(|pair| pair[1].starts_with(pair[0]))
+    }
+
+    #[cfg(test)]
     fn conflicts_with(&self, other: &AlternativePath) -> bool {
         let min_len = self.segments.len().min(other.segments.len());
         self.segments[..min_len] == other.segments[..min_len]
@@ -2059,13 +2071,8 @@ where
         named_group_locations: &HashMap<String, Vec<AlternativePath>>,
     ) -> Result<(), Error> {
         for paths in named_group_locations.values() {
-            // Check each pair of paths for this group name
-            for i in 0..paths.len() {
-                for j in (i + 1)..paths.len() {
-                    if paths[i].conflicts_with(&paths[j]) {
-                        return error("Duplicate capture group name");
-                    }
-                }
+            if AlternativePath::any_conflict(paths) {
+                return error("Duplicate capture group name");
             }
         }
         Ok(())
@@ -2141,4 +2148,31 @@ where
         depth: 0,
     };
     p.try_parse()
+}
+
+#[cfg(test)]
+mod duplicate_group_tests {
+    use super::AlternativePath;
+
+    #[test]
+    fn sorted_neighbours_find_the_same_conflicts_as_every_pair() {
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % n) as usize
+        };
+        for _ in 0..2000 {
+            let count = 1 + next(8);
+            let paths: Vec<AlternativePath> = (0..count)
+                .map(|_| AlternativePath {
+                    segments: (0..=next(3)).map(|depth| (depth, next(3))).collect(),
+                })
+                .collect();
+            let pairwise = (0..paths.len())
+                .any(|i| ((i + 1)..paths.len()).any(|j| paths[i].conflicts_with(&paths[j])));
+            assert_eq!(pairwise, AlternativePath::any_conflict(&paths));
+        }
+    }
 }

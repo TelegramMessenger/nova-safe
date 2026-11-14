@@ -68,7 +68,7 @@ fn parse_capturing_groups<'a>(
     let mut num_of_left_capturing_parens = 0;
 
     // Track all named groups with their depth and alternative path
-    let mut named_groups: Vec<NamedGroupInfo<'a>> = Vec::new();
+    let mut named_groups = NamedGroupPaths::default();
     let mut group_names = GroupNames::default();
 
     // Track alternatives and depth
@@ -123,25 +123,16 @@ fn parse_capturing_groups<'a>(
                     let group_name = reader.str(span_start, span_end);
                     let alternative_path = tracker.get_alternative_path();
 
-                    // Check for duplicates with existing groups
-                    for existing in &named_groups {
-                        if existing.name == group_name {
-                            // Check if they can participate together
-                            if !AlternativeTracker::can_participate(
-                                &existing.alternative_path,
-                                &alternative_path,
-                            ) {
-                                // True duplicate - return error
-                                return Err(vec![existing.span, (span_start, span_end)]);
-                            }
-                        }
+                    // Check for duplicates with existing groups: the first earlier group of
+                    // the same name that cannot participate together with this one.
+                    if let Some(existing) =
+                        named_groups.first_conflict(group_name, &alternative_path)
+                    {
+                        // True duplicate - return error
+                        return Err(vec![existing, (span_start, span_end)]);
                     }
 
-                    named_groups.push(NamedGroupInfo {
-                        name: group_name,
-                        span: (span_start, span_end),
-                        alternative_path,
-                    });
+                    named_groups.insert(group_name, (span_start, span_end), &alternative_path);
                     let next = u32::try_from(group_names.len()).unwrap_or(u32::MAX);
                     group_names.entry(group_name).or_insert(next);
 
@@ -199,6 +190,7 @@ impl AlternativeTracker {
         self.current_alternative.iter().take((self.depth + 1) as usize).copied().collect()
     }
 
+    #[cfg(test)]
     fn can_participate(alt1: &[u32], alt2: &[u32]) -> bool {
         let min_len = alt1.len().min(alt2.len());
         // Check as prefixes, if they differ at any level,
@@ -212,12 +204,70 @@ impl AlternativeTracker {
     }
 }
 
-/// Tracks information about a named capturing group
-#[derive(Debug, Clone)]
-struct NamedGroupInfo<'a> {
-    name: Str<'a>,
-    span: (u32, u32),
-    alternative_path: Vec<u32>,
+/// The alternative paths of the named groups seen so far, as one trie per name.
+///
+/// Two groups of one name cannot participate together when one path is a prefix of the other
+/// ([`AlternativeTracker::can_participate`] is false), so the earlier groups that conflict with
+/// a new path are those whose path ends on the new path's walk down the trie, and those below
+/// its end. Each node keeps the first group (in source order) ending there and below it.
+#[derive(Debug, Default)]
+struct NamedGroupPaths<'a> {
+    roots: HashMap<Str<'a>, usize, IdentBuildHasher>,
+    children: HashMap<(usize, u32), usize>,
+    /// Per node: first group whose path ends here, first group whose path passes through.
+    nodes: Vec<(u32, u32)>,
+    spans: Vec<(u32, u32)>,
+}
+
+impl<'a> NamedGroupPaths<'a> {
+    fn first_conflict(&self, name: Str<'a>, path: &[u32]) -> Option<(u32, u32)> {
+        let mut node = *self.roots.get(&name)?;
+        let mut first = u32::MAX;
+        let mut reached_end = true;
+        for &alternative in path {
+            let Some(&child) = self.children.get(&(node, alternative)) else {
+                reached_end = false;
+                break;
+            };
+            node = child;
+            first = first.min(self.nodes[node].0);
+        }
+        if reached_end {
+            first = first.min(self.nodes[node].1);
+        }
+        self.spans.get(first as usize).copied()
+    }
+
+    fn insert(&mut self, name: Str<'a>, span: (u32, u32), path: &[u32]) {
+        let index = u32::try_from(self.spans.len()).unwrap_or(u32::MAX);
+        self.spans.push(span);
+        let mut node = match self.roots.get(&name) {
+            Some(&root) => root,
+            None => {
+                self.nodes.push((u32::MAX, u32::MAX));
+                let root = self.nodes.len() - 1;
+                self.roots.insert(name, root);
+                root
+            }
+        };
+        let entry = &mut self.nodes[node];
+        entry.1 = entry.1.min(index);
+        for &alternative in path {
+            node = match self.children.get(&(node, alternative)) {
+                Some(&child) => child,
+                None => {
+                    self.nodes.push((u32::MAX, u32::MAX));
+                    let child = self.nodes.len() - 1;
+                    self.children.insert((node, alternative), child);
+                    child
+                }
+            };
+            let entry = &mut self.nodes[node];
+            entry.1 = entry.1.min(index);
+        }
+        let entry = &mut self.nodes[node];
+        entry.0 = entry.0.min(index);
+    }
 }
 
 // ---
@@ -225,6 +275,32 @@ struct NamedGroupInfo<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_group_paths_match_pairwise_check() {
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % n
+        };
+        for _ in 0..300 {
+            let mut trie = NamedGroupPaths::default();
+            let mut seen: Vec<(Str<'static>, Vec<u32>, (u32, u32))> = Vec::new();
+            for i in 0..40 {
+                let name = if next(2) == 0 { Str::from("a") } else { Str::from("b") };
+                let path: Vec<u32> = (0..=next(4)).map(|_| next(3)).collect();
+                let expected = seen
+                    .iter()
+                    .find(|(n, p, _)| *n == name && !AlternativeTracker::can_participate(p, &path))
+                    .map(|(_, _, span)| *span);
+                assert_eq!(trie.first_conflict(name, &path), expected);
+                trie.insert(name, (i, i + 1), &path);
+                seen.push((name, path, (i, i + 1)));
+            }
+        }
+    }
 
     #[test]
     fn count_capturing_groups() {

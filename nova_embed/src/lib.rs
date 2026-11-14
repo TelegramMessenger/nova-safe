@@ -324,7 +324,7 @@ impl Engine {
                 let result = if as_module {
                     let module = match parse_module(agent, source_text, realm, None, gc.nogc()) {
                         Ok(module) => module,
-                        Err(errors) => return Err(syntax_error(&errors)),
+                        Err(errors) => return Err(parse_error(agent, &errors)),
                     };
                     agent
                         .run_module(module.unbind(), None, gc.reborrow())
@@ -334,7 +334,7 @@ impl Engine {
                     let script =
                         match parse_script(agent, source_text, realm, false, None, gc.nogc()) {
                             Ok(script) => script,
-                            Err(errors) => return Err(syntax_error(&errors)),
+                            Err(errors) => return Err(parse_error(agent, &errors)),
                         };
                     script_evaluation(agent, script.unbind(), gc.reborrow())
                         .unbind()
@@ -524,6 +524,12 @@ impl CompiledScript {
         })?;
         Ok(CompiledScript { script })
     }
+}
+
+/// The error of a failed parse: the termination when the interrupt stopped
+/// it, else a SyntaxError.
+fn parse_error<E: core::fmt::Display>(agent: &mut Agent, errors: &[E]) -> Error {
+    limits::take_termination(agent).unwrap_or_else(|| syntax_error(errors))
 }
 
 fn syntax_error<E: core::fmt::Display>(errors: &[E]) -> Error {

@@ -978,3 +978,81 @@ fn the_deepest_tree_the_pre_scan_allows_parses_and_drops() {
         eprintln!("{name}: {n} levels, {result:?}");
     }
 }
+
+struct Deadline(Rc<core::cell::Cell<Option<std::time::Instant>>>);
+
+impl Host for Deadline {
+    fn call(&self, _id: u32, _args: Vec<HostArg>) -> HostReturn {
+        HostReturn::Undefined
+    }
+    fn should_interrupt(&self) -> bool {
+        self.0
+            .get()
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+    }
+}
+
+/// A class whose private references are all undeclared: the checker looks for
+/// a close name among every private field for each of them, which is
+/// quadratic and takes seconds before the parse budget polls the interrupt.
+fn undeclared_private_names(n: usize) -> std::string::String {
+    let mut source = std::string::String::from("class C{");
+    for i in 0..n {
+        source.push_str(&format!("#p{i};"));
+    }
+    source.push_str("m(){");
+    for i in 0..n {
+        source.push_str(&format!("this.#q{i};"));
+    }
+    source.push_str("}}");
+    source
+}
+
+#[test]
+fn parsing_obeys_the_interrupt() {
+    const N: usize = 4000;
+    const LIMIT: std::time::Duration = std::time::Duration::from_millis(150);
+    let deadline = Rc::new(core::cell::Cell::new(None));
+    let mut engine = Engine::new(
+        EngineOptions {
+            memory_limit: 0,
+            stack_limit: 0,
+        },
+        Box::new(Deadline(deadline.clone())),
+    )
+    .unwrap();
+    let hostile = undeclared_private_names(N);
+    let build = format!(
+        "var s = 'class C{{'; for (var i = 0; i < {N}; i++) s += '#p' + i + ';'; s += 'm(){{'; \
+         for (var i = 0; i < {N}; i++) s += 'this.#q' + i + ';'; globalThis.src = s + '}}}}'; \
+         src.length"
+    );
+    assert_eq!(
+        engine.evaluate(&build, false),
+        Ok(Completion::Number(hostile.len() as f64))
+    );
+    let mut run = |source: &str, as_module: bool| {
+        let started = std::time::Instant::now();
+        deadline.set(Some(started + LIMIT));
+        let result = engine.evaluate(source, as_module);
+        let elapsed = started.elapsed();
+        deadline.set(None);
+        assert_eq!(result, Err(Error::Interrupted), "{source:.60}");
+        assert!(
+            elapsed < LIMIT * 10,
+            "{source:.60}: interrupted after {elapsed:?}"
+        );
+        assert_eq!(engine.evaluate("1 + 1", false), Ok(Completion::Number(2.0)));
+    };
+    run(&hostile, false);
+    run(&hostile, true);
+    run("try { eval(src) } catch (e) { 'caught' }", false);
+    run("'use strict'; try { eval(src) } catch (e) { 'caught' }", false);
+    run("try { (0, eval)(src) } catch (e) { 'caught' }", false);
+    run("try { new Function(src) } catch (e) { 'caught' }", false);
+    run("try { Function('a', src) } catch (e) { 'caught' }", false);
+    assert_eq!(
+        engine.evaluate("eval('class D { #x; m() { return this.#x; } }; 7')", false),
+        Ok(Completion::Number(7.0))
+    );
+}

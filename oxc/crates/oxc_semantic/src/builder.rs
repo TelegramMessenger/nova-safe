@@ -120,7 +120,16 @@ pub struct SemanticBuilder<'a> {
 
     #[cfg(feature = "cfg")]
     ast_node_records: Vec<NodeId>,
+
+    /// Asked every [`WORK_PER_POLL`] units of work (nodes, candidates scanned by checks)
+    /// whether to stop.
+    interrupt: Option<&'a dyn Fn() -> bool>,
+    budget_countdown: Cell<u32>,
+    interrupted: Cell<bool>,
 }
+
+/// Nodes, or units of work in a check, between two calls of the interrupt.
+pub const WORK_PER_POLL: u32 = 4096;
 
 /// Data returned by [`SemanticBuilder::build`].
 pub struct SemanticBuilderReturn<'a> {
@@ -128,6 +137,9 @@ pub struct SemanticBuilderReturn<'a> {
     pub semantic: Semantic<'a>,
     /// Diagnostics collected during semantic analysis.
     pub errors: Vec<OxcDiagnostic>,
+    /// The interrupt given to [`SemanticBuilder::with_interrupt`] said stop: the traversal
+    /// and the checks ended early, and `semantic` and `errors` say nothing about the program.
+    pub interrupted: bool,
 }
 
 impl Default for SemanticBuilder<'_> {
@@ -170,7 +182,44 @@ impl<'a> SemanticBuilder<'a> {
             class_table_builder: ClassTableBuilder::new(),
             #[cfg(feature = "cfg")]
             ast_node_records: Vec::new(),
+            interrupt: None,
+            budget_countdown: Cell::new(WORK_PER_POLL),
+            interrupted: Cell::new(false),
         }
+    }
+
+    /// Calls `interrupt` every few thousand nodes (and while long checks run); when it
+    /// returns true, the traversal skips the rest of the program, the checks stop and
+    /// [`SemanticBuilderReturn::interrupted`] is set.
+    #[must_use]
+    pub fn with_interrupt(mut self, interrupt: &'a dyn Fn() -> bool) -> Self {
+        self.interrupt = Some(interrupt);
+        self
+    }
+
+    /// Counts `units` of work and returns whether to stop.
+    #[inline]
+    pub(crate) fn charge_work(&self, units: u32) -> bool {
+        let left = self.budget_countdown.get();
+        if left > units {
+            self.budget_countdown.set(left - units);
+            self.interrupted.get()
+        } else {
+            self.poll_budget()
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn poll_budget(&self) -> bool {
+        self.budget_countdown.set(WORK_PER_POLL);
+        if !self.interrupted.get()
+            && let Some(interrupt) = self.interrupt
+            && interrupt()
+        {
+            self.interrupted.set(true);
+        }
+        self.interrupted.get()
     }
 
     /// Enable/disable additional syntax checks.
@@ -276,7 +325,9 @@ impl<'a> SemanticBuilder<'a> {
 
         // Check that estimated counts accurately (unless in release mode)
         #[cfg(debug_assertions)]
-        if let Some(stats) = check_stats {
+        if let Some(stats) = check_stats
+            && !self.interrupted.get()
+        {
             #[expect(clippy::cast_possible_truncation)]
             let actual_stats = Stats::new(
                 self.nodes.len() as u32,
@@ -315,7 +366,11 @@ impl<'a> SemanticBuilder<'a> {
             #[cfg(not(feature = "cfg"))]
             cfg: (),
         };
-        SemanticBuilderReturn { semantic, errors: self.errors.into_inner() }
+        SemanticBuilderReturn {
+            semantic,
+            errors: self.errors.into_inner(),
+            interrupted: self.interrupted.get(),
+        }
     }
 
     /// Push a Syntax Error
@@ -349,6 +404,9 @@ impl<'a> SemanticBuilder<'a> {
             control_flow!(self, |cfg| cfg.current_node_ix),
             flags,
         );
+        if self.current_node_id.index() % WORK_PER_POLL as usize == 0 && self.poll_budget() {
+            self.check_syntax_error = false;
+        }
         self.record_ast_node();
     }
 
@@ -744,6 +802,20 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
 
         // Check `current_function_node_id` has been reset to as it was at start
         debug_assert!(self.current_function_node_id == NodeId::ROOT);
+    }
+
+    fn visit_statement(&mut self, it: &'a Statement<'a>) {
+        if self.interrupted.get() {
+            return;
+        }
+        walk_statement(self, it);
+    }
+
+    fn visit_expression(&mut self, it: &'a Expression<'a>) {
+        if self.interrupted.get() {
+            return;
+        }
+        walk_expression(self, it);
     }
 
     fn visit_break_statement(&mut self, stmt: &'a BreakStatement<'a>) {

@@ -308,6 +308,9 @@ pub(crate) fn create_dynamic_function<'a>(
         }
         Err(err) => {
             let gc = gc.into_nogc();
+            if agent.termination().is_some() {
+                return Err(agent.termination_error(gc));
+            }
             let message = String::from_string(agent, err.first().unwrap().message.to_string(), gc);
             return Err(agent.throw_exception_with_message(
                 ExceptionType::SyntaxError,

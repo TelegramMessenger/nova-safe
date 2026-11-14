@@ -17,7 +17,7 @@ use oxc_semantic::{AstNodes, Scoping, Semantic, SemanticBuilder, SemanticBuilder
 use oxc_span::SourceType;
 
 use crate::{
-    ecmascript::{HeapString, String, execution::Agent},
+    ecmascript::{HeapString, String, TerminationReason, execution::Agent},
     engine::{Bindable, GcScope, NoGcScope},
     heap::{
         ArenaAccess, BaseIndex, CompactionLists, CreateHeapData, Heap, HeapIndexHandle,
@@ -82,9 +82,19 @@ impl<'a> SourceCode<'a> {
         #[cfg(not(feature = "typescript"))]
         let typescript = false;
         let (source, source_text) = heap_source(agent, source, gc);
+        let host_hooks = agent.host_hooks;
+        let interrupt = move || host_hooks.check_interrupt();
         let allocator = Allocator::new();
-        let program = parse_program(&allocator, &source_text, source_type, typescript)?;
-        let (scoping, nodes) = check_program(&program, source_type)?;
+        let program = parse_program(
+            &allocator,
+            &source_text,
+            source_type,
+            typescript,
+            &interrupt,
+        )
+        .map_err(|errors| interrupted_errors(agent, errors))?;
+        let (scoping, nodes) = check_program(&program, source_type, &interrupt)
+            .map_err(|errors| interrupted_errors(agent, errors))?;
         let source_code = agent.heap.create(SourceCodeHeapData {
             source: source.unbind(),
         });
@@ -124,9 +134,19 @@ impl<'a> SourceCode<'a> {
         let typescript = false;
         let (source, source_text) = heap_source(agent, source, gc.nogc());
         let source = source.unbind();
+        let host_hooks = agent.host_hooks;
+        let interrupt = move || host_hooks.check_interrupt();
         let allocator = Allocator::new();
-        let program = parse_program(&allocator, &source_text, source_type, typescript)?;
-        let (scoping, nodes) = check_program(&program, source_type)?;
+        let program = parse_program(
+            &allocator,
+            &source_text,
+            source_type,
+            typescript,
+            &interrupt,
+        )
+        .map_err(|errors| interrupted_errors(agent, errors))?;
+        let (scoping, nodes) = check_program(&program, source_type, &interrupt)
+            .map_err(|errors| interrupted_errors(agent, errors))?;
         let source_code = agent.heap.create(SourceCodeHeapData { source }).unbind();
         let (scoping, nodes) = (&scoping, &nodes);
         let is_strict = source_type.is_strict() || program.has_use_strict_directive();
@@ -280,12 +300,30 @@ fn heap_source<'g>(
     }
 }
 
-/// Parses a program into `allocator`; [`check_program`] checks it.
+/// The diagnostic of a parse the host's interrupt stopped.
+const PARSE_INTERRUPTED: &str = "Script terminated: interrupted";
+
+fn interrupted() -> Vec<OxcDiagnostic> {
+    vec![OxcDiagnostic::error(PARSE_INTERRUPTED)]
+}
+
+/// A parse the interrupt stopped terminates the script as an interrupted
+/// instruction loop does; other errors pass through.
+fn interrupted_errors(agent: &mut Agent, errors: Vec<OxcDiagnostic>) -> Vec<OxcDiagnostic> {
+    if errors.len() == 1 && errors[0].message == PARSE_INTERRUPTED {
+        agent.terminate(TerminationReason::Interrupted);
+    }
+    errors
+}
+
+/// Parses a program into `allocator`; [`check_program`] checks it. Both poll
+/// `interrupt` while they work and stop when it says so.
 fn parse_program<'p>(
     allocator: &'p Allocator,
     source_text: &'p str,
     source_type: SourceCodeType,
     typescript: bool,
+    interrupt: &'p dyn Fn() -> bool,
 ) -> Result<ast::Program<'p>, Vec<OxcDiagnostic>> {
     if super::source_nesting::source_nesting_too_deep(source_text) {
         return Err(vec![OxcDiagnostic::error(
@@ -309,17 +347,28 @@ fn parse_program<'p>(
                     errors: sloppy_errors,
                     program: sloppy_program,
                     panicked,
+                    interrupted: sloppy_interrupted,
                     ..
-                } = Parser::new(&sloppy_allocator, source_text, source_type).parse();
+                } = Parser::new(&sloppy_allocator, source_text, source_type)
+                    .with_interrupt(interrupt)
+                    .parse();
+                if sloppy_interrupted {
+                    return Err(interrupted());
+                }
                 if panicked {
                     return Err(sloppy_errors);
                 }
                 let SemanticBuilderReturn {
                     errors: mut sloppy_errors,
                     semantic: sloppy_semantic,
+                    interrupted: sloppy_interrupted,
                 } = SemanticBuilder::new()
                     .with_check_syntax_error(true)
+                    .with_interrupt(interrupt)
                     .build(&sloppy_program);
+                if sloppy_interrupted {
+                    return Err(interrupted());
+                }
                 if matches!(source_type_in, SourceCodeType::Eval { direct: true, .. }) {
                     drop_direct_eval_context_errors(&mut sloppy_errors, &sloppy_semantic);
                 }
@@ -332,7 +381,12 @@ fn parse_program<'p>(
                 drop(sloppy_allocator);
 
                 let source_type = SourceType::mjs().with_typescript(typescript);
-                let strict_result = Parser::new(allocator, source_text, source_type).parse();
+                let strict_result = Parser::new(allocator, source_text, source_type)
+                    .with_interrupt(interrupt)
+                    .parse();
+                if strict_result.interrupted {
+                    return Err(interrupted());
+                }
                 if strict_result.panicked {
                     let errors = strict_result.errors;
                     return Err(errors);
@@ -340,18 +394,28 @@ fn parse_program<'p>(
 
                 strict_result
             } else {
-                Parser::new(allocator, source_text, source_type).parse()
+                Parser::new(allocator, source_text, source_type)
+                    .with_interrupt(interrupt)
+                    .parse()
             }
         }
         SourceCodeType::Module => {
             let source_type = SourceType::mjs().with_typescript(typescript);
-            Parser::new(allocator, source_text, source_type).parse()
+            Parser::new(allocator, source_text, source_type)
+                .with_interrupt(interrupt)
+                .parse()
         }
     };
 
     let ParserReturn {
-        errors, program, ..
+        errors,
+        program,
+        interrupted: parse_interrupted,
+        ..
     } = parser_result;
+    if parse_interrupted {
+        return Err(interrupted());
+    }
 
     if !errors.is_empty() {
         return Err(errors);
@@ -364,14 +428,20 @@ fn parse_program<'p>(
 fn check_program<'p>(
     program: &'p ast::Program<'p>,
     source_type: SourceCodeType,
+    interrupt: &'p dyn Fn() -> bool,
 ) -> Result<(Scoping, AstNodes<'p>), Vec<OxcDiagnostic>> {
     let source_type_in = source_type;
     let SemanticBuilderReturn {
         mut errors,
         semantic,
+        interrupted: check_interrupted,
     } = SemanticBuilder::new()
         .with_check_syntax_error(true)
+        .with_interrupt(interrupt)
         .build(program);
+    if check_interrupted {
+        return Err(interrupted());
+    }
     if matches!(source_type_in, SourceCodeType::Eval { direct: true, .. }) {
         drop_direct_eval_context_errors(&mut errors, &semantic);
     }
