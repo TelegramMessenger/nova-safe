@@ -22,7 +22,7 @@ use crate::{
         make_typed_array_with_buffer_witness_record, number_convert_to_integer_or_infinity,
         set_value_in_buffer, to_big_int, to_big_int64, to_big_int64_big_int, to_index, to_int32,
         to_int32_number, to_integer_number_or_infinity, to_integer_or_infinity, to_number,
-        try_result_into_js, try_to_index, unwrap_try, validate_index, validate_typed_array,
+        try_result_into_js, try_to_index, validate_index, validate_typed_array,
     },
     engine::{Bindable, GcScope, Global, NoGcScope, Scopable},
     heap::{ObjectEntry, WellKnownSymbols},
@@ -1630,7 +1630,7 @@ impl WaitAsyncJob {
 
         let promise = self.0.promise_to_resolve.take(agent).bind(gc);
         let promise_capability = PromiseCapability::from_promise(promise, true);
-        unwrap_try(promise_capability.try_resolve(agent, result.to_string().into(), gc));
+        promise_capability.resolve_or_defer(agent, result.to_string().into(), gc);
 
         drop(guard);
         Ok(())

@@ -30,7 +30,7 @@ use crate::{
         create_indirect_import_binding, get_imported_module, get_module_namespace,
         initialize_import_binding, inner_module_evaluation, inner_module_linking,
         inner_module_loading, inner_promise_then,
-        instantiate_ordinary_function_object_from_template, new_module_environment, unwrap_try,
+        instantiate_ordinary_function_object_from_template, new_module_environment,
     },
     engine::{
         Bindable, Executable, ExecutionResult, GcScope, GcToken, HeapRootData, NoGcScope, Scopable,
@@ -914,7 +914,7 @@ impl AbstractModuleMethods for SourceTextModule<'_> {
             //    synchronously.
             // ii. Assert: module.[[AsyncEvaluationOrder]] is unset.
             // iii. Perform ! Call(capability.[[Resolve]], undefined, « undefined »).
-            unwrap_try(capability.try_resolve(agent, Value::Undefined, gc));
+            capability.resolve_or_defer(agent, Value::Undefined, gc);
         }
         // 11. Return capability.[[Promise]].
         capability.promise()
@@ -1395,7 +1395,7 @@ fn async_module_start(
             //       i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « undefined »).
             //    f. Else if result is a return completion, then
             //       i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « result.[[Value]] »).
-            unwrap_try(promise_capability.try_resolve(agent, result, gc.nogc()));
+            promise_capability.resolve_or_defer(agent, result, gc.nogc());
         }
         ExecutionResult::Throw(err) => {
             let _ = agent.pop_execution_context().unwrap();

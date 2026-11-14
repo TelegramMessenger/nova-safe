@@ -13,7 +13,7 @@ use crate::{
         MaybeInvalidIteratorRecord, Object, Promise, PromiseCapability, PromiseReactionHandler,
         Value, call_function, create_iter_result_object, get_object_method,
         if_abrupt_reject_promise_m, inner_promise_then, iterator_close_with_error,
-        iterator_close_with_value, iterator_complete, iterator_next, iterator_value, unwrap_try,
+        iterator_close_with_value, iterator_complete, iterator_next, iterator_value,
     },
     engine::{Bindable, GcScope, Scopable, VmIteratorRecord},
 };
@@ -142,7 +142,7 @@ impl AsyncFromSyncIteratorPrototype {
             )
             .expect("Should perform GC here");
             // b. Perform ! Call(promiseCapability.[[Resolve]], undefined, « iteratorResult »).
-            unwrap_try(promise_capability.try_resolve(agent, iterator_result.into(), gc.nogc()));
+            promise_capability.resolve_or_defer(agent, iterator_result.into(), gc.nogc());
             // c. Return promiseCapability.[[Promise]].
             return scoped_promise.take(agent);
         };

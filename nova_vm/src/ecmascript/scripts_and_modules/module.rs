@@ -13,8 +13,7 @@ use crate::{
         Agent, Array, BUILTIN_STRING_MEMORY, EnumerateKeysAndValues, ExceptionType, JsResult,
         Object, Promise, PromiseCapability, PromiseReactionHandler, String, Value,
         enumerable_own_properties, get, get_active_script_or_module, if_abrupt_reject_promise_m,
-        inner_promise_then, to_string, unwrap_try,
-    },
+        inner_promise_then, to_string, },
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped, typeof_operator},
 };
 
@@ -355,11 +354,11 @@ pub(crate) fn link_and_evaluate(
                 // i. Let namespace be GetModuleNamespace(module).
                 let namespace = get_module_namespace(agent, module, gc.nogc());
                 // ii. Perform ! Call(promiseCapability.[[Resolve]], undefined, « namespace »).
-                unwrap_try(PromiseCapability::from_promise(promise, true).try_resolve(
+                PromiseCapability::from_promise(promise, true).resolve_or_defer(
                     agent,
                     namespace.into(),
                     gc.nogc(),
-                ));
+                );
                 // iii. Return unused.
             }
             Err(err) => {
@@ -404,10 +403,10 @@ pub(crate) fn import_get_module_namespace(
     // i. Let namespace be GetModuleNamespace(module).
     let namespace = get_module_namespace(agent, module, gc);
     // ii. Perform ! Call(promiseCapability.[[Resolve]], undefined, « namespace »).
-    unwrap_try(PromiseCapability::from_promise(promise, true).try_resolve(
+    PromiseCapability::from_promise(promise, true).resolve_or_defer(
         agent,
         namespace.into(),
         gc,
-    ));
+    );
     // iii. Return unused.
 }

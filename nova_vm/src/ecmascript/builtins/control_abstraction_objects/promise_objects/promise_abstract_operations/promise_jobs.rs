@@ -107,6 +107,42 @@ pub(crate) fn new_promise_resolve_thenable_job(
     }
 }
 
+/// Resolves a promise with a value whose "then" could not be read where it
+/// was resolved, because reading it runs JavaScript (see
+/// PromiseCapability::resolve_or_defer).
+#[derive(Debug)]
+pub(crate) struct PromiseResolveJob {
+    promise: Global<Promise<'static>>,
+    resolution: Global<Value<'static>>,
+}
+impl PromiseResolveJob {
+    pub(crate) fn run<'a>(self, agent: &mut Agent, gc: GcScope<'a, '_>) -> JsResult<'a, ()> {
+        let Self {
+            promise,
+            resolution,
+        } = self;
+        let promise = promise.take(agent);
+        let resolution = resolution.take(agent);
+        PromiseCapability::from_promise(promise, false).resolve(agent, resolution, gc);
+        Ok(())
+    }
+}
+
+pub(crate) fn new_promise_resolve_job(
+    agent: &mut Agent,
+    promise: Promise,
+    resolution: Value,
+    _: NoGcScope,
+) -> Job {
+    Job {
+        realm: None,
+        inner: InnerJob::PromiseResolve(PromiseResolveJob {
+            promise: Global::new(agent, promise.unbind()),
+            resolution: Global::new(agent, resolution.unbind()),
+        }),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct PromiseReactionJob {
     reaction: Global<PromiseReaction<'static>>,

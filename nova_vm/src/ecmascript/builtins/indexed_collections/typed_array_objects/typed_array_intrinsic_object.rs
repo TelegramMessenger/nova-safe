@@ -785,8 +785,14 @@ impl TypedArrayPrototype {
         // 17. If count > 0, then
         if count > 0 {
             // g. Set count to min(count, len - startIndex, len - targetIndex).
-            let count = count.min(new_len - start_index).min(new_len - target_index);
-            o.copy_within(agent, start_index, target_index, count)
+            // Note: the coercions of the arguments can shrink the array below
+            // startIndex or targetIndex; then nothing is copied.
+            let count = count
+                .min(new_len.saturating_sub(start_index))
+                .min(new_len.saturating_sub(target_index));
+            if count > 0 {
+                o.copy_within(agent, start_index, target_index, count)
+            }
         }
         Ok(o.into())
     }
@@ -840,7 +846,7 @@ impl TypedArrayPrototype {
         if ta_record.is_typed_array_out_of_bounds(agent) {
             return Err(agent.throw_exception_with_static_message(
                 ExceptionType::TypeError,
-                "Callback is not callable",
+                "TypedArray is out of bounds",
                 gc,
             ));
         }
@@ -2268,7 +2274,9 @@ impl TypedArrayPrototype {
                 // d. Set countBytes to max(endIndex - startIndex, 0).
                 count = end_index.saturating_sub(start_index);
             }
-            o.set_into_data_block(agent, &mut data_block, start_index, count);
+            if count > 0 {
+                o.set_into_data_block(agent, &mut data_block, start_index, count);
+            }
             for_any_typed_array!(
                 o,
                 o,
@@ -2309,7 +2317,11 @@ impl TypedArrayPrototype {
                 // d. Set countBytes to max(endIndex - startIndex, 0).
                 count = end_index.saturating_sub(start_index);
             }
-            a.slice(agent, o, start_index, count);
+            // Note: the species constructor can shrink O below startIndex;
+            // then nothing is copied.
+            if count > 0 {
+                a.slice(agent, o, start_index, count);
+            }
             a
         };
         // 15. Return A.
@@ -2912,8 +2924,27 @@ impl TypedArrayPrototype {
                 gc,
             ));
         };
+        // Note: converting index or value can shrink O; step 12 then reads
+        // undefined for the indices past its end, which ToBigInt rejects and
+        // ToNumber makes NaN.
+        let remaining =
+            make_typed_array_with_buffer_witness_record(agent, o, Ordering::SeqCst)
+                .typed_array_length(agent)
+                .min(len);
+        if remaining < len && o.is_bigint() {
+            return Err(agent.throw_exception_with_static_message(
+                ExceptionType::TypeError,
+                "Cannot convert undefined to a BigInt",
+                gc,
+            ));
+        }
         // 10. Let A be ? TypedArrayCreateSameType(O, « 𝔽(len) »).
         let a = o.typed_array_create_same_type_and_copy_data(agent, len, gc)?;
+        for k in remaining..len {
+            let pk = PropertyKey::try_from(k).unwrap();
+            let result = unwrap_try(a.try_set(agent, pk, Value::nan(), a.into(), None, gc));
+            debug_assert!(result.succeeded());
+        }
         // 11. Let k be 0.
         // 12. Repeat, while k < len
         //  a. Let Pk be ! ToString(𝔽(k)).

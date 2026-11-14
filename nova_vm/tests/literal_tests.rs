@@ -72,3 +72,8 @@ fn generator_prototype() {
 fn not_callable_message() {
     run_test_source("notCallableMessage.test.js");
 }
+
+#[test]
+fn bigint_string_compare() {
+    run_test_source("bigIntStringCompare.test.js");
+}

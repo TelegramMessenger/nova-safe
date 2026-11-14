@@ -2528,6 +2528,10 @@ pub(crate) fn private_element_find<'a>(
     Option<Value<'static>>,
     Option<&'a ElementDescriptor<'static>>,
 )> {
+    // A Proxy never holds private elements here: adding one to it throws.
+    if o.is_proxy() {
+        return None;
+    }
     o.get_backing_object(agent)
         .and_then(|o| o.property_storage().private_element_find(agent, p))
 }

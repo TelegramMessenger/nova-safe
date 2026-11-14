@@ -16,7 +16,9 @@ use crate::{
     },
 };
 
-use super::promise_jobs::new_promise_resolve_thenable_job;
+use core::ops::ControlFlow;
+
+use super::promise_jobs::{new_promise_resolve_job, new_promise_resolve_thenable_job};
 
 /// A promise capability encapsulates a promise, adding methods that are capable
 /// of resolving or rejecting that promise.
@@ -266,14 +268,20 @@ impl<'a> PromiseCapability<'a> {
         if self.is_already_resolved(agent) {
             return TryResult::Continue(());
         }
-        // 6. Set alreadyResolved.[[Value]] to true.
-        match &mut self.promise.get_mut(agent).promise_state {
-            PromiseState::Pending { is_resolved, .. } => *is_resolved = true,
-            _ => unreachable!(),
+        // Note: alreadyResolved is set only once no step needs to run
+        // JavaScript, so that a caller can still fall back to resolve() when
+        // this returns a GcError.
+        let set_already_resolved = |agent: &mut Agent| {
+            // 6. Set alreadyResolved.[[Value]] to true.
+            match &mut self.promise.get_mut(agent).promise_state {
+                PromiseState::Pending { is_resolved, .. } => *is_resolved = true,
+                _ => unreachable!(),
+            };
         };
 
         // 7. If SameValue(resolution, promise) is true, then
         if resolution == self.promise.into() {
+            set_already_resolved(agent);
             // a. Let selfResolutionError be a newly created TypeError object.
             // b. Perform RejectPromise(promise, selfResolutionError).
             let exception = agent
@@ -290,6 +298,7 @@ impl<'a> PromiseCapability<'a> {
 
         // 8. If resolution is not an Object, then
         let Ok(resolution) = Object::try_from(resolution) else {
+            set_already_resolved(agent);
             // a. Perform FulfillPromise(promise, resolution).
             self.internal_fulfill(agent, resolution, gc);
             // b. Return undefined.
@@ -297,9 +306,6 @@ impl<'a> PromiseCapability<'a> {
         };
 
         // 9. Let then be Completion(Get(resolution, "then")).
-        // 10. If then is an abrupt completion, then
-        // a. Perform RejectPromise(promise, then.[[Value]]).
-        // b. Return undefined.
         // 11. Let thenAction be then.[[Value]].
         let then_action = match try_get(
             agent,
@@ -307,11 +313,20 @@ impl<'a> PromiseCapability<'a> {
             BUILTIN_STRING_MEMORY.then.into(),
             None,
             gc,
-        )? {
-            TryGetResult::Unset => Value::Undefined,
-            TryGetResult::Value(v) => v,
+        ) {
+            ControlFlow::Continue(TryGetResult::Unset) => Value::Undefined,
+            ControlFlow::Continue(TryGetResult::Value(v)) => v,
+            // 10. If then is an abrupt completion, then
+            ControlFlow::Break(TryError::Err(err)) => {
+                set_already_resolved(agent);
+                // a. Perform RejectPromise(promise, then.[[Value]]).
+                self.internal_reject(agent, err.value().unbind(), gc);
+                // b. Return undefined.
+                return TryResult::Continue(());
+            }
             _ => return TryError::GcError.into(),
         };
+        set_already_resolved(agent);
 
         // 12. If IsCallable(thenAction) is false, then
         // TODO: Callable proxies
@@ -332,6 +347,18 @@ impl<'a> PromiseCapability<'a> {
         agent.host_hooks.enqueue_promise_job(job);
         // 16. Return undefined.
         TryResult::Continue(())
+    }
+
+    /// Resolve the associated [`Promise`] where no garbage collection may
+    /// happen: as try_resolve, but when reading the resolution's "then" needs
+    /// JavaScript (a getter, a Proxy), the resolution is done by a job.
+    ///
+    /// [`Promise`]: crate::ecmascript::Promise
+    pub(crate) fn resolve_or_defer(&self, agent: &mut Agent, resolution: Value, gc: NoGcScope) {
+        if self.try_resolve(agent, resolution, gc).is_break() {
+            let job = new_promise_resolve_job(agent, self.promise, resolution, gc);
+            agent.host_hooks.enqueue_promise_job(job);
+        }
     }
 
     /// ### [27.2.1.3.1 Promise Reject Functions](https://tc39.es/ecma262/#sec-promise-reject-functions)
