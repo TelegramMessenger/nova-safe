@@ -141,3 +141,12 @@ fn async_generator_results_with_a_then_getter_on_object_prototype() {
     assert!(result.contains("next 1"), "{result}");
     assert!(result.contains("then read"), "{result}");
 }
+
+#[test]
+fn private_name_in_a_proxy_is_false() {
+    let source = r#"
+        class A { #x = 1; static t(o) { return #x in o; } }
+        var result = [A.t(new Proxy({}, {})), A.t(new A())].join();
+    "#;
+    assert_eq!(run(source, "result", None), "false,true");
+}
