@@ -106,6 +106,13 @@ impl Heap {
                 + self.data_view_byte_offsets.capacity())
                 * side_entry;
         }
+        #[cfg(feature = "regexp")]
+        {
+            total += vec_bytes(&self.regexps);
+            for regexp in self.regexps.iter() {
+                total += regexp.utf16_input_bytes();
+            }
+        }
         total += vec_bytes(&self.strings);
         for string in self.strings.iter() {
             total += string.len();

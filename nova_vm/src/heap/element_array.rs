@@ -3179,6 +3179,10 @@ impl ElementArrays {
                 ElementArrayKey::E24 => k2pow24.push_within(index, len),
                 ElementArrayKey::E32 => k2pow32.push_within(index, len),
             }
+        } else if new_cap.capacity() < cap.capacity() {
+            // A shape shares the storage of a descendant that filled more of
+            // it than the shape's own keys need: copy into a smaller one.
+            self.shrink_keys_internal(cap, index, new_cap, len)
         } else {
             // Change in capacity.
             self.grow_keys_internal(cap, index, new_cap, len)
@@ -3190,6 +3194,49 @@ impl ElementArrays {
             u32::try_from(capacity).unwrap_or(u32::MAX),
         )?;
         Ok((new_cap, new_index))
+    }
+
+    /// Copy the first `len` keys of a storage into a new storage of a smaller
+    /// capacity that holds them.
+    fn shrink_keys_internal<'a>(
+        &mut self,
+        cap: ElementArrayKey,
+        index: PropertyKeyIndex<'a>,
+        new_cap: ElementArrayKey,
+        len: u32,
+    ) -> Result<PropertyKeyIndex<'a>, TryReserveError> {
+        debug_assert!(len <= new_cap.capacity());
+        let mut keys: Vec<PropertyKey<'a>> = Vec::new();
+        keys.try_reserve_exact(len as usize)?;
+        keys.extend_from_slice(self.get_keys_raw(cap, index, len));
+        let Self {
+            k2pow1,
+            k2pow2,
+            k2pow3,
+            k2pow4,
+            k2pow6,
+            k2pow8,
+            k2pow10,
+            k2pow12,
+            k2pow16,
+            k2pow24,
+            k2pow32,
+            ..
+        } = self;
+        match new_cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => Ok(PropertyKeyIndex::ZERO),
+            ElementArrayKey::E1 => k2pow1.push(&keys),
+            ElementArrayKey::E2 => k2pow2.push(&keys),
+            ElementArrayKey::E3 => k2pow3.push(&keys),
+            ElementArrayKey::E4 => k2pow4.push(&keys),
+            ElementArrayKey::E6 => k2pow6.push(&keys),
+            ElementArrayKey::E8 => k2pow8.push(&keys),
+            ElementArrayKey::E10 => k2pow10.push(&keys),
+            ElementArrayKey::E12 => k2pow12.push(&keys),
+            ElementArrayKey::E16 => k2pow16.push(&keys),
+            ElementArrayKey::E24 => k2pow24.push(&keys),
+            ElementArrayKey::E32 => k2pow32.push(&keys),
+        }
     }
 
     pub(crate) fn realloc_values_with_removal<'a>(

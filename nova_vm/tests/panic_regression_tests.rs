@@ -355,3 +355,117 @@ fn sloppy_eval_after_a_class_static_element() {
         "2,3,4,5,undefined,undefined,numbernumber"
     );
 }
+
+/// An Object Shape that shares the keys storage of a descendant with more
+/// keys (after `setPrototypeOf` and deletes) copies its keys into a smaller
+/// storage when a different key is added, instead of reaching
+/// `unreachable!()` in the keys storage's grow.
+#[test]
+fn adding_a_key_to_a_shape_that_shares_a_larger_keys_storage() {
+    let source = r#"
+        var log = [];
+        var p = { a: 1, b: 2, c: 3 };
+        Object.setPrototypeOf(p, null);
+        delete p.c;
+        delete p.b;
+        p.n = 4;
+        log.push(Object.keys(p).join(""));
+        var q = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 };
+        Object.setPrototypeOf(q, null);
+        for (var k of ["i", "h", "g", "f", "e", "d", "c", "b"]) delete q[k];
+        q.x = 1;
+        q.y = 2;
+        log.push(Object.keys(q).join(""), q.a + q.x + q.y);
+        var r = { a: 1, b: 2, c: 3, d: 4, e: 5 };
+        Object.setPrototypeOf(r, null);
+        delete r.e; delete r.d; delete r.c; delete r.b;
+        var child = Object.create(r);
+        r.z = 1;
+        log.push(Object.keys(r).join(""), child.a + child.z);
+    "#;
+    assert_eq!(run(source, "log.join()", None), "an,axy,4,az,2");
+}
+
+/// `%TypedArray%.prototype.filter` whose species constructor returns a
+/// typed array of another element type converts the kept elements as `Set`
+/// does, instead of copying raw bytes (a slice index panic when the result's
+/// elements are smaller).
+#[test]
+fn typed_array_filter_species_of_another_element_type() {
+    let source = r#"
+        var log = [];
+        function species(ta, C) {
+            ta.constructor = { [Symbol.species]: function (n) { return new C(n); } };
+            return ta;
+        }
+        function show(r) { log.push(r.constructor.name + " " + Array.from(r).join(" ")); }
+        show(species(new Uint16Array([1, 2, 3, 300, 5, 6, 7, 8, 9]), Uint8Array).filter(() => true));
+        show(species(new Int8Array([-1, 2, -128]), Float64Array).filter(() => true));
+        show(species(new Uint16Array([65535, 1]), Int16Array).filter(() => true));
+        show(species(new Float64Array([1.5, -2, 300]), Uint8ClampedArray).filter(() => true));
+        show(species(new BigInt64Array([-1n, 5n]), BigUint64Array).filter(() => true));
+        show(species(new Uint8Array([1, 2, 3, 4]), Uint16Array).filter((x) => x & 1));
+        show(species(new Float32Array([0.5, 2]), Float32Array).filter(() => true));
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "Uint8Array 1 2 3 44 5 6 7 8 9,Float64Array -1 2 -128,Int16Array -1 1,\
+         Uint8ClampedArray 2 0 255,BigUint64Array 18446744073709551615 5,Uint16Array 1 3,\
+         Float32Array 0.5 2"
+    );
+}
+
+/// `Set.prototype.clear` keeps the list of entries (as EMPTY), so an
+/// iterator suspended in it goes on to the values added after the clear, as
+/// the spec, QuickJS and Map do. Truncating the list ended the iteration and
+/// tripped a debug assertion in the iterator's `next`.
+#[test]
+fn set_iterator_visits_values_added_after_clear() {
+    let source = r#"
+        var log = [];
+        var s = new Set([1, 2, 3, 4]);
+        var it = s.values();
+        it.next(); it.next(); it.next();
+        s.clear();
+        s.add(5); s.add(6);
+        log.push(JSON.stringify([...it]), s.size);
+        var e = new Set(["a", "b"]);
+        var entries = e.entries();
+        entries.next();
+        e.clear();
+        e.add("c");
+        log.push(JSON.stringify([...entries]));
+        var f = new Set([1, 2, 3]);
+        var seen = [];
+        f.forEach(function (v) { seen.push(v); if (v === 2) { f.clear(); f.add(7); } });
+        log.push(seen.join(" "), [...f].join(" "));
+        var g = new Set([1, 2]);
+        for (var i = 0; i < 3; i++) { g.clear(); g.add(i); }
+        log.push([...g].join(" "), g.has(2), g.has(0), g.size);
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "[5,6],2,[[\"c\",\"c\"]],1 2 7,7,2,true,false,1"
+    );
+}
+
+/// `codePointAt` on the second code unit of a surrogate pair that starts a
+/// heap string (longer than an inline string) read the pair's start from an
+/// index mapping that stores index 0 as `None`, and unwrapped it.
+#[test]
+fn code_point_at_inside_a_leading_surrogate_pair() {
+    let source = r#"
+        var log = [];
+        for (var s of ["\u{1F600}aaba", "\u{1F600}", "\u{1F600}\u{1F600}xyzw", "a\u{1F600}bcdef"]) {
+            var units = [];
+            for (var i = 0; i < s.length; i++) units.push(s.codePointAt(i), s.charCodeAt(i));
+            log.push(units.join(" "));
+        }
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "128512 55357 56832 56832 97 97 97 97 98 98 97 97,128512 55357 56832 56832,\
+         128512 55357 56832 56832 128512 55357 56832 56832 120 120 121 121 122 122 119 119,\
+         97 97 128512 55357 56832 56832 98 98 99 99 100 100 101 101 102 102"
+    );
+}

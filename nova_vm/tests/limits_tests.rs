@@ -203,6 +203,21 @@ fn interrupt_ends_long_native_loops() {
         assert_interrupted("Array.prototype.indexOf.call({ length: 2 ** 53 - 1 }, 1)");
         assert_interrupted("Array.prototype.includes.call({ length: 2 ** 53 - 1 }, 1)");
         assert_interrupted("Array.prototype.fill.call({ length: 2 ** 53 - 1 }, 1)");
+        assert_interrupted("new Uint8Array({ length: 2 ** 26 })");
+    });
+}
+
+#[test]
+fn interrupt_ends_regexp_split_match_and_replace_loops() {
+    on_big_stack(|| {
+        assert_interrupted(
+            "var re = /x/g; re.exec = () => ({ index: 0, length: 2 ** 53 - 1, 0: '' }); \
+             re.constructor = { [Symbol.species]: function () { return re; } }; 'ab'.split(re)",
+        );
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.split(/(?:)/)");
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.match(/a/g)");
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.replace(/a/g, 'b')");
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.replace(/(?:)/g, '')");
     });
 }
 
@@ -386,6 +401,9 @@ fn heap_limit_terminates_growing_scripts() {
             "const m = new Map(); for (let i = 0; ; i++) m.set(i, i);",
             "const t = new Set(); for (let i = 0; ; i++) t.add(i);",
             "let s = 'x'.repeat(1 << 20); for (;;) s = s + s;",
+            "const s = 'a'.repeat(1 << 21); for (;;) s.replaceAll('', '');",
+            "const s = '\\u00e9'.repeat(1 << 18); const a = []; \
+             for (;;) { const r = new RegExp('x' + a.length); r.exec(s); a.push(r); }",
         ] {
             let mut engine = Engine::new();
             engine.agent.set_heap_limit(Some(8 * 1024 * 1024));

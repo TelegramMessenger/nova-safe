@@ -3131,6 +3131,15 @@ fn replace_string_matches<'gc, 'scope>(
         let search = search_string.get(agent);
         let mut position = str.index_of_(agent, search, 0);
         while let Some(found) = position {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
+            if match_positions.len() % 4096 == 4095 {
+                agent
+                    .check_heap_limit(
+                        match_positions.len() * core::mem::size_of::<usize>(),
+                        gc.nogc(),
+                    )
+                    .unbind()?;
+            }
             match_positions.push(found);
             if !all {
                 break;

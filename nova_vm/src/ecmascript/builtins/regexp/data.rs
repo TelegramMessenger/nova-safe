@@ -179,6 +179,12 @@ pub(crate) struct RegExpHeapData<'a> {
 }
 
 impl<'a> RegExpHeapData<'a> {
+    /// Bytes held by the UTF-16 copy of the last non-ASCII string searched,
+    /// which lives as long as the RegExp: counted for the heap limit.
+    pub(crate) fn utf16_input_bytes(&self) -> usize {
+        self.utf16_input.capacity() * size_of::<u16>()
+    }
+
     /// Compiles a pattern given as a JavaScript string. Without the `u` or
     /// `v` flag the pattern is a list of code units, with them a list of code
     /// points (lone surrogates included).

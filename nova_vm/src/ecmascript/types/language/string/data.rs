@@ -305,7 +305,8 @@ impl StringRecord {
             }
             None => {
                 // Matched None; this is the second character in a surrogate pair.
-                let wtf8_index: usize = mapping[utf16_idx - 1].unwrap().into();
+                // Index 0 is stored as None too: the pair starts the string.
+                let wtf8_index: usize = mapping[utf16_idx - 1].map_or(0, NonZeroUsize::get);
                 let char = self
                     .as_wtf8()
                     .slice_from(wtf8_index)

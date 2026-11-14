@@ -504,6 +504,7 @@ impl RegExpPrototype {
             let mut n = 0u32;
             // e. Repeat,
             loop {
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 // i. Let result be ? RegExpExec(rx, S).
                 let result = reg_exp_exec(agent, rx.get(agent), s.get(agent), gc.reborrow())
                     .unbind()?
@@ -804,6 +805,15 @@ impl RegExpPrototype {
         // 11. Let done be false.
         // 12. Repeat, while done is false,
         loop {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
+            if results.len() % 4096 == 4095 {
+                agent
+                    .check_heap_limit(
+                        results.len() * core::mem::size_of::<Scoped<Object>>(),
+                        gc.nogc(),
+                    )
+                    .unbind()?;
+            }
             // a. Let result be ? RegExpExec(rx, S).
             let result = reg_exp_exec(agent, rx.get(agent), s.get(agent), gc.reborrow())
                 .unbind()?
@@ -870,6 +880,7 @@ impl RegExpPrototype {
         let mut next_source_position = 0;
         // 15. For each element result of results, do
         for result in results {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let resultLength be ? LengthOfArrayLike(result).
             let result_length = length_of_array_like(agent, result.get(agent), gc.reborrow())
                 .unbind()?
@@ -1357,6 +1368,7 @@ impl RegExpPrototype {
         let mut q = 0;
         // 19. Repeat, while q < size,
         while q < size {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Perform ? Set(splitter, "lastIndex", 𝔽(q), true).
             let f_q = Number::try_from(q).unwrap();
             set(
@@ -1426,6 +1438,7 @@ impl RegExpPrototype {
                     let mut i = 1;
                     // 9. Repeat, while i ≤ numberOfCaptures,
                     while i <= number_of_captures {
+                        agent.poll_interrupt(gc.nogc()).unbind()?;
                         // a. Let nextCapture be ? Get(z, ! ToString(𝔽(i))).
                         let next_capture = get(
                             agent,
