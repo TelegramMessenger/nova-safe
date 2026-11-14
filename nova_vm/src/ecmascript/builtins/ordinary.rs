@@ -605,6 +605,10 @@ pub(crate) fn ordinary_try_has_property<'gc>(
                 .into()
             };
         }
+        agent
+            .heap
+            .caches
+            .set_current_cache(shape, property_key, object.into(), cache);
     }
 
     // 1. Let hasOwn be ? O.[[GetOwnProperty]](P).
@@ -648,7 +652,12 @@ pub(crate) fn ordinary_try_has_property<'gc>(
         .try_get_prototype_of(agent, gc)
     {
         ControlFlow::Continue(p) => p,
-        ControlFlow::Break(_) => return TryError::GcError.into(),
+        ControlFlow::Break(_) => {
+            if cache.is_some() {
+                agent.heap.caches.clear_current_cache_to_populate();
+            }
+            return TryError::GcError.into();
+        }
     };
 
     // 4. If parent is not null, then
