@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nova_cli", "nova_embed", "nova_vm", "nova_vm_derive", "small_string", "tests", "wtf8"]
+members = ["nova_cli", "nova_embed", "nova_embed_ffi", "nova_vm", "nova_vm_derive", "small_string", "tests", "wtf8"]
 exclude = ["nova_lint"]
 
 [workspace.package]

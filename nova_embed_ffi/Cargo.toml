@@ -1,0 +1,12 @@
+[package]
+name = "nova_embed_ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+nova_embed = { path = "../nova_embed" }
