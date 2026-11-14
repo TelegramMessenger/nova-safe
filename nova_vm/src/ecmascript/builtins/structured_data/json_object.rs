@@ -932,6 +932,10 @@ fn serialize_json_object<'a, 'b>(
     mut gc: GcScope<'a, 'b>,
 ) -> JsResult<'a, ()> {
     agent.check_stack(gc.nogc()).unbind()?;
+    agent.poll_interrupt(gc.nogc()).unbind()?;
+    agent
+        .check_string_length(state.result.len(), gc.nogc())
+        .unbind()?;
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception
     //    because the structure is cyclical.
@@ -1098,6 +1102,10 @@ fn serialize_json_array<'a, 'b>(
     mut gc: GcScope<'a, 'b>,
 ) -> JsResult<'a, ()> {
     agent.check_stack(gc.nogc()).unbind()?;
+    agent.poll_interrupt(gc.nogc()).unbind()?;
+    agent
+        .check_string_length(state.result.len(), gc.nogc())
+        .unbind()?;
     let value = value.bind(gc.nogc());
     // 1. If state.[[Stack]] contains value, throw a TypeError exception because the structure is cyclical.
     if state.stack.iter(agent).any(|x| {

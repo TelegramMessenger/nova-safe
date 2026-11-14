@@ -538,13 +538,21 @@ impl<'a> InternalMethods<'a> for Array<'a> {
         if property_key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
             array_set_length(agent, self, property_descriptor.unbind(), gc)
         } else {
-            Ok(unwrap_try(self.try_define_own_property(
-                agent,
-                property_key.unbind(),
-                property_descriptor.unbind(),
-                None,
-                gc.into_nogc(),
-            )))
+            let property_key = property_key.unbind();
+            let property_descriptor = property_descriptor.unbind();
+            let gc = gc.into_nogc();
+            match self.try_define_own_property(agent, property_key, property_descriptor, None, gc) {
+                TryResult::Continue(result) => Ok(result),
+                // Growing the array past the heap limit.
+                TryResult::Break(TryError::Err(err)) => Err(err),
+                // The elements storage could not grow.
+                TryResult::Break(TryError::GcError) => Err(agent
+                    .throw_exception_with_static_message(
+                        crate::ecmascript::ExceptionType::RangeError,
+                        "Out of memory: array storage could not grow",
+                        gc,
+                    )),
+            }
         }
     }
 

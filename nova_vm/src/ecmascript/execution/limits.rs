@@ -19,6 +19,7 @@
 use crate::{
     ecmascript::{Agent, ExceptionType, JsError, JsResult, String},
     engine::NoGcScope,
+    engine::{HeapRootCollection, HeapRootData},
 };
 
 /// Why a script was terminated.
@@ -178,6 +179,24 @@ impl Agent {
             .live_bytes_after_gc
             .saturating_add(self.heap.alloc_counter)
             .saturating_add(self.heap.data_bytes_since_gc)
+            .saturating_add(self.root_stack_bytes())
+    }
+
+    /// Bytes held by the native code's rooted handles (`Scoped` values and
+    /// scoped collections). A native loop over a Proxy can root a handle per
+    /// iteration; they are live until the loop returns, so no collection can
+    /// free them.
+    fn root_stack_bytes(&self) -> usize {
+        let refs = self.stack_refs.try_borrow().map_or(0, |refs| {
+            refs.capacity() * core::mem::size_of::<HeapRootData>()
+        });
+        let collections = self
+            .stack_ref_collections
+            .try_borrow()
+            .map_or(0, |collections| {
+                collections.capacity() * core::mem::size_of::<HeapRootCollection>()
+            });
+        refs + collections
     }
 
     /// Sets how many bytes of native stack the JavaScript code run by one
@@ -289,7 +308,16 @@ impl Agent {
         } else if let Some(limit) = self.limits.heap_limit
             && self.heap_size() > limit
         {
-            if self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0 {
+            let uncollectable = self
+                .limits
+                .live_bytes_after_gc
+                .saturating_add(self.root_stack_bytes());
+            if (self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0)
+                || uncollectable > limit
+                // A native loop that allocates never reaches the collection
+                // the next instruction would run.
+                || self.heap_size() > limit.saturating_mul(2)
+            {
                 self.terminate(TerminationReason::OutOfMemory);
             } else {
                 // Collect at the next instruction; the heap is only over the
