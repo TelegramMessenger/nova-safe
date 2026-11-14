@@ -570,3 +570,25 @@ fn large_arrays_take_memory_proportional_to_their_length() {
         engine.assert_usable();
     });
 }
+
+#[test]
+fn heap_estimate_counts_bytecode_environments_and_stacks() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        engine.agent.gc();
+        let before = engine.agent.heap_size();
+        assert_eq!(
+            engine.run(
+                "var big = Function('let x = 0;' + 'x += 1;'.repeat(100000) + 'return x;'); var keep = []; for (let i = 0; i < 20000; i++) { let v = i; keep.push(() => v); } function* g() { let a = [1, 2, 3]; yield a; } var gens = []; for (let i = 0; i < 20000; i++) { const it = g(); it.next(); gens.push(it); } typeof big",
+                None
+            ),
+            Outcome::Value("function".into())
+        );
+        engine.agent.gc();
+        let grown = engine.agent.heap_size() - before;
+        // 100k statements of bytecode, 20k closure environments and 20k
+        // suspended generator stacks.
+        eprintln!("estimate grew by {grown} bytes");
+        assert!(grown > 10 * 1024 * 1024, "{grown}");
+    });
+}

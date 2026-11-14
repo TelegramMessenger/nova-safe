@@ -40,6 +40,13 @@ pub(crate) struct Binding {
 }
 
 impl DeclarativeEnvironmentRecord {
+    /// Bytes held by the bindings table, for the heap size estimate.
+    pub(crate) fn bindings_bytes(&self) -> usize {
+        self.bindings.capacity() * (core::mem::size_of::<(String<'static>, Binding)>() + 8)
+    }
+}
+
+impl DeclarativeEnvironmentRecord {
     /// ### [9.1.2.2 NewDeclarativeEnvironment ( E )](https://tc39.es/ecma262/#sec-newdeclarativeenvironment)
     ///
     /// The abstract operation NewDeclarativeEnvironment takes argument E (an

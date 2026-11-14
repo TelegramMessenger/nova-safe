@@ -114,6 +114,14 @@ pub(crate) struct SuspendedVm {
 }
 
 impl SuspendedVm {
+    /// Bytes held by the suspended stacks, for the heap size estimate.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        core::mem::size_of_val(&*self.stack)
+            + core::mem::size_of_val(&*self.reference_stack)
+            + core::mem::size_of_val(&*self.iterator_stack)
+            + core::mem::size_of_val(&*self.exception_jump_target_stack)
+    }
+
     pub(crate) fn resume<'gc>(
         self,
         agent: &mut Agent,
