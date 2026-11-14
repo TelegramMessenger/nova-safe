@@ -440,7 +440,7 @@ impl Caches<'static> {
 
 /// Property lookup caches are an internal optimisation that the engine uses in
 /// bytecode execution to speed up property lookups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bindable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bindable)]
 #[repr(transparent)]
 pub struct PropertyLookupCache<'a>(NonZeroU32, PhantomData<&'a GcToken>);
 

@@ -2,7 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::marker::PhantomData;
+use core::{
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+};
+
+use ahash::AHashMap;
 
 use num_traits::Num;
 #[cfg(feature = "regexp")]
@@ -20,7 +25,7 @@ use crate::{
         Bindable, Executable, ExecutableHeapData, FunctionExpression, Instruction, NoGcScope,
         bytecode::executable::ArrowFunctionExpression,
     },
-    heap::CreateHeapData,
+    heap::{CreateHeapData, HeapIndexHandle},
 };
 
 use super::{IndexType, JumpIndex};
@@ -45,8 +50,10 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     instructions: Vec<u8>,
     /// Caches being built
     caches: Vec<PropertyLookupCache<'gc>>,
+    cache_indexes: AHashMap<PropertyLookupCache<'gc>, usize>,
     /// Constants being built
     constants: Vec<Value<'gc>>,
+    constant_indexes: AHashMap<ConstantKey<'gc>, usize>,
     /// Object Shapes being built
     shapes: Vec<ObjectShape<'gc>>,
     /// Function expressions being built
@@ -65,7 +72,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             current_instruction_pointer_is_unreachable: false,
             instructions: Vec::new(),
             caches: Vec::new(),
+            cache_indexes: AHashMap::default(),
             constants: Vec::new(),
+            constant_indexes: AHashMap::default(),
             shapes: Vec::new(),
             function_expressions: Vec::new(),
             arrow_function_expressions: Vec::new(),
@@ -161,7 +170,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.current_instruction_pointer_is_unreachable = false;
         self.instructions.clear();
         self.caches.clear();
+        self.cache_indexes.clear();
         self.constants.clear();
+        self.constant_indexes.clear();
         self.shapes.clear();
         self.function_expressions.clear();
         self.arrow_function_expressions.clear();
@@ -240,49 +251,28 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     }
 
     pub(super) fn add_cache(&mut self, cache: PropertyLookupCache<'gc>) -> usize {
-        let duplicate = self
-            .caches
-            .iter()
-            .enumerate()
-            .find(|item| item.1.eq(&cache))
-            .map(|(idx, _)| idx);
-
-        duplicate.unwrap_or_else(|| {
-            let index = self.caches.len();
+        let next_index = self.caches.len();
+        let index = *self.cache_indexes.entry(cache).or_insert(next_index);
+        if index == next_index {
             self.caches.push(cache);
-            index
-        })
+        }
+        index
     }
 
     pub(super) fn add_constant(&mut self, constant: Value<'gc>) -> usize {
-        let duplicate = self
-            .constants
-            .iter()
-            .enumerate()
-            .find(|item| item.1.eq(&constant))
-            .map(|(idx, _)| idx);
-
-        duplicate.unwrap_or_else(|| {
-            let index = self.constants.len();
+        let next_index = self.constants.len();
+        let index = *self
+            .constant_indexes
+            .entry(ConstantKey(constant))
+            .or_insert(next_index);
+        if index == next_index {
             self.constants.push(constant);
-            index
-        })
+        }
+        index
     }
 
     pub(super) fn add_identifier(&mut self, identifier: PropertyKey<'gc>) -> usize {
-        let identifier_value = identifier.into_value_unchecked();
-        let duplicate = self
-            .constants
-            .iter()
-            .enumerate()
-            .find(|item| item.1 == &identifier_value)
-            .map(|(idx, _)| idx);
-
-        duplicate.unwrap_or_else(|| {
-            let index = self.constants.len();
-            self.constants.push(identifier_value);
-            index
-        })
+        self.add_constant(identifier.into_value_unchecked())
     }
 
     pub(super) fn add_shape(&mut self, shape: ObjectShape<'gc>) -> usize {
@@ -554,6 +544,36 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.add_double_index(0);
         JumpIndex {
             index: self.instructions.len() - core::mem::size_of::<u32>(),
+        }
+    }
+}
+
+/// A constant compared the way `Value`'s `PartialEq` compares it, hashed so
+/// that equal constants hash alike.
+#[derive(Clone, Copy)]
+struct ConstantKey<'gc>(Value<'gc>);
+
+impl PartialEq for ConstantKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for ConstantKey<'_> {}
+
+impl Hash for ConstantKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(&self.0).hash(state);
+        match self.0 {
+            Value::Boolean(value) => value.hash(state),
+            Value::String(value) => value.hash(state),
+            Value::SmallString(value) => value.hash(state),
+            Value::Integer(value) => value.into_i64().hash(state),
+            Value::SmallF64(value) => value.into_f64().to_bits().hash(state),
+            Value::Number(value) => value.get_index_u32().hash(state),
+            Value::Symbol(value) => value.hash(state),
+            Value::Object(value) => value.hash(state),
+            _ => {}
         }
     }
 }
