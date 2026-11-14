@@ -40,7 +40,7 @@ RUSTUP_BIN="$(dirname "$CARGO_BIN")/rustup"
 
 cd "$ROOT"
 COMMIT="$(git rev-parse --short=12 HEAD)"
-if [ -n "$(git status --porcelain -- nova_vm nova_embed nova_embed_ffi small_string wtf8 nova_vm_derive Cargo.toml)" ]; then
+if [ -n "$(git status --porcelain -- nova_vm nova_embed nova_embed_ffi small_string wtf8 regress nova_vm_derive Cargo.toml Cargo.lock)" ]; then
     COMMIT="$COMMIT-dirty"
 fi
 
@@ -80,11 +80,14 @@ lipo -create \
     "$BUILD_DIR/libnova_embed_ffi-x86_64-apple-darwin.a" \
     -output "$BUILD_DIR/libnova_embed_ffi.a"
 
+# The header and module map go in a folder of their own: Xcode copies every
+# static xcframework's Headers into one include directory of the app build, where
+# another library's module.modulemap may already be at the top.
 HEADERS_DIR="$BUILD_DIR/headers"
 rm -rf "$HEADERS_DIR"
-mkdir -p "$HEADERS_DIR"
-cp nova_embed_ffi/include/nova_engine.h "$HEADERS_DIR/"
-cat > "$HEADERS_DIR/module.modulemap" <<EOF
+mkdir -p "$HEADERS_DIR/NovaEngineFFI"
+cp nova_embed_ffi/include/nova_engine.h "$HEADERS_DIR/NovaEngineFFI/"
+cat > "$HEADERS_DIR/NovaEngineFFI/module.modulemap" <<EOF
 module NovaEngineFFI {
     header "nova_engine.h"
     export *

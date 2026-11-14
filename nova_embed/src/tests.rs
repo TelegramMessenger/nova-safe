@@ -767,3 +767,33 @@ fn atob_decodes_a_large_body_in_linear_time() {
     );
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
 }
+
+/// A btoa result past the heap limit is refused as the engine's own string
+/// builders refuse theirs (`padEnd` here), and leaves the engine as they do.
+#[test]
+fn btoa_past_the_heap_limit_ends_the_script_as_pad_end_does() {
+    let outcomes = |builder: &str| {
+        let mut engine = Engine::new(
+            EngineOptions {
+                memory_limit: 16 << 20,
+                stack_limit: 0,
+            },
+            Box::new(SharedRecorder(Rc::new(Recorder::default()))),
+        )
+        .expect("engine");
+        let script = format!(
+            "const s = 'a'.repeat(9 << 20); let r; try {{ r = {builder}.length; }} catch (e) {{ r = e.name; }} r"
+        );
+        [
+            engine.evaluate(&script, false),
+            engine.evaluate("1 + 1", false),
+        ]
+    };
+    let btoa = outcomes("btoa(s)");
+    assert!(
+        matches!(&btoa[0], Err(Error::OutOfMemory))
+            || btoa[0] == Ok(Completion::String("RangeError".into())),
+        "{btoa:?}"
+    );
+    assert_eq!(btoa, outcomes("s.padEnd(12 << 20)"));
+}

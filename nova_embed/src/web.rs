@@ -186,7 +186,8 @@ pub(crate) fn base64_encode(units: &[u8]) -> Option<String> {
 
 /// Polls the interrupt (and the heap limit) once for every `POLL_BYTES` of a
 /// `length`-byte input, so a huge string cannot hold the thread past its
-/// deadline.
+/// deadline. Results are checked like other built strings
+/// (`check_string_length`: the string length and heap limits, a RangeError).
 fn poll_for<'a>(agent: &mut Agent, length: usize, gc: NoGcScope<'a, '_>) -> JsResult<'a, ()> {
     let steps = (length / POLL_BYTES).min(u32::MAX as usize) as u32;
     agent.poll_interrupt_steps(steps.max(1), gc)
@@ -208,6 +209,7 @@ fn atob<'gc>(
         return Err(invalid_character(agent, ATOB_MESSAGE, gc));
     };
     poll_for(agent, bytes.len(), gc)?;
+    agent.check_string_length(bytes.len(), gc)?;
     let text: String = bytes.iter().map(|&byte| char::from(byte)).collect();
     Ok(JsString::from_string(agent, text, gc).into())
 }
@@ -227,6 +229,7 @@ fn btoa<'gc>(
     let Some(units) = latin1_units(data.as_wtf8(agent).as_bytes()) else {
         return Err(invalid_character(agent, BTOA_MESSAGE, gc));
     };
+    agent.check_string_length(units.len().div_ceil(3).saturating_mul(4), gc)?;
     let Some(text) = base64_encode(&units) else {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::RangeError,
