@@ -43,9 +43,32 @@ file states what protects the process from a hostile script, what is trusted, an
 - A memory-safety bug was found in the removed `ryu-js`: `(4.2025059341068935e-46).toFixed(65)` returned bytes of an
   uninitialized stack buffer into a script string. Upstream Nova still has it.
 
+## How it was tested
+
+- test262 (53,616 tests) against recorded expectations, with and without a garbage collection between scripts; a
+  test may only move from Fail to Pass, in a commit of its own (`safe/PLAN.md`).
+- The Telegram widget corpora (about 500 widgets) through `safe/widgets/run.py`: Nova's output must not change, and is
+  compared with QuickJS's (the app's previous engine).
+- A hostile-input hunt: generators and fuzzers for user code running inside native builtins, forced collections
+  inside every callback, typed-array resize/detach matrices, Proxy re-entrancy, size and nesting extremes. Its
+  findings (allocation-size aborts, loops the interrupt did not reach, handles left unrooted across user code, and
+  several unwraps) are fixed with regression tests (`limits_tests.rs`, `gc_rooting_tests.rs`,
+  `panic_regression_tests.rs`).
+- `safe/tools/gc_audit/`: makes the borrow checker list every handle parameter used after a call that can run
+  JavaScript, plus a runtime sweep of every builtin with arguments that force a collection.
+- A review of the C ABI and the Swift wrapper (no memory-safety finding) and the C ABI under ASan/UBSan.
+
 ## What remains (honestly)
 
 - A bug in `rustc`, LLVM, `std` or a listed dependency could still break the guarantees; the sandbox is the wall
   behind that.
 - Denial of service inside one widget (it burns its own CPU quota until the interrupt stops it).
-- Correctness differences against QuickJS (see PLAN.md); they change what a widget shows, not what it can reach.
+- Correctness differences against QuickJS: on the 501 corpus widgets, 497 produce exactly QuickJS's output; the other
+  three differ in an error's stack text, in nova_cli's module-loader message, and in one case where Nova follows the
+  specification and QuickJS does not (`regexp-delete-recompile`). They change what a widget shows, not what it can
+  reach.
+- Speed and memory: Nova is slower than QuickJS (about 2x on a median widget, 6-8x on the heaviest animations; a
+  pooled widget engine boots in about 22 ms against 8 ms) and keeps about 5.4 MiB of live malloc per engine after the
+  sandbox bundle. Widgets stay inside the CPU limits; the heaviest test widgets use up to ~80% of the 500 ms task
+  limit.
+- The parser (oxc) is trusted code with `unsafe`, bounded by the nesting pre-scan; a fork or audit is the next step.
