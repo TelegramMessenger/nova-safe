@@ -16,7 +16,7 @@ use crate::{
         VarDeclaredNames, VarScopedDeclaration, VarScopedDeclarations,
     },
     engine::{
-        Instruction,
+        CallEnvironment, Instruction,
         bytecode::bytecode_compiler::{
             CompileContext, ValueOutput, compile_context::StackVariable, variable_escapes_scope,
         },
@@ -48,13 +48,28 @@ use super::{CompileEvaluation, simple_array_pattern};
 /// > NOTE 2: B.3.2 provides an extension to the above algorithm that is
 /// > necessary for backwards compatibility with web browser implementations of
 /// > ECMAScript that predate ECMAScript 2015.
+///
+/// Returns the environment a \[\[Call]] of the function needs. Nothing can
+/// observe the Function Environment Record of a strict function with no
+/// parameter expressions, no arguments object and no direct eval, that does
+/// not refer to `new.target` or `super`, and in which no nested arrow function
+/// refers to `this`, `new.target` or `super`: such a function's call keeps
+/// the this value in the execution context, and a Declarative Environment
+/// Record holds its bindings, or no record at all when every parameter, var
+/// and lexical declaration lives in a stack slot.
 pub(crate) fn instantiation<'s>(
     ctx: &mut CompileContext<'_, 's, '_, '_>,
     stack_variables: &mut Vec<StackVariable>,
     func: FunctionAstRef<'s>,
     strict: bool,
     is_lexical: bool,
-) {
+) -> CallEnvironment {
+    let mut this_free = strict
+        && !ctx.scope_contains_direct_eval(func.scope_id())
+        && !Contains::contains(&func, ContainsSymbol::ArrowLexicalThis)
+        && !Contains::contains(&func, ContainsSymbol::NewTarget)
+        && !Contains::contains(&func, ContainsSymbol::SuperCall)
+        && !Contains::contains(&func, ContainsSymbol::SuperProperty);
     // 1. Let calleeContext be the running execution context.
     // 2. Let code be func.[[ECMAScriptCode]].
     let body = func.ecmascript_code();
@@ -64,6 +79,10 @@ pub(crate) fn instantiation<'s>(
 
     // 8. Let hasParameterExpressions be ContainsExpression of formals.
     let has_parameter_expressions = formals.contains_expression();
+    if has_parameter_expressions {
+        this_free = false;
+    }
+    let mut bindings_in_environment = false;
 
     // 12. Let functionNames be a new empty List.
     // 13. Let functionsToInitialize be a new empty List.
@@ -148,6 +167,9 @@ pub(crate) fn instantiation<'s>(
         formals.parameters_count()
     });
     let mut has_duplicates = false;
+    if arguments_object_needed {
+        this_free = false;
+    }
     formals.bound_names(&mut |identifier| {
         let added = parameter_names.insert(identifier.name);
         if added {
@@ -184,6 +206,9 @@ pub(crate) fn instantiation<'s>(
     // 21. For each String paramName of parameterNames, do
     for param_name in &stack_parameters {
         stack_variables.push(ctx.push_stack_variable(*param_name, false));
+    }
+    if !env_parameters.is_empty() {
+        bindings_in_environment = true;
     }
     for param_name in &env_parameters {
         // a. Let alreadyDeclared be ! env.HasBinding(paramName).
@@ -302,6 +327,7 @@ pub(crate) fn instantiation<'s>(
             // 1. Append n to instantiatedVarNames.
             let n_string = ctx.create_string(&n);
             if variable_escapes_scope(ctx, d) {
+                bindings_in_environment = true;
                 // 2. Perform ! env.CreateMutableBinding(n, false).
                 ctx.add_instruction_with_identifier(
                     Instruction::CreateMutableBinding,
@@ -401,8 +427,10 @@ pub(crate) fn instantiation<'s>(
     // 34. For each element d of lexDeclarations, do
     {
         let is_constant_declaration = Cell::new(false);
+        let lexical_in_environment = Cell::new(false);
         let cb = &mut |identifier: &BindingIdentifier<'s>| {
             if variable_escapes_scope(ctx, identifier) {
+                lexical_in_environment.set(true);
                 let dn = ctx.create_string(&identifier.name);
                 ctx.add_instruction_with_identifier(
                     // i. If IsConstantDeclaration of d is true, then
@@ -454,6 +482,9 @@ pub(crate) fn instantiation<'s>(
                 }
             }
         });
+        if lexical_in_environment.get() || create_default_export {
+            bindings_in_environment = true;
+        }
         if create_default_export {
             let dn = BUILTIN_STRING_MEMORY._default_;
             ctx.add_instruction_with_identifier(
@@ -473,5 +504,12 @@ pub(crate) fn instantiation<'s>(
         // TODO: This compilation is incorrect if !strict, when varEnv != lexEnv.
         let f = f.id.as_ref().unwrap().compile(ctx);
         f.put_value(ctx, ValueOutput::Value).unwrap();
+    }
+    if !this_free {
+        CallEnvironment::Function
+    } else if bindings_in_environment {
+        CallEnvironment::Declarative
+    } else {
+        CallEnvironment::None
     }
 }

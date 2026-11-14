@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #[cfg(feature = "regexp")]
+use crate::engine::CallEnvironment;
 use oxc_ast::ast::RegExpFlags;
 use oxc_ast::ast::{self, LabelIdentifier, Statement};
 use oxc_semantic::{AstNodes, ScopeId, Scoping};
@@ -1124,7 +1125,16 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ///
     /// This is useful when the function body is part of a larger whole, namely
     /// with class constructors.
-    pub(crate) fn compile_function_body(&mut self, data: CompileFunctionBodyData<'script, '_>) {
+    pub(crate) fn set_call_environment(&mut self, call_environment: CallEnvironment) {
+        self.executable.set_call_environment(call_environment);
+    }
+
+    /// Returns the environment a \[\[Call]] of the function needs (see
+    /// function_declaration_instantiation::instantiation).
+    pub(crate) fn compile_function_body(
+        &mut self,
+        data: CompileFunctionBodyData<'script, '_>,
+    ) -> CallEnvironment {
         if self.executable.agent.options.print_internals {
             eprintln!();
             eprintln!("=== Compiling Function ===");
@@ -1134,7 +1144,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         let mut stack_variables =
             Vec::with_capacity(data.ast.formal_parameters().parameters_count());
 
-        function_declaration_instantiation::instantiation(
+        let call_environment = function_declaration_instantiation::instantiation(
             self,
             &mut stack_variables,
             data.ast,
@@ -1156,6 +1166,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         for stack_variable in stack_variables {
             stack_variable.exit(self);
         }
+        call_environment
     }
 
     /// A directive is an ExpressionStatement of a string literal: the value

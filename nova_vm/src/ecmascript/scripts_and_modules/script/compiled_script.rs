@@ -49,6 +49,7 @@ use crate::{
 use small_string::SmallString;
 
 use super::{GlobalDeclarations, HostDefined, Script, ScriptRecord};
+use crate::engine::CallEnvironment;
 
 /// Why a script could not be exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +195,7 @@ struct CompiledExecutable {
     arrow_function_expressions: Box<[CompiledArrowFunctionExpression]>,
     class_initializer_bytecodes: Box<[(Option<u32>, bool)]>,
     instance_initializer: Option<u32>,
+    call_environment: CallEnvironment,
 }
 
 #[derive(PartialEq)]
@@ -405,6 +407,7 @@ impl Exporter<'_> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
+            call_environment,
             _gc: _,
         } = executable.get(self.agent).clone();
 
@@ -479,6 +482,7 @@ impl Exporter<'_> {
             arrow_function_expressions: compiled_arrows.into_boxed_slice(),
             class_initializer_bytecodes: compiled_class_initializers.into_boxed_slice(),
             instance_initializer,
+            call_environment,
         });
         self.executable_ids.insert(index, id);
         self.in_progress.pop();
@@ -921,6 +925,7 @@ impl<'a> Importer<'_, 'a, '_> {
             arrow_function_expressions,
             class_initializer_bytecodes,
             instance_initializer,
+            call_environment: compiled.call_environment,
             _gc: core::marker::PhantomData,
         })
     }

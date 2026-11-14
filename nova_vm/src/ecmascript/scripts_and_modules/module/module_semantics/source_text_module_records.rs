@@ -1118,6 +1118,7 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
                 // 15. Set the PrivateEnvironment of moduleContext to null.
                 private_environment: None,
                 is_strict_mode: true,
+                this_value: None,
                 source_code: module.source_code(agent).unbind(),
             }),
             // 9. Set the Function of moduleContext to null.
@@ -1289,6 +1290,7 @@ impl CyclicModuleMethods for SourceTextModule<'_> {
                 variable_environment: environment.unbind().into(),
                 private_environment: None,
                 is_strict_mode: true,
+                this_value: None,
                 source_code: source_code.unbind(),
             }),
             // 2. Set the Function of moduleContext to null.

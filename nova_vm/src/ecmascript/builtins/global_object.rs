@@ -407,6 +407,7 @@ fn evaluate_parsed_eval<'gc>(
             private_environment: running_context_private_env.unbind(),
             is_strict_mode: strict_eval,
             // The code running inside eval is defined inside the eval source.
+            this_value: None,
             source_code: source_code.unbind(),
         }
     } else {
@@ -425,6 +426,7 @@ fn evaluate_parsed_eval<'gc>(
             private_environment: None,
             is_strict_mode: strict_eval,
             // The code running inside eval is defined inside the eval source.
+            this_value: None,
             source_code: source_code.unbind(),
         }
     };
