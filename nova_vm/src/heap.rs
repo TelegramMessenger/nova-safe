@@ -14,6 +14,7 @@ mod heap_gc;
 mod heap_size;
 mod indexes;
 mod object_entry;
+pub(crate) mod soa;
 
 pub use element_array::*;
 pub(crate) use heap_bits::*;
@@ -62,8 +63,8 @@ use crate::{
     },
     engine::{ExecutableHeapData, HeapRootData},
 };
-use hashbrown::HashTable;
-use soavec::{SoAVec, SoAble};
+use crate::table::HashTable;
+use crate::heap::soa::{SoAVec, SoAble};
 use wtf8::{Wtf8Buf, Wtf8Str};
 
 pub(crate) struct Heap {
@@ -742,8 +743,8 @@ macro_rules! arena_vec_access {
             #[inline]
             fn get_direct(
                 self,
-                source: &soavec::SoAVec<Self::Data>,
-            ) -> <Self::Data as soavec::SoAble>::Ref<'_> {
+                source: &crate::heap::soa::SoAVec<Self::Data>,
+            ) -> <Self::Data as crate::heap::soa::SoAble>::Ref<'_> {
                 source
                     .get(self.get_index_u32())
                     .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
@@ -755,8 +756,8 @@ macro_rules! arena_vec_access {
             #[inline]
             fn get_direct_mut<'agent>(
                 self,
-                source: &'agent mut soavec::SoAVec<Self::Data>,
-            ) -> <Self::Data as soavec::SoAble>::Mut<'agent> {
+                source: &'agent mut crate::heap::soa::SoAVec<Self::Data>,
+            ) -> <Self::Data as crate::heap::soa::SoAble>::Mut<'agent> {
                 source
                     .get_mut(self.get_index_u32())
                     .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
@@ -764,17 +765,17 @@ macro_rules! arena_vec_access {
         }
 
         #[doc(hidden)]
-        impl AsRef<soavec::SoAVec<$data<'static>>> for crate::ecmascript::Agent {
+        impl AsRef<crate::heap::soa::SoAVec<$data<'static>>> for crate::ecmascript::Agent {
             #[inline(always)]
-            fn as_ref(&self) -> &soavec::SoAVec<$data<'static>> {
+            fn as_ref(&self) -> &crate::heap::soa::SoAVec<$data<'static>> {
                 &self.heap.$member
             }
         }
 
         #[doc(hidden)]
-        impl AsMut<soavec::SoAVec<$data<'static>>> for crate::ecmascript::Agent {
+        impl AsMut<crate::heap::soa::SoAVec<$data<'static>>> for crate::ecmascript::Agent {
             #[inline(always)]
-            fn as_mut(&mut self) -> &mut soavec::SoAVec<$data<'static>> {
+            fn as_mut(&mut self) -> &mut crate::heap::soa::SoAVec<$data<'static>> {
                 &mut self.heap.$member
             }
         }

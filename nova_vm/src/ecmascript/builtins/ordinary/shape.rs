@@ -5,7 +5,7 @@
 use std::{cmp::Ordering, collections::TryReserveError, marker::PhantomData, num::NonZeroU32};
 
 use crate::hashing::{AHashMap, HandleState};
-use hashbrown::{HashTable, hash_table::Entry};
+use crate::table::{HashTable, hash_table::Entry};
 
 use crate::{
     ecmascript::{

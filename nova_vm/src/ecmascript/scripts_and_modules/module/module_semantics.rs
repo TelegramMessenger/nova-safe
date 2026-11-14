@@ -14,7 +14,7 @@ pub use source_text_module_records::*;
 
 use super::continue_dynamic_import;
 use crate::hashing::AHasher;
-use hashbrown::{HashTable, hash_table::Entry};
+use crate::table::{HashTable, hash_table::Entry};
 use oxc_ast::ast;
 use std::{
     hash::{Hash, Hasher},

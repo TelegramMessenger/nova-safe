@@ -2,7 +2,10 @@ import os
 import re
 import sys
 
-ROOTS = ["nova_vm/src", "small_string", "wtf8", "regress/src", "nova_vm_derive", "nova_embed/src"]
+ROOTS = [
+    "nova_vm/src", "small_string", "wtf8", "regress/src", "nova_vm_derive", "nova_embed/src",
+    "num-bigint/src", "num-traits/src", "unicode-normalization/src",
+]
 KINDS = {
     "block": re.compile(r"\bunsafe\s*\{"),
     "fn": re.compile(r"\bunsafe\s+(?:extern\s+\"[^\"]*\"\s+)?fn\b"),

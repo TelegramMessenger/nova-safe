@@ -210,11 +210,11 @@ impl MapConstructor {
                 |index_to_hash| hasher(keys[*index_to_hash as usize].unwrap()),
             );
             match entry {
-                hashbrown::hash_table::Entry::Occupied(occupied) => {
+                crate::table::hash_table::Entry::Occupied(occupied) => {
                     let index = *occupied.get();
                     values[index as usize] = Some(elements.unbind().into());
                 }
-                hashbrown::hash_table::Entry::Vacant(vacant) => {
+                crate::table::hash_table::Entry::Vacant(vacant) => {
                     // b. Let entry be the Record { [[Key]]: g.[[Key]], [[Value]]: elements }.
                     // c. Append entry to map.[[MapData]].
                     let index = u32::try_from(values.len()).unwrap();
@@ -358,13 +358,13 @@ pub(crate) fn add_entries_from_iterable_map_constructor<'a>(
                             |index_to_hash| hasher(keys[*index_to_hash as usize].unwrap()),
                         );
                         match entry {
-                            hashbrown::hash_table::Entry::Occupied(occupied) => {
+                            crate::table::hash_table::Entry::Occupied(occupied) => {
                                 // We have duplicates in the array. Latter
                                 // ones overwrite earlier ones.
                                 let index = *occupied.get();
                                 values[index as usize] = Some(value.unbind());
                             }
-                            hashbrown::hash_table::Entry::Vacant(vacant) => {
+                            crate::table::hash_table::Entry::Vacant(vacant) => {
                                 vacant.insert(next_index);
                                 keys.push(Some(key.unbind()));
                                 values.push(Some(value.unbind()));

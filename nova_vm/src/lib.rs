@@ -91,6 +91,7 @@ pub mod ecmascript;
 pub mod engine;
 pub mod heap;
 mod hashing;
+mod table;
 
 /// DTrace / SystemTap USDT probes in Nova VM.
 #[cfg(feature = "probes")]

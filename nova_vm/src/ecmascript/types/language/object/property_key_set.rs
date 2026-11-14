@@ -4,7 +4,7 @@
 
 use core::marker::PhantomData;
 
-use hashbrown::HashTable;
+use crate::table::HashTable;
 
 use crate::{
     ecmascript::{Agent, PropertyKey},
@@ -42,8 +42,8 @@ impl<'a> PropertyKeySet<'a> {
         let hash = value.heap_hash(agent);
         let entry = self.0.entry(hash, |p| *p == value, |p| p.heap_hash(agent));
         match entry {
-            hashbrown::hash_table::Entry::Occupied(_) => false,
-            hashbrown::hash_table::Entry::Vacant(vacant_entry) => {
+            crate::table::hash_table::Entry::Occupied(_) => false,
+            crate::table::hash_table::Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(value.unbind());
                 true
             }

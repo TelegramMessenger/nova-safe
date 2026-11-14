@@ -852,7 +852,6 @@ dependencies = [
 name = "nova_vm"
 version = "1.0.0"
 dependencies = [
- "hashbrown 0.17.1",
  "nova_vm_derive",
  "num-bigint 0.5.1",
  "num-traits",
@@ -867,8 +866,6 @@ dependencies = [
  "oxc_syntax",
  "regress",
  "small_string",
- "soavec",
- "soavec_derive",
  "temporal_rs",
  "unicode-normalization",
  "usdt",
@@ -911,8 +908,6 @@ dependencies = [
 [[package]]
 name = "num-bigint"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -930,10 +925,9 @@ dependencies = [
 [[package]]
 name = "num-traits"
 version = "0.2.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+ "libm",
 ]
 
 [[package]]
@@ -1557,26 +1551,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8e2fb0f499abb4d162f2bedad68f5ef91a1682b5a03596ddb67efd37768d100"
 
 [[package]]
-name = "soavec"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad00ede36e1df152ce49c19d6a7e0b16c9e0cf936d4c1fd114ec0f86eb2aee4e"
-dependencies = [
- "soavec_derive",
-]
-
-[[package]]
-name = "soavec_derive"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bce974f36fa02f85e686e5d729db2eb4e5a2b7290b9c5608b237ee4351a60cd2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1805,8 +1779,6 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 [[package]]
 name = "unicode-normalization"
 version = "0.1.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
 dependencies = [
  "tinyvec",
 ]

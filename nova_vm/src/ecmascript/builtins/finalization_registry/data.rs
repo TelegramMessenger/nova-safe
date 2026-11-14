@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::hashing::AHashMap;
-use soavec_derive::SoAble;
+use nova_vm_derive::SoAble;
 
 use crate::{
     ecmascript::{Function, OrdinaryObject, Realm, Value, WeakKey},

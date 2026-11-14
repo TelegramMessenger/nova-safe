@@ -1,0 +1,22 @@
+[package]
+name = "num-traits"
+version = "0.2.19"
+authors = ["The Rust Project Developers"]
+description = "Numeric traits for generic mathematics (Nova's fork: no unsafe)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rust-num/num-traits"
+edition = "2021"
+build = "build.rs"
+publish = false
+
+[dependencies]
+libm = { version = "0.2.0", optional = true }
+
+[build-dependencies]
+autocfg = "1"
+
+[features]
+default = ["std"]
+i128 = []
+libm = ["dep:libm"]
+std = []

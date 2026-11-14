@@ -4,7 +4,7 @@
 
 use crate::hashing::{AHashMap, HandleState};
 use core::cell::RefCell;
-use hashbrown::HashTable;
+use crate::table::HashTable;
 
 use super::{
     AtomicBits, BitRange, CompactionLists, ElementIndex, HeapMarkAndSweep, PropertyKeyIndex,

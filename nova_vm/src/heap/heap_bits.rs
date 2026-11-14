@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use crate::hashing::AHashMap;
 #[cfg(feature = "weak-refs")]
 use crate::hashing::AHashSet;
-use hashbrown::HashTable;
-use soavec::{SoAVec, SoAble};
-use soavec_derive::SoAble;
+use crate::table::HashTable;
+use crate::heap::soa::{SoAVec, SoAble};
+use nova_vm_derive::SoAble;
 
 #[cfg(feature = "date")]
 use crate::ecmascript::Date;

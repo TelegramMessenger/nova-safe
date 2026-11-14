@@ -1,0 +1,16 @@
+[package]
+name = "unicode-normalization"
+version = "0.1.26"
+authors = ["kwantam <kwantam@gmail.com>", "Manish Goregaokar <manishsmail@gmail.com>"]
+description = "Unicode normalization (UAX #15) (Nova's fork: no unsafe)"
+license = "(MIT OR Apache-2.0) AND Unicode-3.0"
+repository = "https://github.com/unicode-rs/unicode-normalization"
+edition = "2018"
+publish = false
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+tinyvec = { version = "1", features = ["alloc"] }
