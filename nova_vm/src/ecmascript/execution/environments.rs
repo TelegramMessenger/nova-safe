@@ -795,33 +795,61 @@ pub(crate) fn try_get_identifier_reference<'a>(
     strict: bool,
     gc: NoGcScope<'a, '_>,
 ) -> TryResult<'a, Reference<'a>> {
-    let env = env.bind(gc);
+    let mut env = env.bind(gc);
     let name = name.bind(gc);
     let cache = cache.bind(gc);
-    // 1. If env is null, then
-    // 2. Let exists be ? env.HasBinding(name).
-    let exists = if let ControlFlow::Continue(TryHasBindingContinue::Result(exists)) =
-        env.try_has_binding(agent, name, cache, gc)
-    {
-        exists
-    } else {
-        return TryError::GcError.into();
-    };
+    loop {
+        // 1. If env is null, then
+        // 2. Let exists be ? env.HasBinding(name).
+        let outer = match env {
+            Environment::Declarative(e) => {
+                let env_rec = agent.heap.environments.get_declarative_environment(e);
+                if env_rec.has_binding(name) {
+                    return TryResult::Continue(Reference::new_variable_reference(
+                        env, name, cache, strict,
+                    ));
+                }
+                env_rec.outer_env().bind(gc)
+            }
+            Environment::Function(e) => {
+                let environments = &agent.heap.environments;
+                let dcl_env = environments
+                    .get_function_environment(e)
+                    .declarative_environment();
+                let env_rec = environments.get_declarative_environment(dcl_env);
+                if env_rec.has_binding(name) {
+                    return TryResult::Continue(Reference::new_variable_reference(
+                        env, name, cache, strict,
+                    ));
+                }
+                env_rec.outer_env().bind(gc)
+            }
+            _ => {
+                let exists = if let ControlFlow::Continue(TryHasBindingContinue::Result(exists)) =
+                    env.try_has_binding(agent, name, cache, gc)
+                {
+                    exists
+                } else {
+                    return TryError::GcError.into();
+                };
 
-    // 3. If exists is true, then
-    if exists {
-        // a. Return the Reference Record {
-        // [[ReferencedName]]: name,
-        // [[Base]]: env,
-        // [[Strict]]: strict,
-        TryResult::Continue(Reference::new_variable_reference(env, name, cache, strict))
-        // [[ThisValue]]: EMPTY
-        // }.
-    }
-    // 4. Else,
-    else {
-        // a. Let outer be env.[[OuterEnv]].
-        let outer = env.get_outer_env(agent);
+                // 3. If exists is true, then
+                if exists {
+                    // a. Return the Reference Record {
+                    // [[ReferencedName]]: name,
+                    // [[Base]]: env,
+                    // [[Strict]]: strict,
+                    return TryResult::Continue(Reference::new_variable_reference(
+                        env, name, cache, strict,
+                    ));
+                    // [[ThisValue]]: EMPTY
+                    // }.
+                }
+                // 4. Else,
+                // a. Let outer be env.[[OuterEnv]].
+                env.get_outer_env(agent)
+            }
+        };
 
         let Some(outer) = outer else {
             // a. Return the Reference Record {
@@ -834,7 +862,7 @@ pub(crate) fn try_get_identifier_reference<'a>(
         };
 
         // b. Return ? GetIdentifierReference(outer, name, strict).
-        try_get_identifier_reference(agent, outer, name, cache, strict, gc)
+        env = outer;
     }
 }
 
@@ -1023,7 +1051,6 @@ impl Environments {
             .expect("DeclarativeEnvironment did not match to any vector index")
     }
 
-    #[expect(dead_code)]
     pub(crate) fn get_function_environment(
         &self,
         index: FunctionEnvironment,

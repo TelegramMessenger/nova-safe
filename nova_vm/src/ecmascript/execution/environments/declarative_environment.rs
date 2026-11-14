@@ -174,6 +174,10 @@ impl DeclarativeEnvironmentRecord {
     pub(crate) fn bindings_bytes(&self) -> usize {
         self.bindings.bytes()
     }
+
+    pub(super) fn outer_env(&self) -> OuterEnv<'static> {
+        self.outer_env
+    }
 }
 
 impl DeclarativeEnvironmentRecord {
