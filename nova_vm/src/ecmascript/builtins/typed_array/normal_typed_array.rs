@@ -17,20 +17,20 @@ use crate::{
         BIGINT_64_ARRAY_DISCRIMINANT, BIGUINT_64_ARRAY_DISCRIMINANT, BigInt,
         CachedBufferByteLength, DataBlock, FLOAT_32_ARRAY_DISCRIMINANT,
         FLOAT_64_ARRAY_DISCRIMINANT, Function, INT_8_ARRAY_DISCRIMINANT, INT_16_ARRAY_DISCRIMINANT,
-        INT_32_ARRAY_DISCRIMINANT, InternalMethods, InternalSlots, JsError, JsResult, Number,
-        Numeric, Object, ObjectShape, OrdinaryObject, Primitive, PropertyDescriptor, PropertyKey,
+        INT_32_ARRAY_DISCRIMINANT, InternalMethods, InternalSlots, JsResult, Number, Numeric,
+        Object, ObjectShape, OrdinaryObject, Primitive, PropertyDescriptor, PropertyKey,
         PropertyLookupCache, PropertyOffset, ProtoIntrinsics, SetAtOffsetProps, SetResult,
         TryError, TryGetResult, TryHasResult, TryResult, TypedArrayAbstractOperations,
         TypedArrayArrayLength, TypedArrayRecord, U8Clamped, UINT_8_ARRAY_DISCRIMINANT,
         UINT_8_CLAMPED_ARRAY_DISCRIMINANT, UINT_16_ARRAY_DISCRIMINANT, UINT_32_ARRAY_DISCRIMINANT,
         Value, Viewable, ViewableSlice, ViewableSliceMut, ViewedArrayBufferByteLength,
         ViewedArrayBufferByteOffset, call_function, canonicalize_numeric_index_string,
-        create_byte_data_block, js_result_into_try, ordinary_define_own_property, ordinary_delete,
-        ordinary_get, ordinary_get_own_property, ordinary_has_property_entry,
-        ordinary_prevent_extensions, ordinary_set, ordinary_try_get, ordinary_try_has_property,
-        ordinary_try_set, set, to_big_int, to_big_int_primitive, to_boolean, to_number,
-        to_number_primitive, typed_array_create_from_data_block,
-        typed_array_species_create_with_length, unwrap_try,
+        comparator_result_ordering, create_byte_data_block, js_result_into_try,
+        ordinary_define_own_property, ordinary_delete, ordinary_get, ordinary_get_own_property,
+        ordinary_has_property_entry, ordinary_prevent_extensions, ordinary_set, ordinary_try_get,
+        ordinary_try_has_property, ordinary_try_set, set, to_big_int, to_big_int_primitive,
+        to_boolean, to_number, to_number_primitive, try_merge_sort_by,
+        typed_array_create_from_data_block, typed_array_species_create_with_length, unwrap_try,
     },
     engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, Scoped},
     heap::{
@@ -1922,12 +1922,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
     ) -> JsResult<'gc, ()> {
         let ta = self.bind(gc.nogc());
         let mut items: Vec<T> = ta.as_slice(agent).slice(0..len).to_vec();
-        let mut error: Option<JsError> = None;
         let ta = ta.scope(agent, gc.nogc());
-        items.sort_by(|a, b| {
-            if error.is_some() {
-                return std::cmp::Ordering::Equal;
-            }
+        try_merge_sort_by(&mut items, |a, b| {
             let a_val = a.into_ne_value(agent, gc.nogc());
             let b_val = b.into_ne_value(agent, gc.nogc());
             let result = call_function(
@@ -1942,26 +1938,9 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
             )
             .unbind()
             .and_then(|v| v.to_number(agent, gc.reborrow()));
-            let num = match result {
-                Ok(n) => n,
-                Err(e) => {
-                    error = Some(e.unbind());
-                    return std::cmp::Ordering::Equal;
-                }
-            };
-            if num.is_nan_(agent) {
-                std::cmp::Ordering::Equal
-            } else if num.is_sign_positive_(agent) {
-                std::cmp::Ordering::Greater
-            } else if num.is_sign_negative_(agent) {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Equal
-            }
-        });
-        if let Some(error) = error {
-            return Err(error);
-        }
+            let num = result.map_err(|e| e.unbind())?;
+            Ok(comparator_result_ordering(num.into_f64_(agent)))
+        })?;
         let ta = ta.take(agent).bind(gc.into_nogc());
         if !ta.is_detached(agent) {
             let slice = ta.as_mut_slice(agent);
