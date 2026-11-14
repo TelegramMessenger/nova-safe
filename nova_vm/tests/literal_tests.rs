@@ -77,3 +77,18 @@ fn not_callable_message() {
 fn bigint_string_compare() {
     run_test_source("bigIntStringCompare.test.js");
 }
+
+#[test]
+fn date_parse_legacy_formats() {
+    run_test_source("dateParseLegacy.test.js");
+}
+
+#[test]
+fn eval_super_in_class_elements() {
+    run_test_source("evalSuperInClassElements.test.js");
+}
+
+#[test]
+fn regexp_last_index_non_writable() {
+    run_test_source("regexpLastIndexNonWritable.test.js");
+}

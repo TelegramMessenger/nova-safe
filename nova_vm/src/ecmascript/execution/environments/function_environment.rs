@@ -51,6 +51,12 @@ pub(crate) struct FunctionEnvironmentRecord {
     /// new.target.
     new_target_is_home_object: bool,
 
+    /// The VariableEnvironment of the code around a class static element,
+    /// which leaving the element restores: the element's environment is
+    /// both its LexicalEnvironment and its VariableEnvironment, and its
+    /// outer environment is the class scope, not that VariableEnvironment.
+    outer_variable_environment: Option<Environment<'static>>,
+
     /// ### \[\[FunctionObject\]\]
     ///
     /// The function object whose invocation caused this Environment Record to
@@ -80,10 +86,12 @@ impl HeapMarkAndSweep for FunctionEnvironmentRecord {
             this_value,
             this_binding_status: _,
             new_target_is_home_object: _,
+            outer_variable_environment,
             function_object,
             new_target,
             declarative_environment,
         } = self;
+        outer_variable_environment.mark_values(queues);
         declarative_environment.mark_values(queues);
         function_object.mark_values(queues);
         new_target.mark_values(queues);
@@ -95,10 +103,12 @@ impl HeapMarkAndSweep for FunctionEnvironmentRecord {
             this_value,
             this_binding_status: _,
             new_target_is_home_object: _,
+            outer_variable_environment,
             function_object,
             new_target,
             declarative_environment,
         } = self;
+        outer_variable_environment.sweep_values(compactions);
         declarative_environment.sweep_values(compactions);
         function_object.sweep_values(compactions);
         new_target.sweep_values(compactions);
@@ -144,6 +154,7 @@ pub(crate) fn new_function_environment<'a>(
         // 5. Set env.[[NewTarget]] to newTarget.
         new_target: new_target.unbind(),
         new_target_is_home_object: false,
+        outer_variable_environment: None,
 
         // 6. Set env.[[OuterEnv]] to F.[[Environment]].
         declarative_environment: declarative_environment.unbind(),
@@ -185,6 +196,7 @@ pub(crate) fn new_class_static_element_environment<'a>(
         // Note: static elements are methods whose HomeObject is the class.
         new_target: Some(class_constructor.unbind().into()),
         new_target_is_home_object: true,
+        outer_variable_environment: Some(agent.current_variable_environment(gc).unbind()),
 
         // 6. Set env.[[OuterEnv]] to F.[[Environment]].
         declarative_environment: declarative_environment.unbind(),
@@ -216,6 +228,7 @@ pub(crate) fn new_class_field_initializer_environment<'a>(
             function_object: class_constructor.unbind(),
             new_target: home_object.unbind(),
             new_target_is_home_object: true,
+            outer_variable_environment: None,
             declarative_environment: declarative_environment.unbind(),
         },
         gc,
@@ -225,6 +238,18 @@ pub(crate) fn new_class_field_initializer_environment<'a>(
 impl<'e> FunctionEnvironment<'e> {
     pub(crate) fn get_function_object(self, agent: &Agent) -> Function<'e> {
         self.get(agent).function_object
+    }
+
+    /// Whether this is the environment of a class field initializer or a
+    /// static block, which stand in for functions of their own.
+    pub(crate) fn is_class_element_environment(self, agent: &Agent) -> bool {
+        self.get(agent).new_target_is_home_object
+    }
+
+    /// The VariableEnvironment to restore when leaving a class static
+    /// element.
+    pub(crate) fn get_outer_variable_environment(self, agent: &Agent) -> Option<Environment<'e>> {
+        self.get(agent).outer_variable_environment
     }
 
     pub(crate) fn get_new_target(self, agent: &Agent) -> Option<Object<'e>> {

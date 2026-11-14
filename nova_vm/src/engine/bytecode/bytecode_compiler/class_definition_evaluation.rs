@@ -20,7 +20,7 @@ use crate::{
 use oxc_ast::ast::{self, MethodDefinitionKind};
 use oxc_ecmascript::{BoundNames, PrivateBoundIdentifiers, PropName};
 
-use super::{IndexType, is_anonymous_function_definition};
+use super::is_anonymous_function_definition;
 
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<'s> {
     type Output = Result<(), ExpressionError>;
@@ -373,12 +373,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
             // b. Let F be CreateBuiltinFunction(defaultConstructor, 0,
             //    className, « [[ConstructorKind]], [[SourceText]] », the
             //    current Realm Record, constructorParent).
-            let index = ctx.get_next_class_initializer_index();
-            ctx.add_instruction_with_immediate(
+            // The constructor is not compiled: its index is not used.
+            ctx.add_instruction_with_next_class_initializer_index(
                 Instruction::ClassDefineDefaultConstructor,
-                index.into(),
             );
-            index
+            0
         };
 
         // result: F
@@ -870,7 +869,7 @@ fn define_constructor_method(
     ctx: &mut CompileContext,
     class_element: &ast::MethodDefinition,
     has_constructor_parent: bool,
-) -> IndexType {
+) -> usize {
     // stack: [class_name, proto] or [class_name, constructor_parent, proto]
 
     // 1. Let propKey be ? Evaluation of ClassElementName.

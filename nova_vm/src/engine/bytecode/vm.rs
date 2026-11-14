@@ -69,6 +69,9 @@ enum ExceptionHandler<'a> {
         ip: u32,
         /// The lexical environment which contains this exception jump target.
         lexical_environment: Environment<'a>,
+        /// The variable environment there: a class static element that
+        /// throws has its own.
+        variable_environment: Environment<'a>,
     },
     /// Indicates that any error should be ignored and the next instruction
     /// skipped. This is used in AsyncIteratorClose handling.
@@ -492,6 +495,7 @@ impl Vm {
                 ExceptionHandler::CatchBlock {
                     ip,
                     lexical_environment,
+                    variable_environment,
                 } => {
                     if agent.options.print_internals {
                         eprintln!("Error: {:?}", err.value());
@@ -499,6 +503,7 @@ impl Vm {
                     }
                     self.ip = ip as usize;
                     agent.set_current_lexical_environment(lexical_environment);
+                    agent.set_current_variable_environment(variable_environment);
                     self.result = Some(err.value().unbind());
                 }
                 ExceptionHandler::IgnoreErrorAndNextInstruction => {
@@ -1520,8 +1525,10 @@ impl HeapMarkAndSweep for ExceptionHandler<'static> {
             ExceptionHandler::CatchBlock {
                 ip: _,
                 lexical_environment,
+                variable_environment,
             } => {
                 lexical_environment.mark_values(queues);
+                variable_environment.mark_values(queues);
             }
             ExceptionHandler::IgnoreErrorAndNextInstruction => {}
         }
@@ -1532,8 +1539,10 @@ impl HeapMarkAndSweep for ExceptionHandler<'static> {
             ExceptionHandler::CatchBlock {
                 ip: _,
                 lexical_environment,
+                variable_environment,
             } => {
                 lexical_environment.sweep_values(compactions);
+                variable_environment.sweep_values(compactions);
             }
             ExceptionHandler::IgnoreErrorAndNextInstruction => {}
         }

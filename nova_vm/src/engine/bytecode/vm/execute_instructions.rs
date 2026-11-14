@@ -2348,10 +2348,13 @@ pub(super) fn execute_exit_declarative_environment(agent: &mut Agent, gc: NoGcSc
 }
 
 pub(super) fn execute_exit_variable_environment(agent: &mut Agent, gc: NoGcScope) {
-    let old_env = agent
-        .current_variable_environment(gc)
-        .get_outer_env(agent)
-        .unwrap();
+    let var_env = agent.current_variable_environment(gc);
+    let old_env = match var_env {
+        Environment::Function(env) => env.get_outer_variable_environment(agent),
+        _ => None,
+    }
+    .or_else(|| var_env.get_outer_env(agent))
+    .unwrap();
     agent.set_current_variable_environment(old_env);
 }
 
@@ -2420,6 +2423,7 @@ pub(super) fn execute_push_exception_jump_target(
             // conversion is lossless.
             ip: instr.get_jump_slot() as u32,
             lexical_environment: agent.current_lexical_environment(gc).unbind(),
+            variable_environment: agent.current_variable_environment(gc).unbind(),
         });
 }
 

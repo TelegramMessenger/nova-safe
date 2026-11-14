@@ -182,7 +182,7 @@ pub(crate) fn perform_eval<'gc>(
     // 8. Let inDerivedConstructor be false.
     let mut in_derived_constructor = false;
     // 9. Let inClassFieldInitializer be false.
-    let in_class_field_initializer = false;
+    let mut in_class_field_initializer = false;
 
     // 10. If direct is true, then
     //     a. Let thisEnvRec be GetThisEnvironment().
@@ -196,21 +196,26 @@ pub(crate) fn perform_eval<'gc>(
         in_method = this_env_rec.has_super_binding(agent);
         // iv. If F.[[ConstructorKind]] is derived, set inDerivedConstructor to
         //     true.
-        in_derived_constructor = match f {
-            Function::ECMAScriptFunction(f) => f
-                .get(agent)
-                .ecmascript_function
-                .constructor_status
-                .is_derived_class(),
-            Function::BuiltinConstructorFunction(f) => f.get(agent).is_derived,
-            _ => false,
-        };
+        // Note: a class field initializer or static block runs in an
+        // environment whose [[FunctionObject]] is the class constructor, but
+        // stands in for a method of its own, which is not a constructor.
+        in_derived_constructor = !this_env_rec.is_class_element_environment(agent)
+            && match f {
+                Function::ECMAScriptFunction(f) => f
+                    .get(agent)
+                    .ecmascript_function
+                    .constructor_status
+                    .is_derived_class(),
+                Function::BuiltinConstructorFunction(f) => f.get(agent).is_derived,
+                _ => false,
+            };
 
-        // TODO:
         // v. Let classFieldInitializerName be
         //    F.[[ClassFieldInitializerName]].
         // vi. If classFieldInitializerName is not empty, set
         //     inClassFieldInitializer to true.
+        // Note: as in QuickJS, static blocks count as field initializers.
+        in_class_field_initializer = this_env_rec.is_class_element_environment(agent);
     }
 
     // 11. Perform the following substeps in an implementation-defined order,
@@ -443,6 +448,7 @@ fn evaluate_parsed_eval<'gc>(
     };
     // 27. Push evalContext onto the execution context stack; evalContext is now the running execution context.
     agent.push_execution_context(eval_context);
+    agent.compile_limit_error = None;
     let result = {
         // 28. Let result be Completion(EvalDeclarationInstantiation(body, varEnv, lexEnv, privateEnv, strictEval)).
         // SAFETY: SourceCode is rooted for the duration of this call.
@@ -475,12 +481,23 @@ fn evaluate_parsed_eval<'gc>(
                     gc.nogc(),
                 )
                 .scope(agent, gc.nogc());
-                // a. Set result to Completion(Evaluation of body).
-                // 30. If result is a normal completion and result.[[Value]] is empty, then
-                // a. Set result to NormalCompletion(undefined).
-                let result = Vm::execute(agent, exe.clone(), None, gc).into_js_result();
-                exe.take(agent).try_drop(agent);
-                result
+                if let Some(message) = agent.compile_limit_error.take() {
+                    // The eval code, or a function it declares, is too large
+                    // for the bytecode's operands.
+                    exe.take(agent).try_drop(agent);
+                    Err(agent.throw_exception_with_static_message(
+                        ExceptionType::SyntaxError,
+                        message,
+                        gc.into_nogc(),
+                    ))
+                } else {
+                    // a. Set result to Completion(Evaluation of body).
+                    // 30. If result is a normal completion and result.[[Value]] is empty, then
+                    // a. Set result to NormalCompletion(undefined).
+                    let result = Vm::execute(agent, exe.clone(), None, gc).into_js_result();
+                    exe.take(agent).try_drop(agent);
+                    result
+                }
             }
             Err(err) => Err(err.unbind().bind(gc.into_nogc())),
         }

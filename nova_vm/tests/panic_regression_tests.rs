@@ -301,3 +301,57 @@ fn scripts_with_more_constants_than_16_bit_indices() {
         "70000,s65536,s69999,69999.5,name69999,late literal late"
     );
 }
+
+#[test]
+fn code_with_more_names_than_16_bit_indices() {
+    let source = r#"
+        var log = [];
+        var o = { p0: 1, p65536: 2, p69999: 3 };
+        function list(count, item) {
+            return Array.from({ length: count }, (_, i) => item(i)).join("");
+        }
+        log.push(eval("var n = 0;" + list(70000, (i) => "if (o.p" + i + ") n++;") +
+            " o.p69998 = n; [n, o.p65536, o.p69998, o.p69999].join(' ');"));
+        function tooMany(name, source) {
+            try {
+                eval("log.push('" + name + " started');" + source);
+                log.push(name + " ran");
+            } catch (e) {
+                log.push(name + ": " + e.name);
+            }
+        }
+        tooMany("template parts", "`" + "${o.p0}".repeat(70000) + "`;");
+        tooMany("classes", "[" + list(70000, () => "class {},") + "];");
+        tooMany("arrows", "[" + list(70000, () => "() => 0,") + "];");
+        try {
+            new Function("return [" + list(70000, () => "class {},") + "];");
+            log.push("Function ran");
+        } catch (e) {
+            log.push("Function: " + e.name);
+        }
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "3 2 3 3,template parts: SyntaxError,classes: SyntaxError,arrows: SyntaxError,\
+         Function: SyntaxError"
+    );
+}
+
+#[test]
+fn sloppy_eval_after_a_class_static_element() {
+    let source = r#"
+        var log = [];
+        class A { static f = 1; static { var inBlock = 1; } }
+        log.push(eval("var afterClass = 2; afterClass"));
+        try { class C { static { throw 1; } } } catch (e) {}
+        log.push(eval("var afterThrow = 3; afterThrow"));
+        try { class D { static f = (() => { throw 2; })(); } } catch (e) {}
+        log.push(eval("var afterThrow2 = 4; afterThrow2"));
+        function g() { class F { static x = 1; } return eval("var inG = 5; inG"); }
+        log.push(g(), typeof inG, typeof inBlock, typeof afterClass + typeof afterThrow2);
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "2,3,4,5,undefined,undefined,numbernumber"
+    );
+}

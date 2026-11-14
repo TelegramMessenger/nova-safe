@@ -177,14 +177,16 @@ impl Contains for ast::StaticMemberExpression<'_> {
 }
 
 impl Contains for ast::Super {
-    fn contains(&self, symbol: ContainsSymbol) -> bool {
-        symbol == ContainsSymbol::SuperCall
+    fn contains(&self, _symbol: ContainsSymbol) -> bool {
+        // `super` alone is the SuperCall or SuperProperty around it.
+        false
     }
 }
 
 impl Contains for ast::CallExpression<'_> {
     fn contains(&self, symbol: ContainsSymbol) -> bool {
-        self.callee.contains(symbol)
+        symbol == ContainsSymbol::SuperCall && self.callee.is_super()
+            || self.callee.contains(symbol)
             || self.arguments.iter().any(|arg| arg.contains(symbol))
             || symbol == ContainsSymbol::Arguments
                 && self

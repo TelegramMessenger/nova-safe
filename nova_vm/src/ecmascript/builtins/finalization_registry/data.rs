@@ -105,6 +105,10 @@ impl<'fr> CleanupRecord<'fr> {
         self.callback = cleanup_callback.unbind();
     }
 
+    pub(super) fn realm(&self) -> Realm<'fr> {
+        self.realm
+    }
+
     pub(super) fn get_cleanup_queue(&mut self) -> (Function<'fr>, Vec<Value<'fr>>) {
         self.cleanup_requested = false;
         (self.callback, core::mem::take(&mut self.cleanup_queue))
