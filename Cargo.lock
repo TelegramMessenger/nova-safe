@@ -892,6 +892,8 @@ version = "0.124.0"
 dependencies = [
  "bitflags",
  "cow-utils",
+ "num-bigint",
+ "num-traits",
  "oxc_allocator",
  "oxc_ast",
  "oxc_data_structures",

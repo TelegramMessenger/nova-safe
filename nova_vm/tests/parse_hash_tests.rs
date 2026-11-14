@@ -241,3 +241,38 @@ fn checks_over_many_names_scale_linearly() {
         "one group name in many alternatives",
     );
 }
+
+/// Binary, octal and hex BigInt literals carry their decimal value.
+#[test]
+fn bigint_literals_carry_their_decimal_value() {
+    use num_bigint::BigUint;
+    use num_traits::Num;
+    let digits = "f0e1d2c3b4a5968778695a4b3c2d1e0f".repeat(40);
+    let cases = [
+        ("0x0n".to_owned(), "0".to_owned()),
+        ("0b1_0000_0000n".to_owned(), "256".to_owned()),
+        ("0o777n".to_owned(), "511".to_owned()),
+        ("0xffff_ffff_ffff_ffffn".to_owned(), "18446744073709551615".to_owned()),
+        (
+            format!("0x{digits}n"),
+            BigUint::from_str_radix(&digits, 16).unwrap().to_string(),
+        ),
+    ];
+    for (literal, expected) in cases {
+        let source = format!("x = {literal};");
+        let allocator = Allocator::new();
+        let ret = Parser::new(&allocator, &source, SourceType::script()).parse();
+        assert!(ret.errors.is_empty());
+        let oxc_ast::ast::Statement::ExpressionStatement(statement) = &ret.program.body[0] else {
+            panic!("{source}");
+        };
+        let oxc_ast::ast::Expression::AssignmentExpression(assignment) = &statement.expression
+        else {
+            panic!("{source}");
+        };
+        let oxc_ast::ast::Expression::BigIntLiteral(value) = &assignment.right else {
+            panic!("{source}");
+        };
+        assert_eq!(value.value.as_str(), expected, "{literal}");
+    }
+}
