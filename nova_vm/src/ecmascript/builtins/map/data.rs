@@ -10,7 +10,7 @@ use crate::{
     engine::Bindable,
     heap::{CompactionLists, HeapMarkAndSweep, PrimitiveHeapAccess, WorkQueues},
 };
-use ahash::AHasher;
+use crate::hashing::AHasher;
 use core::{
     cell::RefCell,
     hash::{Hash, Hasher},

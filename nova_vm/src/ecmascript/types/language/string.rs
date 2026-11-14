@@ -916,7 +916,7 @@ impl<'gc> String<'gc> {
     pub(crate) fn from_str_direct(
         strings: &mut Vec<StringRecord>,
         string_lookup_table: &mut HashTable<HeapString<'static>>,
-        string_hasher: &ahash::RandomState,
+        string_hasher: &crate::hashing::RandomState,
         alloc_counter: &mut usize,
         str: &str,
         gc: NoGcScope<'gc, '_>,
@@ -965,7 +965,7 @@ impl<'gc> String<'gc> {
     fn find_equal_string_direct(
         strings: &mut [StringRecord],
         string_lookup_table: &mut HashTable<HeapString<'static>>,
-        string_hasher: &ahash::RandomState,
+        string_hasher: &crate::hashing::RandomState,
         message: &str,
     ) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);

@@ -4,7 +4,7 @@
 
 use std::cell::Cell;
 
-use ahash::{AHashMap, AHashSet};
+use crate::hashing::{AHashMap, AHashSet};
 use oxc_ast::ast::BindingIdentifier;
 use oxc_ecmascript::BoundNames;
 use oxc_span::Ident;

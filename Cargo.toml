@@ -15,7 +15,6 @@ categories = ["development-tools"]
 authors = ["The Nova Team"]
 
 [workspace.dependencies]
-ahash = "=0.8.12"
 clap = { version = "=4.6.7", features = ["derive"] }
 cliclack = "=0.5.6"
 console = "=0.16.6"
@@ -35,7 +34,6 @@ oxc_span = "=0.124.0"
 oxc_syntax = "=0.124.0"
 proc-macro2 = "=1.0.107"
 quote = "=1.0.47"
-rand = "=0.10.3"
 regex = "=1.13.1"
 soavec = "=0.2.0"
 soavec_derive = "=0.2.0"

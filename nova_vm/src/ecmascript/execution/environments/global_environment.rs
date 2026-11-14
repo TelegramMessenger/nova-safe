@@ -4,7 +4,7 @@
 
 use std::ops::ControlFlow;
 
-use ahash::AHashSet;
+use crate::hashing::AHashSet;
 
 use crate::{
     ecmascript::{

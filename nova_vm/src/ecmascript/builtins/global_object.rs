@@ -4,7 +4,7 @@
 
 use core::str;
 
-use ahash::AHashSet;
+use crate::hashing::AHashSet;
 use oxc_ast::ast;
 use oxc_ecmascript::BoundNames;
 use oxc_semantic::{AstNodes, Scoping};

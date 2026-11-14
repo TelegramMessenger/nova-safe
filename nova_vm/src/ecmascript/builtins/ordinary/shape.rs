@@ -4,7 +4,7 @@
 
 use std::{cmp::Ordering, collections::TryReserveError, marker::PhantomData, num::NonZeroU32};
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 use hashbrown::{HashTable, hash_table::Entry};
 
 use crate::{

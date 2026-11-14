@@ -69,7 +69,7 @@
 
 use std::collections::TryReserveError;
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 
 use crate::{
     ecmascript::{

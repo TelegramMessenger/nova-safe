@@ -4,7 +4,7 @@
 
 use core::hash::{Hash, Hasher};
 
-use ahash::AHasher;
+use crate::hashing::AHasher;
 use wtf8::{Wtf8Buf, Wtf8Str};
 
 use crate::{

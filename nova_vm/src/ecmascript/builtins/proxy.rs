@@ -10,7 +10,7 @@ pub(crate) use data::*;
 
 use std::collections::VecDeque;
 
-use ahash::AHashSet;
+use crate::hashing::AHashSet;
 
 use crate::{
     ecmascript::{

@@ -96,7 +96,7 @@ use crate::{
     },
 };
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 use core::hash::Hash;
 use std::collections::TryReserveError;
 

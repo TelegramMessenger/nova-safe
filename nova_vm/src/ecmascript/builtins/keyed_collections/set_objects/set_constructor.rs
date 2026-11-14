@@ -4,7 +4,7 @@
 
 use core::hash::Hasher;
 
-use ahash::AHasher;
+use crate::hashing::AHasher;
 
 use crate::{
     ecmascript::{

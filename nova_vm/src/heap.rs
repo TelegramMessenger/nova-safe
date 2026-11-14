@@ -60,7 +60,7 @@ use crate::{
     engine::{ExecutableHeapData, HeapRootData},
 };
 #[cfg(feature = "array-buffer")]
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 use hashbrown::HashTable;
 use soavec::{SoAVec, SoAble};
 use wtf8::{Wtf8Buf, Wtf8Str};
@@ -172,7 +172,7 @@ pub(crate) struct Heap {
     // the strings only after the source ASTs drop.
     pub(crate) strings: Vec<StringRecord>,
     pub(crate) string_lookup_table: HashTable<HeapString<'static>>,
-    pub(crate) string_hasher: ahash::RandomState,
+    pub(crate) string_hasher: crate::hashing::RandomState,
     /// Counts allocations for garbage collection triggering.
     pub(crate) alloc_counter: usize,
 }
@@ -302,7 +302,7 @@ impl Heap {
             strings: Vec::with_capacity(1024),
             string_iterators: Vec::with_capacity(0),
             string_lookup_table: HashTable::with_capacity(1024),
-            string_hasher: ahash::RandomState::new(),
+            string_hasher: crate::hashing::RandomState::new(),
             symbols: Vec::with_capacity(1024),
             #[cfg(feature = "array-buffer")]
             typed_arrays: Vec::with_capacity(0),

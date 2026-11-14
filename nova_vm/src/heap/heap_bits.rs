@@ -7,9 +7,9 @@ use core::{hash::Hash, num::NonZeroU32};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 #[cfg(feature = "weak-refs")]
-use ahash::AHashSet;
+use crate::hashing::AHashSet;
 use hashbrown::HashTable;
 use soavec::{SoAVec, SoAble};
 use soavec_derive::SoAble;
