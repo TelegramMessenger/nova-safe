@@ -193,3 +193,14 @@ fn typed_array_with_reads_undefined_past_a_shrunk_end() {
     "#;
     assert_eq!(run(source, "result", None), "9,0,0 9,NaN,NaN TypeError");
 }
+
+#[test]
+fn json_stringify_replacer_key_conversion_throws() {
+    let source = r#"
+        var key = new String("a");
+        key.toString = function () { throw new Error("no key"); };
+        var result;
+        try { JSON.stringify({ a: 1 }, [key]); result = "no error"; } catch (e) { result = "caught " + e.message; }
+    "#;
+    assert_eq!(run(source, "result", None), "caught no key");
+}

@@ -284,10 +284,11 @@ impl JSONObject {
                         // f. Else if v is an Object, then
                         // i. If v has a [[StringData]] or [[NumberData]] internal slot, set item to ? ToString(v).
                         if v.is_string_object(agent) || v.is_number_object(agent) {
+                            // Note: ToString of the object runs its toString or
+                            // valueOf, which can throw.
                             Some(
                                 to_property_key(agent, v.unbind(), gc.reborrow())
-                                    .unwrap()
-                                    .unbind()
+                                    .unbind()?
                                     .bind(gc.nogc()),
                             )
                         } else {
