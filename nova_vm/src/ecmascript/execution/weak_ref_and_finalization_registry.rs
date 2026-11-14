@@ -93,7 +93,7 @@ pub(crate) fn cleanup_finalization_registry<'gc>(
     //         a. Choose any such cell.
     //         b. Remove cell from finalizationRegistry.[[Cells]].
     //         c. Perform ? HostCallJobCallback(callback, undefined, « cell.[[HeldValue]] »).
-    if queue.len() == 1 {
+    if queue.is_empty() {
         // 2. Return ? Call(jobCallback.[[Callback]], V, argumentsList).
         let _ = call_function(
             agent,
@@ -131,7 +131,7 @@ pub(crate) fn cleanup_finalization_registry<'gc>(
                 .unbind()
                 .bind(gc.nogc());
                 if let Err(err) = result {
-                    err_and_i = Some((err.unbind(), i));
+                    err_and_i = Some((err.unbind(), i + 1));
                     break;
                 }
             }
@@ -140,13 +140,14 @@ pub(crate) fn cleanup_finalization_registry<'gc>(
         // further cleanup and add any leftover cleanups back into the
         // FinalizationRegistry. This will re-request cleanup of the registry
         // if necessary.
-        if let Some((err, i)) = err_and_i {
+        if let Some((err, called)) = err_and_i {
             let err = err.unbind();
             let gc = gc.into_nogc();
             let err = err.bind(gc);
             let mut queue = queue.take(agent).bind(gc);
-            // Drain all elements that were found so far.
-            queue.drain(0..i);
+            // Drop the values whose callbacks ran, the one that threw too:
+            // each cell is removed before its callback is called.
+            queue.drain(0..called);
             let finalization_registry = finalization_registry.take(agent).bind(gc);
             let _ = scoped_callback.take(agent);
             if !queue.is_empty() {
