@@ -240,6 +240,12 @@ impl<'e> FunctionEnvironment<'e> {
         self.get(agent).function_object
     }
 
+    /// Whether this is the environment of a class field initializer or a
+    /// static block, which stand in for functions of their own.
+    pub(crate) fn is_class_element_environment(self, agent: &Agent) -> bool {
+        self.get(agent).new_target_is_home_object
+    }
+
     /// The VariableEnvironment to restore when leaving a class static
     /// element.
     pub(crate) fn get_outer_variable_environment(self, agent: &Agent) -> Option<Environment<'e>> {

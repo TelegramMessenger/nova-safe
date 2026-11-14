@@ -82,3 +82,8 @@ fn bigint_string_compare() {
 fn date_parse_legacy_formats() {
     run_test_source("dateParseLegacy.test.js");
 }
+
+#[test]
+fn eval_super_in_class_elements() {
+    run_test_source("evalSuperInClassElements.test.js");
+}

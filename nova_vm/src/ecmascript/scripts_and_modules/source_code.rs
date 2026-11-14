@@ -13,7 +13,7 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_parser::{Parser, ParserReturn};
-use oxc_semantic::{AstNodes, Scoping, SemanticBuilder, SemanticBuilderReturn};
+use oxc_semantic::{AstNodes, Scoping, Semantic, SemanticBuilder, SemanticBuilderReturn};
 use oxc_span::SourceType;
 
 use crate::{
@@ -269,6 +269,7 @@ fn parse_program<'p>(
             "Source text nests too deeply to be parsed",
         )]);
     }
+    let source_type_in = source_type;
     let parser_result = match source_type {
         SourceCodeType::Script { strict } | SourceCodeType::Eval { strict, .. } => {
             // Potentially strict script! We first parse and syntax check
@@ -291,11 +292,15 @@ fn parse_program<'p>(
                     return Err(sloppy_errors);
                 }
                 let SemanticBuilderReturn {
-                    errors: sloppy_errors,
-                    ..
+                    errors: mut sloppy_errors,
+                    semantic: sloppy_semantic,
                 } = SemanticBuilder::new()
                     .with_check_syntax_error(true)
                     .build(&sloppy_program);
+                if matches!(source_type_in, SourceCodeType::Eval { direct: true, .. }) {
+                    drop_direct_eval_context_errors(&mut sloppy_errors, &sloppy_semantic);
+                }
+                drop(sloppy_semantic);
 
                 if !sloppy_errors.is_empty() {
                     return Err(sloppy_errors);
@@ -332,15 +337,66 @@ fn parse_program<'p>(
     // the arena with the rest of the program.
     let program: &'p ast::Program<'p> = allocator.alloc(program);
 
-    let SemanticBuilderReturn { errors, semantic } = SemanticBuilder::new()
+    let SemanticBuilderReturn {
+        mut errors,
+        semantic,
+    } = SemanticBuilder::new()
         .with_check_syntax_error(true)
         .build(program);
+    if matches!(source_type_in, SourceCodeType::Eval { direct: true, .. }) {
+        drop_direct_eval_context_errors(&mut errors, &semantic);
+    }
 
     if !errors.is_empty() {
         return Err(errors);
     }
     let (scoping, nodes) = semantic.into_scoping_and_nodes();
     Ok((program, scoping, nodes))
+}
+
+/// Drops the errors for `super` and `new.target` outside any function of a
+/// direct eval's code: whether the code that calls eval allows them is
+/// checked by PerformEval (steps 11.c to 11.f), as the parser cannot know.
+fn drop_direct_eval_context_errors(errors: &mut Vec<OxcDiagnostic>, semantic: &Semantic) {
+    use oxc_ast::AstKind;
+    use oxc_span::GetSpan;
+    let nodes = semantic.nodes();
+    errors.retain(|error| {
+        let message = error.message.as_ref();
+        let is_super_reference = message
+            == "'super' can only be referenced in members of derived classes or object literal expressions.";
+        let is_super_call = message
+            == "Super calls are not permitted outside constructors or in nested functions inside constructors.";
+        let is_new_target = message == "Unexpected new.target expression";
+        if !is_super_reference && !is_super_call && !is_new_target {
+            return true;
+        }
+        let Some(offset) = error
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.first())
+            .map(|label| label.offset())
+        else {
+            return true;
+        };
+        let node = nodes.iter().find(|node| {
+            node.span().start as usize == offset
+                && match node.kind() {
+                    AstKind::Super(_) => is_super_reference,
+                    AstKind::CallExpression(_) | AstKind::NewExpression(_) => is_super_call,
+                    AstKind::MetaProperty(_) => is_new_target,
+                    _ => false,
+                }
+        });
+        let Some(node) = node else {
+            return true;
+        };
+        // Inside a function of the eval code itself (not an arrow function,
+        // which sees the caller's), the error stands.
+        nodes
+            .ancestor_kinds(node.id())
+            .any(|kind| matches!(kind, AstKind::Function(_) | AstKind::StaticBlock(_)))
+    });
 }
 
 #[cfg(test)]
