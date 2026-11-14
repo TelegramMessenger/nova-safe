@@ -84,6 +84,7 @@ clear
 #[cfg(feature = "math")]clz32
 codePointAt
 #[cfg(feature = "atomics")]compareExchange
+#[cfg(feature = "annex-b-regexp")]compile
 concat
 configurable
 construct

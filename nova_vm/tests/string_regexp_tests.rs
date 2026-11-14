@@ -87,3 +87,8 @@ fn regexp_ascii_classes() {
 fn regexp_to_string() {
     run_test_source("regExpToString.test.js");
 }
+
+#[test]
+fn regexp_compile() {
+    run_test_source("regExpCompile.test.js");
+}

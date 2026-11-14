@@ -23,6 +23,18 @@ use crate::{
 
 pub(crate) struct RegExpPrototype;
 
+#[cfg(feature = "annex-b-regexp")]
+use crate::ecmascript::reg_exp_initialize;
+
+#[cfg(feature = "annex-b-regexp")]
+struct RegExpPrototypeCompile;
+#[cfg(feature = "annex-b-regexp")]
+impl Builtin for RegExpPrototypeCompile {
+    const NAME: String<'static> = BUILTIN_STRING_MEMORY.compile;
+    const LENGTH: u8 = 2;
+    const BEHAVIOUR: Behaviour = Behaviour::Regular(RegExpPrototype::compile);
+}
+
 struct RegExpPrototypeExec;
 impl Builtin for RegExpPrototypeExec {
     const NAME: String<'static> = BUILTIN_STRING_MEMORY.exec;
@@ -1634,14 +1646,63 @@ impl RegExpPrototype {
             .map(|v| v.map_or(Value::Undefined, |v| v.into()))
     }
 
+    /// ### [B.2.4.1 RegExp.prototype.compile ( pattern, flags )](https://tc39.es/ecma262/#sec-regexp.prototype.compile)
+    #[cfg(feature = "annex-b-regexp")]
+    fn compile<'gc>(
+        agent: &mut Agent,
+        this_value: Value,
+        arguments: ArgumentsList,
+        gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Value<'gc>> {
+        let nogc = gc.nogc();
+        let pattern = arguments.get(0).bind(nogc);
+        let flags = arguments.get(1).bind(nogc);
+        // 1. Let O be the this value.
+        // 2. Perform ? RequireInternalSlot(O, [[RegExpMatcher]]).
+        let Value::RegExp(o) = this_value.bind(nogc) else {
+            return Err(agent.throw_exception_with_static_message(
+                ExceptionType::TypeError,
+                "RegExp.prototype.compile called on an object that is not a RegExp",
+                gc.into_nogc(),
+            ));
+        };
+        // 3. If pattern is an Object and pattern has a [[RegExpMatcher]]
+        //    internal slot, then
+        let (p, f) = if let Value::RegExp(pattern) = pattern {
+            // a. If flags is not undefined, throw a TypeError exception.
+            if !flags.is_undefined() {
+                return Err(agent.throw_exception_with_static_message(
+                    ExceptionType::TypeError,
+                    "RegExp.prototype.compile takes no flags with a RegExp",
+                    gc.into_nogc(),
+                ));
+            }
+            // b. Let P be pattern.[[OriginalSource]].
+            // c. Let F be pattern.[[OriginalFlags]].
+            let source: Value = pattern.original_source(agent).into();
+            (source.scope(agent, nogc), Ok(pattern.original_flags(agent)))
+        } else {
+            // 4. Else,
+            // a. Let P be pattern.
+            // b. Let F be flags.
+            (pattern.scope(agent, nogc), Err(flags.scope(agent, nogc)))
+        };
+        // 5. Return ? RegExpInitialize(O, P, F).
+        reg_exp_initialize(agent, o.unbind(), p, f, gc).map(|o| o.into())
+    }
+
     pub(crate) fn create_intrinsic(agent: &mut Agent, realm: Realm<'static>) {
         let intrinsics = agent.get_realm_record_by_id(realm).intrinsics();
         let object_prototype = intrinsics.object_prototype();
         let this = intrinsics.reg_exp_prototype();
         let reg_exp_constructor = intrinsics.reg_exp();
 
-        OrdinaryObjectBuilder::new_intrinsic_object(agent, realm, this)
-            .with_property_capacity(19)
+        let builder = OrdinaryObjectBuilder::new_intrinsic_object(agent, realm, this)
+            .with_property_capacity(if cfg!(feature = "annex-b-regexp") {
+                20
+            } else {
+                19
+            })
             .with_prototype(object_prototype)
             .with_constructor_property(reg_exp_constructor)
             .with_builtin_intrinsic_function_property::<RegExpPrototypeExec>()
@@ -1661,8 +1722,10 @@ impl RegExpPrototype {
             .with_builtin_function_getter_property::<RegExpPrototypeGetMultiline>()
             .with_builtin_function_property::<RegExpPrototypeReplace>()
             .with_builtin_function_property::<RegExpPrototypeSearch>()
-            .with_builtin_function_property::<RegExpPrototypeSplit>()
-            .build();
+            .with_builtin_function_property::<RegExpPrototypeSplit>();
+        #[cfg(feature = "annex-b-regexp")]
+        let builder = builder.with_builtin_function_property::<RegExpPrototypeCompile>();
+        builder.build();
     }
 }
 
