@@ -29,8 +29,6 @@ pub(crate) trait SoAble: Sized {
         Self: 'a;
 
     fn with_capacity(capacity: usize) -> Self::Columns;
-    fn reserve(columns: &mut Self::Columns, additional: usize);
-    fn capacity(columns: &Self::Columns) -> usize;
     fn push(columns: &mut Self::Columns, value: Self);
     fn get(columns: &Self::Columns, index: usize) -> Option<Self::Ref<'_>>;
     fn get_mut(columns: &mut Self::Columns, index: usize) -> Option<Self::Mut<'_>>;
@@ -38,7 +36,6 @@ pub(crate) trait SoAble: Sized {
     fn as_mut_slice(columns: &mut Self::Columns) -> Self::SliceMut<'_>;
     fn swap(columns: &mut Self::Columns, a: usize, b: usize);
     fn truncate(columns: &mut Self::Columns, len: usize);
-    fn pop(columns: &mut Self::Columns) -> Option<Self>;
 }
 
 pub(crate) struct SoAVec<T: SoAble> {
@@ -73,19 +70,6 @@ impl<T: SoAble> SoAVec<T> {
     }
 
     #[inline]
-    pub(crate) fn capacity(&self) -> u32 {
-        u32::try_from(T::capacity(&self.columns)).unwrap_or(u32::MAX)
-    }
-
-    pub(crate) fn reserve(&mut self, additional: u32) -> Result<(), AllocError> {
-        if self.len.checked_add(additional).is_none() {
-            return Err(AllocError);
-        }
-        T::reserve(&mut self.columns, additional as usize);
-        Ok(())
-    }
-
-    #[inline]
     pub(crate) fn push(&mut self, value: T) -> Result<(), AllocError> {
         let Some(len) = self.len.checked_add(1) else {
             return Err(AllocError);
@@ -93,12 +77,6 @@ impl<T: SoAble> SoAVec<T> {
         T::push(&mut self.columns, value);
         self.len = len;
         Ok(())
-    }
-
-    pub(crate) fn pop(&mut self) -> Option<T> {
-        let value = T::pop(&mut self.columns)?;
-        self.len -= 1;
-        Some(value)
     }
 
     #[inline(always)]

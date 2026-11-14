@@ -160,13 +160,13 @@ impl SetConstructor {
                             |index_to_hash| hasher(values[*index_to_hash as usize].unwrap()),
                         );
                         match entry {
-                            hashbrown::hash_table::Entry::Occupied(occupied) => {
+                            crate::table::hash_table::Entry::Occupied(occupied) => {
                                 // We have duplicates in the array. Latter
                                 // ones overwrite earlier ones.
                                 let index = *occupied.get();
                                 values[index as usize] = Some(value.unbind());
                             }
-                            hashbrown::hash_table::Entry::Vacant(vacant) => {
+                            crate::table::hash_table::Entry::Vacant(vacant) => {
                                 vacant.insert(next_index);
                                 values.push(Some(value.unbind()));
                             }

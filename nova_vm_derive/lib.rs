@@ -316,8 +316,6 @@ fn expand_soable(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
     let vis = &input.vis;
     let names: Vec<&Ident> = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect();
-    let first = names[0];
-    let rest: Vec<&Ident> = names[1..].to_vec();
     let types: Vec<&Type> = fields.iter().map(|f| &f.ty).collect();
     let field_vis: Vec<_> = fields.iter().map(|f| &f.vis).collect();
     let lifetimes: Vec<&Lifetime> = input.generics.lifetimes().map(|l| &l.lifetime).collect();
@@ -398,16 +396,6 @@ fn expand_soable(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
 
             #[inline]
-            fn reserve(__columns: &mut Self::Columns, __additional: usize) {
-                #(__columns.#names.reserve(__additional);)*
-            }
-
-            #[inline]
-            fn capacity(__columns: &Self::Columns) -> usize {
-                __columns.#first.capacity()#(.min(__columns.#rest.capacity()))*
-            }
-
-            #[inline]
             fn push(__columns: &mut Self::Columns, __value: Self) {
                 let Self { #(#names),* } = __value;
                 #(__columns.#names.push(#names);)*
@@ -445,11 +433,6 @@ fn expand_soable(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #(__columns.#names.truncate(__len);)*
             }
 
-            #[inline]
-            fn pop(__columns: &mut Self::Columns) -> Option<Self> {
-                #(let #names = __columns.#names.pop()?;)*
-                Some(Self { #(#names),* })
-            }
         }
     })
 }

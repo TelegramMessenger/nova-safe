@@ -855,7 +855,6 @@ dependencies = [
 name = "nova_vm"
 version = "1.0.0"
 dependencies = [
- "hashbrown 0.17.1",
  "nova_vm_derive",
  "num-bigint 0.5.1",
  "num-traits",

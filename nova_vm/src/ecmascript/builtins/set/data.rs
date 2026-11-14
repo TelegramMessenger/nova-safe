@@ -11,7 +11,7 @@ use core::{
     cell::RefCell,
     sync::atomic::{AtomicBool, Ordering},
 };
-use hashbrown::HashTable;
+use crate::table::HashTable;
 use nova_vm_derive::SoAble;
 
 #[derive(Debug, Default, SoAble, Bindable)]

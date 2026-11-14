@@ -438,13 +438,13 @@ impl MapPrototype {
             |index_to_hash| hasher(keys[*index_to_hash as usize].unwrap()),
         );
         match entry {
-            hashbrown::hash_table::Entry::Occupied(occupied) => {
+            crate::table::hash_table::Entry::Occupied(occupied) => {
                 let index = *occupied.get();
                 // i. Set p.[[Value]] to value.
                 values[index as usize] = Some(value.unbind());
                 // ii. Return M.
             }
-            hashbrown::hash_table::Entry::Vacant(vacant) => {
+            crate::table::hash_table::Entry::Vacant(vacant) => {
                 // 5. Let p be the Record { [[Key]]: key, [[Value]]: value }.
                 // 6. Append p to M.[[MapData]].
                 let index = u32::try_from(values.len()).unwrap();

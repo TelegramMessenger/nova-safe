@@ -25,7 +25,7 @@ use crate::{
     },
 };
 
-use hashbrown::HashTable;
+use crate::table::HashTable;
 use wtf8::{CodePoint, Wtf8Buf, Wtf8Str};
 
 /// ### [6.1.4 The String Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-string-type)

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use crate::hashing::AHashMap;
 #[cfg(feature = "weak-refs")]
 use crate::hashing::AHashSet;
-use hashbrown::HashTable;
+use crate::table::HashTable;
 use crate::heap::soa::{SoAVec, SoAble};
 use nova_vm_derive::SoAble;
 

@@ -4,7 +4,7 @@
 
 use std::{marker::PhantomData, num::NonZeroU32};
 
-use hashbrown::{HashTable, hash_table::Entry};
+use crate::table::{HashTable, hash_table::Entry};
 
 use crate::{
     ecmascript::{Agent, InternalMethods, Object, PropertyKey, TryResult, Value},

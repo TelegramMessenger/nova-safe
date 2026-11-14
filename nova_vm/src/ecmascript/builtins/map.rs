@@ -6,7 +6,7 @@ mod data;
 
 pub(crate) use data::*;
 
-use hashbrown::HashTable;
+use crate::table::HashTable;
 use crate::heap::soa::SoAVec;
 
 use crate::{

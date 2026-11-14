@@ -63,7 +63,7 @@ use crate::{
     },
     engine::{ExecutableHeapData, HeapRootData},
 };
-use hashbrown::HashTable;
+use crate::table::HashTable;
 use crate::heap::soa::{SoAVec, SoAble};
 use wtf8::{Wtf8Buf, Wtf8Str};
 

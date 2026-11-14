@@ -122,7 +122,7 @@ impl SetPrototype {
 
         // 4. For each element e of S.[[SetData]], do
         // a. If e is not empty and SameValue(e, value) is true, then
-        if let hashbrown::hash_table::Entry::Vacant(entry) = set_data.entry(
+        if let crate::table::hash_table::Entry::Vacant(entry) = set_data.entry(
             value_hash,
             |hash_equal_index| {
                 let found_value = values[*hash_equal_index as usize].unwrap();
