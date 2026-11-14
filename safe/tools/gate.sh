@@ -45,9 +45,18 @@ fi
 
 echo "== widgets (Nova output must not change)"
 if ! python3 -I safe/widgets/run.py --nova target/dev-fast/nova_cli --bundle "$BUNDLE" \
-    --expect safe/baseline/widgets-nova.json --jobs "${GATE_JOBS:-6}" --timeout 300 \
+    --expect safe/baseline/widgets-nova.json --skip safe/baseline/widgets-qjs-progress.json \
+    --jobs "${GATE_JOBS:-6}" --timeout 300 \
     $(find "$WIDGET_SANDBOX/corpus" "$LAB_WIDGETS" -name "*.html"); then
   echo "GATE FAIL: widgets"
+  status=1
+fi
+
+echo "== widgets on their way to QuickJS (the part equal to QuickJS must not shrink)"
+QJS=$(safe/tools/build-qjs.sh)
+if ! python3 -I safe/widgets/run.py --nova target/dev-fast/nova_cli --qjs "$QJS" --bundle "$BUNDLE" \
+    --progress safe/baseline/widgets-qjs-progress.json --jobs "${GATE_JOBS:-6}" --timeout 300 x; then
+  echo "GATE FAIL: widgets progress"
   status=1
 fi
 
