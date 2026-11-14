@@ -88,10 +88,6 @@ features = [
 path = "../oxc_span"
 version = "0.124.0"
 
-[dependencies.phf]
-version = "0.13.1"
-features = ["macros"]
-
 [dependencies.serde]
 version = "1"
 features = ["derive"]

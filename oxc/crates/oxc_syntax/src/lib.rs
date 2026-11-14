@@ -1,4 +1,5 @@
 //! Common code for JavaScript Syntax
+#![forbid(unsafe_code)]
 
 use std::num::NonZeroU32;
 
@@ -20,7 +21,6 @@ pub mod scope;
 #[cfg(feature = "serialize")]
 mod serialize;
 pub mod symbol;
-pub mod xml_entities;
 
 mod generated {
     #[cfg(debug_assertions)]

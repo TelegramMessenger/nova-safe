@@ -1,6 +1,6 @@
 //! Identifier string type with precomputed hash.
 
-use std::{borrow::Cow, fmt, hash, marker::PhantomData, ops::Deref, ptr::NonNull, slice, str};
+use std::{borrow::Cow, fmt, hash, ops::Deref, str};
 
 use oxc_allocator::{
     Allocator, CloneIn, Dummy, FromIn, IdentBuildHasher, StringBuilder as ArenaStringBuilder,
@@ -13,123 +13,56 @@ use serde::{Serialize, Serializer as SerdeSerializer};
 
 use crate::{CompactStr, Str};
 
-/// An identifier string for oxc_allocator with a precomputed hash.
+/// An identifier string for oxc_allocator.
 ///
-/// Stores a pointer to string data, length, and a precomputed hash for fast
-/// HashMap lookups and equality comparisons.
-///
-/// On 64-bit platforms, length and hash are packed into a single `u64` for
-/// maximum performance (16 bytes total, same as `&str`).
-/// On 32-bit platforms, they are stored as separate `u32` fields (12 bytes total).
+/// nova-safe stores only the `&str` (16 bytes, as upstream's pointer plus packed length and
+/// hash). The hash that upstream precomputes is recomputed on demand: `ident_hash` samples at
+/// most 16 bytes, so it is O(1), and `Hash` writes the same packed length and hash as upstream.
 ///
 /// Use [CompactStr] with [Ident::to_compact_str] or [Ident::into_compact_str] for
 /// the lifetimeless form.
-#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Ident<'a> {
-    ptr: NonNull<u8>,
-    #[cfg(target_pointer_width = "64")]
-    len_and_hash: u64,
-    #[cfg(not(target_pointer_width = "64"))]
-    len: u32,
-    #[cfg(not(target_pointer_width = "64"))]
-    hash: u32,
-    _marker: PhantomData<&'a str>,
+    text: &'a str,
 }
-
-// SAFETY: Ident is conceptually equivalent to &str, which is Send + Sync.
-// NonNull is !Send/!Sync, but Ident only stores a pointer to borrowed data.
-unsafe impl Send for Ident<'_> {}
-// SAFETY: See above.
-unsafe impl Sync for Ident<'_> {}
-
-// We can't derive Clone/Copy because NonNull prevents it.
-// The explicit impl is needed for Copy to work.
-#[expect(clippy::expl_impl_clone_on_copy)]
-impl Clone for Ident<'_> {
-    #[expect(clippy::inline_always)]
-    #[inline(always)]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl Copy for Ident<'_> {}
 
 impl<'a> Ident<'a> {
-    /// Create an [`Ident`] from raw components.
-    #[cfg(target_pointer_width = "64")]
-    #[inline]
-    const fn from_raw(ptr: NonNull<u8>, len: u32, hash: u32) -> Self {
-        Self { ptr, len_and_hash: pack_len_hash(len, hash), _marker: PhantomData }
-    }
-
-    /// Create an [`Ident`] from raw components.
-    #[cfg(not(target_pointer_width = "64"))]
-    #[inline]
-    const fn from_raw(ptr: NonNull<u8>, len: u32, hash: u32) -> Self {
-        Self { ptr, len, hash, _marker: PhantomData }
-    }
-
-    /// Get the length of the identifier string.
-    #[cfg(target_pointer_width = "64")]
+    #[expect(clippy::cast_possible_truncation)]
     #[inline]
     const fn ident_len(&self) -> u32 {
-        (self.len_and_hash & 0xFFFF_FFFF) as u32
+        self.text.len() as u32
     }
 
-    /// Get the length of the identifier string.
-    #[cfg(not(target_pointer_width = "64"))]
-    #[inline]
-    const fn ident_len(&self) -> u32 {
-        self.len
-    }
-
-    /// Get the precomputed hash value.
-    #[cfg(target_pointer_width = "64")]
     #[inline]
     const fn ident_hash_value(&self) -> u32 {
-        (self.len_and_hash >> 32) as u32
+        ident_hash(self.text.as_bytes())
     }
 
-    /// Get the precomputed hash value.
-    #[cfg(not(target_pointer_width = "64"))]
     #[inline]
-    const fn ident_hash_value(&self) -> u32 {
-        self.hash
+    const fn len_and_hash(&self) -> u64 {
+        pack_len_hash(self.ident_len(), self.ident_hash_value())
     }
 
-    /// Create a new [`Ident`] from a string slice.
-    ///
-    /// This is a const fn that computes the hash at compile time when possible.
-    /// Use this for strings that already have the correct lifetime
-    /// (e.g. arena-allocated strings, or `'static` string literals).
-    #[expect(clippy::inline_always, clippy::cast_possible_truncation)]
+    /// Create a new [`Ident`] from a `&'a str`.
     #[inline(always)]
+    #[expect(clippy::inline_always)]
     pub const fn new_const(s: &'a str) -> Self {
-        let bytes = s.as_bytes();
-        let len = bytes.len() as u32;
-        let hash = ident_hash(bytes);
-        // SAFETY: A &str's pointer is always non-null.
-        let ptr = unsafe { NonNull::new_unchecked(bytes.as_ptr().cast_mut()) };
-        Self::from_raw(ptr, len, hash)
+        Self { text: s }
     }
 
-    /// Get an [`Ident`] containing the empty string (`""`).
+    /// An empty [`Ident`].
     #[inline]
     pub const fn empty() -> Self {
-        Self::from_raw(NonNull::dangling(), 0, ident_hash(b""))
+        Self { text: "" }
     }
 
-    /// Borrow a string slice.
+    /// The identifier text.
     #[expect(clippy::inline_always)]
-    #[inline(always)] // Hot path — must be inlined
+    #[inline(always)]
     pub fn as_str(&self) -> &'a str {
-        let len = self.ident_len() as usize;
-        // SAFETY: The pointer and length are valid because they came from a valid &str.
-        unsafe { str::from_utf8_unchecked(slice::from_raw_parts(self.ptr.as_ptr(), len)) }
+        self.text
     }
 
-    /// Convert this [`Ident`] into a [`Str`].
     #[expect(clippy::inline_always)]
     #[inline(always)] // Because this is a no-op
     pub fn as_arena_str(&self) -> Str<'a> {
@@ -196,10 +129,7 @@ impl<'new_alloc> CloneIn<'new_alloc> for Ident<'_> {
     /// Clone the identifier into a new allocator, preserving the precomputed hash.
     #[inline]
     fn clone_in(&self, allocator: &'new_alloc Allocator) -> Self::Cloned {
-        let s = allocator.alloc_str(self.as_str());
-        // SAFETY: `alloc_str` returns a valid `&str` whose pointer is non-null.
-        let ptr = unsafe { NonNull::new_unchecked(s.as_ptr().cast_mut()) };
-        Ident::from_raw(ptr, self.ident_len(), self.ident_hash_value())
+        Ident::new_const(allocator.alloc_str(self.as_str()))
     }
 }
 
@@ -338,18 +268,9 @@ impl oxc_allocator::hash_map::Equivalent<Ident<'_>> for str {
 impl Eq for Ident<'_> {}
 
 impl PartialEq for Ident<'_> {
-    /// Fast-reject equality: compare packed len+hash first, then bytes.
-    #[cfg(target_pointer_width = "64")]
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.len_and_hash == other.len_and_hash && self.as_str() == other.as_str()
-    }
-
-    /// Fast-reject equality: compare len and hash first, then bytes.
-    #[cfg(not(target_pointer_width = "64"))]
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.len == other.len && self.hash == other.hash && self.as_str() == other.as_str()
+        self.text == other.text
     }
 }
 
@@ -396,18 +317,10 @@ impl PartialEq<Str<'_>> for Ident<'_> {
 }
 
 impl hash::Hash for Ident<'_> {
-    /// Write the precomputed packed len+hash as a single u64.
-    #[cfg(target_pointer_width = "64")]
+    /// Write the packed len+hash as a single u64, as upstream does.
     #[inline]
     fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
-        hasher.write_u64(self.len_and_hash);
-    }
-
-    /// Pack len and hash on the fly and write as u64.
-    #[cfg(not(target_pointer_width = "64"))]
-    #[inline]
-    fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
-        hasher.write_u64(pack_len_hash(self.len, self.hash));
+        hasher.write_u64(self.len_and_hash());
     }
 }
 

@@ -83,43 +83,28 @@ impl<'a> Iterator for LineTerminatorSplitter<'a> {
         for (index, &byte) in self.text.as_bytes().iter().enumerate() {
             match byte {
                 b'\n' => {
-                    // SAFETY: Byte at `index` is `\n`, so `index` and `index + 1` are both UTF-8 char boundaries.
-                    // Therefore, slices up to `index` and from `index + 1` are both valid `&str`s.
-                    unsafe {
-                        let line = self.text.get_unchecked(..index);
-                        self.text = self.text.get_unchecked(index + 1..);
-                        return Some(line);
-                    }
+                    let line = &self.text[..index];
+                    self.text = &self.text[index + 1..];
+                    return Some(line);
                 }
                 b'\r' => {
-                    // SAFETY: Byte at `index` is `\r`, so `index` is on a UTF-8 char boundary
-                    let line = unsafe { self.text.get_unchecked(..index) };
+                    let line = &self.text[..index];
                     // If the next byte is `\n`, consume it as well
                     let skip_bytes =
                         if self.text.as_bytes().get(index + 1) == Some(&b'\n') { 2 } else { 1 };
-                    // SAFETY: `index + skip_bytes` is after `\r` or `\n`, so on a UTF-8 char boundary.
-                    // Therefore slice from `index + skip_bytes` is a valid `&str`.
-                    self.text = unsafe { self.text.get_unchecked(index + skip_bytes..) };
+                    self.text = &self.text[index + skip_bytes..];
                     return Some(line);
                 }
                 LS_OR_PS_FIRST_BYTE => {
                     let next2: [u8; 2] = {
-                        // SAFETY: 0xE2 is always the start of a 3-byte Unicode character,
-                        // so there must be 2 more bytes available to consume
-                        let next2 =
-                            unsafe { self.text.as_bytes().get_unchecked(index + 1..index + 3) };
+                        let next2 = &self.text.as_bytes()[index + 1..index + 3];
                         next2.try_into().unwrap()
                     };
                     // If this is LS or PS, treat it as a line terminator
                     if matches!(next2, LS_LAST_2_BYTES | PS_LAST_2_BYTES) {
-                        // SAFETY: `index` is the start of a 3-byte Unicode character,
-                        // so `index` and `index + 3` are both UTF-8 char boundaries.
-                        // Therefore, slices up to `index` and from `index + 3` are both valid `&str`s.
-                        unsafe {
-                            let line = self.text.get_unchecked(..index);
-                            self.text = self.text.get_unchecked(index + 3..);
-                            return Some(line);
-                        }
+                        let line = &self.text[..index];
+                        self.text = &self.text[index + 3..];
+                        return Some(line);
                     }
                 }
                 _ => {}
