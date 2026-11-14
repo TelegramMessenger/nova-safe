@@ -2,21 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::hashing::AHasher;
 use crate::{
-    ecmascript::types::{
-        BIGINT_DISCRIMINANT, HeapBigInt, HeapNumber, HeapPrimitive, HeapString,
-        NUMBER_DISCRIMINANT, OrdinaryObject, STRING_DISCRIMINANT, Value,
-    },
+    ecmascript::types::{OrdinaryObject, Value},
     engine::Bindable,
     heap::{CompactionLists, HeapMarkAndSweep, PrimitiveHeapAccess, WorkQueues},
 };
-use crate::hashing::AHasher;
 use core::{
     cell::RefCell,
-    hash::{Hash, Hasher},
+    hash::Hasher,
     sync::atomic::{AtomicBool, Ordering},
 };
-use hashbrown::{HashTable, hash_table::Entry};
+use hashbrown::HashTable;
 use soavec_derive::SoAble;
 
 #[derive(Debug, Default, SoAble, Bindable)]
@@ -28,13 +25,8 @@ pub(crate) struct MapHeapData<'a> {
     pub(super) values: Vec<Option<Value<'static>>>,
     pub(super) keys: Vec<Option<Value<'static>>>,
     pub(super) object_index: Option<OrdinaryObject<'a>>,
-    /// Flag that lets the Map know if it needs to rehash its primitive keys.
-    ///
-    /// This happens when an object key needs to be moved in the map_data
-    /// during garbage collection, and the move results in a primitive key
-    /// moving as well. The primitive key's hash cannot be calculated during
-    /// garbage collection due to the heap data being concurrently sweeped on
-    /// another thread.
+    /// Set by a garbage collection that moved an Object key: map_data is
+    /// rebuilt (rebuild_hash_table) before it is used again.
     needs_primitive_rehashing: AtomicBool,
     // TODO: When an non-terminal (start or end) iterator exists for the Map,
     // the items in the map cannot be compacted.
@@ -98,56 +90,32 @@ fn rehash_map_data(
     map_data: &mut HashTable<u32>,
     arena: &impl PrimitiveHeapAccess,
 ) {
+    rebuild_hash_table(keys, map_data, arena);
+}
+
+/// Rebuild a Map's or Set's hash table from its live keys. A garbage
+/// collection that moves an Object key changes the key's hash, and the
+/// table cannot be fixed during the collection (a primitive key's hash
+/// needs the heap), so the collection only marks the table and the next
+/// access rebuilds it here.
+pub(crate) fn rebuild_hash_table(
+    keys: &[Option<Value>],
+    table: &mut HashTable<u32>,
+    arena: &impl PrimitiveHeapAccess,
+) {
     let hasher = |value: Value| {
         let mut hasher = AHasher::default();
         value.unbind().hash(arena, &mut hasher);
         hasher.finish()
     };
-    let hashes = {
-        let hasher = |discriminant: u8| {
-            let mut hasher = AHasher::default();
-            discriminant.hash(&mut hasher);
-            hasher.finish()
+    table.clear();
+    for (index, key) in keys.iter().enumerate() {
+        let Some(key) = key else {
+            continue;
         };
-        [
-            (0u8, hasher(STRING_DISCRIMINANT)),
-            (1u8, hasher(NUMBER_DISCRIMINANT)),
-            (2u8, hasher(BIGINT_DISCRIMINANT)),
-        ]
-    };
-    for (id, hash) in hashes {
-        let eq = |equal_hash_index: &u32| {
-            let value = keys[*equal_hash_index as usize].unwrap();
-            match id {
-                0 => HeapString::try_from(value).is_ok(),
-                1 => HeapNumber::try_from(value).is_ok(),
-                2 => HeapBigInt::try_from(value).is_ok(),
-                _ => unreachable!(),
-            }
-        };
-        let mut entries = Vec::new();
-        while let Ok(entry) = map_data.find_entry(hash, eq) {
-            entries.push(*entry.get());
-            entry.remove();
-        }
-        entries.iter().for_each(|entry| {
-            let key = keys[*entry as usize].unwrap();
-            let key_hash = hasher(key);
-            let result = map_data.entry(
-                key_hash,
-                |equal_hash_index| {
-                    // It should not be possible for there to be an equal item
-                    // in the Map already.
-                    debug_assert_ne!(keys[*equal_hash_index as usize].unwrap(), key);
-                    false
-                },
-                |index_to_hash| hasher(keys[*index_to_hash as usize].unwrap()),
-            );
-
-            let Entry::Vacant(result) = result else {
-                unreachable!();
-            };
-            result.insert(*entry);
+        let index = u32::try_from(index).expect("keyed collection indexes are u32");
+        table.insert_unique(hasher(*key), index, |index_to_hash| {
+            hasher(keys[*index_to_hash as usize].expect("the table holds live keys only"))
         });
     }
 }
@@ -181,97 +149,29 @@ impl HeapMarkAndSweep for MapHeapDataMut<'_, 'static> {
             keys,
             values,
             needs_primitive_rehashing,
-            map_data,
+            map_data: _,
         } = self;
-        let map_data = map_data.get_mut();
         object_index.sweep_values(compactions);
-
-        let hasher = |value: Value| {
-            let mut hasher = AHasher::default();
-            if value.try_hash(&mut hasher).is_err() {
-                // A heap String, Number, or BigInt required rehashing as part
-                // of moving an Object key inside the HashTable. The heap
-                // vectors for those data points are currently being sweeped on
-                // another thread, so we cannot access them right now even if
-                // we wanted to. This situation should be fairly improbable as
-                // it requires mixing eg. long string and object values in the
-                // same Map, so it's not pressing right now. Still, it must be
-                // handled eventually. We essentially mark the heap hash data
-                // as "dirty". Any lookup shall then later check this boolean
-                // and rehash primitive keys if necessary.
-                needs_primitive_rehashing.store(true, Ordering::Relaxed);
-                let value = HeapPrimitive::try_from(value).unwrap();
-                // Return a hash based on the discriminant. This we are likely
-                // to cause hash collisions but we avoid having to rehash all
-                // keys; we can just rehash the primitive keys that match the
-                // discriminant hash.
-                core::mem::discriminant(&value).hash(&mut hasher);
-            }
-            hasher.finish()
-        };
-        assert_eq!(keys.len(), values.len());
-        for index in 0..keys.len() as u32 {
-            let key = &mut keys[index as usize];
-            let Some(key) = key else {
-                // Skip empty slots.
-                continue;
-            };
-            // Sweep value without any concerns.
-            values[index as usize].sweep_values(compactions);
-
-            let old_key = *key;
-            key.sweep_values(compactions);
-            let new_key = *key;
-
-            if old_key == new_key {
-                // No identity change, no hash change.
-                continue;
-            }
-
-            if !new_key.is_object() {
-                // Non-objects do not change their hash even if their identity
-                // changes.
-                continue;
-            }
-            // Object changed identity; it must be moved in the map_data.
-            let old_hash = hasher(old_key);
-            let new_hash = hasher(new_key);
-            if let Ok(old_entry) =
-                map_data.find_entry(old_hash, |equal_hash_index| *equal_hash_index == index)
-            {
-                // We do not always find an entry if a previous item has
-                // shifted ontop of our old hash.
-                old_entry.remove();
-            }
-            let new_entry = map_data.entry(
-                new_hash,
-                |equal_hash_index| {
-                    // It's not possible for there to be another hash index that
-                    // holds our item. But! It's possible that we're eg. shifting
-                    // 32 to 30, and then 30 to 29. Thus 32 will happily override
-                    // 30.
-                    values[*equal_hash_index as usize].unwrap() == new_key
-                },
-                |index_to_hash| {
-                    let value = values[*index_to_hash as usize].unwrap();
-                    hasher(value)
-                },
-            );
-            match new_entry {
-                hashbrown::hash_table::Entry::Occupied(mut occupied) => {
-                    // We found an existing entry that points to a
-                    // (necessarily) different slot that contains the same
-                    // value. This value will necessarily be removed later; we
-                    // can just reuse this slot.
-                    *occupied.get_mut() = index;
-                }
-                hashbrown::hash_table::Entry::Vacant(vacant) => {
-                    // This is the expected case: We're not overwriting a slot.
-                    vacant.insert(index);
-                }
-            }
+        values.sweep_values(compactions);
+        if sweep_keys_moved_an_object(keys, compactions) {
+            needs_primitive_rehashing.store(true, Ordering::Relaxed);
         }
     }
+}
+
+/// Sweep the keys of a Map or Set and tell if an Object key moved: its hash
+/// changed, so the hash table must be rebuilt before it is used again.
+pub(crate) fn sweep_keys_moved_an_object(
+    keys: &mut [Option<Value<'static>>],
+    compactions: &CompactionLists,
+) -> bool {
+    let mut moved = false;
+    for key in keys.iter_mut().flatten() {
+        let old_key = *key;
+        key.sweep_values(compactions);
+        moved |= old_key != *key && key.is_object();
+    }
+    moved
 }
 
 /// Bytes held by the entries of every Map, for the heap size estimate.
