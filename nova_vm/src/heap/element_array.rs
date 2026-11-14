@@ -7,6 +7,7 @@ use crate::hashing::AHashMap;
 use super::{
     AtomicBits, BitRange, CompactionLists, ElementIndex, HeapMarkAndSweep, PropertyKeyIndex,
     WorkQueues,
+    heap_bits::release_spare_capacity,
     object_entry::{ObjectEntry, ObjectEntryPropertyDescriptor},
 };
 use crate::{
@@ -1464,6 +1465,8 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
             }
             do_retain
         });
+        release_spare_capacity(&mut self.data);
+        release_spare_capacity(&mut self.storages);
     }
 }
 

@@ -2342,6 +2342,21 @@ pub(crate) fn sweep_heap_vector_values<T: HeapMarkAndSweep>(
             false
         }
     });
+    release_spare_capacity(vec);
+}
+
+/// Spare capacity a swept heap vector may keep without being shrunk.
+const SPARE_CAPACITY_BYTES: usize = 4096;
+
+/// Gives back the capacity of a vector that a collection left with more than
+/// half its length to spare (and at least [`SPARE_CAPACITY_BYTES`]), keeping a
+/// quarter of its length as room to grow.
+pub(crate) fn release_spare_capacity<T>(vec: &mut Vec<T>) {
+    let len = vec.len();
+    let spare = vec.capacity() - len;
+    if spare * 2 > len && spare * core::mem::size_of::<T>() >= SPARE_CAPACITY_BYTES {
+        vec.shrink_to(len + len / 4);
+    }
 }
 
 pub(crate) fn sweep_heap_soa_vector_values<T: SoAble>(

@@ -724,12 +724,12 @@ pub(crate) struct Environments {
 impl Default for Environments {
     fn default() -> Self {
         Self {
-            declarative: Vec::with_capacity(256),
-            function: Vec::with_capacity(1024),
+            declarative: Vec::new(),
+            function: Vec::new(),
             global: Vec::with_capacity(1),
-            object: Vec::with_capacity(1024),
-            module: Vec::with_capacity(8),
-            private: Vec::with_capacity(0),
+            object: Vec::new(),
+            module: Vec::new(),
+            private: Vec::new(),
         }
     }
 }
