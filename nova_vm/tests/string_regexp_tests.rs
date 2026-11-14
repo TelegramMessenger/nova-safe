@@ -82,3 +82,8 @@ fn regexp_multiline_dot_all() {
 fn regexp_ascii_classes() {
     run_test_source("regExpAsciiClasses.test.js");
 }
+
+#[test]
+fn regexp_to_string() {
+    run_test_source("regExpToString.test.js");
+}
