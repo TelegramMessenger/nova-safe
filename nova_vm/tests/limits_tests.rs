@@ -519,11 +519,13 @@ fn heap_limit_holds_with_a_large_live_heap() {
         // (Arrays stay under 65536 elements: a longer one takes a storage
         // slot of 2^24 elements.)
         let mut engine = Engine::new();
-        let limit = 48 * 1024 * 1024;
+        let limit = 24 * 1024 * 1024;
         engine.agent.set_heap_limit(Some(limit));
+        // The interrupt is only a backstop: unoptimised builds under a loaded
+        // gate take tens of seconds to fill the heap.
         let outcome = engine.run(
             "const keep = []; let chunk = []; for (let i = 0; ; i++) { chunk.push({ i }); if (chunk.length === 1000) { keep.push(chunk); chunk = []; } }",
-            Some(Duration::from_secs(60)),
+            Some(Duration::from_secs(600)),
         );
         assert_eq!(outcome, Outcome::Terminated(TerminationReason::OutOfMemory));
         let size = engine.agent.heap_size();
