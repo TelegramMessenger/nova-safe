@@ -73,110 +73,102 @@ pub trait Visit<'a>: Sized {
     fn leave_node(&mut self, _kind: RegExpAstKind<'a>) {}
 
     #[inline]
-    fn alloc<T>(&self, t: &T) -> &'a T {
-        // SAFETY:
-        // This should be safe as long as `src` is an reference from the allocator.
-        // But honestly, I'm not really sure if this is safe.
-        unsafe { std::mem::transmute(t) }
-    }
-
-    #[inline]
-    fn visit_pattern(&mut self, it: &Pattern<'a>) {
+    fn visit_pattern(&mut self, it: &'a Pattern<'a>) {
         walk_pattern(self, it);
     }
 
     #[inline]
-    fn visit_disjunction(&mut self, it: &Disjunction<'a>) {
+    fn visit_disjunction(&mut self, it: &'a Disjunction<'a>) {
         walk_disjunction(self, it);
     }
 
     #[inline]
-    fn visit_alternative(&mut self, it: &Alternative<'a>) {
+    fn visit_alternative(&mut self, it: &'a Alternative<'a>) {
         walk_alternative(self, it);
     }
 
     #[inline]
-    fn visit_term(&mut self, it: &Term<'a>) {
+    fn visit_term(&mut self, it: &'a Term<'a>) {
         walk_term(self, it);
     }
 
     #[inline]
-    fn visit_lookaround_assertion(&mut self, it: &LookAroundAssertion<'a>) {
+    fn visit_lookaround_assertion(&mut self, it: &'a LookAroundAssertion<'a>) {
         walk_lookaround_assertion(self, it);
     }
 
     #[inline]
-    fn visit_quantifier(&mut self, it: &Quantifier<'a>) {
+    fn visit_quantifier(&mut self, it: &'a Quantifier<'a>) {
         walk_quantifier(self, it);
     }
 
     #[inline]
-    fn visit_capturing_group(&mut self, it: &CapturingGroup<'a>) {
+    fn visit_capturing_group(&mut self, it: &'a CapturingGroup<'a>) {
         walk_capturing_group(self, it);
     }
 
     #[inline]
-    fn visit_ignore_group(&mut self, it: &IgnoreGroup<'a>) {
+    fn visit_ignore_group(&mut self, it: &'a IgnoreGroup<'a>) {
         walk_ignore_group(self, it);
     }
 
     #[inline]
-    fn visit_boundary_assertion(&mut self, it: &BoundaryAssertion) {
+    fn visit_boundary_assertion(&mut self, it: &'a BoundaryAssertion) {
         walk_boundary_assertion(self, it);
     }
 
     #[inline]
-    fn visit_character(&mut self, it: &Character) {
+    fn visit_character(&mut self, it: &'a Character) {
         walk_character(self, it);
     }
 
     #[inline]
-    fn visit_dot(&mut self, it: &Dot) {
+    fn visit_dot(&mut self, it: &'a Dot) {
         walk_dot(self, it);
     }
 
     #[inline]
-    fn visit_character_class_escape(&mut self, it: &CharacterClassEscape) {
+    fn visit_character_class_escape(&mut self, it: &'a CharacterClassEscape) {
         walk_character_class_escape(self, it);
     }
 
     #[inline]
-    fn visit_unicode_property_escape(&mut self, it: &UnicodePropertyEscape<'a>) {
+    fn visit_unicode_property_escape(&mut self, it: &'a UnicodePropertyEscape<'a>) {
         walk_unicode_property_escape(self, it);
     }
 
     #[inline]
-    fn visit_character_class(&mut self, it: &CharacterClass<'a>) {
+    fn visit_character_class(&mut self, it: &'a CharacterClass<'a>) {
         walk_character_class(self, it);
     }
 
     #[inline]
-    fn visit_character_class_contents(&mut self, it: &CharacterClassContents<'a>) {
+    fn visit_character_class_contents(&mut self, it: &'a CharacterClassContents<'a>) {
         walk_character_class_contents(self, it);
     }
 
     #[inline]
-    fn visit_character_class_range(&mut self, it: &CharacterClassRange) {
+    fn visit_character_class_range(&mut self, it: &'a CharacterClassRange) {
         walk_character_class_range(self, it);
     }
 
     #[inline]
-    fn visit_character_class_string_disjunction(&mut self, it: &ClassStringDisjunction<'a>) {
+    fn visit_character_class_string_disjunction(&mut self, it: &'a ClassStringDisjunction<'a>) {
         walk_character_class_string_disjunction(self, it);
     }
 
     #[inline]
-    fn visit_character_class_string(&mut self, it: &ClassString<'a>) {
+    fn visit_character_class_string(&mut self, it: &'a ClassString<'a>) {
         walk_character_class_string(self, it);
     }
 
     #[inline]
-    fn visit_indexed_reference(&mut self, it: &IndexedReference) {
+    fn visit_indexed_reference(&mut self, it: &'a IndexedReference) {
         walk_indexed_reference(self, it);
     }
 
     #[inline]
-    fn visit_named_reference(&mut self, it: &NamedReference<'a>) {
+    fn visit_named_reference(&mut self, it: &'a NamedReference<'a>) {
         walk_named_reference(self, it);
     }
 }
@@ -185,16 +177,16 @@ pub mod walk {
     use super::*;
 
     #[inline]
-    pub fn walk_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &Pattern<'a>) {
-        let kind = RegExpAstKind::Pattern(visitor.alloc(it));
+    pub fn walk_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Pattern<'a>) {
+        let kind = RegExpAstKind::Pattern(it);
         visitor.enter_node(kind);
         visitor.visit_disjunction(&it.body);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_disjunction<'a, V: Visit<'a>>(visitor: &mut V, it: &Disjunction<'a>) {
-        let kind = RegExpAstKind::Disjunction(visitor.alloc(it));
+    pub fn walk_disjunction<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Disjunction<'a>) {
+        let kind = RegExpAstKind::Disjunction(it);
         visitor.enter_node(kind);
         for alt in &it.body {
             visitor.visit_alternative(alt);
@@ -203,8 +195,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_alternative<'a, V: Visit<'a>>(visitor: &mut V, it: &Alternative<'a>) {
-        let kind = RegExpAstKind::Alternative(visitor.alloc(it));
+    pub fn walk_alternative<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Alternative<'a>) {
+        let kind = RegExpAstKind::Alternative(it);
         visitor.enter_node(kind);
         for term in &it.body {
             visitor.visit_term(term);
@@ -213,8 +205,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_term<'a, V: Visit<'a>>(visitor: &mut V, it: &Term<'a>) {
-        let kind = RegExpAstKind::Term(visitor.alloc(it));
+    pub fn walk_term<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Term<'a>) {
+        let kind = RegExpAstKind::Term(it);
         visitor.enter_node(kind);
         match it {
             Term::LookAroundAssertion(lookaround) => {
@@ -260,55 +252,55 @@ pub mod walk {
     #[inline]
     pub fn walk_lookaround_assertion<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &LookAroundAssertion<'a>,
+        it: &'a LookAroundAssertion<'a>,
     ) {
-        let kind = RegExpAstKind::LookAroundAssertion(visitor.alloc(it));
+        let kind = RegExpAstKind::LookAroundAssertion(it);
         visitor.enter_node(kind);
         visitor.visit_disjunction(&it.body);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_quantifier<'a, V: Visit<'a>>(visitor: &mut V, it: &Quantifier<'a>) {
-        let kind = RegExpAstKind::Quantifier(visitor.alloc(it));
+    pub fn walk_quantifier<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Quantifier<'a>) {
+        let kind = RegExpAstKind::Quantifier(it);
         visitor.enter_node(kind);
         visitor.visit_term(&it.body);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_capturing_group<'a, V: Visit<'a>>(visitor: &mut V, it: &CapturingGroup<'a>) {
-        let kind = RegExpAstKind::CapturingGroup(visitor.alloc(it));
+    pub fn walk_capturing_group<'a, V: Visit<'a>>(visitor: &mut V, it: &'a CapturingGroup<'a>) {
+        let kind = RegExpAstKind::CapturingGroup(it);
         visitor.enter_node(kind);
         visitor.visit_disjunction(&it.body);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ignore_group<'a, V: Visit<'a>>(visitor: &mut V, it: &IgnoreGroup<'a>) {
-        let kind = RegExpAstKind::IgnoreGroup(visitor.alloc(it));
+    pub fn walk_ignore_group<'a, V: Visit<'a>>(visitor: &mut V, it: &'a IgnoreGroup<'a>) {
+        let kind = RegExpAstKind::IgnoreGroup(it);
         visitor.enter_node(kind);
         visitor.visit_disjunction(&it.body);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_boundary_assertion<'a, V: Visit<'a>>(visitor: &mut V, it: &BoundaryAssertion) {
-        let kind = RegExpAstKind::BoundaryAssertion(visitor.alloc(it));
+    pub fn walk_boundary_assertion<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BoundaryAssertion) {
+        let kind = RegExpAstKind::BoundaryAssertion(it);
         visitor.enter_node(kind);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_character<'a, V: Visit<'a>>(visitor: &mut V, it: &Character) {
-        let kind = RegExpAstKind::Character(visitor.alloc(it));
+    pub fn walk_character<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Character) {
+        let kind = RegExpAstKind::Character(it);
         visitor.enter_node(kind);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_dot<'a, V: Visit<'a>>(visitor: &mut V, it: &Dot) {
-        let kind = RegExpAstKind::Dot(visitor.alloc(it));
+    pub fn walk_dot<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Dot) {
+        let kind = RegExpAstKind::Dot(it);
         visitor.enter_node(kind);
         visitor.leave_node(kind);
     }
@@ -316,9 +308,9 @@ pub mod walk {
     #[inline]
     pub fn walk_character_class_escape<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &CharacterClassEscape,
+        it: &'a CharacterClassEscape,
     ) {
-        let kind = RegExpAstKind::CharacterClassEscape(visitor.alloc(it));
+        let kind = RegExpAstKind::CharacterClassEscape(it);
         visitor.enter_node(kind);
         visitor.leave_node(kind);
     }
@@ -326,16 +318,16 @@ pub mod walk {
     #[inline]
     pub fn walk_unicode_property_escape<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &UnicodePropertyEscape<'a>,
+        it: &'a UnicodePropertyEscape<'a>,
     ) {
-        let kind = RegExpAstKind::UnicodePropertyEscape(visitor.alloc(it));
+        let kind = RegExpAstKind::UnicodePropertyEscape(it);
         visitor.enter_node(kind);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_character_class<'a, V: Visit<'a>>(visitor: &mut V, it: &CharacterClass<'a>) {
-        let kind = RegExpAstKind::CharacterClass(visitor.alloc(it));
+    pub fn walk_character_class<'a, V: Visit<'a>>(visitor: &mut V, it: &'a CharacterClass<'a>) {
+        let kind = RegExpAstKind::CharacterClass(it);
         visitor.enter_node(kind);
         for content in &it.body {
             visitor.visit_character_class_contents(content);
@@ -346,9 +338,9 @@ pub mod walk {
     #[inline]
     pub fn walk_character_class_contents<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &CharacterClassContents<'a>,
+        it: &'a CharacterClassContents<'a>,
     ) {
-        let kind = RegExpAstKind::CharacterClassContents(visitor.alloc(it));
+        let kind = RegExpAstKind::CharacterClassContents(it);
         visitor.enter_node(kind);
         match it {
             CharacterClassContents::CharacterClassRange(character_class_range) => {
@@ -374,8 +366,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_character_class_range<'a, V: Visit<'a>>(visitor: &mut V, it: &CharacterClassRange) {
-        let kind = RegExpAstKind::CharacterClassRange(visitor.alloc(it));
+    pub fn walk_character_class_range<'a, V: Visit<'a>>(visitor: &mut V, it: &'a CharacterClassRange) {
+        let kind = RegExpAstKind::CharacterClassRange(it);
         visitor.enter_node(kind);
         visitor.visit_character(&it.min);
         visitor.visit_character(&it.max);
@@ -385,9 +377,9 @@ pub mod walk {
     #[inline]
     pub fn walk_character_class_string_disjunction<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ClassStringDisjunction<'a>,
+        it: &'a ClassStringDisjunction<'a>,
     ) {
-        let kind = RegExpAstKind::CharacterClassStringDisjunction(visitor.alloc(it));
+        let kind = RegExpAstKind::CharacterClassStringDisjunction(it);
         visitor.enter_node(kind);
         for string in &it.body {
             visitor.visit_character_class_string(string);
@@ -396,8 +388,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_character_class_string<'a, V: Visit<'a>>(visitor: &mut V, it: &ClassString<'a>) {
-        let kind = RegExpAstKind::CharacterClassString(visitor.alloc(it));
+    pub fn walk_character_class_string<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ClassString<'a>) {
+        let kind = RegExpAstKind::CharacterClassString(it);
         visitor.enter_node(kind);
         for character in &it.body {
             visitor.visit_character(character);
@@ -406,15 +398,15 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_indexed_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &IndexedReference) {
-        let kind = RegExpAstKind::IndexedReference(visitor.alloc(it));
+    pub fn walk_indexed_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &'a IndexedReference) {
+        let kind = RegExpAstKind::IndexedReference(it);
         visitor.enter_node(kind);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_named_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &NamedReference<'a>) {
-        let kind = RegExpAstKind::NamedReference(visitor.alloc(it));
+    pub fn walk_named_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &'a NamedReference<'a>) {
+        let kind = RegExpAstKind::NamedReference(it);
         visitor.enter_node(kind);
         visitor.leave_node(kind);
     }

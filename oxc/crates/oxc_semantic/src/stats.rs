@@ -151,19 +151,19 @@ impl<'a> Visit<'a> for Counter {
     }
 
     #[inline]
-    fn visit_binding_identifier(&mut self, _: &BindingIdentifier<'a>) {
+    fn visit_binding_identifier(&mut self, _: &'a BindingIdentifier<'a>) {
         self.stats.nodes += 1;
         self.stats.symbols += 1;
     }
 
     #[inline]
-    fn visit_identifier_reference(&mut self, _: &IdentifierReference<'a>) {
+    fn visit_identifier_reference(&mut self, _: &'a IdentifierReference<'a>) {
         self.stats.nodes += 1;
         self.stats.references += 1;
     }
 
     #[inline]
-    fn visit_ts_enum_member_name(&mut self, it: &TSEnumMemberName<'a>) {
+    fn visit_ts_enum_member_name(&mut self, it: &'a TSEnumMemberName<'a>) {
         self.stats.symbols += 1;
         walk_ts_enum_member_name(self, it);
     }

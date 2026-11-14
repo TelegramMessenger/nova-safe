@@ -675,8 +675,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.pop_ast_node();
     }
 
-    fn visit_program(&mut self, program: &Program<'a>) {
-        let kind = AstKind::Program(self.alloc(program));
+    fn visit_program(&mut self, program: &'a Program<'a>) {
+        let kind = AstKind::Program(program);
         /* cfg */
         #[cfg(feature = "cfg")]
         let error_harness = control_flow!(self, |cfg| {
@@ -735,8 +735,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         debug_assert!(self.current_function_node_id == NodeId::ROOT);
     }
 
-    fn visit_break_statement(&mut self, stmt: &BreakStatement<'a>) {
-        let kind = AstKind::BreakStatement(self.alloc(stmt));
+    fn visit_break_statement(&mut self, stmt: &'a BreakStatement<'a>) {
+        let kind = AstKind::BreakStatement(stmt);
         self.enter_node(kind);
         if let Some(label) = &stmt.label {
             self.unused_labels.reference(label.name);
@@ -759,8 +759,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_class(&mut self, class: &Class<'a>) {
-        let kind = AstKind::Class(self.alloc(class));
+    fn visit_class(&mut self, class: &'a Class<'a>) {
+        let kind = AstKind::Class(class);
         self.enter_node(kind);
         self.current_node_flags |= NodeFlags::Class;
         if class.is_declaration() {
@@ -797,8 +797,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.class_table_builder.pop_class();
     }
 
-    fn visit_block_statement(&mut self, it: &BlockStatement<'a>) {
-        let kind = AstKind::BlockStatement(self.alloc(it));
+    fn visit_block_statement(&mut self, it: &'a BlockStatement<'a>) {
+        let kind = AstKind::BlockStatement(it);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
 
@@ -832,8 +832,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_continue_statement(&mut self, stmt: &ContinueStatement<'a>) {
-        let kind = AstKind::ContinueStatement(self.alloc(stmt));
+    fn visit_continue_statement(&mut self, stmt: &'a ContinueStatement<'a>) {
+        let kind = AstKind::ContinueStatement(stmt);
         self.enter_node(kind);
         if let Some(label) = &stmt.label {
             self.unused_labels.reference(label.name);
@@ -856,8 +856,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_do_while_statement(&mut self, stmt: &DoWhileStatement<'a>) {
-        let kind = AstKind::DoWhileStatement(self.alloc(stmt));
+    fn visit_do_while_statement(&mut self, stmt: &'a DoWhileStatement<'a>) {
+        let kind = AstKind::DoWhileStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
 
@@ -914,13 +914,13 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_logical_expression(&mut self, expr: &LogicalExpression<'a>) {
+    fn visit_logical_expression(&mut self, expr: &'a LogicalExpression<'a>) {
         // logical expressions are short-circuiting, and therefore
         // also represent control flow.
         // For example, in:
         //   foo && bar();
         // the bar() call will only be executed if foo is truthy.
-        let kind = AstKind::LogicalExpression(self.alloc(expr));
+        let kind = AstKind::LogicalExpression(expr);
         self.enter_node(kind);
 
         /* cfg - condition basic block */
@@ -965,14 +965,14 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_assignment_expression(&mut self, expr: &AssignmentExpression<'a>) {
+    fn visit_assignment_expression(&mut self, expr: &'a AssignmentExpression<'a>) {
         // assignment expressions can include an operator, which
         // can be used to determine the control flow of the expression.
         // For example, in:
         //   foo &&= super();
         // the super() call will only be executed if foo is truthy.
 
-        let kind = AstKind::AssignmentExpression(self.alloc(expr));
+        let kind = AstKind::AssignmentExpression(expr);
         self.enter_node(kind);
 
         if !expr.operator.is_assign() {
@@ -1043,8 +1043,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_conditional_expression(&mut self, expr: &ConditionalExpression<'a>) {
-        let kind = AstKind::ConditionalExpression(self.alloc(expr));
+    fn visit_conditional_expression(&mut self, expr: &'a ConditionalExpression<'a>) {
+        let kind = AstKind::ConditionalExpression(expr);
         self.enter_node(kind);
 
         /* cfg - condition basic block */
@@ -1116,8 +1116,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_for_statement(&mut self, stmt: &ForStatement<'a>) {
-        let kind = AstKind::ForStatement(self.alloc(stmt));
+    fn visit_for_statement(&mut self, stmt: &'a ForStatement<'a>) {
+        let kind = AstKind::ForStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.enter_scope(ScopeFlags::empty(), &stmt.scope_id);
@@ -1187,8 +1187,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_for_in_statement(&mut self, stmt: &ForInStatement<'a>) {
-        let kind = AstKind::ForInStatement(self.alloc(stmt));
+    fn visit_for_in_statement(&mut self, stmt: &'a ForInStatement<'a>) {
+        let kind = AstKind::ForInStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.enter_scope(ScopeFlags::empty(), &stmt.scope_id);
@@ -1251,8 +1251,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_for_of_statement(&mut self, stmt: &ForOfStatement<'a>) {
-        let kind = AstKind::ForOfStatement(self.alloc(stmt));
+    fn visit_for_of_statement(&mut self, stmt: &'a ForOfStatement<'a>) {
+        let kind = AstKind::ForOfStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.enter_scope(ScopeFlags::empty(), &stmt.scope_id);
@@ -1314,8 +1314,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_if_statement(&mut self, stmt: &IfStatement<'a>) {
-        let kind = AstKind::IfStatement(self.alloc(stmt));
+    fn visit_if_statement(&mut self, stmt: &'a IfStatement<'a>) {
+        let kind = AstKind::IfStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
 
@@ -1388,8 +1388,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_labeled_statement(&mut self, stmt: &LabeledStatement<'a>) {
-        let kind = AstKind::LabeledStatement(self.alloc(stmt));
+    fn visit_labeled_statement(&mut self, stmt: &'a LabeledStatement<'a>) {
+        let kind = AstKind::LabeledStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.unused_labels.add(stmt.label.name, self.current_node_id);
@@ -1423,8 +1423,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_return_statement(&mut self, stmt: &ReturnStatement<'a>) {
-        let kind = AstKind::ReturnStatement(self.alloc(stmt));
+    fn visit_return_statement(&mut self, stmt: &'a ReturnStatement<'a>) {
+        let kind = AstKind::ReturnStatement(stmt);
         self.enter_node(kind);
 
         /* cfg */
@@ -1455,8 +1455,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_switch_statement(&mut self, stmt: &SwitchStatement<'a>) {
-        let kind = AstKind::SwitchStatement(self.alloc(stmt));
+    fn visit_switch_statement(&mut self, stmt: &'a SwitchStatement<'a>) {
+        let kind = AstKind::SwitchStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.visit_expression(&stmt.discriminant);
@@ -1535,8 +1535,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_switch_case(&mut self, case: &SwitchCase<'a>) {
-        let kind = AstKind::SwitchCase(self.alloc(case));
+    fn visit_switch_case(&mut self, case: &'a SwitchCase<'a>) {
+        let kind = AstKind::SwitchCase(case);
         self.enter_node(kind);
 
         if let Some(expr) = &case.test {
@@ -1563,8 +1563,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_throw_statement(&mut self, stmt: &ThrowStatement<'a>) {
-        let kind = AstKind::ThrowStatement(self.alloc(stmt));
+    fn visit_throw_statement(&mut self, stmt: &'a ThrowStatement<'a>) {
+        let kind = AstKind::ThrowStatement(stmt);
         self.enter_node(kind);
 
         /* cfg */
@@ -1581,8 +1581,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_try_statement(&mut self, stmt: &TryStatement<'a>) {
-        let kind = AstKind::TryStatement(self.alloc(stmt));
+    fn visit_try_statement(&mut self, stmt: &'a TryStatement<'a>) {
+        let kind = AstKind::TryStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
 
@@ -1716,8 +1716,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_while_statement(&mut self, stmt: &WhileStatement<'a>) {
-        let kind = AstKind::WhileStatement(self.alloc(stmt));
+    fn visit_while_statement(&mut self, stmt: &'a WhileStatement<'a>) {
+        let kind = AstKind::WhileStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
 
@@ -1765,8 +1765,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_with_statement(&mut self, stmt: &WithStatement<'a>) {
-        let kind = AstKind::WithStatement(self.alloc(stmt));
+    fn visit_with_statement(&mut self, stmt: &'a WithStatement<'a>) {
+        let kind = AstKind::WithStatement(stmt);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
 
@@ -1801,7 +1801,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_function(&mut self, func: &Function<'a>, flags: ScopeFlags) {
+    fn visit_function(&mut self, func: &'a Function<'a>, flags: ScopeFlags) {
         /* cfg */
         // We add a new basic block to the cfg before entering the node
         // so that the correct cfg_ix is associated with the ast node.
@@ -1817,7 +1817,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
             });
         /* cfg */
 
-        let kind = AstKind::Function(self.alloc(func));
+        let kind = AstKind::Function(func);
         self.enter_node(kind);
 
         let parent_function_node_id = self.current_function_node_id;
@@ -1912,7 +1912,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.current_function_node_id = parent_function_node_id;
     }
 
-    fn visit_arrow_function_expression(&mut self, expr: &ArrowFunctionExpression<'a>) {
+    fn visit_arrow_function_expression(&mut self, expr: &'a ArrowFunctionExpression<'a>) {
         /* cfg */
         // We add a new basic block to the cfg before entering the node
         // so that the correct cfg_ix is associated with the ast node.
@@ -1927,7 +1927,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         });
         /* cfg */
 
-        let kind = AstKind::ArrowFunctionExpression(self.alloc(expr));
+        let kind = AstKind::ArrowFunctionExpression(expr);
         self.enter_node(kind);
         self.enter_scope(
             {
@@ -1999,8 +1999,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_update_expression(&mut self, it: &UpdateExpression<'a>) {
-        let kind = AstKind::UpdateExpression(self.alloc(it));
+    fn visit_update_expression(&mut self, it: &'a UpdateExpression<'a>) {
+        let kind = AstKind::UpdateExpression(it);
         self.enter_node(kind);
         // `++a` or `a--`
         //    ^      ^ We always treat `a` as Read and Write reference,
@@ -2009,7 +2009,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_member_expression(&mut self, it: &MemberExpression<'a>) {
+    fn visit_member_expression(&mut self, it: &'a MemberExpression<'a>) {
         // A.B = 1;
         // ^^^ Can't treat A as a Write reference since it's A's property(B) that changes.
         self.current_reference_flags -= ReferenceFlags::Write;
@@ -2023,7 +2023,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         }
     }
 
-    fn visit_simple_assignment_target(&mut self, it: &SimpleAssignmentTarget<'a>) {
+    fn visit_simple_assignment_target(&mut self, it: &'a SimpleAssignmentTarget<'a>) {
         // Except that the read-write flags has been set in visit_assignment_expression
         // and visit_update_expression, this is always a write-only reference here.
         if !self.current_reference_flags.is_write() {
@@ -2054,9 +2054,9 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
 
     fn visit_assignment_target_property_identifier(
         &mut self,
-        it: &AssignmentTargetPropertyIdentifier<'a>,
+        it: &'a AssignmentTargetPropertyIdentifier<'a>,
     ) {
-        let kind = AstKind::AssignmentTargetPropertyIdentifier(self.alloc(it));
+        let kind = AstKind::AssignmentTargetPropertyIdentifier(it);
         self.enter_node(kind);
         self.current_reference_flags = ReferenceFlags::Write;
         self.visit_identifier_reference(&it.binding);
@@ -2066,7 +2066,7 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_export_default_declaration_kind(&mut self, it: &ExportDefaultDeclarationKind<'a>) {
+    fn visit_export_default_declaration_kind(&mut self, it: &'a ExportDefaultDeclarationKind<'a>) {
         match it {
             ExportDefaultDeclarationKind::FunctionDeclaration(it) => {
                 let flags = ScopeFlags::Function;
@@ -2088,8 +2088,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         }
     }
 
-    fn visit_export_named_declaration(&mut self, it: &ExportNamedDeclaration<'a>) {
-        let kind = AstKind::ExportNamedDeclaration(self.alloc(it));
+    fn visit_export_named_declaration(&mut self, it: &'a ExportNamedDeclaration<'a>) {
+        let kind = AstKind::ExportNamedDeclaration(it);
         self.enter_node(kind);
         self.visit_span(&it.span);
         if let Some(declaration) = &it.declaration {
@@ -2120,8 +2120,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_export_specifier(&mut self, it: &ExportSpecifier<'a>) {
-        let kind = AstKind::ExportSpecifier(self.alloc(it));
+    fn visit_export_specifier(&mut self, it: &'a ExportSpecifier<'a>) {
+        let kind = AstKind::ExportSpecifier(it);
         self.enter_node(kind);
         self.visit_span(&it.span);
 
@@ -2135,8 +2135,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_export_assignment(&mut self, it: &TSExportAssignment<'a>) {
-        let kind = AstKind::TSExportAssignment(self.alloc(it));
+    fn visit_ts_export_assignment(&mut self, it: &'a TSExportAssignment<'a>) {
+        let kind = AstKind::TSExportAssignment(it);
         self.enter_node(kind);
         self.visit_span(&it.span);
         // export = a;
@@ -2148,8 +2148,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_catch_parameter(&mut self, param: &CatchParameter<'a>) {
-        let kind = AstKind::CatchParameter(self.alloc(param));
+    fn visit_catch_parameter(&mut self, param: &'a CatchParameter<'a>) {
+        let kind = AstKind::CatchParameter(param);
         self.enter_node(kind);
         param.bind(self);
 
@@ -2166,8 +2166,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_type_query(&mut self, ty: &TSTypeQuery<'a>) {
-        let kind = AstKind::TSTypeQuery(self.alloc(ty));
+    fn visit_ts_type_query(&mut self, ty: &'a TSTypeQuery<'a>) {
+        let kind = AstKind::TSTypeQuery(ty);
         self.enter_node(kind);
         // type A = typeof a;
         //          ^^^^^^^^
@@ -2181,8 +2181,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_property_signature(&mut self, sig: &TSPropertySignature<'a>) {
-        let kind = AstKind::TSPropertySignature(self.alloc(sig));
+    fn visit_ts_property_signature(&mut self, sig: &'a TSPropertySignature<'a>) {
+        let kind = AstKind::TSPropertySignature(sig);
         self.enter_node(kind);
         if sig.key.is_expression() {
             // interface A { [prop]: string }
@@ -2198,8 +2198,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_import_specifier(&mut self, specifier: &ImportSpecifier<'a>) {
-        let kind = AstKind::ImportSpecifier(self.alloc(specifier));
+    fn visit_import_specifier(&mut self, specifier: &'a ImportSpecifier<'a>) {
+        let kind = AstKind::ImportSpecifier(specifier);
         self.enter_node(kind);
         specifier.bind(self);
         self.visit_span(&specifier.span);
@@ -2208,8 +2208,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_import_default_specifier(&mut self, specifier: &ImportDefaultSpecifier<'a>) {
-        let kind = AstKind::ImportDefaultSpecifier(self.alloc(specifier));
+    fn visit_import_default_specifier(&mut self, specifier: &'a ImportDefaultSpecifier<'a>) {
+        let kind = AstKind::ImportDefaultSpecifier(specifier);
         self.enter_node(kind);
         specifier.bind(self);
         self.visit_span(&specifier.span);
@@ -2217,8 +2217,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_import_namespace_specifier(&mut self, specifier: &ImportNamespaceSpecifier<'a>) {
-        let kind = AstKind::ImportNamespaceSpecifier(self.alloc(specifier));
+    fn visit_import_namespace_specifier(&mut self, specifier: &'a ImportNamespaceSpecifier<'a>) {
+        let kind = AstKind::ImportNamespaceSpecifier(specifier);
         self.enter_node(kind);
         specifier.bind(self);
         self.visit_span(&specifier.span);
@@ -2226,8 +2226,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_import_equals_declaration(&mut self, decl: &TSImportEqualsDeclaration<'a>) {
-        let kind = AstKind::TSImportEqualsDeclaration(self.alloc(decl));
+    fn visit_ts_import_equals_declaration(&mut self, decl: &'a TSImportEqualsDeclaration<'a>) {
+        let kind = AstKind::TSImportEqualsDeclaration(decl);
         self.enter_node(kind);
         decl.bind(self);
         self.visit_span(&decl.span);
@@ -2236,8 +2236,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_variable_declarator(&mut self, decl: &VariableDeclarator<'a>) {
-        let kind = AstKind::VariableDeclarator(self.alloc(decl));
+    fn visit_variable_declarator(&mut self, decl: &'a VariableDeclarator<'a>) {
+        let kind = AstKind::VariableDeclarator(decl);
         self.enter_node(kind);
         decl.bind(self);
         self.visit_span(&decl.span);
@@ -2251,8 +2251,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_class_body(&mut self, body: &ClassBody<'a>) {
-        let kind = AstKind::ClassBody(self.alloc(body));
+    fn visit_class_body(&mut self, body: &'a ClassBody<'a>) {
+        let kind = AstKind::ClassBody(body);
         self.enter_node(kind);
         self.class_table_builder.declare_class_body(body, self.current_node_id, &self.nodes);
         self.visit_span(&body.span);
@@ -2260,8 +2260,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_private_identifier(&mut self, ident: &PrivateIdentifier<'a>) {
-        let kind = AstKind::PrivateIdentifier(self.alloc(ident));
+    fn visit_private_identifier(&mut self, ident: &'a PrivateIdentifier<'a>) {
+        let kind = AstKind::PrivateIdentifier(ident);
         self.enter_node(kind);
         self.class_table_builder.add_private_identifier_reference(
             ident,
@@ -2272,8 +2272,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_binding_rest_element(&mut self, element: &BindingRestElement<'a>) {
-        let kind = AstKind::BindingRestElement(self.alloc(element));
+    fn visit_binding_rest_element(&mut self, element: &'a BindingRestElement<'a>) {
+        let kind = AstKind::BindingRestElement(element);
         self.enter_node(kind);
         element.bind(self);
         self.visit_span(&element.span);
@@ -2281,8 +2281,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_formal_parameter(&mut self, param: &FormalParameter<'a>) {
-        let kind = AstKind::FormalParameter(self.alloc(param));
+    fn visit_formal_parameter(&mut self, param: &'a FormalParameter<'a>) {
+        let kind = AstKind::FormalParameter(param);
         self.enter_node(kind);
         param.bind(self);
         self.visit_span(&param.span);
@@ -2297,8 +2297,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_formal_parameter_rest(&mut self, param: &FormalParameterRest<'a>) {
-        let kind = AstKind::FormalParameterRest(self.alloc(param));
+    fn visit_formal_parameter_rest(&mut self, param: &'a FormalParameterRest<'a>) {
+        let kind = AstKind::FormalParameterRest(param);
         self.enter_node(kind);
         param.bind(self);
         self.visit_span(&param.span);
@@ -2310,8 +2310,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_module_declaration(&mut self, decl: &TSModuleDeclaration<'a>) {
-        let kind = AstKind::TSModuleDeclaration(self.alloc(decl));
+    fn visit_ts_module_declaration(&mut self, decl: &'a TSModuleDeclaration<'a>) {
+        let kind = AstKind::TSModuleDeclaration(decl);
         self.enter_node(kind);
         decl.bind(self);
         self.visit_span(&decl.span);
@@ -2334,8 +2334,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_type_alias_declaration(&mut self, decl: &TSTypeAliasDeclaration<'a>) {
-        let kind = AstKind::TSTypeAliasDeclaration(self.alloc(decl));
+    fn visit_ts_type_alias_declaration(&mut self, decl: &'a TSTypeAliasDeclaration<'a>) {
+        let kind = AstKind::TSTypeAliasDeclaration(decl);
         self.enter_node(kind);
         decl.bind(self);
         self.visit_span(&decl.span);
@@ -2349,8 +2349,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_interface_declaration(&mut self, decl: &TSInterfaceDeclaration<'a>) {
-        let kind = AstKind::TSInterfaceDeclaration(self.alloc(decl));
+    fn visit_ts_interface_declaration(&mut self, decl: &'a TSInterfaceDeclaration<'a>) {
+        let kind = AstKind::TSInterfaceDeclaration(decl);
         self.enter_node(kind);
         decl.bind(self);
         self.visit_span(&decl.span);
@@ -2365,8 +2365,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_enum_declaration(&mut self, decl: &TSEnumDeclaration<'a>) {
-        let kind = AstKind::TSEnumDeclaration(self.alloc(decl));
+    fn visit_ts_enum_declaration(&mut self, decl: &'a TSEnumDeclaration<'a>) {
+        let kind = AstKind::TSEnumDeclaration(decl);
         self.enter_node(kind);
         decl.bind(self);
         self.visit_span(&decl.span);
@@ -2375,8 +2375,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_enum_member(&mut self, member: &TSEnumMember<'a>) {
-        let kind = AstKind::TSEnumMember(self.alloc(member));
+    fn visit_ts_enum_member(&mut self, member: &'a TSEnumMember<'a>) {
+        let kind = AstKind::TSEnumMember(member);
         self.enter_node(kind);
         member.bind(self);
         self.visit_span(&member.span);
@@ -2387,8 +2387,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_type_parameter(&mut self, param: &TSTypeParameter<'a>) {
-        let kind = AstKind::TSTypeParameter(self.alloc(param));
+    fn visit_ts_type_parameter(&mut self, param: &'a TSTypeParameter<'a>) {
+        let kind = AstKind::TSTypeParameter(param);
         self.enter_node(kind);
         param.bind(self);
         self.visit_span(&param.span);
@@ -2402,8 +2402,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_mapped_type(&mut self, it: &TSMappedType<'a>) {
-        let kind = AstKind::TSMappedType(self.alloc(it));
+    fn visit_ts_mapped_type(&mut self, it: &'a TSMappedType<'a>) {
+        let kind = AstKind::TSMappedType(it);
         self.enter_node(kind);
         self.enter_scope(ScopeFlags::empty(), &it.scope_id);
         it.bind(self);
@@ -2420,16 +2420,16 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_identifier_reference(&mut self, ident: &IdentifierReference<'a>) {
-        let kind = AstKind::IdentifierReference(self.alloc(ident));
+    fn visit_identifier_reference(&mut self, ident: &'a IdentifierReference<'a>) {
+        let kind = AstKind::IdentifierReference(ident);
         self.enter_node(kind);
         self.reference_identifier(ident);
         self.visit_span(&ident.span);
         self.leave_node(kind);
     }
 
-    fn visit_yield_expression(&mut self, expr: &YieldExpression<'a>) {
-        let kind = AstKind::YieldExpression(self.alloc(expr));
+    fn visit_yield_expression(&mut self, expr: &'a YieldExpression<'a>) {
+        let kind = AstKind::YieldExpression(expr);
         self.enter_node(kind);
         // If not in a function, `current_function_node_id` is `NodeId` of `Program`.
         // But it shouldn't be possible for `yield` to be at top level - that's a parse error.
@@ -2441,8 +2441,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_call_expression(&mut self, expr: &CallExpression<'a>) {
-        let kind = AstKind::CallExpression(self.alloc(expr));
+    fn visit_call_expression(&mut self, expr: &'a CallExpression<'a>) {
+        let kind = AstKind::CallExpression(expr);
         self.enter_node(kind);
         if !expr.optional && expr.callee.is_specific_id("eval") {
             self.scoping.scope_flags_mut(self.current_scope_id).insert(ScopeFlags::DirectEval);
@@ -2456,8 +2456,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_interface_heritage(&mut self, heritage: &TSInterfaceHeritage<'a>) {
-        let kind = AstKind::TSInterfaceHeritage(self.alloc(heritage));
+    fn visit_ts_interface_heritage(&mut self, heritage: &'a TSInterfaceHeritage<'a>) {
+        let kind = AstKind::TSInterfaceHeritage(heritage);
         self.enter_node(kind);
         // interface A extends B {}
         //             ^^^^^^^^^
@@ -2470,8 +2470,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_class_implements(&mut self, implements: &TSClassImplements<'a>) {
-        let kind = AstKind::TSClassImplements(self.alloc(implements));
+    fn visit_ts_class_implements(&mut self, implements: &'a TSClassImplements<'a>) {
+        let kind = AstKind::TSClassImplements(implements);
         self.enter_node(kind);
         // class A implements B {}
         //         ^^^^^^^^^^^^
@@ -2484,8 +2484,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_type_reference(&mut self, ty: &TSTypeReference<'a>) {
-        let kind = AstKind::TSTypeReference(self.alloc(ty));
+    fn visit_ts_type_reference(&mut self, ty: &'a TSTypeReference<'a>) {
+        let kind = AstKind::TSTypeReference(ty);
         self.enter_node(kind);
         self.current_reference_flags = ReferenceFlags::Type;
         self.visit_span(&ty.span);
@@ -2496,8 +2496,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_ts_qualified_name(&mut self, name: &TSQualifiedName<'a>) {
-        let kind = AstKind::TSQualifiedName(self.alloc(name));
+    fn visit_ts_qualified_name(&mut self, name: &'a TSQualifiedName<'a>) {
+        let kind = AstKind::TSQualifiedName(name);
         self.enter_node(kind);
         self.visit_span(&name.span);
         // The left side of a qualified name (e.g., `Database` in `Database.Table`)
@@ -2515,8 +2515,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_expression_statement(&mut self, it: &ExpressionStatement<'a>) {
-        let kind = AstKind::ExpressionStatement(self.alloc(it));
+    fn visit_expression_statement(&mut self, it: &'a ExpressionStatement<'a>) {
+        let kind = AstKind::ExpressionStatement(it);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.visit_span(&it.span);
@@ -2524,8 +2524,8 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
-        let kind = AstKind::VariableDeclaration(self.alloc(it));
+    fn visit_variable_declaration(&mut self, it: &'a VariableDeclaration<'a>) {
+        let kind = AstKind::VariableDeclaration(it);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.visit_span(&it.span);
@@ -2533,24 +2533,24 @@ impl<'a> Visit<'a> for SemanticBuilder<'a> {
         self.leave_node(kind);
     }
 
-    fn visit_empty_statement(&mut self, it: &EmptyStatement) {
-        let kind = AstKind::EmptyStatement(self.alloc(it));
+    fn visit_empty_statement(&mut self, it: &'a EmptyStatement) {
+        let kind = AstKind::EmptyStatement(it);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.visit_span(&it.span);
         self.leave_node(kind);
     }
 
-    fn visit_debugger_statement(&mut self, it: &DebuggerStatement) {
-        let kind = AstKind::DebuggerStatement(self.alloc(it));
+    fn visit_debugger_statement(&mut self, it: &'a DebuggerStatement) {
+        let kind = AstKind::DebuggerStatement(it);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.visit_span(&it.span);
         self.leave_node(kind);
     }
 
-    fn visit_export_default_declaration(&mut self, it: &ExportDefaultDeclaration<'a>) {
-        let kind = AstKind::ExportDefaultDeclaration(self.alloc(it));
+    fn visit_export_default_declaration(&mut self, it: &'a ExportDefaultDeclaration<'a>) {
+        let kind = AstKind::ExportDefaultDeclaration(it);
         self.enter_node(kind);
         control_flow!(self, |cfg| cfg.enter_statement(self.current_node_id));
         self.visit_span(&it.span);

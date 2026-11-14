@@ -33,227 +33,219 @@ pub trait Visit<'a>: Sized {
     fn leave_scope(&mut self) {}
 
     #[inline]
-    fn alloc<T>(&self, t: &T) -> &'a T {
-        // SAFETY:
-        // This should be safe as long as `src` is an reference from the allocator.
-        // But honestly, I'm not really sure if this is safe.
-        unsafe { std::mem::transmute(t) }
-    }
-
-    #[inline]
-    fn visit_program(&mut self, it: &Program<'a>) {
+    fn visit_program(&mut self, it: &'a Program<'a>) {
         walk_program(self, it);
     }
 
     #[inline]
-    fn visit_expression(&mut self, it: &Expression<'a>) {
+    fn visit_expression(&mut self, it: &'a Expression<'a>) {
         walk_expression(self, it);
     }
 
     #[inline]
-    fn visit_identifier_name(&mut self, it: &IdentifierName<'a>) {
+    fn visit_identifier_name(&mut self, it: &'a IdentifierName<'a>) {
         walk_identifier_name(self, it);
     }
 
     #[inline]
-    fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+    fn visit_identifier_reference(&mut self, it: &'a IdentifierReference<'a>) {
         walk_identifier_reference(self, it);
     }
 
     #[inline]
-    fn visit_binding_identifier(&mut self, it: &BindingIdentifier<'a>) {
+    fn visit_binding_identifier(&mut self, it: &'a BindingIdentifier<'a>) {
         walk_binding_identifier(self, it);
     }
 
     #[inline]
-    fn visit_label_identifier(&mut self, it: &LabelIdentifier<'a>) {
+    fn visit_label_identifier(&mut self, it: &'a LabelIdentifier<'a>) {
         walk_label_identifier(self, it);
     }
 
     #[inline]
-    fn visit_this_expression(&mut self, it: &ThisExpression) {
+    fn visit_this_expression(&mut self, it: &'a ThisExpression) {
         walk_this_expression(self, it);
     }
 
     #[inline]
-    fn visit_array_expression(&mut self, it: &ArrayExpression<'a>) {
+    fn visit_array_expression(&mut self, it: &'a ArrayExpression<'a>) {
         walk_array_expression(self, it);
     }
 
     #[inline]
-    fn visit_array_expression_element(&mut self, it: &ArrayExpressionElement<'a>) {
+    fn visit_array_expression_element(&mut self, it: &'a ArrayExpressionElement<'a>) {
         walk_array_expression_element(self, it);
     }
 
     #[inline]
-    fn visit_elision(&mut self, it: &Elision) {
+    fn visit_elision(&mut self, it: &'a Elision) {
         walk_elision(self, it);
     }
 
     #[inline]
-    fn visit_object_expression(&mut self, it: &ObjectExpression<'a>) {
+    fn visit_object_expression(&mut self, it: &'a ObjectExpression<'a>) {
         walk_object_expression(self, it);
     }
 
     #[inline]
-    fn visit_object_property_kind(&mut self, it: &ObjectPropertyKind<'a>) {
+    fn visit_object_property_kind(&mut self, it: &'a ObjectPropertyKind<'a>) {
         walk_object_property_kind(self, it);
     }
 
     #[inline]
-    fn visit_object_property(&mut self, it: &ObjectProperty<'a>) {
+    fn visit_object_property(&mut self, it: &'a ObjectProperty<'a>) {
         walk_object_property(self, it);
     }
 
     #[inline]
-    fn visit_property_key(&mut self, it: &PropertyKey<'a>) {
+    fn visit_property_key(&mut self, it: &'a PropertyKey<'a>) {
         walk_property_key(self, it);
     }
 
     #[inline]
-    fn visit_template_literal(&mut self, it: &TemplateLiteral<'a>) {
+    fn visit_template_literal(&mut self, it: &'a TemplateLiteral<'a>) {
         walk_template_literal(self, it);
     }
 
     #[inline]
-    fn visit_tagged_template_expression(&mut self, it: &TaggedTemplateExpression<'a>) {
+    fn visit_tagged_template_expression(&mut self, it: &'a TaggedTemplateExpression<'a>) {
         walk_tagged_template_expression(self, it);
     }
 
     #[inline]
-    fn visit_template_element(&mut self, it: &TemplateElement<'a>) {
+    fn visit_template_element(&mut self, it: &'a TemplateElement<'a>) {
         walk_template_element(self, it);
     }
 
     #[inline]
-    fn visit_member_expression(&mut self, it: &MemberExpression<'a>) {
+    fn visit_member_expression(&mut self, it: &'a MemberExpression<'a>) {
         walk_member_expression(self, it);
     }
 
     #[inline]
-    fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'a>) {
+    fn visit_computed_member_expression(&mut self, it: &'a ComputedMemberExpression<'a>) {
         walk_computed_member_expression(self, it);
     }
 
     #[inline]
-    fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
+    fn visit_static_member_expression(&mut self, it: &'a StaticMemberExpression<'a>) {
         walk_static_member_expression(self, it);
     }
 
     #[inline]
-    fn visit_private_field_expression(&mut self, it: &PrivateFieldExpression<'a>) {
+    fn visit_private_field_expression(&mut self, it: &'a PrivateFieldExpression<'a>) {
         walk_private_field_expression(self, it);
     }
 
     #[inline]
-    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+    fn visit_call_expression(&mut self, it: &'a CallExpression<'a>) {
         walk_call_expression(self, it);
     }
 
     #[inline]
-    fn visit_new_expression(&mut self, it: &NewExpression<'a>) {
+    fn visit_new_expression(&mut self, it: &'a NewExpression<'a>) {
         walk_new_expression(self, it);
     }
 
     #[inline]
-    fn visit_meta_property(&mut self, it: &MetaProperty<'a>) {
+    fn visit_meta_property(&mut self, it: &'a MetaProperty<'a>) {
         walk_meta_property(self, it);
     }
 
     #[inline]
-    fn visit_spread_element(&mut self, it: &SpreadElement<'a>) {
+    fn visit_spread_element(&mut self, it: &'a SpreadElement<'a>) {
         walk_spread_element(self, it);
     }
 
     #[inline]
-    fn visit_argument(&mut self, it: &Argument<'a>) {
+    fn visit_argument(&mut self, it: &'a Argument<'a>) {
         walk_argument(self, it);
     }
 
     #[inline]
-    fn visit_update_expression(&mut self, it: &UpdateExpression<'a>) {
+    fn visit_update_expression(&mut self, it: &'a UpdateExpression<'a>) {
         walk_update_expression(self, it);
     }
 
     #[inline]
-    fn visit_unary_expression(&mut self, it: &UnaryExpression<'a>) {
+    fn visit_unary_expression(&mut self, it: &'a UnaryExpression<'a>) {
         walk_unary_expression(self, it);
     }
 
     #[inline]
-    fn visit_binary_expression(&mut self, it: &BinaryExpression<'a>) {
+    fn visit_binary_expression(&mut self, it: &'a BinaryExpression<'a>) {
         walk_binary_expression(self, it);
     }
 
     #[inline]
-    fn visit_private_in_expression(&mut self, it: &PrivateInExpression<'a>) {
+    fn visit_private_in_expression(&mut self, it: &'a PrivateInExpression<'a>) {
         walk_private_in_expression(self, it);
     }
 
     #[inline]
-    fn visit_logical_expression(&mut self, it: &LogicalExpression<'a>) {
+    fn visit_logical_expression(&mut self, it: &'a LogicalExpression<'a>) {
         walk_logical_expression(self, it);
     }
 
     #[inline]
-    fn visit_conditional_expression(&mut self, it: &ConditionalExpression<'a>) {
+    fn visit_conditional_expression(&mut self, it: &'a ConditionalExpression<'a>) {
         walk_conditional_expression(self, it);
     }
 
     #[inline]
-    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+    fn visit_assignment_expression(&mut self, it: &'a AssignmentExpression<'a>) {
         walk_assignment_expression(self, it);
     }
 
     #[inline]
-    fn visit_assignment_target(&mut self, it: &AssignmentTarget<'a>) {
+    fn visit_assignment_target(&mut self, it: &'a AssignmentTarget<'a>) {
         walk_assignment_target(self, it);
     }
 
     #[inline]
-    fn visit_simple_assignment_target(&mut self, it: &SimpleAssignmentTarget<'a>) {
+    fn visit_simple_assignment_target(&mut self, it: &'a SimpleAssignmentTarget<'a>) {
         walk_simple_assignment_target(self, it);
     }
 
     #[inline]
-    fn visit_assignment_target_pattern(&mut self, it: &AssignmentTargetPattern<'a>) {
+    fn visit_assignment_target_pattern(&mut self, it: &'a AssignmentTargetPattern<'a>) {
         walk_assignment_target_pattern(self, it);
     }
 
     #[inline]
-    fn visit_array_assignment_target(&mut self, it: &ArrayAssignmentTarget<'a>) {
+    fn visit_array_assignment_target(&mut self, it: &'a ArrayAssignmentTarget<'a>) {
         walk_array_assignment_target(self, it);
     }
 
     #[inline]
-    fn visit_object_assignment_target(&mut self, it: &ObjectAssignmentTarget<'a>) {
+    fn visit_object_assignment_target(&mut self, it: &'a ObjectAssignmentTarget<'a>) {
         walk_object_assignment_target(self, it);
     }
 
     #[inline]
-    fn visit_assignment_target_rest(&mut self, it: &AssignmentTargetRest<'a>) {
+    fn visit_assignment_target_rest(&mut self, it: &'a AssignmentTargetRest<'a>) {
         walk_assignment_target_rest(self, it);
     }
 
     #[inline]
-    fn visit_assignment_target_maybe_default(&mut self, it: &AssignmentTargetMaybeDefault<'a>) {
+    fn visit_assignment_target_maybe_default(&mut self, it: &'a AssignmentTargetMaybeDefault<'a>) {
         walk_assignment_target_maybe_default(self, it);
     }
 
     #[inline]
-    fn visit_assignment_target_with_default(&mut self, it: &AssignmentTargetWithDefault<'a>) {
+    fn visit_assignment_target_with_default(&mut self, it: &'a AssignmentTargetWithDefault<'a>) {
         walk_assignment_target_with_default(self, it);
     }
 
     #[inline]
-    fn visit_assignment_target_property(&mut self, it: &AssignmentTargetProperty<'a>) {
+    fn visit_assignment_target_property(&mut self, it: &'a AssignmentTargetProperty<'a>) {
         walk_assignment_target_property(self, it);
     }
 
     #[inline]
     fn visit_assignment_target_property_identifier(
         &mut self,
-        it: &AssignmentTargetPropertyIdentifier<'a>,
+        it: &'a AssignmentTargetPropertyIdentifier<'a>,
     ) {
         walk_assignment_target_property_identifier(self, it);
     }
@@ -261,1089 +253,1089 @@ pub trait Visit<'a>: Sized {
     #[inline]
     fn visit_assignment_target_property_property(
         &mut self,
-        it: &AssignmentTargetPropertyProperty<'a>,
+        it: &'a AssignmentTargetPropertyProperty<'a>,
     ) {
         walk_assignment_target_property_property(self, it);
     }
 
     #[inline]
-    fn visit_sequence_expression(&mut self, it: &SequenceExpression<'a>) {
+    fn visit_sequence_expression(&mut self, it: &'a SequenceExpression<'a>) {
         walk_sequence_expression(self, it);
     }
 
     #[inline]
-    fn visit_super(&mut self, it: &Super) {
+    fn visit_super(&mut self, it: &'a Super) {
         walk_super(self, it);
     }
 
     #[inline]
-    fn visit_await_expression(&mut self, it: &AwaitExpression<'a>) {
+    fn visit_await_expression(&mut self, it: &'a AwaitExpression<'a>) {
         walk_await_expression(self, it);
     }
 
     #[inline]
-    fn visit_chain_expression(&mut self, it: &ChainExpression<'a>) {
+    fn visit_chain_expression(&mut self, it: &'a ChainExpression<'a>) {
         walk_chain_expression(self, it);
     }
 
     #[inline]
-    fn visit_chain_element(&mut self, it: &ChainElement<'a>) {
+    fn visit_chain_element(&mut self, it: &'a ChainElement<'a>) {
         walk_chain_element(self, it);
     }
 
     #[inline]
-    fn visit_parenthesized_expression(&mut self, it: &ParenthesizedExpression<'a>) {
+    fn visit_parenthesized_expression(&mut self, it: &'a ParenthesizedExpression<'a>) {
         walk_parenthesized_expression(self, it);
     }
 
     #[inline]
-    fn visit_statement(&mut self, it: &Statement<'a>) {
+    fn visit_statement(&mut self, it: &'a Statement<'a>) {
         walk_statement(self, it);
     }
 
     #[inline]
-    fn visit_directive(&mut self, it: &Directive<'a>) {
+    fn visit_directive(&mut self, it: &'a Directive<'a>) {
         walk_directive(self, it);
     }
 
     #[inline]
-    fn visit_hashbang(&mut self, it: &Hashbang<'a>) {
+    fn visit_hashbang(&mut self, it: &'a Hashbang<'a>) {
         walk_hashbang(self, it);
     }
 
     #[inline]
-    fn visit_block_statement(&mut self, it: &BlockStatement<'a>) {
+    fn visit_block_statement(&mut self, it: &'a BlockStatement<'a>) {
         walk_block_statement(self, it);
     }
 
     #[inline]
-    fn visit_declaration(&mut self, it: &Declaration<'a>) {
+    fn visit_declaration(&mut self, it: &'a Declaration<'a>) {
         walk_declaration(self, it);
     }
 
     #[inline]
-    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+    fn visit_variable_declaration(&mut self, it: &'a VariableDeclaration<'a>) {
         walk_variable_declaration(self, it);
     }
 
     #[inline]
-    fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
+    fn visit_variable_declarator(&mut self, it: &'a VariableDeclarator<'a>) {
         walk_variable_declarator(self, it);
     }
 
     #[inline]
-    fn visit_empty_statement(&mut self, it: &EmptyStatement) {
+    fn visit_empty_statement(&mut self, it: &'a EmptyStatement) {
         walk_empty_statement(self, it);
     }
 
     #[inline]
-    fn visit_expression_statement(&mut self, it: &ExpressionStatement<'a>) {
+    fn visit_expression_statement(&mut self, it: &'a ExpressionStatement<'a>) {
         walk_expression_statement(self, it);
     }
 
     #[inline]
-    fn visit_if_statement(&mut self, it: &IfStatement<'a>) {
+    fn visit_if_statement(&mut self, it: &'a IfStatement<'a>) {
         walk_if_statement(self, it);
     }
 
     #[inline]
-    fn visit_do_while_statement(&mut self, it: &DoWhileStatement<'a>) {
+    fn visit_do_while_statement(&mut self, it: &'a DoWhileStatement<'a>) {
         walk_do_while_statement(self, it);
     }
 
     #[inline]
-    fn visit_while_statement(&mut self, it: &WhileStatement<'a>) {
+    fn visit_while_statement(&mut self, it: &'a WhileStatement<'a>) {
         walk_while_statement(self, it);
     }
 
     #[inline]
-    fn visit_for_statement(&mut self, it: &ForStatement<'a>) {
+    fn visit_for_statement(&mut self, it: &'a ForStatement<'a>) {
         walk_for_statement(self, it);
     }
 
     #[inline]
-    fn visit_for_statement_init(&mut self, it: &ForStatementInit<'a>) {
+    fn visit_for_statement_init(&mut self, it: &'a ForStatementInit<'a>) {
         walk_for_statement_init(self, it);
     }
 
     #[inline]
-    fn visit_for_in_statement(&mut self, it: &ForInStatement<'a>) {
+    fn visit_for_in_statement(&mut self, it: &'a ForInStatement<'a>) {
         walk_for_in_statement(self, it);
     }
 
     #[inline]
-    fn visit_for_statement_left(&mut self, it: &ForStatementLeft<'a>) {
+    fn visit_for_statement_left(&mut self, it: &'a ForStatementLeft<'a>) {
         walk_for_statement_left(self, it);
     }
 
     #[inline]
-    fn visit_for_of_statement(&mut self, it: &ForOfStatement<'a>) {
+    fn visit_for_of_statement(&mut self, it: &'a ForOfStatement<'a>) {
         walk_for_of_statement(self, it);
     }
 
     #[inline]
-    fn visit_continue_statement(&mut self, it: &ContinueStatement<'a>) {
+    fn visit_continue_statement(&mut self, it: &'a ContinueStatement<'a>) {
         walk_continue_statement(self, it);
     }
 
     #[inline]
-    fn visit_break_statement(&mut self, it: &BreakStatement<'a>) {
+    fn visit_break_statement(&mut self, it: &'a BreakStatement<'a>) {
         walk_break_statement(self, it);
     }
 
     #[inline]
-    fn visit_return_statement(&mut self, it: &ReturnStatement<'a>) {
+    fn visit_return_statement(&mut self, it: &'a ReturnStatement<'a>) {
         walk_return_statement(self, it);
     }
 
     #[inline]
-    fn visit_with_statement(&mut self, it: &WithStatement<'a>) {
+    fn visit_with_statement(&mut self, it: &'a WithStatement<'a>) {
         walk_with_statement(self, it);
     }
 
     #[inline]
-    fn visit_switch_statement(&mut self, it: &SwitchStatement<'a>) {
+    fn visit_switch_statement(&mut self, it: &'a SwitchStatement<'a>) {
         walk_switch_statement(self, it);
     }
 
     #[inline]
-    fn visit_switch_case(&mut self, it: &SwitchCase<'a>) {
+    fn visit_switch_case(&mut self, it: &'a SwitchCase<'a>) {
         walk_switch_case(self, it);
     }
 
     #[inline]
-    fn visit_labeled_statement(&mut self, it: &LabeledStatement<'a>) {
+    fn visit_labeled_statement(&mut self, it: &'a LabeledStatement<'a>) {
         walk_labeled_statement(self, it);
     }
 
     #[inline]
-    fn visit_throw_statement(&mut self, it: &ThrowStatement<'a>) {
+    fn visit_throw_statement(&mut self, it: &'a ThrowStatement<'a>) {
         walk_throw_statement(self, it);
     }
 
     #[inline]
-    fn visit_try_statement(&mut self, it: &TryStatement<'a>) {
+    fn visit_try_statement(&mut self, it: &'a TryStatement<'a>) {
         walk_try_statement(self, it);
     }
 
     #[inline]
-    fn visit_catch_clause(&mut self, it: &CatchClause<'a>) {
+    fn visit_catch_clause(&mut self, it: &'a CatchClause<'a>) {
         walk_catch_clause(self, it);
     }
 
     #[inline]
-    fn visit_catch_parameter(&mut self, it: &CatchParameter<'a>) {
+    fn visit_catch_parameter(&mut self, it: &'a CatchParameter<'a>) {
         walk_catch_parameter(self, it);
     }
 
     #[inline]
-    fn visit_debugger_statement(&mut self, it: &DebuggerStatement) {
+    fn visit_debugger_statement(&mut self, it: &'a DebuggerStatement) {
         walk_debugger_statement(self, it);
     }
 
     #[inline]
-    fn visit_binding_pattern(&mut self, it: &BindingPattern<'a>) {
+    fn visit_binding_pattern(&mut self, it: &'a BindingPattern<'a>) {
         walk_binding_pattern(self, it);
     }
 
     #[inline]
-    fn visit_assignment_pattern(&mut self, it: &AssignmentPattern<'a>) {
+    fn visit_assignment_pattern(&mut self, it: &'a AssignmentPattern<'a>) {
         walk_assignment_pattern(self, it);
     }
 
     #[inline]
-    fn visit_object_pattern(&mut self, it: &ObjectPattern<'a>) {
+    fn visit_object_pattern(&mut self, it: &'a ObjectPattern<'a>) {
         walk_object_pattern(self, it);
     }
 
     #[inline]
-    fn visit_binding_property(&mut self, it: &BindingProperty<'a>) {
+    fn visit_binding_property(&mut self, it: &'a BindingProperty<'a>) {
         walk_binding_property(self, it);
     }
 
     #[inline]
-    fn visit_array_pattern(&mut self, it: &ArrayPattern<'a>) {
+    fn visit_array_pattern(&mut self, it: &'a ArrayPattern<'a>) {
         walk_array_pattern(self, it);
     }
 
     #[inline]
-    fn visit_binding_rest_element(&mut self, it: &BindingRestElement<'a>) {
+    fn visit_binding_rest_element(&mut self, it: &'a BindingRestElement<'a>) {
         walk_binding_rest_element(self, it);
     }
 
     #[inline]
-    fn visit_function(&mut self, it: &Function<'a>, flags: ScopeFlags) {
+    fn visit_function(&mut self, it: &'a Function<'a>, flags: ScopeFlags) {
         walk_function(self, it, flags);
     }
 
     #[inline]
-    fn visit_formal_parameters(&mut self, it: &FormalParameters<'a>) {
+    fn visit_formal_parameters(&mut self, it: &'a FormalParameters<'a>) {
         walk_formal_parameters(self, it);
     }
 
     #[inline]
-    fn visit_formal_parameter(&mut self, it: &FormalParameter<'a>) {
+    fn visit_formal_parameter(&mut self, it: &'a FormalParameter<'a>) {
         walk_formal_parameter(self, it);
     }
 
     #[inline]
-    fn visit_formal_parameter_rest(&mut self, it: &FormalParameterRest<'a>) {
+    fn visit_formal_parameter_rest(&mut self, it: &'a FormalParameterRest<'a>) {
         walk_formal_parameter_rest(self, it);
     }
 
     #[inline]
-    fn visit_function_body(&mut self, it: &FunctionBody<'a>) {
+    fn visit_function_body(&mut self, it: &'a FunctionBody<'a>) {
         walk_function_body(self, it);
     }
 
     #[inline]
-    fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'a>) {
+    fn visit_arrow_function_expression(&mut self, it: &'a ArrowFunctionExpression<'a>) {
         walk_arrow_function_expression(self, it);
     }
 
     #[inline]
-    fn visit_yield_expression(&mut self, it: &YieldExpression<'a>) {
+    fn visit_yield_expression(&mut self, it: &'a YieldExpression<'a>) {
         walk_yield_expression(self, it);
     }
 
     #[inline]
-    fn visit_class(&mut self, it: &Class<'a>) {
+    fn visit_class(&mut self, it: &'a Class<'a>) {
         walk_class(self, it);
     }
 
     #[inline]
-    fn visit_class_body(&mut self, it: &ClassBody<'a>) {
+    fn visit_class_body(&mut self, it: &'a ClassBody<'a>) {
         walk_class_body(self, it);
     }
 
     #[inline]
-    fn visit_class_element(&mut self, it: &ClassElement<'a>) {
+    fn visit_class_element(&mut self, it: &'a ClassElement<'a>) {
         walk_class_element(self, it);
     }
 
     #[inline]
-    fn visit_method_definition(&mut self, it: &MethodDefinition<'a>) {
+    fn visit_method_definition(&mut self, it: &'a MethodDefinition<'a>) {
         walk_method_definition(self, it);
     }
 
     #[inline]
-    fn visit_property_definition(&mut self, it: &PropertyDefinition<'a>) {
+    fn visit_property_definition(&mut self, it: &'a PropertyDefinition<'a>) {
         walk_property_definition(self, it);
     }
 
     #[inline]
-    fn visit_private_identifier(&mut self, it: &PrivateIdentifier<'a>) {
+    fn visit_private_identifier(&mut self, it: &'a PrivateIdentifier<'a>) {
         walk_private_identifier(self, it);
     }
 
     #[inline]
-    fn visit_static_block(&mut self, it: &StaticBlock<'a>) {
+    fn visit_static_block(&mut self, it: &'a StaticBlock<'a>) {
         walk_static_block(self, it);
     }
 
     #[inline]
-    fn visit_module_declaration(&mut self, it: &ModuleDeclaration<'a>) {
+    fn visit_module_declaration(&mut self, it: &'a ModuleDeclaration<'a>) {
         walk_module_declaration(self, it);
     }
 
     #[inline]
-    fn visit_accessor_property(&mut self, it: &AccessorProperty<'a>) {
+    fn visit_accessor_property(&mut self, it: &'a AccessorProperty<'a>) {
         walk_accessor_property(self, it);
     }
 
     #[inline]
-    fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+    fn visit_import_expression(&mut self, it: &'a ImportExpression<'a>) {
         walk_import_expression(self, it);
     }
 
     #[inline]
-    fn visit_import_declaration(&mut self, it: &ImportDeclaration<'a>) {
+    fn visit_import_declaration(&mut self, it: &'a ImportDeclaration<'a>) {
         walk_import_declaration(self, it);
     }
 
     #[inline]
-    fn visit_import_declaration_specifier(&mut self, it: &ImportDeclarationSpecifier<'a>) {
+    fn visit_import_declaration_specifier(&mut self, it: &'a ImportDeclarationSpecifier<'a>) {
         walk_import_declaration_specifier(self, it);
     }
 
     #[inline]
-    fn visit_import_specifier(&mut self, it: &ImportSpecifier<'a>) {
+    fn visit_import_specifier(&mut self, it: &'a ImportSpecifier<'a>) {
         walk_import_specifier(self, it);
     }
 
     #[inline]
-    fn visit_import_default_specifier(&mut self, it: &ImportDefaultSpecifier<'a>) {
+    fn visit_import_default_specifier(&mut self, it: &'a ImportDefaultSpecifier<'a>) {
         walk_import_default_specifier(self, it);
     }
 
     #[inline]
-    fn visit_import_namespace_specifier(&mut self, it: &ImportNamespaceSpecifier<'a>) {
+    fn visit_import_namespace_specifier(&mut self, it: &'a ImportNamespaceSpecifier<'a>) {
         walk_import_namespace_specifier(self, it);
     }
 
     #[inline]
-    fn visit_with_clause(&mut self, it: &WithClause<'a>) {
+    fn visit_with_clause(&mut self, it: &'a WithClause<'a>) {
         walk_with_clause(self, it);
     }
 
     #[inline]
-    fn visit_import_attribute(&mut self, it: &ImportAttribute<'a>) {
+    fn visit_import_attribute(&mut self, it: &'a ImportAttribute<'a>) {
         walk_import_attribute(self, it);
     }
 
     #[inline]
-    fn visit_import_attribute_key(&mut self, it: &ImportAttributeKey<'a>) {
+    fn visit_import_attribute_key(&mut self, it: &'a ImportAttributeKey<'a>) {
         walk_import_attribute_key(self, it);
     }
 
     #[inline]
-    fn visit_export_named_declaration(&mut self, it: &ExportNamedDeclaration<'a>) {
+    fn visit_export_named_declaration(&mut self, it: &'a ExportNamedDeclaration<'a>) {
         walk_export_named_declaration(self, it);
     }
 
     #[inline]
-    fn visit_export_default_declaration(&mut self, it: &ExportDefaultDeclaration<'a>) {
+    fn visit_export_default_declaration(&mut self, it: &'a ExportDefaultDeclaration<'a>) {
         walk_export_default_declaration(self, it);
     }
 
     #[inline]
-    fn visit_export_all_declaration(&mut self, it: &ExportAllDeclaration<'a>) {
+    fn visit_export_all_declaration(&mut self, it: &'a ExportAllDeclaration<'a>) {
         walk_export_all_declaration(self, it);
     }
 
     #[inline]
-    fn visit_export_specifier(&mut self, it: &ExportSpecifier<'a>) {
+    fn visit_export_specifier(&mut self, it: &'a ExportSpecifier<'a>) {
         walk_export_specifier(self, it);
     }
 
     #[inline]
-    fn visit_export_default_declaration_kind(&mut self, it: &ExportDefaultDeclarationKind<'a>) {
+    fn visit_export_default_declaration_kind(&mut self, it: &'a ExportDefaultDeclarationKind<'a>) {
         walk_export_default_declaration_kind(self, it);
     }
 
     #[inline]
-    fn visit_module_export_name(&mut self, it: &ModuleExportName<'a>) {
+    fn visit_module_export_name(&mut self, it: &'a ModuleExportName<'a>) {
         walk_module_export_name(self, it);
     }
 
     #[inline]
-    fn visit_v8_intrinsic_expression(&mut self, it: &V8IntrinsicExpression<'a>) {
+    fn visit_v8_intrinsic_expression(&mut self, it: &'a V8IntrinsicExpression<'a>) {
         walk_v8_intrinsic_expression(self, it);
     }
 
     #[inline]
-    fn visit_boolean_literal(&mut self, it: &BooleanLiteral) {
+    fn visit_boolean_literal(&mut self, it: &'a BooleanLiteral) {
         walk_boolean_literal(self, it);
     }
 
     #[inline]
-    fn visit_null_literal(&mut self, it: &NullLiteral) {
+    fn visit_null_literal(&mut self, it: &'a NullLiteral) {
         walk_null_literal(self, it);
     }
 
     #[inline]
-    fn visit_numeric_literal(&mut self, it: &NumericLiteral<'a>) {
+    fn visit_numeric_literal(&mut self, it: &'a NumericLiteral<'a>) {
         walk_numeric_literal(self, it);
     }
 
     #[inline]
-    fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
+    fn visit_string_literal(&mut self, it: &'a StringLiteral<'a>) {
         walk_string_literal(self, it);
     }
 
     #[inline]
-    fn visit_big_int_literal(&mut self, it: &BigIntLiteral<'a>) {
+    fn visit_big_int_literal(&mut self, it: &'a BigIntLiteral<'a>) {
         walk_big_int_literal(self, it);
     }
 
     #[inline]
-    fn visit_reg_exp_literal(&mut self, it: &RegExpLiteral<'a>) {
+    fn visit_reg_exp_literal(&mut self, it: &'a RegExpLiteral<'a>) {
         walk_reg_exp_literal(self, it);
     }
 
     #[inline]
-    fn visit_jsx_element(&mut self, it: &JSXElement<'a>) {
+    fn visit_jsx_element(&mut self, it: &'a JSXElement<'a>) {
         walk_jsx_element(self, it);
     }
 
     #[inline]
-    fn visit_jsx_opening_element(&mut self, it: &JSXOpeningElement<'a>) {
+    fn visit_jsx_opening_element(&mut self, it: &'a JSXOpeningElement<'a>) {
         walk_jsx_opening_element(self, it);
     }
 
     #[inline]
-    fn visit_jsx_closing_element(&mut self, it: &JSXClosingElement<'a>) {
+    fn visit_jsx_closing_element(&mut self, it: &'a JSXClosingElement<'a>) {
         walk_jsx_closing_element(self, it);
     }
 
     #[inline]
-    fn visit_jsx_fragment(&mut self, it: &JSXFragment<'a>) {
+    fn visit_jsx_fragment(&mut self, it: &'a JSXFragment<'a>) {
         walk_jsx_fragment(self, it);
     }
 
     #[inline]
-    fn visit_jsx_opening_fragment(&mut self, it: &JSXOpeningFragment) {
+    fn visit_jsx_opening_fragment(&mut self, it: &'a JSXOpeningFragment) {
         walk_jsx_opening_fragment(self, it);
     }
 
     #[inline]
-    fn visit_jsx_closing_fragment(&mut self, it: &JSXClosingFragment) {
+    fn visit_jsx_closing_fragment(&mut self, it: &'a JSXClosingFragment) {
         walk_jsx_closing_fragment(self, it);
     }
 
     #[inline]
-    fn visit_jsx_element_name(&mut self, it: &JSXElementName<'a>) {
+    fn visit_jsx_element_name(&mut self, it: &'a JSXElementName<'a>) {
         walk_jsx_element_name(self, it);
     }
 
     #[inline]
-    fn visit_jsx_namespaced_name(&mut self, it: &JSXNamespacedName<'a>) {
+    fn visit_jsx_namespaced_name(&mut self, it: &'a JSXNamespacedName<'a>) {
         walk_jsx_namespaced_name(self, it);
     }
 
     #[inline]
-    fn visit_jsx_member_expression(&mut self, it: &JSXMemberExpression<'a>) {
+    fn visit_jsx_member_expression(&mut self, it: &'a JSXMemberExpression<'a>) {
         walk_jsx_member_expression(self, it);
     }
 
     #[inline]
-    fn visit_jsx_member_expression_object(&mut self, it: &JSXMemberExpressionObject<'a>) {
+    fn visit_jsx_member_expression_object(&mut self, it: &'a JSXMemberExpressionObject<'a>) {
         walk_jsx_member_expression_object(self, it);
     }
 
     #[inline]
-    fn visit_jsx_expression_container(&mut self, it: &JSXExpressionContainer<'a>) {
+    fn visit_jsx_expression_container(&mut self, it: &'a JSXExpressionContainer<'a>) {
         walk_jsx_expression_container(self, it);
     }
 
     #[inline]
-    fn visit_jsx_expression(&mut self, it: &JSXExpression<'a>) {
+    fn visit_jsx_expression(&mut self, it: &'a JSXExpression<'a>) {
         walk_jsx_expression(self, it);
     }
 
     #[inline]
-    fn visit_jsx_empty_expression(&mut self, it: &JSXEmptyExpression) {
+    fn visit_jsx_empty_expression(&mut self, it: &'a JSXEmptyExpression) {
         walk_jsx_empty_expression(self, it);
     }
 
     #[inline]
-    fn visit_jsx_attribute_item(&mut self, it: &JSXAttributeItem<'a>) {
+    fn visit_jsx_attribute_item(&mut self, it: &'a JSXAttributeItem<'a>) {
         walk_jsx_attribute_item(self, it);
     }
 
     #[inline]
-    fn visit_jsx_attribute(&mut self, it: &JSXAttribute<'a>) {
+    fn visit_jsx_attribute(&mut self, it: &'a JSXAttribute<'a>) {
         walk_jsx_attribute(self, it);
     }
 
     #[inline]
-    fn visit_jsx_spread_attribute(&mut self, it: &JSXSpreadAttribute<'a>) {
+    fn visit_jsx_spread_attribute(&mut self, it: &'a JSXSpreadAttribute<'a>) {
         walk_jsx_spread_attribute(self, it);
     }
 
     #[inline]
-    fn visit_jsx_attribute_name(&mut self, it: &JSXAttributeName<'a>) {
+    fn visit_jsx_attribute_name(&mut self, it: &'a JSXAttributeName<'a>) {
         walk_jsx_attribute_name(self, it);
     }
 
     #[inline]
-    fn visit_jsx_attribute_value(&mut self, it: &JSXAttributeValue<'a>) {
+    fn visit_jsx_attribute_value(&mut self, it: &'a JSXAttributeValue<'a>) {
         walk_jsx_attribute_value(self, it);
     }
 
     #[inline]
-    fn visit_jsx_identifier(&mut self, it: &JSXIdentifier<'a>) {
+    fn visit_jsx_identifier(&mut self, it: &'a JSXIdentifier<'a>) {
         walk_jsx_identifier(self, it);
     }
 
     #[inline]
-    fn visit_jsx_child(&mut self, it: &JSXChild<'a>) {
+    fn visit_jsx_child(&mut self, it: &'a JSXChild<'a>) {
         walk_jsx_child(self, it);
     }
 
     #[inline]
-    fn visit_jsx_spread_child(&mut self, it: &JSXSpreadChild<'a>) {
+    fn visit_jsx_spread_child(&mut self, it: &'a JSXSpreadChild<'a>) {
         walk_jsx_spread_child(self, it);
     }
 
     #[inline]
-    fn visit_jsx_text(&mut self, it: &JSXText<'a>) {
+    fn visit_jsx_text(&mut self, it: &'a JSXText<'a>) {
         walk_jsx_text(self, it);
     }
 
     #[inline]
-    fn visit_ts_this_parameter(&mut self, it: &TSThisParameter<'a>) {
+    fn visit_ts_this_parameter(&mut self, it: &'a TSThisParameter<'a>) {
         walk_ts_this_parameter(self, it);
     }
 
     #[inline]
-    fn visit_ts_enum_declaration(&mut self, it: &TSEnumDeclaration<'a>) {
+    fn visit_ts_enum_declaration(&mut self, it: &'a TSEnumDeclaration<'a>) {
         walk_ts_enum_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_enum_body(&mut self, it: &TSEnumBody<'a>) {
+    fn visit_ts_enum_body(&mut self, it: &'a TSEnumBody<'a>) {
         walk_ts_enum_body(self, it);
     }
 
     #[inline]
-    fn visit_ts_enum_member(&mut self, it: &TSEnumMember<'a>) {
+    fn visit_ts_enum_member(&mut self, it: &'a TSEnumMember<'a>) {
         walk_ts_enum_member(self, it);
     }
 
     #[inline]
-    fn visit_ts_enum_member_name(&mut self, it: &TSEnumMemberName<'a>) {
+    fn visit_ts_enum_member_name(&mut self, it: &'a TSEnumMemberName<'a>) {
         walk_ts_enum_member_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_annotation(&mut self, it: &TSTypeAnnotation<'a>) {
+    fn visit_ts_type_annotation(&mut self, it: &'a TSTypeAnnotation<'a>) {
         walk_ts_type_annotation(self, it);
     }
 
     #[inline]
-    fn visit_ts_literal_type(&mut self, it: &TSLiteralType<'a>) {
+    fn visit_ts_literal_type(&mut self, it: &'a TSLiteralType<'a>) {
         walk_ts_literal_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_literal(&mut self, it: &TSLiteral<'a>) {
+    fn visit_ts_literal(&mut self, it: &'a TSLiteral<'a>) {
         walk_ts_literal(self, it);
     }
 
     #[inline]
-    fn visit_ts_type(&mut self, it: &TSType<'a>) {
+    fn visit_ts_type(&mut self, it: &'a TSType<'a>) {
         walk_ts_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_conditional_type(&mut self, it: &TSConditionalType<'a>) {
+    fn visit_ts_conditional_type(&mut self, it: &'a TSConditionalType<'a>) {
         walk_ts_conditional_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_union_type(&mut self, it: &TSUnionType<'a>) {
+    fn visit_ts_union_type(&mut self, it: &'a TSUnionType<'a>) {
         walk_ts_union_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_intersection_type(&mut self, it: &TSIntersectionType<'a>) {
+    fn visit_ts_intersection_type(&mut self, it: &'a TSIntersectionType<'a>) {
         walk_ts_intersection_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_parenthesized_type(&mut self, it: &TSParenthesizedType<'a>) {
+    fn visit_ts_parenthesized_type(&mut self, it: &'a TSParenthesizedType<'a>) {
         walk_ts_parenthesized_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_operator(&mut self, it: &TSTypeOperator<'a>) {
+    fn visit_ts_type_operator(&mut self, it: &'a TSTypeOperator<'a>) {
         walk_ts_type_operator(self, it);
     }
 
     #[inline]
-    fn visit_ts_array_type(&mut self, it: &TSArrayType<'a>) {
+    fn visit_ts_array_type(&mut self, it: &'a TSArrayType<'a>) {
         walk_ts_array_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_indexed_access_type(&mut self, it: &TSIndexedAccessType<'a>) {
+    fn visit_ts_indexed_access_type(&mut self, it: &'a TSIndexedAccessType<'a>) {
         walk_ts_indexed_access_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_tuple_type(&mut self, it: &TSTupleType<'a>) {
+    fn visit_ts_tuple_type(&mut self, it: &'a TSTupleType<'a>) {
         walk_ts_tuple_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_named_tuple_member(&mut self, it: &TSNamedTupleMember<'a>) {
+    fn visit_ts_named_tuple_member(&mut self, it: &'a TSNamedTupleMember<'a>) {
         walk_ts_named_tuple_member(self, it);
     }
 
     #[inline]
-    fn visit_ts_optional_type(&mut self, it: &TSOptionalType<'a>) {
+    fn visit_ts_optional_type(&mut self, it: &'a TSOptionalType<'a>) {
         walk_ts_optional_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_rest_type(&mut self, it: &TSRestType<'a>) {
+    fn visit_ts_rest_type(&mut self, it: &'a TSRestType<'a>) {
         walk_ts_rest_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_tuple_element(&mut self, it: &TSTupleElement<'a>) {
+    fn visit_ts_tuple_element(&mut self, it: &'a TSTupleElement<'a>) {
         walk_ts_tuple_element(self, it);
     }
 
     #[inline]
-    fn visit_ts_any_keyword(&mut self, it: &TSAnyKeyword) {
+    fn visit_ts_any_keyword(&mut self, it: &'a TSAnyKeyword) {
         walk_ts_any_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_string_keyword(&mut self, it: &TSStringKeyword) {
+    fn visit_ts_string_keyword(&mut self, it: &'a TSStringKeyword) {
         walk_ts_string_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_boolean_keyword(&mut self, it: &TSBooleanKeyword) {
+    fn visit_ts_boolean_keyword(&mut self, it: &'a TSBooleanKeyword) {
         walk_ts_boolean_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_number_keyword(&mut self, it: &TSNumberKeyword) {
+    fn visit_ts_number_keyword(&mut self, it: &'a TSNumberKeyword) {
         walk_ts_number_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_never_keyword(&mut self, it: &TSNeverKeyword) {
+    fn visit_ts_never_keyword(&mut self, it: &'a TSNeverKeyword) {
         walk_ts_never_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_intrinsic_keyword(&mut self, it: &TSIntrinsicKeyword) {
+    fn visit_ts_intrinsic_keyword(&mut self, it: &'a TSIntrinsicKeyword) {
         walk_ts_intrinsic_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_unknown_keyword(&mut self, it: &TSUnknownKeyword) {
+    fn visit_ts_unknown_keyword(&mut self, it: &'a TSUnknownKeyword) {
         walk_ts_unknown_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_null_keyword(&mut self, it: &TSNullKeyword) {
+    fn visit_ts_null_keyword(&mut self, it: &'a TSNullKeyword) {
         walk_ts_null_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_undefined_keyword(&mut self, it: &TSUndefinedKeyword) {
+    fn visit_ts_undefined_keyword(&mut self, it: &'a TSUndefinedKeyword) {
         walk_ts_undefined_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_void_keyword(&mut self, it: &TSVoidKeyword) {
+    fn visit_ts_void_keyword(&mut self, it: &'a TSVoidKeyword) {
         walk_ts_void_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_symbol_keyword(&mut self, it: &TSSymbolKeyword) {
+    fn visit_ts_symbol_keyword(&mut self, it: &'a TSSymbolKeyword) {
         walk_ts_symbol_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_this_type(&mut self, it: &TSThisType) {
+    fn visit_ts_this_type(&mut self, it: &'a TSThisType) {
         walk_ts_this_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_object_keyword(&mut self, it: &TSObjectKeyword) {
+    fn visit_ts_object_keyword(&mut self, it: &'a TSObjectKeyword) {
         walk_ts_object_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_big_int_keyword(&mut self, it: &TSBigIntKeyword) {
+    fn visit_ts_big_int_keyword(&mut self, it: &'a TSBigIntKeyword) {
         walk_ts_big_int_keyword(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_reference(&mut self, it: &TSTypeReference<'a>) {
+    fn visit_ts_type_reference(&mut self, it: &'a TSTypeReference<'a>) {
         walk_ts_type_reference(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_name(&mut self, it: &TSTypeName<'a>) {
+    fn visit_ts_type_name(&mut self, it: &'a TSTypeName<'a>) {
         walk_ts_type_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_qualified_name(&mut self, it: &TSQualifiedName<'a>) {
+    fn visit_ts_qualified_name(&mut self, it: &'a TSQualifiedName<'a>) {
         walk_ts_qualified_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_parameter_instantiation(&mut self, it: &TSTypeParameterInstantiation<'a>) {
+    fn visit_ts_type_parameter_instantiation(&mut self, it: &'a TSTypeParameterInstantiation<'a>) {
         walk_ts_type_parameter_instantiation(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_parameter(&mut self, it: &TSTypeParameter<'a>) {
+    fn visit_ts_type_parameter(&mut self, it: &'a TSTypeParameter<'a>) {
         walk_ts_type_parameter(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_parameter_declaration(&mut self, it: &TSTypeParameterDeclaration<'a>) {
+    fn visit_ts_type_parameter_declaration(&mut self, it: &'a TSTypeParameterDeclaration<'a>) {
         walk_ts_type_parameter_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_alias_declaration(&mut self, it: &TSTypeAliasDeclaration<'a>) {
+    fn visit_ts_type_alias_declaration(&mut self, it: &'a TSTypeAliasDeclaration<'a>) {
         walk_ts_type_alias_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_class_implements(&mut self, it: &TSClassImplements<'a>) {
+    fn visit_ts_class_implements(&mut self, it: &'a TSClassImplements<'a>) {
         walk_ts_class_implements(self, it);
     }
 
     #[inline]
-    fn visit_ts_interface_declaration(&mut self, it: &TSInterfaceDeclaration<'a>) {
+    fn visit_ts_interface_declaration(&mut self, it: &'a TSInterfaceDeclaration<'a>) {
         walk_ts_interface_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_interface_body(&mut self, it: &TSInterfaceBody<'a>) {
+    fn visit_ts_interface_body(&mut self, it: &'a TSInterfaceBody<'a>) {
         walk_ts_interface_body(self, it);
     }
 
     #[inline]
-    fn visit_ts_property_signature(&mut self, it: &TSPropertySignature<'a>) {
+    fn visit_ts_property_signature(&mut self, it: &'a TSPropertySignature<'a>) {
         walk_ts_property_signature(self, it);
     }
 
     #[inline]
-    fn visit_ts_signature(&mut self, it: &TSSignature<'a>) {
+    fn visit_ts_signature(&mut self, it: &'a TSSignature<'a>) {
         walk_ts_signature(self, it);
     }
 
     #[inline]
-    fn visit_ts_index_signature(&mut self, it: &TSIndexSignature<'a>) {
+    fn visit_ts_index_signature(&mut self, it: &'a TSIndexSignature<'a>) {
         walk_ts_index_signature(self, it);
     }
 
     #[inline]
-    fn visit_ts_call_signature_declaration(&mut self, it: &TSCallSignatureDeclaration<'a>) {
+    fn visit_ts_call_signature_declaration(&mut self, it: &'a TSCallSignatureDeclaration<'a>) {
         walk_ts_call_signature_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_method_signature(&mut self, it: &TSMethodSignature<'a>) {
+    fn visit_ts_method_signature(&mut self, it: &'a TSMethodSignature<'a>) {
         walk_ts_method_signature(self, it);
     }
 
     #[inline]
     fn visit_ts_construct_signature_declaration(
         &mut self,
-        it: &TSConstructSignatureDeclaration<'a>,
+        it: &'a TSConstructSignatureDeclaration<'a>,
     ) {
         walk_ts_construct_signature_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_index_signature_name(&mut self, it: &TSIndexSignatureName<'a>) {
+    fn visit_ts_index_signature_name(&mut self, it: &'a TSIndexSignatureName<'a>) {
         walk_ts_index_signature_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_interface_heritage(&mut self, it: &TSInterfaceHeritage<'a>) {
+    fn visit_ts_interface_heritage(&mut self, it: &'a TSInterfaceHeritage<'a>) {
         walk_ts_interface_heritage(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_predicate(&mut self, it: &TSTypePredicate<'a>) {
+    fn visit_ts_type_predicate(&mut self, it: &'a TSTypePredicate<'a>) {
         walk_ts_type_predicate(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_predicate_name(&mut self, it: &TSTypePredicateName<'a>) {
+    fn visit_ts_type_predicate_name(&mut self, it: &'a TSTypePredicateName<'a>) {
         walk_ts_type_predicate_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_module_declaration(&mut self, it: &TSModuleDeclaration<'a>) {
+    fn visit_ts_module_declaration(&mut self, it: &'a TSModuleDeclaration<'a>) {
         walk_ts_module_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_module_declaration_name(&mut self, it: &TSModuleDeclarationName<'a>) {
+    fn visit_ts_module_declaration_name(&mut self, it: &'a TSModuleDeclarationName<'a>) {
         walk_ts_module_declaration_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_module_declaration_body(&mut self, it: &TSModuleDeclarationBody<'a>) {
+    fn visit_ts_module_declaration_body(&mut self, it: &'a TSModuleDeclarationBody<'a>) {
         walk_ts_module_declaration_body(self, it);
     }
 
     #[inline]
-    fn visit_ts_global_declaration(&mut self, it: &TSGlobalDeclaration<'a>) {
+    fn visit_ts_global_declaration(&mut self, it: &'a TSGlobalDeclaration<'a>) {
         walk_ts_global_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_module_block(&mut self, it: &TSModuleBlock<'a>) {
+    fn visit_ts_module_block(&mut self, it: &'a TSModuleBlock<'a>) {
         walk_ts_module_block(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_literal(&mut self, it: &TSTypeLiteral<'a>) {
+    fn visit_ts_type_literal(&mut self, it: &'a TSTypeLiteral<'a>) {
         walk_ts_type_literal(self, it);
     }
 
     #[inline]
-    fn visit_ts_infer_type(&mut self, it: &TSInferType<'a>) {
+    fn visit_ts_infer_type(&mut self, it: &'a TSInferType<'a>) {
         walk_ts_infer_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_query(&mut self, it: &TSTypeQuery<'a>) {
+    fn visit_ts_type_query(&mut self, it: &'a TSTypeQuery<'a>) {
         walk_ts_type_query(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_query_expr_name(&mut self, it: &TSTypeQueryExprName<'a>) {
+    fn visit_ts_type_query_expr_name(&mut self, it: &'a TSTypeQueryExprName<'a>) {
         walk_ts_type_query_expr_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_import_type(&mut self, it: &TSImportType<'a>) {
+    fn visit_ts_import_type(&mut self, it: &'a TSImportType<'a>) {
         walk_ts_import_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_import_type_qualifier(&mut self, it: &TSImportTypeQualifier<'a>) {
+    fn visit_ts_import_type_qualifier(&mut self, it: &'a TSImportTypeQualifier<'a>) {
         walk_ts_import_type_qualifier(self, it);
     }
 
     #[inline]
-    fn visit_ts_import_type_qualified_name(&mut self, it: &TSImportTypeQualifiedName<'a>) {
+    fn visit_ts_import_type_qualified_name(&mut self, it: &'a TSImportTypeQualifiedName<'a>) {
         walk_ts_import_type_qualified_name(self, it);
     }
 
     #[inline]
-    fn visit_ts_function_type(&mut self, it: &TSFunctionType<'a>) {
+    fn visit_ts_function_type(&mut self, it: &'a TSFunctionType<'a>) {
         walk_ts_function_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_constructor_type(&mut self, it: &TSConstructorType<'a>) {
+    fn visit_ts_constructor_type(&mut self, it: &'a TSConstructorType<'a>) {
         walk_ts_constructor_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_mapped_type(&mut self, it: &TSMappedType<'a>) {
+    fn visit_ts_mapped_type(&mut self, it: &'a TSMappedType<'a>) {
         walk_ts_mapped_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_template_literal_type(&mut self, it: &TSTemplateLiteralType<'a>) {
+    fn visit_ts_template_literal_type(&mut self, it: &'a TSTemplateLiteralType<'a>) {
         walk_ts_template_literal_type(self, it);
     }
 
     #[inline]
-    fn visit_ts_as_expression(&mut self, it: &TSAsExpression<'a>) {
+    fn visit_ts_as_expression(&mut self, it: &'a TSAsExpression<'a>) {
         walk_ts_as_expression(self, it);
     }
 
     #[inline]
-    fn visit_ts_satisfies_expression(&mut self, it: &TSSatisfiesExpression<'a>) {
+    fn visit_ts_satisfies_expression(&mut self, it: &'a TSSatisfiesExpression<'a>) {
         walk_ts_satisfies_expression(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_assertion(&mut self, it: &TSTypeAssertion<'a>) {
+    fn visit_ts_type_assertion(&mut self, it: &'a TSTypeAssertion<'a>) {
         walk_ts_type_assertion(self, it);
     }
 
     #[inline]
-    fn visit_ts_import_equals_declaration(&mut self, it: &TSImportEqualsDeclaration<'a>) {
+    fn visit_ts_import_equals_declaration(&mut self, it: &'a TSImportEqualsDeclaration<'a>) {
         walk_ts_import_equals_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_module_reference(&mut self, it: &TSModuleReference<'a>) {
+    fn visit_ts_module_reference(&mut self, it: &'a TSModuleReference<'a>) {
         walk_ts_module_reference(self, it);
     }
 
     #[inline]
-    fn visit_ts_external_module_reference(&mut self, it: &TSExternalModuleReference<'a>) {
+    fn visit_ts_external_module_reference(&mut self, it: &'a TSExternalModuleReference<'a>) {
         walk_ts_external_module_reference(self, it);
     }
 
     #[inline]
-    fn visit_ts_non_null_expression(&mut self, it: &TSNonNullExpression<'a>) {
+    fn visit_ts_non_null_expression(&mut self, it: &'a TSNonNullExpression<'a>) {
         walk_ts_non_null_expression(self, it);
     }
 
     #[inline]
-    fn visit_decorator(&mut self, it: &Decorator<'a>) {
+    fn visit_decorator(&mut self, it: &'a Decorator<'a>) {
         walk_decorator(self, it);
     }
 
     #[inline]
-    fn visit_ts_export_assignment(&mut self, it: &TSExportAssignment<'a>) {
+    fn visit_ts_export_assignment(&mut self, it: &'a TSExportAssignment<'a>) {
         walk_ts_export_assignment(self, it);
     }
 
     #[inline]
-    fn visit_ts_namespace_export_declaration(&mut self, it: &TSNamespaceExportDeclaration<'a>) {
+    fn visit_ts_namespace_export_declaration(&mut self, it: &'a TSNamespaceExportDeclaration<'a>) {
         walk_ts_namespace_export_declaration(self, it);
     }
 
     #[inline]
-    fn visit_ts_instantiation_expression(&mut self, it: &TSInstantiationExpression<'a>) {
+    fn visit_ts_instantiation_expression(&mut self, it: &'a TSInstantiationExpression<'a>) {
         walk_ts_instantiation_expression(self, it);
     }
 
     #[inline]
-    fn visit_js_doc_nullable_type(&mut self, it: &JSDocNullableType<'a>) {
+    fn visit_js_doc_nullable_type(&mut self, it: &'a JSDocNullableType<'a>) {
         walk_js_doc_nullable_type(self, it);
     }
 
     #[inline]
-    fn visit_js_doc_non_nullable_type(&mut self, it: &JSDocNonNullableType<'a>) {
+    fn visit_js_doc_non_nullable_type(&mut self, it: &'a JSDocNonNullableType<'a>) {
         walk_js_doc_non_nullable_type(self, it);
     }
 
     #[inline]
-    fn visit_js_doc_unknown_type(&mut self, it: &JSDocUnknownType) {
+    fn visit_js_doc_unknown_type(&mut self, it: &'a JSDocUnknownType) {
         walk_js_doc_unknown_type(self, it);
     }
 
     #[inline]
-    fn visit_span(&mut self, it: &Span) {
+    fn visit_span(&mut self, it: &'a Span) {
         walk_span(self, it);
     }
 
     #[inline]
-    fn visit_directives(&mut self, it: &Vec<'a, Directive<'a>>) {
+    fn visit_directives(&mut self, it: &'a Vec<'a, Directive<'a>>) {
         walk_directives(self, it);
     }
 
     #[inline]
-    fn visit_statements(&mut self, it: &Vec<'a, Statement<'a>>) {
+    fn visit_statements(&mut self, it: &'a Vec<'a, Statement<'a>>) {
         walk_statements(self, it);
     }
 
     #[inline]
-    fn visit_array_expression_elements(&mut self, it: &Vec<'a, ArrayExpressionElement<'a>>) {
+    fn visit_array_expression_elements(&mut self, it: &'a Vec<'a, ArrayExpressionElement<'a>>) {
         walk_array_expression_elements(self, it);
     }
 
     #[inline]
-    fn visit_object_property_kinds(&mut self, it: &Vec<'a, ObjectPropertyKind<'a>>) {
+    fn visit_object_property_kinds(&mut self, it: &'a Vec<'a, ObjectPropertyKind<'a>>) {
         walk_object_property_kinds(self, it);
     }
 
     #[inline]
-    fn visit_template_elements(&mut self, it: &Vec<'a, TemplateElement<'a>>) {
+    fn visit_template_elements(&mut self, it: &'a Vec<'a, TemplateElement<'a>>) {
         walk_template_elements(self, it);
     }
 
     #[inline]
-    fn visit_expressions(&mut self, it: &Vec<'a, Expression<'a>>) {
+    fn visit_expressions(&mut self, it: &'a Vec<'a, Expression<'a>>) {
         walk_expressions(self, it);
     }
 
     #[inline]
-    fn visit_arguments(&mut self, it: &Vec<'a, Argument<'a>>) {
+    fn visit_arguments(&mut self, it: &'a Vec<'a, Argument<'a>>) {
         walk_arguments(self, it);
     }
 
     #[inline]
-    fn visit_assignment_target_properties(&mut self, it: &Vec<'a, AssignmentTargetProperty<'a>>) {
+    fn visit_assignment_target_properties(&mut self, it: &'a Vec<'a, AssignmentTargetProperty<'a>>) {
         walk_assignment_target_properties(self, it);
     }
 
     #[inline]
-    fn visit_variable_declarators(&mut self, it: &Vec<'a, VariableDeclarator<'a>>) {
+    fn visit_variable_declarators(&mut self, it: &'a Vec<'a, VariableDeclarator<'a>>) {
         walk_variable_declarators(self, it);
     }
 
     #[inline]
-    fn visit_switch_cases(&mut self, it: &Vec<'a, SwitchCase<'a>>) {
+    fn visit_switch_cases(&mut self, it: &'a Vec<'a, SwitchCase<'a>>) {
         walk_switch_cases(self, it);
     }
 
     #[inline]
-    fn visit_binding_properties(&mut self, it: &Vec<'a, BindingProperty<'a>>) {
+    fn visit_binding_properties(&mut self, it: &'a Vec<'a, BindingProperty<'a>>) {
         walk_binding_properties(self, it);
     }
 
     #[inline]
-    fn visit_formal_parameter_list(&mut self, it: &Vec<'a, FormalParameter<'a>>) {
+    fn visit_formal_parameter_list(&mut self, it: &'a Vec<'a, FormalParameter<'a>>) {
         walk_formal_parameter_list(self, it);
     }
 
     #[inline]
-    fn visit_decorators(&mut self, it: &Vec<'a, Decorator<'a>>) {
+    fn visit_decorators(&mut self, it: &'a Vec<'a, Decorator<'a>>) {
         walk_decorators(self, it);
     }
 
     #[inline]
-    fn visit_ts_class_implements_list(&mut self, it: &Vec<'a, TSClassImplements<'a>>) {
+    fn visit_ts_class_implements_list(&mut self, it: &'a Vec<'a, TSClassImplements<'a>>) {
         walk_ts_class_implements_list(self, it);
     }
 
     #[inline]
-    fn visit_class_elements(&mut self, it: &Vec<'a, ClassElement<'a>>) {
+    fn visit_class_elements(&mut self, it: &'a Vec<'a, ClassElement<'a>>) {
         walk_class_elements(self, it);
     }
 
     #[inline]
     fn visit_import_declaration_specifiers(
         &mut self,
-        it: &Vec<'a, ImportDeclarationSpecifier<'a>>,
+        it: &'a Vec<'a, ImportDeclarationSpecifier<'a>>,
     ) {
         walk_import_declaration_specifiers(self, it);
     }
 
     #[inline]
-    fn visit_import_attributes(&mut self, it: &Vec<'a, ImportAttribute<'a>>) {
+    fn visit_import_attributes(&mut self, it: &'a Vec<'a, ImportAttribute<'a>>) {
         walk_import_attributes(self, it);
     }
 
     #[inline]
-    fn visit_export_specifiers(&mut self, it: &Vec<'a, ExportSpecifier<'a>>) {
+    fn visit_export_specifiers(&mut self, it: &'a Vec<'a, ExportSpecifier<'a>>) {
         walk_export_specifiers(self, it);
     }
 
     #[inline]
-    fn visit_jsx_children(&mut self, it: &Vec<'a, JSXChild<'a>>) {
+    fn visit_jsx_children(&mut self, it: &'a Vec<'a, JSXChild<'a>>) {
         walk_jsx_children(self, it);
     }
 
     #[inline]
-    fn visit_jsx_attribute_items(&mut self, it: &Vec<'a, JSXAttributeItem<'a>>) {
+    fn visit_jsx_attribute_items(&mut self, it: &'a Vec<'a, JSXAttributeItem<'a>>) {
         walk_jsx_attribute_items(self, it);
     }
 
     #[inline]
-    fn visit_ts_enum_members(&mut self, it: &Vec<'a, TSEnumMember<'a>>) {
+    fn visit_ts_enum_members(&mut self, it: &'a Vec<'a, TSEnumMember<'a>>) {
         walk_ts_enum_members(self, it);
     }
 
     #[inline]
-    fn visit_ts_types(&mut self, it: &Vec<'a, TSType<'a>>) {
+    fn visit_ts_types(&mut self, it: &'a Vec<'a, TSType<'a>>) {
         walk_ts_types(self, it);
     }
 
     #[inline]
-    fn visit_ts_tuple_elements(&mut self, it: &Vec<'a, TSTupleElement<'a>>) {
+    fn visit_ts_tuple_elements(&mut self, it: &'a Vec<'a, TSTupleElement<'a>>) {
         walk_ts_tuple_elements(self, it);
     }
 
     #[inline]
-    fn visit_ts_type_parameters(&mut self, it: &Vec<'a, TSTypeParameter<'a>>) {
+    fn visit_ts_type_parameters(&mut self, it: &'a Vec<'a, TSTypeParameter<'a>>) {
         walk_ts_type_parameters(self, it);
     }
 
     #[inline]
-    fn visit_ts_interface_heritages(&mut self, it: &Vec<'a, TSInterfaceHeritage<'a>>) {
+    fn visit_ts_interface_heritages(&mut self, it: &'a Vec<'a, TSInterfaceHeritage<'a>>) {
         walk_ts_interface_heritages(self, it);
     }
 
     #[inline]
-    fn visit_ts_signatures(&mut self, it: &Vec<'a, TSSignature<'a>>) {
+    fn visit_ts_signatures(&mut self, it: &'a Vec<'a, TSSignature<'a>>) {
         walk_ts_signatures(self, it);
     }
 
     #[inline]
-    fn visit_ts_index_signature_names(&mut self, it: &Vec<'a, TSIndexSignatureName<'a>>) {
+    fn visit_ts_index_signature_names(&mut self, it: &'a Vec<'a, TSIndexSignatureName<'a>>) {
         walk_ts_index_signature_names(self, it);
     }
 
     #[inline]
-    fn visit_spans(&mut self, it: &Vec<'a, Span>) {
+    fn visit_spans(&mut self, it: &'a Vec<'a, Span>) {
         walk_spans(self, it);
     }
 }
@@ -1352,8 +1344,8 @@ pub mod walk {
     use super::*;
 
     #[inline]
-    pub fn walk_program<'a, V: Visit<'a>>(visitor: &mut V, it: &Program<'a>) {
-        let kind = AstKind::Program(visitor.alloc(it));
+    pub fn walk_program<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Program<'a>) {
+        let kind = AstKind::Program(it);
         visitor.enter_node(kind);
         visitor.enter_scope(
             {
@@ -1375,7 +1367,7 @@ pub mod walk {
         visitor.leave_node(kind);
     }
 
-    pub fn walk_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &Expression<'a>) {
+    pub fn walk_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Expression<'a>) {
         // No `AstKind` for this type
         match it {
             Expression::BooleanLiteral(it) => visitor.visit_boolean_literal(it),
@@ -1432,8 +1424,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_identifier_name<'a, V: Visit<'a>>(visitor: &mut V, it: &IdentifierName<'a>) {
-        let kind = AstKind::IdentifierName(visitor.alloc(it));
+    pub fn walk_identifier_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a IdentifierName<'a>) {
+        let kind = AstKind::IdentifierName(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
@@ -1442,41 +1434,41 @@ pub mod walk {
     #[inline]
     pub fn walk_identifier_reference<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &IdentifierReference<'a>,
+        it: &'a IdentifierReference<'a>,
     ) {
-        let kind = AstKind::IdentifierReference(visitor.alloc(it));
+        let kind = AstKind::IdentifierReference(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_binding_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &BindingIdentifier<'a>) {
-        let kind = AstKind::BindingIdentifier(visitor.alloc(it));
+    pub fn walk_binding_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BindingIdentifier<'a>) {
+        let kind = AstKind::BindingIdentifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_label_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &LabelIdentifier<'a>) {
-        let kind = AstKind::LabelIdentifier(visitor.alloc(it));
+    pub fn walk_label_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &'a LabelIdentifier<'a>) {
+        let kind = AstKind::LabelIdentifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_this_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &ThisExpression) {
-        let kind = AstKind::ThisExpression(visitor.alloc(it));
+    pub fn walk_this_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ThisExpression) {
+        let kind = AstKind::ThisExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_array_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &ArrayExpression<'a>) {
-        let kind = AstKind::ArrayExpression(visitor.alloc(it));
+    pub fn walk_array_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ArrayExpression<'a>) {
+        let kind = AstKind::ArrayExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_array_expression_elements(&it.elements);
@@ -1486,7 +1478,7 @@ pub mod walk {
     #[inline]
     pub fn walk_array_expression_element<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ArrayExpressionElement<'a>,
+        it: &'a ArrayExpressionElement<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -1499,16 +1491,16 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_elision<'a, V: Visit<'a>>(visitor: &mut V, it: &Elision) {
-        let kind = AstKind::Elision(visitor.alloc(it));
+    pub fn walk_elision<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Elision) {
+        let kind = AstKind::Elision(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_object_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &ObjectExpression<'a>) {
-        let kind = AstKind::ObjectExpression(visitor.alloc(it));
+    pub fn walk_object_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ObjectExpression<'a>) {
+        let kind = AstKind::ObjectExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_object_property_kinds(&it.properties);
@@ -1518,7 +1510,7 @@ pub mod walk {
     #[inline]
     pub fn walk_object_property_kind<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ObjectPropertyKind<'a>,
+        it: &'a ObjectPropertyKind<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -1528,8 +1520,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_object_property<'a, V: Visit<'a>>(visitor: &mut V, it: &ObjectProperty<'a>) {
-        let kind = AstKind::ObjectProperty(visitor.alloc(it));
+    pub fn walk_object_property<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ObjectProperty<'a>) {
+        let kind = AstKind::ObjectProperty(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_property_key(&it.key);
@@ -1538,7 +1530,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_property_key<'a, V: Visit<'a>>(visitor: &mut V, it: &PropertyKey<'a>) {
+    pub fn walk_property_key<'a, V: Visit<'a>>(visitor: &mut V, it: &'a PropertyKey<'a>) {
         // No `AstKind` for this type
         match it {
             PropertyKey::StaticIdentifier(it) => visitor.visit_identifier_name(it),
@@ -1548,8 +1540,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_template_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &TemplateLiteral<'a>) {
-        let kind = AstKind::TemplateLiteral(visitor.alloc(it));
+    pub fn walk_template_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TemplateLiteral<'a>) {
+        let kind = AstKind::TemplateLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_template_elements(&it.quasis);
@@ -1560,9 +1552,9 @@ pub mod walk {
     #[inline]
     pub fn walk_tagged_template_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TaggedTemplateExpression<'a>,
+        it: &'a TaggedTemplateExpression<'a>,
     ) {
-        let kind = AstKind::TaggedTemplateExpression(visitor.alloc(it));
+        let kind = AstKind::TaggedTemplateExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.tag);
@@ -1574,15 +1566,15 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_template_element<'a, V: Visit<'a>>(visitor: &mut V, it: &TemplateElement<'a>) {
-        let kind = AstKind::TemplateElement(visitor.alloc(it));
+    pub fn walk_template_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TemplateElement<'a>) {
+        let kind = AstKind::TemplateElement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_member_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &MemberExpression<'a>) {
+    pub fn walk_member_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a MemberExpression<'a>) {
         // No `AstKind` for this type
         match it {
             MemberExpression::ComputedMemberExpression(it) => {
@@ -1600,9 +1592,9 @@ pub mod walk {
     #[inline]
     pub fn walk_computed_member_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ComputedMemberExpression<'a>,
+        it: &'a ComputedMemberExpression<'a>,
     ) {
-        let kind = AstKind::ComputedMemberExpression(visitor.alloc(it));
+        let kind = AstKind::ComputedMemberExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.object);
@@ -1613,9 +1605,9 @@ pub mod walk {
     #[inline]
     pub fn walk_static_member_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &StaticMemberExpression<'a>,
+        it: &'a StaticMemberExpression<'a>,
     ) {
-        let kind = AstKind::StaticMemberExpression(visitor.alloc(it));
+        let kind = AstKind::StaticMemberExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.object);
@@ -1626,9 +1618,9 @@ pub mod walk {
     #[inline]
     pub fn walk_private_field_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &PrivateFieldExpression<'a>,
+        it: &'a PrivateFieldExpression<'a>,
     ) {
-        let kind = AstKind::PrivateFieldExpression(visitor.alloc(it));
+        let kind = AstKind::PrivateFieldExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.object);
@@ -1637,8 +1629,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_call_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &CallExpression<'a>) {
-        let kind = AstKind::CallExpression(visitor.alloc(it));
+    pub fn walk_call_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a CallExpression<'a>) {
+        let kind = AstKind::CallExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.callee);
@@ -1650,8 +1642,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_new_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &NewExpression<'a>) {
-        let kind = AstKind::NewExpression(visitor.alloc(it));
+    pub fn walk_new_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a NewExpression<'a>) {
+        let kind = AstKind::NewExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.callee);
@@ -1663,8 +1655,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_meta_property<'a, V: Visit<'a>>(visitor: &mut V, it: &MetaProperty<'a>) {
-        let kind = AstKind::MetaProperty(visitor.alloc(it));
+    pub fn walk_meta_property<'a, V: Visit<'a>>(visitor: &mut V, it: &'a MetaProperty<'a>) {
+        let kind = AstKind::MetaProperty(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_identifier_name(&it.meta);
@@ -1673,8 +1665,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_spread_element<'a, V: Visit<'a>>(visitor: &mut V, it: &SpreadElement<'a>) {
-        let kind = AstKind::SpreadElement(visitor.alloc(it));
+    pub fn walk_spread_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a SpreadElement<'a>) {
+        let kind = AstKind::SpreadElement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.argument);
@@ -1682,7 +1674,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_argument<'a, V: Visit<'a>>(visitor: &mut V, it: &Argument<'a>) {
+    pub fn walk_argument<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Argument<'a>) {
         // No `AstKind` for this type
         match it {
             Argument::SpreadElement(it) => visitor.visit_spread_element(it),
@@ -1691,8 +1683,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_update_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &UpdateExpression<'a>) {
-        let kind = AstKind::UpdateExpression(visitor.alloc(it));
+    pub fn walk_update_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a UpdateExpression<'a>) {
+        let kind = AstKind::UpdateExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_simple_assignment_target(&it.argument);
@@ -1700,8 +1692,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_unary_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &UnaryExpression<'a>) {
-        let kind = AstKind::UnaryExpression(visitor.alloc(it));
+    pub fn walk_unary_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a UnaryExpression<'a>) {
+        let kind = AstKind::UnaryExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.argument);
@@ -1709,8 +1701,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_binary_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &BinaryExpression<'a>) {
-        let kind = AstKind::BinaryExpression(visitor.alloc(it));
+    pub fn walk_binary_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BinaryExpression<'a>) {
+        let kind = AstKind::BinaryExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.left);
@@ -1721,9 +1713,9 @@ pub mod walk {
     #[inline]
     pub fn walk_private_in_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &PrivateInExpression<'a>,
+        it: &'a PrivateInExpression<'a>,
     ) {
-        let kind = AstKind::PrivateInExpression(visitor.alloc(it));
+        let kind = AstKind::PrivateInExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_private_identifier(&it.left);
@@ -1732,8 +1724,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_logical_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &LogicalExpression<'a>) {
-        let kind = AstKind::LogicalExpression(visitor.alloc(it));
+    pub fn walk_logical_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a LogicalExpression<'a>) {
+        let kind = AstKind::LogicalExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.left);
@@ -1744,9 +1736,9 @@ pub mod walk {
     #[inline]
     pub fn walk_conditional_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ConditionalExpression<'a>,
+        it: &'a ConditionalExpression<'a>,
     ) {
-        let kind = AstKind::ConditionalExpression(visitor.alloc(it));
+        let kind = AstKind::ConditionalExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.test);
@@ -1758,9 +1750,9 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentExpression<'a>,
+        it: &'a AssignmentExpression<'a>,
     ) {
-        let kind = AstKind::AssignmentExpression(visitor.alloc(it));
+        let kind = AstKind::AssignmentExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_assignment_target(&it.left);
@@ -1769,7 +1761,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_assignment_target<'a, V: Visit<'a>>(visitor: &mut V, it: &AssignmentTarget<'a>) {
+    pub fn walk_assignment_target<'a, V: Visit<'a>>(visitor: &mut V, it: &'a AssignmentTarget<'a>) {
         // No `AstKind` for this type
         match it {
             match_simple_assignment_target!(AssignmentTarget) => {
@@ -1783,7 +1775,7 @@ pub mod walk {
 
     pub fn walk_simple_assignment_target<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &SimpleAssignmentTarget<'a>,
+        it: &'a SimpleAssignmentTarget<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -1807,7 +1799,7 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_pattern<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentTargetPattern<'a>,
+        it: &'a AssignmentTargetPattern<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -1823,9 +1815,9 @@ pub mod walk {
     #[inline]
     pub fn walk_array_assignment_target<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ArrayAssignmentTarget<'a>,
+        it: &'a ArrayAssignmentTarget<'a>,
     ) {
-        let kind = AstKind::ArrayAssignmentTarget(visitor.alloc(it));
+        let kind = AstKind::ArrayAssignmentTarget(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         for el in it.elements.iter().flatten() {
@@ -1840,9 +1832,9 @@ pub mod walk {
     #[inline]
     pub fn walk_object_assignment_target<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ObjectAssignmentTarget<'a>,
+        it: &'a ObjectAssignmentTarget<'a>,
     ) {
-        let kind = AstKind::ObjectAssignmentTarget(visitor.alloc(it));
+        let kind = AstKind::ObjectAssignmentTarget(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_assignment_target_properties(&it.properties);
@@ -1855,9 +1847,9 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_rest<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentTargetRest<'a>,
+        it: &'a AssignmentTargetRest<'a>,
     ) {
-        let kind = AstKind::AssignmentTargetRest(visitor.alloc(it));
+        let kind = AstKind::AssignmentTargetRest(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_assignment_target(&it.target);
@@ -1867,7 +1859,7 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_maybe_default<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentTargetMaybeDefault<'a>,
+        it: &'a AssignmentTargetMaybeDefault<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -1883,9 +1875,9 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_with_default<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentTargetWithDefault<'a>,
+        it: &'a AssignmentTargetWithDefault<'a>,
     ) {
-        let kind = AstKind::AssignmentTargetWithDefault(visitor.alloc(it));
+        let kind = AstKind::AssignmentTargetWithDefault(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_assignment_target(&it.binding);
@@ -1896,7 +1888,7 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_property<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentTargetProperty<'a>,
+        it: &'a AssignmentTargetProperty<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -1912,9 +1904,9 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_property_identifier<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentTargetPropertyIdentifier<'a>,
+        it: &'a AssignmentTargetPropertyIdentifier<'a>,
     ) {
-        let kind = AstKind::AssignmentTargetPropertyIdentifier(visitor.alloc(it));
+        let kind = AstKind::AssignmentTargetPropertyIdentifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_identifier_reference(&it.binding);
@@ -1927,9 +1919,9 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_property_property<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &AssignmentTargetPropertyProperty<'a>,
+        it: &'a AssignmentTargetPropertyProperty<'a>,
     ) {
-        let kind = AstKind::AssignmentTargetPropertyProperty(visitor.alloc(it));
+        let kind = AstKind::AssignmentTargetPropertyProperty(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_property_key(&it.name);
@@ -1940,9 +1932,9 @@ pub mod walk {
     #[inline]
     pub fn walk_sequence_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &SequenceExpression<'a>,
+        it: &'a SequenceExpression<'a>,
     ) {
-        let kind = AstKind::SequenceExpression(visitor.alloc(it));
+        let kind = AstKind::SequenceExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expressions(&it.expressions);
@@ -1950,16 +1942,16 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_super<'a, V: Visit<'a>>(visitor: &mut V, it: &Super) {
-        let kind = AstKind::Super(visitor.alloc(it));
+    pub fn walk_super<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Super) {
+        let kind = AstKind::Super(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_await_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &AwaitExpression<'a>) {
-        let kind = AstKind::AwaitExpression(visitor.alloc(it));
+    pub fn walk_await_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a AwaitExpression<'a>) {
+        let kind = AstKind::AwaitExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.argument);
@@ -1967,8 +1959,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_chain_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &ChainExpression<'a>) {
-        let kind = AstKind::ChainExpression(visitor.alloc(it));
+    pub fn walk_chain_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ChainExpression<'a>) {
+        let kind = AstKind::ChainExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_chain_element(&it.expression);
@@ -1976,7 +1968,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_chain_element<'a, V: Visit<'a>>(visitor: &mut V, it: &ChainElement<'a>) {
+    pub fn walk_chain_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ChainElement<'a>) {
         // No `AstKind` for this type
         match it {
             ChainElement::CallExpression(it) => visitor.visit_call_expression(it),
@@ -1990,16 +1982,16 @@ pub mod walk {
     #[inline]
     pub fn walk_parenthesized_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ParenthesizedExpression<'a>,
+        it: &'a ParenthesizedExpression<'a>,
     ) {
-        let kind = AstKind::ParenthesizedExpression(visitor.alloc(it));
+        let kind = AstKind::ParenthesizedExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
         visitor.leave_node(kind);
     }
 
-    pub fn walk_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &Statement<'a>) {
+    pub fn walk_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Statement<'a>) {
         // No `AstKind` for this type
         match it {
             Statement::BlockStatement(it) => visitor.visit_block_statement(it),
@@ -2028,8 +2020,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_directive<'a, V: Visit<'a>>(visitor: &mut V, it: &Directive<'a>) {
-        let kind = AstKind::Directive(visitor.alloc(it));
+    pub fn walk_directive<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Directive<'a>) {
+        let kind = AstKind::Directive(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_string_literal(&it.expression);
@@ -2037,16 +2029,16 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_hashbang<'a, V: Visit<'a>>(visitor: &mut V, it: &Hashbang<'a>) {
-        let kind = AstKind::Hashbang(visitor.alloc(it));
+    pub fn walk_hashbang<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Hashbang<'a>) {
+        let kind = AstKind::Hashbang(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_block_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &BlockStatement<'a>) {
-        let kind = AstKind::BlockStatement(visitor.alloc(it));
+    pub fn walk_block_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BlockStatement<'a>) {
+        let kind = AstKind::BlockStatement(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -2055,7 +2047,7 @@ pub mod walk {
         visitor.leave_node(kind);
     }
 
-    pub fn walk_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &Declaration<'a>) {
+    pub fn walk_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Declaration<'a>) {
         // No `AstKind` for this type
         match it {
             Declaration::VariableDeclaration(it) => visitor.visit_variable_declaration(it),
@@ -2078,9 +2070,9 @@ pub mod walk {
     #[inline]
     pub fn walk_variable_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &VariableDeclaration<'a>,
+        it: &'a VariableDeclaration<'a>,
     ) {
-        let kind = AstKind::VariableDeclaration(visitor.alloc(it));
+        let kind = AstKind::VariableDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_variable_declarators(&it.declarations);
@@ -2090,9 +2082,9 @@ pub mod walk {
     #[inline]
     pub fn walk_variable_declarator<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &VariableDeclarator<'a>,
+        it: &'a VariableDeclarator<'a>,
     ) {
-        let kind = AstKind::VariableDeclarator(visitor.alloc(it));
+        let kind = AstKind::VariableDeclarator(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_pattern(&it.id);
@@ -2106,8 +2098,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_empty_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &EmptyStatement) {
-        let kind = AstKind::EmptyStatement(visitor.alloc(it));
+    pub fn walk_empty_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a EmptyStatement) {
+        let kind = AstKind::EmptyStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
@@ -2116,9 +2108,9 @@ pub mod walk {
     #[inline]
     pub fn walk_expression_statement<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ExpressionStatement<'a>,
+        it: &'a ExpressionStatement<'a>,
     ) {
-        let kind = AstKind::ExpressionStatement(visitor.alloc(it));
+        let kind = AstKind::ExpressionStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -2126,8 +2118,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_if_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &IfStatement<'a>) {
-        let kind = AstKind::IfStatement(visitor.alloc(it));
+    pub fn walk_if_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a IfStatement<'a>) {
+        let kind = AstKind::IfStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.test);
@@ -2139,8 +2131,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_do_while_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &DoWhileStatement<'a>) {
-        let kind = AstKind::DoWhileStatement(visitor.alloc(it));
+    pub fn walk_do_while_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a DoWhileStatement<'a>) {
+        let kind = AstKind::DoWhileStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_statement(&it.body);
@@ -2149,8 +2141,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_while_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &WhileStatement<'a>) {
-        let kind = AstKind::WhileStatement(visitor.alloc(it));
+    pub fn walk_while_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a WhileStatement<'a>) {
+        let kind = AstKind::WhileStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.test);
@@ -2159,8 +2151,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_for_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &ForStatement<'a>) {
-        let kind = AstKind::ForStatement(visitor.alloc(it));
+    pub fn walk_for_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ForStatement<'a>) {
+        let kind = AstKind::ForStatement(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -2179,7 +2171,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_for_statement_init<'a, V: Visit<'a>>(visitor: &mut V, it: &ForStatementInit<'a>) {
+    pub fn walk_for_statement_init<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ForStatementInit<'a>) {
         // No `AstKind` for this type
         match it {
             ForStatementInit::VariableDeclaration(it) => visitor.visit_variable_declaration(it),
@@ -2188,8 +2180,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_for_in_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &ForInStatement<'a>) {
-        let kind = AstKind::ForInStatement(visitor.alloc(it));
+    pub fn walk_for_in_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ForInStatement<'a>) {
+        let kind = AstKind::ForInStatement(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -2201,7 +2193,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_for_statement_left<'a, V: Visit<'a>>(visitor: &mut V, it: &ForStatementLeft<'a>) {
+    pub fn walk_for_statement_left<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ForStatementLeft<'a>) {
         // No `AstKind` for this type
         match it {
             ForStatementLeft::VariableDeclaration(it) => visitor.visit_variable_declaration(it),
@@ -2212,8 +2204,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_for_of_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &ForOfStatement<'a>) {
-        let kind = AstKind::ForOfStatement(visitor.alloc(it));
+    pub fn walk_for_of_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ForOfStatement<'a>) {
+        let kind = AstKind::ForOfStatement(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -2225,8 +2217,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_continue_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &ContinueStatement<'a>) {
-        let kind = AstKind::ContinueStatement(visitor.alloc(it));
+    pub fn walk_continue_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ContinueStatement<'a>) {
+        let kind = AstKind::ContinueStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(label) = &it.label {
@@ -2236,8 +2228,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_break_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &BreakStatement<'a>) {
-        let kind = AstKind::BreakStatement(visitor.alloc(it));
+    pub fn walk_break_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BreakStatement<'a>) {
+        let kind = AstKind::BreakStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(label) = &it.label {
@@ -2247,8 +2239,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_return_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &ReturnStatement<'a>) {
-        let kind = AstKind::ReturnStatement(visitor.alloc(it));
+    pub fn walk_return_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ReturnStatement<'a>) {
+        let kind = AstKind::ReturnStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(argument) = &it.argument {
@@ -2258,8 +2250,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_with_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &WithStatement<'a>) {
-        let kind = AstKind::WithStatement(visitor.alloc(it));
+    pub fn walk_with_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a WithStatement<'a>) {
+        let kind = AstKind::WithStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.object);
@@ -2270,8 +2262,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_switch_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &SwitchStatement<'a>) {
-        let kind = AstKind::SwitchStatement(visitor.alloc(it));
+    pub fn walk_switch_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a SwitchStatement<'a>) {
+        let kind = AstKind::SwitchStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.discriminant);
@@ -2282,8 +2274,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_switch_case<'a, V: Visit<'a>>(visitor: &mut V, it: &SwitchCase<'a>) {
-        let kind = AstKind::SwitchCase(visitor.alloc(it));
+    pub fn walk_switch_case<'a, V: Visit<'a>>(visitor: &mut V, it: &'a SwitchCase<'a>) {
+        let kind = AstKind::SwitchCase(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(test) = &it.test {
@@ -2294,8 +2286,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_labeled_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &LabeledStatement<'a>) {
-        let kind = AstKind::LabeledStatement(visitor.alloc(it));
+    pub fn walk_labeled_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a LabeledStatement<'a>) {
+        let kind = AstKind::LabeledStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_label_identifier(&it.label);
@@ -2304,8 +2296,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_throw_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &ThrowStatement<'a>) {
-        let kind = AstKind::ThrowStatement(visitor.alloc(it));
+    pub fn walk_throw_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ThrowStatement<'a>) {
+        let kind = AstKind::ThrowStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.argument);
@@ -2313,8 +2305,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_try_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &TryStatement<'a>) {
-        let kind = AstKind::TryStatement(visitor.alloc(it));
+    pub fn walk_try_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TryStatement<'a>) {
+        let kind = AstKind::TryStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_block_statement(&it.block);
@@ -2328,8 +2320,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_catch_clause<'a, V: Visit<'a>>(visitor: &mut V, it: &CatchClause<'a>) {
-        let kind = AstKind::CatchClause(visitor.alloc(it));
+    pub fn walk_catch_clause<'a, V: Visit<'a>>(visitor: &mut V, it: &'a CatchClause<'a>) {
+        let kind = AstKind::CatchClause(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::CatchClause, &it.scope_id);
         visitor.visit_span(&it.span);
@@ -2342,8 +2334,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_catch_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &CatchParameter<'a>) {
-        let kind = AstKind::CatchParameter(visitor.alloc(it));
+    pub fn walk_catch_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &'a CatchParameter<'a>) {
+        let kind = AstKind::CatchParameter(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_pattern(&it.pattern);
@@ -2354,15 +2346,15 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_debugger_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &DebuggerStatement) {
-        let kind = AstKind::DebuggerStatement(visitor.alloc(it));
+    pub fn walk_debugger_statement<'a, V: Visit<'a>>(visitor: &mut V, it: &'a DebuggerStatement) {
+        let kind = AstKind::DebuggerStatement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_binding_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &BindingPattern<'a>) {
+    pub fn walk_binding_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BindingPattern<'a>) {
         // No `AstKind` for this type
         match it {
             BindingPattern::BindingIdentifier(it) => visitor.visit_binding_identifier(it),
@@ -2373,8 +2365,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_assignment_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &AssignmentPattern<'a>) {
-        let kind = AstKind::AssignmentPattern(visitor.alloc(it));
+    pub fn walk_assignment_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &'a AssignmentPattern<'a>) {
+        let kind = AstKind::AssignmentPattern(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_pattern(&it.left);
@@ -2383,8 +2375,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_object_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &ObjectPattern<'a>) {
-        let kind = AstKind::ObjectPattern(visitor.alloc(it));
+    pub fn walk_object_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ObjectPattern<'a>) {
+        let kind = AstKind::ObjectPattern(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_properties(&it.properties);
@@ -2395,8 +2387,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_binding_property<'a, V: Visit<'a>>(visitor: &mut V, it: &BindingProperty<'a>) {
-        let kind = AstKind::BindingProperty(visitor.alloc(it));
+    pub fn walk_binding_property<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BindingProperty<'a>) {
+        let kind = AstKind::BindingProperty(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_property_key(&it.key);
@@ -2405,8 +2397,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_array_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &ArrayPattern<'a>) {
-        let kind = AstKind::ArrayPattern(visitor.alloc(it));
+    pub fn walk_array_pattern<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ArrayPattern<'a>) {
+        let kind = AstKind::ArrayPattern(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         for el in it.elements.iter().flatten() {
@@ -2421,17 +2413,17 @@ pub mod walk {
     #[inline]
     pub fn walk_binding_rest_element<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &BindingRestElement<'a>,
+        it: &'a BindingRestElement<'a>,
     ) {
-        let kind = AstKind::BindingRestElement(visitor.alloc(it));
+        let kind = AstKind::BindingRestElement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_pattern(&it.argument);
         visitor.leave_node(kind);
     }
 
-    pub fn walk_function<'a, V: Visit<'a>>(visitor: &mut V, it: &Function<'a>, flags: ScopeFlags) {
-        let kind = AstKind::Function(visitor.alloc(it));
+    pub fn walk_function<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Function<'a>, flags: ScopeFlags) {
+        let kind = AstKind::Function(it);
         visitor.enter_node(kind);
         visitor.enter_scope(
             {
@@ -2465,8 +2457,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_formal_parameters<'a, V: Visit<'a>>(visitor: &mut V, it: &FormalParameters<'a>) {
-        let kind = AstKind::FormalParameters(visitor.alloc(it));
+    pub fn walk_formal_parameters<'a, V: Visit<'a>>(visitor: &mut V, it: &'a FormalParameters<'a>) {
+        let kind = AstKind::FormalParameters(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_formal_parameter_list(&it.items);
@@ -2477,8 +2469,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_formal_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &FormalParameter<'a>) {
-        let kind = AstKind::FormalParameter(visitor.alloc(it));
+    pub fn walk_formal_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &'a FormalParameter<'a>) {
+        let kind = AstKind::FormalParameter(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_decorators(&it.decorators);
@@ -2495,9 +2487,9 @@ pub mod walk {
     #[inline]
     pub fn walk_formal_parameter_rest<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &FormalParameterRest<'a>,
+        it: &'a FormalParameterRest<'a>,
     ) {
-        let kind = AstKind::FormalParameterRest(visitor.alloc(it));
+        let kind = AstKind::FormalParameterRest(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_decorators(&it.decorators);
@@ -2509,8 +2501,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_function_body<'a, V: Visit<'a>>(visitor: &mut V, it: &FunctionBody<'a>) {
-        let kind = AstKind::FunctionBody(visitor.alloc(it));
+    pub fn walk_function_body<'a, V: Visit<'a>>(visitor: &mut V, it: &'a FunctionBody<'a>) {
+        let kind = AstKind::FunctionBody(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_directives(&it.directives);
@@ -2521,9 +2513,9 @@ pub mod walk {
     #[inline]
     pub fn walk_arrow_function_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ArrowFunctionExpression<'a>,
+        it: &'a ArrowFunctionExpression<'a>,
     ) {
-        let kind = AstKind::ArrowFunctionExpression(visitor.alloc(it));
+        let kind = AstKind::ArrowFunctionExpression(it);
         visitor.enter_node(kind);
         visitor.enter_scope(
             {
@@ -2549,8 +2541,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_yield_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &YieldExpression<'a>) {
-        let kind = AstKind::YieldExpression(visitor.alloc(it));
+    pub fn walk_yield_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a YieldExpression<'a>) {
+        let kind = AstKind::YieldExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(argument) = &it.argument {
@@ -2559,8 +2551,8 @@ pub mod walk {
         visitor.leave_node(kind);
     }
 
-    pub fn walk_class<'a, V: Visit<'a>>(visitor: &mut V, it: &Class<'a>) {
-        let kind = AstKind::Class(visitor.alloc(it));
+    pub fn walk_class<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Class<'a>) {
+        let kind = AstKind::Class(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_decorators(&it.decorators);
@@ -2584,8 +2576,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_class_body<'a, V: Visit<'a>>(visitor: &mut V, it: &ClassBody<'a>) {
-        let kind = AstKind::ClassBody(visitor.alloc(it));
+    pub fn walk_class_body<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ClassBody<'a>) {
+        let kind = AstKind::ClassBody(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_class_elements(&it.body);
@@ -2593,7 +2585,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_class_element<'a, V: Visit<'a>>(visitor: &mut V, it: &ClassElement<'a>) {
+    pub fn walk_class_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ClassElement<'a>) {
         // No `AstKind` for this type
         match it {
             ClassElement::StaticBlock(it) => visitor.visit_static_block(it),
@@ -2605,8 +2597,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_method_definition<'a, V: Visit<'a>>(visitor: &mut V, it: &MethodDefinition<'a>) {
-        let kind = AstKind::MethodDefinition(visitor.alloc(it));
+    pub fn walk_method_definition<'a, V: Visit<'a>>(visitor: &mut V, it: &'a MethodDefinition<'a>) {
+        let kind = AstKind::MethodDefinition(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_decorators(&it.decorators);
@@ -2626,9 +2618,9 @@ pub mod walk {
     #[inline]
     pub fn walk_property_definition<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &PropertyDefinition<'a>,
+        it: &'a PropertyDefinition<'a>,
     ) {
-        let kind = AstKind::PropertyDefinition(visitor.alloc(it));
+        let kind = AstKind::PropertyDefinition(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_decorators(&it.decorators);
@@ -2643,16 +2635,16 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_private_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &PrivateIdentifier<'a>) {
-        let kind = AstKind::PrivateIdentifier(visitor.alloc(it));
+    pub fn walk_private_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &'a PrivateIdentifier<'a>) {
+        let kind = AstKind::PrivateIdentifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_static_block<'a, V: Visit<'a>>(visitor: &mut V, it: &StaticBlock<'a>) {
-        let kind = AstKind::StaticBlock(visitor.alloc(it));
+    pub fn walk_static_block<'a, V: Visit<'a>>(visitor: &mut V, it: &'a StaticBlock<'a>) {
+        let kind = AstKind::StaticBlock(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::ClassStaticBlock, &it.scope_id);
         visitor.visit_span(&it.span);
@@ -2661,7 +2653,7 @@ pub mod walk {
         visitor.leave_node(kind);
     }
 
-    pub fn walk_module_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &ModuleDeclaration<'a>) {
+    pub fn walk_module_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ModuleDeclaration<'a>) {
         // No `AstKind` for this type
         match it {
             ModuleDeclaration::ImportDeclaration(it) => visitor.visit_import_declaration(it),
@@ -2680,8 +2672,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_accessor_property<'a, V: Visit<'a>>(visitor: &mut V, it: &AccessorProperty<'a>) {
-        let kind = AstKind::AccessorProperty(visitor.alloc(it));
+    pub fn walk_accessor_property<'a, V: Visit<'a>>(visitor: &mut V, it: &'a AccessorProperty<'a>) {
+        let kind = AstKind::AccessorProperty(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_decorators(&it.decorators);
@@ -2696,8 +2688,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_import_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &ImportExpression<'a>) {
-        let kind = AstKind::ImportExpression(visitor.alloc(it));
+    pub fn walk_import_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ImportExpression<'a>) {
+        let kind = AstKind::ImportExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.source);
@@ -2708,8 +2700,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_import_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &ImportDeclaration<'a>) {
-        let kind = AstKind::ImportDeclaration(visitor.alloc(it));
+    pub fn walk_import_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ImportDeclaration<'a>) {
+        let kind = AstKind::ImportDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(specifiers) = &it.specifiers {
@@ -2725,7 +2717,7 @@ pub mod walk {
     #[inline]
     pub fn walk_import_declaration_specifier<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ImportDeclarationSpecifier<'a>,
+        it: &'a ImportDeclarationSpecifier<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -2740,8 +2732,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_import_specifier<'a, V: Visit<'a>>(visitor: &mut V, it: &ImportSpecifier<'a>) {
-        let kind = AstKind::ImportSpecifier(visitor.alloc(it));
+    pub fn walk_import_specifier<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ImportSpecifier<'a>) {
+        let kind = AstKind::ImportSpecifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_module_export_name(&it.imported);
@@ -2752,9 +2744,9 @@ pub mod walk {
     #[inline]
     pub fn walk_import_default_specifier<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ImportDefaultSpecifier<'a>,
+        it: &'a ImportDefaultSpecifier<'a>,
     ) {
-        let kind = AstKind::ImportDefaultSpecifier(visitor.alloc(it));
+        let kind = AstKind::ImportDefaultSpecifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_identifier(&it.local);
@@ -2764,9 +2756,9 @@ pub mod walk {
     #[inline]
     pub fn walk_import_namespace_specifier<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ImportNamespaceSpecifier<'a>,
+        it: &'a ImportNamespaceSpecifier<'a>,
     ) {
-        let kind = AstKind::ImportNamespaceSpecifier(visitor.alloc(it));
+        let kind = AstKind::ImportNamespaceSpecifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_identifier(&it.local);
@@ -2774,8 +2766,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_with_clause<'a, V: Visit<'a>>(visitor: &mut V, it: &WithClause<'a>) {
-        let kind = AstKind::WithClause(visitor.alloc(it));
+    pub fn walk_with_clause<'a, V: Visit<'a>>(visitor: &mut V, it: &'a WithClause<'a>) {
+        let kind = AstKind::WithClause(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_import_attributes(&it.with_entries);
@@ -2783,8 +2775,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_import_attribute<'a, V: Visit<'a>>(visitor: &mut V, it: &ImportAttribute<'a>) {
-        let kind = AstKind::ImportAttribute(visitor.alloc(it));
+    pub fn walk_import_attribute<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ImportAttribute<'a>) {
+        let kind = AstKind::ImportAttribute(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_import_attribute_key(&it.key);
@@ -2795,7 +2787,7 @@ pub mod walk {
     #[inline]
     pub fn walk_import_attribute_key<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ImportAttributeKey<'a>,
+        it: &'a ImportAttributeKey<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -2807,9 +2799,9 @@ pub mod walk {
     #[inline]
     pub fn walk_export_named_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ExportNamedDeclaration<'a>,
+        it: &'a ExportNamedDeclaration<'a>,
     ) {
-        let kind = AstKind::ExportNamedDeclaration(visitor.alloc(it));
+        let kind = AstKind::ExportNamedDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(declaration) = &it.declaration {
@@ -2828,9 +2820,9 @@ pub mod walk {
     #[inline]
     pub fn walk_export_default_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ExportDefaultDeclaration<'a>,
+        it: &'a ExportDefaultDeclaration<'a>,
     ) {
-        let kind = AstKind::ExportDefaultDeclaration(visitor.alloc(it));
+        let kind = AstKind::ExportDefaultDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_export_default_declaration_kind(&it.declaration);
@@ -2840,9 +2832,9 @@ pub mod walk {
     #[inline]
     pub fn walk_export_all_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ExportAllDeclaration<'a>,
+        it: &'a ExportAllDeclaration<'a>,
     ) {
-        let kind = AstKind::ExportAllDeclaration(visitor.alloc(it));
+        let kind = AstKind::ExportAllDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         if let Some(exported) = &it.exported {
@@ -2856,8 +2848,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_export_specifier<'a, V: Visit<'a>>(visitor: &mut V, it: &ExportSpecifier<'a>) {
-        let kind = AstKind::ExportSpecifier(visitor.alloc(it));
+    pub fn walk_export_specifier<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ExportSpecifier<'a>) {
+        let kind = AstKind::ExportSpecifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_module_export_name(&it.local);
@@ -2868,7 +2860,7 @@ pub mod walk {
     #[inline]
     pub fn walk_export_default_declaration_kind<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &ExportDefaultDeclarationKind<'a>,
+        it: &'a ExportDefaultDeclarationKind<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -2887,7 +2879,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_module_export_name<'a, V: Visit<'a>>(visitor: &mut V, it: &ModuleExportName<'a>) {
+    pub fn walk_module_export_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ModuleExportName<'a>) {
         // No `AstKind` for this type
         match it {
             ModuleExportName::IdentifierName(it) => visitor.visit_identifier_name(it),
@@ -2899,9 +2891,9 @@ pub mod walk {
     #[inline]
     pub fn walk_v8_intrinsic_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &V8IntrinsicExpression<'a>,
+        it: &'a V8IntrinsicExpression<'a>,
     ) {
-        let kind = AstKind::V8IntrinsicExpression(visitor.alloc(it));
+        let kind = AstKind::V8IntrinsicExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_identifier_name(&it.name);
@@ -2910,56 +2902,56 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_boolean_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &BooleanLiteral) {
-        let kind = AstKind::BooleanLiteral(visitor.alloc(it));
+    pub fn walk_boolean_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BooleanLiteral) {
+        let kind = AstKind::BooleanLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_null_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &NullLiteral) {
-        let kind = AstKind::NullLiteral(visitor.alloc(it));
+    pub fn walk_null_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a NullLiteral) {
+        let kind = AstKind::NullLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_numeric_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &NumericLiteral<'a>) {
-        let kind = AstKind::NumericLiteral(visitor.alloc(it));
+    pub fn walk_numeric_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a NumericLiteral<'a>) {
+        let kind = AstKind::NumericLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_string_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &StringLiteral<'a>) {
-        let kind = AstKind::StringLiteral(visitor.alloc(it));
+    pub fn walk_string_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a StringLiteral<'a>) {
+        let kind = AstKind::StringLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_big_int_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &BigIntLiteral<'a>) {
-        let kind = AstKind::BigIntLiteral(visitor.alloc(it));
+    pub fn walk_big_int_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a BigIntLiteral<'a>) {
+        let kind = AstKind::BigIntLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_reg_exp_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &RegExpLiteral<'a>) {
-        let kind = AstKind::RegExpLiteral(visitor.alloc(it));
+    pub fn walk_reg_exp_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a RegExpLiteral<'a>) {
+        let kind = AstKind::RegExpLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_jsx_element<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXElement<'a>) {
-        let kind = AstKind::JSXElement(visitor.alloc(it));
+    pub fn walk_jsx_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXElement<'a>) {
+        let kind = AstKind::JSXElement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_opening_element(&it.opening_element);
@@ -2971,8 +2963,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_opening_element<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXOpeningElement<'a>) {
-        let kind = AstKind::JSXOpeningElement(visitor.alloc(it));
+    pub fn walk_jsx_opening_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXOpeningElement<'a>) {
+        let kind = AstKind::JSXOpeningElement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_element_name(&it.name);
@@ -2984,8 +2976,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_closing_element<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXClosingElement<'a>) {
-        let kind = AstKind::JSXClosingElement(visitor.alloc(it));
+    pub fn walk_jsx_closing_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXClosingElement<'a>) {
+        let kind = AstKind::JSXClosingElement(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_element_name(&it.name);
@@ -2993,8 +2985,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_fragment<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXFragment<'a>) {
-        let kind = AstKind::JSXFragment(visitor.alloc(it));
+    pub fn walk_jsx_fragment<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXFragment<'a>) {
+        let kind = AstKind::JSXFragment(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_opening_fragment(&it.opening_fragment);
@@ -3004,23 +2996,23 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_opening_fragment<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXOpeningFragment) {
-        let kind = AstKind::JSXOpeningFragment(visitor.alloc(it));
+    pub fn walk_jsx_opening_fragment<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXOpeningFragment) {
+        let kind = AstKind::JSXOpeningFragment(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_jsx_closing_fragment<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXClosingFragment) {
-        let kind = AstKind::JSXClosingFragment(visitor.alloc(it));
+    pub fn walk_jsx_closing_fragment<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXClosingFragment) {
+        let kind = AstKind::JSXClosingFragment(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_jsx_element_name<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXElementName<'a>) {
+    pub fn walk_jsx_element_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXElementName<'a>) {
         // No `AstKind` for this type
         match it {
             JSXElementName::Identifier(it) => visitor.visit_jsx_identifier(it),
@@ -3032,8 +3024,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_namespaced_name<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXNamespacedName<'a>) {
-        let kind = AstKind::JSXNamespacedName(visitor.alloc(it));
+    pub fn walk_jsx_namespaced_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXNamespacedName<'a>) {
+        let kind = AstKind::JSXNamespacedName(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_identifier(&it.namespace);
@@ -3044,9 +3036,9 @@ pub mod walk {
     #[inline]
     pub fn walk_jsx_member_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &JSXMemberExpression<'a>,
+        it: &'a JSXMemberExpression<'a>,
     ) {
-        let kind = AstKind::JSXMemberExpression(visitor.alloc(it));
+        let kind = AstKind::JSXMemberExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_member_expression_object(&it.object);
@@ -3057,7 +3049,7 @@ pub mod walk {
     #[inline]
     pub fn walk_jsx_member_expression_object<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &JSXMemberExpressionObject<'a>,
+        it: &'a JSXMemberExpressionObject<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -3074,9 +3066,9 @@ pub mod walk {
     #[inline]
     pub fn walk_jsx_expression_container<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &JSXExpressionContainer<'a>,
+        it: &'a JSXExpressionContainer<'a>,
     ) {
-        let kind = AstKind::JSXExpressionContainer(visitor.alloc(it));
+        let kind = AstKind::JSXExpressionContainer(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_expression(&it.expression);
@@ -3084,7 +3076,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXExpression<'a>) {
+    pub fn walk_jsx_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXExpression<'a>) {
         // No `AstKind` for this type
         match it {
             JSXExpression::EmptyExpression(it) => visitor.visit_jsx_empty_expression(it),
@@ -3093,15 +3085,15 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_empty_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXEmptyExpression) {
-        let kind = AstKind::JSXEmptyExpression(visitor.alloc(it));
+    pub fn walk_jsx_empty_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXEmptyExpression) {
+        let kind = AstKind::JSXEmptyExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_jsx_attribute_item<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXAttributeItem<'a>) {
+    pub fn walk_jsx_attribute_item<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXAttributeItem<'a>) {
         // No `AstKind` for this type
         match it {
             JSXAttributeItem::Attribute(it) => visitor.visit_jsx_attribute(it),
@@ -3110,8 +3102,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_attribute<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXAttribute<'a>) {
-        let kind = AstKind::JSXAttribute(visitor.alloc(it));
+    pub fn walk_jsx_attribute<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXAttribute<'a>) {
+        let kind = AstKind::JSXAttribute(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_jsx_attribute_name(&it.name);
@@ -3124,9 +3116,9 @@ pub mod walk {
     #[inline]
     pub fn walk_jsx_spread_attribute<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &JSXSpreadAttribute<'a>,
+        it: &'a JSXSpreadAttribute<'a>,
     ) {
-        let kind = AstKind::JSXSpreadAttribute(visitor.alloc(it));
+        let kind = AstKind::JSXSpreadAttribute(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.argument);
@@ -3134,7 +3126,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_attribute_name<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXAttributeName<'a>) {
+    pub fn walk_jsx_attribute_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXAttributeName<'a>) {
         // No `AstKind` for this type
         match it {
             JSXAttributeName::Identifier(it) => visitor.visit_jsx_identifier(it),
@@ -3143,7 +3135,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_attribute_value<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXAttributeValue<'a>) {
+    pub fn walk_jsx_attribute_value<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXAttributeValue<'a>) {
         // No `AstKind` for this type
         match it {
             JSXAttributeValue::StringLiteral(it) => visitor.visit_string_literal(it),
@@ -3156,15 +3148,15 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXIdentifier<'a>) {
-        let kind = AstKind::JSXIdentifier(visitor.alloc(it));
+    pub fn walk_jsx_identifier<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXIdentifier<'a>) {
+        let kind = AstKind::JSXIdentifier(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_jsx_child<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXChild<'a>) {
+    pub fn walk_jsx_child<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXChild<'a>) {
         // No `AstKind` for this type
         match it {
             JSXChild::Text(it) => visitor.visit_jsx_text(it),
@@ -3176,8 +3168,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_spread_child<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXSpreadChild<'a>) {
-        let kind = AstKind::JSXSpreadChild(visitor.alloc(it));
+    pub fn walk_jsx_spread_child<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXSpreadChild<'a>) {
+        let kind = AstKind::JSXSpreadChild(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -3185,16 +3177,16 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_text<'a, V: Visit<'a>>(visitor: &mut V, it: &JSXText<'a>) {
-        let kind = AstKind::JSXText(visitor.alloc(it));
+    pub fn walk_jsx_text<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSXText<'a>) {
+        let kind = AstKind::JSXText(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_this_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &TSThisParameter<'a>) {
-        let kind = AstKind::TSThisParameter(visitor.alloc(it));
+    pub fn walk_ts_this_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSThisParameter<'a>) {
+        let kind = AstKind::TSThisParameter(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_span(&it.this_span);
@@ -3205,8 +3197,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_enum_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &TSEnumDeclaration<'a>) {
-        let kind = AstKind::TSEnumDeclaration(visitor.alloc(it));
+    pub fn walk_ts_enum_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSEnumDeclaration<'a>) {
+        let kind = AstKind::TSEnumDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_identifier(&it.id);
@@ -3215,8 +3207,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_enum_body<'a, V: Visit<'a>>(visitor: &mut V, it: &TSEnumBody<'a>) {
-        let kind = AstKind::TSEnumBody(visitor.alloc(it));
+    pub fn walk_ts_enum_body<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSEnumBody<'a>) {
+        let kind = AstKind::TSEnumBody(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -3226,8 +3218,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_enum_member<'a, V: Visit<'a>>(visitor: &mut V, it: &TSEnumMember<'a>) {
-        let kind = AstKind::TSEnumMember(visitor.alloc(it));
+    pub fn walk_ts_enum_member<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSEnumMember<'a>) {
+        let kind = AstKind::TSEnumMember(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_enum_member_name(&it.id);
@@ -3238,7 +3230,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_enum_member_name<'a, V: Visit<'a>>(visitor: &mut V, it: &TSEnumMemberName<'a>) {
+    pub fn walk_ts_enum_member_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSEnumMemberName<'a>) {
         // No `AstKind` for this type
         match it {
             TSEnumMemberName::Identifier(it) => visitor.visit_identifier_name(it),
@@ -3249,8 +3241,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_annotation<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeAnnotation<'a>) {
-        let kind = AstKind::TSTypeAnnotation(visitor.alloc(it));
+    pub fn walk_ts_type_annotation<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeAnnotation<'a>) {
+        let kind = AstKind::TSTypeAnnotation(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -3258,15 +3250,15 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_literal_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSLiteralType<'a>) {
-        let kind = AstKind::TSLiteralType(visitor.alloc(it));
+    pub fn walk_ts_literal_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSLiteralType<'a>) {
+        let kind = AstKind::TSLiteralType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_literal(&it.literal);
         visitor.leave_node(kind);
     }
 
-    pub fn walk_ts_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &TSLiteral<'a>) {
+    pub fn walk_ts_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSLiteral<'a>) {
         // No `AstKind` for this type
         match it {
             TSLiteral::BooleanLiteral(it) => visitor.visit_boolean_literal(it),
@@ -3278,7 +3270,7 @@ pub mod walk {
         }
     }
 
-    pub fn walk_ts_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSType<'a>) {
+    pub fn walk_ts_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSType<'a>) {
         // No `AstKind` for this type
         match it {
             TSType::TSAnyKeyword(it) => visitor.visit_ts_any_keyword(it),
@@ -3322,8 +3314,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_conditional_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSConditionalType<'a>) {
-        let kind = AstKind::TSConditionalType(visitor.alloc(it));
+    pub fn walk_ts_conditional_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSConditionalType<'a>) {
+        let kind = AstKind::TSConditionalType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.check_type);
@@ -3336,8 +3328,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_union_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSUnionType<'a>) {
-        let kind = AstKind::TSUnionType(visitor.alloc(it));
+    pub fn walk_ts_union_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSUnionType<'a>) {
+        let kind = AstKind::TSUnionType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_types(&it.types);
@@ -3347,9 +3339,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_intersection_type<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSIntersectionType<'a>,
+        it: &'a TSIntersectionType<'a>,
     ) {
-        let kind = AstKind::TSIntersectionType(visitor.alloc(it));
+        let kind = AstKind::TSIntersectionType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_types(&it.types);
@@ -3359,9 +3351,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_parenthesized_type<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSParenthesizedType<'a>,
+        it: &'a TSParenthesizedType<'a>,
     ) {
-        let kind = AstKind::TSParenthesizedType(visitor.alloc(it));
+        let kind = AstKind::TSParenthesizedType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -3369,8 +3361,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_operator<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeOperator<'a>) {
-        let kind = AstKind::TSTypeOperator(visitor.alloc(it));
+    pub fn walk_ts_type_operator<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeOperator<'a>) {
+        let kind = AstKind::TSTypeOperator(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -3378,8 +3370,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_array_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSArrayType<'a>) {
-        let kind = AstKind::TSArrayType(visitor.alloc(it));
+    pub fn walk_ts_array_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSArrayType<'a>) {
+        let kind = AstKind::TSArrayType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.element_type);
@@ -3389,9 +3381,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_indexed_access_type<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSIndexedAccessType<'a>,
+        it: &'a TSIndexedAccessType<'a>,
     ) {
-        let kind = AstKind::TSIndexedAccessType(visitor.alloc(it));
+        let kind = AstKind::TSIndexedAccessType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.object_type);
@@ -3400,8 +3392,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_tuple_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTupleType<'a>) {
-        let kind = AstKind::TSTupleType(visitor.alloc(it));
+    pub fn walk_ts_tuple_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTupleType<'a>) {
+        let kind = AstKind::TSTupleType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_tuple_elements(&it.element_types);
@@ -3411,9 +3403,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_named_tuple_member<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSNamedTupleMember<'a>,
+        it: &'a TSNamedTupleMember<'a>,
     ) {
-        let kind = AstKind::TSNamedTupleMember(visitor.alloc(it));
+        let kind = AstKind::TSNamedTupleMember(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_identifier_name(&it.label);
@@ -3422,8 +3414,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_optional_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSOptionalType<'a>) {
-        let kind = AstKind::TSOptionalType(visitor.alloc(it));
+    pub fn walk_ts_optional_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSOptionalType<'a>) {
+        let kind = AstKind::TSOptionalType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -3431,8 +3423,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_rest_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSRestType<'a>) {
-        let kind = AstKind::TSRestType(visitor.alloc(it));
+    pub fn walk_ts_rest_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSRestType<'a>) {
+        let kind = AstKind::TSRestType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -3440,7 +3432,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_tuple_element<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTupleElement<'a>) {
+    pub fn walk_ts_tuple_element<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTupleElement<'a>) {
         // No `AstKind` for this type
         match it {
             TSTupleElement::TSOptionalType(it) => visitor.visit_ts_optional_type(it),
@@ -3450,120 +3442,120 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_any_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSAnyKeyword) {
-        let kind = AstKind::TSAnyKeyword(visitor.alloc(it));
+    pub fn walk_ts_any_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSAnyKeyword) {
+        let kind = AstKind::TSAnyKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_string_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSStringKeyword) {
-        let kind = AstKind::TSStringKeyword(visitor.alloc(it));
+    pub fn walk_ts_string_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSStringKeyword) {
+        let kind = AstKind::TSStringKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_boolean_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSBooleanKeyword) {
-        let kind = AstKind::TSBooleanKeyword(visitor.alloc(it));
+    pub fn walk_ts_boolean_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSBooleanKeyword) {
+        let kind = AstKind::TSBooleanKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_number_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSNumberKeyword) {
-        let kind = AstKind::TSNumberKeyword(visitor.alloc(it));
+    pub fn walk_ts_number_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSNumberKeyword) {
+        let kind = AstKind::TSNumberKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_never_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSNeverKeyword) {
-        let kind = AstKind::TSNeverKeyword(visitor.alloc(it));
+    pub fn walk_ts_never_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSNeverKeyword) {
+        let kind = AstKind::TSNeverKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_intrinsic_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSIntrinsicKeyword) {
-        let kind = AstKind::TSIntrinsicKeyword(visitor.alloc(it));
+    pub fn walk_ts_intrinsic_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSIntrinsicKeyword) {
+        let kind = AstKind::TSIntrinsicKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_unknown_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSUnknownKeyword) {
-        let kind = AstKind::TSUnknownKeyword(visitor.alloc(it));
+    pub fn walk_ts_unknown_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSUnknownKeyword) {
+        let kind = AstKind::TSUnknownKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_null_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSNullKeyword) {
-        let kind = AstKind::TSNullKeyword(visitor.alloc(it));
+    pub fn walk_ts_null_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSNullKeyword) {
+        let kind = AstKind::TSNullKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_undefined_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSUndefinedKeyword) {
-        let kind = AstKind::TSUndefinedKeyword(visitor.alloc(it));
+    pub fn walk_ts_undefined_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSUndefinedKeyword) {
+        let kind = AstKind::TSUndefinedKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_void_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSVoidKeyword) {
-        let kind = AstKind::TSVoidKeyword(visitor.alloc(it));
+    pub fn walk_ts_void_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSVoidKeyword) {
+        let kind = AstKind::TSVoidKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_symbol_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSSymbolKeyword) {
-        let kind = AstKind::TSSymbolKeyword(visitor.alloc(it));
+    pub fn walk_ts_symbol_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSSymbolKeyword) {
+        let kind = AstKind::TSSymbolKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_this_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSThisType) {
-        let kind = AstKind::TSThisType(visitor.alloc(it));
+    pub fn walk_ts_this_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSThisType) {
+        let kind = AstKind::TSThisType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_object_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSObjectKeyword) {
-        let kind = AstKind::TSObjectKeyword(visitor.alloc(it));
+    pub fn walk_ts_object_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSObjectKeyword) {
+        let kind = AstKind::TSObjectKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_big_int_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &TSBigIntKeyword) {
-        let kind = AstKind::TSBigIntKeyword(visitor.alloc(it));
+    pub fn walk_ts_big_int_keyword<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSBigIntKeyword) {
+        let kind = AstKind::TSBigIntKeyword(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_ts_type_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeReference<'a>) {
-        let kind = AstKind::TSTypeReference(visitor.alloc(it));
+    pub fn walk_ts_type_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeReference<'a>) {
+        let kind = AstKind::TSTypeReference(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_name(&it.type_name);
@@ -3574,7 +3566,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_name<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeName<'a>) {
+    pub fn walk_ts_type_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeName<'a>) {
         // No `AstKind` for this type
         match it {
             TSTypeName::IdentifierReference(it) => visitor.visit_identifier_reference(it),
@@ -3584,8 +3576,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_qualified_name<'a, V: Visit<'a>>(visitor: &mut V, it: &TSQualifiedName<'a>) {
-        let kind = AstKind::TSQualifiedName(visitor.alloc(it));
+    pub fn walk_ts_qualified_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSQualifiedName<'a>) {
+        let kind = AstKind::TSQualifiedName(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_name(&it.left);
@@ -3596,9 +3588,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_type_parameter_instantiation<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSTypeParameterInstantiation<'a>,
+        it: &'a TSTypeParameterInstantiation<'a>,
     ) {
-        let kind = AstKind::TSTypeParameterInstantiation(visitor.alloc(it));
+        let kind = AstKind::TSTypeParameterInstantiation(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_types(&it.params);
@@ -3606,8 +3598,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeParameter<'a>) {
-        let kind = AstKind::TSTypeParameter(visitor.alloc(it));
+    pub fn walk_ts_type_parameter<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeParameter<'a>) {
+        let kind = AstKind::TSTypeParameter(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_identifier(&it.name);
@@ -3623,9 +3615,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_type_parameter_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSTypeParameterDeclaration<'a>,
+        it: &'a TSTypeParameterDeclaration<'a>,
     ) {
-        let kind = AstKind::TSTypeParameterDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSTypeParameterDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_parameters(&it.params);
@@ -3635,9 +3627,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_type_alias_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSTypeAliasDeclaration<'a>,
+        it: &'a TSTypeAliasDeclaration<'a>,
     ) {
-        let kind = AstKind::TSTypeAliasDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSTypeAliasDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_identifier(&it.id);
@@ -3651,8 +3643,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_class_implements<'a, V: Visit<'a>>(visitor: &mut V, it: &TSClassImplements<'a>) {
-        let kind = AstKind::TSClassImplements(visitor.alloc(it));
+    pub fn walk_ts_class_implements<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSClassImplements<'a>) {
+        let kind = AstKind::TSClassImplements(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_name(&it.expression);
@@ -3665,9 +3657,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_interface_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSInterfaceDeclaration<'a>,
+        it: &'a TSInterfaceDeclaration<'a>,
     ) {
-        let kind = AstKind::TSInterfaceDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSInterfaceDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_identifier(&it.id);
@@ -3682,8 +3674,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_interface_body<'a, V: Visit<'a>>(visitor: &mut V, it: &TSInterfaceBody<'a>) {
-        let kind = AstKind::TSInterfaceBody(visitor.alloc(it));
+    pub fn walk_ts_interface_body<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSInterfaceBody<'a>) {
+        let kind = AstKind::TSInterfaceBody(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_signatures(&it.body);
@@ -3693,9 +3685,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_property_signature<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSPropertySignature<'a>,
+        it: &'a TSPropertySignature<'a>,
     ) {
-        let kind = AstKind::TSPropertySignature(visitor.alloc(it));
+        let kind = AstKind::TSPropertySignature(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_property_key(&it.key);
@@ -3706,7 +3698,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_signature<'a, V: Visit<'a>>(visitor: &mut V, it: &TSSignature<'a>) {
+    pub fn walk_ts_signature<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSSignature<'a>) {
         // No `AstKind` for this type
         match it {
             TSSignature::TSIndexSignature(it) => visitor.visit_ts_index_signature(it),
@@ -3722,8 +3714,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_index_signature<'a, V: Visit<'a>>(visitor: &mut V, it: &TSIndexSignature<'a>) {
-        let kind = AstKind::TSIndexSignature(visitor.alloc(it));
+    pub fn walk_ts_index_signature<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSIndexSignature<'a>) {
+        let kind = AstKind::TSIndexSignature(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_index_signature_names(&it.parameters);
@@ -3734,9 +3726,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_call_signature_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSCallSignatureDeclaration<'a>,
+        it: &'a TSCallSignatureDeclaration<'a>,
     ) {
-        let kind = AstKind::TSCallSignatureDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSCallSignatureDeclaration(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -3754,8 +3746,8 @@ pub mod walk {
         visitor.leave_node(kind);
     }
 
-    pub fn walk_ts_method_signature<'a, V: Visit<'a>>(visitor: &mut V, it: &TSMethodSignature<'a>) {
-        let kind = AstKind::TSMethodSignature(visitor.alloc(it));
+    pub fn walk_ts_method_signature<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSMethodSignature<'a>) {
+        let kind = AstKind::TSMethodSignature(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -3777,9 +3769,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_construct_signature_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSConstructSignatureDeclaration<'a>,
+        it: &'a TSConstructSignatureDeclaration<'a>,
     ) {
-        let kind = AstKind::TSConstructSignatureDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSConstructSignatureDeclaration(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -3797,9 +3789,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_index_signature_name<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSIndexSignatureName<'a>,
+        it: &'a TSIndexSignatureName<'a>,
     ) {
-        let kind = AstKind::TSIndexSignatureName(visitor.alloc(it));
+        let kind = AstKind::TSIndexSignatureName(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_annotation(&it.type_annotation);
@@ -3809,9 +3801,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_interface_heritage<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSInterfaceHeritage<'a>,
+        it: &'a TSInterfaceHeritage<'a>,
     ) {
-        let kind = AstKind::TSInterfaceHeritage(visitor.alloc(it));
+        let kind = AstKind::TSInterfaceHeritage(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -3822,8 +3814,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_predicate<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypePredicate<'a>) {
-        let kind = AstKind::TSTypePredicate(visitor.alloc(it));
+    pub fn walk_ts_type_predicate<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypePredicate<'a>) {
+        let kind = AstKind::TSTypePredicate(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_predicate_name(&it.parameter_name);
@@ -3836,7 +3828,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_type_predicate_name<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSTypePredicateName<'a>,
+        it: &'a TSTypePredicateName<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -3848,9 +3840,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_module_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSModuleDeclaration<'a>,
+        it: &'a TSModuleDeclaration<'a>,
     ) {
-        let kind = AstKind::TSModuleDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSModuleDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_module_declaration_name(&it.id);
@@ -3874,7 +3866,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_module_declaration_name<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSModuleDeclarationName<'a>,
+        it: &'a TSModuleDeclarationName<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -3886,7 +3878,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_module_declaration_body<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSModuleDeclarationBody<'a>,
+        it: &'a TSModuleDeclarationBody<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -3900,9 +3892,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_global_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSGlobalDeclaration<'a>,
+        it: &'a TSGlobalDeclaration<'a>,
     ) {
-        let kind = AstKind::TSGlobalDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSGlobalDeclaration(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::TsModuleBlock, &it.scope_id);
         visitor.visit_span(&it.span);
@@ -3913,8 +3905,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_module_block<'a, V: Visit<'a>>(visitor: &mut V, it: &TSModuleBlock<'a>) {
-        let kind = AstKind::TSModuleBlock(visitor.alloc(it));
+    pub fn walk_ts_module_block<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSModuleBlock<'a>) {
+        let kind = AstKind::TSModuleBlock(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_directives(&it.directives);
@@ -3923,8 +3915,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeLiteral<'a>) {
-        let kind = AstKind::TSTypeLiteral(visitor.alloc(it));
+    pub fn walk_ts_type_literal<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeLiteral<'a>) {
+        let kind = AstKind::TSTypeLiteral(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_signatures(&it.members);
@@ -3932,8 +3924,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_infer_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSInferType<'a>) {
-        let kind = AstKind::TSInferType(visitor.alloc(it));
+    pub fn walk_ts_infer_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSInferType<'a>) {
+        let kind = AstKind::TSInferType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_parameter(&it.type_parameter);
@@ -3941,8 +3933,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_query<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeQuery<'a>) {
-        let kind = AstKind::TSTypeQuery(visitor.alloc(it));
+    pub fn walk_ts_type_query<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeQuery<'a>) {
+        let kind = AstKind::TSTypeQuery(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type_query_expr_name(&it.expr_name);
@@ -3955,7 +3947,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_type_query_expr_name<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSTypeQueryExprName<'a>,
+        it: &'a TSTypeQueryExprName<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -3967,8 +3959,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_import_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSImportType<'a>) {
-        let kind = AstKind::TSImportType(visitor.alloc(it));
+    pub fn walk_ts_import_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSImportType<'a>) {
+        let kind = AstKind::TSImportType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_string_literal(&it.source);
@@ -3987,7 +3979,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_import_type_qualifier<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSImportTypeQualifier<'a>,
+        it: &'a TSImportTypeQualifier<'a>,
     ) {
         // No `AstKind` for this type
         match it {
@@ -4001,9 +3993,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_import_type_qualified_name<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSImportTypeQualifiedName<'a>,
+        it: &'a TSImportTypeQualifiedName<'a>,
     ) {
-        let kind = AstKind::TSImportTypeQualifiedName(visitor.alloc(it));
+        let kind = AstKind::TSImportTypeQualifiedName(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_import_type_qualifier(&it.left);
@@ -4012,8 +4004,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_function_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSFunctionType<'a>) {
-        let kind = AstKind::TSFunctionType(visitor.alloc(it));
+    pub fn walk_ts_function_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSFunctionType<'a>) {
+        let kind = AstKind::TSFunctionType(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -4030,8 +4022,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_constructor_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSConstructorType<'a>) {
-        let kind = AstKind::TSConstructorType(visitor.alloc(it));
+    pub fn walk_ts_constructor_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSConstructorType<'a>) {
+        let kind = AstKind::TSConstructorType(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -4045,8 +4037,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_mapped_type<'a, V: Visit<'a>>(visitor: &mut V, it: &TSMappedType<'a>) {
-        let kind = AstKind::TSMappedType(visitor.alloc(it));
+    pub fn walk_ts_mapped_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSMappedType<'a>) {
+        let kind = AstKind::TSMappedType(it);
         visitor.enter_node(kind);
         visitor.enter_scope(ScopeFlags::empty(), &it.scope_id);
         visitor.visit_span(&it.span);
@@ -4065,9 +4057,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_template_literal_type<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSTemplateLiteralType<'a>,
+        it: &'a TSTemplateLiteralType<'a>,
     ) {
-        let kind = AstKind::TSTemplateLiteralType(visitor.alloc(it));
+        let kind = AstKind::TSTemplateLiteralType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_template_elements(&it.quasis);
@@ -4076,8 +4068,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_as_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &TSAsExpression<'a>) {
-        let kind = AstKind::TSAsExpression(visitor.alloc(it));
+    pub fn walk_ts_as_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSAsExpression<'a>) {
+        let kind = AstKind::TSAsExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -4088,9 +4080,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_satisfies_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSSatisfiesExpression<'a>,
+        it: &'a TSSatisfiesExpression<'a>,
     ) {
-        let kind = AstKind::TSSatisfiesExpression(visitor.alloc(it));
+        let kind = AstKind::TSSatisfiesExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -4099,8 +4091,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_type_assertion<'a, V: Visit<'a>>(visitor: &mut V, it: &TSTypeAssertion<'a>) {
-        let kind = AstKind::TSTypeAssertion(visitor.alloc(it));
+    pub fn walk_ts_type_assertion<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeAssertion<'a>) {
+        let kind = AstKind::TSTypeAssertion(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -4111,9 +4103,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_import_equals_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSImportEqualsDeclaration<'a>,
+        it: &'a TSImportEqualsDeclaration<'a>,
     ) {
-        let kind = AstKind::TSImportEqualsDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSImportEqualsDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_binding_identifier(&it.id);
@@ -4122,7 +4114,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_module_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &TSModuleReference<'a>) {
+    pub fn walk_ts_module_reference<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSModuleReference<'a>) {
         // No `AstKind` for this type
         match it {
             TSModuleReference::ExternalModuleReference(it) => {
@@ -4136,9 +4128,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_external_module_reference<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSExternalModuleReference<'a>,
+        it: &'a TSExternalModuleReference<'a>,
     ) {
-        let kind = AstKind::TSExternalModuleReference(visitor.alloc(it));
+        let kind = AstKind::TSExternalModuleReference(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_string_literal(&it.expression);
@@ -4148,9 +4140,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_non_null_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSNonNullExpression<'a>,
+        it: &'a TSNonNullExpression<'a>,
     ) {
-        let kind = AstKind::TSNonNullExpression(visitor.alloc(it));
+        let kind = AstKind::TSNonNullExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -4158,8 +4150,8 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_decorator<'a, V: Visit<'a>>(visitor: &mut V, it: &Decorator<'a>) {
-        let kind = AstKind::Decorator(visitor.alloc(it));
+    pub fn walk_decorator<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Decorator<'a>) {
+        let kind = AstKind::Decorator(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -4169,9 +4161,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_export_assignment<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSExportAssignment<'a>,
+        it: &'a TSExportAssignment<'a>,
     ) {
-        let kind = AstKind::TSExportAssignment(visitor.alloc(it));
+        let kind = AstKind::TSExportAssignment(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -4181,9 +4173,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_namespace_export_declaration<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSNamespaceExportDeclaration<'a>,
+        it: &'a TSNamespaceExportDeclaration<'a>,
     ) {
-        let kind = AstKind::TSNamespaceExportDeclaration(visitor.alloc(it));
+        let kind = AstKind::TSNamespaceExportDeclaration(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_identifier_name(&it.id);
@@ -4193,9 +4185,9 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_instantiation_expression<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &TSInstantiationExpression<'a>,
+        it: &'a TSInstantiationExpression<'a>,
     ) {
-        let kind = AstKind::TSInstantiationExpression(visitor.alloc(it));
+        let kind = AstKind::TSInstantiationExpression(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_expression(&it.expression);
@@ -4206,9 +4198,9 @@ pub mod walk {
     #[inline]
     pub fn walk_js_doc_nullable_type<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &JSDocNullableType<'a>,
+        it: &'a JSDocNullableType<'a>,
     ) {
-        let kind = AstKind::JSDocNullableType(visitor.alloc(it));
+        let kind = AstKind::JSDocNullableType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -4218,9 +4210,9 @@ pub mod walk {
     #[inline]
     pub fn walk_js_doc_non_nullable_type<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &JSDocNonNullableType<'a>,
+        it: &'a JSDocNonNullableType<'a>,
     ) {
-        let kind = AstKind::JSDocNonNullableType(visitor.alloc(it));
+        let kind = AstKind::JSDocNonNullableType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.visit_ts_type(&it.type_annotation);
@@ -4228,27 +4220,27 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_js_doc_unknown_type<'a, V: Visit<'a>>(visitor: &mut V, it: &JSDocUnknownType) {
-        let kind = AstKind::JSDocUnknownType(visitor.alloc(it));
+    pub fn walk_js_doc_unknown_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a JSDocUnknownType) {
+        let kind = AstKind::JSDocUnknownType(it);
         visitor.enter_node(kind);
         visitor.visit_span(&it.span);
         visitor.leave_node(kind);
     }
 
     #[inline]
-    pub fn walk_span<'a, V: Visit<'a>>(visitor: &mut V, it: &Span) {
+    pub fn walk_span<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Span) {
         // No `AstKind` for this type
     }
 
     #[inline]
-    pub fn walk_directives<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, Directive<'a>>) {
+    pub fn walk_directives<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, Directive<'a>>) {
         for el in it {
             visitor.visit_directive(el);
         }
     }
 
     #[inline]
-    pub fn walk_statements<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, Statement<'a>>) {
+    pub fn walk_statements<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, Statement<'a>>) {
         for el in it {
             visitor.visit_statement(el);
         }
@@ -4257,7 +4249,7 @@ pub mod walk {
     #[inline]
     pub fn walk_array_expression_elements<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, ArrayExpressionElement<'a>>,
+        it: &'a Vec<'a, ArrayExpressionElement<'a>>,
     ) {
         for el in it {
             visitor.visit_array_expression_element(el);
@@ -4267,7 +4259,7 @@ pub mod walk {
     #[inline]
     pub fn walk_object_property_kinds<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, ObjectPropertyKind<'a>>,
+        it: &'a Vec<'a, ObjectPropertyKind<'a>>,
     ) {
         for el in it {
             visitor.visit_object_property_kind(el);
@@ -4277,7 +4269,7 @@ pub mod walk {
     #[inline]
     pub fn walk_template_elements<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, TemplateElement<'a>>,
+        it: &'a Vec<'a, TemplateElement<'a>>,
     ) {
         for el in it {
             visitor.visit_template_element(el);
@@ -4285,14 +4277,14 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_expressions<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, Expression<'a>>) {
+    pub fn walk_expressions<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, Expression<'a>>) {
         for el in it {
             visitor.visit_expression(el);
         }
     }
 
     #[inline]
-    pub fn walk_arguments<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, Argument<'a>>) {
+    pub fn walk_arguments<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, Argument<'a>>) {
         for el in it {
             match el {
                 oxc_ast::ast::Argument::SpreadElement(spread) => {
@@ -4308,7 +4300,7 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target_properties<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, AssignmentTargetProperty<'a>>,
+        it: &'a Vec<'a, AssignmentTargetProperty<'a>>,
     ) {
         for el in it {
             visitor.visit_assignment_target_property(el);
@@ -4318,7 +4310,7 @@ pub mod walk {
     #[inline]
     pub fn walk_variable_declarators<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, VariableDeclarator<'a>>,
+        it: &'a Vec<'a, VariableDeclarator<'a>>,
     ) {
         for el in it {
             visitor.visit_variable_declarator(el);
@@ -4326,7 +4318,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_switch_cases<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, SwitchCase<'a>>) {
+    pub fn walk_switch_cases<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, SwitchCase<'a>>) {
         for el in it {
             visitor.visit_switch_case(el);
         }
@@ -4335,7 +4327,7 @@ pub mod walk {
     #[inline]
     pub fn walk_binding_properties<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, BindingProperty<'a>>,
+        it: &'a Vec<'a, BindingProperty<'a>>,
     ) {
         for el in it {
             visitor.visit_binding_property(el);
@@ -4345,7 +4337,7 @@ pub mod walk {
     #[inline]
     pub fn walk_formal_parameter_list<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, FormalParameter<'a>>,
+        it: &'a Vec<'a, FormalParameter<'a>>,
     ) {
         for el in it {
             visitor.visit_formal_parameter(el);
@@ -4353,7 +4345,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_decorators<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, Decorator<'a>>) {
+    pub fn walk_decorators<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, Decorator<'a>>) {
         for el in it {
             visitor.visit_decorator(el);
         }
@@ -4362,7 +4354,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_class_implements_list<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, TSClassImplements<'a>>,
+        it: &'a Vec<'a, TSClassImplements<'a>>,
     ) {
         for el in it {
             visitor.visit_ts_class_implements(el);
@@ -4370,7 +4362,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_class_elements<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, ClassElement<'a>>) {
+    pub fn walk_class_elements<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, ClassElement<'a>>) {
         for el in it {
             visitor.visit_class_element(el);
         }
@@ -4379,7 +4371,7 @@ pub mod walk {
     #[inline]
     pub fn walk_import_declaration_specifiers<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, ImportDeclarationSpecifier<'a>>,
+        it: &'a Vec<'a, ImportDeclarationSpecifier<'a>>,
     ) {
         for el in it {
             visitor.visit_import_declaration_specifier(el);
@@ -4389,7 +4381,7 @@ pub mod walk {
     #[inline]
     pub fn walk_import_attributes<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, ImportAttribute<'a>>,
+        it: &'a Vec<'a, ImportAttribute<'a>>,
     ) {
         for el in it {
             visitor.visit_import_attribute(el);
@@ -4399,7 +4391,7 @@ pub mod walk {
     #[inline]
     pub fn walk_export_specifiers<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, ExportSpecifier<'a>>,
+        it: &'a Vec<'a, ExportSpecifier<'a>>,
     ) {
         for el in it {
             visitor.visit_export_specifier(el);
@@ -4407,7 +4399,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_jsx_children<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, JSXChild<'a>>) {
+    pub fn walk_jsx_children<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, JSXChild<'a>>) {
         for el in it {
             visitor.visit_jsx_child(el);
         }
@@ -4416,7 +4408,7 @@ pub mod walk {
     #[inline]
     pub fn walk_jsx_attribute_items<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, JSXAttributeItem<'a>>,
+        it: &'a Vec<'a, JSXAttributeItem<'a>>,
     ) {
         for el in it {
             visitor.visit_jsx_attribute_item(el);
@@ -4424,14 +4416,14 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_enum_members<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, TSEnumMember<'a>>) {
+    pub fn walk_ts_enum_members<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, TSEnumMember<'a>>) {
         for el in it {
             visitor.visit_ts_enum_member(el);
         }
     }
 
     #[inline]
-    pub fn walk_ts_types<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, TSType<'a>>) {
+    pub fn walk_ts_types<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, TSType<'a>>) {
         for el in it {
             visitor.visit_ts_type(el);
         }
@@ -4440,7 +4432,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_tuple_elements<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, TSTupleElement<'a>>,
+        it: &'a Vec<'a, TSTupleElement<'a>>,
     ) {
         for el in it {
             visitor.visit_ts_tuple_element(el);
@@ -4450,7 +4442,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_type_parameters<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, TSTypeParameter<'a>>,
+        it: &'a Vec<'a, TSTypeParameter<'a>>,
     ) {
         for el in it {
             visitor.visit_ts_type_parameter(el);
@@ -4460,7 +4452,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_interface_heritages<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, TSInterfaceHeritage<'a>>,
+        it: &'a Vec<'a, TSInterfaceHeritage<'a>>,
     ) {
         for el in it {
             visitor.visit_ts_interface_heritage(el);
@@ -4468,7 +4460,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_ts_signatures<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, TSSignature<'a>>) {
+    pub fn walk_ts_signatures<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, TSSignature<'a>>) {
         for el in it {
             visitor.visit_ts_signature(el);
         }
@@ -4477,7 +4469,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_index_signature_names<'a, V: Visit<'a>>(
         visitor: &mut V,
-        it: &Vec<'a, TSIndexSignatureName<'a>>,
+        it: &'a Vec<'a, TSIndexSignatureName<'a>>,
     ) {
         for el in it {
             visitor.visit_ts_index_signature_name(el);
@@ -4485,7 +4477,7 @@ pub mod walk {
     }
 
     #[inline]
-    pub fn walk_spans<'a, V: Visit<'a>>(visitor: &mut V, it: &Vec<'a, Span>) {
+    pub fn walk_spans<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Vec<'a, Span>) {
         for el in it {
             visitor.visit_span(el);
         }

@@ -41,12 +41,6 @@ repository = "https://github.com/oxc-project/oxc"
 [features]
 conformance = []
 default = []
-serialize = [
-    "oxc_allocator/serialize",
-    "oxc_ast/serialize",
-    "oxc_span/serialize",
-    "oxc_syntax/serialize",
-]
 
 [lib]
 name = "oxc_ast_visit"
