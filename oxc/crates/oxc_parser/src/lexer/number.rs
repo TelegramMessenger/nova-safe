@@ -6,11 +6,9 @@
 use std::borrow::Cow;
 
 use cow_utils::CowUtils;
-use num_bigint::BigInt;
-use num_traits::Num;
 
 use oxc_allocator::Allocator;
-use oxc_span::{Str, format_str};
+use oxc_span::Str;
 
 use super::kind::Kind;
 
@@ -410,11 +408,53 @@ pub fn parse_big_int<'a>(
 
     let s = &s[2..];
 
-    // NOTE: BigInt::from_bytes does a UTF8 check, then uses from_str_radix under the hood.
-    // We already have a string, so we can just use that directly.
-    // Lexer already checked `s` represents a valid BigInt, so `unwrap` cannot fail.
-    let bigint = BigInt::from_str_radix(s, radix).unwrap();
-    format_str!(allocator, "{bigint}")
+    // Lexer already checked that `s` is a non-empty run of `radix` digits.
+    Str::from_cow_in(&Cow::Owned(power_of_two_radix_to_decimal(s, radix)), allocator)
+}
+
+/// The decimal digits of the non-negative integer that `digits` writes in `radix` (2, 8 or 16).
+///
+/// Little-endian limbs in base 10^18; each step multiplies them by `radix^k` (at most 2^60) and
+/// adds the next `k` digits, so a limb times the multiplier plus the carry stays below 2^121.
+fn power_of_two_radix_to_decimal(digits: &str, radix: u32) -> String {
+    use std::fmt::Write;
+    const BASE: u128 = 1_000_000_000_000_000_000;
+    let bits_per_digit = radix.trailing_zeros();
+    let chunk = (60 / bits_per_digit) as usize;
+    let bytes = digits.as_bytes();
+    let mut limbs: Vec<u64> = vec![0];
+    let mut pos = 0;
+    let mut step = match bytes.len() % chunk {
+        0 => chunk,
+        first => first,
+    };
+    while pos < bytes.len() {
+        let mut value: u64 = 0;
+        for &b in &bytes[pos..pos + step] {
+            let digit = char::from(b).to_digit(radix).unwrap();
+            value = (value << bits_per_digit) | u64::from(digit);
+        }
+        let multiplier = 1u128 << (bits_per_digit as usize * step);
+        let mut carry = u128::from(value);
+        for limb in &mut limbs {
+            let v = u128::from(*limb) * multiplier + carry;
+            *limb = (v % BASE) as u64;
+            carry = v / BASE;
+        }
+        while carry > 0 {
+            limbs.push((carry % BASE) as u64);
+            carry /= BASE;
+        }
+        pos += step;
+        step = chunk;
+    }
+    let mut out = String::with_capacity(limbs.len() * 18);
+    let mut rev = limbs.iter().rev();
+    write!(out, "{}", rev.next().unwrap()).unwrap();
+    for limb in rev {
+        write!(out, "{limb:018}").unwrap();
+    }
+    out
 }
 
 #[cfg(test)]

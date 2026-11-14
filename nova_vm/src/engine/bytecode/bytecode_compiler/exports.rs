@@ -8,6 +8,8 @@ use std::ops::ControlFlow;
 
 use oxc_ast::ast;
 
+use super::CompileExpressionVariants;
+
 use crate::{
     ecmascript::BUILTIN_STRING_MEMORY,
     engine::{
@@ -72,10 +74,18 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
             ast::ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => unreachable!(),
             _ => {
                 // ExportDeclaration : export default AssignmentExpression ;
-                let expr = self.declaration.as_expression().unwrap();
                 // 1. If IsAnonymousFunctionDefinition(AssignmentExpression) is
                 //    true, then
-                if is_anonymous_function_definition(expr) {
+                let is_anonymous_function_definition = match &self.declaration {
+                    ast::ExportDefaultDeclarationKind::ArrowFunctionExpression(_) => true,
+                    ast::ExportDefaultDeclarationKind::FunctionExpression(f) => f.id.is_none(),
+                    ast::ExportDefaultDeclarationKind::ClassExpression(f) => f.id.is_none(),
+                    ast::ExportDefaultDeclarationKind::ParenthesizedExpression(x) => {
+                        is_anonymous_function_definition(&x.expression)
+                    }
+                    _ => false,
+                };
+                if is_anonymous_function_definition {
                     // a. Let value be ? NamedEvaluation of
                     //    AssignmentExpression with argument "default".
                     ctx.name_identifier = Some(NamedEvaluationParameter::Result);
@@ -87,7 +97,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
                 // 2. Else,
                 // a. Let rhs be ? Evaluation of AssignmentExpression.
                 // b. Let value be ? GetValue(rhs).
-                value_result_to_statement_result(expr.compile(ctx).and_then(|r| r.get_value(ctx)))?;
+                value_result_to_statement_result(
+                    self.declaration.compile_expression(ctx).and_then(|r| r.get_value(ctx)),
+                )?;
             }
         }
         ctx.add_instruction_with_identifier(

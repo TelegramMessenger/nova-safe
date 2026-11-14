@@ -1,6 +1,7 @@
 //! String types for oxc.
 //!
 //! This crate provides [`Str`], [`Ident`], and [`CompactStr`] types for efficient string handling.
+#![forbid(unsafe_code)]
 
 mod compact_str;
 pub mod ident;

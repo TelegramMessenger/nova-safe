@@ -18,6 +18,8 @@ use crate::{
     },
 };
 use oxc_ast::ast::{self, MethodDefinitionKind};
+
+use super::CompileExpressionVariants;
 use oxc_ecmascript::{BoundNames, PrivateBoundIdentifiers, PropName};
 
 use super::is_anonymous_function_definition;
@@ -512,7 +514,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                         match compile_computed_field_name(
                             ctx,
                             computed_field_id,
-                            prop.key.as_expression().unwrap(),
+                            &prop.key,
                             prop.value.as_ref(),
                         ) {
                             Ok(field) => field,
@@ -831,7 +833,7 @@ enum PropertyInitializerField<'a, 'gc> {
 fn compile_computed_field_name<'s, 'gc>(
     ctx: &mut CompileContext<'_, 's, 'gc, '_>,
     next_computed_key_id: u32,
-    key: &'s ast::Expression<'s>,
+    key: &'s ast::PropertyKey<'s>,
     value: Option<&'s ast::Expression<'s>>,
 ) -> Result<PropertyInitializerField<'s, 'gc>, ExpressionError> {
     let computed_key_id = ctx.create_string_from_owned(format!("^{next_computed_key_id}"));
@@ -843,7 +845,7 @@ fn compile_computed_field_name<'s, 'gc>(
     // ### ComputedPropertyName : [ AssignmentExpression ]
     // 1. Let exprValue be ? Evaluation of AssignmentExpression.
     // 2. Let propName be ? GetValue(exprValue).
-    key.compile(ctx)?.get_value(ctx)?;
+    key.compile_expression(ctx)?.get_value(ctx)?;
 
     // TODO: To be fully compliant, we need to perform ToPropertyKey here as
     // otherwise we change the order of errors thrown.
@@ -923,8 +925,7 @@ fn define_method<'s>(
         ctx.add_instruction_with_constant(Instruction::LoadConstant, prop_name);
     } else {
         // Computed method name.
-        let key = class_element.key.as_expression().unwrap();
-        key.compile(ctx)?.get_value(ctx)?;
+        class_element.key.compile_expression(ctx)?.get_value(ctx)?;
 
         ctx.add_instruction(Instruction::Load);
     };

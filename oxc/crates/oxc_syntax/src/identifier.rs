@@ -184,12 +184,8 @@ fn is_identifier_name_impl<const PATCHED: bool>(name: &str) -> bool {
             if bytes_remaining >= 8 {
                 // Process block of 8 bytes.
                 // Check that next 8 bytes are all ASCII.
-                // SAFETY: We checked above that there are at least 8 bytes to read starting at `index`
-                #[expect(clippy::cast_ptr_alignment)]
-                let next8_as_u64 = unsafe {
-                    let ptr = bytes.as_ptr().add(index).cast::<u64>();
-                    ptr.read_unaligned()
-                };
+                let next8: [u8; 8] = bytes[index..index + 8].try_into().unwrap();
+                let next8_as_u64 = u64::from_ne_bytes(next8);
                 let high_bits = next8_as_u64 & 0x8080_8080_8080_8080;
                 if high_bits != 0 {
                     // Some chars in this block are non-ASCII
@@ -207,12 +203,8 @@ fn is_identifier_name_impl<const PATCHED: bool>(name: &str) -> bool {
             } else if bytes_remaining >= 4 {
                 // Process block of 4 bytes.
                 // Check that next 4 bytes are all ASCII.
-                // SAFETY: We checked above that there are at least 4 bytes to read starting at `index`
-                #[expect(clippy::cast_ptr_alignment)]
-                let next4_as_u32 = unsafe {
-                    let ptr = bytes.as_ptr().add(index).cast::<u32>();
-                    ptr.read_unaligned()
-                };
+                let next4: [u8; 4] = bytes[index..index + 4].try_into().unwrap();
+                let next4_as_u32 = u32::from_ne_bytes(next4);
                 let high_bits = next4_as_u32 & 0x8080_8080;
                 if high_bits != 0 {
                     // Some chars in this block are non-ASCII

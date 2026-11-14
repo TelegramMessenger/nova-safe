@@ -444,9 +444,9 @@ pub fn check_string_literal(lit: &StringLiteral, ctx: &SemanticBuilder<'_>) {
                     backslash_index,
                     raw_bytes.len()
                 );
-                // SAFETY: We search `haystack` which excludes the last byte, so any backslash
+                // We search `haystack` which excludes the last byte, so any backslash
                 // found is at index < raw_len - 1, meaning backslash_index + 1 < raw_len.
-                let next_byte = unsafe { *raw_bytes.get_unchecked(backslash_index + 1) };
+                let next_byte = raw_bytes[backslash_index + 1];
                 match next_byte {
                     b'\\' => {
                         // Escaped backslash - skip the next backslash in memchr results

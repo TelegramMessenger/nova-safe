@@ -117,10 +117,6 @@ pub trait Visit<'a>: Sized {
         walk_template_element(self, it);
     }
 
-    #[inline]
-    fn visit_member_expression(&mut self, it: &'a MemberExpression<'a>) {
-        walk_member_expression(self, it);
-    }
 
     #[inline]
     fn visit_computed_member_expression(&mut self, it: &'a ComputedMemberExpression<'a>) {
@@ -207,10 +203,6 @@ pub trait Visit<'a>: Sized {
         walk_simple_assignment_target(self, it);
     }
 
-    #[inline]
-    fn visit_assignment_target_pattern(&mut self, it: &'a AssignmentTargetPattern<'a>) {
-        walk_assignment_target_pattern(self, it);
-    }
 
     #[inline]
     fn visit_array_assignment_target(&mut self, it: &'a ArrayAssignmentTarget<'a>) {
@@ -533,10 +525,6 @@ pub trait Visit<'a>: Sized {
         walk_static_block(self, it);
     }
 
-    #[inline]
-    fn visit_module_declaration(&mut self, it: &'a ModuleDeclaration<'a>) {
-        walk_module_declaration(self, it);
-    }
 
     #[inline]
     fn visit_accessor_property(&mut self, it: &'a AccessorProperty<'a>) {
@@ -1343,6 +1331,238 @@ pub trait Visit<'a>: Sized {
 pub mod walk {
     use super::*;
 
+    macro_rules! walk_expression_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::BooleanLiteral(it) => $visitor.visit_boolean_literal(it),
+                $ty::NullLiteral(it) => $visitor.visit_null_literal(it),
+                $ty::NumericLiteral(it) => $visitor.visit_numeric_literal(it),
+                $ty::BigIntLiteral(it) => $visitor.visit_big_int_literal(it),
+                $ty::RegExpLiteral(it) => $visitor.visit_reg_exp_literal(it),
+                $ty::StringLiteral(it) => $visitor.visit_string_literal(it),
+                $ty::TemplateLiteral(it) => $visitor.visit_template_literal(it),
+                $ty::Identifier(it) => $visitor.visit_identifier_reference(it),
+                $ty::MetaProperty(it) => $visitor.visit_meta_property(it),
+                $ty::Super(it) => $visitor.visit_super(it),
+                $ty::ArrayExpression(it) => $visitor.visit_array_expression(it),
+                $ty::ArrowFunctionExpression(it) => $visitor.visit_arrow_function_expression(it),
+                $ty::AssignmentExpression(it) => $visitor.visit_assignment_expression(it),
+                $ty::AwaitExpression(it) => $visitor.visit_await_expression(it),
+                $ty::BinaryExpression(it) => $visitor.visit_binary_expression(it),
+                $ty::CallExpression(it) => $visitor.visit_call_expression(it),
+                $ty::ChainExpression(it) => $visitor.visit_chain_expression(it),
+                $ty::ClassExpression(it) => $visitor.visit_class(it),
+                $ty::ConditionalExpression(it) => $visitor.visit_conditional_expression(it),
+                $ty::FunctionExpression(it) => {
+                    let flags = ScopeFlags::Function;
+                    $visitor.visit_function(it, flags)
+                }
+                $ty::ImportExpression(it) => $visitor.visit_import_expression(it),
+                $ty::LogicalExpression(it) => $visitor.visit_logical_expression(it),
+                $ty::NewExpression(it) => $visitor.visit_new_expression(it),
+                $ty::ObjectExpression(it) => $visitor.visit_object_expression(it),
+                $ty::ParenthesizedExpression(it) => $visitor.visit_parenthesized_expression(it),
+                $ty::SequenceExpression(it) => $visitor.visit_sequence_expression(it),
+                $ty::TaggedTemplateExpression(it) => {
+                    $visitor.visit_tagged_template_expression(it)
+                }
+                $ty::ThisExpression(it) => $visitor.visit_this_expression(it),
+                $ty::UnaryExpression(it) => $visitor.visit_unary_expression(it),
+                $ty::UpdateExpression(it) => $visitor.visit_update_expression(it),
+                $ty::YieldExpression(it) => $visitor.visit_yield_expression(it),
+                $ty::PrivateInExpression(it) => $visitor.visit_private_in_expression(it),
+                $ty::JSXElement(it) => $visitor.visit_jsx_element(it),
+                $ty::JSXFragment(it) => $visitor.visit_jsx_fragment(it),
+                $ty::TSAsExpression(it) => $visitor.visit_ts_as_expression(it),
+                $ty::TSSatisfiesExpression(it) => $visitor.visit_ts_satisfies_expression(it),
+                $ty::TSTypeAssertion(it) => $visitor.visit_ts_type_assertion(it),
+                $ty::TSNonNullExpression(it) => $visitor.visit_ts_non_null_expression(it),
+                $ty::TSInstantiationExpression(it) => {
+                    $visitor.visit_ts_instantiation_expression(it)
+                }
+                $ty::V8IntrinsicExpression(it) => $visitor.visit_v8_intrinsic_expression(it),
+                match_member_expression!($ty) => {
+                    walk_member_expression_variants!($visitor, $ty, $it)
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_member_expression_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::ComputedMemberExpression(it) => {
+                    $visitor.visit_computed_member_expression(it)
+                }
+                $ty::StaticMemberExpression(it) => {
+                    $visitor.visit_static_member_expression(it)
+                }
+                $ty::PrivateFieldExpression(it) => {
+                    $visitor.visit_private_field_expression(it)
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_simple_assignment_target_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::AssignmentTargetIdentifier(it) => {
+                    $visitor.visit_identifier_reference(it)
+                }
+                $ty::TSAsExpression(it) => $visitor.visit_ts_as_expression(it),
+                $ty::TSSatisfiesExpression(it) => {
+                    $visitor.visit_ts_satisfies_expression(it)
+                }
+                $ty::TSNonNullExpression(it) => {
+                    $visitor.visit_ts_non_null_expression(it)
+                }
+                $ty::TSTypeAssertion(it) => $visitor.visit_ts_type_assertion(it),
+                match_member_expression!($ty) => {
+                    walk_member_expression_variants!($visitor, $ty, $it)
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_assignment_target_pattern_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::ArrayAssignmentTarget(it) => {
+                    $visitor.visit_array_assignment_target(it)
+                }
+                $ty::ObjectAssignmentTarget(it) => {
+                    $visitor.visit_object_assignment_target(it)
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_assignment_target_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                match_simple_assignment_target!($ty) => {
+                    walk_simple_assignment_target_variants!($visitor, $ty, $it)
+                }
+                match_assignment_target_pattern!($ty) => {
+                    walk_assignment_target_pattern_variants!($visitor, $ty, $it)
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_declaration_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::VariableDeclaration(it) => $visitor.visit_variable_declaration(it),
+                $ty::FunctionDeclaration(it) => {
+                    let flags = ScopeFlags::Function;
+                    $visitor.visit_function(it, flags)
+                }
+                $ty::ClassDeclaration(it) => $visitor.visit_class(it),
+                $ty::TSTypeAliasDeclaration(it) => $visitor.visit_ts_type_alias_declaration(it),
+                $ty::TSInterfaceDeclaration(it) => $visitor.visit_ts_interface_declaration(it),
+                $ty::TSEnumDeclaration(it) => $visitor.visit_ts_enum_declaration(it),
+                $ty::TSModuleDeclaration(it) => $visitor.visit_ts_module_declaration(it),
+                $ty::TSGlobalDeclaration(it) => $visitor.visit_ts_global_declaration(it),
+                $ty::TSImportEqualsDeclaration(it) => {
+                    $visitor.visit_ts_import_equals_declaration(it)
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_module_declaration_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::ImportDeclaration(it) => $visitor.visit_import_declaration(it),
+                $ty::ExportAllDeclaration(it) => $visitor.visit_export_all_declaration(it),
+                $ty::ExportDefaultDeclaration(it) => {
+                    $visitor.visit_export_default_declaration(it)
+                }
+                $ty::ExportNamedDeclaration(it) => {
+                    $visitor.visit_export_named_declaration(it)
+                }
+                $ty::TSExportAssignment(it) => $visitor.visit_ts_export_assignment(it),
+                $ty::TSNamespaceExportDeclaration(it) => {
+                    $visitor.visit_ts_namespace_export_declaration(it)
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_ts_type_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::TSAnyKeyword(it) => $visitor.visit_ts_any_keyword(it),
+                $ty::TSBigIntKeyword(it) => $visitor.visit_ts_big_int_keyword(it),
+                $ty::TSBooleanKeyword(it) => $visitor.visit_ts_boolean_keyword(it),
+                $ty::TSIntrinsicKeyword(it) => $visitor.visit_ts_intrinsic_keyword(it),
+                $ty::TSNeverKeyword(it) => $visitor.visit_ts_never_keyword(it),
+                $ty::TSNullKeyword(it) => $visitor.visit_ts_null_keyword(it),
+                $ty::TSNumberKeyword(it) => $visitor.visit_ts_number_keyword(it),
+                $ty::TSObjectKeyword(it) => $visitor.visit_ts_object_keyword(it),
+                $ty::TSStringKeyword(it) => $visitor.visit_ts_string_keyword(it),
+                $ty::TSSymbolKeyword(it) => $visitor.visit_ts_symbol_keyword(it),
+                $ty::TSUndefinedKeyword(it) => $visitor.visit_ts_undefined_keyword(it),
+                $ty::TSUnknownKeyword(it) => $visitor.visit_ts_unknown_keyword(it),
+                $ty::TSVoidKeyword(it) => $visitor.visit_ts_void_keyword(it),
+                $ty::TSArrayType(it) => $visitor.visit_ts_array_type(it),
+                $ty::TSConditionalType(it) => $visitor.visit_ts_conditional_type(it),
+                $ty::TSConstructorType(it) => $visitor.visit_ts_constructor_type(it),
+                $ty::TSFunctionType(it) => $visitor.visit_ts_function_type(it),
+                $ty::TSImportType(it) => $visitor.visit_ts_import_type(it),
+                $ty::TSIndexedAccessType(it) => $visitor.visit_ts_indexed_access_type(it),
+                $ty::TSInferType(it) => $visitor.visit_ts_infer_type(it),
+                $ty::TSIntersectionType(it) => $visitor.visit_ts_intersection_type(it),
+                $ty::TSLiteralType(it) => $visitor.visit_ts_literal_type(it),
+                $ty::TSMappedType(it) => $visitor.visit_ts_mapped_type(it),
+                $ty::TSNamedTupleMember(it) => $visitor.visit_ts_named_tuple_member(it),
+                $ty::TSTemplateLiteralType(it) => $visitor.visit_ts_template_literal_type(it),
+                $ty::TSThisType(it) => $visitor.visit_ts_this_type(it),
+                $ty::TSTupleType(it) => $visitor.visit_ts_tuple_type(it),
+                $ty::TSTypeLiteral(it) => $visitor.visit_ts_type_literal(it),
+                $ty::TSTypeOperatorType(it) => $visitor.visit_ts_type_operator(it),
+                $ty::TSTypePredicate(it) => $visitor.visit_ts_type_predicate(it),
+                $ty::TSTypeQuery(it) => $visitor.visit_ts_type_query(it),
+                $ty::TSTypeReference(it) => $visitor.visit_ts_type_reference(it),
+                $ty::TSUnionType(it) => $visitor.visit_ts_union_type(it),
+                $ty::TSParenthesizedType(it) => $visitor.visit_ts_parenthesized_type(it),
+                $ty::JSDocNullableType(it) => $visitor.visit_js_doc_nullable_type(it),
+                $ty::JSDocNonNullableType(it) => $visitor.visit_js_doc_non_nullable_type(it),
+                $ty::JSDocUnknownType(it) => $visitor.visit_js_doc_unknown_type(it),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
+    macro_rules! walk_ts_type_name_variants {
+        ($visitor:ident, $ty:ident, $it:ident) => {
+            match $it {
+                $ty::IdentifierReference(it) => $visitor.visit_identifier_reference(it),
+                $ty::QualifiedName(it) => $visitor.visit_ts_qualified_name(it),
+                $ty::ThisExpression(it) => $visitor.visit_this_expression(it),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            }
+        };
+    }
+
     #[inline]
     pub fn walk_program<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Program<'a>) {
         let kind = AstKind::Program(it);
@@ -1369,58 +1589,7 @@ pub mod walk {
 
     pub fn walk_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Expression<'a>) {
         // No `AstKind` for this type
-        match it {
-            Expression::BooleanLiteral(it) => visitor.visit_boolean_literal(it),
-            Expression::NullLiteral(it) => visitor.visit_null_literal(it),
-            Expression::NumericLiteral(it) => visitor.visit_numeric_literal(it),
-            Expression::BigIntLiteral(it) => visitor.visit_big_int_literal(it),
-            Expression::RegExpLiteral(it) => visitor.visit_reg_exp_literal(it),
-            Expression::StringLiteral(it) => visitor.visit_string_literal(it),
-            Expression::TemplateLiteral(it) => visitor.visit_template_literal(it),
-            Expression::Identifier(it) => visitor.visit_identifier_reference(it),
-            Expression::MetaProperty(it) => visitor.visit_meta_property(it),
-            Expression::Super(it) => visitor.visit_super(it),
-            Expression::ArrayExpression(it) => visitor.visit_array_expression(it),
-            Expression::ArrowFunctionExpression(it) => visitor.visit_arrow_function_expression(it),
-            Expression::AssignmentExpression(it) => visitor.visit_assignment_expression(it),
-            Expression::AwaitExpression(it) => visitor.visit_await_expression(it),
-            Expression::BinaryExpression(it) => visitor.visit_binary_expression(it),
-            Expression::CallExpression(it) => visitor.visit_call_expression(it),
-            Expression::ChainExpression(it) => visitor.visit_chain_expression(it),
-            Expression::ClassExpression(it) => visitor.visit_class(it),
-            Expression::ConditionalExpression(it) => visitor.visit_conditional_expression(it),
-            Expression::FunctionExpression(it) => {
-                let flags = ScopeFlags::Function;
-                visitor.visit_function(it, flags)
-            }
-            Expression::ImportExpression(it) => visitor.visit_import_expression(it),
-            Expression::LogicalExpression(it) => visitor.visit_logical_expression(it),
-            Expression::NewExpression(it) => visitor.visit_new_expression(it),
-            Expression::ObjectExpression(it) => visitor.visit_object_expression(it),
-            Expression::ParenthesizedExpression(it) => visitor.visit_parenthesized_expression(it),
-            Expression::SequenceExpression(it) => visitor.visit_sequence_expression(it),
-            Expression::TaggedTemplateExpression(it) => {
-                visitor.visit_tagged_template_expression(it)
-            }
-            Expression::ThisExpression(it) => visitor.visit_this_expression(it),
-            Expression::UnaryExpression(it) => visitor.visit_unary_expression(it),
-            Expression::UpdateExpression(it) => visitor.visit_update_expression(it),
-            Expression::YieldExpression(it) => visitor.visit_yield_expression(it),
-            Expression::PrivateInExpression(it) => visitor.visit_private_in_expression(it),
-            Expression::JSXElement(it) => visitor.visit_jsx_element(it),
-            Expression::JSXFragment(it) => visitor.visit_jsx_fragment(it),
-            Expression::TSAsExpression(it) => visitor.visit_ts_as_expression(it),
-            Expression::TSSatisfiesExpression(it) => visitor.visit_ts_satisfies_expression(it),
-            Expression::TSTypeAssertion(it) => visitor.visit_ts_type_assertion(it),
-            Expression::TSNonNullExpression(it) => visitor.visit_ts_non_null_expression(it),
-            Expression::TSInstantiationExpression(it) => {
-                visitor.visit_ts_instantiation_expression(it)
-            }
-            Expression::V8IntrinsicExpression(it) => visitor.visit_v8_intrinsic_expression(it),
-            match_member_expression!(Expression) => {
-                visitor.visit_member_expression(it.to_member_expression())
-            }
-        }
+        walk_expression_variants!(visitor, Expression, it);
     }
 
     #[inline]
@@ -1485,7 +1654,7 @@ pub mod walk {
             ArrayExpressionElement::SpreadElement(it) => visitor.visit_spread_element(it),
             ArrayExpressionElement::Elision(it) => visitor.visit_elision(it),
             match_expression!(ArrayExpressionElement) => {
-                visitor.visit_expression(it.to_expression())
+                walk_expression_variants!(visitor, ArrayExpressionElement, it)
             }
         }
     }
@@ -1535,7 +1704,7 @@ pub mod walk {
         match it {
             PropertyKey::StaticIdentifier(it) => visitor.visit_identifier_name(it),
             PropertyKey::PrivateIdentifier(it) => visitor.visit_private_identifier(it),
-            match_expression!(PropertyKey) => visitor.visit_expression(it.to_expression()),
+            match_expression!(PropertyKey) => walk_expression_variants!(visitor, PropertyKey, it),
         }
     }
 
@@ -1576,17 +1745,7 @@ pub mod walk {
     #[inline]
     pub fn walk_member_expression<'a, V: Visit<'a>>(visitor: &mut V, it: &'a MemberExpression<'a>) {
         // No `AstKind` for this type
-        match it {
-            MemberExpression::ComputedMemberExpression(it) => {
-                visitor.visit_computed_member_expression(it)
-            }
-            MemberExpression::StaticMemberExpression(it) => {
-                visitor.visit_static_member_expression(it)
-            }
-            MemberExpression::PrivateFieldExpression(it) => {
-                visitor.visit_private_field_expression(it)
-            }
-        }
+        walk_member_expression_variants!(visitor, MemberExpression, it);
     }
 
     #[inline]
@@ -1678,7 +1837,7 @@ pub mod walk {
         // No `AstKind` for this type
         match it {
             Argument::SpreadElement(it) => visitor.visit_spread_element(it),
-            match_expression!(Argument) => visitor.visit_expression(it.to_expression()),
+            match_expression!(Argument) => walk_expression_variants!(visitor, Argument, it),
         }
     }
 
@@ -1763,14 +1922,7 @@ pub mod walk {
     #[inline]
     pub fn walk_assignment_target<'a, V: Visit<'a>>(visitor: &mut V, it: &'a AssignmentTarget<'a>) {
         // No `AstKind` for this type
-        match it {
-            match_simple_assignment_target!(AssignmentTarget) => {
-                visitor.visit_simple_assignment_target(it.to_simple_assignment_target())
-            }
-            match_assignment_target_pattern!(AssignmentTarget) => {
-                visitor.visit_assignment_target_pattern(it.to_assignment_target_pattern())
-            }
-        }
+        walk_assignment_target_variants!(visitor, AssignmentTarget, it);
     }
 
     pub fn walk_simple_assignment_target<'a, V: Visit<'a>>(
@@ -1778,22 +1930,7 @@ pub mod walk {
         it: &'a SimpleAssignmentTarget<'a>,
     ) {
         // No `AstKind` for this type
-        match it {
-            SimpleAssignmentTarget::AssignmentTargetIdentifier(it) => {
-                visitor.visit_identifier_reference(it)
-            }
-            SimpleAssignmentTarget::TSAsExpression(it) => visitor.visit_ts_as_expression(it),
-            SimpleAssignmentTarget::TSSatisfiesExpression(it) => {
-                visitor.visit_ts_satisfies_expression(it)
-            }
-            SimpleAssignmentTarget::TSNonNullExpression(it) => {
-                visitor.visit_ts_non_null_expression(it)
-            }
-            SimpleAssignmentTarget::TSTypeAssertion(it) => visitor.visit_ts_type_assertion(it),
-            match_member_expression!(SimpleAssignmentTarget) => {
-                visitor.visit_member_expression(it.to_member_expression())
-            }
-        }
+        walk_simple_assignment_target_variants!(visitor, SimpleAssignmentTarget, it);
     }
 
     #[inline]
@@ -1802,14 +1939,7 @@ pub mod walk {
         it: &'a AssignmentTargetPattern<'a>,
     ) {
         // No `AstKind` for this type
-        match it {
-            AssignmentTargetPattern::ArrayAssignmentTarget(it) => {
-                visitor.visit_array_assignment_target(it)
-            }
-            AssignmentTargetPattern::ObjectAssignmentTarget(it) => {
-                visitor.visit_object_assignment_target(it)
-            }
-        }
+        walk_assignment_target_pattern_variants!(visitor, AssignmentTargetPattern, it);
     }
 
     #[inline]
@@ -1867,7 +1997,7 @@ pub mod walk {
                 visitor.visit_assignment_target_with_default(it)
             }
             match_assignment_target!(AssignmentTargetMaybeDefault) => {
-                visitor.visit_assignment_target(it.to_assignment_target())
+                walk_assignment_target_variants!(visitor, AssignmentTargetMaybeDefault, it)
             }
         }
     }
@@ -1974,7 +2104,7 @@ pub mod walk {
             ChainElement::CallExpression(it) => visitor.visit_call_expression(it),
             ChainElement::TSNonNullExpression(it) => visitor.visit_ts_non_null_expression(it),
             match_member_expression!(ChainElement) => {
-                visitor.visit_member_expression(it.to_member_expression())
+                walk_member_expression_variants!(visitor, ChainElement, it)
             }
         }
     }
@@ -2012,9 +2142,9 @@ pub mod walk {
             Statement::TryStatement(it) => visitor.visit_try_statement(it),
             Statement::WhileStatement(it) => visitor.visit_while_statement(it),
             Statement::WithStatement(it) => visitor.visit_with_statement(it),
-            match_declaration!(Statement) => visitor.visit_declaration(it.to_declaration()),
+            match_declaration!(Statement) => walk_declaration_variants!(visitor, Statement, it),
             match_module_declaration!(Statement) => {
-                visitor.visit_module_declaration(it.to_module_declaration())
+                walk_module_declaration_variants!(visitor, Statement, it)
             }
         }
     }
@@ -2049,22 +2179,7 @@ pub mod walk {
 
     pub fn walk_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &'a Declaration<'a>) {
         // No `AstKind` for this type
-        match it {
-            Declaration::VariableDeclaration(it) => visitor.visit_variable_declaration(it),
-            Declaration::FunctionDeclaration(it) => {
-                let flags = ScopeFlags::Function;
-                visitor.visit_function(it, flags)
-            }
-            Declaration::ClassDeclaration(it) => visitor.visit_class(it),
-            Declaration::TSTypeAliasDeclaration(it) => visitor.visit_ts_type_alias_declaration(it),
-            Declaration::TSInterfaceDeclaration(it) => visitor.visit_ts_interface_declaration(it),
-            Declaration::TSEnumDeclaration(it) => visitor.visit_ts_enum_declaration(it),
-            Declaration::TSModuleDeclaration(it) => visitor.visit_ts_module_declaration(it),
-            Declaration::TSGlobalDeclaration(it) => visitor.visit_ts_global_declaration(it),
-            Declaration::TSImportEqualsDeclaration(it) => {
-                visitor.visit_ts_import_equals_declaration(it)
-            }
-        }
+        walk_declaration_variants!(visitor, Declaration, it);
     }
 
     #[inline]
@@ -2175,7 +2290,7 @@ pub mod walk {
         // No `AstKind` for this type
         match it {
             ForStatementInit::VariableDeclaration(it) => visitor.visit_variable_declaration(it),
-            match_expression!(ForStatementInit) => visitor.visit_expression(it.to_expression()),
+            match_expression!(ForStatementInit) => walk_expression_variants!(visitor, ForStatementInit, it),
         }
     }
 
@@ -2198,7 +2313,7 @@ pub mod walk {
         match it {
             ForStatementLeft::VariableDeclaration(it) => visitor.visit_variable_declaration(it),
             match_assignment_target!(ForStatementLeft) => {
-                visitor.visit_assignment_target(it.to_assignment_target())
+                walk_assignment_target_variants!(visitor, ForStatementLeft, it)
             }
         }
     }
@@ -2655,20 +2770,7 @@ pub mod walk {
 
     pub fn walk_module_declaration<'a, V: Visit<'a>>(visitor: &mut V, it: &'a ModuleDeclaration<'a>) {
         // No `AstKind` for this type
-        match it {
-            ModuleDeclaration::ImportDeclaration(it) => visitor.visit_import_declaration(it),
-            ModuleDeclaration::ExportAllDeclaration(it) => visitor.visit_export_all_declaration(it),
-            ModuleDeclaration::ExportDefaultDeclaration(it) => {
-                visitor.visit_export_default_declaration(it)
-            }
-            ModuleDeclaration::ExportNamedDeclaration(it) => {
-                visitor.visit_export_named_declaration(it)
-            }
-            ModuleDeclaration::TSExportAssignment(it) => visitor.visit_ts_export_assignment(it),
-            ModuleDeclaration::TSNamespaceExportDeclaration(it) => {
-                visitor.visit_ts_namespace_export_declaration(it)
-            }
-        }
+        walk_module_declaration_variants!(visitor, ModuleDeclaration, it);
     }
 
     #[inline]
@@ -2873,7 +2975,7 @@ pub mod walk {
                 visitor.visit_ts_interface_declaration(it)
             }
             match_expression!(ExportDefaultDeclarationKind) => {
-                visitor.visit_expression(it.to_expression())
+                walk_expression_variants!(visitor, ExportDefaultDeclarationKind, it)
             }
         }
     }
@@ -3080,7 +3182,7 @@ pub mod walk {
         // No `AstKind` for this type
         match it {
             JSXExpression::EmptyExpression(it) => visitor.visit_jsx_empty_expression(it),
-            match_expression!(JSXExpression) => visitor.visit_expression(it.to_expression()),
+            match_expression!(JSXExpression) => walk_expression_variants!(visitor, JSXExpression, it),
         }
     }
 
@@ -3272,45 +3374,7 @@ pub mod walk {
 
     pub fn walk_ts_type<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSType<'a>) {
         // No `AstKind` for this type
-        match it {
-            TSType::TSAnyKeyword(it) => visitor.visit_ts_any_keyword(it),
-            TSType::TSBigIntKeyword(it) => visitor.visit_ts_big_int_keyword(it),
-            TSType::TSBooleanKeyword(it) => visitor.visit_ts_boolean_keyword(it),
-            TSType::TSIntrinsicKeyword(it) => visitor.visit_ts_intrinsic_keyword(it),
-            TSType::TSNeverKeyword(it) => visitor.visit_ts_never_keyword(it),
-            TSType::TSNullKeyword(it) => visitor.visit_ts_null_keyword(it),
-            TSType::TSNumberKeyword(it) => visitor.visit_ts_number_keyword(it),
-            TSType::TSObjectKeyword(it) => visitor.visit_ts_object_keyword(it),
-            TSType::TSStringKeyword(it) => visitor.visit_ts_string_keyword(it),
-            TSType::TSSymbolKeyword(it) => visitor.visit_ts_symbol_keyword(it),
-            TSType::TSUndefinedKeyword(it) => visitor.visit_ts_undefined_keyword(it),
-            TSType::TSUnknownKeyword(it) => visitor.visit_ts_unknown_keyword(it),
-            TSType::TSVoidKeyword(it) => visitor.visit_ts_void_keyword(it),
-            TSType::TSArrayType(it) => visitor.visit_ts_array_type(it),
-            TSType::TSConditionalType(it) => visitor.visit_ts_conditional_type(it),
-            TSType::TSConstructorType(it) => visitor.visit_ts_constructor_type(it),
-            TSType::TSFunctionType(it) => visitor.visit_ts_function_type(it),
-            TSType::TSImportType(it) => visitor.visit_ts_import_type(it),
-            TSType::TSIndexedAccessType(it) => visitor.visit_ts_indexed_access_type(it),
-            TSType::TSInferType(it) => visitor.visit_ts_infer_type(it),
-            TSType::TSIntersectionType(it) => visitor.visit_ts_intersection_type(it),
-            TSType::TSLiteralType(it) => visitor.visit_ts_literal_type(it),
-            TSType::TSMappedType(it) => visitor.visit_ts_mapped_type(it),
-            TSType::TSNamedTupleMember(it) => visitor.visit_ts_named_tuple_member(it),
-            TSType::TSTemplateLiteralType(it) => visitor.visit_ts_template_literal_type(it),
-            TSType::TSThisType(it) => visitor.visit_ts_this_type(it),
-            TSType::TSTupleType(it) => visitor.visit_ts_tuple_type(it),
-            TSType::TSTypeLiteral(it) => visitor.visit_ts_type_literal(it),
-            TSType::TSTypeOperatorType(it) => visitor.visit_ts_type_operator(it),
-            TSType::TSTypePredicate(it) => visitor.visit_ts_type_predicate(it),
-            TSType::TSTypeQuery(it) => visitor.visit_ts_type_query(it),
-            TSType::TSTypeReference(it) => visitor.visit_ts_type_reference(it),
-            TSType::TSUnionType(it) => visitor.visit_ts_union_type(it),
-            TSType::TSParenthesizedType(it) => visitor.visit_ts_parenthesized_type(it),
-            TSType::JSDocNullableType(it) => visitor.visit_js_doc_nullable_type(it),
-            TSType::JSDocNonNullableType(it) => visitor.visit_js_doc_non_nullable_type(it),
-            TSType::JSDocUnknownType(it) => visitor.visit_js_doc_unknown_type(it),
-        }
+        walk_ts_type_variants!(visitor, TSType, it);
     }
 
     #[inline]
@@ -3437,7 +3501,7 @@ pub mod walk {
         match it {
             TSTupleElement::TSOptionalType(it) => visitor.visit_ts_optional_type(it),
             TSTupleElement::TSRestType(it) => visitor.visit_ts_rest_type(it),
-            match_ts_type!(TSTupleElement) => visitor.visit_ts_type(it.to_ts_type()),
+            match_ts_type!(TSTupleElement) => walk_ts_type_variants!(visitor, TSTupleElement, it),
         }
     }
 
@@ -3568,11 +3632,7 @@ pub mod walk {
     #[inline]
     pub fn walk_ts_type_name<'a, V: Visit<'a>>(visitor: &mut V, it: &'a TSTypeName<'a>) {
         // No `AstKind` for this type
-        match it {
-            TSTypeName::IdentifierReference(it) => visitor.visit_identifier_reference(it),
-            TSTypeName::QualifiedName(it) => visitor.visit_ts_qualified_name(it),
-            TSTypeName::ThisExpression(it) => visitor.visit_this_expression(it),
-        }
+        walk_ts_type_name_variants!(visitor, TSTypeName, it);
     }
 
     #[inline]
@@ -3953,7 +4013,7 @@ pub mod walk {
         match it {
             TSTypeQueryExprName::TSImportType(it) => visitor.visit_ts_import_type(it),
             match_ts_type_name!(TSTypeQueryExprName) => {
-                visitor.visit_ts_type_name(it.to_ts_type_name())
+                walk_ts_type_name_variants!(visitor, TSTypeQueryExprName, it)
             }
         }
     }
@@ -4291,7 +4351,7 @@ pub mod walk {
                     visitor.visit_spread_element(spread);
                 }
                 _ => {
-                    visitor.visit_expression(el.to_expression());
+                    walk_argument(visitor, el);
                 }
             }
         }

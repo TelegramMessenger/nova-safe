@@ -55,8 +55,6 @@ name = "oxc_semantic"
 path = "src/lib.rs"
 doctest = true
 
-[dependencies.itertools]
-version = "0.14.0"
 
 [dependencies.oxc_allocator]
 path = "../oxc_allocator"

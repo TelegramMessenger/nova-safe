@@ -626,7 +626,20 @@ fn get_module_instance_state_for_alias_target<'a>(
                     });
                 }
                 match_declaration!(Statement) => {
-                    if stmt.to_declaration().id().is_some_and(|id| id.name == name) {
+                    let id = match stmt {
+                        Statement::FunctionDeclaration(decl) => decl.id.as_ref(),
+                        Statement::ClassDeclaration(decl) => decl.id.as_ref(),
+                        Statement::TSTypeAliasDeclaration(decl) => Some(&decl.id),
+                        Statement::TSInterfaceDeclaration(decl) => Some(&decl.id),
+                        Statement::TSEnumDeclaration(decl) => Some(&decl.id),
+                        Statement::TSImportEqualsDeclaration(decl) => Some(&decl.id),
+                        Statement::TSModuleDeclaration(decl) => match &decl.id {
+                            TSModuleDeclarationName::Identifier(ident) => Some(ident),
+                            TSModuleDeclarationName::StringLiteral(_) => None,
+                        },
+                        _ => None,
+                    };
+                    if id.is_some_and(|id| id.name == name) {
                         found = true;
                     }
                 }

@@ -2,6 +2,7 @@
 //!
 //! <https://doc.rust-lang.org/beta/nightly-rustc/rustc_span>
 
+#![forbid(unsafe_code)]
 mod cmp;
 mod edit_distance;
 mod source_type;

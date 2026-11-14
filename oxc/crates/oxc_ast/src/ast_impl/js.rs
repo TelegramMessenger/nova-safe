@@ -193,9 +193,9 @@ impl<'a> Expression<'a> {
     /// and could be checked like `expr.is_specific_member_access("Array", "from")`.
     pub fn is_specific_member_access(&self, object: &str, property: &str) -> bool {
         match self.get_inner_expression() {
-            expr if expr.is_member_expression() => {
-                expr.to_member_expression().is_specific_member_access(object, property)
-            }
+            expr if expr.is_member_expression() => expr
+                .as_member_expression()
+                .is_some_and(|member| member.is_specific_member_access(object, property)),
             Expression::ChainExpression(chain) => {
                 let Some(expr) = chain.expression.as_member_expression() else {
                     return false;
@@ -352,7 +352,7 @@ impl<'a> Expression<'a> {
     /// Returns the [`MemberExpression`] if this expression is a [`MemberExpression`], contains a
     /// [`MemberExpression`], or is or part of a [`ChainExpression`] (such as `a?.b`),
     /// and returns `None` otherwise if this is not a member expression.
-    pub fn get_member_expr(&self) -> Option<&MemberExpression<'a>> {
+    pub fn get_member_expr(&self) -> Option<MemberExpressionRef<'_, 'a>> {
         match self.get_inner_expression() {
             Expression::ChainExpression(chain_expr) => chain_expr.expression.as_member_expression(),
             expr => expr.as_member_expression(),
@@ -565,6 +565,81 @@ impl<'a> TemplateLiteral<'a> {
     }
 }
 
+/// A borrowed [`MemberExpression`]: the member expression variants of [`Expression`],
+/// [`ChainElement`], [`SimpleAssignmentTarget`] or [`MemberExpression`] itself, without a cast
+/// between the enums.
+#[derive(Debug, Clone, Copy)]
+pub enum MemberExpressionRef<'b, 'a> {
+    /// `a[b]`
+    ComputedMemberExpression(&'b ComputedMemberExpression<'a>),
+    /// `a.b`
+    StaticMemberExpression(&'b StaticMemberExpression<'a>),
+    /// `a.#b`
+    PrivateFieldExpression(&'b PrivateFieldExpression<'a>),
+}
+
+impl<'b, 'a> MemberExpressionRef<'b, 'a> {
+    /// Returns `true` if this is an optionally chained member expression.
+    pub fn optional(self) -> bool {
+        match self {
+            Self::ComputedMemberExpression(expr) => expr.optional,
+            Self::StaticMemberExpression(expr) => expr.optional,
+            Self::PrivateFieldExpression(expr) => expr.optional,
+        }
+    }
+
+    /// Returns a reference to the [`Expression`] that is the object of this member expression.
+    pub fn object(self) -> &'b Expression<'a> {
+        match self {
+            Self::ComputedMemberExpression(expr) => &expr.object,
+            Self::StaticMemberExpression(expr) => &expr.object,
+            Self::PrivateFieldExpression(expr) => &expr.object,
+        }
+    }
+
+    /// Returns the static property name of this member expression, if it has one.
+    pub fn static_property_name(self) -> Option<&'a str> {
+        match self {
+            Self::ComputedMemberExpression(expr) => {
+                expr.static_property_name().map(|name| name.as_str())
+            }
+            Self::StaticMemberExpression(expr) => Some(expr.property.name.as_str()),
+            Self::PrivateFieldExpression(_) => None,
+        }
+    }
+
+    /// Whether it is a static member access `object.property`
+    pub fn is_specific_member_access(self, object: &str, property: &str) -> bool {
+        self.object().is_specific_id(object)
+            && self.static_property_name().is_some_and(|p| p == property)
+    }
+}
+
+impl<'a> Expression<'a> {
+    /// Returns the member expression variants of this [`Expression`] as a [`MemberExpressionRef`].
+    pub fn as_member_expression(&self) -> Option<MemberExpressionRef<'_, 'a>> {
+        match self {
+            Self::ComputedMemberExpression(e) => {
+                Some(MemberExpressionRef::ComputedMemberExpression(e))
+            }
+            Self::StaticMemberExpression(e) => Some(MemberExpressionRef::StaticMemberExpression(e)),
+            Self::PrivateFieldExpression(e) => Some(MemberExpressionRef::PrivateFieldExpression(e)),
+            _ => None,
+        }
+    }
+}
+
+impl<'a> MemberExpression<'a> {
+    /// Borrows this [`MemberExpression`] as a [`MemberExpressionRef`].
+    pub fn as_member_expression_ref(&self) -> MemberExpressionRef<'_, 'a> {
+        match self {
+            Self::ComputedMemberExpression(e) => MemberExpressionRef::ComputedMemberExpression(e),
+            Self::StaticMemberExpression(e) => MemberExpressionRef::StaticMemberExpression(e),
+            Self::PrivateFieldExpression(e) => MemberExpressionRef::PrivateFieldExpression(e),
+        }
+    }
+}
+
 impl<'a> MemberExpression<'a> {
     /// Returns `true` if this member expression is a [`MemberExpression::ComputedMemberExpression`]. For example, `a[b]`
     /// in `let a = { b: 1 }; a[b]` is a computed member expression.
@@ -727,13 +802,26 @@ impl<'a> StaticMemberExpression<'a> {
 
 impl<'a> ChainElement<'a> {
     /// Returns the member expression.
-    pub fn member_expression(&self) -> Option<&MemberExpression<'a>> {
+    pub fn member_expression(&self) -> Option<MemberExpressionRef<'_, 'a>> {
         match self {
-            ChainElement::TSNonNullExpression(e) => match &e.expression {
-                match_member_expression!(Expression) => e.expression.as_member_expression(),
-                _ => None,
-            },
+            ChainElement::TSNonNullExpression(e) => e.expression.as_member_expression(),
             _ => self.as_member_expression(),
+        }
+    }
+
+    /// Returns the member expression variants of this [`ChainElement`] as a [`MemberExpressionRef`].
+    pub fn as_member_expression(&self) -> Option<MemberExpressionRef<'_, 'a>> {
+        match self {
+            ChainElement::ComputedMemberExpression(e) => {
+                Some(MemberExpressionRef::ComputedMemberExpression(e))
+            }
+            ChainElement::StaticMemberExpression(e) => {
+                Some(MemberExpressionRef::StaticMemberExpression(e))
+            }
+            ChainElement::PrivateFieldExpression(e) => {
+                Some(MemberExpressionRef::PrivateFieldExpression(e))
+            }
+            _ => None,
         }
     }
 }
@@ -755,7 +843,7 @@ impl CallExpression<'_> {
     pub fn callee_name(&self) -> Option<&str> {
         match &self.callee {
             Expression::Identifier(ident) => Some(ident.name.as_str()),
-            expr => expr.as_member_expression().and_then(MemberExpression::static_property_name),
+            expr => expr.as_member_expression().and_then(|member| member.static_property_name()),
         }
     }
 
@@ -874,7 +962,14 @@ impl<'a> AssignmentTarget<'a> {
     /// - returns `b` when called on the left-hand side of `a.b = b`
     /// - returns `None` when called on the left-hand side of `a[b] = b`
     pub fn get_identifier_name(&self) -> Option<&'a str> {
-        self.as_simple_assignment_target().and_then(SimpleAssignmentTarget::get_identifier_name)
+        match self {
+            Self::AssignmentTargetIdentifier(ident) => Some(ident.name.as_str()),
+            Self::ComputedMemberExpression(expr) => {
+                expr.static_property_name().map(|name| name.as_str())
+            }
+            Self::StaticMemberExpression(expr) => Some(expr.property.name.as_str()),
+            _ => None,
+        }
     }
 
     /// Returns the expression inside of this assignment target, if applicable, and returns a reference to it.
@@ -886,7 +981,13 @@ impl<'a> AssignmentTarget<'a> {
     /// - returns `a` when called on `a!` in `a! = b`
     /// - returns `None` when called on `a` in `a = b` because there is no inner expression to get
     pub fn get_expression(&self) -> Option<&Expression<'a>> {
-        self.as_simple_assignment_target().and_then(SimpleAssignmentTarget::get_expression)
+        match self {
+            Self::TSAsExpression(expr) => Some(&expr.expression),
+            Self::TSSatisfiesExpression(expr) => Some(&expr.expression),
+            Self::TSNonNullExpression(expr) => Some(&expr.expression),
+            Self::TSTypeAssertion(expr) => Some(&expr.expression),
+            _ => None,
+        }
     }
 
     /// Returns the expression inside of this assignment target, if applicable, and returns a mutable reference to it.
@@ -898,7 +999,13 @@ impl<'a> AssignmentTarget<'a> {
     /// - returns `a` when called on `a!` in `a! = b`
     /// - returns `None` when called on `a` in `a = b` because there is no inner expression to get
     pub fn get_expression_mut(&mut self) -> Option<&mut Expression<'a>> {
-        self.as_simple_assignment_target_mut().and_then(SimpleAssignmentTarget::get_expression_mut)
+        match self {
+            Self::TSAsExpression(expr) => Some(&mut expr.expression),
+            Self::TSSatisfiesExpression(expr) => Some(&mut expr.expression),
+            Self::TSNonNullExpression(expr) => Some(&mut expr.expression),
+            Self::TSTypeAssertion(expr) => Some(&mut expr.expression),
+            _ => None,
+        }
     }
 }
 
@@ -914,7 +1021,22 @@ impl<'a> SimpleAssignmentTarget<'a> {
     pub fn get_identifier_name(&self) -> Option<&'a str> {
         match self {
             Self::AssignmentTargetIdentifier(ident) => Some(ident.name.as_str()),
-            match_member_expression!(Self) => self.to_member_expression().static_property_name(),
+            match_member_expression!(Self) => {
+                self.as_member_expression().and_then(|member| member.static_property_name())
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns the member expression variants of this [`SimpleAssignmentTarget`] as a
+    /// [`MemberExpressionRef`].
+    pub fn as_member_expression(&self) -> Option<MemberExpressionRef<'_, 'a>> {
+        match self {
+            Self::ComputedMemberExpression(e) => {
+                Some(MemberExpressionRef::ComputedMemberExpression(e))
+            }
+            Self::StaticMemberExpression(e) => Some(MemberExpressionRef::StaticMemberExpression(e)),
+            Self::PrivateFieldExpression(e) => Some(MemberExpressionRef::PrivateFieldExpression(e)),
             _ => None,
         }
     }
@@ -1021,13 +1143,15 @@ impl Statement<'_> {
     /// Returns `true` if this statement uses any TypeScript syntax (such as `declare`).
     pub fn is_typescript_syntax(&self) -> bool {
         match self {
-            match_declaration!(Self) => {
-                self.as_declaration().is_some_and(Declaration::is_typescript_syntax)
-            }
-            match_module_declaration!(Self) => {
-                self.as_module_declaration().is_some_and(ModuleDeclaration::is_typescript_syntax)
-            }
-            _ => false,
+            Self::VariableDeclaration(decl) => decl.is_typescript_syntax(),
+            Self::FunctionDeclaration(func) => func.is_typescript_syntax(),
+            Self::ClassDeclaration(class) => class.is_typescript_syntax(),
+            Self::ImportDeclaration(_) => false,
+            Self::ExportDefaultDeclaration(decl) => decl.is_typescript_syntax(),
+            Self::ExportNamedDeclaration(decl) => decl.is_typescript_syntax(),
+            Self::ExportAllDeclaration(decl) => decl.is_typescript_syntax(),
+            Self::TSNamespaceExportDeclaration(_) | Self::TSExportAssignment(_) => true,
+            _ => self.is_declaration(),
         }
     }
 

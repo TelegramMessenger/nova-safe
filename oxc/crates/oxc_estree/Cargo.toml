@@ -39,34 +39,14 @@ repository = "https://github.com/oxc-project/oxc"
 
 [features]
 default = []
-serialize = [
-    "dep:oxc_data_structures",
-    "dep:itoa",
-    "dep:dragonbox_ecma",
-]
+# The serializer is not vendored; the feature is kept so that the other crates' `serialize`
+# features still resolve.
+serialize = []
 
 [lib]
 name = "oxc_estree"
 path = "src/lib.rs"
 doctest = false
-
-[dependencies.dragonbox_ecma]
-version = "0.1.0"
-optional = true
-
-[dependencies.itoa]
-version = "1.0.17"
-optional = true
-
-[dependencies.oxc_data_structures]
-path = "../oxc_data_structures"
-version = "0.124.0"
-features = [
-    "code_buffer",
-    "slice_iter",
-    "stack",
-]
-optional = true
 
 [lints.clippy]
 allow_attributes = "warn"

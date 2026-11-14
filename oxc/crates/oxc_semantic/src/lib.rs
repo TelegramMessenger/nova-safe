@@ -5,6 +5,7 @@
 #![doc = include_str!("../examples/semantic.rs")]
 //! ```
 
+#![forbid(unsafe_code)]
 use std::ops::RangeBounds;
 
 use oxc_ast::{

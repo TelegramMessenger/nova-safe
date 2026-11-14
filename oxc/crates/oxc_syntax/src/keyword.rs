@@ -2,7 +2,6 @@
 //!
 //! ## References
 //! - [12.7.2 Keywords and Reserved Words](https://tc39.es/ecma262/#sec-keywords-and-reserved-words)
-use phf::{Set, phf_set};
 
 /// Checks if the given string is a [reserved keyword] or a [global object]
 /// (e.g. `NaN`).
@@ -20,40 +19,29 @@ pub fn is_reserved_keyword_or_global_object(s: &str) -> bool {
 /// or words that are reserved for future use.
 #[inline]
 pub fn is_reserved_keyword(s: &str) -> bool {
-    RESERVED_KEYWORDS.contains(s)
+    RESERVED_KEYWORDS.binary_search(&s).is_ok()
 }
 
 /// Checks `Infinity`, `NaN`, `globalThis` and `undefined`
 #[inline]
 pub fn is_global_object(s: &str) -> bool {
-    GLOBAL_OBJECTS.contains(s)
+    GLOBAL_OBJECTS.binary_search(&s).is_ok()
 }
 
 /// Value properties of the global object
 ///
 /// Reference: <https://tc39.es/ecma262/multipage/global-object.html#sec-value-properties-of-the-global-object>
-pub const GLOBAL_OBJECTS: Set<&'static str> = phf_set! {
+pub const GLOBAL_OBJECTS: &[&str] = &[
     "Infinity",
     "NaN",
     "globalThis",
     "undefined",
-};
+];
 
 /// All reserved keywords, including keywords that are contextually disallowed as identifiers.
 ///
 /// Reference: <https://tc39.es/ecma262/#prod-ReservedWord>
-pub const RESERVED_KEYWORDS: Set<&'static str> = phf_set! {
-    // contextually disallowed as identifiers
-    "let",
-    "static",
-    // future reserved keywords
-    "implements",
-    "interface",
-    "package",
-    "private",
-    "protected",
-    "public",
-    // reserved word
+pub const RESERVED_KEYWORDS: &[&str] = &[
     "await",
     "break",
     "case",
@@ -74,12 +62,20 @@ pub const RESERVED_KEYWORDS: Set<&'static str> = phf_set! {
     "for",
     "function",
     "if",
+    "implements",
     "import",
     "in",
     "instanceof",
+    "interface",
+    "let",
     "new",
     "null",
+    "package",
+    "private",
+    "protected",
+    "public",
     "return",
+    "static",
     "super",
     "switch",
     "this",
@@ -92,4 +88,4 @@ pub const RESERVED_KEYWORDS: Set<&'static str> = phf_set! {
     "while",
     "with",
     "yield",
-};
+];

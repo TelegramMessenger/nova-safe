@@ -297,10 +297,10 @@ impl<'a> Decorator<'a> {
         match &self.expression {
             Expression::Identifier(ident) => Some(ident.name.as_str()),
             expr @ match_member_expression!(Expression) => {
-                expr.to_member_expression().static_property_name()
+                expr.as_member_expression().and_then(|member| member.static_property_name())
             }
             Expression::CallExpression(call) => {
-                call.callee.get_member_expr().and_then(MemberExpression::static_property_name)
+                call.callee.get_member_expr().and_then(|member| member.static_property_name())
             }
             _ => None,
         }

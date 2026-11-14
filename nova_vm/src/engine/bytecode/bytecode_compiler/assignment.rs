@@ -3,6 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use oxc_ast::ast::{self, AssignmentOperator, LogicalOperator};
+use oxc_ast::{
+    ast::{AssignmentTarget, AssignmentTargetMaybeDefault, ForStatementLeft},
+    match_member_expression, match_simple_assignment_target,
+};
+
+use super::CompileExpressionVariants;
 
 #[cfg(feature = "typescript")]
 use crate::engine::bytecode::bytecode_compiler::PlaceOrValue;
@@ -46,7 +52,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
                 let rval = self.right.compile(ctx)?.get_value(ctx)?;
                 // 5. Perform ? DestructuringAssignmentEvaluation of assignmentPattern with argument rVal.
                 let rval_copy = ctx.load_copy_to_stack();
-                let result = self.left.to_assignment_target_pattern().compile(ctx);
+                let result = self.left.compile_pattern_target(ctx);
                 // 6. Return rVal.
                 rval_copy.store(ctx);
                 return result.map(|_| rval);
@@ -304,41 +310,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
     /// reference stack: []
     /// ```
     fn compile(&'s self, ctx: &mut CompileContext<'_, 's, 'gc, '_>) -> Self::Output {
-        // result: value
-        // stack: []
-        if let Some(target) = self.as_simple_assignment_target() {
-            let needs_load_store = target.is_member_expression();
-            let place = if needs_load_store {
-                let value_on_stack = ctx.load_to_stack();
-                // result: None
-                // stack: [value]
-                match target.compile(ctx) {
-                    Ok(p) => {
-                        // result: None
-                        // stack: [value]
-                        // reference: &target
-                        value_on_stack.store(ctx);
-                        p
-                    }
-                    Err(err) => {
-                        value_on_stack.forget(ctx);
-                        return Err(err);
-                    }
-                }
-            } else {
-                target.compile(ctx)?
-            };
-            // result: value
-            // stack: []
-            // reference: &target
-            place.put_value(ctx, ValueOutput::Value)?;
-            // result: None
-            // stack: []
-            // reference: None
-        } else {
-            self.to_assignment_target_pattern().compile(ctx)?;
-        }
-        Ok(())
+        self.compile_assignment_target(ctx)
     }
 }
 
@@ -354,44 +326,147 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     }
 }
 
+/// Compiles the `SimpleAssignmentTarget` variants of `$ty` to a place, without a cast between
+/// the enums.
+macro_rules! compile_simple_target_variants {
+    ($ty:ident, $node:expr, $ctx:expr) => {
+        match $node {
+            ast::$ty::AssignmentTargetIdentifier(t) => Ok(t.compile($ctx)),
+            ast::$ty::ComputedMemberExpression(t) => t.compile($ctx),
+            ast::$ty::StaticMemberExpression(t) => t.compile($ctx),
+            ast::$ty::PrivateFieldExpression(t) => t.compile($ctx),
+            #[cfg(feature = "typescript")]
+            ast::$ty::TSNonNullExpression(t) => {
+                t.expression.compile($ctx).map(|r| match r {
+                    PlaceOrValue::Place(p) => p,
+                    _ => unreachable!(),
+                })
+            }
+            #[cfg(feature = "typescript")]
+            ast::$ty::TSAsExpression(t) => {
+                t.expression.compile($ctx).map(|r| match r {
+                    PlaceOrValue::Place(p) => p,
+                    _ => unreachable!(),
+                })
+            }
+            #[cfg(feature = "typescript")]
+            ast::$ty::TSSatisfiesExpression(t) => {
+                t.expression.compile($ctx).map(|r| match r {
+                    PlaceOrValue::Place(p) => p,
+                    _ => unreachable!(),
+                })
+            }
+            #[cfg(not(feature = "typescript"))]
+            ast::$ty::TSAsExpression(_)
+            | ast::$ty::TSNonNullExpression(_)
+            | ast::$ty::TSSatisfiesExpression(_) => unreachable!(),
+            ast::$ty::TSTypeAssertion(_) => unreachable!(),
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
+        }
+    };
+}
+
+/// The `SimpleAssignmentTarget` and `AssignmentTargetPattern` variants that
+/// `AssignmentTarget`, `AssignmentTargetMaybeDefault` and `ForStatementLeft` inherit.
+pub(crate) trait AssignmentTargetVariants<'s> {
+    /// Evaluation of a simple assignment target variant. Panics on other variants.
+    fn compile_simple_target<'a, 'gc, 'scope>(
+        &'s self,
+        ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+    ) -> Result<Place<'s, 'gc>, ExpressionError>;
+
+    /// DestructuringAssignmentEvaluation of an assignment pattern variant. Panics on other
+    /// variants.
+    fn compile_pattern_target<'a, 'gc, 'scope>(
+        &'s self,
+        ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+    ) -> Result<(), ExpressionError>;
+
+    /// Evaluation of an assignment target variant followed by PutValue of the result
+    /// register, as `AssignmentTarget`'s compile does.
+    fn compile_assignment_target<'a, 'gc, 'scope>(
+        &'s self,
+        ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+    ) -> Result<(), ExpressionError>;
+}
+
+macro_rules! impl_assignment_target_variants {
+    ($($ty:ident),*) => {
+        $(
+            impl<'s> AssignmentTargetVariants<'s> for ast::$ty<'s> {
+                fn compile_simple_target<'a, 'gc, 'scope>(
+                    &'s self,
+                    ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+                ) -> Result<Place<'s, 'gc>, ExpressionError> {
+                    compile_simple_target_variants!($ty, self, ctx)
+                }
+
+                fn compile_pattern_target<'a, 'gc, 'scope>(
+                    &'s self,
+                    ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+                ) -> Result<(), ExpressionError> {
+                    match self {
+                        ast::$ty::ArrayAssignmentTarget(t) => t.compile(ctx),
+                        ast::$ty::ObjectAssignmentTarget(t) => t.compile(ctx),
+                        _ => unreachable!(),
+                    }
+                }
+
+                fn compile_assignment_target<'a, 'gc, 'scope>(
+                    &'s self,
+                    ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+                ) -> Result<(), ExpressionError> {
+                    // result: value
+                    // stack: []
+                    if matches!(self, match_simple_assignment_target!($ty)) {
+                        let needs_load_store = matches!(self, match_member_expression!($ty));
+                        let place = if needs_load_store {
+                            let value_on_stack = ctx.load_to_stack();
+                            // result: None
+                            // stack: [value]
+                            match self.compile_simple_target(ctx) {
+                                Ok(p) => {
+                                    // result: None
+                                    // stack: [value]
+                                    // reference: &target
+                                    value_on_stack.store(ctx);
+                                    p
+                                }
+                                Err(err) => {
+                                    value_on_stack.forget(ctx);
+                                    return Err(err);
+                                }
+                            }
+                        } else {
+                            self.compile_simple_target(ctx)?
+                        };
+                        // result: value
+                        // stack: []
+                        // reference: &target
+                        place.put_value(ctx, ValueOutput::Value)?;
+                        // result: None
+                        // stack: []
+                        // reference: None
+                    } else {
+                        self.compile_pattern_target(ctx)?;
+                    }
+                    Ok(())
+                }
+            }
+        )*
+    };
+}
+
+impl_assignment_target_variants!(AssignmentTarget, AssignmentTargetMaybeDefault, ForStatementLeft);
+
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     for ast::SimpleAssignmentTarget<'s>
 {
     type Output = Result<Place<'s, 'gc>, ExpressionError>;
 
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        match self {
-            ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(t) => Ok(t.compile(ctx)),
-            ast::SimpleAssignmentTarget::ComputedMemberExpression(t) => t.compile(ctx),
-            ast::SimpleAssignmentTarget::StaticMemberExpression(t) => t.compile(ctx),
-            ast::SimpleAssignmentTarget::PrivateFieldExpression(t) => t.compile(ctx),
-            #[cfg(feature = "typescript")]
-            ast::SimpleAssignmentTarget::TSNonNullExpression(t) => {
-                t.expression.compile(ctx).map(|r| match r {
-                    PlaceOrValue::Place(p) => p,
-                    _ => unreachable!(),
-                })
-            }
-            #[cfg(feature = "typescript")]
-            ast::SimpleAssignmentTarget::TSAsExpression(t) => {
-                t.expression.compile(ctx).map(|r| match r {
-                    PlaceOrValue::Place(p) => p,
-                    _ => unreachable!(),
-                })
-            }
-            #[cfg(feature = "typescript")]
-            ast::SimpleAssignmentTarget::TSSatisfiesExpression(t) => {
-                t.expression.compile(ctx).map(|r| match r {
-                    PlaceOrValue::Place(p) => p,
-                    _ => unreachable!(),
-                })
-            }
-            #[cfg(not(feature = "typescript"))]
-            ast::SimpleAssignmentTarget::TSAsExpression(_)
-            | ast::SimpleAssignmentTarget::TSNonNullExpression(_)
-            | ast::SimpleAssignmentTarget::TSSatisfiesExpression(_) => unreachable!(),
-            ast::SimpleAssignmentTarget::TSTypeAssertion(_) => unreachable!(),
-        }
+        compile_simple_target_variants!(SimpleAssignmentTarget, self, ctx)
     }
 }
 
@@ -414,8 +489,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
                         element
                     {
                         // a. Let lRef be ? Evaluation of DestructuringAssignmentTarget.
-                        if let Some(binding) = element.binding.as_simple_assignment_target() {
-                            let lref = match binding.compile(ctx) {
+                        if element.binding.is_simple_assignment_target() {
+                            let lref = match element.binding.compile_simple_target(ctx) {
                                 Ok(l) => l,
                                 Err(e) => {
                                     result = Err(e);
@@ -461,18 +536,17 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
                             // a. Let nestedAssignmentPattern be the
                             //    AssignmentPattern that is covered by
                             //    DestructuringAssignmentTarget.
-                            let nested_assignment_pattern =
-                                element.binding.to_assignment_target_pattern();
+                            let nested_assignment_pattern = &element.binding;
                             // b. Return ? DestructuringAssignmentEvaluation of
                             //    nestedAssignmentPattern with argument v.
-                            if let Err(e) = nested_assignment_pattern.compile(ctx) {
+                            if let Err(e) = nested_assignment_pattern.compile_pattern_target(ctx) {
                                 result = Err(e);
                                 break 'args;
                             }
                         }
-                    } else if let Some(element) = element.as_simple_assignment_target() {
+                    } else if element.is_simple_assignment_target() {
                         // a. Let lRef be ? Evaluation of DestructuringAssignmentTarget.
-                        let lref = match element.compile(ctx) {
+                        let lref = match element.compile_simple_target(ctx) {
                             Ok(l) => l,
                             Err(e) => {
                                 result = Err(e);
@@ -508,8 +582,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
                         // 6. If DestructuringAssignmentTarget is either an ObjectLiteral or an ArrayLiteral, then
                         // a. Let nestedAssignmentPattern be the AssignmentPattern that is covered by DestructuringAssignmentTarget.
                         // b. Return ? DestructuringAssignmentEvaluation of nestedAssignmentPattern with argument v.
-                        let nested_assignment_pattern = element.to_assignment_target_pattern();
-                        if let Err(e) = nested_assignment_pattern.compile(ctx) {
+                        let nested_assignment_pattern = element;
+                        if let Err(e) = nested_assignment_pattern.compile_pattern_target(ctx) {
                             result = Err(e);
                             break 'args;
                         }
@@ -523,12 +597,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
                 }
             }
             if let Some(rest) = &self.rest {
-                if let Some(target) = rest.target.as_simple_assignment_target() {
+                if rest.target.is_simple_assignment_target() {
+                    let target = &rest.target;
                     // 1. If DestructuringAssignmentTarget is neither an
                     //    ObjectLiteral nor an ArrayLiteral, then
                     // a. Let lRef be ? Evaluation of
                     //    DestructuringAssignmentTarget.
-                    let lref = match target.compile(ctx) {
+                    let lref = match target.compile_simple_target(ctx) {
                         Ok(l) => l,
                         Err(e) => {
                             result = Err(e);
@@ -547,10 +622,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
                     ctx.add_instruction(Instruction::IteratorRestIntoArray);
                     // 6. Let nestedAssignmentPattern be the AssignmentPattern that
                     //    is covered by DestructuringAssignmentTarget.
-                    let nested_assignment_pattern = rest.target.to_assignment_target_pattern();
+                    let nested_assignment_pattern = &rest.target;
                     // 7. Return ? DestructuringAssignmentEvaluation of
                     //    nestedAssignmentPattern with argument A.
-                    if let Err(e) = nested_assignment_pattern.compile(ctx) {
+                    if let Err(e) = nested_assignment_pattern.compile_pattern_target(ctx) {
                         result = Err(e);
                         break 'args;
                     }
@@ -714,16 +789,15 @@ fn compile_assignment_target_property<'s>(
         ast::AssignmentTargetProperty::AssignmentTargetPropertyProperty(property)
             if !has_rest && !property.computed =>
         {
-            let (target, default) = match &property.binding {
-                ast::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(target) => (
-                    target.binding.as_simple_assignment_target(),
-                    Some(&**target),
-                ),
-                target => (target.as_simple_assignment_target(), None),
+            let (is_simple_target, default) = match &property.binding {
+                ast::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(target) => {
+                    (target.binding.is_simple_assignment_target(), Some(&**target))
+                }
+                target => (target.is_simple_assignment_target(), None),
             };
-            let Some(target) = target else {
+            if !is_simple_target {
                 return compile_assignment_target_property_value(property, ctx, has_rest);
-            };
+            }
             // KeyedDestructuringAssignmentEvaluation: the target is evaluated
             // before the property is read.
             // result: source
@@ -731,7 +805,13 @@ fn compile_assignment_target_property<'s>(
             let source = ctx.load_to_stack();
             // stack: [source?, source]
             // 1. Let lRef be ? Evaluation of DestructuringAssignmentTarget.
-            let lref = match target.compile(ctx) {
+            let lref = match &property.binding {
+                ast::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(target) => {
+                    target.binding.compile_simple_target(ctx)
+                }
+                target => target.compile_simple_target(ctx),
+            };
+            let lref = match lref {
                 Ok(lref) => lref,
                 Err(err) => {
                     source.forget(ctx);
@@ -907,8 +987,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Proper
                 let source_on_stack = ctx.load_to_stack();
                 // result: None
                 // stack: [source]
-                let expr = self.to_expression();
-                let expr_result = expr.compile(ctx).and_then(|r| r.get_value(ctx));
+                let expr_result = self.compile_expression(ctx).and_then(|r| r.get_value(ctx));
 
                 // Source on stack is either forget on the stack and cleaned up
                 // by try-catch if expr is Err, or is consumed by below
@@ -1007,7 +1086,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
             _ => {
                 // result: value
                 // stack: []
-                self.to_assignment_target().compile(ctx)?;
+                self.compile_assignment_target(ctx)?;
                 // result: None
                 // stack: []
             }
