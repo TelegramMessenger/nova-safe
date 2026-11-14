@@ -30,7 +30,7 @@ Area H: `oxc_allocator::HashMap`/`HashSet` wrap `std::collections::HashMap`/`Has
 `IdentHashMap`/`IdentHashSet` are std maps. Lookups that went through hashbrown's `Equivalent` go through `Borrow`:
 `Ident: Borrow<str>` (as `ScopingName` already was), and `Ident` and `ScopingName` hash as their `str`. Under
 `IdentBuildHasher` that is the value they hashed to before (the packed length and hash), so every map sees the same
-hashes, and `Borrow`'s contract also holds under any other hasher. No caller used a hashbrown-only API; the unused
+hashes, and `Borrow`'s contract also holds under any other hasher (which the keyed hash below relies on). No caller used a hashbrown-only API; the unused
 `HashSet::from(HashMap)` is gone. std's map is the same SwissTable and iterates in the same order: on 54,332 inputs
 (53,910 test262 files, the sandbox bundle, the 6 parsebench inputs and 415 widget scripts) the scope digest with the raw
 iteration order of bindings and root unresolved references, the order-free digest and every parse and semantic
@@ -52,13 +52,62 @@ The whole track costs about +48% on the bundle and +50-60% on a widget's scripts
 allocation per node and string. The bundle is compiled once per process; a widget's own scripts take about 0.1 ms
 against a median widget run of about 150 ms.
 
-Left, not `unsafe`: `IdentBuildHasher` (upstream's) is unkeyed and samples at most 16 bytes of a name, so a script
-can make its identifiers collide (same length, same sampled bytes). 20,000 such `var` names (920 KB) take 1.85 s to
-parse and check, against 5 ms for as many distinct names; it grows with the square of the count, and the parser
-runs before the interrupt is ever polled. Same before this track (upstream oxc, hashbrown 0.16). The fix is a keyed
-hash for the identifier maps (std's `RandomState`), with the two checks that iterate the root scope's bindings
-(`check_unresolved_exports`'s suggestion, `check_import_value_redeclarations`' error order) made independent of the
-iteration order.
+### Hash flooding in the parser (fixed 2026-11-15, branch safe-parse-dos)
+
+Upstream's `IdentBuildHasher` was unkeyed and sampled at most 16 bytes of a name, so a script could give its
+identifiers one hash (same length, same sampled bytes) and make the parser's maps quadratic; the parser runs before
+the interrupt is ever polled. Now:
+
+- `IdentBuildHasher` (oxc_allocator) is std's SipHash-1-3 over the whole name under random keys chosen once per
+  process. It keys `Scoping`'s bindings and root unresolved references, the builder's hoisting maps and
+  `IdentHashMap`/`IdentHashSet`. `Ident`, `ScopingName` and `Str` hash as their `str`; `ScopingName` no longer keeps
+  upstream's packed length and hash, and `ident_hash`/`pack_len_hash` are gone.
+- Every other map in the parse/semantic path whose key is script text uses it too (they were rustc-hash's unkeyed
+  `FxHash`): the module record's `requested_modules` and `exported_bindings`, import attribute keys, class element
+  names (`check_duplicate_class_elements`), regexp group names, and TypeScript's duplicate bound names.
+- Left on `FxHash`, keyed by numbers the parser assigns: source offsets (`not_parenthesized_arrow`,
+  `cover_initialized_name`, `trailing_commas`, `escaped_strings`, `escaped_templates`, JSDoc), `SymbolId`, `ScopeId`,
+  `ClassId` and node addresses. A script picks which offsets or ids are used, but they are distinct integers below the
+  source size S, and FxHash multiplies them by an odd constant: at most about S/2^b of them share a start bucket in a
+  table of 2^b slots, so at most about sqrt(S) keys collide and the work stays linear in S. Regexp flags (at most 8
+  distinct) too.
+- nova_vm's compile-time maps were already keyed: names and strings go through `HandleState` (multiply-fold under
+  random per-map keys over every byte) and the heap's string table through SipHash (`nova_vm/src/hashing.rs`).
+- Order: a random key changes iteration order on every run, so nothing may depend on it. `check_unresolved_exports`
+  offers the first close name in declaration order (`SymbolId`), `check_import_value_redeclarations` reports in
+  declaration order, and the regexp "Valid group names are" help lists names in source order. Nothing else iterates
+  these maps into output (`move_catch_param_bindings`, `delete_typescript_bindings`, `clone_map` and nova_vm do not
+  depend on the order).
+
+Checked: the semantic digest (`dg`, nodes, symbols, references, scopes with bindings sorted, every parse and semantic
+error with labels and help, in order) on the same 54,332 inputs is identical to the base and between two runs with
+different keys; only the raw iteration order of bindings differs, as it should. `nova_vm/tests/parse_hash_tests.rs`:
+20,000 names built to collide (plus as many unresolved references and 5,000 locals) parse within 4x ordinary names
++ 0.5 s (13.4 s against 76 ms on the old hash in a debug build, now about equal), and three tests pin the source order
+of the diagnostics above (all four fail on the old code).
+
+Parse plus semantic check (`dg`, release, best of 3; the inputs of the earlier note):
+
+| input | before | after |
+|---|---:|---:|
+| 5,000 colliding `var` names (230 KB) | 61 ms | 1.2 ms |
+| 10,000 (460 KB) | 215 ms | 2.3 ms |
+| 20,000 (920 KB) | 840 ms | 3.8 ms |
+| 40,000 (1.8 MB) | 3,624 ms | 9.3 ms |
+| 40,000 distinct names (control) | 7.7 ms | 7.8 ms |
+
+Normal input pays for SipHash: sandbox-bundle.js 7.69 -> 7.95 ms (+3.4%, best of 4 interleaved, quiet machine), the
+widget scripts +1-4%. A keyed folded multiply over every byte (nova_vm's `HandleState` construction) measured +0.3% on
+the bundle, but its resistance to collisions without the key is an argument, not a proof, so the parser uses SipHash.
+
+Still super-linear, not through hashing (bounded by the source size, before the interrupt):
+- private names: `ClassTable::get_element_ids` (per `#x` reference, in the class builder) and
+  `has_private_definition` scan all elements of the class: a class with 20,000 private fields each referenced once
+  (440 KB) takes 400 ms to parse and check, 10,000 take 154 ms;
+- `parse_capturing_groups` compares each named group with every earlier one (regexp literals and `new RegExp`);
+- modules only: `check_unresolved_exports` runs `best_match` over every root name for each undefined export, and
+  `ModuleRecordBuilder::resolve_export_entries` searches the import entries linearly for each export.
+A parser work budget (or an interrupt poll in the lexer) would bound all of these; see `safe/SECURITY.md`.
 
 ## Phase 0 (where it stood after vendoring)
 
