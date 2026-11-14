@@ -309,7 +309,9 @@ pub(crate) fn check_length_growth<'a>(
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, ()> {
     let old_len = a.len(agent);
-    if new_len > old_len {
+    // Small growth (a push) is left to the collector and the poll: the
+    // infallible callers that append elements must not see an error here.
+    if new_len > old_len.saturating_add(4096) {
         let growth = (new_len - old_len) as usize;
         agent.check_heap_limit(
             growth.saturating_mul(core::mem::size_of::<Option<crate::ecmascript::Value>>()),
