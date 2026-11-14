@@ -176,6 +176,10 @@ pub(crate) struct Heap {
     pub(crate) string_hasher: ahash::RandomState,
     /// Counts allocations for garbage collection triggering.
     pub(crate) alloc_counter: usize,
+    /// Bytes of string data, ArrayBuffer data and keyed collection entries
+    /// allocated since the last garbage collection, for the heap limit. Not
+    /// part of the garbage collector's pacing.
+    pub(crate) data_bytes_since_gc: usize,
 }
 
 pub(crate) trait CreateHeapData<T, F> {
@@ -340,6 +344,7 @@ impl Heap {
             #[cfg(feature = "weak-refs")]
             weak_sets: Vec::with_capacity(0),
             alloc_counter: 0,
+            data_bytes_since_gc: 0,
         };
 
         const {

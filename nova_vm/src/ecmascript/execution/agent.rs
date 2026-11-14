@@ -990,7 +990,7 @@ impl Agent {
     pub(crate) fn check_gc(&mut self) -> bool {
         // Perform garbage collection if over 2 MiB of allocations have been
         // performed since last GC, or less near the heap limit.
-        self.heap.alloc_counter > self.limits.gc_threshold
+        self.heap.alloc_counter >= self.limits.gc_threshold
     }
 
     fn get_created_realm_root(&mut self) -> Realm<'static> {

@@ -32,6 +32,7 @@ impl Heap {
         total += vec_bytes(&self.executables);
         total += vec_bytes(&self.generators);
         total += self.maps.len() as usize * 64;
+        total += crate::ecmascript::map_entries_bytes(&self.maps);
         total += vec_bytes(&self.map_iterators);
         total += vec_bytes(&self.numbers);
         total += vec_bytes(&self.object_shapes);
@@ -47,6 +48,11 @@ impl Heap {
         #[cfg(feature = "set")]
         {
             total += self.sets.len() as usize * 64;
+            for index in 0..self.sets.len() {
+                if let Some(set) = self.sets.get(index) {
+                    total += set.values.capacity() * (size_of::<Option<Value<'static>>>() + 8);
+                }
+            }
         }
         #[cfg(feature = "array-buffer")]
         {

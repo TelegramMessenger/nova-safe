@@ -622,6 +622,7 @@ impl StringPrototype {
                     .into_iter()
                     .map(|arg| arg.get(agent).bind(nogc))
                     .collect::<Vec<_>>();
+                agent.check_concat_lengths(&string_args, nogc)?;
                 return Ok(String::concat(agent, &string_args, nogc).into());
             }
         };
@@ -660,6 +661,7 @@ impl StringPrototype {
         //     a. Let nextString be ? ToString(next).
         //     b. Set R to the string-concatenation of R and nextString.
         // 5. Return R.
+        agent.check_concat_lengths(&strings, nogc)?;
         Ok(String::concat(agent, &strings, nogc).into())
     }
 
@@ -3025,6 +3027,7 @@ fn string_pad<'gc>(
     if fill_string.is_empty_string() {
         return Ok(s.into());
     }
+    agent.check_string_length(usize::try_from(max_len).unwrap_or(usize::MAX), gc)?;
 
     // 4. Let fillLen be maxLength - stringLength.
     // Note: we checked that max_len > string_len above; this is always >0.

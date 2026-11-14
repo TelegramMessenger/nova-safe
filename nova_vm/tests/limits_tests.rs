@@ -351,6 +351,17 @@ fn huge_allocations_are_refused() {
             engine.run("'x'.repeat(2 ** 30)", None),
             thrown("RangeError: Invalid string length")
         );
+        assert_eq!(
+            engine.run(
+                "var s = 'x'.repeat(2 ** 27); try { s.concat(s, s, s, s, s, s, s); } catch (e) { String(e) }",
+                None
+            ),
+            Outcome::Value("RangeError: Invalid string length".into())
+        );
+        assert_eq!(
+            engine.run("'x'.padStart(2 ** 31)", None),
+            thrown("RangeError: Invalid string length")
+        );
         engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
         assert_eq!(
             engine.run("new ArrayBuffer(2 ** 27)", None),
@@ -372,6 +383,9 @@ fn heap_limit_terminates_growing_scripts() {
             "const a = []; for (;;) a.push(new ArrayBuffer(1 << 16));",
             "const a = []; for (let i = 0; ; i++) a.push('s' + i);",
             "const a = []; for (;;) { try { a.push(new Array(100).fill(0)); } catch {} }",
+            "const m = new Map(); for (let i = 0; ; i++) m.set(i, i);",
+            "const t = new Set(); for (let i = 0; ; i++) t.add(i);",
+            "let s = 'x'.repeat(1 << 20); for (;;) s = s + s;",
         ] {
             let mut engine = Engine::new();
             engine.agent.set_heap_limit(Some(8 * 1024 * 1024));

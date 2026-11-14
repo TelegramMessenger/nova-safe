@@ -779,7 +779,7 @@ pub(crate) fn create_byte_data_block<'a>(
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, DataBlock> {
     agent.check_allocation(usize::try_from(size).unwrap_or(usize::MAX), gc)?;
-    agent.heap.alloc_counter += size as usize;
+    agent.heap.data_bytes_since_gc += size as usize;
     // 1. If size > 2**53 - 1, throw a RangeError exception.
     if let Some(db) = usize::try_from(size)
         .ok()

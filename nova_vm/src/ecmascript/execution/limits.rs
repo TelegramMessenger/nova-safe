@@ -17,7 +17,7 @@
 //! [`GcAgent::run_job`]: crate::ecmascript::GcAgent::run_job
 
 use crate::{
-    ecmascript::{Agent, ExceptionType, JsError, JsResult},
+    ecmascript::{Agent, ExceptionType, JsError, JsResult, String},
     engine::NoGcScope,
 };
 
@@ -137,6 +137,7 @@ impl Agent {
         self.limits
             .live_bytes_after_gc
             .saturating_add(self.heap.alloc_counter)
+            .saturating_add(self.heap.data_bytes_since_gc)
     }
 
     /// Sets how many bytes of native stack the JavaScript code run by one
@@ -248,7 +249,13 @@ impl Agent {
         } else if let Some(limit) = self.limits.heap_limit
             && self.heap_size() > limit
         {
-            self.terminate(TerminationReason::OutOfMemory);
+            if self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0 {
+                self.terminate(TerminationReason::OutOfMemory);
+            } else {
+                // Collect at the next instruction; the heap is only over the
+                // limit if it still is after that.
+                self.limits.gc_threshold = 0;
+            }
         }
     }
 
@@ -326,6 +333,36 @@ impl Agent {
         self.check_allocation(length, gc)
     }
 
+    /// Refuses the concatenation of two strings that would be too long (see
+    /// [`Agent::check_string_length`]); the byte lengths bound the code unit
+    /// count from above.
+    #[inline]
+    pub fn check_concat_length<'a>(
+        &mut self,
+        a: String,
+        b: String,
+        gc: NoGcScope<'a, '_>,
+    ) -> JsResult<'a, ()> {
+        let bytes = a.len_(self).saturating_add(b.len_(self));
+        if bytes > 4096 {
+            self.check_string_length(bytes, gc)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// [`Agent::check_concat_length`] for a list of strings.
+    pub fn check_concat_lengths<'a>(
+        &mut self,
+        strings: &[String],
+        gc: NoGcScope<'a, '_>,
+    ) -> JsResult<'a, ()> {
+        let bytes = strings
+            .iter()
+            .fold(0usize, |total, s| total.saturating_add(s.len_(self)));
+        self.check_string_length(bytes, gc)
+    }
+
     /// Throws a RangeError "Maximum call stack size exceeded" when the native
     /// stack used since the host entered the Agent is over the stack limit.
     #[inline]
@@ -367,6 +404,7 @@ impl Agent {
     /// Called after a garbage collection: records the live heap size and
     /// terminates the running script if it is over the heap limit.
     pub(crate) fn after_gc(&mut self) {
+        self.heap.data_bytes_since_gc = 0;
         self.limits.live_bytes_after_gc = self.heap.estimate_live_bytes();
         self.limits.update_gc_threshold();
         if let Some(limit) = self.limits.heap_limit

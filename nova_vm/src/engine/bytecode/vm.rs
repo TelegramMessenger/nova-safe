@@ -1115,6 +1115,7 @@ fn apply_string_or_numeric_addition<'gc>(
     match (String::try_from(lprim), String::try_from(rprim)) {
         (Ok(lstr), Ok(rstr)) => {
             // iii. Return the string-concatenation of lstr and rstr.
+            agent.check_concat_length(lstr, rstr, gc)?;
             return Ok(String::concat(agent, [lstr, rstr], gc).into());
         }
         (Ok(lstr), Err(_)) => {
@@ -1122,14 +1123,18 @@ fn apply_string_or_numeric_addition<'gc>(
             // ii. Let rstr be ? ToString(rprim).
             let rstr = to_string_primitive(agent, rprim, gc)?;
             // iii. Return the string-concatenation of lstr and rstr.
-            return Ok(String::concat(agent, [lstr.get(agent).bind(gc), rstr], gc).into());
+            let lstr = lstr.get(agent).bind(gc);
+            agent.check_concat_length(lstr, rstr, gc)?;
+            return Ok(String::concat(agent, [lstr, rstr], gc).into());
         }
         (Err(_), Ok(rstr)) => {
             let rstr = rstr.scope(agent, gc);
             // i. Let lstr be ? ToString(lprim).
             let lstr = to_string_primitive(agent, lprim, gc)?;
             // iii. Return the string-concatenation of lstr and rstr.
-            return Ok(String::concat(agent, [lstr, rstr.get(agent).bind(gc)], gc).into());
+            let rstr = rstr.get(agent).bind(gc);
+            agent.check_concat_length(lstr, rstr, gc)?;
+            return Ok(String::concat(agent, [lstr, rstr], gc).into());
         }
         (Err(_), Err(_)) => {}
     }
