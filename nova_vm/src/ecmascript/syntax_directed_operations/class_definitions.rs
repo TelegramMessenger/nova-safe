@@ -4,12 +4,63 @@
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BuiltinConstructorFunction, ExceptionType, Function, InternalMethods,
-        JsResult, Object, ProtoIntrinsics, construct, initialize_instance_elements, is_constructor,
+        Agent, ArgumentsList, BuiltinConstructorFunction, ECMAScriptCodeEvaluationState,
+        ECMAScriptFunction, Environment, ExceptionType, ExecutionContext, Function,
+        InternalMethods, JsResult, Object, ProtoIntrinsics, construct,
+        initialize_instance_elements, is_constructor, new_class_field_initializer_environment,
         ordinary_create_from_constructor, unwrap_try,
     },
-    engine::{Bindable, GcScope, Scopable},
+    engine::{Bindable, GcScope, Scopable, Vm},
+    heap::ArenaAccess,
 };
+
+/// ### [7.3.33 InitializeInstanceElements ( O, constructor )](https://tc39.es/ecma262/#sec-initializeinstanceelements)
+///
+/// For a derived class constructor written in the class body: SuperCall
+/// performs this on the object that super() returned. The constructor's
+/// field and private method initializers are compiled into one Executable
+/// that runs with `this` bound to that object.
+pub(crate) fn initialize_derived_instance_elements<'a>(
+    agent: &mut Agent,
+    o: Object,
+    constructor: ECMAScriptFunction,
+    gc: GcScope<'a, '_>,
+) -> JsResult<'a, ()> {
+    let o = o.bind(gc.nogc());
+    let constructor = constructor.bind(gc.nogc());
+    let Some(bytecode) = constructor
+        .get_executable(agent)
+        .get(agent)
+        .instance_initializer
+        .bind(gc.nogc())
+    else {
+        return Ok(());
+    };
+    let data = &constructor.get(agent).ecmascript_function;
+    let outer_env = data.environment.bind(gc.nogc());
+    let outer_priv_env = data.private_environment.bind(gc.nogc());
+    let source_code = data.source_code.bind(gc.nogc());
+    let realm = data.realm.bind(gc.nogc());
+    let script_or_module = data.script_or_module.bind(gc.nogc());
+    let f = Function::from(constructor);
+    let decl_env = new_class_field_initializer_environment(agent, f, o, outer_env, gc.nogc());
+    agent.push_execution_context(ExecutionContext {
+        ecmascript_code: Some(ECMAScriptCodeEvaluationState {
+            lexical_environment: Environment::Function(decl_env.unbind()),
+            variable_environment: Environment::Function(decl_env.unbind()),
+            private_environment: outer_priv_env.unbind(),
+            is_strict_mode: true,
+            source_code: source_code.unbind(),
+        }),
+        function: Some(f.unbind()),
+        realm: realm.unbind(),
+        script_or_module: Some(script_or_module.unbind()),
+    });
+    let bytecode = bytecode.scope(agent, gc.nogc());
+    let result = Vm::execute(agent, bytecode, None, gc).into_js_result();
+    agent.pop_execution_context();
+    result.map(|_| ())
+}
 
 pub(crate) fn base_class_default_constructor<'a>(
     agent: &mut Agent,

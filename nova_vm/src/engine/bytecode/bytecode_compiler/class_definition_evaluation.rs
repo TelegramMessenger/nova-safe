@@ -653,7 +653,28 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
             // Pop the `this` value off the stack.
             constructor_ctx.add_instruction(Instruction::Store);
             let source_code = constructor_ctx.get_source_code();
-            if let Some(constructor) = constructor {
+            if let Some(constructor) = constructor
+                && has_constructor_parent
+            {
+                // A derived constructor has no `this` until super() returns:
+                // SuperCall runs the initializers then.
+                let initializer = constructor_ctx.finish();
+                let (agent, gc) = ctx.get_agent_and_gc();
+                let mut constructor_ctx =
+                    CompileContext::new(agent, source_code, scoping, nodes, gc);
+                constructor_ctx.set_runtime_strict(constructor_runtime_strict);
+                constructor_ctx.set_instance_initializer(initializer);
+                constructor_ctx.compile_function_body(CompileFunctionBodyData {
+                    source_code,
+                    scoping,
+                    nodes,
+                    is_lexical: false,
+                    is_strict: true,
+                    ast: FunctionAstRef::ClassConstructor(&constructor.value),
+                });
+                let executable = constructor_ctx.finish();
+                ctx.set_function_expression_bytecode(constructor_index, executable);
+            } else if let Some(constructor) = constructor {
                 let constructor_data = CompileFunctionBodyData {
                     source_code,
                     scoping,

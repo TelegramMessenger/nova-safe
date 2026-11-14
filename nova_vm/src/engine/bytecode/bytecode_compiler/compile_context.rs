@@ -1365,6 +1365,10 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             .add_class_initializer_bytecode(executable, has_constructor_parent);
     }
 
+    pub(super) fn set_instance_initializer(&mut self, executable: Executable<'gc>) {
+        self.executable.set_instance_initializer(executable);
+    }
+
     pub(super) fn add_class_initializer(&mut self, has_constructor_parent: bool) {
         self.executable
             .add_class_initializer(has_constructor_parent);

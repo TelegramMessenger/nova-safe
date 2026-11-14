@@ -117,6 +117,9 @@ pub(crate) struct ExecutableHeapData<'a> {
     pub(crate) function_expressions: Box<[FunctionExpression<'static>]>,
     pub(crate) arrow_function_expressions: Box<[ArrowFunctionExpression<'static>]>,
     pub(crate) class_initializer_bytecodes: Box<[(Option<Executable<'static>>, bool)]>,
+    /// The instance field and private method initializers of a derived class
+    /// constructor: SuperCall runs them on the new `this` value.
+    pub(crate) instance_initializer: Option<Executable<'static>>,
     pub(crate) _gc: PhantomData<Value<'a>>,
 }
 
@@ -466,8 +469,10 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             function_expressions,
             arrow_function_expressions,
             class_initializer_bytecodes,
+            instance_initializer,
             _gc: _,
         } = self;
+        instance_initializer.mark_values(queues);
         constants.mark_values(queues);
         arrow_function_expressions.mark_values(queues);
         caches.mark_values(queues);
@@ -485,8 +490,10 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             function_expressions,
             arrow_function_expressions,
             class_initializer_bytecodes,
+            instance_initializer,
             _gc: _,
         } = self;
+        instance_initializer.sweep_values(compactions);
         constants.sweep_values(compactions);
         arrow_function_expressions.sweep_values(compactions);
         caches.sweep_values(compactions);
