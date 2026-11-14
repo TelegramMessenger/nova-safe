@@ -490,3 +490,23 @@ fn callable_proxies_can_be_called() {
         engine.assert_usable();
     });
 }
+
+#[test]
+fn rebinding_does_not_grow_names_without_bound() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        let started = Instant::now();
+        assert_eq!(
+            engine.run(
+                "var b = function f() {}; for (let i = 0; i < 1e5; i++) b = b.bind(null); b.name.length < 4200 && b.name.startsWith('bound ') && b.name.endsWith(' f')",
+                None
+            ),
+            Outcome::Value("true".into())
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            engine.run("function g() {} g.bind().bind().name", None),
+            Outcome::Value("bound bound g".into())
+        );
+    });
+}
