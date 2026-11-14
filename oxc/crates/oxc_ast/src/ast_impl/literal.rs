@@ -237,34 +237,30 @@ impl RegExpFlags {
     pub fn to_inline_string(self) -> InlineString<8, usize> {
         let mut str = InlineString::new();
 
-        // In alphabetical order.
-        // SAFETY: Capacity of the `InlineString` is 8, and we push a maximum of 8 bytes.
-        // All bytes pushed are ASCII.
-        unsafe {
-            if self.contains(Self::D) {
-                str.push_unchecked(b'd');
-            }
-            if self.contains(Self::G) {
-                str.push_unchecked(b'g');
-            }
-            if self.contains(Self::I) {
-                str.push_unchecked(b'i');
-            }
-            if self.contains(Self::M) {
-                str.push_unchecked(b'm');
-            }
-            if self.contains(Self::S) {
-                str.push_unchecked(b's');
-            }
-            if self.contains(Self::U) {
-                str.push_unchecked(b'u');
-            }
-            if self.contains(Self::V) {
-                str.push_unchecked(b'v');
-            }
-            if self.contains(Self::Y) {
-                str.push_unchecked(b'y');
-            }
+        // In alphabetical order; at most 8 ASCII bytes, the capacity.
+        if self.contains(Self::D) {
+            str.push(b'd');
+        }
+        if self.contains(Self::G) {
+            str.push(b'g');
+        }
+        if self.contains(Self::I) {
+            str.push(b'i');
+        }
+        if self.contains(Self::M) {
+            str.push(b'm');
+        }
+        if self.contains(Self::S) {
+            str.push(b's');
+        }
+        if self.contains(Self::U) {
+            str.push(b'u');
+        }
+        if self.contains(Self::V) {
+            str.push(b'v');
+        }
+        if self.contains(Self::Y) {
+            str.push(b'y');
         }
 
         str
