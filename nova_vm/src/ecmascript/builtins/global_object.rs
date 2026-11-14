@@ -467,6 +467,7 @@ fn evaluate_parsed_eval<'gc>(
                 let exe = Executable::compile_eval_body(
                     agent,
                     body,
+                    directives,
                     source_code,
                     scoping,
                     nodes,

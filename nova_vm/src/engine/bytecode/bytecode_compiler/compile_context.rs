@@ -33,7 +33,7 @@ use super::{
         ControlFlowFinallyEntry, ControlFlowStackEntry, compile_async_iterator_exit,
         compile_iterator_pop,
     },
-    function_declaration_instantiation, parsed_string_to_wtf8,
+    function_declaration_instantiation, parsed_string_to_wtf8, string_literal_to_wtf8,
 };
 
 pub(crate) type IndexType = u16;
@@ -1155,6 +1155,20 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
 
         for stack_variable in stack_variables {
             stack_variable.exit(self);
+        }
+    }
+
+    /// A directive is an ExpressionStatement of a string literal: the value
+    /// of a Script or eval code that ends in its directive prologue is the
+    /// last directive's string.
+    pub(crate) fn compile_directive_prologue(
+        &mut self,
+        directives: &'script [ast::Directive<'script>],
+    ) {
+        if let Some(directive) = directives.last() {
+            let (agent, gc) = self.get_agent_and_gc();
+            let value = string_literal_to_wtf8(agent, &directive.expression, gc);
+            self.add_instruction_with_constant(Instruction::StoreConstant, value);
         }
     }
 

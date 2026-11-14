@@ -127,6 +127,7 @@ impl<'gc> Executable<'gc> {
     pub(crate) fn compile_script<'s>(
         agent: &mut Agent,
         body: &'s [ast::Statement<'s>],
+        directives: &'s [ast::Directive<'s>],
         source_code: SourceCode<'gc>,
         scoping: &'s Scoping,
         nodes: &'s AstNodes<'s>,
@@ -141,6 +142,7 @@ impl<'gc> Executable<'gc> {
         let mut ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
         ctx.set_runtime_strict(is_strict);
 
+        ctx.compile_directive_prologue(directives);
         ctx.compile_statements(body);
         ctx.do_implicit_return();
         ctx.finish()
@@ -196,6 +198,7 @@ impl<'gc> Executable<'gc> {
     pub(crate) fn compile_eval_body<'s>(
         agent: &mut Agent,
         body: &'s [ast::Statement<'s>],
+        directives: &'s [ast::Directive<'s>],
         source_code: SourceCode<'gc>,
         scoping: &'s Scoping,
         nodes: &'s AstNodes<'s>,
@@ -210,6 +213,7 @@ impl<'gc> Executable<'gc> {
         let mut ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
         ctx.set_runtime_strict(is_strict);
 
+        ctx.compile_directive_prologue(directives);
         ctx.compile_statements(body);
         ctx.do_implicit_return();
         ctx.finish()
