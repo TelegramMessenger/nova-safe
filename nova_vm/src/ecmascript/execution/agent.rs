@@ -41,7 +41,7 @@ use crate::{
     },
     engine::{
         Bindable, GcScope, Global, HeapRootCollection, HeapRootData, HeapRootRef, NoGcScope,
-        Rootable, Vm,
+        PooledVmStacks, Rootable, Vm,
     },
     heap::{
         ArenaAccess, CompactionLists, CreateHeapData, Heap, HeapIndexHandle, HeapMarkAndSweep,
@@ -924,6 +924,10 @@ pub struct Agent {
     pub(crate) stack_ref_collections: RefCell<Vec<HeapRootCollection>>,
     /// VMs suspended while their running code calls out of the interpreter.
     pub(crate) vm_stack: Vec<Vm>,
+    /// Emptied value and iterator stacks of finished VMs, reused by new ones.
+    pub(crate) vm_stack_pool: Vec<PooledVmStacks>,
+    /// Emptied argument vectors, reused for call arguments.
+    pub(crate) arguments_pool: Vec<Vec<Value<'static>>>,
     /// ### \[\[KeptAlive]]
     ///
     /// > Note: instead of storing objects in a list here, we only store a
@@ -954,6 +958,8 @@ impl Agent {
             stack_refs: RefCell::new(Vec::with_capacity(64)),
             stack_ref_collections: RefCell::new(Vec::with_capacity(32)),
             vm_stack: Vec::with_capacity(16),
+            vm_stack_pool: Vec::new(),
+            arguments_pool: Vec::new(),
             #[cfg(feature = "weak-refs")]
             kept_alive: false,
             private_names_counter: 0,
@@ -1670,6 +1676,8 @@ impl HeapMarkAndSweep for Agent {
             stack_refs,
             stack_ref_collections,
             vm_stack,
+            vm_stack_pool: _,
+            arguments_pool: _,
             options: _,
             symbol_id: _,
             global_symbol_registry,
@@ -1720,6 +1728,8 @@ impl HeapMarkAndSweep for Agent {
             stack_refs,
             stack_ref_collections,
             vm_stack,
+            vm_stack_pool: _,
+            arguments_pool: _,
             options: _,
             symbol_id: _,
             global_symbol_registry,

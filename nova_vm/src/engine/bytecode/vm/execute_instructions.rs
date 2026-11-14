@@ -1545,7 +1545,7 @@ pub(super) fn execute_direct_eval_call<'gc>(
     )
     .unbind()?
     .bind(gc.nogc());
-    let args = vm.get_call_args(instr, gc.nogc());
+    let args = vm.get_call_args(agent, instr, gc.nogc());
 
     // a. If SameValue(func, %eval%) is true, then
     let result = if func == agent.current_realm_record().intrinsics().eval().into() {
@@ -1620,7 +1620,7 @@ pub(super) fn execute_evaluate_call<'gc>(
         // a. Let thisValue be undefined.
         Value::Undefined
     };
-    let mut args = vm.get_call_args(instr, gc.nogc()).unbind();
+    let mut args = vm.get_call_args(agent, instr, gc.nogc()).unbind();
     let func = vm.stack.pop().unwrap().unbind();
     let this_value = this_value.unbind();
     let result = with_vm_gc(
@@ -1637,7 +1637,7 @@ pub(super) fn execute_evaluate_call<'gc>(
         },
         gc,
     );
-    return_pooled_arguments_vec(args);
+    return_pooled_arguments_vec(agent, args);
     vm.result = Some(result?.unbind());
     Ok(())
 }
@@ -1648,7 +1648,7 @@ pub(super) fn execute_evaluate_new<'gc>(
     instr: Instr,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let args = vm.get_call_args(instr, gc.nogc());
+    let args = vm.get_call_args(agent, instr, gc.nogc());
     let constructor = vm.stack.pop().unwrap().bind(gc.nogc());
     let Some(constructor) = is_constructor(agent, constructor) else {
         let constructor_string = {
@@ -1710,7 +1710,7 @@ pub(super) fn execute_evaluate_super<'gc>(
         )
     };
     // 4. Let argList be ? ArgumentListEvaluation of Arguments.
-    let arg_list = vm.get_call_args(instr, gc.nogc());
+    let arg_list = vm.get_call_args(agent, instr, gc.nogc());
     // 5. If IsConstructor(func) is false, throw a TypeError exception.
     let Some(func) = func.and_then(|func| is_constructor(agent, func)) else {
         let constructor = func.map_or(Value::Null, |f| f.unbind().into());

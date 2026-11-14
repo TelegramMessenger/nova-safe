@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::{cell::RefCell, marker::PhantomData, ops::Deref};
+use core::{marker::PhantomData, ops::Deref};
 use std::borrow::Cow;
 
 use crate::{
@@ -79,7 +79,7 @@ impl<'slice, 'value> ArgumentsList<'slice, 'value> {
         R: 'a,
     {
         let slice = core::mem::take(&mut self.slice);
-        let values = take_pooled_arguments_vec(slice);
+        let values = take_pooled_arguments_vec(agent, slice);
         let (stack_refs_len, index) = {
             let stack_refs_len = agent.stack_refs.borrow().len();
             let mut stack_ref_collections = agent.stack_ref_collections.borrow_mut();
@@ -116,7 +116,7 @@ impl<'slice, 'value> ArgumentsList<'slice, 'value> {
         let copied = tail.len().min(remaining.len());
         tail[..copied].copy_from_slice(&remaining[..copied]);
         self.slice = tail;
-        return_pooled_arguments_vec(values);
+        return_pooled_arguments_vec(agent, values);
         result
     }
 
@@ -194,31 +194,27 @@ impl<'value> Deref for ArgumentsList<'_, 'value> {
 const ARGUMENTS_POOL_LEN: usize = 16;
 const ARGUMENTS_POOL_MAX_CAPACITY: usize = 64;
 
-thread_local! {
-    static ARGUMENTS_POOL: RefCell<Vec<Vec<Value<'static>>>> = const { RefCell::new(Vec::new()) };
-}
-
-pub(crate) fn take_pooled_arguments_vec(values: &[Value<'static>]) -> Vec<Value<'static>> {
+pub(crate) fn take_pooled_arguments_vec(
+    agent: &mut Agent,
+    values: &[Value<'static>],
+) -> Vec<Value<'static>> {
     if values.is_empty() {
         return Vec::new();
     }
-    let mut vec = ARGUMENTS_POOL
-        .with_borrow_mut(|pool| pool.pop())
-        .unwrap_or_default();
+    let mut vec = agent.arguments_pool.pop().unwrap_or_default();
     vec.extend_from_slice(values);
     vec
 }
 
-pub(crate) fn return_pooled_arguments_vec(mut vec: Vec<Value<'static>>) {
-    if vec.capacity() == 0 || vec.capacity() > ARGUMENTS_POOL_MAX_CAPACITY {
+pub(crate) fn return_pooled_arguments_vec(agent: &mut Agent, mut vec: Vec<Value<'static>>) {
+    if vec.capacity() == 0
+        || vec.capacity() > ARGUMENTS_POOL_MAX_CAPACITY
+        || agent.arguments_pool.len() >= ARGUMENTS_POOL_LEN
+    {
         return;
     }
     vec.clear();
-    ARGUMENTS_POOL.with_borrow_mut(|pool| {
-        if pool.len() < ARGUMENTS_POOL_LEN {
-            pool.push(vec);
-        }
-    });
+    agent.arguments_pool.push(vec);
 }
 
 /// Arguments list stored temporarily on the Agent's heap.
