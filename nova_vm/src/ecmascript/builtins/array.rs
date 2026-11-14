@@ -162,10 +162,15 @@ impl<'a> Array<'a> {
     /// to appear as JavaScript Array "holes", but this guarantee may be
     /// removed in the future.
     pub fn set_len(self, agent: &mut Agent, len: u32) {
-        let elems = self.get_elements_mut(agent);
+        let elems = self.get_elements(agent);
         debug_assert!(elems.len_writable);
         assert!(len <= elems.cap(), "Array length exceeds its capacity");
-        elems.len = len;
+        agent
+            .heap
+            .elements
+            .ensure_values_len(elems.cap, elems.elements_index, len)
+            .expect("Array length exceeds its allocated storage");
+        self.get_elements_mut(agent).len = len;
     }
 
     pub(crate) fn length_writable(self, agent: &Agent) -> bool {

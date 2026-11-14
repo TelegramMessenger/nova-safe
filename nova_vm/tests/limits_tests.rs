@@ -533,3 +533,62 @@ fn heap_limit_holds_with_a_large_live_heap() {
         assert!(size <= limit + limit / 2, "{size}");
     });
 }
+
+#[test]
+fn large_arrays_take_memory_proportional_to_their_length() {
+    on_big_stack(|| {
+        // A chart with 100k points under a small heap limit: elements past
+        // 2^16 used to take a whole 2^24-slot storage (128 MiB).
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(8 * 1024 * 1024));
+        assert_eq!(
+            engine.run(
+                "var points = []; for (let i = 0; i < 100000; i++) points.push(i); points.length",
+                None
+            ),
+            Outcome::Value("100000".into())
+        );
+        engine.agent.gc();
+        let size = engine.agent.heap_size();
+        assert!(size > 100_000 * 8, "{size}");
+        assert!(size < 4 * 1024 * 1024, "{size}");
+        assert_eq!(
+            engine.run(
+                "var b = new Array(70000); b[69999] = 1; b.fill(2, 0, 10); var c = b.slice(); c.length + ':' + c[5] + ':' + c[69999] + ':' + (30000 in c) + ':' + points.indexOf(99999)",
+                None
+            ),
+            Outcome::Value("70000:2:1:false:99999".into())
+        );
+        assert_eq!(
+            engine.run(
+                "points.length = 50; points.push(7); points.length + ':' + points[50] + ':' + points.concat(points).length",
+                None
+            ),
+            Outcome::Value("51:7:102".into())
+        );
+        engine.agent.set_heap_limit(None);
+        engine.assert_usable();
+    });
+}
+
+#[test]
+fn heap_estimate_counts_bytecode_environments_and_stacks() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        engine.agent.gc();
+        let before = engine.agent.heap_size();
+        assert_eq!(
+            engine.run(
+                "var big = Function('let x = 0;' + 'x += 1;'.repeat(100000) + 'return x;'); var keep = []; for (let i = 0; i < 20000; i++) { let v = i; keep.push(() => v); } function* g() { let a = [1, 2, 3]; yield a; } var gens = []; for (let i = 0; i < 20000; i++) { const it = g(); it.next(); gens.push(it); } typeof big",
+                None
+            ),
+            Outcome::Value("function".into())
+        );
+        engine.agent.gc();
+        let grown = engine.agent.heap_size() - before;
+        // 100k statements of bytecode, 20k closure environments and 20k
+        // suspended generator stacks.
+        eprintln!("estimate grew by {grown} bytes");
+        assert!(grown > 10 * 1024 * 1024, "{grown}");
+    });
+}

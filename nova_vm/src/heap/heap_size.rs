@@ -7,7 +7,7 @@
 use core::mem::size_of;
 
 use super::Heap;
-use crate::ecmascript::{PropertyKey, Value};
+use crate::ecmascript::{GeneratorState, PropertyKey, Value};
 
 fn vec_bytes<T>(v: &[T]) -> usize {
     core::mem::size_of_val(v)
@@ -63,6 +63,49 @@ impl Heap {
                 total += buffer.byte_length();
             }
         }
+        for executable in self.executables.iter() {
+            total += executable.instructions.len()
+                + vec_bytes(&executable.caches)
+                + vec_bytes(&executable.constants)
+                + vec_bytes(&executable.shapes)
+                + vec_bytes(&executable.function_expressions)
+                + vec_bytes(&executable.arrow_function_expressions)
+                + vec_bytes(&executable.class_initializer_bytecodes);
+        }
+        let environments = &self.environments;
+        total += vec_bytes(&environments.declarative)
+            + vec_bytes(&environments.function)
+            + vec_bytes(&environments.global)
+            + vec_bytes(&environments.object)
+            + vec_bytes(&environments.module)
+            + vec_bytes(&environments.private);
+        for declarative in environments.declarative.iter() {
+            total += declarative.bindings_bytes();
+        }
+        total += vec_bytes(&self.object_shape_transitions);
+        for generator in self.generators.iter() {
+            if let Some(
+                GeneratorState::SuspendedStart(state) | GeneratorState::SuspendedYield(state),
+            ) = &generator.generator_state
+            {
+                total += state.vm.heap_bytes();
+            }
+        }
+        for reaction in self.await_reactions.iter() {
+            if let Some(vm) = &reaction.vm {
+                total += vm.heap_bytes();
+            }
+        }
+        #[cfg(feature = "array-buffer")]
+        {
+            let side_entry = size_of::<(usize, usize)>() + 8;
+            total += (self.typed_array_byte_lengths.capacity()
+                + self.typed_array_byte_offsets.capacity()
+                + self.typed_array_array_lengths.capacity()
+                + self.data_view_byte_lengths.capacity()
+                + self.data_view_byte_offsets.capacity())
+                * side_entry;
+        }
         total += vec_bytes(&self.strings);
         for string in self.strings.iter() {
             total += string.len();
@@ -73,7 +116,8 @@ impl Heap {
         macro_rules! storage {
             ($($values:ident, $keys:ident, $n:expr;)*) => {
                 $(
-                    total += e.$values.values.len().saturating_mul($n).saturating_mul(value_size);
+                    let _ = $n;
+                    total += e.$values.values.slot_count().saturating_mul(value_size);
                     total += e.$keys.keys.len().saturating_mul($n).saturating_mul(key_size);
                 )*
             };
