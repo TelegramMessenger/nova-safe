@@ -43,7 +43,11 @@ pub(crate) fn initialize_derived_instance_elements<'a>(
     let realm = data.realm.bind(gc.nogc());
     let script_or_module = data.script_or_module.bind(gc.nogc());
     let f = Function::from(constructor);
-    let decl_env = new_class_field_initializer_environment(agent, f, o, outer_env, gc.nogc());
+    // The initializers are methods whose HomeObject is the class prototype,
+    // as the constructor's is.
+    let home_object = data.home_object.bind(gc.nogc());
+    let decl_env =
+        new_class_field_initializer_environment(agent, f, o, home_object, outer_env, gc.nogc());
     agent.push_execution_context(ExecutionContext {
         ecmascript_code: Some(ECMAScriptCodeEvaluationState {
             lexical_environment: Environment::Function(decl_env.unbind()),

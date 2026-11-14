@@ -206,6 +206,28 @@ fn json_stringify_replacer_key_conversion_throws() {
 }
 
 #[test]
+fn super_property_in_field_initializers_and_static_blocks() {
+    let source = r#"
+        class P { m() { return "P.m"; } static s() { return "P.s"; } }
+        class A extends P {
+            constructor() { super(); }
+            f = () => super.m(); g = super.m(); static h = super.s();
+            static { this.k = super.s(); }
+        }
+        var a = new A();
+        var out = [a.f(), a.g, A.h, A.k];
+        class B extends P { f = () => super.m(); static { this.k = super.s(); } }
+        out.push(new B().f(), B.k);
+        class C { f = () => super.toString === Object.prototype.toString; x = new.target; }
+        out.push(new C().f(), String(new C().x));
+    "#;
+    assert_eq!(
+        run(source, "out.join()", None),
+        "P.m,P.m,P.s,P.s,P.m,P.s,true,undefined"
+    );
+}
+
+#[test]
 fn unsupported_syntax_throws_a_syntax_error() {
     let source = r#"
         var out = [];
