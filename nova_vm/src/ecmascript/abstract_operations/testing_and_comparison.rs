@@ -453,8 +453,10 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
             };
 
             // i. Let ny be StringToBigInt(py).
-            let ny = string_to_big_int(agent, py, gc).unbind()?.bind(gc);
             // ii. If ny is undefined, return undefined.
+            let Ok(ny) = string_to_big_int(agent, py, gc) else {
+                return Ok(None);
+            };
             // iii. Return BigInt::lessThan(px, ny).
             return Ok(Some(BigInt::less_than(agent, px, ny)));
         }
@@ -469,8 +471,10 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
             };
 
             // i. Let nx be StringToBigInt(px).
-            let nx = string_to_big_int(agent, px, gc).unbind()?.bind(gc);
             // ii. If nx is undefined, return undefined.
+            let Ok(nx) = string_to_big_int(agent, px, gc) else {
+                return Ok(None);
+            };
             // iii. Return BigInt::lessThan(nx, py).
             return Ok(Some(BigInt::less_than(agent, nx, py)));
         }
