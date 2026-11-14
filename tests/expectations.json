@@ -1558,7 +1558,6 @@
   "built-ins/RegExp/prototype/Symbol.match/y-fail-lastindex-no-write.js": "FAIL",
   "built-ins/RegExp/prototype/Symbol.matchAll/this-lastindex-cached.js": "FAIL",
   "built-ins/RegExp/prototype/Symbol.matchAll/this-tolength-lastindex-throws.js": "FAIL",
-  "built-ins/RegExp/prototype/Symbol.replace/coerce-lastindex.js": "CRASH",
   "built-ins/RegExp/prototype/Symbol.replace/y-fail-lastindex-no-write.js": "FAIL",
   "built-ins/RegExp/prototype/Symbol.split/splitter-proto-from-ctor-realm.js": "FAIL",
   "built-ins/RegExp/prototype/dotAll/cross-realm.js": "FAIL",
