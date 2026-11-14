@@ -99,7 +99,7 @@ impl Address {
     /// [`Box`]: crate::Box
     /// [`Vec`]: crate::Vec
     #[inline(always)] // Because it's a no-op
-    pub unsafe fn from_ptr<T>(p: *const T) -> Self {
+    pub fn from_ptr<T>(p: *const T) -> Self {
         Self(p as usize)
     }
 }
@@ -117,8 +117,7 @@ impl<T> GetAddress for Box<'_, T> {
     /// so this address acts as a unique identifier for the duration of the arena's existence.
     #[inline(always)] // Because it's only 1 instruction
     fn address(&self) -> Address {
-        let ptr = Box::as_non_null(self);
-        Address(ptr.addr().get())
+        Address::from_ptr::<T>(&**self)
     }
 }
 

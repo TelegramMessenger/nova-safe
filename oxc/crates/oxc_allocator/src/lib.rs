@@ -36,60 +36,30 @@
 //! * `disable_track_allocations` - Disables `track_allocations` feature.
 //!   Purpose is to prevent `--all-features` enabling allocation tracking.
 
+#![forbid(unsafe_code)]
+
 mod accessor;
 mod address;
-mod alloc;
 mod allocator;
-mod allocator_api2;
-#[cfg(feature = "bitset")]
-mod bitset;
 mod boxed;
-mod bumpalo_alloc;
 mod clone_in;
 mod convert;
-#[cfg(feature = "from_raw_parts")]
-mod from_raw_parts;
 pub mod hash_map;
 pub mod hash_set;
 pub mod ident_hasher;
-#[cfg(feature = "pool")]
-mod pool;
 mod string_builder;
 mod take_in;
-#[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
-mod tracking;
 mod vec;
-mod vec2;
-
-// Only expose `bump` module for doc tests
-#[cfg(not(feature = "testing"))]
-mod bump;
-#[cfg(feature = "testing")]
-pub mod bump;
 
 pub use accessor::AllocatorAccessor;
 pub use address::{Address, GetAddress, UnstableAddress};
 pub use allocator::Allocator;
-#[cfg(feature = "bitset")]
-pub use bitset::BitSet;
 pub use boxed::Box;
 pub use clone_in::CloneIn;
 pub use convert::{FromIn, IntoIn};
 pub use hash_map::HashMap;
 pub use hash_set::HashSet;
 pub use ident_hasher::{IdentBuildHasher, ident_hash, pack_len_hash};
-#[cfg(feature = "pool")]
-pub use pool::*;
 pub use string_builder::StringBuilder;
 pub use take_in::{Dummy, TakeIn};
 pub use vec::Vec;
-
-// Fixed size allocators are only supported on 64-bit little-endian platforms at present.
-//
-// Note: Importing the `fixed_size_constants` module would cause a compilation error on 32-bit systems.
-#[cfg(all(feature = "fixed_size", target_pointer_width = "64", target_endian = "little"))]
-mod generated {
-    #[cfg(debug_assertions)]
-    mod assert_layouts;
-    pub mod fixed_size_constants;
-}

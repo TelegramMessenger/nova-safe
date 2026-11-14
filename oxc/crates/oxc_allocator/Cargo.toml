@@ -60,16 +60,10 @@ name = "oxc_allocator"
 path = "src/lib.rs"
 doctest = true
 
-[dependencies.allocator-api2]
-version = "=0.2.21"
-
 [dependencies.hashbrown]
 version = "0.16.1"
-features = [
-    "inline-more",
-    "allocator-api2",
-]
 default-features = false
+features = ["inline-more"]
 
 [dependencies.oxc_ast_macros]
 path = "../oxc_ast_macros"

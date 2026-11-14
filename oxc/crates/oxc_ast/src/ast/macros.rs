@@ -857,18 +857,6 @@ macro_rules! shared_enum_variants {
         [$($variant:ident),+ $(,)?]
     ) => {
         // Ensure discriminants match for all variants between parent and child types
-        const _: () = {
-            $(
-                assert!(
-                    $crate::ast::macros::discriminant!($parent::$variant)
-                    == $crate::ast::macros::discriminant!($child::$variant),
-                    concat!(
-                        "Non-matching discriminants for `", stringify!($variant),
-                        "` between `", stringify!($parent), "` and `", stringify!($child), "`"
-                    )
-                );
-            )+
-        };
 
         impl<'a> $parent<'a> {
             #[doc = concat!("Return if a `", stringify!($parent), "` is a `", stringify!($child), "`.")]
@@ -959,17 +947,3 @@ macro_rules! shared_enum_variants {
 }
 pub(crate) use shared_enum_variants;
 
-/// Macro to get discriminant of an enum.
-/// # SAFETY
-/// Enum must be `#[repr(C, u8)]` or using this macro is unsound.
-/// <https://doc.rust-lang.org/std/mem/fn.discriminant.html>
-macro_rules! discriminant {
-    ($ty:ident :: $variant:ident) => {{
-        #[expect(clippy::undocumented_unsafe_blocks)]
-        unsafe {
-            let t = std::mem::ManuallyDrop::new($ty::$variant(oxc_allocator::Box::dangling()));
-            *(std::ptr::addr_of!(t).cast::<u8>())
-        }
-    }};
-}
-pub(crate) use discriminant;

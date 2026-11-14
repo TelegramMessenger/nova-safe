@@ -15571,41 +15571,18 @@ fn escape_template_element_raw<'a>(raw: &str, ast: AstBuilder<'a>) -> Str<'a> {
     if extra_bytes == 0 {
         return ast.str(raw);
     }
-    let len = bytes.len() + extra_bytes;
-    let layout = std::alloc::Layout::array::<u8>(len).unwrap();
-    let ptr = ast.allocator.alloc_layout(layout);
-    #[expect(clippy::undocumented_unsafe_blocks)]
-    unsafe {
-        let escaped = std::slice::from_raw_parts_mut(ptr.as_ptr(), len);
-        let mut j = 0;
-        for i in 0..bytes.len() {
-            match bytes[i] {
-                b'\\' => {
-                    *escaped.get_unchecked_mut(j) = b'\\';
-                    *escaped.get_unchecked_mut(j + 1) = b'\\';
-                    j += 2;
-                }
-                b'`' => {
-                    *escaped.get_unchecked_mut(j) = b'\\';
-                    *escaped.get_unchecked_mut(j + 1) = b'`';
-                    j += 2;
-                }
-                b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                    *escaped.get_unchecked_mut(j) = b'\\';
-                    *escaped.get_unchecked_mut(j + 1) = b'$';
-                    j += 2;
-                }
-                b'\r' => {
-                    *escaped.get_unchecked_mut(j) = b'\\';
-                    *escaped.get_unchecked_mut(j + 1) = b'r';
-                    j += 2;
-                }
-                b => {
-                    *escaped.get_unchecked_mut(j) = b;
-                    j += 1;
-                }
-            }
+    let mut escaped = String::with_capacity(bytes.len() + extra_bytes);
+    let mut rest = raw;
+    while let Some(c) = rest.chars().next() {
+        let next = &rest[c.len_utf8()..];
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '`' => escaped.push_str("\\`"),
+            '$' if next.starts_with('{') => escaped.push_str("\\$"),
+            '\r' => escaped.push_str("\\r"),
+            c => escaped.push(c),
         }
-        Str::from(std::str::from_utf8_unchecked(escaped))
+        rest = next;
     }
+    Str::from(ast.allocator.alloc_string(escaped))
 }

@@ -1,9 +1,6 @@
 use std::{
-    alloc::Layout,
     cell::Cell,
     hash::{BuildHasher, Hash},
-    ptr::NonNull,
-    slice,
 };
 
 use crate::{Allocator, Box, HashMap, Vec};
@@ -83,133 +80,27 @@ where
     type Cloned = Box<'new_alloc, [C]>;
 
     fn clone_in(&self, allocator: &'new_alloc Allocator) -> Self::Cloned {
-        let slice = self.as_ref();
-
-        // Compile-time check that `T` and `C` have identical size and alignment - which they always will
-        // with intended usage that `T` and `C` are same types, just with different lifetimes.
-        // This guarantees that layout of clone is same as layout of `slice`,
-        // so we can create `Layout` with `for_value`, which has no runtime checks.
-        const {
-            assert!(
-                size_of::<C>() == size_of::<T>() && align_of::<C>() == align_of::<T>(),
-                "Size and alignment of `T` and `<T as CloneIn>::Cloned` must be the same"
-            );
-        }
-        let layout = Layout::for_value(slice);
-
-        let dst_ptr = allocator.alloc_layout(layout).cast::<C>();
-
-        // SAFETY: We allocated space for `slice.len()` items of type `C`, starting at `dst_ptr`.
-        // Therefore, writing `slice.len()` elements to that memory region is safe.
-        // `C` isn't `Drop`, and allocation is in the arena, so we don't need to worry about a panic
-        // in the loop - can't lead to a memory leak.
-        unsafe {
-            let mut ptr = dst_ptr;
-            for item in slice {
-                ptr.write(item.clone_in(allocator));
-                ptr = ptr.add(1);
-            }
-        }
-
-        // SAFETY: We just initialized `slice.len()` x `C`s, starting at `dst_ptr`
-        let new_slice = unsafe { slice::from_raw_parts_mut(dst_ptr.as_ptr(), slice.len()) };
-        // SAFETY: `NonNull::from(new_slice)` produces a valid pointer. The data is in the arena.
-        // Lifetime of returned `Box` matches the `Allocator` the data was allocated in.
-        unsafe { Box::from_non_null(NonNull::from(new_slice)) }
+        Box::from_std(self.iter().map(|item| item.clone_in(allocator)).collect())
     }
 
     fn clone_in_with_semantic_ids(&self, allocator: &'new_alloc Allocator) -> Self::Cloned {
-        let slice = self.as_ref();
-
-        // Compile-time check that `T` and `C` have identical size and alignment - which they always will
-        // with intended usage that `T` and `C` are same types, just with different lifetimes.
-        // This guarantees that layout of clone is same as layout of `slice`,
-        // so we can create `Layout` with `for_value`, which has no runtime checks.
-        const {
-            assert!(
-                size_of::<C>() == size_of::<T>() && align_of::<C>() == align_of::<T>(),
-                "Size and alignment of `T` and `<T as CloneIn>::Cloned` must be the same"
-            );
-        }
-        let layout = Layout::for_value(slice);
-
-        let dst_ptr = allocator.alloc_layout(layout).cast::<C>();
-
-        // SAFETY: We allocated space for `slice.len()` items of type `C`, starting at `dst_ptr`.
-        // Therefore, writing `slice.len()` elements to that memory region is safe.
-        // `C` isn't `Drop`, and allocation is in the arena, so we don't need to worry about a panic
-        // in the loop - can't lead to a memory leak.
-        unsafe {
-            let mut ptr = dst_ptr;
-            for item in slice {
-                ptr.write(item.clone_in_with_semantic_ids(allocator));
-                ptr = ptr.add(1);
-            }
-        }
-
-        // SAFETY: We just initialized `slice.len()` x `C`s, starting at `dst_ptr`
-        let new_slice = unsafe { slice::from_raw_parts_mut(dst_ptr.as_ptr(), slice.len()) };
-        // SAFETY: `NonNull::from(new_slice)` produces a valid pointer. The data is in the arena.
-        // Lifetime of returned `Box` matches the `Allocator` the data was allocated in.
-        unsafe { Box::from_non_null(NonNull::from(new_slice)) }
+        Box::from_std(self.iter().map(|item| item.clone_in_with_semantic_ids(allocator)).collect())
     }
 }
 
 impl<'new_alloc, T, C> CloneIn<'new_alloc> for Vec<'_, T>
 where
     T: CloneIn<'new_alloc, Cloned = C>,
-    // TODO: This lifetime bound possibly shouldn't be required.
-    // https://github.com/oxc-project/oxc/pull/9656#issuecomment-2719762898
     C: 'new_alloc,
 {
     type Cloned = Vec<'new_alloc, C>;
 
     fn clone_in(&self, allocator: &'new_alloc Allocator) -> Self::Cloned {
-        // The implementation below is equivalent to:
-        // `Vec::from_iter_in(self.iter().map(|it| it.clone_in(allocator)), allocator)`
-        // But `Vec::from_iter_in` is inefficient because it performs a bounds check for each item.
-        // This is unnecessary in this case as we know the length of the slice with certainty.
-        // This implementation takes advantage of that invariant, and skips those checks.
-
-        let slice = self.as_slice();
-
-        let mut vec = Vec::<C>::with_capacity_in(slice.len(), allocator);
-
-        // SAFETY: We allocated capacity for `slice.len()` elements in `vec`.
-        // Therefore, writing `slice.len()` elements to that memory region is safe.
-        // `C` and `Vec` aren't `Drop`, and allocation is in the arena, so we don't need to worry about
-        // a panic in this loop - can't lead to a memory leak. We just set length at the end.
-        unsafe {
-            let mut ptr = vec.as_mut_ptr();
-            for item in slice {
-                ptr.write(item.clone_in(allocator));
-                ptr = ptr.add(1);
-            }
-            vec.set_len(slice.len());
-        }
-
-        vec
+        Vec::from_iter_in(self.iter().map(|item| item.clone_in(allocator)), allocator)
     }
 
     fn clone_in_with_semantic_ids(&self, allocator: &'new_alloc Allocator) -> Self::Cloned {
-        let slice = self.as_slice();
-
-        let mut vec = Vec::<C>::with_capacity_in(slice.len(), allocator);
-
-        // SAFETY: We allocated capacity for `slice.len()` elements in `vec`.
-        // Therefore, writing `slice.len()` elements to that memory region is safe.
-        // `C` and `Vec` aren't `Drop`, and allocation is in the arena, so we don't need to worry about
-        // a panic in this loop - can't lead to a memory leak. We just set length at the end.
-        unsafe {
-            let mut ptr = vec.as_mut_ptr();
-            for item in slice {
-                ptr.write(item.clone_in_with_semantic_ids(allocator));
-                ptr = ptr.add(1);
-            }
-            vec.set_len(slice.len());
-        }
-
-        vec
+        Vec::from_iter_in(self.iter().map(|item| item.clone_in_with_semantic_ids(allocator)), allocator)
     }
 }
 
