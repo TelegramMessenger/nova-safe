@@ -21,6 +21,11 @@ use crate::{
     },
 };
 
+
+/// Longest name (in bytes) that Function.prototype.bind still prefixes with
+/// "bound ".
+const MAX_BOUND_NAME_BYTES: usize = 4096;
+
 pub(crate) struct FunctionPrototype;
 impl Builtin for FunctionPrototype {
     const NAME: String<'static> = String::EMPTY_STRING;
@@ -306,13 +311,15 @@ impl FunctionPrototype {
         // 9. If targetName is not a String, set targetName to the empty String.
         let target_name = String::try_from(target_name).unwrap_or(String::EMPTY_STRING);
         // 10. Perform SetFunctionName(F, targetName, "bound").
-        set_function_name(
-            agent,
-            f,
-            target_name.into(),
-            Some(SetFunctionNamePrefix::Bound),
-            gc.nogc(),
-        );
+        // Nova stops prefixing once the name is long: rebinding a bound
+        // function in a loop would otherwise copy ever longer names
+        // ("bound bound … f"), quadratic in the number of binds.
+        let prefix = if target_name.len_(agent) > MAX_BOUND_NAME_BYTES {
+            None
+        } else {
+            Some(SetFunctionNamePrefix::Bound)
+        };
+        set_function_name(agent, f, target_name.into(), prefix, gc.nogc());
         // 11. Return F.
 
         Ok(f.unbind().into())

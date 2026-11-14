@@ -43,6 +43,12 @@ use crate::{
     ndt,
 };
 
+/// Allocations between two garbage collections of a small heap.
+pub(crate) const MIN_GC_ALLOC_LIMIT: usize = 2 * 1024 * 1024;
+/// A larger heap waits for this many allocated bytes per live item, so that
+/// collections stay proportional to the work done between them.
+const GC_ALLOC_BYTES_PER_LIVE_ITEM: usize = 16;
+
 #[cfg_attr(feature = "probes", allow(unsafe_code))]
 pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static>>], gc: GcScope) {
     ndt::gc_start!(|| ());
@@ -97,6 +103,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             finalization_registries,
             generators,
             globals: _,
+            free_globals: _,
+            gc_alloc_limit: _,
             maps,
             map_iterators,
             modules,
@@ -1705,9 +1713,12 @@ fn sweep(
         weak_sets,
         alloc_counter,
         data_bytes_since_gc: _,
+        free_globals: _,
+        gc_alloc_limit,
     } = &mut agent.heap;
     // Reset the allocation counter.
     *alloc_counter = 0;
+    *gc_alloc_limit = MIN_GC_ALLOC_LIMIT.max(bits.marked_count() * GC_ALLOC_BYTES_PER_LIVE_ITEM);
     let Environments {
         declarative,
         function,

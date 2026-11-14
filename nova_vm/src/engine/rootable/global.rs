@@ -31,14 +31,17 @@ impl<T: Rootable> Global<T> {
         };
         let value = heap_root_data;
         let mut globals = agent.heap.globals.borrow_mut();
-        let reused_index = globals.iter_mut().enumerate().find_map(|(index, entry)| {
-            if entry == &HeapRootData::Empty {
+        let mut free_globals = agent.heap.free_globals.borrow_mut();
+        let mut reused_index = None;
+        while let Some(index) = free_globals.pop() {
+            if let Some(entry) = globals.get_mut(index as usize)
+                && *entry == HeapRootData::Empty
+            {
                 *entry = value;
-                Some(index)
-            } else {
-                None
+                reused_index = Some(index as usize);
+                break;
             }
-        });
+        }
         let heap_ref = if let Some(reused_index) = reused_index {
             HeapRootRef::from_index(reused_index)
         } else {
@@ -60,15 +63,14 @@ impl<T: Rootable> Global<T> {
             Err(heap_ref) => heap_ref,
         };
         // Leave an `Empty` in the index and return the value
+        let index = heap_ref.to_index();
         let heap_data = core::mem::replace(
-            agent
-                .heap
-                .globals
-                .borrow_mut()
-                .get_mut(heap_ref.to_index())
-                .unwrap(),
+            agent.heap.globals.borrow_mut().get_mut(index).unwrap(),
             HeapRootData::Empty,
         );
+        if let Ok(index) = u32::try_from(index) {
+            agent.heap.free_globals.borrow_mut().push(index);
+        }
         let Some(value) = T::from_heap_data(heap_data) else {
             panic!("Invalid Global returned different type than expected");
         };

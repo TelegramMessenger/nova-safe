@@ -404,3 +404,132 @@ fn heap_limit_terminates_growing_scripts() {
         }
     });
 }
+
+#[test]
+fn many_live_globals_are_cheap() {
+    on_big_stack(|| {
+        use nova_vm::{
+            ecmascript::{OrdinaryObject, Value},
+            engine::Global,
+        };
+        let mut engine = Engine::new();
+        let started = Instant::now();
+        engine.agent.run_in_realm(&engine.realm, |agent, _| {
+            let mut globals = Vec::new();
+            for _ in 0..100_000u32 {
+                let object: Value = OrdinaryObject::create_object(agent, None, &[])
+                    .expect("no GC needed")
+                    .into();
+                globals.push(Global::new(agent, object.unbind()));
+            }
+            let mut kept = Vec::new();
+            for (i, global) in globals.into_iter().enumerate() {
+                if i % 2 == 0 {
+                    let _ = global.take(agent);
+                } else {
+                    kept.push(global);
+                }
+            }
+            for _ in 0..100_000u32 {
+                let object: Value = OrdinaryObject::create_object(agent, None, &[])
+                    .expect("no GC needed")
+                    .into();
+                kept.push(Global::new(agent, object.unbind()));
+            }
+            for global in kept {
+                assert!(matches!(global.take(agent), Value::Object(_)));
+            }
+        });
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        engine.assert_usable();
+    });
+}
+
+#[test]
+fn math_random_is_per_agent() {
+    on_big_stack(|| {
+        let source = "var r = []; for (let i = 0; i < 4; i++) { const x = Math.random(); if (!(x >= 0 && x < 1)) throw x; r.push(x); } r.join()";
+        let mut first = Engine::new();
+        let mut second = Engine::new();
+        let a = first.run(source, None);
+        let b = second.run(source, None);
+        let c = first.run(source, None);
+        assert!(matches!(a, Outcome::Value(_)), "{a:?}");
+        assert_ne!(a, b, "two Agents on one thread share a Math.random stream");
+        assert_ne!(a, c);
+    });
+}
+
+#[test]
+fn callable_proxies_can_be_called() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        assert_eq!(
+            engine.run("new Proxy(function () { return 1; }, {})()", None),
+            Outcome::Value("1".into())
+        );
+        assert_eq!(
+            engine.run(
+                "new Proxy(new Proxy(function () { return 2; }, {}), {})()",
+                None
+            ),
+            Outcome::Value("2".into())
+        );
+        assert_eq!(
+            engine.run(
+                "var f = function () { return 7; }; for (let i = 0; i < 1e5; i++) f = new Proxy(f, {}); typeof f",
+                None
+            ),
+            Outcome::Value("function".into())
+        );
+        assert_eq!(
+            engine.run("f()", None),
+            thrown("RangeError: Maximum call stack size exceeded")
+        );
+        engine.assert_usable();
+    });
+}
+
+#[test]
+fn rebinding_does_not_grow_names_without_bound() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        let started = Instant::now();
+        assert_eq!(
+            engine.run(
+                "var b = function f() {}; for (let i = 0; i < 1e5; i++) b = b.bind(null); b.name.length < 4200 && b.name.startsWith('bound ') && b.name.endsWith(' f')",
+                None
+            ),
+            Outcome::Value("true".into())
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            engine.run("function g() {} g.bind().bind().name", None),
+            Outcome::Value("bound bound g".into())
+        );
+    });
+}
+
+#[test]
+fn heap_limit_holds_with_a_large_live_heap() {
+    on_big_stack(|| {
+        // A large live heap spaces collections further apart (16 bytes of
+        // allocation per live item); near the limit they must come sooner.
+        // (Arrays stay under 65536 elements: a longer one takes a storage
+        // slot of 2^24 elements.)
+        let mut engine = Engine::new();
+        let limit = 48 * 1024 * 1024;
+        engine.agent.set_heap_limit(Some(limit));
+        let outcome = engine.run(
+            "const keep = []; let chunk = []; for (let i = 0; ; i++) { chunk.push({ i }); if (chunk.length === 1000) { keep.push(chunk); chunk = []; } }",
+            Some(Duration::from_secs(60)),
+        );
+        assert_eq!(outcome, Outcome::Terminated(TerminationReason::OutOfMemory));
+        let size = engine.agent.heap_size();
+        // The allocation counter undercounts what the estimate finds live
+        // (element storage, property storage), so the last collection can
+        // find the heap past the limit by a part of the headroom it allowed.
+        assert!(size <= limit + limit / 2, "{size}");
+    });
+}

@@ -940,6 +940,9 @@ pub struct Agent {
     /// \[\[AsyncEvaluationOrder]] field of modules that are asynchronous or
     /// have asynchronous dependencies.
     module_async_evaluation_count: u32,
+    /// xorshift128+ state of Math.random, seeded per Agent from std's
+    /// OS-random SipHash keys.
+    math_random_state: (u64, u64),
 }
 
 impl Agent {
@@ -958,8 +961,20 @@ impl Agent {
             kept_alive: false,
             private_names_counter: 0,
             module_async_evaluation_count: 0,
+            math_random_state: random_seed(),
             limits: Limits::default(),
         }
+    }
+
+    /// A number in [0, 1) for Math.random: xorshift128+ (as in V8) over this
+    /// Agent's own state, so that one Agent's outputs say nothing about
+    /// another's.
+    pub(crate) fn next_random_f64(&mut self) -> f64 {
+        let (mut s1, s0) = self.math_random_state;
+        s1 ^= s1 << 23;
+        let next = s1 ^ s0 ^ (s1 >> 17) ^ (s0 >> 26);
+        self.math_random_state = (s0, next);
+        (next.wrapping_add(s0) >> 11) as f64 / (1u64 << 53) as f64
     }
 
     /// Returns the value of the Agent's `[[CanBlock]]` field.
@@ -1678,6 +1693,7 @@ impl HeapMarkAndSweep for Agent {
                 kept_alive: _,
             private_names_counter: _,
             module_async_evaluation_count: _,
+            math_random_state: _,
             limits: _,
         } = self;
 
@@ -1711,6 +1727,10 @@ impl HeapMarkAndSweep for Agent {
                 .borrow_mut()
                 .truncate(last_filled_global_value + 1);
         }
+        let globals_len = heap.globals.borrow().len();
+        heap.free_globals
+            .borrow_mut()
+            .retain(|&index| (index as usize) < globals_len);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
@@ -1728,6 +1748,7 @@ impl HeapMarkAndSweep for Agent {
                 kept_alive: _,
             private_names_counter: _,
             module_async_evaluation_count: _,
+            math_random_state: _,
             limits: _,
         } = self;
 
@@ -1753,4 +1774,22 @@ impl HeapMarkAndSweep for Agent {
 #[inline(never)]
 fn panic_corrupted_agent() -> ! {
     panic!("Agent is corrupted")
+}
+
+/// A seed for Math.random that a script cannot predict: SipHash outputs under
+/// fresh std `RandomState` keys, which std draws from the OS random source
+/// (once per thread, then varied per `RandomState`), mixed with a process-wide
+/// counter so that two Agents never share a seed.
+fn random_seed() -> (u64, u64) {
+    use std::{
+        hash::{BuildHasher, RandomState},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    static AGENTS: AtomicU64 = AtomicU64::new(0);
+    let agent_number = AGENTS.fetch_add(1, Ordering::Relaxed);
+    let keys = RandomState::new();
+    let s0 = keys.hash_one((agent_number, 0u8));
+    let s1 = keys.hash_one((agent_number, 1u8));
+    // xorshift128+ must not start from the all-zero state.
+    (s0 | 1, s1)
 }
