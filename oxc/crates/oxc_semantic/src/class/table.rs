@@ -1,6 +1,8 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 
 use rustc_hash::FxHashMap;
+
+use oxc_allocator::IdentBuildHasher;
 
 use oxc_index::IndexVec;
 use oxc_span::{Ident, Span};
@@ -53,6 +55,8 @@ pub struct ClassTable<'a> {
     pub declarations: IndexVec<ClassId, NodeId>,
     pub elements: IndexVec<ClassId, IndexVec<ElementId, Element<'a>>>,
     pub private_identifier_references: IndexVec<ClassId, Vec<PrivateIdentifierReference<'a>>>,
+    /// Each class's private element ids by name, in declaration order.
+    private_elements: IndexVec<ClassId, HashMap<Cow<'a, str>, Vec<ElementId>, IdentBuildHasher>>,
 }
 
 impl<'a> ClassTable<'a> {
@@ -86,19 +90,34 @@ impl<'a> ClassTable<'a> {
         is_private: bool,
     ) -> Vec<ElementId> {
         let mut element_ids = vec![];
-        for (element_id, element) in self.elements[class_id].iter_enumerated() {
-            if element.name == name && element.is_private == is_private {
-                element_ids.push(element_id);
-
-                // Property or Accessor only has 1 element
-                if element.kind.intersects(ElementKind::Accessor | ElementKind::Property) {
-                    break;
+        if !is_private {
+            for (element_id, element) in self.elements[class_id].iter_enumerated() {
+                if element.name == name && !element.is_private {
+                    element_ids.push(element_id);
+                    if element.kind.intersects(ElementKind::Accessor | ElementKind::Property)
+                        || element_ids.len() == 2
+                    {
+                        break;
+                    }
                 }
+            }
+            return element_ids;
+        }
+        let Some(candidates) = self.private_elements[class_id].get(name.as_str()) else {
+            return element_ids;
+        };
+        for &element_id in candidates {
+            let element = &self.elements[class_id][element_id];
+            element_ids.push(element_id);
 
-                // Maximum 2 method ids, for get/set
-                if element_ids.len() == 2 {
-                    break;
-                }
+            // Property or Accessor only has 1 element
+            if element.kind.intersects(ElementKind::Accessor | ElementKind::Property) {
+                break;
+            }
+
+            // Maximum 2 method ids, for get/set
+            if element_ids.len() == 2 {
+                break;
             }
         }
 
@@ -106,7 +125,7 @@ impl<'a> ClassTable<'a> {
     }
 
     pub fn has_private_definition(&self, class_id: ClassId, name: Ident<'_>) -> bool {
-        self.elements[class_id].iter().any(|p| p.is_private && p.name == name)
+        self.private_elements[class_id].contains_key(name.as_str())
     }
 
     pub fn declare_class(&mut self, parent_id: Option<ClassId>, node_id: NodeId) -> ClassId {
@@ -116,11 +135,16 @@ impl<'a> ClassTable<'a> {
         }
         self.elements.push(IndexVec::default());
         self.private_identifier_references.push(Vec::new());
+        self.private_elements.push(HashMap::default());
         class_id
     }
 
     pub fn add_element(&mut self, class_id: ClassId, element: Element<'a>) {
-        self.elements[class_id].push(element);
+        let name = element.is_private.then(|| element.name.clone());
+        let element_id = self.elements[class_id].push(element);
+        if let Some(name) = name {
+            self.private_elements[class_id].entry(name).or_default().push(element_id);
+        }
     }
 
     pub fn add_private_identifier_reference(

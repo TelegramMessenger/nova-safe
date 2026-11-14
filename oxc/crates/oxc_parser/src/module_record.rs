@@ -117,16 +117,24 @@ impl<'a> ModuleRecordBuilder<'a> {
         // let export_entries = self.export_entries.drain(..).collect::<Vec<_>>();
         let export_entries =
             std::mem::replace(&mut self.export_entries, Vec::new_in(self.allocator));
+        let mut first_import_by_local_name: std::collections::HashMap<
+            Str<'a>,
+            usize,
+            oxc_allocator::IdentBuildHasher,
+        > = std::collections::HashMap::default();
+        if export_entries.iter().any(|ee| ee.module_request.is_none()) {
+            for (index, entry) in self.module_record.import_entries.iter().enumerate() {
+                first_import_by_local_name.entry(entry.local_name.name).or_insert(index);
+            }
+        }
         // 10. For each ExportEntry Record ee of exportEntries, do
         for ee in export_entries {
             // a. If ee.[[ModuleRequest]] is null, then
             if ee.module_request.is_none() {
                 let found_import_entry = match &ee.local_name {
-                    ExportLocalName::Name(name) => self
-                        .module_record
-                        .import_entries
-                        .iter()
-                        .find(|entry| entry.local_name.name == name.name),
+                    ExportLocalName::Name(name) => first_import_by_local_name
+                        .get(&name.name)
+                        .map(|&index| &self.module_record.import_entries[index]),
                     _ => None,
                 };
                 match found_import_entry {
