@@ -905,3 +905,76 @@ fn compiled_widget_bundles_evaluate_as_their_source() {
         );
     }
 }
+
+/// The parser's syntax tree is freed node by node (no arena), so dropping
+/// it recurses as deep as the tree. The nesting pre-scan bounds that depth:
+/// the deepest tree of each shape the pre-scan lets through is parsed,
+/// compiled, run and dropped on a thread with the widget engine's stack
+/// (8 MB, `JSThread.stackSize`); an unoptimized build's frames are several
+/// times larger, so it gets 64 MB.
+#[test]
+fn the_deepest_tree_the_pre_scan_allows_parses_and_drops() {
+    type Shape = (&'static str, fn(usize) -> String);
+    const SHAPES: &[Shape] = &[
+        ("binary chain", |n| format!("1{}", "+1".repeat(n))),
+        ("member chain", |n| format!("var a = {{}}; a{}", ".b".repeat(n))),
+        ("call chain", |n| format!("var f = () => f; f{}", "()".repeat(n))),
+        ("index chain", |n| format!("var a = [[]]; a{}", "[0]".repeat(n))),
+        ("tag chain", |n| format!("var t = () => t; t{}", "``".repeat(n))),
+        ("parentheses", |n| format!("{}1{}", "(".repeat(n), ")".repeat(n))),
+        ("unary", |n| format!("{}1", "!".repeat(n))),
+        ("arrays", |n| format!("{}{}", "[".repeat(n), "]".repeat(n))),
+        ("objects", |n| format!("var x = {}1{}", "{a:".repeat(n), "}".repeat(n))),
+        ("assignments", |n| format!("var x; {}1", "x=".repeat(n))),
+        ("conditionals", |n| format!("{}1", "1?1:".repeat(n))),
+        ("arrows", |n| format!("{}1", "()=>".repeat(n))),
+        ("functions", |n| format!("{}{}", "function f(){".repeat(n), "}".repeat(n))),
+        ("blocks", |n| format!("{}{}", "{".repeat(n), "}".repeat(n))),
+        ("ifs", |n| format!("{};", "if(1)".repeat(n))),
+        ("templates", |n| format!("{}1{}", "`${".repeat(n), "}`".repeat(n))),
+        ("new", |n| format!("{}Object", "new ".repeat(n))),
+    ];
+    fn rejected(result: &Result<Completion, Error>) -> bool {
+        matches!(result, Err(Error::Exception(message)) if message.contains("nests too deeply"))
+    }
+    let stack = if cfg!(debug_assertions) { 64 << 20 } else { 8 << 20 };
+    let results = std::thread::Builder::new()
+        .stack_size(stack)
+        .spawn(|| {
+            let mut out = vec![];
+            for (name, shape) in SHAPES {
+                let (mut engine, _, _) = limited(256 << 20, (6 << 20) / 4 * 3);
+                let (mut low, mut high) = (1usize, 4096usize);
+                assert!(rejected(&engine.evaluate(&shape(high), false)), "{name}");
+                let mut deepest = None;
+                while low < high {
+                    let n = (low + high) / 2;
+                    let result = engine.evaluate(&shape(n), false);
+                    if rejected(&result) {
+                        high = n;
+                    } else {
+                        deepest = Some((n, result));
+                        low = n + 1;
+                    }
+                }
+                let (n, result) = deepest.expect("a shallow tree passes the pre-scan");
+                assert_eq!(
+                    engine.evaluate("1 + 1", false),
+                    Ok(Completion::Number(2.0)),
+                    "{name}"
+                );
+                out.push((name, n, result));
+            }
+            out
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    for (name, n, result) in results {
+        match result {
+            Ok(_) | Err(Error::Exception(_)) | Err(Error::OutOfMemory) => {}
+            other => panic!("{name} at {n}: {other:?}"),
+        }
+        eprintln!("{name}: {n} levels, {result:?}");
+    }
+}
