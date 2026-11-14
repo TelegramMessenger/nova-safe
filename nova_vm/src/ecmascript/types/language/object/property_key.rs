@@ -364,7 +364,9 @@ impl<'a> From<String<'a>> for PropertyKey<'a> {
             String::SmallString(x) => {
                 // NOTE: Makes property keys slightly more correct by converting
                 // small strings to integers when possible.
-                if let Ok(n) = x.to_string_lossy().parse::<i64>() {
+                if let [b'0'..=b'9' | b'+' | b'-', ..] = x.as_bytes()
+                    && let Ok(n) = x.to_string_lossy().parse::<i64>()
+                {
                     return PropertyKey::Integer(SmallInteger::try_from(n).unwrap());
                 }
 
