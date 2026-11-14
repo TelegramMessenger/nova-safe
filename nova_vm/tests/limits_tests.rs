@@ -716,3 +716,13 @@ fn interrupt_ends_proxy_prototype_cycles_and_huge_array_likes() {
         "JSON.stringify({}, new Proxy([], { get: (t, k) => k === 'length' ? 2 ** 53 - 1 : undefined }))",
     );
 }
+
+#[test]
+fn string_raw_with_a_huge_literal_count_is_bounded() {
+    assert_interrupted("String.raw({ raw: { length: 2 ** 53 - 1 } })");
+    let mut engine = Engine::new();
+    assert_eq!(
+        engine.run("String.raw({ raw: ['a', 'b', 'c'] }, 1, 2)", None),
+        Outcome::Value("a1b2c".into())
+    );
+}

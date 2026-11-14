@@ -339,11 +339,15 @@ impl StringConstructor {
                 }
 
                 // 6. Let R be the empty String.
-                let mut r = Wtf8Buf::with_capacity(literal_count as usize);
+                // The result grows as literals come: `literalCount` is the
+                // script's word only.
+                let mut r = Wtf8Buf::with_capacity((literal_count as usize).min(1024));
 
                 // 7. Let nextIndex be 0.
                 // 8. Repeat,
                 for next_index in 0..literal_count {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
+                    agent.check_string_length(r.len(), gc.nogc()).unbind()?;
                     // a. Let nextLiteralVal be ? Get(literals, ! ToString(𝔽(nextIndex))).
                     let next_literal_val = get(
                         agent,
