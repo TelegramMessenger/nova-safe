@@ -2,6 +2,8 @@
 set -u
 cd "$(git rev-parse --show-toplevel)"
 export PATH="$HOME/.cargo/bin:$PATH"
+# Widgets that show local time were recorded in UTC+4; both engines read TZ.
+export TZ=Asia/Dubai
 WIDGET_SANDBOX=/Users/renoir/projects/Telegram/telegrammacos/third-party/widget-sandbox
 LAB_WIDGETS=/Users/renoir/projects/Telegram/telegrammacos/tools/perflab/TwidgetLab/widgets
 BUNDLE=$WIDGET_SANDBOX/packages/ios/Sources/WidgetSandbox/WidgetJS/sandbox-bundle.js
