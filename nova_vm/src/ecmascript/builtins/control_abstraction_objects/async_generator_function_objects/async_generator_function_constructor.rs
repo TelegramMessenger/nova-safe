@@ -5,10 +5,12 @@
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin,
-        BuiltinIntrinsicConstructor, DynamicFunctionKind, Function, JsResult, Object, Realm,
-        String, Value, builders::BuiltinFunctionBuilder, create_dynamic_function,
+        BuiltinIntrinsicConstructor, DynamicFunctionKind, Function, JsResult, Object,
+        PropertyDescriptor, ProtoIntrinsics, Realm, String, Value,
+        builders::BuiltinFunctionBuilder, create_dynamic_function,
+        ordinary_object_create_with_intrinsics, try_define_property_or_throw, unwrap_try,
     },
-    engine::GcScope,
+    engine::{Bindable, GcScope},
     heap::IntrinsicConstructorIndexes,
 };
 
@@ -30,7 +32,7 @@ impl AsyncGeneratorFunctionConstructor {
         _this_value: Value,
         arguments: ArgumentsList,
         new_target: Option<Object>,
-        gc: GcScope<'gc, '_>,
+        mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
         // 2. If bodyArg is not present, set bodyArg to the empty String.
         let (parameter_args, body_arg) = if arguments.is_empty() {
@@ -51,8 +53,43 @@ impl AsyncGeneratorFunctionConstructor {
             DynamicFunctionKind::AsyncGenerator,
             parameter_args,
             body_arg,
+            gc.reborrow(),
+        )
+        .unbind()?;
+        let gc = gc.into_nogc();
+        let f = f.bind(gc);
+        // 20.2.1.1.1 CreateDynamicFunction ( constructor, newTarget, kind, parameterArgs, bodyArg )
+        // 31. Else if kind is async-generator, then
+        //   a. Let prototype be OrdinaryObjectCreate(%AsyncGeneratorFunction.prototype.prototype%).
+        let prototype = ordinary_object_create_with_intrinsics(
+            agent,
+            ProtoIntrinsics::Object,
+            Some(
+                agent
+                    .current_realm_record()
+                    .intrinsics()
+                    .async_generator_prototype()
+                    .into(),
+            ),
             gc,
-        )?;
+        );
+        //   b. Perform ! DefinePropertyOrThrow(F, "prototype", PropertyDescriptor {
+        //      [[Value]]: prototype, [[Writable]]: true, [[Enumerable]]: false,
+        //      [[Configurable]]: false }).
+        unwrap_try(try_define_property_or_throw(
+            agent,
+            f,
+            BUILTIN_STRING_MEMORY.prototype.to_property_key(),
+            PropertyDescriptor {
+                value: Some(prototype.unbind().into()),
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(false),
+                ..Default::default()
+            },
+            None,
+            gc,
+        ));
 
         Ok(f.into())
     }

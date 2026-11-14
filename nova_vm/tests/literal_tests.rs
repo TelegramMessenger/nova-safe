@@ -62,3 +62,8 @@ fn string_less_than_utf16() {
 fn bound_function_properties() {
     run_test_source("boundFunctionProperties.test.js");
 }
+
+#[test]
+fn generator_prototype() {
+    run_test_source("generatorPrototype.test.js");
+}
