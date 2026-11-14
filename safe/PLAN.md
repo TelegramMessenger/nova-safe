@@ -119,15 +119,16 @@ The embedding contract the limits track provides (names may be refined, keep the
   with a memory reason.
 - a maximum call depth and a native-stack guard that throw a catchable RangeError instead of overflowing.
 
-## Status (2026-11-14, 969ac9c4)
+## Status (2026-11-14, d0837d0c)
 
-- `unsafe`: 0 in every engine crate (`forbid(unsafe_code)`), only `nova_embed_ffi` has it.
-- test262: 41,050 pass (41,063 when timing allows), 16 crash (162 at the fork), 0 pass→fail along the way.
-- Widgets: 497 of 501 equal to QuickJS; the 3 others are listed in SECURITY.md.
-- Hostile-input hunts: all findings fixed with regression tests; the GC sweep (1,021 builtins, 1.37M cases) finds no
-  panic and no wrong result.
-- Embedded as `QuickJSBackend.nova` in widget-sandbox (`macos/nova-engine`) and switched on in Telegram for macOS
-  (branch `nova-engine` of the app).
+- `unsafe`: 0 in every engine crate (`forbid(unsafe_code)`); only `nova_embed_ffi`, the C ABI, has it.
+- test262: 41122 pass, 16 crash (162 at the fork; the rest are Temporal, which the widget build leaves out),
+  nothing went from pass to fail.
+- Widgets: 497 of 501 produce exactly QuickJS's output; the 3 others are listed in SECURITY.md.
+- Three hostile-input hunts: every finding fixed with a regression test; the last one found no new crash in 4,000
+  fuzz seeds, 130k mutated test262 runs and the GC sweep (1,021 builtins, 1.37M cases).
+- Embedded as `QuickJSBackend.nova` in widget-sandbox (`macos/nova-engine`, 676a68f) and switched on in Telegram for
+  macOS (branch `nova-engine` of the app, 56729f31c).
 
 ## Commits
 
