@@ -263,6 +263,28 @@ pub(super) fn execute_load_constant(
     vm.stack.push(constant.unbind());
 }
 
+pub(super) fn execute_load_constant_wide(
+    agent: &Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: NoGcScope,
+) {
+    let constant = executable.fetch_wide_constant(agent, instr.get_wide_index(), gc);
+    vm.stack.push(constant.unbind());
+}
+
+pub(super) fn execute_store_constant_wide(
+    agent: &Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: NoGcScope,
+) {
+    let constant = executable.fetch_wide_constant(agent, instr.get_wide_index(), gc);
+    vm.result = Some(constant.unbind());
+}
+
 #[inline(always)]
 pub(super) fn execute_store_constant(
     agent: &mut Agent,
@@ -2377,7 +2399,8 @@ pub(super) fn execute_throw_error<'gc>(
     let exception_type_immediate = instr.get_first_arg();
     let message = String::try_from(vm.result.take().unwrap()).unwrap();
     if exception_type_immediate == crate::engine::bytecode::UNSUPPORTED_SYNTAX_IMMEDIATE {
-        panic!("not yet implemented: {}", message.to_string_lossy_(agent));
+        // Code the compiler does not support compiles to a stub that throws.
+        return Err(agent.throw_exception_with_message(ExceptionType::SyntaxError, message, gc));
     }
 
     let exception_type = ExceptionType::try_from(exception_type_immediate).unwrap();

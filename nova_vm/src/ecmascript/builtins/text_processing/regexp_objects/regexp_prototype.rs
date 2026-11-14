@@ -557,11 +557,13 @@ impl RegExpPrototype {
                         full_unicode,
                     );
                     // c. Perform ? Set(rx, "lastIndex", 𝔽(nextIndex), true).
+                    // Note: nextIndex can be 2**53, past the safe integers.
+                    let next_index = Number::from_f64(agent, next_index as f64, gc.nogc()).unbind();
                     set(
                         agent,
                         rx.get(agent),
                         BUILTIN_STRING_MEMORY.lastIndex.to_property_key(),
-                        Number::try_from(next_index).unwrap().into(),
+                        next_index.into(),
                         true,
                         gc.reborrow(),
                     )
@@ -848,11 +850,13 @@ impl RegExpPrototype {
                 let next_index =
                     advance_string_index(agent, s.get(agent), this_index, full_unicode);
                 // d. Perform ? Set(rx, "lastIndex", 𝔽(nextIndex), true).
+                // Note: nextIndex can be 2**53, past the safe integers.
+                let next_index = Number::from_f64(agent, next_index as f64, gc.nogc()).unbind();
                 set(
                     agent,
                     rx.get(agent),
                     BUILTIN_STRING_MEMORY.lastIndex.to_property_key(),
-                    Number::try_from(next_index).unwrap().into(),
+                    next_index.into(),
                     true,
                     gc.reborrow(),
                 )

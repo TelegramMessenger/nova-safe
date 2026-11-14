@@ -44,6 +44,13 @@ pub(crate) struct FunctionEnvironmentRecord {
     /// local this value.
     this_binding_status: ThisBindingStatus,
 
+    /// A class field initializer or static element runs as a method of the
+    /// class, with a HomeObject (the prototype, or the class itself for
+    /// static elements) that the constructor does not have. Its environment
+    /// keeps that HomeObject in new_target's place: such code has no
+    /// new.target.
+    new_target_is_home_object: bool,
+
     /// ### \[\[FunctionObject\]\]
     ///
     /// The function object whose invocation caused this Environment Record to
@@ -72,6 +79,7 @@ impl HeapMarkAndSweep for FunctionEnvironmentRecord {
         let Self {
             this_value,
             this_binding_status: _,
+            new_target_is_home_object: _,
             function_object,
             new_target,
             declarative_environment,
@@ -86,6 +94,7 @@ impl HeapMarkAndSweep for FunctionEnvironmentRecord {
         let Self {
             this_value,
             this_binding_status: _,
+            new_target_is_home_object: _,
             function_object,
             new_target,
             declarative_environment,
@@ -134,6 +143,7 @@ pub(crate) fn new_function_environment<'a>(
 
         // 5. Set env.[[NewTarget]] to newTarget.
         new_target: new_target.unbind(),
+        new_target_is_home_object: false,
 
         // 6. Set env.[[OuterEnv]] to F.[[Environment]].
         declarative_environment: declarative_environment.unbind(),
@@ -172,7 +182,9 @@ pub(crate) fn new_class_static_element_environment<'a>(
         this_binding_status: ThisBindingStatus::Initialized,
 
         // 5. Set env.[[NewTarget]] to newTarget.
-        new_target: None,
+        // Note: static elements are methods whose HomeObject is the class.
+        new_target: Some(class_constructor.unbind().into()),
+        new_target_is_home_object: true,
 
         // 6. Set env.[[OuterEnv]] to F.[[Environment]].
         declarative_environment: declarative_environment.unbind(),
@@ -187,6 +199,7 @@ pub(crate) fn new_class_field_initializer_environment<'a>(
     agent: &mut Agent,
     class_constructor: Function,
     class_instance: Object,
+    home_object: Option<Object>,
     outer_env: Environment,
     gc: NoGcScope<'a, '_>,
 ) -> FunctionEnvironment<'a> {
@@ -201,7 +214,8 @@ pub(crate) fn new_class_field_initializer_environment<'a>(
             this_value: Some(class_instance.unbind().into()),
             this_binding_status: ThisBindingStatus::Initialized,
             function_object: class_constructor.unbind(),
-            new_target: None,
+            new_target: home_object.unbind(),
+            new_target_is_home_object: true,
             declarative_environment: declarative_environment.unbind(),
         },
         gc,
@@ -214,7 +228,25 @@ impl<'e> FunctionEnvironment<'e> {
     }
 
     pub(crate) fn get_new_target(self, agent: &Agent) -> Option<Object<'e>> {
-        self.get(agent).new_target
+        let env_rec = self.get(agent);
+        if env_rec.new_target_is_home_object {
+            None
+        } else {
+            env_rec.new_target
+        }
+    }
+
+    /// \[\[FunctionObject\]\].\[\[HomeObject\]\], or the HomeObject a class
+    /// element's environment was given.
+    fn home_object(self, agent: &Agent) -> Option<Object<'e>> {
+        let env_rec = self.get(agent);
+        if env_rec.new_target_is_home_object {
+            return env_rec.new_target;
+        }
+        match env_rec.function_object {
+            Function::ECMAScriptFunction(func) => func.get(agent).ecmascript_function.home_object,
+            _ => None,
+        }
     }
 
     pub(crate) fn get_outer_env(self, agent: &Agent) -> Option<Environment<'e>> {
@@ -439,12 +471,7 @@ impl<'e> FunctionEnvironment<'e> {
 
         // 2. If envRec.[[FunctionObject]].[[HomeObject]] is undefined, return
         //    false; otherwise, return true.
-        match env_rec.function_object {
-            Function::ECMAScriptFunction(func) => {
-                func.get(agent).ecmascript_function.home_object.is_some()
-            }
-            _ => false,
-        }
+        self.home_object(agent).is_some()
     }
 
     /// ### [9.1.1.3.5 GetSuperBase ( )](https://tc39.es/ecma262/#sec-getsuperbase)
@@ -453,13 +480,8 @@ impl<'e> FunctionEnvironment<'e> {
     /// envRec takes no arguments and returns either a normal completion
     /// containing either an Object, null, or undefined.
     pub(crate) fn get_super_base<'a>(self, agent: &mut Agent, gc: NoGcScope<'a, '_>) -> Value<'a> {
-        let env_rec: &FunctionEnvironmentRecord = self.get(agent);
-
         // 1. Let home be envRec.[[FunctionObject]].[[HomeObject]].
-        let home = match env_rec.function_object {
-            Function::ECMAScriptFunction(func) => func.get(agent).ecmascript_function.home_object,
-            _ => None,
-        };
+        let home = self.home_object(agent);
         // 2. If home is undefined, return undefined.
         let Some(home) = home else {
             return Value::Undefined;

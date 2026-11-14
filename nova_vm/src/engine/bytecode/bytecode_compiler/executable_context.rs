@@ -35,6 +35,9 @@ use super::{IndexType, JumpIndex};
 /// code did before functions were compiled ahead of their first call.
 pub(crate) const UNSUPPORTED_SYNTAX_IMMEDIATE: IndexType = IndexType::MAX;
 
+/// From this many constants on, new literal constants go to the wide table.
+const WIDE_CONSTANTS_FROM: usize = 60_000;
+
 /// Context for executable creation only. This struct contains the things
 /// needed for adding instructions and nothing else, no scope tracking and
 /// other metadata is included.
@@ -54,6 +57,10 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// Constants being built
     constants: Vec<Value<'gc>>,
     constant_indexes: AHashMap<ConstantKey<'gc>, usize>,
+    /// Literal constants added once `constants` is near the 16-bit index
+    /// limit, so that identifiers and property keys keep fitting there.
+    wide_constants: Vec<Value<'gc>>,
+    wide_constant_indexes: AHashMap<ConstantKey<'gc>, usize>,
     /// Object Shapes being built
     shapes: Vec<ObjectShape<'gc>>,
     /// Function expressions being built
@@ -78,6 +85,8 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             cache_indexes: AHashMap::default(),
             constants: Vec::new(),
             constant_indexes: AHashMap::default(),
+            wide_constants: Vec::new(),
+            wide_constant_indexes: AHashMap::default(),
             shapes: Vec::new(),
             function_expressions: Vec::new(),
             arrow_function_expressions: Vec::new(),
@@ -177,6 +186,8 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.cache_indexes.clear();
         self.constants.clear();
         self.constant_indexes.clear();
+        self.wide_constants.clear();
+        self.wide_constant_indexes.clear();
         self.shapes.clear();
         self.function_expressions.clear();
         self.arrow_function_expressions.clear();
@@ -208,6 +219,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             instructions: self.instructions.into(),
             caches: self.caches.unbind().into_boxed_slice(),
             constants: self.constants.unbind().into_boxed_slice(),
+            wide_constants: self.wide_constants.unbind().into_boxed_slice(),
             shapes: self.shapes.unbind().into_boxed_slice(),
             function_expressions: self.function_expressions.unbind().into_boxed_slice(),
             arrow_function_expressions: self.arrow_function_expressions.unbind().into_boxed_slice(),
@@ -313,8 +325,33 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     ) {
         debug_assert_eq!(instruction.argument_count(), 1);
         debug_assert!(instruction.has_constant_index());
+        let constant = constant.into();
+        let wide_instruction = match instruction {
+            Instruction::LoadConstant => Some(Instruction::LoadConstantWide),
+            Instruction::StoreConstant => Some(Instruction::StoreConstantWide),
+            _ => None,
+        };
+        if let Some(wide_instruction) = wide_instruction
+            && self.constants.len() >= WIDE_CONSTANTS_FROM
+            && !self.constant_indexes.contains_key(&ConstantKey(constant))
+        {
+            // A script with this many distinct constants (a large data
+            // table) keeps the 16-bit table's last indices for identifiers
+            // and property keys: its further literals go to the wide table.
+            let next_index = self.wide_constants.len();
+            let index = *self
+                .wide_constant_indexes
+                .entry(ConstantKey(constant))
+                .or_insert(next_index);
+            if index == next_index {
+                self.wide_constants.push(constant);
+            }
+            self.push_instruction(wide_instruction);
+            self.add_double_index(index);
+            return;
+        }
         self.push_instruction(instruction);
-        let constant = self.add_constant(constant.into());
+        let constant = self.add_constant(constant);
         self.add_index(constant);
     }
 

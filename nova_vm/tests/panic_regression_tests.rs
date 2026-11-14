@@ -193,3 +193,111 @@ fn typed_array_with_reads_undefined_past_a_shrunk_end() {
     "#;
     assert_eq!(run(source, "result", None), "9,0,0 9,NaN,NaN TypeError");
 }
+
+#[test]
+fn json_stringify_replacer_key_conversion_throws() {
+    let source = r#"
+        var key = new String("a");
+        key.toString = function () { throw new Error("no key"); };
+        var result;
+        try { JSON.stringify({ a: 1 }, [key]); result = "no error"; } catch (e) { result = "caught " + e.message; }
+    "#;
+    assert_eq!(run(source, "result", None), "caught no key");
+}
+
+#[test]
+fn super_property_in_field_initializers_and_static_blocks() {
+    let source = r#"
+        class P { m() { return "P.m"; } static s() { return "P.s"; } }
+        class A extends P {
+            constructor() { super(); }
+            f = () => super.m(); g = super.m(); static h = super.s();
+            static { this.k = super.s(); }
+        }
+        var a = new A();
+        var out = [a.f(), a.g, A.h, A.k];
+        class B extends P { f = () => super.m(); static { this.k = super.s(); } }
+        out.push(new B().f(), B.k);
+        class C { f = () => super.toString === Object.prototype.toString; x = new.target; }
+        out.push(new C().f(), String(new C().x));
+    "#;
+    assert_eq!(
+        run(source, "out.join()", None),
+        "P.m,P.m,P.s,P.s,P.m,P.s,true,undefined"
+    );
+}
+
+#[test]
+fn unsupported_syntax_throws_a_syntax_error() {
+    let source = r#"
+        var out = [];
+        for (var code of ["class A { accessor x = 1; }", "class B { accessor #x = 1; }", "{ using y = null; }"]) {
+            try { eval(code); out.push("ran"); } catch (e) { out.push(e.constructor.name); }
+        }
+    "#;
+    assert_eq!(
+        run(source, "out.join()", None),
+        "SyntaxError,SyntaxError,SyntaxError"
+    );
+}
+
+#[test]
+fn sloppy_block_function_declared_twice() {
+    let source = r#"
+        var out = [];
+        { function f() { return 1; } out.push(f()); }
+        { function f() { return 2; } function f() { return 3; } out.push(f()); }
+        { out.push(g()); function g() { return "a"; } function g() { return "b"; } }
+        (function () { { function k() { return 1; } function k() { return 2; } out.push(k()); } })();
+    "#;
+    assert_eq!(run(source, "out.join()", None), "1,3,b,2");
+}
+
+#[test]
+fn regexp_last_index_past_the_safe_integers() {
+    let source = r#"
+        var r = /./g;
+        var called = false;
+        r.exec = function () {
+            if (called) return null;
+            called = true;
+            r.lastIndex = 2 ** 54;
+            return { length: 1, 0: "", index: 0 };
+        };
+        r[Symbol.replace]("", "");
+    "#;
+    assert_eq!(run(source, "r.lastIndex", None), "9007199254740992");
+}
+
+#[test]
+fn number_to_locale_string_ignores_locales() {
+    let source =
+        r#"var result = [(1234.5).toLocaleString("de"), (12n).toLocaleString("de", {})].join();"#;
+    assert_eq!(run(source, "result", None), "1234.5,12");
+}
+
+#[test]
+fn scripts_with_more_constants_than_16_bit_indices() {
+    let count = 70_000;
+    let mut source = std::string::String::from("var a = [");
+    for i in 0..count {
+        source.push_str(&format!("\"s{i}\","));
+    }
+    source.push_str("];\nvar nums = [");
+    for i in 0..count {
+        source.push_str(&format!("{i}.5,"));
+    }
+    source.push_str("];\nvar table = [");
+    for i in 0..count {
+        source.push_str(&format!("{{n:\"name{i}\",v:{i}}},"));
+    }
+    source.push_str(
+        "];\nvar after = { someNewProperty: 'late' };\n\
+         function late() { return 'late literal ' + after.someNewProperty; }\n\
+         var result = [a.length, a[65536], a[69999], nums[69999], table[69999].n, late()].join();",
+    );
+    assert_eq!(
+        run(&source, "result", None),
+        "70000,s65536,s69999,69999.5,name69999,late literal late"
+    );
+}

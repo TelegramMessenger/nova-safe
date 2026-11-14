@@ -2832,7 +2832,21 @@ pub(crate) fn initialize_instance_elements<'a>(
         let outer_env = constructor_data.environment;
         let outer_priv_env = constructor_data.private_environment;
         let source_code = constructor_data.source_code;
-        let decl_env = new_class_field_initializer_environment(agent, f, o, outer_env, gc.nogc());
+        // The initializers are methods whose HomeObject is the class
+        // prototype: the constructor's "prototype", which a class makes
+        // non-writable and non-configurable.
+        let home_object = match try_get(
+            agent,
+            Object::from(constructor),
+            BUILTIN_STRING_MEMORY.prototype.to_property_key(),
+            None,
+            gc.nogc(),
+        ) {
+            ControlFlow::Continue(TryGetResult::Value(v)) => Object::try_from(v).ok(),
+            _ => None,
+        };
+        let decl_env =
+            new_class_field_initializer_environment(agent, f, o, home_object, outer_env, gc.nogc());
         agent.push_execution_context(ExecutionContext {
             ecmascript_code: Some(ECMAScriptCodeEvaluationState {
                 lexical_environment: Environment::Function(decl_env.unbind()),

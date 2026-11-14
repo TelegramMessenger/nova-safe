@@ -837,7 +837,12 @@ impl AbstractModuleMethods for SourceTextModule<'_> {
             CyclicModuleRecordStatus::EvaluatingAsync | CyclicModuleRecordStatus::Evaluated
         ) {
             // set module to module.[[CycleRoot]].
-            module = module.get_cycle_root(agent).unwrap();
+            // Note: a module whose evaluation threw has no [[CycleRoot]]; it
+            // keeps its own [[TopLevelCapability]] (rejected with the error)
+            // or InnerModuleEvaluation returns its [[EvaluationError]].
+            if let Some(cycle_root) = module.get_cycle_root(agent) {
+                module = cycle_root;
+            }
         }
         // 4. If module.[[TopLevelCapability]] is not empty, then
         if let Some(top_level_capability) = module.top_level_capability(agent) {
