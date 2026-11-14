@@ -144,28 +144,25 @@ impl<'a> SourceCode<'a> {
 
     /// The SourceCode that [`SourceCode::parse_source`] makes of a UTF-8
     /// source text, for a script compiled from the same text in another
-    /// agent: function source spans index into the same string.
+    /// agent: function source spans index into the same text.
+    ///
+    /// The source string is kept out of the string lookup table (it is
+    /// never a JavaScript value; function source texts are new strings
+    /// sliced from it), so that the text is not hashed, now or whenever the
+    /// table grows.
     pub(crate) fn from_source_text(
         agent: &mut Agent,
         source_text: &str,
         gc: NoGcScope<'a, '_>,
     ) -> Self {
-        let source = match String::from_str(agent, source_text, gc) {
-            String::String(source) => source,
-            String::SmallString(_) => {
-                let data = format!("{source_text}          ");
-                let String::String(source) = String::from_string(agent, data, gc) else {
-                    unreachable!()
-                };
-                source
-            }
+        let source = if String::try_from(source_text).is_ok() {
+            agent
+                .heap
+                .alloc_unlisted_str(&format!("{source_text}          "))
+        } else {
+            agent.heap.alloc_unlisted_str(source_text)
         };
-        agent
-            .heap
-            .create(SourceCodeHeapData {
-                source: source.unbind(),
-            })
-            .bind(gc)
+        agent.heap.create(SourceCodeHeapData { source }).bind(gc)
     }
 
     /// Manually drop a SourceCode.

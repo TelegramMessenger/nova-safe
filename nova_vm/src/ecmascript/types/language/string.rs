@@ -1044,6 +1044,27 @@ impl<'a> CreateHeapData<(StringRecord, u64), String<'a>> for Heap {
     }
 }
 
+impl Heap {
+    /// Allocates a heap string without entering it in the string lookup
+    /// table, so that its text is never hashed: for text that no script gets
+    /// as a value, such as the source text a SourceCode keeps.
+    ///
+    /// ## Correctness
+    ///
+    /// The string must never become a JavaScript value or a property key:
+    /// heap strings are compared by index, and an equal string made later
+    /// through the lookup table would be another one. The text must not fit
+    /// a small string.
+    pub(crate) fn alloc_unlisted_str(&mut self, text: &str) -> HeapString<'static> {
+        let data = StringRecord::from_str(text);
+        self.alloc_counter += core::mem::size_of::<StringRecord>();
+        self.data_bytes_since_gc += data.len();
+        self.strings.push(data);
+        self.alloc_counter += core::mem::size_of::<HeapString>();
+        HeapString(BaseIndex::last(&self.strings))
+    }
+}
+
 impl HeapMarkAndSweep for String<'static> {
     #[inline(always)]
     fn mark_values(&self, queues: &mut WorkQueues) {

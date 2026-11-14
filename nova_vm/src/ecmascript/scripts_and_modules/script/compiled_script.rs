@@ -11,6 +11,10 @@
 //! makes them again in another agent, the way compiling the same source
 //! text there makes them, and returns a Script for [`script_evaluation`].
 //!
+//! Heap strings, property lookup caches and object shapes are kept in tables
+//! of their own, each entry once however many executables use it, so that an
+//! agent makes (and hashes) each of them once.
+//!
 //! Only constants whose making is known are exported (primitives, the
 //! RegExp and template objects of literals, and the two intrinsics the
 //! compiler refers to); anything else makes the export fail, and the caller
@@ -19,21 +23,21 @@
 //!
 //! [`script_evaluation`]: crate::ecmascript::script_evaluation
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[cfg(feature = "regexp")]
 use oxc_ast::ast::RegExpFlags;
 use oxc_span::Span;
-use wtf8::{Wtf8Buf, Wtf8Str};
+use wtf8::Wtf8Buf;
 
 #[cfg(feature = "regexp")]
 use crate::ecmascript::{RegExp, reg_exp_create_literal};
 use crate::{
     ecmascript::{
         Agent, Array, BUILTIN_STRING_MEMORY, BigInt, BigIntHeapData, FunctionKind,
-        FunctionTemplate, InternalMethods, InternalSlots, Number, ObjectShape, PropertyKey,
-        PropertyLookupCache, Realm, SmallBigInt, SmallF64, SmallInteger, SourceCode, String, Value,
-        unwrap_try,
+        FunctionTemplate, HeapString, InternalMethods, InternalSlots, Number, ObjectShape,
+        PropertyKey, PropertyLookupCache, Realm, SmallBigInt, SmallF64, SmallInteger, SourceCode,
+        String, Value, unwrap_try,
     },
     engine::{
         ArrowFunctionExpression, Bindable, Executable, ExecutableHeapData, FunctionExpression,
@@ -71,11 +75,17 @@ type ExportResult<T> = Result<T, CompiledScriptError>;
 pub struct CompiledScript {
     source_text: Box<str>,
     is_strict: bool,
-    /// Every executable, each after the executables it refers to.
-    executables: Box<[CompiledExecutable]>,
+    /// The distinct heap strings.
+    strings: Box<[HeapText]>,
+    /// The key of each distinct property lookup cache.
+    caches: Box<[CompiledKey]>,
+    /// The distinct object literal shapes.
+    shapes: Box<[CompiledShape]>,
     /// The RegExp, template and intrinsic objects of the constants, each
     /// once however many constants refer to it.
     objects: Box<[CompiledObject]>,
+    /// Every executable, each after the executables it refers to.
+    executables: Box<[CompiledExecutable]>,
     declarations: CompiledDeclarations,
 }
 
@@ -84,13 +94,22 @@ const _: () = {
     shareable::<CompiledScript>();
 };
 
-#[derive(Clone, PartialEq)]
-enum CompiledString {
-    Small(SmallString),
-    Heap(Wtf8Buf),
+/// The text of a heap string; UTF-8 text is kept as such so that making the
+/// string does not check it again.
+#[derive(PartialEq)]
+enum HeapText {
+    Utf8(Box<str>),
+    Wtf8(Wtf8Buf),
 }
 
-#[derive(Clone, PartialEq)]
+/// A string: small, or an index into [`CompiledScript::strings`].
+#[derive(Clone, Copy, PartialEq)]
+enum CompiledString {
+    Small(SmallString),
+    Heap(u32),
+}
+
+#[derive(Clone, Copy, PartialEq)]
 enum CompiledKey {
     Integer(SmallInteger),
     String(CompiledString),
@@ -165,10 +184,12 @@ struct CompiledArrowFunctionExpression {
 #[derive(PartialEq)]
 struct CompiledExecutable {
     instructions: Arc<[u8]>,
-    caches: Box<[CompiledKey]>,
+    /// Indices into [`CompiledScript::caches`].
+    caches: Box<[u32]>,
     constants: Box<[CompiledValue]>,
     wide_constants: Box<[CompiledValue]>,
-    shapes: Box<[CompiledShape]>,
+    /// Indices into [`CompiledScript::shapes`].
+    shapes: Box<[u32]>,
     function_expressions: Box<[CompiledFunctionExpression]>,
     arrow_function_expressions: Box<[CompiledArrowFunctionExpression]>,
     class_initializer_bytecodes: Box<[(Option<u32>, bool)]>,
@@ -182,6 +203,10 @@ struct CompiledDeclarations {
     functions: Box<[(Box<str>, CompiledTemplate)]>,
     var_declaration_names: Box<[Box<str>]>,
     lex_declarations: Box<[(Option<Box<str>>, bool)]>,
+}
+
+fn table_index(len: usize, what: &'static str) -> ExportResult<u32> {
+    u32::try_from(len).map_err(|_| CompiledScriptError::Unsupported(what))
 }
 
 impl CompiledScript {
@@ -225,6 +250,12 @@ impl CompiledScript {
             object_prototype: object_prototype.unbind(),
             function_prototype: function_prototype.unbind(),
             cache_keys,
+            strings: Vec::new(),
+            string_ids: AHashMap::default(),
+            caches: Vec::new(),
+            cache_ids: AHashMap::default(),
+            shapes: Vec::new(),
+            shape_ids: BTreeMap::new(),
             executables: Vec::new(),
             executable_ids: AHashMap::default(),
             in_progress: Vec::new(),
@@ -236,7 +267,7 @@ impl CompiledScript {
             compiled_functions.push((name.clone(), exporter.template(*template, gc)?));
         }
         let root = exporter.executable(executable, gc)?;
-        if root + 1 != exporter.executables.len() as u32 {
+        if root as usize + 1 != exporter.executables.len() {
             return Err(CompiledScriptError::Unsupported(
                 "a script executable referred to from its own functions",
             ));
@@ -244,8 +275,11 @@ impl CompiledScript {
         Ok(Self {
             source_text,
             is_strict,
-            executables: exporter.executables.into_boxed_slice(),
+            strings: exporter.strings.into_boxed_slice(),
+            caches: exporter.caches.into_boxed_slice(),
+            shapes: exporter.shapes.into_boxed_slice(),
             objects: exporter.objects.into_boxed_slice(),
+            executables: exporter.executables.into_boxed_slice(),
             declarations: CompiledDeclarations {
                 lex_names,
                 var_names,
@@ -269,15 +303,33 @@ impl CompiledScript {
     ) -> Script<'a> {
         let realm = realm.bind(gc);
         let source_code = SourceCode::from_source_text(agent, &self.source_text, gc);
-        let mut objects: Vec<Value<'a>> = Vec::with_capacity(self.objects.len());
-        for object in self.objects.iter() {
-            let value = import_object(agent, realm, object, gc);
-            objects.push(value);
+        let strings = import_strings(agent, &self.strings, gc);
+        let mut importer = Importer {
+            agent,
+            realm,
+            gc,
+            strings,
+            caches: Vec::with_capacity(self.caches.len()),
+            shapes: Vec::with_capacity(self.shapes.len()),
+            objects: Vec::with_capacity(self.objects.len()),
+            executables: Vec::with_capacity(self.executables.len()),
+        };
+        for key in self.caches.iter() {
+            let key = importer.key(*key);
+            let cache = PropertyLookupCache::new(importer.agent, key);
+            importer.caches.push(cache);
         }
-        let mut executables: Vec<Executable<'a>> = Vec::with_capacity(self.executables.len());
-        for compiled in self.executables.iter() {
-            let executable = import_executable(agent, realm, compiled, &executables, &objects, gc);
-            executables.push(executable);
+        for shape in self.shapes.iter() {
+            let shape = importer.shape(shape);
+            importer.shapes.push(shape);
+        }
+        for object in self.objects.iter() {
+            let object = importer.object(object);
+            importer.objects.push(object);
+        }
+        for executable in self.executables.iter() {
+            let executable = importer.executable(executable);
+            importer.executables.push(executable);
         }
         let CompiledDeclarations {
             lex_names,
@@ -291,17 +343,13 @@ impl CompiledScript {
             var_names: var_names.clone(),
             functions: functions
                 .iter()
-                .map(|(name, template)| {
-                    (
-                        name.clone(),
-                        import_template(template, &executables).unbind(),
-                    )
-                })
+                .map(|(name, template)| (name.clone(), importer.template(template).unbind()))
                 .collect(),
             var_declaration_names: var_declaration_names.clone(),
             lex_declarations: lex_declarations.clone(),
         };
-        let root = *executables
+        let root = *importer
+            .executables
             .last()
             .expect("an exported script has its own executable");
         let script_record = ScriptRecord {
@@ -322,6 +370,12 @@ struct Exporter<'agent> {
     object_prototype: Value<'static>,
     function_prototype: Value<'static>,
     cache_keys: AHashMap<PropertyLookupCache<'static>, PropertyKey<'static>>,
+    strings: Vec<HeapText>,
+    string_ids: AHashMap<HeapString<'static>, u32>,
+    caches: Vec<CompiledKey>,
+    cache_ids: AHashMap<PropertyLookupCache<'static>, u32>,
+    shapes: Vec<CompiledShape>,
+    shape_ids: BTreeMap<ObjectShape<'static>, u32>,
     executables: Vec<CompiledExecutable>,
     executable_ids: AHashMap<usize, u32>,
     in_progress: Vec<usize>,
@@ -399,12 +453,7 @@ impl Exporter<'_> {
         };
         let mut compiled_caches = Vec::with_capacity(caches.len());
         for cache in caches.iter() {
-            let Some(key) = self.cache_keys.get(cache).copied() else {
-                return Err(CompiledScriptError::Unsupported(
-                    "a property lookup cache without a key",
-                ));
-            };
-            compiled_caches.push(self.key(key)?);
+            compiled_caches.push(self.cache(*cache)?);
         }
         let mut compiled_constants = Vec::with_capacity(constants.len());
         for constant in constants.iter() {
@@ -419,8 +468,7 @@ impl Exporter<'_> {
             compiled_shapes.push(self.shape(*shape)?);
         }
 
-        let id = u32::try_from(self.executables.len())
-            .map_err(|_| CompiledScriptError::Unsupported("too many executables"))?;
+        let id = table_index(self.executables.len(), "too many executables")?;
         self.executables.push(CompiledExecutable {
             instructions,
             caches: compiled_caches.into_boxed_slice(),
@@ -462,23 +510,36 @@ impl Exporter<'_> {
         })
     }
 
-    fn string(&self, string: String) -> ExportResult<CompiledString> {
-        match string {
-            String::SmallString(string) => Ok(CompiledString::Small(string)),
-            String::String(heap) => {
-                let string = String::String(heap);
-                let text = string.as_wtf8_(self.agent);
-                if String::try_from(text).is_ok() {
-                    return Err(CompiledScriptError::Unsupported(
-                        "a heap string short enough to be a small string",
-                    ));
-                }
-                Ok(CompiledString::Heap(owned_wtf8(text)))
-            }
+    fn string(&mut self, string: String) -> ExportResult<CompiledString> {
+        let heap = match string {
+            String::SmallString(string) => return Ok(CompiledString::Small(string)),
+            String::String(heap) => heap.unbind(),
+        };
+        if let Some(&id) = self.string_ids.get(&heap) {
+            return Ok(CompiledString::Heap(id));
         }
+        let string = String::String(heap);
+        let text = string.as_wtf8_(self.agent);
+        if String::try_from(text).is_ok() {
+            return Err(CompiledScriptError::Unsupported(
+                "a heap string short enough to be a small string",
+            ));
+        }
+        let text = match text.as_str() {
+            Some(text) => HeapText::Utf8(text.into()),
+            None => {
+                let mut owned = Wtf8Buf::with_capacity(text.len());
+                owned.push_wtf8(text);
+                HeapText::Wtf8(owned)
+            }
+        };
+        let id = table_index(self.strings.len(), "too many strings")?;
+        self.strings.push(text);
+        self.string_ids.insert(heap, id);
+        Ok(CompiledString::Heap(id))
     }
 
-    fn key(&self, key: PropertyKey) -> ExportResult<CompiledKey> {
+    fn key(&mut self, key: PropertyKey) -> ExportResult<CompiledKey> {
         match key {
             PropertyKey::Integer(integer) => Ok(CompiledKey::Integer(integer)),
             PropertyKey::SmallString(string) => {
@@ -491,7 +552,28 @@ impl Exporter<'_> {
         }
     }
 
-    fn shape(&self, shape: ObjectShape) -> ExportResult<CompiledShape> {
+    fn cache(&mut self, cache: PropertyLookupCache) -> ExportResult<u32> {
+        let cache = cache.unbind();
+        if let Some(&id) = self.cache_ids.get(&cache) {
+            return Ok(id);
+        }
+        let Some(key) = self.cache_keys.get(&cache).copied() else {
+            return Err(CompiledScriptError::Unsupported(
+                "a property lookup cache without a key",
+            ));
+        };
+        let key = self.key(key)?;
+        let id = table_index(self.caches.len(), "too many property lookup caches")?;
+        self.caches.push(key);
+        self.cache_ids.insert(cache, id);
+        Ok(id)
+    }
+
+    fn shape(&mut self, shape: ObjectShape) -> ExportResult<u32> {
+        let shape = shape.unbind();
+        if let Some(&id) = self.shape_ids.get(&shape) {
+            return Ok(id);
+        }
         let null_prototype = match shape.get_prototype(&self.agent.heap.object_shapes) {
             None => true,
             Some(prototype) if Value::from(prototype) == self.object_prototype => false,
@@ -501,16 +583,21 @@ impl Exporter<'_> {
                 ));
             }
         };
-        let keys = shape.keys(&self.agent.heap.object_shapes, &self.agent.heap.elements);
+        let keys = shape
+            .keys(&self.agent.heap.object_shapes, &self.agent.heap.elements)
+            .to_vec();
         let mut compiled_keys = Vec::with_capacity(keys.len());
         for key in keys {
-            compiled_keys.push(self.key(*key)?);
+            compiled_keys.push(self.key(key)?);
         }
-        Ok(CompiledShape {
+        let id = table_index(self.shapes.len(), "too many object shapes")?;
+        self.shapes.push(CompiledShape {
             null_prototype,
             keys: compiled_keys.into_boxed_slice(),
             extensible: shape.extensible(),
-        })
+        });
+        self.shape_ids.insert(shape, id);
+        Ok(id)
     }
 
     fn value(&mut self, value: Value, gc: NoGcScope) -> ExportResult<CompiledValue> {
@@ -551,15 +638,14 @@ impl Exporter<'_> {
                 }
             }
         };
-        let id = u32::try_from(self.objects.len())
-            .map_err(|_| CompiledScriptError::Unsupported("too many object constants"))?;
+        let id = table_index(self.objects.len(), "too many object constants")?;
         self.objects.push(object);
         self.object_ids.push((value.unbind(), id));
         Ok(id)
     }
 
     #[cfg(feature = "regexp")]
-    fn regexp(&self, regexp: RegExp) -> ExportResult<CompiledObject> {
+    fn regexp(&mut self, regexp: RegExp) -> ExportResult<CompiledObject> {
         if regexp.get_backing_object(self.agent).is_some()
             || regexp.try_get_last_index(self.agent) != Some(0)
         {
@@ -567,9 +653,11 @@ impl Exporter<'_> {
                 "a RegExp literal that was used",
             ));
         }
+        let source = regexp.original_source(self.agent);
+        let flags = regexp.original_flags(self.agent);
         Ok(CompiledObject::RegExp {
-            source: self.string(regexp.original_source(self.agent))?,
-            flags: regexp.original_flags(self.agent),
+            source: self.string(source)?,
+            flags,
         })
     }
 
@@ -630,210 +718,212 @@ fn import_named_evaluation(parameter: CompiledNamedEvaluation) -> NamedEvaluatio
     }
 }
 
-fn owned_wtf8(text: Wtf8Str) -> Wtf8Buf {
-    let mut owned = Wtf8Buf::with_capacity(text.len());
-    owned.push_wtf8(text);
-    owned
-}
-
-fn import_string<'a>(
+/// Makes the distinct heap strings, each with one hash: room for all of them
+/// in the string table is made first, so that adding them never rehashes the
+/// strings already there.
+fn import_strings<'a>(
     agent: &mut Agent,
-    string: &CompiledString,
+    texts: &[HeapText],
     gc: NoGcScope<'a, '_>,
-) -> String<'a> {
-    match string {
-        CompiledString::Small(string) => String::SmallString(*string),
-        CompiledString::Heap(text) => match text.as_str() {
-            Some(text) => String::from_str(agent, text, gc),
-            None => String::from_wtf8_buf(agent, text.clone(), gc),
-        },
+) -> Vec<String<'a>> {
+    {
+        let heap = &mut agent.heap;
+        heap.strings.reserve(texts.len());
+        let strings = &heap.strings;
+        let hasher = &heap.string_hasher;
+        heap.string_lookup_table.reserve(texts.len(), |string| {
+            hasher.hash_one(strings[string.get_index()].as_wtf8())
+        });
     }
-}
-
-fn import_key<'a>(agent: &mut Agent, key: &CompiledKey, gc: NoGcScope<'a, '_>) -> PropertyKey<'a> {
-    match key {
-        CompiledKey::Integer(integer) => PropertyKey::Integer(*integer),
-        CompiledKey::String(string) => match import_string(agent, string, gc) {
-            String::SmallString(string) => PropertyKey::SmallString(string),
-            String::String(string) => PropertyKey::String(string),
-        },
-    }
-}
-
-fn import_value<'a>(
-    agent: &mut Agent,
-    value: &CompiledValue,
-    objects: &[Value<'a>],
-    gc: NoGcScope<'a, '_>,
-) -> Value<'a> {
-    match value {
-        CompiledValue::Undefined => Value::Undefined,
-        CompiledValue::Null => Value::Null,
-        CompiledValue::Boolean(value) => Value::Boolean(*value),
-        CompiledValue::String(string) => import_string(agent, string, gc).into(),
-        CompiledValue::Integer(integer) => Value::Integer(*integer),
-        CompiledValue::SmallF64(number) => Value::SmallF64(*number),
-        CompiledValue::Number(number) => Number::from_f64(agent, *number, gc).into(),
-        CompiledValue::SmallBigInt(bigint) => Value::SmallBigInt(*bigint),
-        CompiledValue::BigInt(bigint) => {
-            let bigint: BigInt = agent.heap.create(BigIntHeapData {
-                data: bigint.clone(),
-            });
-            bigint.bind(gc).into()
-        }
-        CompiledValue::Object(id) => objects[*id as usize],
-    }
-}
-
-fn import_object<'a>(
-    agent: &mut Agent,
-    realm: Realm<'a>,
-    object: &CompiledObject,
-    gc: NoGcScope<'a, '_>,
-) -> Value<'a> {
-    match object {
-        #[cfg(feature = "regexp")]
-        CompiledObject::RegExp { source, flags } => {
-            let source = import_string(agent, source, gc);
-            reg_exp_create_literal(agent, source, Some(*flags), gc).into()
-        }
-        CompiledObject::Template { cooked, raw } => {
-            let cooked = cooked
-                .iter()
-                .map(|value| import_value(agent, value, &[], gc).unbind())
-                .collect();
-            let raw = raw
-                .iter()
-                .map(|value| import_value(agent, value, &[], gc).unbind())
-                .collect();
-            create_template_object(agent, cooked, raw, gc).into()
-        }
-        CompiledObject::ObjectPrototype => agent
-            .get_realm_record_by_id(realm)
-            .intrinsics()
-            .object_prototype()
-            .bind(gc)
-            .into(),
-        CompiledObject::FunctionPrototype => agent
-            .get_realm_record_by_id(realm)
-            .intrinsics()
-            .function_prototype()
-            .bind(gc)
-            .into(),
-    }
-}
-
-fn import_template<'a>(
-    template: &CompiledTemplate,
-    executables: &[Executable<'a>],
-) -> FunctionTemplate<'a> {
-    FunctionTemplate {
-        kind: template.kind,
-        span: template.span,
-        has_use_strict_directive: template.has_use_strict_directive,
-        expected_argument_count: template.expected_argument_count,
-        executable: template.executable.map(|id| executables[id as usize]),
-    }
-}
-
-fn import_executable<'a>(
-    agent: &mut Agent,
-    realm: Realm<'a>,
-    compiled: &CompiledExecutable,
-    executables: &[Executable<'a>],
-    objects: &[Value<'a>],
-    gc: NoGcScope<'a, '_>,
-) -> Executable<'a> {
-    let caches = compiled
-        .caches
+    texts
         .iter()
-        .map(|key| {
-            let key = import_key(agent, key, gc);
-            PropertyLookupCache::new(agent, key).unbind()
+        .map(|text| match text {
+            HeapText::Utf8(text) => String::from_str(agent, text, gc),
+            HeapText::Wtf8(text) => String::from_wtf8_buf(agent, text.clone(), gc),
         })
-        .collect();
-    let constants = compiled
-        .constants
-        .iter()
-        .map(|value| import_value(agent, value, objects, gc).unbind())
-        .collect();
-    let wide_constants = compiled
-        .wide_constants
-        .iter()
-        .map(|value| import_value(agent, value, objects, gc).unbind())
-        .collect();
-    let shapes = compiled
-        .shapes
-        .iter()
-        .map(|shape| {
-            let prototype = if shape.null_prototype {
-                None
-            } else {
-                Some(
-                    agent
-                        .get_realm_record_by_id(realm)
-                        .intrinsics()
-                        .object_prototype()
-                        .into(),
-                )
-            };
-            let mut object_shape = ObjectShape::get_shape_for_prototype(agent, prototype);
-            for key in shape.keys.iter() {
-                let key = import_key(agent, key, gc);
-                object_shape = object_shape
-                    .get_child_shape(agent, key)
-                    .expect("Should perform GC here");
+        .collect()
+}
+
+struct Importer<'agent, 'a, 'scope> {
+    agent: &'agent mut Agent,
+    realm: Realm<'a>,
+    gc: NoGcScope<'a, 'scope>,
+    strings: Vec<String<'a>>,
+    caches: Vec<PropertyLookupCache<'a>>,
+    shapes: Vec<ObjectShape<'a>>,
+    objects: Vec<Value<'a>>,
+    executables: Vec<Executable<'a>>,
+}
+
+impl<'a> Importer<'_, 'a, '_> {
+    fn string(&self, string: CompiledString) -> String<'a> {
+        match string {
+            CompiledString::Small(string) => String::SmallString(string),
+            CompiledString::Heap(id) => self.strings[id as usize],
+        }
+    }
+
+    fn key(&self, key: CompiledKey) -> PropertyKey<'a> {
+        match key {
+            CompiledKey::Integer(integer) => PropertyKey::Integer(integer),
+            CompiledKey::String(string) => match self.string(string) {
+                String::SmallString(string) => PropertyKey::SmallString(string),
+                String::String(string) => PropertyKey::String(string),
+            },
+        }
+    }
+
+    fn value(&mut self, value: &CompiledValue) -> Value<'a> {
+        match value {
+            CompiledValue::Undefined => Value::Undefined,
+            CompiledValue::Null => Value::Null,
+            CompiledValue::Boolean(value) => Value::Boolean(*value),
+            CompiledValue::String(string) => self.string(*string).into(),
+            CompiledValue::Integer(integer) => Value::Integer(*integer),
+            CompiledValue::SmallF64(number) => Value::SmallF64(*number),
+            CompiledValue::Number(number) => Number::from_f64(self.agent, *number, self.gc).into(),
+            CompiledValue::SmallBigInt(bigint) => Value::SmallBigInt(*bigint),
+            CompiledValue::BigInt(bigint) => {
+                let bigint: BigInt = self.agent.heap.create(BigIntHeapData {
+                    data: bigint.clone(),
+                });
+                bigint.bind(self.gc).into()
             }
-            object_shape.set_extensible(shape.extensible);
-            object_shape.unbind()
-        })
-        .collect();
-    let function_expressions = compiled
-        .function_expressions
-        .iter()
-        .map(|function| FunctionExpression {
-            template: import_template(&function.template, executables).unbind(),
-            identifier: function.identifier.map(import_named_evaluation),
-            binding_name: function
-                .binding_name
-                .as_ref()
-                .map(|name| import_string(agent, name, gc).unbind()),
-            is_expression: function.is_expression,
-            is_declaration: function.is_declaration,
-        })
-        .collect();
-    let arrow_function_expressions = compiled
-        .arrow_function_expressions
-        .iter()
-        .map(|arrow| ArrowFunctionExpression {
-            template: import_template(&arrow.template, executables).unbind(),
-            identifier: arrow.identifier.map(import_named_evaluation),
-        })
-        .collect();
-    let class_initializer_bytecodes = compiled
-        .class_initializer_bytecodes
-        .iter()
-        .map(|(initializer, has_constructor_parent)| {
-            (
-                initializer.map(|id| executables[id as usize].unbind()),
-                *has_constructor_parent,
+            CompiledValue::Object(id) => self.objects[*id as usize],
+        }
+    }
+
+    fn shape(&mut self, shape: &CompiledShape) -> ObjectShape<'a> {
+        let prototype = if shape.null_prototype {
+            None
+        } else {
+            Some(
+                self.agent
+                    .get_realm_record_by_id(self.realm)
+                    .intrinsics()
+                    .object_prototype()
+                    .into(),
             )
-        })
-        .collect();
-    agent.heap.create(ExecutableHeapData {
-        instructions: compiled.instructions.clone(),
-        caches,
-        constants,
-        wide_constants,
-        shapes,
-        function_expressions,
-        arrow_function_expressions,
-        class_initializer_bytecodes,
-        instance_initializer: compiled
+        };
+        let mut object_shape = ObjectShape::get_shape_for_prototype(self.agent, prototype);
+        for key in shape.keys.iter() {
+            let key = self.key(*key);
+            object_shape = object_shape
+                .get_child_shape(self.agent, key)
+                .expect("Should perform GC here");
+        }
+        object_shape.set_extensible(shape.extensible);
+        object_shape
+    }
+
+    fn object(&mut self, object: &CompiledObject) -> Value<'a> {
+        match object {
+            #[cfg(feature = "regexp")]
+            CompiledObject::RegExp { source, flags } => {
+                let source = self.string(*source);
+                reg_exp_create_literal(self.agent, source, Some(*flags), self.gc).into()
+            }
+            CompiledObject::Template { cooked, raw } => {
+                let cooked = cooked
+                    .iter()
+                    .map(|value| self.value(value).unbind())
+                    .collect();
+                let raw = raw.iter().map(|value| self.value(value).unbind()).collect();
+                create_template_object(self.agent, cooked, raw, self.gc).into()
+            }
+            CompiledObject::ObjectPrototype => self
+                .agent
+                .get_realm_record_by_id(self.realm)
+                .intrinsics()
+                .object_prototype()
+                .bind(self.gc)
+                .into(),
+            CompiledObject::FunctionPrototype => self
+                .agent
+                .get_realm_record_by_id(self.realm)
+                .intrinsics()
+                .function_prototype()
+                .bind(self.gc)
+                .into(),
+        }
+    }
+
+    fn template(&self, template: &CompiledTemplate) -> FunctionTemplate<'a> {
+        FunctionTemplate {
+            kind: template.kind,
+            span: template.span,
+            has_use_strict_directive: template.has_use_strict_directive,
+            expected_argument_count: template.expected_argument_count,
+            executable: template.executable.map(|id| self.executables[id as usize]),
+        }
+    }
+
+    fn executable(&mut self, compiled: &CompiledExecutable) -> Executable<'a> {
+        let caches = compiled
+            .caches
+            .iter()
+            .map(|id| self.caches[*id as usize].unbind())
+            .collect();
+        let constants = compiled
+            .constants
+            .iter()
+            .map(|value| self.value(value).unbind())
+            .collect();
+        let wide_constants = compiled
+            .wide_constants
+            .iter()
+            .map(|value| self.value(value).unbind())
+            .collect();
+        let shapes = compiled
+            .shapes
+            .iter()
+            .map(|id| self.shapes[*id as usize].unbind())
+            .collect();
+        let function_expressions = compiled
+            .function_expressions
+            .iter()
+            .map(|function| FunctionExpression {
+                template: self.template(&function.template).unbind(),
+                identifier: function.identifier.map(import_named_evaluation),
+                binding_name: function.binding_name.map(|name| self.string(name).unbind()),
+                is_expression: function.is_expression,
+                is_declaration: function.is_declaration,
+            })
+            .collect();
+        let arrow_function_expressions = compiled
+            .arrow_function_expressions
+            .iter()
+            .map(|arrow| ArrowFunctionExpression {
+                template: self.template(&arrow.template).unbind(),
+                identifier: arrow.identifier.map(import_named_evaluation),
+            })
+            .collect();
+        let class_initializer_bytecodes = compiled
+            .class_initializer_bytecodes
+            .iter()
+            .map(|(initializer, has_constructor_parent)| {
+                (
+                    initializer.map(|id| self.executables[id as usize].unbind()),
+                    *has_constructor_parent,
+                )
+            })
+            .collect();
+        let instance_initializer = compiled
             .instance_initializer
-            .map(|id| executables[id as usize].unbind()),
-        _gc: core::marker::PhantomData,
-    })
+            .map(|id| self.executables[id as usize].unbind());
+        self.agent.heap.create(ExecutableHeapData {
+            instructions: compiled.instructions.clone(),
+            caches,
+            constants,
+            wide_constants,
+            shapes,
+            function_expressions,
+            arrow_function_expressions,
+            class_initializer_bytecodes,
+            instance_initializer,
+            _gc: core::marker::PhantomData,
+        })
+    }
 }
 
 #[cfg(test)]

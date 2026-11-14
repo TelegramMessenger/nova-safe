@@ -10,6 +10,13 @@
 use std::time::{Duration, Instant};
 
 use nova_embed::{CompiledScript, Engine, EngineOptions, Host, HostArg, HostReturn};
+use nova_vm::{
+    ecmascript::{
+        AgentOptions, CompiledScript as VmCompiledScript, DefaultHostHooks, GcAgent,
+        String as JsString, parse_script,
+    },
+    engine::Bindable,
+};
 
 struct NoHost;
 
@@ -30,11 +37,49 @@ fn new_engine() -> Engine {
     .expect("engine")
 }
 
+fn new_agent() -> (GcAgent, nova_vm::ecmascript::RealmRoot) {
+    let mut agent = GcAgent::new(AgentOptions::default(), &DefaultHostHooks);
+    let realm = agent.create_default_realm();
+    (agent, realm)
+}
+
+/// Times `CompiledScript::instantiate` alone, each in a fresh agent.
+fn instantiate_only(source: &str, agents: u32) {
+    let (mut agent, realm) = new_agent();
+    let compiled = agent.run_in_realm(&realm, |agent, gc| {
+        let source = JsString::from_str(agent, source, gc.nogc());
+        let realm = agent.current_realm(gc.nogc());
+        let script = parse_script(agent, source, realm, false, None, gc.nogc()).unwrap();
+        VmCompiledScript::export(agent, script, gc.nogc())
+            .ok()
+            .expect("exports")
+    });
+    let mut total = Duration::ZERO;
+    for _ in 0..agents {
+        let (mut agent, realm) = new_agent();
+        agent.run_in_realm(&realm, |agent, gc| {
+            let realm = agent.current_realm(gc.nogc());
+            let started = Instant::now();
+            let script = compiled.instantiate(agent, realm, None, gc.nogc());
+            total += started.elapsed();
+            let _ = script.unbind();
+        });
+    }
+    println!(
+        "  instantiate only:             {:.2} ms per agent",
+        total.as_secs_f64() * 1000.0 / f64::from(agents)
+    );
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect("a script path");
     let engines: u32 = args.next().map_or(20, |n| n.parse().expect("a count"));
     let source = std::fs::read_to_string(&path).expect("readable script");
+    if std::env::var_os("INSTANTIATE_ONLY").is_some() {
+        instantiate_only(&source, engines);
+        return;
+    }
 
     let started = Instant::now();
     let compiled = CompiledScript::compile(&source).expect("compiles");
