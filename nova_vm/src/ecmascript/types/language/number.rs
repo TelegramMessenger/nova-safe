@@ -713,7 +713,7 @@ impl<'a> Number<'a> {
 
             // a. If abs(ℝ(base)) > 1, return +0𝔽.
             return if base > 1.0 {
-                Number::pos_inf()
+                Number::pos_zero()
             }
             // b. If abs(ℝ(base)) = 1, return NaN.
             else if base == 1.0 {
@@ -730,7 +730,7 @@ impl<'a> Number<'a> {
 
         // 12. If base < -0𝔽 and exponent is not an integral Number, return NaN.
         if Number::less_than(agent, base, Number::neg_zero()).unwrap_or(false)
-            && !exponent.is_odd_integer(agent)
+            && !exponent.is_integer_(agent)
         {
             return Number::nan();
         }

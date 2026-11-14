@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use core::cmp::Ordering;
+use core::{cmp::Ordering, convert::Infallible};
 
 use wtf8::Wtf8Buf;
 
@@ -10,15 +10,15 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, ArrayIterator, BUILTIN_STRING_MEMORY, Behaviour, Builtin,
         BuiltinIntrinsic, CollectionIteratorKind, ExceptionType, Function, InternalMethods,
-        JsError, JsResult, Number, Object, PropertyKey, Realm, SmallInteger, String, Value,
+        JsResult, Number, Object, Primitive, PropertyKey, Realm, SmallInteger, String, Value,
         array_create, array_species_create, builders::OrdinaryObjectBuilder, call_function,
         create_data_property_or_throw, delete_property_or_throw, get, has_property, invoke,
         is_array, is_callable, is_strictly_equal, length_of_array_like, same_value_zero, set,
-        to_boolean, to_integer_or_infinity, to_number, to_object, to_string,
-        try_create_data_property_or_throw, try_length_of_array_like, try_result_into_js,
-        try_to_integer_or_infinity, try_to_string, unwrap_try,
+        to_boolean, to_integer_or_infinity, to_number, to_object, to_string, to_string_primitive,
+        try_create_data_property_or_throw, try_length_of_array_like, try_merge_sort_by,
+        try_result_into_js, try_to_integer_or_infinity, try_to_string, unwrap_try,
     },
-    engine::{Bindable, GcScope, Rootable, Scopable, ScopableCollection, Scoped},
+    engine::{Bindable, GcScope, NoGcScope, Rootable, Scopable, ScopableCollection, Scoped},
     heap::{ArenaAccessSoAMut, Heap, HeapIndexHandle, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
@@ -4630,27 +4630,74 @@ fn sort_indexed_properties<'gc, 'scope, const SKIP_HOLES: bool>(
     // SortCompare. If any such call returns an abrupt completion, stop before
     // performing any further calls to SortCompare and return that Completion
     // Record.
-    let mut error: Option<JsError> = None;
-    items.sort_by(|a, b| {
-        if error.is_some() {
-            // This is dangerous but we don't have much of a choice.
-            return Ordering::Equal;
-        }
-        let result = compare_array_elements(agent, a, b, comparator.clone(), gc.reborrow());
-        match result {
-            Ok(result) => result,
-            Err(err) => {
-                error = Some(err.unbind());
-                Ordering::Equal
-            }
-        }
-    });
-    if let Some(error) = error {
-        return Err(error);
+    if comparator.is_none()
+        && let Some(order) = sort_primitives_by_string(agent, &items, gc.nogc())
+    {
+        let gc = gc.into_nogc();
+        // 5. Return items.
+        return Ok(order
+            .into_iter()
+            .map(|index| items[index].get(agent).bind(gc))
+            .collect());
     }
+    try_merge_sort_by(&mut items, |a, b| {
+        compare_array_elements(agent, a, b, comparator.clone(), gc.reborrow())
+            .map_err(|err| err.unbind())
+    })?;
     let gc = gc.into_nogc();
     // 5. Return items.
     Ok(items.into_iter().map(|v| v.get(agent).bind(gc)).collect())
+}
+
+/// SortCompare without a comparator when every item is undefined or a
+/// primitive other than a Symbol: ToString of those runs no JavaScript, so
+/// each item is converted once. Returns the sorted order of the items'
+/// indices, or None if an item needs the general path.
+fn sort_primitives_by_string(
+    agent: &mut Agent,
+    items: &[Scoped<Value>],
+    gc: NoGcScope,
+) -> Option<Vec<usize>> {
+    let mut keys: Vec<(Option<String<'static>>, usize)> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let value = item.get(agent).bind(gc);
+        if value.is_undefined() {
+            keys.push((None, index));
+            continue;
+        }
+        if value.is_symbol() {
+            return None;
+        }
+        let primitive = Primitive::try_from(value).ok()?;
+        let string = to_string_primitive(agent, primitive, gc).ok()?;
+        keys.push((Some(string.unbind()), index));
+    }
+    // CompareArrayElements: undefined sorts after every other value, the
+    // rest by the code units of their Strings.
+    let result: Result<(), Infallible> = try_merge_sort_by(&mut keys, |(a, _), (b, _)| {
+        Ok(match (a, b) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(a), Some(b)) => a.as_wtf8_(agent).cmp_utf16(b.as_wtf8_(agent)),
+        })
+    });
+    match result {
+        Ok(()) => Some(keys.into_iter().map(|(_, index)| index).collect()),
+        Err(never) => match never {},
+    }
+}
+
+/// The order a comparator's result means: positive is greater, negative is
+/// less, and zero (either sign) or NaN is equal.
+pub(crate) fn comparator_result_ordering(v: f64) -> Ordering {
+    if v > 0.0 {
+        Ordering::Greater
+    } else if v < 0.0 {
+        Ordering::Less
+    } else {
+        Ordering::Equal
+    }
 }
 
 /// ### [23.1.3.30.2 CompareArrayElements ( x, y, comparator )](https://tc39.es/ecma262/#sec-comparearrayelements)
@@ -4694,22 +4741,7 @@ fn compare_array_elements<'a>(
             .bind(gc.nogc());
         // b. If v is NaN, return +0𝔽.
         // c. Return v.
-        if v.is_nan_(agent) {
-            Ok(Ordering::Equal)
-        } else if v.is_sign_positive_(agent) {
-            Ok(Ordering::Greater)
-        } else if v.is_sign_negative_(agent) {
-            Ok(Ordering::Less)
-        } else {
-            Ok(Ordering::Equal)
-        }
-    } else if let (Value::Integer(x), Value::Integer(y)) = (x, y) {
-        // Fast path: Avoid string conversions for numbers
-        Ok(x.into_i64().cmp(&y.into_i64()))
-    } else if let (Ok(x), Ok(y)) = (Number::try_from(x), Number::try_from(y)) {
-        // Fast path: Avoid string conversions for numbers.
-        // Note: This is probably not correct for NaN's.
-        Ok(x.into_f64_(agent).total_cmp(&y.into_f64_(agent)))
+        Ok(comparator_result_ordering(v.into_f64_(agent)))
     } else {
         // 5. Let xString be ? ToString(x).
         let (x, y) = if let Some(x) = try_result_into_js(try_to_string(agent, x, gc.nogc()))
@@ -4741,7 +4773,6 @@ fn compare_array_elements<'a>(
         // 9. Let ySmaller be ! IsLessThan(yString, xString, true).
         // 10. If ySmaller is true, return 1𝔽.
         // 11. Return +0𝔽.
-        // TODO: this gives UTF-8 lexicographic ordering, not UTF-16.
-        Ok(x.as_wtf8_(agent).cmp(&y.as_wtf8_(agent)))
+        Ok(x.as_wtf8_(agent).cmp_utf16(y.as_wtf8_(agent)))
     }
 }

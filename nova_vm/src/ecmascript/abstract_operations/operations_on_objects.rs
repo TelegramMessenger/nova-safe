@@ -561,7 +561,7 @@ fn get_method_internal<'a>(
     if func.is_none() {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::TypeError,
-            "Not a callable object",
+            "not a function",
             gc,
         ));
     }
@@ -696,7 +696,7 @@ pub(crate) fn call<'gc>(
 #[cold]
 #[inline(never)]
 pub(crate) fn throw_not_callable<'a>(agent: &mut Agent, gc: NoGcScope<'a, '_>) -> JsError<'a> {
-    agent.throw_exception_with_static_message(ExceptionType::TypeError, "Not a callable object", gc)
+    agent.throw_exception_with_static_message(ExceptionType::TypeError, "not a function", gc)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

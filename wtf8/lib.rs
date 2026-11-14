@@ -466,6 +466,32 @@ impl<'a> Wtf8Str<'a> {
         panic!("index {begin} and/or {end} in {self:?} do not lie on character boundary");
     }
 
+    /// Compare as JavaScript compares strings: by UTF-16 code units. This
+    /// differs from byte order when a code point above U+FFFF meets one in
+    /// U+E000..=U+FFFF.
+    pub fn cmp_utf16(self, other: Wtf8Str<'_>) -> core::cmp::Ordering {
+        let (a, b) = (self.bytes, other.bytes);
+        let common = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+        if common == a.len() || common == b.len() {
+            return a.len().cmp(&b.len());
+        }
+        let mut start = common;
+        while start > 0 && (128u8..192u8).contains(&a[start]) {
+            start -= 1;
+        }
+        let mut x = self.slice_from(start).to_ill_formed_utf16();
+        let mut y = other.slice_from(start).to_ill_formed_utf16();
+        loop {
+            match (x.next(), y.next()) {
+                (Some(p), Some(q)) if p == q => continue,
+                (Some(p), Some(q)) => return p.cmp(&q),
+                (None, None) => return core::cmp::Ordering::Equal,
+                (None, Some(_)) => return core::cmp::Ordering::Less,
+                (Some(_), None) => return core::cmp::Ordering::Greater,
+            }
+        }
+    }
+
     /// The bytes from `begin` to `end`.
     ///
     /// ## Panics

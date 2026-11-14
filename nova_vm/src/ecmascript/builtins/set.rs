@@ -9,6 +9,7 @@ pub(crate) use data::*;
 use crate::{
     ecmascript::{
         Agent, InternalMethods, InternalSlots, OrdinaryObject, ProtoIntrinsics, object_handle,
+        sweep_keys_moved_an_object,
     },
     engine::Bindable,
     heap::{
@@ -121,9 +122,11 @@ impl HeapMarkAndSweep for SetHeapDataMut<'_, 'static> {
             set_data: _,
             values,
             object_index,
-            needs_primitive_rehashing: _,
+            needs_primitive_rehashing,
         } = self;
-        values.sweep_values(compactions);
         object_index.sweep_values(compactions);
+        if sweep_keys_moved_an_object(values, compactions) {
+            needs_primitive_rehashing.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
     }
 }

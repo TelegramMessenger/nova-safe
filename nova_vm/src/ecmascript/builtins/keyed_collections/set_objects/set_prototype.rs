@@ -11,7 +11,7 @@ use crate::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinGetter,
         BuiltinIntrinsic, CollectionIteratorKind, ExceptionType, JsResult, Number, PropertyKey,
         Realm, Set, SetIterator, String, Value, builders::OrdinaryObjectBuilder, call_function,
-        canonicalize_keyed_collection_key, is_callable, same_value,
+        canonicalize_keyed_collection_key, is_callable, rehash_set_data_if_needed, same_value,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable},
     heap::{
@@ -104,6 +104,12 @@ impl SetPrototype {
         let value = canonicalize_keyed_collection_key(&primitive_heap.numbers, value);
 
         let set_heap_data = s.get_direct_mut(sets);
+        rehash_set_data_if_needed(
+            set_heap_data.set_data,
+            set_heap_data.values,
+            set_heap_data.needs_primitive_rehashing,
+            &primitive_heap,
+        );
         let values = set_heap_data.values;
         let set_data = set_heap_data.set_data.get_mut();
         let hasher = |value: Value| {
@@ -199,6 +205,12 @@ impl SetPrototype {
             hasher.finish()
         };
         let set_heap_data = s.get_direct_mut(sets);
+        rehash_set_data_if_needed(
+            set_heap_data.set_data,
+            set_heap_data.values,
+            set_heap_data.needs_primitive_rehashing,
+            &primitive_heap,
+        );
         let values = set_heap_data.values;
         let set_data = set_heap_data.set_data.get_mut();
         // 4. For each element e of S.[[SetData]], do
@@ -363,6 +375,12 @@ impl SetPrototype {
         } = &mut agent.heap;
         let primitive_heap = PrimitiveHeap::new(bigints, numbers, strings);
         let set_heap_data = s.get_direct(sets);
+        rehash_set_data_if_needed(
+            set_heap_data.set_data,
+            set_heap_data.values,
+            set_heap_data.needs_primitive_rehashing,
+            &primitive_heap,
+        );
         let values = set_heap_data.values;
         let set_data = set_heap_data.set_data.borrow();
 

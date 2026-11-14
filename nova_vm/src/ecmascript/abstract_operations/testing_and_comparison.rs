@@ -437,34 +437,9 @@ pub(crate) fn is_less_than<'a, const LEFT_FIRST: bool>(
         // d. If lx < ly, return true. Otherwise, return false.
         let sx = String::try_from(px).unwrap();
         let sy = String::try_from(py).unwrap();
-        if let (Some(sx), Some(sy)) = (sx.as_str_(agent), sy.as_str_(agent)) {
-            Ok(Some(sx < sy))
-        } else {
-            let lx = sx.utf16_len_(agent);
-            let ly = sy.utf16_len_(agent);
-            let l = lx.min(ly);
-            let mut sx = sx.as_wtf8_(agent).to_ill_formed_utf16();
-            let mut sy = sy.as_wtf8_(agent).to_ill_formed_utf16();
-            for _ in 0..l {
-                // i. Let cx be the numeric value of the code unit at index i within px.
-                let cx = sx.next().unwrap();
-                // ii. Let cy be the numeric value of the code unit at index i within py.
-                let cy = sy.next().unwrap();
-                // iii. If cx < cy, return true.
-                match cx.cmp(&cy) {
-                    std::cmp::Ordering::Less => {
-                        return Ok(Some(true));
-                    }
-                    std::cmp::Ordering::Equal => {}
-                    std::cmp::Ordering::Greater => {
-                        return Ok(Some(false));
-                    }
-                }
-                // iv. If cx > cy, return false.
-            }
-            // d. If lx < ly, return true. Otherwise, return false.
-            Ok(Some(lx < ly))
-        }
+        Ok(Some(
+            sx.as_wtf8_(agent).cmp_utf16(sy.as_wtf8_(agent)) == core::cmp::Ordering::Less,
+        ))
     }
     // 4. Else,
     else {

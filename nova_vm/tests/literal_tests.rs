@@ -47,3 +47,28 @@ fn function_own_properties() {
 fn math_atan2_quadrants() {
     run_test_source("mathAtan2.test.js");
 }
+
+#[test]
+fn math_pow_round() {
+    run_test_source("mathPowRound.test.js");
+}
+
+#[test]
+fn string_less_than_utf16() {
+    run_test_source("stringLessThanUtf16.test.js");
+}
+
+#[test]
+fn bound_function_properties() {
+    run_test_source("boundFunctionProperties.test.js");
+}
+
+#[test]
+fn generator_prototype() {
+    run_test_source("generatorPrototype.test.js");
+}
+
+#[test]
+fn not_callable_message() {
+    run_test_source("notCallableMessage.test.js");
+}

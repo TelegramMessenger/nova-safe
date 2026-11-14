@@ -343,15 +343,23 @@ pub fn parse_script<'a>(
             let ParseResult {
                 source_code,
                 body,
-                directives: _,
+                directives,
                 scoping,
                 nodes,
                 is_strict,
             } = parsed;
             let declarations =
                 GlobalDeclarations::new(agent, body, source_code, scoping, nodes, is_strict, gc);
-            let executable =
-                Executable::compile_script(agent, body, source_code, scoping, nodes, is_strict, gc);
+            let executable = Executable::compile_script(
+                agent,
+                body,
+                directives,
+                source_code,
+                scoping,
+                nodes,
+                is_strict,
+                gc,
+            );
             (source_code, declarations, executable, is_strict)
         },
     );

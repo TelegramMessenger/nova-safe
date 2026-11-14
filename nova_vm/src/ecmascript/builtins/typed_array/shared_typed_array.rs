@@ -13,8 +13,8 @@ use crate::ecmascript::SHARED_FLOAT_16_ARRAY_DISCRIMINANT;
 use crate::{
     ecmascript::{
         Agent, AnyArrayBuffer, AnyTypedArray, ArgumentsList, BigInt, CachedBufferByteLength,
-        DataBlock, Function, InternalMethods, InternalSlots, JsError, JsResult, Number, Numeric,
-        Object, ObjectShape, OrdinaryObject, Primitive, PropertyDescriptor, PropertyKey,
+        DataBlock, Function, InternalMethods, InternalSlots, JsResult, Number, Numeric, Object,
+        ObjectShape, OrdinaryObject, Primitive, PropertyDescriptor, PropertyKey,
         PropertyLookupCache, PropertyOffset, ProtoIntrinsics, SHARED_BIGINT_64_ARRAY_DISCRIMINANT,
         SHARED_BIGUINT_64_ARRAY_DISCRIMINANT, SHARED_FLOAT_32_ARRAY_DISCRIMINANT,
         SHARED_FLOAT_64_ARRAY_DISCRIMINANT, SHARED_INT_8_ARRAY_DISCRIMINANT,
@@ -25,11 +25,12 @@ use crate::{
         TryGetResult, TryHasResult, TryResult, TypedArray, TypedArrayAbstractOperations,
         TypedArrayArrayLength, U8Clamped, Value, Viewable, ViewedArrayBufferByteLength,
         ViewedArrayBufferByteOffset, call_function, canonicalize_numeric_index_string,
-        create_byte_data_block, for_normal_typed_array, js_result_into_try,
-        ordinary_define_own_property, ordinary_delete, ordinary_get, ordinary_get_own_property,
-        ordinary_has_property_entry, ordinary_prevent_extensions, ordinary_set, ordinary_try_get,
-        ordinary_try_has_property, ordinary_try_set, set, to_big_int, to_big_int_primitive,
-        to_boolean, to_number, to_number_primitive, typed_array_create_from_data_block,
+        comparator_result_ordering, create_byte_data_block, for_normal_typed_array,
+        js_result_into_try, ordinary_define_own_property, ordinary_delete, ordinary_get,
+        ordinary_get_own_property, ordinary_has_property_entry, ordinary_prevent_extensions,
+        ordinary_set, ordinary_try_get, ordinary_try_has_property, ordinary_try_set, set,
+        to_big_int, to_big_int_primitive, to_boolean, to_number, to_number_primitive,
+        try_merge_sort_by, typed_array_create_from_data_block,
         typed_array_species_create_with_length, unwrap_try,
     },
     engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable, Scoped},
@@ -1946,12 +1947,8 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
         for item in slice.iter() {
             items.push(T::from_storage(item.load(Ordering::Unordered)));
         }
-        let mut error: Option<JsError> = None;
         let ta = ta.scope(agent, gc.nogc());
-        items.sort_by(|a, b| {
-            if error.is_some() {
-                return std::cmp::Ordering::Equal;
-            }
+        try_merge_sort_by(&mut items, |a, b| {
             let a_val = a.into_ne_value(agent, gc.nogc());
             let b_val = b.into_ne_value(agent, gc.nogc());
             let result = call_function(
@@ -1966,26 +1963,9 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericSharedTypedArr
             )
             .unbind()
             .and_then(|v| v.to_number(agent, gc.reborrow()));
-            let num = match result {
-                Ok(n) => n,
-                Err(e) => {
-                    error = Some(e.unbind());
-                    return std::cmp::Ordering::Equal;
-                }
-            };
-            if num.is_nan_(agent) {
-                std::cmp::Ordering::Equal
-            } else if num.is_sign_positive_(agent) {
-                std::cmp::Ordering::Greater
-            } else if num.is_sign_negative_(agent) {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Equal
-            }
-        });
-        if let Some(error) = error {
-            return Err(error);
-        }
+            let num = result.map_err(|e| e.unbind())?;
+            Ok(comparator_result_ordering(num.into_f64_(agent)))
+        })?;
         let ta = ta.take(agent).bind(gc.into_nogc());
         let slice = ta.as_slice(agent);
         let len = len.min(slice.len());

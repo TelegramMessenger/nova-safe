@@ -8,15 +8,16 @@ use oxc_span::Span;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, BigInt, BuiltinConstructorArgs,
-        ConstructorStatus, Environment, ExceptionType, Function, InternalMethods, InternalSlots,
-        JsResult, Number, Numeric, Object, OrdinaryFunctionCreateParams, OrdinaryObject, Primitive,
-        PrivateMethod, Promise, PropertyDescriptor, PropertyKey, PropertyKeySet,
-        PropertyLookupCache, ProtoIntrinsics, Reference, ScriptOrModule, SetFunctionNamePrefix,
-        SetResult, String, TryError, TryGetValueContinue, TryHasResult, TryResult, Value,
-        array_create, call, call_function, call_proxy_set, construct, copy_data_properties,
-        copy_data_properties_into_object, create_builtin_constructor,
-        create_data_property_or_throw, create_unmapped_arguments_object, define_property_or_throw,
-        evaluate_import_call, get_this_environment, get_this_value, get_value, has_property,
+        ConstructorStatus, ECMAScriptFunction, Environment, ExceptionType, Function,
+        InternalMethods, InternalSlots, JsResult, Number, Numeric, Object,
+        OrdinaryFunctionCreateParams, OrdinaryObject, Primitive, PrivateMethod, Promise,
+        PropertyDescriptor, PropertyKey, PropertyKeySet, PropertyLookupCache, ProtoIntrinsics,
+        Reference, ScriptOrModule, SetFunctionNamePrefix, SetResult, String, TryError,
+        TryGetValueContinue, TryHasResult, TryResult, Value, array_create, call, call_function,
+        call_proxy_set, construct, copy_data_properties, copy_data_properties_into_object,
+        create_builtin_constructor, create_data_property_or_throw,
+        create_unmapped_arguments_object, define_property_or_throw, evaluate_import_call,
+        get_this_environment, get_this_value, get_value, has_property,
         initialize_derived_instance_elements, is_constructor, is_less_than, is_loosely_equal,
         is_private_reference, is_property_reference, is_strictly_equal, is_super_reference,
         is_unresolvable_reference, iterator_complete, iterator_value, make_constructor,
@@ -472,11 +473,16 @@ pub(super) fn execute_object_define_method<'gc>(
     //      env,
     //      privateEnv
     //  ).
+    let is_generator = params.template.kind.is_generator();
+    let is_async = params.template.kind.is_async();
     let closure = ordinary_function_create(agent, params, gc.nogc());
     // 8. Perform MakeMethod(closure, object).
     make_method(agent, closure, object);
     // 2. Perform SetFunctionName(closure, propKey).
     set_function_name(agent, closure, prop_key, None, gc.nogc());
+    if is_generator {
+        define_generator_prototype(agent, closure, is_async, gc.nogc());
+    }
     // 3. Return ? DefineMethodProperty(
     //      object,
     //      methodDef.[[Key]],
@@ -517,6 +523,44 @@ pub(super) fn execute_object_define_method<'gc>(
     )?;
     // c. Return unused.
     Ok(())
+}
+
+/// The "prototype" property every generator function and generator method
+/// gets: steps 7 and 8 of InstantiateGeneratorFunctionExpression, and of
+/// GeneratorMethod's and AsyncGeneratorMethod's MethodDefinitionEvaluation.
+fn define_generator_prototype(
+    agent: &mut Agent,
+    function: ECMAScriptFunction,
+    is_async: bool,
+    gc: NoGcScope,
+) {
+    // 7. Let prototype be OrdinaryObjectCreate(%GeneratorFunction.prototype.prototype%).
+    // NOTE: Although `prototype` has the generator prototype, it doesn't have the generator
+    // internals slots, so it's created as an ordinary object.
+    let intrinsics = agent.current_realm_record().intrinsics();
+    let proto = if is_async {
+        intrinsics.async_generator_prototype().into()
+    } else {
+        intrinsics.generator_prototype().into()
+    };
+    let prototype =
+        ordinary_object_create_with_intrinsics(agent, ProtoIntrinsics::Object, Some(proto), gc);
+    // 8. Perform ! DefinePropertyOrThrow(F, "prototype", PropertyDescriptor { [[Value]]: prototype, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false }).
+    unwrap_try(try_define_property_or_throw(
+        agent,
+        function,
+        BUILTIN_STRING_MEMORY.prototype.to_property_key(),
+        PropertyDescriptor {
+            value: Some(prototype.unbind().into()),
+            writable: Some(true),
+            get: None,
+            set: None,
+            enumerable: Some(false),
+            configurable: Some(false),
+        },
+        None,
+        gc,
+    ));
 }
 
 pub(super) fn execute_object_define_getter<'gc>(
@@ -1145,43 +1189,8 @@ pub(super) fn execute_instantiate_ordinary_function_expression<'gc>(
 
     if kind.is_generator() {
         // InstantiateGeneratorFunctionExpression
-        // 7. Let prototype be OrdinaryObjectCreate(%GeneratorFunction.prototype.prototype%).
-        // NOTE: Although `prototype` has the generator prototype, it doesn't have the generator
-        // internals slots, so it's created as an ordinary object.
-        let prototype = ordinary_object_create_with_intrinsics(
-            agent,
-            ProtoIntrinsics::Object,
-            Some(if kind.is_async() {
-                agent
-                    .current_realm_record()
-                    .intrinsics()
-                    .async_generator_prototype()
-                    .into()
-            } else {
-                agent
-                    .current_realm_record()
-                    .intrinsics()
-                    .generator_prototype()
-                    .into()
-            }),
-            gc.nogc(),
-        );
-        // 8. Perform ! DefinePropertyOrThrow(F, "prototype", PropertyDescriptor { [[Value]]: prototype, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false }).
-        unwrap_try(try_define_property_or_throw(
-            agent,
-            function,
-            BUILTIN_STRING_MEMORY.prototype.to_property_key(),
-            PropertyDescriptor {
-                value: Some(prototype.unbind().into()),
-                writable: Some(true),
-                get: None,
-                set: None,
-                enumerable: Some(false),
-                configurable: Some(false),
-            },
-            None,
-            gc.nogc(),
-        ));
+        // 7.-8.
+        define_generator_prototype(agent, function, kind.is_async(), gc.nogc());
     }
 
     if initialize_binding {
@@ -1379,7 +1388,12 @@ pub(super) fn execute_class_define_private_method<'gc>(
     //      env,
     //      privateEnv
     //  ).
+    let is_generator = params.template.kind.is_generator();
+    let is_async = params.template.kind.is_async();
     let closure = ordinary_function_create(agent, params, gc.nogc());
+    if is_generator {
+        define_generator_prototype(agent, closure, is_async, gc.nogc());
+    }
     // 7. Perform MakeMethod(closure, object).
     make_method(agent, closure, object);
     // 8. Perform SetFunctionName(closure, propKey).
