@@ -51,10 +51,6 @@ name = "oxc_str"
 path = "src/lib.rs"
 doctest = true
 
-[dependencies.hashbrown]
-version = "0.16.1"
-default-features = false
-
 [dependencies.oxc_allocator]
 path = "../oxc_allocator"
 version = "0.124.0"

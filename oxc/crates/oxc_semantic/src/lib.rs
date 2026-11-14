@@ -233,7 +233,7 @@ impl<'a> Semantic<'a> {
         let AstKind::IdentifierReference(id) = reference_node.kind() else {
             return false;
         };
-        self.scoping.root_unresolved_references().contains_key(&id.name)
+        self.scoping.root_unresolved_references().contains_key(id.name.as_str())
     }
 
     /// Find which scope a symbol is declared in
@@ -256,7 +256,7 @@ impl<'a> Semantic<'a> {
 
     /// Returns `true` if `ident` resolves to a global (unbound) reference.
     pub fn is_reference_to_global_variable(&self, ident: &IdentifierReference) -> bool {
-        self.scoping.root_unresolved_references().contains_key(&ident.name)
+        self.scoping.root_unresolved_references().contains_key(ident.name.as_str())
     }
 
     /// Get the textual name for a semantic reference.

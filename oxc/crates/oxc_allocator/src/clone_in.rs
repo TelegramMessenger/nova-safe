@@ -117,8 +117,7 @@ where
         // Keys in original hash map are guaranteed to be unique.
         // Unfortunately, we have no static guarantee that `CloneIn` maintains that uniqueness
         // - original keys (`K`) are guaranteed unique, but cloned keys (`CK`) might not be.
-        // If we did have that guarantee, we could use the faster `insert_unique_unchecked` here.
-        // `hashbrown::HashMap` also has a faster cloning method in its `Clone` implementation,
+        // `std::collections::HashMap` also has a faster cloning method in its `Clone` implementation,
         // but those APIs are not exposed, and `Clone` doesn't support custom allocators.
         // So sadly this is a lot slower than it could be, especially for `Copy` types.
         let mut cloned = HashMap::with_capacity_in(self.len(), allocator);
@@ -219,7 +218,7 @@ mod test {
         let allocator = Allocator::default();
 
         let mut original: HashMap<'_, &str, &str> = HashMap::with_capacity_in(8, &allocator);
-        original.extend(&[("x", "xx"), ("y", "yy"), ("z", "zz")]);
+        original.extend([("x", "xx"), ("y", "yy"), ("z", "zz")]);
 
         let cloned = original.clone_in(&allocator);
         let cloned2 = original.clone_in_with_semantic_ids(&allocator);

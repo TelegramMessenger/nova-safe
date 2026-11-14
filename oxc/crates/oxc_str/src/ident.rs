@@ -1,10 +1,14 @@
 //! Identifier string type with precomputed hash.
 
-use std::{borrow::Cow, fmt, hash, ops::Deref, str};
+use std::{
+    borrow::{Borrow, Cow},
+    fmt, hash,
+    ops::Deref,
+    str,
+};
 
 use oxc_allocator::{
     Allocator, CloneIn, Dummy, FromIn, IdentBuildHasher, StringBuilder as ArenaStringBuilder,
-    ident_hash, pack_len_hash,
 };
 #[cfg(feature = "serialize")]
 use oxc_estree::{ESTree, JsonSafeString, Serializer as ESTreeSerializer};
@@ -16,8 +20,9 @@ use crate::{CompactStr, Str};
 /// An identifier string for oxc_allocator.
 ///
 /// nova-safe stores only the `&str` (16 bytes, as upstream's pointer plus packed length and
-/// hash). The hash that upstream precomputes is recomputed on demand: `ident_hash` samples at
-/// most 16 bytes, so it is O(1), and `Hash` writes the same packed length and hash as upstream.
+/// hash). `Hash` hashes the `str`, so `Ident: Borrow<str>` holds under every hasher; under
+/// [`IdentBuildHasher`] that gives upstream's packed length and hash (`ident_hash` samples at
+/// most 16 bytes, so it is O(1)).
 ///
 /// Use [CompactStr] with [Ident::to_compact_str] or [Ident::into_compact_str] for
 /// the lifetimeless form.
@@ -27,20 +32,15 @@ pub struct Ident<'a> {
 }
 
 impl<'a> Ident<'a> {
+    #[cfg(test)]
     #[expect(clippy::cast_possible_truncation)]
-    #[inline]
     const fn ident_len(&self) -> u32 {
         self.text.len() as u32
     }
 
-    #[inline]
+    #[cfg(test)]
     const fn ident_hash_value(&self) -> u32 {
-        ident_hash(self.text.as_bytes())
-    }
-
-    #[inline]
-    const fn len_and_hash(&self) -> u64 {
-        pack_len_hash(self.ident_len(), self.ident_hash_value())
+        oxc_allocator::ident_hash(self.text.as_bytes())
     }
 
     /// Create a new [`Ident`] from a `&'a str`.
@@ -256,12 +256,12 @@ impl AsRef<str> for Ident<'_> {
     }
 }
 
-/// Allows looking up an `Ident`-keyed hashbrown map with a `&str` key,
-/// without requiring `Ident: Borrow<str>`.
-impl oxc_allocator::hash_map::Equivalent<Ident<'_>> for str {
+/// Allows looking up an `Ident`-keyed map with a `&str` key. `Ident`'s `Eq` and `Hash` are its
+/// `str`'s.
+impl Borrow<str> for Ident<'_> {
     #[inline]
-    fn equivalent(&self, key: &Ident<'_>) -> bool {
-        self == key.as_str()
+    fn borrow(&self) -> &str {
+        self.text
     }
 }
 
@@ -317,10 +317,11 @@ impl PartialEq<Str<'_>> for Ident<'_> {
 }
 
 impl hash::Hash for Ident<'_> {
-    /// Write the packed len+hash as a single u64, as upstream does.
+    /// Hash the `str`. Under [`IdentBuildHasher`] the result is upstream's: the packed length and
+    /// hash it wrote with `write_u64`.
     #[inline]
     fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
-        hasher.write_u64(self.len_and_hash());
+        hash::Hash::hash(self.text, hasher);
     }
 }
 
@@ -354,14 +355,14 @@ impl ESTree for Ident<'_> {
 }
 
 /// Hash map keyed by [`Ident`], using precomputed ident hash.
-pub type IdentHashMap<'a, V> = hashbrown::HashMap<Ident<'a>, V, IdentBuildHasher>;
+pub type IdentHashMap<'a, V> = std::collections::HashMap<Ident<'a>, V, IdentBuildHasher>;
 
 /// Arena-allocated hash map keyed by [`Ident`], using precomputed ident hash.
 pub type ArenaIdentHashMap<'alloc, V> =
     oxc_allocator::HashMap<'alloc, Ident<'alloc>, V, IdentBuildHasher>;
 
 /// Hash set of [`Ident`], using precomputed ident hash.
-pub type IdentHashSet<'a> = hashbrown::HashSet<Ident<'a>, IdentBuildHasher>;
+pub type IdentHashSet<'a> = std::collections::HashSet<Ident<'a>, IdentBuildHasher>;
 
 pub const AGGREGATE_ERROR: Ident<'static> = Ident::new_const("AggregateError");
 pub const ARGUMENTS: Ident<'static> = Ident::new_const("arguments");
@@ -496,12 +497,19 @@ mod test {
     }
 
     #[test]
+    fn ident_hashes_like_its_str() {
+        let ident = Ident::from("fooBarBazQuxQuuxCorge");
+        let state = std::hash::RandomState::new();
+        assert_eq!(state.hash_one(ident), state.hash_one("fooBarBazQuxQuuxCorge"));
+    }
+
+    #[test]
     fn ident_hashmap_str_lookup() {
         let mut map = IdentHashMap::default();
         map.insert(Ident::from("key1"), 1);
         map.insert(Ident::from("key2"), 2);
 
-        // Lookup with &str via Equivalent
+        // Lookup with &str via Borrow
         assert_eq!(map.get("key1"), Some(&1));
         assert_eq!(map.get("key2"), Some(&2));
         assert_eq!(map.get("key3"), None);

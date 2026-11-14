@@ -4,8 +4,8 @@
 //! * `Ident::hash()` — writes a precomputed `u64` via [`write_u64`](std::hash::Hasher::write_u64)
 //! * `str::hash()` — writes bytes via [`write`](std::hash::Hasher::write), then computes hash data
 //!
-//! Both paths are normalized to the same final state so `Equivalent<Ident> for str` lookups
-//! always match `Ident`-keyed inserts.
+//! Both paths are normalized to the same final state, so a `&str` lookup (`Ident: Borrow<str>`)
+//! always matches an `Ident`-keyed insert.
 
 use std::hash::{BuildHasher, Hasher};
 
@@ -86,7 +86,7 @@ pub const fn pack_len_hash(len: u32, hash: u32) -> u64 {
     (len as u64) | ((hash as u64) << 32)
 }
 
-/// Compose the final hash state used by hashbrown.
+/// Compose the final hash state used by the hash table (`std`'s `HashMap`, a SwissTable).
 ///
 /// Keep upper bits derived from `hash` (for tag/SIMD filtering), while ensuring
 /// the low bits used for bucket index also contain hash entropy instead of being

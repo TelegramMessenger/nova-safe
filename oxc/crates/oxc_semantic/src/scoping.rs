@@ -9,8 +9,8 @@ use std::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use oxc_allocator::{
-    Allocator, CloneIn, HashMap as ArenaHashMap, IdentBuildHasher, Vec as ArenaVec,
-    hash_map::Equivalent, ident_hash, pack_len_hash,
+    Allocator, CloneIn, HashMap as ArenaHashMap, IdentBuildHasher, Vec as ArenaVec, ident_hash,
+    pack_len_hash,
 };
 use oxc_index::IndexVec;
 use oxc_span::{Ident, Span};
@@ -29,9 +29,9 @@ pub type UnresolvedReferences<'a> =
 
 /// A name that [`Scoping`] owns: the string of an [`Ident`] and its packed length and hash.
 ///
-/// It hashes and compares like that `Ident`, so the maps of [`Scoping`] can be searched with an
-/// `Ident` or a `&str`. (Upstream oxc kept `Ident`s copied into an arena owned by `Scoping`, which
-/// needed a self-referential struct.)
+/// It hashes and compares like its `str` (and so like an `Ident` of it), so the maps of [`Scoping`]
+/// are searched with a `&str` through `Borrow<str>`. (Upstream oxc kept `Ident`s copied into an
+/// arena owned by `Scoping`, which needed a self-referential struct.)
 #[derive(Clone)]
 pub struct ScopingName {
     name: Box<str>,
@@ -68,10 +68,10 @@ impl PartialEq for ScopingName {
 impl Eq for ScopingName {}
 
 impl Hash for ScopingName {
-    /// Same as `Ident`'s `Hash`: the packed length and hash as one `u64`.
+    /// Same as `str`'s and `Ident`'s `Hash`, as `Borrow<str>` requires.
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
-        hasher.write_u64(self.len_and_hash);
+        self.as_str().hash(hasher);
     }
 }
 
@@ -79,13 +79,6 @@ impl Borrow<str> for ScopingName {
     #[inline]
     fn borrow(&self) -> &str {
         &self.name
-    }
-}
-
-impl Equivalent<ScopingName> for Ident<'_> {
-    #[inline]
-    fn equivalent(&self, key: &ScopingName) -> bool {
-        self.as_str() == key.as_str()
     }
 }
 
@@ -658,7 +651,7 @@ impl Scoping {
     /// Add an unresolved reference to the root scope map.
     pub fn add_root_unresolved_reference(&mut self, name: Ident<'_>, reference_id: ReferenceId) {
         let roots = &mut self.cell.root_unresolved_references;
-        if let Some(reference_ids) = roots.get_mut(&name) {
+        if let Some(reference_ids) = roots.get_mut(name.as_str()) {
             reference_ids.push(reference_id);
         } else {
             roots.insert(
@@ -670,7 +663,7 @@ impl Scoping {
 
     /// Check if a symbol is declared in a certain scope.
     pub fn scope_has_binding(&self, scope_id: ScopeId, name: Ident<'_>) -> bool {
-        self.cell.bindings[scope_id].contains_key(&name)
+        self.cell.bindings[scope_id].contains_key(name.as_str())
     }
 
     /// Get the symbol bound to an identifier name in a scope.
@@ -682,7 +675,7 @@ impl Scoping {
     ///
     /// [`find_binding`]: Scoping::find_binding
     pub fn get_binding(&self, scope_id: ScopeId, name: Ident<'_>) -> Option<SymbolId> {
-        self.cell.bindings[scope_id].get(&name).copied()
+        self.cell.bindings[scope_id].get(name.as_str()).copied()
     }
 
     /// Find a binding by name in a scope or its ancestors.
@@ -692,7 +685,7 @@ impl Scoping {
     pub fn find_binding(&self, mut scope_id: ScopeId, name: Ident<'_>) -> Option<SymbolId> {
         let cell = &self.cell;
         loop {
-            if let Some(symbol_id) = cell.bindings[scope_id].get(&name) {
+            if let Some(symbol_id) = cell.bindings[scope_id].get(name.as_str()) {
                 return Some(*symbol_id);
             }
             let parent_scope_id = (*self.scope_table.parent_ids(scope_id))?;
