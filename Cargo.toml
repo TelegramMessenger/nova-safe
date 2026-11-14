@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["nova_cli", "nova_embed", "nova_embed_ffi", "nova_vm", "nova_vm_derive", "regress", "small_string", "tests", "wtf8"]
-exclude = ["nova_lint"]
+exclude = ["nova_lint", "oxc"]
 
 [workspace.package]
 edition = "2024"
@@ -23,15 +23,15 @@ hashbrown = "=0.17.1"
 num-bigint = "=0.5.1"
 num-traits = "=0.2.19"
 oxc-miette = { version = "=2.7.1", features = ["fancy"] }
-oxc_allocator = "=0.124.0"
-oxc_ast = "=0.124.0"
-oxc_diagnostics = "=0.124.0"
-oxc_ecmascript = "=0.124.0"
-oxc_parser = "=0.124.0"
-oxc_regular_expression = "=0.124.0"
-oxc_semantic = "=0.124.0"
-oxc_span = "=0.124.0"
-oxc_syntax = "=0.124.0"
+oxc_allocator = { path = "oxc/crates/oxc_allocator" }
+oxc_ast = { path = "oxc/crates/oxc_ast" }
+oxc_diagnostics = { path = "oxc/crates/oxc_diagnostics" }
+oxc_ecmascript = { path = "oxc/crates/oxc_ecmascript" }
+oxc_parser = { path = "oxc/crates/oxc_parser" }
+oxc_regular_expression = { path = "oxc/crates/oxc_regular_expression" }
+oxc_semantic = { path = "oxc/crates/oxc_semantic" }
+oxc_span = { path = "oxc/crates/oxc_span" }
+oxc_syntax = { path = "oxc/crates/oxc_syntax" }
 proc-macro2 = "=1.0.107"
 quote = "=1.0.47"
 regress = { path = "regress", default-features = false, features = ["std", "utf16"] }

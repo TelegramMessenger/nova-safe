@@ -83,11 +83,12 @@ impl<'a> SourceCode<'a> {
         let typescript = false;
         let (source, source_text) = heap_source(agent, source, gc);
         let allocator = Allocator::new();
-        let parsed = parse_program(&allocator, &source_text, source_type, typescript)?;
+        let program = parse_program(&allocator, &source_text, source_type, typescript)?;
+        let (scoping, nodes) = check_program(&program, source_type)?;
         let source_code = agent.heap.create(SourceCodeHeapData {
             source: source.unbind(),
         });
-        let (program, scoping, nodes) = (parsed.0, &parsed.1, &parsed.2);
+        let (scoping, nodes) = (&scoping, &nodes);
         let is_strict = source_type.is_strict() || program.has_use_strict_directive();
         agent.compile_limit_error = None;
         let result = f(
@@ -124,9 +125,10 @@ impl<'a> SourceCode<'a> {
         let (source, source_text) = heap_source(agent, source, gc.nogc());
         let source = source.unbind();
         let allocator = Allocator::new();
-        let parsed = parse_program(&allocator, &source_text, source_type, typescript)?;
+        let program = parse_program(&allocator, &source_text, source_type, typescript)?;
+        let (scoping, nodes) = check_program(&program, source_type)?;
         let source_code = agent.heap.create(SourceCodeHeapData { source }).unbind();
-        let (program, scoping, nodes) = (parsed.0, &parsed.1, &parsed.2);
+        let (scoping, nodes) = (&scoping, &nodes);
         let is_strict = source_type.is_strict() || program.has_use_strict_directive();
         Ok(f(
             agent,
@@ -278,15 +280,13 @@ fn heap_source<'g>(
     }
 }
 
-type ParsedProgram<'p> = (&'p ast::Program<'p>, Scoping, AstNodes<'p>);
-
-/// Parses and checks a program into `allocator`.
+/// Parses a program into `allocator`; [`check_program`] checks it.
 fn parse_program<'p>(
     allocator: &'p Allocator,
     source_text: &'p str,
     source_type: SourceCodeType,
     typescript: bool,
-) -> Result<ParsedProgram<'p>, Vec<OxcDiagnostic>> {
+) -> Result<ast::Program<'p>, Vec<OxcDiagnostic>> {
     if super::source_nesting::source_nesting_too_deep(source_text) {
         return Err(vec![OxcDiagnostic::error(
             "Source text nests too deeply to be parsed",
@@ -356,10 +356,16 @@ fn parse_program<'p>(
     if !errors.is_empty() {
         return Err(errors);
     }
-    // The semantic analysis refers to the program node, so it is moved into
-    // the arena with the rest of the program.
-    let program: &'p ast::Program<'p> = allocator.alloc(program);
+    Ok(program)
+}
 
+/// Runs the semantic checks of a parsed program. The returned nodes borrow
+/// the program, which the caller keeps alive while it uses them.
+fn check_program<'p>(
+    program: &'p ast::Program<'p>,
+    source_type: SourceCodeType,
+) -> Result<(Scoping, AstNodes<'p>), Vec<OxcDiagnostic>> {
+    let source_type_in = source_type;
     let SemanticBuilderReturn {
         mut errors,
         semantic,
@@ -373,8 +379,7 @@ fn parse_program<'p>(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let (scoping, nodes) = semantic.into_scoping_and_nodes();
-    Ok((program, scoping, nodes))
+    Ok(semantic.into_scoping_and_nodes())
 }
 
 /// Drops the errors for `super` and `new.target` outside any function of a

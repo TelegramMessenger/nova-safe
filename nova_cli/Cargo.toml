@@ -32,4 +32,4 @@ oxc-miette = { workspace = true }
 oxc_parser = { workspace = true }
 oxc_semantic = { workspace = true }
 oxc_span = { workspace = true }
-oxc_diagnostics = { workspace = true }
+oxc_diagnostics = { workspace = true, features = ["fancy"] }
