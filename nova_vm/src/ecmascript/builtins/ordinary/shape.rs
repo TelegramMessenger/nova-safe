@@ -530,6 +530,7 @@ impl<'a> ObjectShape<'a> {
             .heap
             .elements
             .reserve_keys_raw(keys, keys_cap, *len, private_fields_count)?;
+        agent.heap.elements.key_offsets.invalidate(*keys_cap, *keys);
         let keys = agent.heap.elements.get_keys_uninit_raw(*keys_cap, *keys);
         keys.copy_within(
             insertion_index..*len as usize,

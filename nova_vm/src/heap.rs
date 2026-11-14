@@ -276,6 +276,7 @@ impl Heap {
                 k2pow16: PropertyKeyArray2Pow16::default(),
                 k2pow24: PropertyKeyArray2Pow24::default(),
                 k2pow32: PropertyKeyArray2Pow32::default(),
+                key_offsets: Default::default(),
             },
             embedder_objects: Vec::with_capacity(0),
             environments: Default::default(),

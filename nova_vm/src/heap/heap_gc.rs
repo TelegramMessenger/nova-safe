@@ -194,6 +194,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             k2pow16,
             k2pow24,
             k2pow32,
+            key_offsets: _,
         } = elements;
 
         if !queues.modules.is_empty() {
@@ -1812,7 +1813,9 @@ fn sweep(
         k2pow16,
         k2pow24,
         k2pow32,
+        key_offsets,
     } = elements;
+    key_offsets.clear();
 
     let mut globals = globals.borrow_mut();
     let globals_iter = globals.iter_mut();

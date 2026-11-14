@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::hashing::AHashMap;
+use crate::hashing::{AHashMap, HandleState};
+use core::cell::RefCell;
+use hashbrown::HashTable;
 
 use super::{
     AtomicBits, BitRange, CompactionLists, ElementIndex, HeapMarkAndSweep, PropertyKeyIndex,
@@ -2051,6 +2053,99 @@ pub(crate) struct ElementArrays {
     /// up to 4294967296 elements
     pub(crate) k2pow32: PropertyKeyArray2Pow32,
     pub(crate) e2pow32: ElementArray2Pow32,
+    /// Hashed key offsets of the larger key storages.
+    pub(crate) key_offsets: KeyOffsets,
+}
+
+/// From this many keys on, a key is looked up in a shape through
+/// [`KeyOffsets`] instead of a linear search of the shape's keys.
+pub(crate) const KEY_OFFSETS_MIN_LEN: usize = 32;
+
+/// Hashed offsets of the keys in the larger key storages, so that looking up
+/// a key in, or adding a key to, an object with many properties is not
+/// linear in its number of properties.
+///
+/// A storage's table is built on its first lookup and extended as shapes
+/// that share the storage append keys to it. The slots below a shape's
+/// length never change, except in the storages of intrinsic shapes, whose
+/// in-place removals and insertions drop the table
+/// ([`KeyOffsets::invalidate`]). Every garbage collection moves storages and
+/// keys and drops all tables. Storages are never reused between collections,
+/// so a table always describes the storage it is keyed by.
+///
+/// Keys hash by identity ([`PropertyKey::identity_hash`]) under random
+/// per-Agent keys, like the other maps keyed by engine handles.
+#[derive(Debug, Default)]
+pub(crate) struct KeyOffsets {
+    hasher: HandleState,
+    storages: RefCell<AHashMap<u64, StorageKeyOffsets>>,
+}
+
+#[derive(Debug, Default)]
+struct StorageKeyOffsets {
+    /// Number of leading storage slots entered in the table.
+    covered: u32,
+    /// The first offset of each key among the covered slots.
+    table: HashTable<(PropertyKey<'static>, u32)>,
+}
+
+impl KeyOffsets {
+    #[inline]
+    fn storage_id(cap: ElementArrayKey, index: PropertyKeyIndex) -> u64 {
+        (u64::from(cap as u8) << 56) | index.get_index() as u64
+    }
+
+    /// The offset of `key` in `keys`, which are the keys of a shape whose
+    /// key storage is `(cap, index)`. Same result as a linear search.
+    pub(crate) fn find(
+        &self,
+        cap: ElementArrayKey,
+        index: PropertyKeyIndex,
+        keys: &[PropertyKey],
+        key: PropertyKey,
+    ) -> Option<usize> {
+        if keys.len() < KEY_OFFSETS_MIN_LEN {
+            return keys.iter().position(|k| *k == key);
+        }
+        let hasher = &self.hasher;
+        let mut storages = self.storages.borrow_mut();
+        let offsets = storages.entry(Self::storage_id(cap, index)).or_default();
+        while (offsets.covered as usize) < keys.len() {
+            let offset = offsets.covered;
+            let slot = keys[offset as usize].unbind();
+            let hash = slot.identity_hash(hasher);
+            if offsets.table.find(hash, |(k, _)| *k == slot).is_none() {
+                offsets
+                    .table
+                    .insert_unique(hash, (slot, offset), |(k, _)| k.identity_hash(hasher));
+            }
+            offsets.covered = offset + 1;
+        }
+        let key = key.unbind();
+        let found = offsets
+            .table
+            .find(key.identity_hash(hasher), |(k, _)| *k == key)
+            .map(|(_, offset)| *offset as usize)
+            .filter(|offset| *offset < keys.len());
+        debug_assert_eq!(found, keys.iter().position(|k| *k == key));
+        found
+    }
+
+    /// Drops the table of a key storage whose slots were changed in place.
+    pub(crate) fn invalidate(&mut self, cap: ElementArrayKey, index: PropertyKeyIndex) {
+        let storages = self.storages.get_mut();
+        if !storages.is_empty() {
+            storages.remove(&Self::storage_id(cap, index));
+        }
+    }
+
+    /// Drops every table; a garbage collection moves storages and keys.
+    pub(crate) fn clear(&mut self) {
+        let storages = self.storages.get_mut();
+        if !storages.is_empty() {
+            *storages = AHashMap::default();
+        }
+    }
 }
 
 impl ElementArrays {
@@ -2864,6 +2959,7 @@ impl ElementArrays {
         if *len == 0 {
             return;
         }
+        self.key_offsets.invalidate(cap, index);
         let Self {
             k2pow1,
             k2pow2,
