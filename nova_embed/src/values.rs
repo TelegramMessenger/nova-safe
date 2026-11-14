@@ -37,8 +37,9 @@ pub enum HostArg {
     /// Anything that is not a string or a number (or a typed array, when the
     /// function takes bytes), including a detached or out-of-bounds view.
     Other,
-    /// A string, as UTF-8 (lone surrogates become U+FFFD).
-    String(String),
+    /// A string, as WTF-8: UTF-8 with each lone surrogate as its own 3-byte
+    /// sequence (what QuickJS hands its hosts; a UTF-8 decoder replaces it).
+    String(Vec<u8>),
     /// A number.
     Number(f64),
     /// A copy of the bytes a typed array views.
@@ -59,12 +60,12 @@ pub enum HostReturn {
     ArrayBuffer(Vec<u8>),
 }
 
-/// The value a script evaluation or a call completed with: strings and
-/// numbers; anything else is `Undefined`.
+/// The value a script evaluation or a call completed with: strings (as
+/// WTF-8, see [`HostArg::String`]) and numbers; anything else is `Undefined`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Completion {
     Undefined,
-    String(String),
+    String(Vec<u8>),
     Number(f64),
 }
 
@@ -113,7 +114,7 @@ fn typed_array_bytes(agent: &Agent, value: Value) -> Option<HostArg> {
 
 fn host_arg(agent: &Agent, value: Value, mode: ArgumentMode) -> HostArg {
     if let Ok(string) = JsString::try_from(value) {
-        return HostArg::String(string.to_string_lossy(agent).into_owned());
+        return HostArg::String(string.as_wtf8(agent).as_bytes().to_vec());
     }
     if let Some(number) = number_of(agent, value) {
         return HostArg::Number(number);
@@ -193,7 +194,7 @@ pub(crate) fn completion(
         Ok(value) => {
             if let Ok(string) = JsString::try_from(value) {
                 Ok(Completion::String(
-                    string.to_string_lossy(agent).into_owned(),
+                    string.as_wtf8(agent).as_bytes().to_vec(),
                 ))
             } else if let Some(number) = number_of(agent, value) {
                 Ok(Completion::Number(number))

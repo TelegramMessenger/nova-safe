@@ -60,6 +60,10 @@ fn evaluates_sloppy_scripts() {
         Ok(Completion::String("bc".into()))
     );
     assert_eq!(engine.evaluate("({})", false), Ok(Completion::Undefined));
+    assert_eq!(
+        engine.evaluate("('a\\ud83d' + '\\u00e9')", false),
+        Ok(Completion::String(b"a\xed\xa0\xbd\xc3\xa9".to_vec()))
+    );
 }
 
 #[test]
@@ -302,9 +306,12 @@ fn engines_nest_and_stay_apart() {
             let HostArg::String(code) = &args[0] else {
                 return HostReturn::Undefined;
             };
+            let code = core::str::from_utf8(code).expect("UTF-8");
             match self.inner.borrow_mut().evaluate(code, false) {
                 Ok(Completion::Number(n)) => HostReturn::Number(n),
-                Ok(Completion::String(s)) => HostReturn::String(s),
+                Ok(Completion::String(s)) => {
+                    HostReturn::String(String::from_utf8_lossy(&s).into_owned())
+                }
                 _ => HostReturn::Undefined,
             }
         }

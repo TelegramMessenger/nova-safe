@@ -216,7 +216,7 @@ unsafe fn write_completion(out: *mut NovaResult, completion: Completion) -> i32 
     let (kind, number, bytes) = match completion {
         Completion::Undefined => (NOVA_VALUE_UNDEFINED, 0.0, Vec::new()),
         Completion::Number(number) => (NOVA_VALUE_NUMBER, number, Vec::new()),
-        Completion::String(text) => (NOVA_VALUE_STRING, 0.0, text.into_bytes()),
+        Completion::String(text) => (NOVA_VALUE_STRING, 0.0, text),
     };
     // SAFETY: forwarded contract.
     unsafe { write_result(out, kind, number, bytes) };

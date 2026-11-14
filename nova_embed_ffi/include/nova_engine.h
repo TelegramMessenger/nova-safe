@@ -96,7 +96,9 @@ typedef struct nova_str {
 } nova_str;
 
 /* An argument of a host function call; `bytes` is valid during the callback
- * only. Strings are UTF-8 without a terminator (and may contain NUL). */
+ * only. Strings are WTF-8 without a terminator (and may contain NUL): UTF-8,
+ * with a lone surrogate as its own 3-byte sequence, as QuickJS hands them out.
+ * Result strings (NOVA_VALUE_STRING on NOVA_OK) are WTF-8 too. */
 typedef struct nova_arg {
     int32_t kind;
     int32_t array_kind;
