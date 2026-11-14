@@ -565,3 +565,33 @@ fn deep_recursion_is_a_range_error_not_a_stack_overflow() {
         eprintln!("{probe}: {result:?} ({used} bytes)");
     }
 }
+
+#[test]
+fn a_backtracking_regexp_is_interrupted_and_cannot_catch_it() {
+    let (mut engine, stop, polls) = limited(0, 0);
+    engine
+        .evaluate(
+            "var re = /(a+)+$/; var input = 'a'.repeat(28) + 'b';",
+            false,
+        )
+        .unwrap();
+    stop.set(true);
+    let before = polls.get();
+    assert_eq!(
+        engine.evaluate("for (;;) { try { re.test(input); } catch (e) {} }", false),
+        Err(Error::Interrupted)
+    );
+    assert_eq!(polls.get(), before + 1);
+    assert_eq!(
+        engine.evaluate(
+            "try { input.replace(re, 'x') } catch (e) { 'caught' }",
+            false
+        ),
+        Err(Error::Interrupted)
+    );
+    stop.set(false);
+    assert_eq!(
+        engine.evaluate("/b+/.exec('aabbb')[0]", false),
+        Ok(Completion::String("bbb".into()))
+    );
+}

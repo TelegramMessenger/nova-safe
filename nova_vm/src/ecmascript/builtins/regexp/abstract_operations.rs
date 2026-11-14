@@ -599,10 +599,11 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     // d. If r is failure, then
     //    i. If sticky is true, then [...] Return null.
     //    ii. Set lastIndex to AdvanceStringIndex(S, lastIndex, fullUnicode).
-    let result = match r_data.search(&agent.heap.strings, s, last_index, sticky) {
+    let result = match search(agent, r, s, last_index, sticky) {
         Ok(result) => result,
         Err(err) => return Err(throw_exec_error(agent, err, gc)),
     };
+    let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     let Some(full_match) = result else {
         // i. If global is true or sticky is true, then
         if global || sticky {
@@ -783,10 +784,11 @@ pub(crate) fn reg_exp_builtin_test<'a>(
         // ii. Return null.
         return Ok(false);
     }
-    let result = match r_data.search(&agent.heap.strings, s, last_index, sticky) {
+    let result = match search(agent, r, s, last_index, sticky) {
         Ok(result) => result,
         Err(err) => return Err(throw_exec_error(agent, err, gc)),
     };
+    let r_data = r.get_direct_mut(&mut agent.heap.regexps);
     match result {
         Some(found) => {
             if global || sticky {
@@ -803,11 +805,38 @@ pub(crate) fn reg_exp_builtin_test<'a>(
     }
 }
 
+/// Runs `r`'s matcher on `s`, polling the host's interrupt and the heap
+/// limit as `Agent::should_terminate` does while the matcher holds borrows
+/// of the heap.
+fn search(
+    agent: &mut Agent,
+    r: RegExp,
+    s: String,
+    last_index: usize,
+    sticky: bool,
+) -> Result<Option<regress::Match>, RegExpExecError> {
+    let heap_size = agent.heap_size();
+    let collectable = agent.heap.alloc_counter != 0 || agent.heap.data_bytes_since_gc != 0;
+    let host_hooks = agent.host_hooks;
+    let limits = &mut agent.limits;
+    let mut poll = || limits.should_terminate_matcher(host_hooks, heap_size, collectable);
+    r.get_direct_mut(&mut agent.heap.regexps).search(
+        &agent.heap.strings,
+        s,
+        last_index,
+        sticky,
+        &mut poll,
+    )
+}
+
 fn throw_exec_error<'a>(
     agent: &mut Agent,
     err: RegExpExecError,
     gc: NoGcScope<'a, '_>,
 ) -> crate::ecmascript::JsError<'a> {
+    if agent.termination().is_some() {
+        return agent.termination_error(gc);
+    }
     let kind = match err {
         RegExpExecError::TooComplex => ExceptionType::RangeError,
         RegExpExecError::Interrupted => ExceptionType::Error,
