@@ -694,16 +694,23 @@ impl Instruction {
     }
 }
 
+const ARGUMENT_BYTES: [u8; 256] = {
+    let mut table = [0; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        if let Some(kind) = Instruction::from_u8(byte as u8) {
+            table[byte] = kind.argument_count() * 2;
+        }
+        byte += 1;
+    }
+    table
+};
+
 #[derive(Clone, Copy)]
 struct InstructionArgs([u16; 2]);
 
 impl InstructionArgs {
     const NONE: Self = Self([0, 0]);
-
-    fn from_double_arg(arg: u32) -> Self {
-        let [a, b, c, d] = arg.to_ne_bytes();
-        Self([u16::from_ne_bytes([a, b]), u16::from_ne_bytes([c, d])])
-    }
 
     fn single_arg(self) -> u16 {
         self.0[0]
@@ -733,45 +740,49 @@ pub(crate) struct Instr {
 }
 
 impl Instr {
+    #[inline(always)]
     pub(super) fn consume_instruction(instructions: &[u8], ip: &mut usize) -> Option<Instr> {
-        let len = instructions.len();
         let cur_ip = *ip;
-        if cur_ip >= len {
-            return None;
-        }
-        *ip += 1;
-        // NOTE: we read IP here.
-        let Ok(kind) = Instruction::try_from(instructions[cur_ip]) else {
+        let &byte = instructions.get(cur_ip)?;
+        let Some(kind) = Instruction::from_u8(byte) else {
             panic_invalid_instruction()
         };
+        let argument_bytes = ARGUMENT_BYTES[byte as usize] as usize;
+        let args_ip = cur_ip + 1;
+        *ip = args_ip + argument_bytes;
+        let Some(&[a, b, c, d]) = instructions
+            .get(args_ip..)
+            .and_then(|bytes| bytes.first_chunk::<4>())
+        else {
+            return Some(Self::consume_short_arguments(kind, instructions, args_ip));
+        };
+        let first = if argument_bytes >= 2 {
+            u16::from_ne_bytes([a, b])
+        } else {
+            0
+        };
+        let second = if argument_bytes == 4 {
+            u16::from_ne_bytes([c, d])
+        } else {
+            0
+        };
+        Some(Instr {
+            kind,
+            args: InstructionArgs([first, second]),
+        })
+    }
 
-        let arg_count = kind.argument_count() as usize;
-
-        let cur_ip = *ip;
-        let bytes = &instructions[cur_ip..];
-        match arg_count {
-            0 => Some(Instr::new(kind)),
+    #[cold]
+    #[inline(never)]
+    fn consume_short_arguments(kind: Instruction, instructions: &[u8], args_ip: usize) -> Instr {
+        let bytes = instructions.get(args_ip..).unwrap_or(&[]);
+        match kind.argument_count() {
+            0 => Instr::new(kind),
             1 => {
-                *ip += 2;
                 let Some(arg_slice) = bytes.first_chunk::<2>() else {
                     panic_invalid_instruction()
                 };
-                let arg0 = IndexType::from_ne_bytes(*arg_slice);
-                Some(Instr::new_with_arg(kind, arg0))
-            }
-            2 => {
-                *ip += 4;
-                let Some(arg_slice) = bytes.first_chunk::<4>() else {
-                    panic_invalid_instruction()
-                };
-                if kind.has_double_arg() {
-                    let arg = u32::from_ne_bytes(*arg_slice);
-                    Some(Instr::new_with_double_arg(kind, arg))
-                } else {
-                    let arg0 = IndexType::from_ne_bytes([arg_slice[0], arg_slice[1]]);
-                    let arg1 = IndexType::from_ne_bytes([arg_slice[2], arg_slice[3]]);
-                    Some(Instr::new_with_two_args(kind, arg0, arg1))
-                }
+                Instr::new_with_arg(kind, IndexType::from_ne_bytes(*arg_slice))
             }
             _ => panic_invalid_instruction(),
         }
@@ -788,20 +799,6 @@ impl Instr {
         Self {
             kind,
             args: InstructionArgs([arg, 0]),
-        }
-    }
-
-    pub(crate) fn new_with_two_args(kind: Instruction, arg1: u16, arg2: u16) -> Self {
-        Self {
-            kind,
-            args: InstructionArgs([arg1, arg2]),
-        }
-    }
-
-    pub(crate) fn new_with_double_arg(kind: Instruction, arg: u32) -> Self {
-        Self {
-            kind,
-            args: InstructionArgs::from_double_arg(arg),
         }
     }
 
@@ -1076,6 +1073,13 @@ impl TryFrom<u8> for Instruction {
 
     #[inline]
     fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::from_u8(value).ok_or(())
+    }
+}
+
+impl Instruction {
+    #[inline(always)]
+    const fn from_u8(value: u8) -> Option<Self> {
         const APPLYADDITIONBINARYOPERATOR: u8 = Instruction::ApplyAdditionBinaryOperator.as_u8();
         const APPLYSUBTRACTIONBINARYOPERATOR: u8 =
             Instruction::ApplySubtractionBinaryOperator.as_u8();
@@ -1245,169 +1249,171 @@ impl TryFrom<u8> for Instruction {
         const IMPORTMETA: u8 = Instruction::ImportMeta.as_u8();
         const VERIFYISOBJECT: u8 = Instruction::VerifyIsObject.as_u8();
         match value {
-            APPLYADDITIONBINARYOPERATOR => Ok(Instruction::ApplyAdditionBinaryOperator),
-            APPLYSUBTRACTIONBINARYOPERATOR => Ok(Instruction::ApplySubtractionBinaryOperator),
-            APPLYMULTIPLICATIONBINARYOPERATOR => Ok(Instruction::ApplyMultiplicationBinaryOperator),
-            APPLYDIVISIONBINARYOPERATOR => Ok(Instruction::ApplyDivisionBinaryOperator),
-            APPLYREMAINDERBINARYOPERATOR => Ok(Instruction::ApplyRemainderBinaryOperator),
-            APPLYEXPONENTIALBINARYOPERATOR => Ok(Instruction::ApplyExponentialBinaryOperator),
-            APPLYSHIFTLEFTBINARYOPERATOR => Ok(Instruction::ApplyShiftLeftBinaryOperator),
-            APPLYSHIFTRIGHTBINARYOPERATOR => Ok(Instruction::ApplyShiftRightBinaryOperator),
-            APPLYSHIFTRIGHTZEROFILLBINARYOPERATOR => {
-                Ok(Instruction::ApplyShiftRightZeroFillBinaryOperator)
+            APPLYADDITIONBINARYOPERATOR => Some(Instruction::ApplyAdditionBinaryOperator),
+            APPLYSUBTRACTIONBINARYOPERATOR => Some(Instruction::ApplySubtractionBinaryOperator),
+            APPLYMULTIPLICATIONBINARYOPERATOR => {
+                Some(Instruction::ApplyMultiplicationBinaryOperator)
             }
-            APPLYBITWISEORBINARYOPERATOR => Ok(Instruction::ApplyBitwiseORBinaryOperator),
-            APPLYBITWISEXORBINARYOPERATOR => Ok(Instruction::ApplyBitwiseXORBinaryOperator),
-            APPLYBITWISEANDBINARYOPERATOR => Ok(Instruction::ApplyBitwiseAndBinaryOperator),
-            DEBUG => Ok(Instruction::Debug),
-            ARRAYCREATE => Ok(Instruction::ArrayCreate),
-            ARRAYPUSH => Ok(Instruction::ArrayPush),
-            ARRAYELISION => Ok(Instruction::ArrayElision),
-            AWAIT => Ok(Instruction::Await),
-            BITWISENOT => Ok(Instruction::BitwiseNot),
-            CREATEUNMAPPEDARGUMENTSOBJECT => Ok(Instruction::CreateUnmappedArgumentsObject),
-            COPYDATAPROPERTIES => Ok(Instruction::CopyDataProperties),
-            COPYDATAPROPERTIESINTOOBJECT => Ok(Instruction::CopyDataPropertiesIntoObject),
-            DELETE => Ok(Instruction::Delete),
-            DIRECTEVALCALL => Ok(Instruction::DirectEvalCall),
-            EVALUATECALL => Ok(Instruction::EvaluateCall),
-            EVALUATENEW => Ok(Instruction::EvaluateNew),
-            EVALUATESUPER => Ok(Instruction::EvaluateSuper),
+            APPLYDIVISIONBINARYOPERATOR => Some(Instruction::ApplyDivisionBinaryOperator),
+            APPLYREMAINDERBINARYOPERATOR => Some(Instruction::ApplyRemainderBinaryOperator),
+            APPLYEXPONENTIALBINARYOPERATOR => Some(Instruction::ApplyExponentialBinaryOperator),
+            APPLYSHIFTLEFTBINARYOPERATOR => Some(Instruction::ApplyShiftLeftBinaryOperator),
+            APPLYSHIFTRIGHTBINARYOPERATOR => Some(Instruction::ApplyShiftRightBinaryOperator),
+            APPLYSHIFTRIGHTZEROFILLBINARYOPERATOR => {
+                Some(Instruction::ApplyShiftRightZeroFillBinaryOperator)
+            }
+            APPLYBITWISEORBINARYOPERATOR => Some(Instruction::ApplyBitwiseORBinaryOperator),
+            APPLYBITWISEXORBINARYOPERATOR => Some(Instruction::ApplyBitwiseXORBinaryOperator),
+            APPLYBITWISEANDBINARYOPERATOR => Some(Instruction::ApplyBitwiseAndBinaryOperator),
+            DEBUG => Some(Instruction::Debug),
+            ARRAYCREATE => Some(Instruction::ArrayCreate),
+            ARRAYPUSH => Some(Instruction::ArrayPush),
+            ARRAYELISION => Some(Instruction::ArrayElision),
+            AWAIT => Some(Instruction::Await),
+            BITWISENOT => Some(Instruction::BitwiseNot),
+            CREATEUNMAPPEDARGUMENTSOBJECT => Some(Instruction::CreateUnmappedArgumentsObject),
+            COPYDATAPROPERTIES => Some(Instruction::CopyDataProperties),
+            COPYDATAPROPERTIESINTOOBJECT => Some(Instruction::CopyDataPropertiesIntoObject),
+            DELETE => Some(Instruction::Delete),
+            DIRECTEVALCALL => Some(Instruction::DirectEvalCall),
+            EVALUATECALL => Some(Instruction::EvaluateCall),
+            EVALUATENEW => Some(Instruction::EvaluateNew),
+            EVALUATESUPER => Some(Instruction::EvaluateSuper),
             EVALUATEPROPERTYACCESSWITHEXPRESSIONKEY => {
-                Ok(Instruction::EvaluatePropertyAccessWithExpressionKey)
+                Some(Instruction::EvaluatePropertyAccessWithExpressionKey)
             }
             EVALUATEPROPERTYACCESSWITHIDENTIFIERKEY => {
-                Ok(Instruction::EvaluatePropertyAccessWithIdentifierKey)
+                Some(Instruction::EvaluatePropertyAccessWithIdentifierKey)
             }
-            MAKEPRIVATEREFERENCE => Ok(Instruction::MakePrivateReference),
+            MAKEPRIVATEREFERENCE => Some(Instruction::MakePrivateReference),
             MAKESUPERPROPERTYREFERENCEWITHEXPRESSIONKEY => {
-                Ok(Instruction::MakeSuperPropertyReferenceWithExpressionKey)
+                Some(Instruction::MakeSuperPropertyReferenceWithExpressionKey)
             }
             MAKESUPERPROPERTYREFERENCEWITHIDENTIFIERKEY => {
-                Ok(Instruction::MakeSuperPropertyReferenceWithIdentifierKey)
+                Some(Instruction::MakeSuperPropertyReferenceWithIdentifierKey)
             }
-            GETVALUE => Ok(Instruction::GetValue),
-            GETVALUEWITHCACHE => Ok(Instruction::GetValueWithCache),
-            GETVALUEKEEPREFERENCE => Ok(Instruction::GetValueKeepReference),
-            GETVALUEWITHCACHEKEEPREFERENCE => Ok(Instruction::GetValueWithCacheKeepReference),
-            GREATERTHAN => Ok(Instruction::GreaterThan),
-            GREATERTHANEQUALS => Ok(Instruction::GreaterThanEquals),
-            HASPROPERTY => Ok(Instruction::HasProperty),
-            HASPRIVATEELEMENT => Ok(Instruction::HasPrivateElement),
-            INCREMENT => Ok(Instruction::Increment),
-            DECREMENT => Ok(Instruction::Decrement),
-            INSTANCEOFOPERATOR => Ok(Instruction::InstanceofOperator),
+            GETVALUE => Some(Instruction::GetValue),
+            GETVALUEWITHCACHE => Some(Instruction::GetValueWithCache),
+            GETVALUEKEEPREFERENCE => Some(Instruction::GetValueKeepReference),
+            GETVALUEWITHCACHEKEEPREFERENCE => Some(Instruction::GetValueWithCacheKeepReference),
+            GREATERTHAN => Some(Instruction::GreaterThan),
+            GREATERTHANEQUALS => Some(Instruction::GreaterThanEquals),
+            HASPROPERTY => Some(Instruction::HasProperty),
+            HASPRIVATEELEMENT => Some(Instruction::HasPrivateElement),
+            INCREMENT => Some(Instruction::Increment),
+            DECREMENT => Some(Instruction::Decrement),
+            INSTANCEOFOPERATOR => Some(Instruction::InstanceofOperator),
             INSTANTIATEARROWFUNCTIONEXPRESSION => {
-                Ok(Instruction::InstantiateArrowFunctionExpression)
+                Some(Instruction::InstantiateArrowFunctionExpression)
             }
             INSTANTIATEORDINARYFUNCTIONEXPRESSION => {
-                Ok(Instruction::InstantiateOrdinaryFunctionExpression)
+                Some(Instruction::InstantiateOrdinaryFunctionExpression)
             }
-            CLASSDEFINECONSTRUCTOR => Ok(Instruction::ClassDefineConstructor),
-            CLASSDEFINEDEFAULTCONSTRUCTOR => Ok(Instruction::ClassDefineDefaultConstructor),
-            CLASSDEFINEPRIVATEMETHOD => Ok(Instruction::ClassDefinePrivateMethod),
-            CLASSDEFINEPRIVATEPROPERTY => Ok(Instruction::ClassDefinePrivateProperty),
-            CLASSINITIALIZEPRIVATEELEMENTS => Ok(Instruction::ClassInitializePrivateElements),
-            PUTPRIVATEVALUE => Ok(Instruction::ClassInitializePrivateValue),
-            ISLOOSELYEQUAL => Ok(Instruction::IsLooselyEqual),
-            ISSTRICTLYEQUAL => Ok(Instruction::IsStrictlyEqual),
-            ISNULLORUNDEFINED => Ok(Instruction::IsNullOrUndefined),
-            ISNULL => Ok(Instruction::IsNull),
-            ISUNDEFINED => Ok(Instruction::IsUndefined),
-            ISOBJECT => Ok(Instruction::IsObject),
-            ISCONSTRUCTOR => Ok(Instruction::IsConstructor),
-            JUMP => Ok(Instruction::Jump),
-            JUMPIFNOT => Ok(Instruction::JumpIfNot),
-            JUMPIFTRUE => Ok(Instruction::JumpIfTrue),
-            LESSTHAN => Ok(Instruction::LessThan),
-            LESSTHANEQUALS => Ok(Instruction::LessThanEquals),
-            LOAD => Ok(Instruction::Load),
-            LOADCOPY => Ok(Instruction::LoadCopy),
-            LOADCONSTANT => Ok(Instruction::LoadConstant),
-            LOADSTORESWAP => Ok(Instruction::LoadStoreSwap),
-            LOADREPLACE => Ok(Instruction::LoadReplace),
-            LOADTOINDEX => Ok(Instruction::PutValueToIndex),
-            UPDATEEMPTY => Ok(Instruction::UpdateEmpty),
-            SWAP => Ok(Instruction::Swap),
-            EMPTY => Ok(Instruction::Empty),
-            POPSTACK => Ok(Instruction::PopStack),
-            LOGICALNOT => Ok(Instruction::LogicalNot),
-            OBJECTCREATE => Ok(Instruction::ObjectCreate),
-            OBJECTCREATEWITHSHAPE => Ok(Instruction::ObjectCreateWithShape),
-            OBJECTDEFINEPROPERTY => Ok(Instruction::ObjectDefineProperty),
-            OBJECTDEFINEMETHOD => Ok(Instruction::ObjectDefineMethod),
-            OBJECTDEFINEGETTER => Ok(Instruction::ObjectDefineGetter),
-            OBJECTDEFINESETTER => Ok(Instruction::ObjectDefineSetter),
-            OBJECTSETPROTOTYPE => Ok(Instruction::ObjectSetPrototype),
-            POPEXCEPTIONJUMPTARGET => Ok(Instruction::PopExceptionJumpTarget),
-            POPREFERENCE => Ok(Instruction::PopReference),
-            PUSHEXCEPTIONJUMPTARGET => Ok(Instruction::PushExceptionJumpTarget),
-            PUSHREFERENCE => Ok(Instruction::PushReference),
-            PUTVALUE => Ok(Instruction::PutValue),
-            PUTVALUEWITHCACHE => Ok(Instruction::PutValueWithCache),
-            RESOLVEBINDING => Ok(Instruction::ResolveBinding),
-            RESOLVEBINDINGWITHCACHE => Ok(Instruction::ResolveBindingWithCache),
-            RESOLVETHISBINDING => Ok(Instruction::ResolveThisBinding),
-            RETURN => Ok(Instruction::Return),
-            STORE => Ok(Instruction::Store),
-            STORECOPY => Ok(Instruction::StoreCopy),
-            STORECONSTANT => Ok(Instruction::StoreConstant),
-            STOREFROMINDEX => Ok(Instruction::GetValueFromIndex),
-            STRINGCONCAT => Ok(Instruction::StringConcat),
-            THROW => Ok(Instruction::Throw),
-            THROWERROR => Ok(Instruction::ThrowError),
-            TONUMBER => Ok(Instruction::ToNumber),
-            TONUMERIC => Ok(Instruction::ToNumeric),
-            TOOBJECT => Ok(Instruction::ToObject),
-            TRUNCATESTACK => Ok(Instruction::TruncateStack),
-            TYPEOF => Ok(Instruction::Typeof),
-            UNARYMINUS => Ok(Instruction::UnaryMinus),
-            YIELD => Ok(Instruction::Yield),
-            CREATEIMMUTABLEBINDING => Ok(Instruction::CreateImmutableBinding),
-            CREATEMUTABLEBINDING => Ok(Instruction::CreateMutableBinding),
-            INITIALIZEREFERENCEDBINDING => Ok(Instruction::InitializeReferencedBinding),
-            INITIALIZEVARIABLEENVIRONMENT => Ok(Instruction::InitializeVariableEnvironment),
-            ENTERDECLARATIVEENVIRONMENT => Ok(Instruction::EnterDeclarativeEnvironment),
+            CLASSDEFINECONSTRUCTOR => Some(Instruction::ClassDefineConstructor),
+            CLASSDEFINEDEFAULTCONSTRUCTOR => Some(Instruction::ClassDefineDefaultConstructor),
+            CLASSDEFINEPRIVATEMETHOD => Some(Instruction::ClassDefinePrivateMethod),
+            CLASSDEFINEPRIVATEPROPERTY => Some(Instruction::ClassDefinePrivateProperty),
+            CLASSINITIALIZEPRIVATEELEMENTS => Some(Instruction::ClassInitializePrivateElements),
+            PUTPRIVATEVALUE => Some(Instruction::ClassInitializePrivateValue),
+            ISLOOSELYEQUAL => Some(Instruction::IsLooselyEqual),
+            ISSTRICTLYEQUAL => Some(Instruction::IsStrictlyEqual),
+            ISNULLORUNDEFINED => Some(Instruction::IsNullOrUndefined),
+            ISNULL => Some(Instruction::IsNull),
+            ISUNDEFINED => Some(Instruction::IsUndefined),
+            ISOBJECT => Some(Instruction::IsObject),
+            ISCONSTRUCTOR => Some(Instruction::IsConstructor),
+            JUMP => Some(Instruction::Jump),
+            JUMPIFNOT => Some(Instruction::JumpIfNot),
+            JUMPIFTRUE => Some(Instruction::JumpIfTrue),
+            LESSTHAN => Some(Instruction::LessThan),
+            LESSTHANEQUALS => Some(Instruction::LessThanEquals),
+            LOAD => Some(Instruction::Load),
+            LOADCOPY => Some(Instruction::LoadCopy),
+            LOADCONSTANT => Some(Instruction::LoadConstant),
+            LOADSTORESWAP => Some(Instruction::LoadStoreSwap),
+            LOADREPLACE => Some(Instruction::LoadReplace),
+            LOADTOINDEX => Some(Instruction::PutValueToIndex),
+            UPDATEEMPTY => Some(Instruction::UpdateEmpty),
+            SWAP => Some(Instruction::Swap),
+            EMPTY => Some(Instruction::Empty),
+            POPSTACK => Some(Instruction::PopStack),
+            LOGICALNOT => Some(Instruction::LogicalNot),
+            OBJECTCREATE => Some(Instruction::ObjectCreate),
+            OBJECTCREATEWITHSHAPE => Some(Instruction::ObjectCreateWithShape),
+            OBJECTDEFINEPROPERTY => Some(Instruction::ObjectDefineProperty),
+            OBJECTDEFINEMETHOD => Some(Instruction::ObjectDefineMethod),
+            OBJECTDEFINEGETTER => Some(Instruction::ObjectDefineGetter),
+            OBJECTDEFINESETTER => Some(Instruction::ObjectDefineSetter),
+            OBJECTSETPROTOTYPE => Some(Instruction::ObjectSetPrototype),
+            POPEXCEPTIONJUMPTARGET => Some(Instruction::PopExceptionJumpTarget),
+            POPREFERENCE => Some(Instruction::PopReference),
+            PUSHEXCEPTIONJUMPTARGET => Some(Instruction::PushExceptionJumpTarget),
+            PUSHREFERENCE => Some(Instruction::PushReference),
+            PUTVALUE => Some(Instruction::PutValue),
+            PUTVALUEWITHCACHE => Some(Instruction::PutValueWithCache),
+            RESOLVEBINDING => Some(Instruction::ResolveBinding),
+            RESOLVEBINDINGWITHCACHE => Some(Instruction::ResolveBindingWithCache),
+            RESOLVETHISBINDING => Some(Instruction::ResolveThisBinding),
+            RETURN => Some(Instruction::Return),
+            STORE => Some(Instruction::Store),
+            STORECOPY => Some(Instruction::StoreCopy),
+            STORECONSTANT => Some(Instruction::StoreConstant),
+            STOREFROMINDEX => Some(Instruction::GetValueFromIndex),
+            STRINGCONCAT => Some(Instruction::StringConcat),
+            THROW => Some(Instruction::Throw),
+            THROWERROR => Some(Instruction::ThrowError),
+            TONUMBER => Some(Instruction::ToNumber),
+            TONUMERIC => Some(Instruction::ToNumeric),
+            TOOBJECT => Some(Instruction::ToObject),
+            TRUNCATESTACK => Some(Instruction::TruncateStack),
+            TYPEOF => Some(Instruction::Typeof),
+            UNARYMINUS => Some(Instruction::UnaryMinus),
+            YIELD => Some(Instruction::Yield),
+            CREATEIMMUTABLEBINDING => Some(Instruction::CreateImmutableBinding),
+            CREATEMUTABLEBINDING => Some(Instruction::CreateMutableBinding),
+            INITIALIZEREFERENCEDBINDING => Some(Instruction::InitializeReferencedBinding),
+            INITIALIZEVARIABLEENVIRONMENT => Some(Instruction::InitializeVariableEnvironment),
+            ENTERDECLARATIVEENVIRONMENT => Some(Instruction::EnterDeclarativeEnvironment),
             ENTERCLASSSTATICELEMENTENVIRONMENT => {
-                Ok(Instruction::EnterClassStaticElementEnvironment)
+                Some(Instruction::EnterClassStaticElementEnvironment)
             }
-            ENTERPRIVATEENVIRONMENT => Ok(Instruction::EnterPrivateEnvironment),
-            EXITDECLARATIVEENVIRONMENT => Ok(Instruction::ExitDeclarativeEnvironment),
-            EXITVARIABLEENVIRONMENT => Ok(Instruction::ExitVariableEnvironment),
-            EXITPRIVATEENVIRONMENT => Ok(Instruction::ExitPrivateEnvironment),
-            BEGINSIMPLEOBJECTBINDINGPATTERN => Ok(Instruction::BeginSimpleObjectBindingPattern),
-            BEGINSIMPLEARRAYBINDINGPATTERN => Ok(Instruction::BeginSimpleArrayBindingPattern),
-            BINDINGPATTERNBIND => Ok(Instruction::BindingPatternBind),
-            BINDINGPATTERNBINDNAMED => Ok(Instruction::BindingPatternBindNamed),
-            BINDINGPATTERNBINDTOINDEX => Ok(Instruction::BindingPatternBindToIndex),
-            BINDINGPATTERNBINDREST => Ok(Instruction::BindingPatternBindRest),
-            BINDINGPATTERNBINDRESTTOINDEX => Ok(Instruction::BindingPatternBindRestToIndex),
-            BINDINGPATTERNSKIP => Ok(Instruction::BindingPatternSkip),
-            BINDINGPATTERNGETVALUE => Ok(Instruction::BindingPatternGetValue),
-            BINDINGPATTERNGETVALUENAMED => Ok(Instruction::BindingPatternGetValueNamed),
-            BINDINGPATTERNGETRESTVALUE => Ok(Instruction::BindingPatternGetRestValue),
-            FINISHBINDINGPATTERN => Ok(Instruction::FinishBindingPattern),
-            ENUMERATEOBJECTPROPERTIES => Ok(Instruction::EnumerateObjectProperties),
-            GETITERATORSYNC => Ok(Instruction::GetIteratorSync),
-            GETITERATORASYNC => Ok(Instruction::GetIteratorAsync),
-            ITERATORSTEPVALUE => Ok(Instruction::IteratorStepValue),
-            ITERATORSTEPVALUEORUNDEFINED => Ok(Instruction::IteratorStepValueOrUndefined),
-            ITERATORNEXT => Ok(Instruction::IteratorCallNextMethod),
-            ITERATORCOMPLETE => Ok(Instruction::IteratorComplete),
-            ITERATORVALUE => Ok(Instruction::IteratorValue),
-            ITERATORTHROW => Ok(Instruction::IteratorThrow),
-            ITERATORRETURN => Ok(Instruction::IteratorReturn),
-            ITERATORRESTINTOARRAY => Ok(Instruction::IteratorRestIntoArray),
-            ITERATORCLOSE => Ok(Instruction::IteratorClose),
-            ASYNCITERATORCLOSE => Ok(Instruction::AsyncIteratorClose),
-            ITERATORCLOSEWITHERROR => Ok(Instruction::IteratorCloseWithError),
-            ASYNCITERATORCLOSEWITHERROR => Ok(Instruction::AsyncIteratorCloseWithError),
-            ITERATORPOP => Ok(Instruction::IteratorPop),
-            GETNEWTARGET => Ok(Instruction::GetNewTarget),
-            IMPORTCALL => Ok(Instruction::ImportCall),
-            IMPORTMETA => Ok(Instruction::ImportMeta),
-            VERIFYISOBJECT => Ok(Instruction::VerifyIsObject),
-            _ => Err(()),
+            ENTERPRIVATEENVIRONMENT => Some(Instruction::EnterPrivateEnvironment),
+            EXITDECLARATIVEENVIRONMENT => Some(Instruction::ExitDeclarativeEnvironment),
+            EXITVARIABLEENVIRONMENT => Some(Instruction::ExitVariableEnvironment),
+            EXITPRIVATEENVIRONMENT => Some(Instruction::ExitPrivateEnvironment),
+            BEGINSIMPLEOBJECTBINDINGPATTERN => Some(Instruction::BeginSimpleObjectBindingPattern),
+            BEGINSIMPLEARRAYBINDINGPATTERN => Some(Instruction::BeginSimpleArrayBindingPattern),
+            BINDINGPATTERNBIND => Some(Instruction::BindingPatternBind),
+            BINDINGPATTERNBINDNAMED => Some(Instruction::BindingPatternBindNamed),
+            BINDINGPATTERNBINDTOINDEX => Some(Instruction::BindingPatternBindToIndex),
+            BINDINGPATTERNBINDREST => Some(Instruction::BindingPatternBindRest),
+            BINDINGPATTERNBINDRESTTOINDEX => Some(Instruction::BindingPatternBindRestToIndex),
+            BINDINGPATTERNSKIP => Some(Instruction::BindingPatternSkip),
+            BINDINGPATTERNGETVALUE => Some(Instruction::BindingPatternGetValue),
+            BINDINGPATTERNGETVALUENAMED => Some(Instruction::BindingPatternGetValueNamed),
+            BINDINGPATTERNGETRESTVALUE => Some(Instruction::BindingPatternGetRestValue),
+            FINISHBINDINGPATTERN => Some(Instruction::FinishBindingPattern),
+            ENUMERATEOBJECTPROPERTIES => Some(Instruction::EnumerateObjectProperties),
+            GETITERATORSYNC => Some(Instruction::GetIteratorSync),
+            GETITERATORASYNC => Some(Instruction::GetIteratorAsync),
+            ITERATORSTEPVALUE => Some(Instruction::IteratorStepValue),
+            ITERATORSTEPVALUEORUNDEFINED => Some(Instruction::IteratorStepValueOrUndefined),
+            ITERATORNEXT => Some(Instruction::IteratorCallNextMethod),
+            ITERATORCOMPLETE => Some(Instruction::IteratorComplete),
+            ITERATORVALUE => Some(Instruction::IteratorValue),
+            ITERATORTHROW => Some(Instruction::IteratorThrow),
+            ITERATORRETURN => Some(Instruction::IteratorReturn),
+            ITERATORRESTINTOARRAY => Some(Instruction::IteratorRestIntoArray),
+            ITERATORCLOSE => Some(Instruction::IteratorClose),
+            ASYNCITERATORCLOSE => Some(Instruction::AsyncIteratorClose),
+            ITERATORCLOSEWITHERROR => Some(Instruction::IteratorCloseWithError),
+            ASYNCITERATORCLOSEWITHERROR => Some(Instruction::AsyncIteratorCloseWithError),
+            ITERATORPOP => Some(Instruction::IteratorPop),
+            GETNEWTARGET => Some(Instruction::GetNewTarget),
+            IMPORTCALL => Some(Instruction::ImportCall),
+            IMPORTMETA => Some(Instruction::ImportMeta),
+            VERIFYISOBJECT => Some(Instruction::VerifyIsObject),
+            _ => None,
         }
     }
 }
