@@ -819,7 +819,11 @@ pub(crate) fn inner_module_evaluation<'a, 'b>(
             } else {
                 // iv. Else,
                 // 1. Set requiredModule to requiredModule.[[CycleRoot]].
-                required_module = required_module.get_cycle_root(agent).unwrap();
+                // Note: a module whose evaluation threw has no [[CycleRoot]];
+                // its own [[EvaluationError]] is returned below.
+                if let Some(cycle_root) = required_module.get_cycle_root(agent) {
+                    required_module = cycle_root;
+                }
                 // 2. Assert: requiredModule.[[Status]] is either evaluating-async or evaluated.
                 debug_assert!(matches!(
                     required_module.status(agent),
