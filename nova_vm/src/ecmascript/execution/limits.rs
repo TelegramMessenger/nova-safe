@@ -143,8 +143,11 @@ impl Limits {
     fn update_gc_threshold(&mut self, interval: usize) {
         self.gc_threshold = match self.heap_limit {
             Some(limit) => {
+                // The allocation counter sees less than the estimate finds
+                // live afterwards (element and property storage moves), so
+                // collect after a quarter of the headroom.
                 let headroom = limit.saturating_sub(self.live_bytes_after_gc);
-                interval.min(headroom.max(MIN_GC_ALLOCATION_INTERVAL))
+                interval.min((headroom / 4).max(MIN_GC_ALLOCATION_INTERVAL))
             }
             None => interval,
         };

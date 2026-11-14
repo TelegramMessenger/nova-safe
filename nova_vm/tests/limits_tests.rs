@@ -519,11 +519,13 @@ fn heap_limit_holds_with_a_large_live_heap() {
         // (Arrays stay under 65536 elements: a longer one takes a storage
         // slot of 2^24 elements.)
         let mut engine = Engine::new();
-        let limit = 48 * 1024 * 1024;
+        let limit = 24 * 1024 * 1024;
         engine.agent.set_heap_limit(Some(limit));
+        // The interrupt is only a backstop: unoptimised builds under a loaded
+        // gate take tens of seconds to fill the heap.
         let outcome = engine.run(
             "const keep = []; let chunk = []; for (let i = 0; ; i++) { chunk.push({ i }); if (chunk.length === 1000) { keep.push(chunk); chunk = []; } }",
-            Some(Duration::from_secs(60)),
+            Some(Duration::from_secs(600)),
         );
         assert_eq!(outcome, Outcome::Terminated(TerminationReason::OutOfMemory));
         let size = engine.agent.heap_size();
@@ -590,5 +592,28 @@ fn heap_estimate_counts_bytecode_environments_and_stacks() {
         // suspended generator stacks.
         eprintln!("estimate grew by {grown} bytes");
         assert!(grown > 10 * 1024 * 1024, "{grown}");
+    });
+}
+
+#[test]
+fn large_dictionaries_take_memory_proportional_to_their_keys() {
+    on_big_stack(|| {
+        // Keys past 2^16 used to take a whole 2^24-key storage (128 MiB) plus
+        // a 2^24-slot value storage.
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(8 * 1024 * 1024));
+        assert_eq!(
+            engine.run(
+                "var dict = Object.fromEntries(Array.from({ length: 70000 }, (_, i) => ['k' + i, i])); dict.extra = 1; delete dict.k5; Object.keys(dict).length + ':' + dict.k69999 + ':' + ('k5' in dict) + ':' + dict.extra",
+                None
+            ),
+            Outcome::Value("70000:69999:false:1".into())
+        );
+        engine.agent.gc();
+        let size = engine.agent.heap_size();
+        assert!(size > 70_000 * 16, "{size}");
+        assert!(size < 6 * 1024 * 1024, "{size}");
+        engine.agent.set_heap_limit(None);
+        engine.assert_usable();
     });
 }
