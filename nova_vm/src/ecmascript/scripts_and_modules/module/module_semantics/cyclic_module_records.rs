@@ -9,7 +9,6 @@ use crate::{
         AbstractModule, AbstractModuleMethods, Agent, HostDefined, JsError, JsResult,
         LoadedModules, ModuleRequest, ModuleRequestRecord, Promise, PromiseCapability,
         PromiseReactionHandler, SourceTextModule, Value, get_imported_module, inner_promise_then,
-        unwrap_try,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
@@ -984,7 +983,7 @@ pub(crate) fn async_module_execution_fulfilled(
         // a. Assert: module.[[CycleRoot]] and module are the same Module Record.
         assert_eq!(module.get_cycle_root(agent), Some(module));
         // b. Perform ! Call(module.[[TopLevelCapability]].[[Resolve]], undefined, « undefined »).
-        unwrap_try(top_level_capability.try_resolve(agent, Value::Undefined, gc.nogc()));
+        top_level_capability.resolve_or_defer(agent, Value::Undefined, gc.nogc());
     }
     // 8. Let execList be a new empty List.
     let mut exec_list = vec![];
@@ -1056,11 +1055,7 @@ pub(crate) fn async_module_execution_fulfilled(
                     // a. Assert: m.[[CycleRoot]] and m are the same Module Record.
                     assert_eq!(m.get_cycle_root(agent), Some(m));
                     // b. Perform ! Call(m.[[TopLevelCapability]].[[Resolve]], undefined, « undefined »).
-                    unwrap_try(top_level_capability.try_resolve(
-                        agent,
-                        Value::Undefined,
-                        gc.nogc(),
-                    ));
+                    top_level_capability.resolve_or_defer(agent, Value::Undefined, gc.nogc());
                 }
             }
         }

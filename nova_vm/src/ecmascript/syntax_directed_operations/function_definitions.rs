@@ -296,21 +296,26 @@ pub(crate) fn evaluate_async_function_body<'a>(
         gc.reborrow(),
     )
     .unbind();
+    if let ExecutionResult::Return(result) = result {
+        let promise_capability =
+            PromiseCapability::from_promise(promise.get(agent), must_be_unresolved);
+        // [27.7.5.2 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext )](https://tc39.es/ecma262/#sec-asyncblockstart)
+        // 2. e. If result is a normal completion, then
+        //       i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « undefined »).
+        //    f. Else if result is a return completion, then
+        //       i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « result.[[Value]] »).
+        // Note: reading "then" of the returned value can run JavaScript.
+        promise_capability.resolve(agent, result, gc.reborrow());
+        // 5. Return Completion Record { [[Type]]: return, [[Value]]: promiseCapability.[[Promise]], [[Target]]: empty }.
+        return promise.take(agent).bind(gc.into_nogc());
+    }
     let gc = gc.into_nogc();
     let result = result.bind(gc);
     let promise = promise.take(agent).bind(gc);
     // AsyncFunctionStart will run the function until it returns, throws or gets
     // suspended with an await.
     match result {
-        ExecutionResult::Return(result) => {
-            let promise_capability = PromiseCapability::from_promise(promise, must_be_unresolved);
-            // [27.7.5.2 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext )](https://tc39.es/ecma262/#sec-asyncblockstart)
-            // 2. e. If result is a normal completion, then
-            //       i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « undefined »).
-            //    f. Else if result is a return completion, then
-            //       i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « result.[[Value]] »).
-            unwrap_try(promise_capability.try_resolve(agent, result, gc));
-        }
+        ExecutionResult::Return(_) => unreachable!(),
         ExecutionResult::Throw(err) => {
             let promise_capability = PromiseCapability::from_promise(promise, must_be_unresolved);
             // [27.7.5.2 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext )](https://tc39.es/ecma262/#sec-asyncblockstart)

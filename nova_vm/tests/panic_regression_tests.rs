@@ -109,3 +109,35 @@ fn loose_equality_with_a_boolean_propagates_the_object_conversion_error() {
         "caught 1,caught 2,true,true"
     );
 }
+
+#[test]
+fn async_function_returning_a_thenable_getter_or_proxy() {
+    let source = r#"
+        var log = [];
+        (async function () { return { get then() { log.push("then read"); return undefined; } }; })()
+            .then((v) => log.push("fulfilled " + typeof v));
+        (async function () { return new Proxy({}, {}); })().then((v) => log.push("proxy " + typeof v));
+        (async function () { return { get then() { throw new Error("bad then"); } }; })()
+            .catch((e) => log.push("rejected " + e.message));
+        log.push("sync");
+    "#;
+    assert_eq!(
+        run(source, "log.join()", None),
+        "then read,sync,fulfilled object,proxy object,rejected bad then"
+    );
+}
+
+#[test]
+fn async_generator_results_with_a_then_getter_on_object_prototype() {
+    let source = r#"
+        var log = [];
+        Object.defineProperty(Object.prototype, "then", {
+            configurable: true,
+            get() { log.push("then read"); return undefined; },
+        });
+        (async function* () { yield 1; })().next().then((r) => log.push("next " + r.value));
+    "#;
+    let result = run(source, "delete Object.prototype.then; log.join()", None);
+    assert!(result.contains("next 1"), "{result}");
+    assert!(result.contains("then read"), "{result}");
+}

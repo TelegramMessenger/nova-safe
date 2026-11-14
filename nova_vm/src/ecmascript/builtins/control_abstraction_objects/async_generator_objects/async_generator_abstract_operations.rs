@@ -6,7 +6,6 @@ use crate::{
     ecmascript::{
         Agent, ECMAScriptFunction, ExceptionType, JsError, JsResult, Promise, PromiseCapability,
         PromiseReactionHandler, Realm, Value, create_iter_result_object, inner_promise_then,
-        unwrap_try,
     },
     engine::{Bindable, ExecutionResult, GcScope, NoGcScope, Scopable, Scoped, SuspendedVm},
     heap::ArenaAccessMut,
@@ -123,7 +122,7 @@ fn async_generator_complete_step(
         create_iter_result_object(agent, value, done, gc).expect("Should perform GC here")
     };
     // d. Perform ! Call(promiseCapability.[[Resolve]], undefined, « iteratorResult »).
-    unwrap_try(promise_capability.try_resolve(agent, iterator_result.into(), gc));
+    promise_capability.resolve_or_defer(agent, iterator_result.into(), gc);
     // 8. Return unused.
 }
 

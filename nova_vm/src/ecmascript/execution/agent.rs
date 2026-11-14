@@ -33,7 +33,8 @@ use crate::{
     ecmascript::{
         AbstractModuleMethods, Environment, ErrorHeapData, ExecutionContext, Function,
         GraphLoadingStateRecord, HostDefined, Limits, ModuleRequest, Object, OrdinaryObject,
-        PrivateEnvironment, PrivateName, Promise, PromiseReactionJob, PromiseResolveThenableJob,
+        PrivateEnvironment, PrivateName, Promise, PromiseReactionJob, PromiseResolveJob,
+        PromiseResolveThenableJob,
         PropertyKey, PropertyLookupCache, Realm, RealmRecord, Reference, Referrer, ScriptOrModule,
         SourceCode, SourceTextModule, String, Symbol, Value, ValueRootRepr,
         get_identifier_reference, initialize_default_realm, initialize_host_defined_realm,
@@ -250,6 +251,7 @@ pub fn unwrap_try<'a, T: 'a>(try_result: TryResult<'a, T>) -> T {
 }
 
 pub(crate) enum InnerJob {
+    PromiseResolve(PromiseResolveJob),
     PromiseResolveThenable(PromiseResolveThenableJob),
     PromiseReaction(PromiseReactionJob),
     #[cfg(feature = "atomics")]
@@ -310,6 +312,7 @@ impl Job {
         }
 
         let result = match self.inner {
+            InnerJob::PromiseResolve(job) => job.run(agent, gc.reborrow()).unbind(),
             InnerJob::PromiseResolveThenable(job) => job.run(agent, gc.reborrow()).unbind(),
             InnerJob::PromiseReaction(job) => job.run(agent, gc.reborrow()).unbind(),
             #[cfg(feature = "atomics")]
