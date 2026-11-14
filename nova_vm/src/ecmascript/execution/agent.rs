@@ -19,7 +19,7 @@
 //! - This is inspired by and/or copied from Kiesel engine:
 //!   Copyright (c) 2023-2024 Linus Groh
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 
 #[cfg(test)]
 use crate::ecmascript::GlobalEnvironment;

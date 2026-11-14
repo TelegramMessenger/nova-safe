@@ -21,7 +21,7 @@ use crate::{
     },
     ndt,
 };
-use ahash::AHashSet;
+use crate::hashing::AHashSet;
 use core::any::Any;
 use oxc_ast::ast;
 use oxc_diagnostics::OxcDiagnostic;

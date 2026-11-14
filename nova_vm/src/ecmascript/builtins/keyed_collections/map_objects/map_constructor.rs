@@ -5,7 +5,7 @@
 use core::hash::Hasher;
 use core::ops::ControlFlow;
 
-use ahash::AHasher;
+use crate::hashing::AHasher;
 
 use crate::{
     ecmascript::{

@@ -4,7 +4,7 @@
 
 use std::collections::{TryReserveError, hash_map::Entry};
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 
 use crate::{
     ecmascript::{

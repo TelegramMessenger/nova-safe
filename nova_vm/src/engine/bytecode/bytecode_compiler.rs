@@ -3164,8 +3164,8 @@ fn simple_object_pattern<'s>(
                     } else {
                         // Literal is a float: it needs to be converted into a
                         // String.
-                        let mut buffer = ryu_js::Buffer::new();
-                        ctx.create_string(buffer.format(literal.value)).into()
+                        ctx.create_string(&crate::ecmascript::f64_to_js_string(literal.value))
+                            .into()
                     }
                 }
                 ast::PropertyKey::StringLiteral(literal) => ctx

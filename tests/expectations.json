@@ -1048,7 +1048,6 @@
   "built-ins/JSON/parse/reviver-context-source-object-literal.js": "FAIL",
   "built-ins/JSON/parse/reviver-context-source-primitive-literal.js": "FAIL",
   "built-ins/JSON/parse/reviver-forward-modifies-object.js": "FAIL",
-  "built-ins/JSON/parse/text-negative-zero.js": "FAIL",
   "built-ins/JSON/rawJSON/basic.js": "FAIL",
   "built-ins/JSON/rawJSON/bigint-raw-json-can-be-stringified.js": "FAIL",
   "built-ins/JSON/rawJSON/builtin.js": "FAIL",

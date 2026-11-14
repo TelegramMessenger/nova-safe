@@ -3,14 +3,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 mod data;
-mod radix;
 mod small_f64;
 mod small_integer;
+mod text;
 
 pub(crate) use data::*;
-pub(crate) use radix::*;
 pub use small_f64::*;
 pub use small_integer::*;
+pub(crate) use text::*;
 
 use super::{
     Numeric, Primitive, String, Value,
@@ -1301,39 +1301,12 @@ impl<'a> Number<'a> {
         radix: u32,
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
-        String::from_string(
-            agent,
-            with_radix!(
-                radix,
-                match x {
-                    Number::Integer(x) => {
-                        lexical::to_string_with_options::<_, RADIX>(
-                            x.into_i64(),
-                            &lexical::write_integer_options::STANDARD,
-                        )
-                        .to_ascii_lowercase()
-                    }
-                    Number::Number(x) => {
-                        let x = *x.get(agent);
-                        let mut string = lexical::to_string_with_options::<_, RADIX>(
-                            x,
-                            &lexical::write_float_options::JAVASCRIPT_LITERAL,
-                        );
-                        make_float_string_ascii_lowercase(&mut string);
-                        string
-                    }
-                    Number::SmallF64(x) => {
-                        let mut string = lexical::to_string_with_options::<_, RADIX>(
-                            x.into_f64(),
-                            &lexical::write_float_options::JAVASCRIPT_LITERAL,
-                        );
-                        make_float_string_ascii_lowercase(&mut string);
-                        string
-                    }
-                }
-            ),
-            gc,
-        )
+        let string = match x {
+            Number::Integer(x) => i64_to_radix_string(x.into_i64(), radix),
+            Number::Number(x) => f64_to_radix_string(*x.get(agent), radix),
+            Number::SmallF64(x) => f64_to_radix_string(x.into_f64(), radix),
+        };
+        String::from_string(agent, string, gc)
     }
 
     // ### [6.1.6.1.20 Number::toString ( x, radix )](https://tc39.es/ecma262/#sec-numeric-types-number-tostring)
@@ -1343,15 +1316,9 @@ impl<'a> Number<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
         match x {
-            Number::Number(x) => {
-                let mut buffer = ryu_js::Buffer::new();
-                String::from_string(agent, buffer.format(*x.get(agent)).to_string(), gc)
-            }
+            Number::Number(x) => String::from_string(agent, f64_to_js_string(*x.get(agent)), gc),
             Number::Integer(x) => String::from_string(agent, x.into_i64().to_string(), gc),
-            Number::SmallF64(x) => {
-                let mut buffer = ryu_js::Buffer::new();
-                String::from_string(agent, buffer.format(x.into_f64()).to_string(), gc)
-            }
+            Number::SmallF64(x) => String::from_string(agent, f64_to_js_string(x.into_f64()), gc),
         }
     }
 

@@ -4,7 +4,7 @@
 
 use core::{hash::Hasher, marker::PhantomData};
 
-use ahash::AHasher;
+use crate::hashing::AHasher;
 use hashbrown::{HashTable, hash_table::Entry};
 
 use crate::{

@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 use soavec::SoAVec;
 
 use super::{

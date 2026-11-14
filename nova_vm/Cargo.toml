@@ -12,11 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ahash = { workspace = true }
-fast-float = { workspace = true }
 hashbrown = { workspace = true }
-lexical = { workspace = true }
-memchr = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 oxc_allocator = { workspace = true }
@@ -28,14 +24,11 @@ oxc_regular_expression = { workspace = true }
 oxc_semantic = { workspace = true }
 oxc_span = { workspace = true }
 oxc_syntax = { workspace = true }
-rand = { workspace = true }
 regress = { workspace = true, optional = true }
-ryu-js = { workspace = true }
 small_string = { path = "../small_string", version = "1.0.0" }
 soavec = { workspace = true }
 soavec_derive = { workspace = true }
 nova_vm_derive = { path = "../nova_vm_derive", version = "1.0.0" }
-sonic-rs = { workspace = true, optional = true }
 unicode-normalization = { workspace = true }
 usdt = { workspace = true, optional = true }
 wtf8 = { workspace = true }
@@ -56,10 +49,22 @@ default = [
     "annex-b",
     "temporal",
 ]
+# The widget engine: no Temporal, no SharedArrayBuffer and Atomics (widgets
+# have no workers to share memory with).
+widget = [
+    "math",
+    "json",
+    "date",
+    "array-buffer",
+    "weak-refs",
+    "regexp",
+    "set",
+    "annex-b",
+]
 array-buffer = []
 atomics = ["array-buffer", "shared-array-buffer"]
 date = []
-json = ["dep:sonic-rs"]
+json = []
 math = []
 regexp = ["dep:regress"]
 shared-array-buffer = ["array-buffer"]

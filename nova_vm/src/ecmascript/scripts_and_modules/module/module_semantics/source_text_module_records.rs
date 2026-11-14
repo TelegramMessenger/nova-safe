@@ -9,7 +9,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use ahash::AHashSet;
+use crate::hashing::AHashSet;
 use oxc_ast::ast;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_ecmascript::BoundNames;

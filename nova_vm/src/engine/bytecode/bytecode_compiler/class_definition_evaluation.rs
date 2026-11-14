@@ -16,7 +16,7 @@ use crate::{
         bytecode::{CompileEvaluation, bytecode_compiler::variable_escapes_scope},
     },
 };
-use ahash::{AHashMap, AHashSet};
+use crate::hashing::{AHashMap, AHashSet};
 use oxc_ast::ast::{self, MethodDefinitionKind};
 use oxc_ecmascript::{BoundNames, PrivateBoundIdentifiers, PropName};
 

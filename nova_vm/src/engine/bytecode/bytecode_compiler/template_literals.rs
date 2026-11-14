@@ -4,7 +4,7 @@
 
 //! ### [13.2.8 Template Literals](https://tc39.es/ecma262/#sec-template-literals)
 
-use ahash::AHashMap;
+use crate::hashing::AHashMap;
 use oxc_ast::ast;
 
 use crate::{

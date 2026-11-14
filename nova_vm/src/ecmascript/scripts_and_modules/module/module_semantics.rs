@@ -13,7 +13,7 @@ pub use cyclic_module_records::*;
 pub use source_text_module_records::*;
 
 use super::continue_dynamic_import;
-use ahash::AHasher;
+use crate::hashing::AHasher;
 use hashbrown::{HashTable, hash_table::Entry};
 use oxc_ast::ast;
 use std::{

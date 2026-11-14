@@ -15,7 +15,8 @@ pub use small_bigint::*;
 use crate::{
     ecmascript::{
         Agent, BIGINT_DISCRIMINANT, ExceptionType, JsResult, Numeric, Primitive,
-        SMALL_BIGINT_DISCRIMINANT, SmallInteger, String, Value, primitive_handle, with_radix,
+        SMALL_BIGINT_DISCRIMINANT, SmallInteger, String, Value, i64_to_radix_string,
+        primitive_handle,
     },
     engine::{Bindable, HeapRootData, HeapRootRef, NoGcScope, Rootable},
     heap::{
@@ -717,14 +718,7 @@ impl<'a> BigInt<'a> {
         String::from_string(
             agent,
             match x {
-                BigInt::SmallBigInt(x) => with_radix!(
-                    radix,
-                    lexical::to_string_with_options::<_, RADIX>(
-                        x.into_i64(),
-                        &lexical::write_integer_options::STANDARD,
-                    )
-                )
-                .to_ascii_lowercase(),
+                BigInt::SmallBigInt(x) => i64_to_radix_string(x.into_i64(), radix),
                 BigInt::BigInt(x) => x.get(agent).to_str_radix(radix),
             },
             gc,
