@@ -61,6 +61,9 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// Arrow function expressions being built
     arrow_function_expressions: Vec<ArrowFunctionExpression<'gc>>,
     class_initializer_bytecodes: Vec<(Option<Executable<'gc>>, bool)>,
+    /// The field initializers of a derived class with a constructor, run
+    /// after each super call of the constructor.
+    instance_initializer: Option<Executable<'gc>>,
 }
 
 impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
@@ -79,6 +82,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             function_expressions: Vec::new(),
             arrow_function_expressions: Vec::new(),
             class_initializer_bytecodes: Vec::new(),
+            instance_initializer: None,
         }
     }
 
@@ -177,6 +181,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.function_expressions.clear();
         self.arrow_function_expressions.clear();
         self.class_initializer_bytecodes.clear();
+        self.instance_initializer = None;
         let message = self.create_string(message);
         self.add_instruction_with_constant(Instruction::StoreConstant, message);
         self.add_instruction_with_immediate(Instruction::ThrowError, immediate);
@@ -211,6 +216,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 .into_iter()
                 .map(|(exe, b)| (exe.unbind(), b))
                 .collect(),
+            instance_initializer: self.instance_initializer.unbind(),
             _gc: PhantomData,
         })
     }
@@ -516,6 +522,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     ) {
         self.class_initializer_bytecodes
             .push((Some(executable), has_constructor_parent));
+    }
+
+    pub(super) fn set_instance_initializer(&mut self, executable: Executable<'gc>) {
+        self.instance_initializer = Some(executable);
     }
 
     pub(super) fn add_class_initializer(&mut self, has_constructor_parent: bool) {

@@ -33,7 +33,7 @@ use super::{
         ControlFlowFinallyEntry, ControlFlowStackEntry, compile_async_iterator_exit,
         compile_iterator_pop,
     },
-    function_declaration_instantiation,
+    function_declaration_instantiation, parsed_string_to_wtf8,
 };
 
 pub(crate) type IndexType = u16;
@@ -293,6 +293,22 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     /// Create a new JavaScript String from a string literal.
     pub(crate) fn create_string(&mut self, literal: &str) -> String<'gc> {
         self.executable.create_string(literal)
+    }
+
+    /// Create the String value of an untagged template literal's text.
+    pub(super) fn create_template_string(&mut self, quasi: &ast::TemplateElement) -> String<'gc> {
+        let cooked = quasi
+            .value
+            .cooked
+            .as_ref()
+            .expect("an untagged template literal has no invalid escapes")
+            .as_str();
+        if quasi.lone_surrogates {
+            let (agent, gc) = self.get_agent_and_gc();
+            parsed_string_to_wtf8(agent, cooked, true, gc)
+        } else {
+            self.create_string(cooked)
+        }
     }
 
     /// Create a new JavaScript String from an owned string.
@@ -1363,6 +1379,10 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ) {
         self.executable
             .add_class_initializer_bytecode(executable, has_constructor_parent);
+    }
+
+    pub(super) fn set_instance_initializer(&mut self, executable: Executable<'gc>) {
+        self.executable.set_instance_initializer(executable);
     }
 
     pub(super) fn add_class_initializer(&mut self, has_constructor_parent: bool) {

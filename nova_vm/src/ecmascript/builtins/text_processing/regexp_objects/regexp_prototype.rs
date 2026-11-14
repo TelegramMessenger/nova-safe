@@ -12,10 +12,10 @@ use crate::{
         PropertyLookupCache, ProtoIntrinsics, Realm, String, TryGetResult, Value,
         advance_string_index, array_create, builders::OrdinaryObjectBuilder, call_function,
         construct, create_reg_exp_string_iterator, get, get_substitution, is_callable,
-        length_of_array_like, reg_exp_builtin_exec, reg_exp_builtin_test, reg_exp_exec,
-        reg_exp_test, require_internal_slot_reg_exp, same_value, set, species_constructor,
-        to_boolean, to_integer_or_infinity, to_length, to_object, to_string, to_uint32,
-        try_create_data_property_or_throw, try_get, unwrap_try,
+        length_of_array_like, push_flag_letters, reg_exp_builtin_exec, reg_exp_builtin_test,
+        reg_exp_exec, reg_exp_test, require_internal_slot_reg_exp, same_value, set,
+        species_constructor, to_boolean, to_integer_or_infinity, to_length, to_object, to_string,
+        to_uint32, try_create_data_property_or_throw, try_get, unwrap_try,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{IntrinsicFunctionIndexes, WellKnownSymbols},
@@ -1546,7 +1546,18 @@ impl RegExpPrototype {
         if let Object::RegExp(r) = r {
             // Fast path for RegExp objects: This is not actually proper as it
             // does not take into account prototype mutations.
-            let regexp_string = r.create_regexp_string(agent);
+            let flags = r.original_flags(agent);
+            let source = r.original_source(agent);
+            let mut regexp_string = Wtf8Buf::with_capacity(source.len_(agent) + 10);
+            regexp_string.push_char('/');
+            if source.is_empty_string() {
+                regexp_string.push_str("(?:)");
+            } else {
+                let source = escape_reg_exp_pattern(agent, source, flags, nogc);
+                regexp_string.push_wtf8(source.as_wtf8_(agent));
+            }
+            regexp_string.push_char('/');
+            push_flag_letters(&mut regexp_string, flags);
             return Ok(String::from_wtf8_buf(agent, regexp_string, nogc)
                 .unbind()
                 .into());

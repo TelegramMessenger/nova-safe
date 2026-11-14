@@ -17,12 +17,12 @@ use crate::{
         copy_data_properties_into_object, create_builtin_constructor,
         create_data_property_or_throw, create_unmapped_arguments_object, define_property_or_throw,
         evaluate_import_call, get_this_environment, get_this_value, get_value, has_property,
-        is_constructor, is_less_than, is_loosely_equal, is_private_reference,
-        is_property_reference, is_strictly_equal, is_super_reference, is_unresolvable_reference,
-        iterator_complete, iterator_value, make_constructor, make_method,
-        new_class_static_element_environment, new_declarative_environment, new_private_environment,
-        ordinary_function_create, ordinary_object_create_with_intrinsics, perform_eval,
-        private_element_find, put_value, resolve_binding, resolve_private_identifier,
+        initialize_derived_instance_elements, is_constructor, is_less_than, is_loosely_equal,
+        is_private_reference, is_property_reference, is_strictly_equal, is_super_reference,
+        is_unresolvable_reference, iterator_complete, iterator_value, make_constructor,
+        make_method, new_class_static_element_environment, new_declarative_environment,
+        new_private_environment, ordinary_function_create, ordinary_object_create_with_intrinsics,
+        perform_eval, private_element_find, put_value, resolve_binding, resolve_private_identifier,
         resolve_this_binding, set, set_function_name, throw_no_proxy_private_names,
         throw_read_undefined_or_null_error, to_boolean, to_number, to_number_primitive, to_numeric,
         to_numeric_primitive, to_object, to_property_key, to_property_key_complex,
@@ -42,7 +42,7 @@ use crate::{
         },
         throw_iterator_returned_non_object,
     },
-    heap::{ArenaAccessMut, ObjectEntry},
+    heap::{ArenaAccess, ArenaAccessMut, ObjectEntry},
 };
 
 use super::{
@@ -1488,6 +1488,9 @@ pub(super) fn execute_class_initialize_private_elements<'gc>(
     gc: NoGcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let target = Object::try_from(vm.stack.last().unwrap().bind(gc)).unwrap();
+    if target.is_proxy() {
+        return Err(throw_no_proxy_private_names(agent, gc));
+    }
     target
         .get_or_create_backing_object(agent)
         .property_storage()
@@ -1755,10 +1758,30 @@ pub(super) fn execute_evaluate_super<'gc>(
         .bind(gc.nogc());
     // 9. Let F be thisER.[[FunctionObject]].
     // 10. Assert: F is an ECMAScript function object.
-    let Function::ECMAScriptFunction(_f) = this_er.get_function_object(agent) else {
+    let Function::ECMAScriptFunction(f) = this_er.get_function_object(agent) else {
         unreachable!();
     };
     // 11. Perform ? InitializeInstanceElements(result, F).
+    let result = if f
+        .get_executable(agent)
+        .get(agent)
+        .instance_initializer
+        .is_some()
+    {
+        let scoped_result = result.scope(agent, gc.nogc());
+        let f = f.unbind();
+        let o = result.unbind();
+        with_vm_gc(
+            agent,
+            vm,
+            |agent, gc| initialize_derived_instance_elements(agent, o, f, gc),
+            gc.reborrow(),
+        )
+        .unbind()?;
+        scoped_result.get(agent).bind(gc.nogc())
+    } else {
+        result
+    };
     // 12. Return result.
     vm.result = Some(result.unbind().into());
     Ok(())

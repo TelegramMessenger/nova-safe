@@ -26,7 +26,6 @@ use crate::{
     },
 };
 use oxc_ast::ast::RegExpFlags;
-use wtf8::Wtf8Buf;
 
 use super::ordinary::{
     PropertyLookupCache, ordinary_get_own_property, ordinary_has_property, ordinary_set,
@@ -58,10 +57,6 @@ impl<'a> RegExp<'a> {
     /// Fast-path for RegExp object debug stringifying; this does not take into
     /// account any prototype-modifications.
     #[inline(always)]
-    pub(crate) fn create_regexp_string(self, agent: &Agent) -> Wtf8Buf {
-        self.get(agent).create_regexp_string(agent)
-    }
-
     /// ### \[\[OriginalSource]]
     pub(crate) fn original_source(self, agent: &Agent) -> String<'a> {
         self.get(agent).original_source

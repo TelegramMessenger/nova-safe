@@ -7,6 +7,7 @@
 use crate::hashing::AHashMap;
 use oxc_ast::ast;
 
+use super::parsed_string_to_wtf8;
 use crate::{
     ecmascript::{
         Agent, Array, BUILTIN_STRING_MEMORY, InternalMethods, InternalSlots, OrdinaryObject,
@@ -46,6 +47,7 @@ pub(super) fn get_template_object<'a>(
 
     let mut cooked_values = Vec::with_capacity(len);
     let mut raw_values = Vec::with_capacity(len);
+    let mut lone_surrogate_values = Vec::new();
     {
         let strings = &mut agent.heap.strings;
         let string_lookup_table = &mut agent.heap.string_lookup_table;
@@ -55,6 +57,10 @@ pub(super) fn get_template_object<'a>(
             // a. Let prop be ! ToString(𝔽(index)).
             // b. Let cookedValue be cookedStrings[index].
             let cooked_value = quasi.value.cooked.map_or(Value::Undefined, |cooked_value| {
+                if quasi.lone_surrogates {
+                    lone_surrogate_values.push((cooked_values.len(), cooked_value.as_str()));
+                    return Value::Undefined;
+                }
                 String::from_str_direct(
                     strings,
                     string_lookup_table,
@@ -78,6 +84,11 @@ pub(super) fn get_template_object<'a>(
             raw_values.push(Value::from(raw_value.unbind()));
             // f. Set index to index + 1.
         }
+    }
+    for (index, cooked_value) in lone_surrogate_values {
+        cooked_values[index] = parsed_string_to_wtf8(agent, cooked_value, true, gc)
+            .unbind()
+            .into();
     }
     // c. Perform ! DefinePropertyOrThrow(template, prop,
     //    PropertyDescriptor {

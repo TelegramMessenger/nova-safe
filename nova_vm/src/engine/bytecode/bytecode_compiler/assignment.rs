@@ -711,27 +711,56 @@ fn compile_assignment_target_property<'s>(
             // reference: None
             // reference stack: [&source.identifier?]
         }
-        ast::AssignmentTargetProperty::AssignmentTargetPropertyProperty(property) => {
+        ast::AssignmentTargetProperty::AssignmentTargetPropertyProperty(property)
+            if !has_rest && !property.computed =>
+        {
+            let (target, default) = match &property.binding {
+                ast::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(target) => (
+                    target.binding.as_simple_assignment_target(),
+                    Some(&**target),
+                ),
+                target => (target.as_simple_assignment_target(), None),
+            };
+            let Some(target) = target else {
+                return compile_assignment_target_property_value(property, ctx, has_rest);
+            };
+            // KeyedDestructuringAssignmentEvaluation: the target is evaluated
+            // before the property is read.
             // result: source
             // stack: [source?]
-            let place = property.name.compile(ctx)?;
-            // result: None
-            // stack: [source?]
-            // reference: &source.property
-            place.get_value_maybe_keep_reference(ctx, has_rest)?;
-            if has_rest {
-                debug_assert!(place.has_reference());
+            let source = ctx.load_to_stack();
+            // stack: [source?, source]
+            // 1. Let lRef be ? Evaluation of DestructuringAssignmentTarget.
+            let lref = match target.compile(ctx) {
+                Ok(lref) => lref,
+                Err(err) => {
+                    source.forget(ctx);
+                    return Err(err);
+                }
+            };
+            let push_reference = lref.has_reference();
+            if push_reference {
                 ctx.add_instruction(Instruction::PushReference);
             }
+            source.store(ctx);
+            // result: source
+            // stack: [source?]
+            // 2. Let v be ? GetV(value, propertyName).
+            let place = property.name.compile(ctx)?;
+            place.get_value_maybe_keep_reference(ctx, false)?;
             // result: source.property
-            // stack: [source?]
-            // reference: None
-            // reference stack: [&source.property?]
-            property.binding.compile(ctx)?;
-            // result: None
-            // stack: [source?]
-            // reference: None
-            // reference stack: [&source.property?]
+            // 3. If Initializer is present and v is undefined, then
+            if let Some(default) = default {
+                compile_initializer(default, ctx);
+            }
+            if push_reference {
+                ctx.add_instruction(Instruction::PopReference);
+            }
+            // 4. Return ? PutValue(lRef, v).
+            lref.put_value(ctx, ValueOutput::Value)?;
+        }
+        ast::AssignmentTargetProperty::AssignmentTargetPropertyProperty(property) => {
+            compile_assignment_target_property_value(property, ctx, has_rest)?;
         }
     }
     // result: None
@@ -739,6 +768,33 @@ fn compile_assignment_target_property<'s>(
     // reference: None
     // reference stack: [&source.property?]
     Ok(())
+}
+
+fn compile_assignment_target_property_value<'s>(
+    property: &'s ast::AssignmentTargetPropertyProperty<'s>,
+    ctx: &mut CompileContext<'_, 's, '_, '_>,
+    has_rest: bool,
+) -> Result<(), ExpressionError> {
+    // result: source
+    // stack: [source?]
+    let place = property.name.compile(ctx)?;
+    // result: None
+    // stack: [source?]
+    // reference: &source.property
+    place.get_value_maybe_keep_reference(ctx, has_rest)?;
+    if has_rest {
+        debug_assert!(place.has_reference());
+        ctx.add_instruction(Instruction::PushReference);
+    }
+    // result: source.property
+    // stack: [source?]
+    // reference: None
+    // reference stack: [&source.property?]
+    property.binding.compile(ctx)
+    // result: None
+    // stack: [source?]
+    // reference: None
+    // reference stack: [&source.property?]
 }
 
 fn compile_assignment_target_rest<'s>(

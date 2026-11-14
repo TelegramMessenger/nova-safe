@@ -722,9 +722,21 @@ pub(crate) fn string_literal_to_wtf8<'a>(
     string: &ast::StringLiteral,
     gc: NoGcScope<'a, '_>,
 ) -> String<'a> {
-    if string.lone_surrogates {
-        let mut buf = Wtf8Buf::with_capacity(string.value.len());
-        let mut str = string.value.as_str();
+    parsed_string_to_wtf8(agent, string.value.as_str(), string.lone_surrogates, gc)
+}
+
+/// The String value of a string literal or a template literal's cooked text
+/// as oxc returns it: with `lone_surrogates` set, every lone surrogate is
+/// written as \u{FFFD} followed by its four hex digits.
+pub(crate) fn parsed_string_to_wtf8<'a>(
+    agent: &mut Agent,
+    value: &str,
+    lone_surrogates: bool,
+    gc: NoGcScope<'a, '_>,
+) -> String<'a> {
+    if lone_surrogates {
+        let mut buf = Wtf8Buf::with_capacity(value.len());
+        let mut str = value;
         while let Some(replacement_character_index) = str.find("\u{FFFD}") {
             // Lone surrogates are encoded as \u{FFFD}XXXX and \u{FFFD}
             // itself is encoded as \u{FFFD}fffd: hence the fact that we
@@ -765,7 +777,7 @@ pub(crate) fn string_literal_to_wtf8<'a>(
         }
         String::from_wtf8_buf(agent, buf, gc)
     } else {
-        String::from_str(agent, string.value.as_str(), gc)
+        String::from_str(agent, value, gc)
     }
 }
 
@@ -2324,8 +2336,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Templa
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
 
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        if let Some(quasi) = self.single_quasi() {
-            let constant = ctx.create_string(&quasi);
+        if self.quasis.len() == 1 {
+            let constant = ctx.create_template_string(&self.quasis[0]);
             ctx.add_instruction_with_constant(Instruction::StoreConstant, constant);
             Ok(constant.into())
         } else {
@@ -2335,7 +2347,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Templa
             while let Some((head, rest)) = quasis.split_first() {
                 quasis = rest;
                 // 1. Let head be the TV of TemplateHead as defined in 12.9.6.
-                let head = ctx.create_string(head.value.cooked.as_ref().unwrap().as_str());
+                let head = ctx.create_template_string(head);
                 parts.push(ctx.load_constant_to_stack(head));
                 if let Some((expression, rest)) = expressions.split_first() {
                     expressions = rest;
@@ -3167,6 +3179,10 @@ fn simple_object_pattern<'s>(
                         ctx.create_string(&crate::ecmascript::f64_to_js_string(literal.value))
                             .into()
                     }
+                }
+                ast::PropertyKey::StringLiteral(literal) if literal.lone_surrogates => {
+                    let (agent, gc) = ctx.get_agent_and_gc();
+                    string_literal_to_wtf8(agent, literal, gc).into()
                 }
                 ast::PropertyKey::StringLiteral(literal) => ctx
                     .create_property_key(&literal.value)

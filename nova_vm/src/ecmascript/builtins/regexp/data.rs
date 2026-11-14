@@ -123,6 +123,26 @@ const MAX_STEPS: u64 = 200_000_000;
 const POLL_INTERVAL: u64 = 1 << 16;
 /// The most entries of the backtracking stack (each a few machine words).
 const MAX_BACKTRACK_ENTRIES: usize = 4 << 20;
+
+/// Append the letters of `flags` in the order the `flags` getter writes
+/// them (RegExp.prototype.flags: "dgimsuvy").
+pub(crate) fn push_flag_letters(buf: &mut Wtf8Buf, flags: RegExpFlags) {
+    for (flag, letter) in [
+        (RegExpFlags::D, 'd'),
+        (RegExpFlags::G, 'g'),
+        (RegExpFlags::I, 'i'),
+        (RegExpFlags::M, 'm'),
+        (RegExpFlags::S, 's'),
+        (RegExpFlags::U, 'u'),
+        (RegExpFlags::V, 'v'),
+        (RegExpFlags::Y, 'y'),
+    ] {
+        if flags.contains(flag) {
+            buf.push_char(letter);
+        }
+    }
+}
+
 /// The deepest nesting of groups and classes a pattern may have: deeper
 /// patterns are a SyntaxError before any parser recurses into them.
 pub(crate) const MAX_PATTERN_NESTING: usize = 256;
@@ -253,20 +273,6 @@ impl<'a> RegExpHeapData<'a> {
             MatchError::Interrupted => RegExpExecError::Interrupted,
             MatchError::StepLimit | MatchError::StackLimit => RegExpExecError::TooComplex,
         })
-    }
-
-    pub(super) fn create_regexp_string(&self, agent: &Agent) -> Wtf8Buf {
-        let string_length = self.original_source.len_(agent);
-        let flags_length = self.original_flags.bits().count_ones();
-        let mut regexp_string =
-            Wtf8Buf::with_capacity(1 + string_length + 1 + flags_length as usize);
-        regexp_string.push_char('/');
-        regexp_string.push_wtf8(self.original_source.as_wtf8_(agent));
-        regexp_string.push_char('/');
-        self.original_flags.iter_names().for_each(|(flag, _)| {
-            regexp_string.push_str(flag);
-        });
-        regexp_string
     }
 }
 
