@@ -207,6 +207,20 @@ fn interrupt_ends_long_native_loops() {
 }
 
 #[test]
+fn interrupt_ends_regexp_split_match_and_replace_loops() {
+    on_big_stack(|| {
+        assert_interrupted(
+            "var re = /x/g; re.exec = () => ({ index: 0, length: 2 ** 53 - 1, 0: '' }); \
+             re.constructor = { [Symbol.species]: function () { return re; } }; 'ab'.split(re)",
+        );
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.split(/(?:)/)");
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.match(/a/g)");
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.replace(/a/g, 'b')");
+        assert_interrupted("var s = 'a'.repeat(1 << 24); for (;;) s.replace(/(?:)/g, '')");
+    });
+}
+
+#[test]
 fn deep_recursion_throws_a_catchable_range_error() {
     on_big_stack(|| {
         let mut engine = Engine::new();
