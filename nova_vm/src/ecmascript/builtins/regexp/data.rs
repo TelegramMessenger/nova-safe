@@ -2,14 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::borrow::Cow;
 use oxc_ast::ast::RegExpFlags;
-use regex::bytes::{Regex, RegexBuilder};
-use wtf8::Wtf8Buf;
+use regress::{ExecBudget, Flags, Match, MatchError, Regex};
+use wtf8::{Wtf8Buf, Wtf8Str};
 
 use crate::{
     ecmascript::{OrdinaryObject, PropertyDescriptor, String, Value, execution::Agent},
-    heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
+    engine::Bindable,
+    heap::{CompactionLists, HeapMarkAndSweep, StringHeapAccess, WorkQueues},
 };
 
 /// ## Optimistic storage for the RegExp "lastIndex" property
@@ -115,40 +115,144 @@ impl From<usize> for RegExpLastIndex {
     }
 }
 
+/// The most steps one search may take: a pattern that backtracks
+/// exponentially (`/(a+)+$/` on a long run of "a") ends with an error instead
+/// of running for years.
+const MAX_STEPS: u64 = 200_000_000;
+/// How many steps go between two host interrupt polls.
+const POLL_INTERVAL: u64 = 1 << 16;
+/// The most entries of the backtracking stack (each a few machine words).
+const MAX_BACKTRACK_ENTRIES: usize = 4 << 20;
+/// The deepest nesting of groups and classes a pattern may have: deeper
+/// patterns are a SyntaxError before any parser recurses into them.
+pub(crate) const MAX_PATTERN_NESTING: usize = 256;
+
+/// Why a search ended without an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegExpExecError {
+    /// The step or stack budget ran out.
+    TooComplex,
+    /// The host asked to stop.
+    Interrupted,
+}
+
+impl RegExpExecError {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::TooComplex => "regular expression is too complex to match",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
 #[derive(Debug, crate::engine::Bindable)]
 pub(crate) struct RegExpHeapData<'a> {
     pub(super) object_index: Option<OrdinaryObject<'a>>,
-    pub(super) reg_exp_matcher: Result<Regex, regex::Error>,
+    pub(super) reg_exp_matcher: Result<Regex, std::string::String>,
     pub(super) original_source: String<'a>,
     pub(super) original_flags: RegExpFlags,
     pub(super) last_index: RegExpLastIndex,
+    /// The last non-ASCII string searched and its UTF-16 code units, so that
+    /// a global search over it converts it once.
+    utf16_input_key: Option<String<'a>>,
+    utf16_input: Vec<u16>,
 }
 
 impl<'a> RegExpHeapData<'a> {
+    /// Compiles a pattern given as a JavaScript string. Without the `u` or
+    /// `v` flag the pattern is a list of code units, with them a list of code
+    /// points (lone surrogates included).
     pub(crate) fn compile_pattern(
-        pattern: &str,
+        pattern: Wtf8Str<'_>,
         flags: RegExpFlags,
-    ) -> Result<Regex, regex::Error> {
-        let pattern = ascii_class_escapes(pattern, flags);
-        RegexBuilder::new(&pattern)
-            .multi_line((flags & RegExpFlags::M).bits() > 0)
-            .case_insensitive((flags & RegExpFlags::I).bits() > 0)
-            .unicode(true)
-            .dot_matches_new_line((flags & RegExpFlags::S).bits() > 0)
-            .octal(false) // TODO: !strict
-            .build()
+    ) -> Result<Regex, std::string::String> {
+        if pattern_nesting(pattern) > MAX_PATTERN_NESTING {
+            return Err("regular expression is nested too deeply".into());
+        }
+        let regress_flags = Flags {
+            icase: flags.contains(RegExpFlags::I),
+            multiline: flags.contains(RegExpFlags::M),
+            dot_all: flags.contains(RegExpFlags::S),
+            no_opt: false,
+            unicode: flags.intersects(RegExpFlags::U | RegExpFlags::V),
+            unicode_sets: flags.contains(RegExpFlags::V),
+        };
+        let result = if flags.intersects(RegExpFlags::U | RegExpFlags::V) {
+            Regex::from_unicode(pattern.code_points().map(|c| c.to_u32()), regress_flags)
+        } else {
+            Regex::from_unicode(pattern.to_ill_formed_utf16().map(u32::from), regress_flags)
+        };
+        result.map_err(|err| err.to_string())
     }
 
     pub(crate) fn new(agent: &Agent, source: String<'a>, flags: RegExpFlags) -> Self {
-        let str = source.to_string_lossy_(agent);
-        let regex = Self::compile_pattern(&str, flags);
+        let regex = Self::compile_pattern(source.as_wtf8_(agent), flags);
         Self {
             object_index: None,
             reg_exp_matcher: regex,
             original_source: source,
             original_flags: flags,
             last_index: RegExpLastIndex::ZERO,
+            utf16_input_key: None,
+            utf16_input: Vec::new(),
         }
+    }
+
+    /// Searches `s` from UTF-16 index `start` (only at `start` if `sticky`).
+    /// The match and its captures are UTF-16 ranges.
+    ///
+    /// ## Panics
+    ///
+    /// If the pattern did not compile.
+    pub(super) fn search(
+        &mut self,
+        strings: &impl StringHeapAccess,
+        s: String<'_>,
+        start: usize,
+        sticky: bool,
+    ) -> Result<Option<Match>, RegExpExecError> {
+        let bytes = s.as_bytes_(strings);
+        let utf16_len = s.utf16_len_(strings);
+        let budget = || ExecBudget {
+            max_steps: MAX_STEPS,
+            poll_interval: POLL_INTERVAL,
+            max_backtrack_entries: MAX_BACKTRACK_ENTRIES,
+            poll: None,
+        };
+        let full_unicode = self
+            .original_flags
+            .intersects(RegExpFlags::U | RegExpFlags::V);
+        let result = if utf16_len == bytes.len() {
+            let matcher = self.reg_exp_matcher.as_ref().expect("a compiled pattern");
+            matcher.exec_ascii(bytes, start, sticky, budget())
+        } else {
+            if self.utf16_input_key != Some(s.unbind()) {
+                self.utf16_input.clear();
+                self.utf16_input
+                    .extend(s.as_wtf8_(strings).to_ill_formed_utf16());
+                self.utf16_input_key = match s {
+                    String::String(_) => Some(s.unbind()),
+                    String::SmallString(_) => None,
+                };
+            }
+            let units = &self.utf16_input;
+            let start = if full_unicode
+                && start > 0
+                && start < units.len()
+                && (0xDC00..0xE000).contains(&units[start])
+                && (0xD800..0xDC00).contains(&units[start - 1])
+            {
+                start - 1
+            } else {
+                start
+            };
+            let matcher = self.reg_exp_matcher.as_ref().expect("a compiled pattern");
+            matcher.exec_utf16(units, start, sticky, budget())
+        };
+        result.map_err(|err| match err {
+            MatchError::Interrupted => RegExpExecError::Interrupted,
+            MatchError::StepLimit | MatchError::StackLimit => RegExpExecError::TooComplex,
+        })
     }
 
     pub(super) fn create_regexp_string(&self, agent: &Agent) -> Wtf8Buf {
@@ -166,92 +270,47 @@ impl<'a> RegExpHeapData<'a> {
     }
 }
 
-/// JavaScript's `\d`, `\w` and `\b` (and `\D`, `\W`, `\B`) are ASCII even
-/// with the `u` flag, where the regex crate's Unicode mode makes them
-/// Unicode; with `u` and `i`, `\w` also takes U+017F and U+212A, which
-/// case-fold to ASCII word characters (outside a class, `\w` and `\W` turn
-/// case folding off so that `i` alone does not add them). Inside a class,
-/// `\b` is a backspace.
-fn ascii_class_escapes(pattern: &str, flags: RegExpFlags) -> Cow<'_, str> {
-    if !pattern.contains('\\') {
-        return Cow::Borrowed(pattern);
-    }
-    let folds_to_word = flags.contains(RegExpFlags::I)
-        && flags.intersects(RegExpFlags::U | RegExpFlags::V);
-    let word = if folds_to_word {
-        r"0-9A-Za-z_\x{17F}\x{212A}"
-    } else {
-        "0-9A-Za-z_"
-    };
-    let mut out = std::string::String::with_capacity(pattern.len() + 16);
+/// The deepest nesting of groups and (`v` flag) classes in a pattern. A
+/// cheap scan that over-counts escaped or in-class parentheses never, and
+/// may count brackets that a non-`v` class takes literally, which only makes
+/// it stricter.
+pub(crate) fn pattern_nesting(pattern: Wtf8Str<'_>) -> usize {
+    let bytes = pattern.as_bytes();
+    let mut depth = 0usize;
+    let mut max_depth = 0usize;
     let mut class_depth = 0usize;
-    let mut chars = pattern.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                let Some(escaped) = chars.next() else {
-                    out.push('\\');
-                    break;
-                };
-                match (escaped, class_depth > 0) {
-                    ('d', false) => out.push_str("[0-9]"),
-                    ('d', true) => out.push_str("0-9"),
-                    ('D', _) => out.push_str("[^0-9]"),
-                    ('w', false) => {
-                        out.push_str("(?-i:[");
-                        out.push_str(word);
-                        out.push_str("])");
-                    }
-                    ('w', true) => out.push_str(word),
-                    ('W', false) => {
-                        out.push_str("(?-i:[^");
-                        out.push_str(word);
-                        out.push_str("])");
-                    }
-                    ('W', true) => {
-                        out.push_str("[^");
-                        out.push_str(word);
-                        out.push(']');
-                    }
-                    ('b', false) => out.push_str(r"(?-u:\b)"),
-                    ('B', false) => out.push_str(r"(?-u:\B)"),
-                    ('b', true) => out.push_str(r"\x08"),
-                    (escaped, _) => {
-                        out.push('\\');
-                        out.push(escaped);
-                    }
-                }
-            }
-            '[' => {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 1,
+            b'[' => {
                 class_depth += 1;
-                out.push('[');
-                if chars.peek() == Some(&'^') {
-                    out.push('^');
-                    chars.next();
-                }
-                if chars.peek() == Some(&']') {
-                    out.push(']');
-                    chars.next();
-                }
+                depth += 1;
             }
-            ']' if class_depth > 0 => {
+            b']' if class_depth > 0 => {
                 class_depth -= 1;
-                out.push(']');
+                depth = depth.saturating_sub(1);
             }
-            c => out.push(c),
+            b'(' if class_depth == 0 => depth += 1,
+            b')' if class_depth == 0 => depth = depth.saturating_sub(1),
+            _ => {}
         }
+        max_depth = max_depth.max(depth);
+        i += 1;
     }
-    Cow::Owned(out)
+    max_depth
 }
 
 impl Default for RegExpHeapData<'_> {
     fn default() -> Self {
         Self {
             object_index: Default::default(),
-            reg_exp_matcher: Err(regex::Error::CompiledTooBig(usize::MAX)),
+            reg_exp_matcher: Err(std::string::String::new()),
             original_source: String::EMPTY_STRING,
             original_flags: RegExpFlags::empty(),
             last_index: Default::default(),
+            utf16_input_key: None,
+            utf16_input: Vec::new(),
         }
     }
 }
@@ -264,9 +323,12 @@ impl HeapMarkAndSweep for RegExpHeapData<'static> {
             original_source,
             original_flags: _,
             last_index: _,
+            utf16_input_key,
+            utf16_input: _,
         } = self;
         object_index.mark_values(queues);
         original_source.mark_values(queues);
+        utf16_input_key.mark_values(queues);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
@@ -276,8 +338,11 @@ impl HeapMarkAndSweep for RegExpHeapData<'static> {
             original_source,
             original_flags: _,
             last_index: _,
+            utf16_input_key,
+            utf16_input: _,
         } = self;
         object_index.sweep_values(compactions);
         original_source.sweep_values(compactions);
+        utf16_input_key.sweep_values(compactions);
     }
 }
