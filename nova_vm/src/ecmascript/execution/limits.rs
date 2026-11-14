@@ -286,6 +286,19 @@ impl Agent {
         }
     }
 
+    /// Counts `steps` steps of work done outside the interpreter loop (one
+    /// large BigInt operation) without polling: the next poll then asks the
+    /// host at once if the countdown ran out.
+    #[inline]
+    pub(crate) fn charge_steps(&mut self, steps: u64) {
+        let steps = u32::try_from(steps).unwrap_or(u32::MAX);
+        if self.limits.countdown <= steps {
+            self.limits.countdown = 1;
+        } else {
+            self.limits.countdown -= steps;
+        }
+    }
+
     /// For engines that run without a GC scope (the RegExp matcher): true
     /// when the running script must end. The caller then returns
     /// [`Agent::termination_error`].

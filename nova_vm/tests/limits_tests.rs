@@ -208,6 +208,51 @@ fn interrupt_ends_long_native_loops() {
 }
 
 #[test]
+fn interrupt_ends_loops_of_large_bigint_operations() {
+    on_big_stack(|| {
+        assert_interrupted("const a = (1n << 300000n) - 1n; for (;;) a * a;");
+        assert_interrupted("const a = (1n << 300000n) - 1n; for (;;) a / 3n;");
+        assert_interrupted("const a = (1n << 300000n) - 1n; for (;;) a.toString();");
+        assert_interrupted("const s = '9'.repeat(90000); for (;;) BigInt(s);");
+    });
+}
+
+/// BigInts stop at 2^20 bits of magnitude with QuickJS-ng's RangeError, and
+/// BigInt.asIntN and asUintN past that width build no 2^bits divisor.
+#[test]
+fn bigints_past_two_to_the_twenty_bits_are_refused() {
+    on_big_stack(|| {
+        let mut engine = Engine::new();
+        let too_large = thrown("RangeError: BigInt is too large to allocate");
+        for source in [
+            "1n << 1048576n",
+            "(1n << 1048575n) * 2n",
+            "(1n << 1048575n) + (1n << 1048575n)",
+            "2n ** 1048576n",
+            "3n ** 700000n",
+            "(1n << 1048575n) >> -1n",
+            "~((1n << 1048575n) + ((1n << 1048575n) - 1n))",
+            "BigInt.asUintN(1048577, -1n)",
+            "BigInt('0x' + 'f'.repeat(262145))",
+            "BigInt('9'.repeat(315653))",
+            "1n << 4294967295n",
+        ] {
+            assert_eq!(engine.run(source, None), too_large, "{source}");
+        }
+        assert_eq!(
+            engine.run(
+                "[(1n << 1048575n).toString(16).length, BigInt.asUintN(1048576, -1n).toString(16).length, \
+                 BigInt.asIntN(2 ** 32 - 2, -1n), BigInt.asUintN(2 ** 32 - 2, 5n), \
+                 BigInt('0x' + '0'.repeat(300000) + '1'), 0n << 1000000000n, 1n << -5n].join()",
+                None
+            ),
+            Outcome::Value("262144,262144,-1,5,1,0,0".into())
+        );
+        engine.assert_usable();
+    });
+}
+
+#[test]
 fn interrupt_ends_regexp_split_match_and_replace_loops() {
     on_big_stack(|| {
         assert_interrupted(
@@ -402,6 +447,7 @@ fn heap_limit_terminates_growing_scripts() {
             "const t = new Set(); for (let i = 0; ; i++) t.add(i);",
             "let s = 'x'.repeat(1 << 20); for (;;) s = s + s;",
             "const s = 'a'.repeat(1 << 21); for (;;) s.replaceAll('', '');",
+            "const a = []; for (;;) a.push((1n << 1000000n) + BigInt(a.length));",
             "const s = '\\u00e9'.repeat(1 << 18); const a = []; \
              for (;;) { const r = new RegExp('x' + a.length); r.exec(s); a.push(r); }",
         ] {

@@ -14,7 +14,7 @@ pub use small_bigint::*;
 
 use crate::{
     ecmascript::{
-        Agent, BIGINT_DISCRIMINANT, ExceptionType, JsResult, Numeric, Primitive,
+        Agent, BIGINT_DISCRIMINANT, ExceptionType, JsError, JsResult, Numeric, Primitive,
         SMALL_BIGINT_DISCRIMINANT, SmallInteger, String, Value, i64_to_radix_string,
         primitive_handle,
     },
@@ -25,6 +25,32 @@ use crate::{
     },
 };
 use core::ops::Neg;
+
+/// The most bits the magnitude of a BigInt may have. QuickJS-ng refuses
+/// BigInts past 2^20 bits (JS_BIGINT_MAX_SIZE) with the same RangeError;
+/// the limit bounds the memory a BigInt holds (128 KiB) and the time one
+/// operation on BigInts takes. QuickJS refuses some values a few bits under
+/// the limit as well, depending on the operation; here every result whose
+/// magnitude has at most 2^20 bits is allowed.
+pub(crate) const MAX_BIGINT_BITS: u64 = 1 << 20;
+
+/// The RangeError a BigInt past [`MAX_BIGINT_BITS`] throws.
+pub(crate) fn throw_bigint_too_large<'a>(agent: &mut Agent, gc: NoGcScope<'a, '_>) -> JsError<'a> {
+    agent.throw_exception_with_static_message(
+        ExceptionType::RangeError,
+        "BigInt is too large to allocate",
+        gc,
+    )
+}
+
+/// Interpreter steps charged against the interrupt countdown for an
+/// operation whose work grows with the product of its operands' sizes
+/// (schoolbook or Karatsuba multiplication, division, radix conversion):
+/// one step per 128 limb products, so the largest operation (2^20 by 2^20
+/// bits, a few milliseconds) counts as about two million steps.
+pub(crate) fn bigint_work_steps(a_bits: u64, b_bits: u64) -> u64 {
+    (a_bits / 64 + 1).saturating_mul(b_bits / 64 + 1) / 128
+}
 use num_bigint::{Sign, ToBigInt, TryFromBigIntError};
 use std::ops::{BitAnd, BitOr, BitXor};
 
@@ -148,6 +174,31 @@ pub(crate) enum BigIntRootRepr {
 }
 
 impl<'a> BigInt<'a> {
+    /// Bits of the magnitude.
+    pub(crate) fn magnitude_bits(self, agent: &Agent) -> u64 {
+        match self {
+            BigInt::SmallBigInt(x) => u64::from(64 - x.into_i64().unsigned_abs().leading_zeros()),
+            BigInt::BigInt(x) => x.get(agent).data.bits(),
+        }
+    }
+
+    /// Refuses a BigInt whose magnitude has more than [`MAX_BIGINT_BITS`]
+    /// bits with QuickJS's RangeError.
+    pub(crate) fn check_size(self, agent: &mut Agent, gc: NoGcScope<'a, '_>) -> JsResult<'a, Self> {
+        if self.magnitude_bits(agent) > MAX_BIGINT_BITS {
+            return Err(throw_bigint_too_large(agent, gc));
+        }
+        Ok(self)
+    }
+
+    /// Whether the BigInt's value is below 0n.
+    pub(crate) fn is_negative(self, agent: &Agent) -> bool {
+        match self {
+            BigInt::SmallBigInt(x) => x.into_i64() < 0,
+            BigInt::BigInt(x) => x.get(agent).data.sign() == Sign::Minus,
+        }
+    }
+
     /// Returns `true` if the BigInt's value is 0n.
     pub fn is_zero(self, agent: &Agent) -> bool {
         match self {
@@ -332,7 +383,18 @@ impl<'a> BigInt<'a> {
             return Ok(base);
         }
 
-        match base {
+        // |base| >= 2^(bits - 1), so the result has at least
+        // (bits - 1) * exponent + 1 bits: refuse before computing it.
+        let base_bits = base.magnitude_bits(agent);
+        if base_bits > 1
+            && (base_bits - 1).saturating_mul(u64::from(exponent)) + 1 > MAX_BIGINT_BITS
+        {
+            return Err(throw_bigint_too_large(agent, gc));
+        }
+        let result_bits = base_bits.saturating_mul(u64::from(exponent));
+        agent.charge_steps(bigint_work_steps(result_bits, result_bits));
+
+        let result = match base {
             BigInt::SmallBigInt(base) => {
                 // 2. If base is 0ℤ and exponent is 0ℤ, return 1ℤ.
                 // 3. Return base raised to the power exponent.
@@ -355,9 +417,10 @@ impl<'a> BigInt<'a> {
             BigInt::BigInt(base) => Ok(agent.heap.create(BigIntHeapData {
                 data: base.get(agent).pow(exponent),
             })),
-        }
+        };
         // NOTE: The BigInt implementation does not support native
         // exponentiation.
+        result?.check_size(agent, gc)
     }
 
     /// ### [6.1.6.2.4 BigInt::multiply ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-bigint-multiply)
@@ -566,6 +629,7 @@ impl<'a> BigInt<'a> {
         y: Self,
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, Self> {
+        Self::check_shift_size(agent, x, y, false, gc)?;
         if let Some(r) = match (x, y) {
             (BigInt::SmallBigInt(x), BigInt::SmallBigInt(y)) => {
                 left_shift_i64(agent, x.into_i64(), y.into_i64())
@@ -604,6 +668,7 @@ impl<'a> BigInt<'a> {
         y: Self,
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, Self> {
+        Self::check_shift_size(agent, x, y, true, gc)?;
         if let Some(r) = match (x, y) {
             (BigInt::SmallBigInt(x), BigInt::SmallBigInt(y)) => {
                 right_shift_i64(agent, x.into_i64(), y.into_i64())
@@ -630,6 +695,34 @@ impl<'a> BigInt<'a> {
                 gc,
             ))
         }
+    }
+
+    /// Refuses a shift whose result would have more than
+    /// [`MAX_BIGINT_BITS`] bits, before it is computed.
+    fn check_shift_size(
+        agent: &mut Agent,
+        x: Self,
+        y: Self,
+        right: bool,
+        gc: NoGcScope<'a, '_>,
+    ) -> JsResult<'a, ()> {
+        let BigInt::SmallBigInt(amount) = y else {
+            return Ok(());
+        };
+        let amount = amount.into_i64();
+        let left = if right {
+            amount.checked_neg()
+        } else {
+            Some(amount)
+        };
+        if let Some(left) = left
+            && left > 0
+            && !x.is_zero(agent)
+            && x.magnitude_bits(agent).saturating_add(left.unsigned_abs()) > MAX_BIGINT_BITS
+        {
+            return Err(throw_bigint_too_large(agent, gc));
+        }
+        Ok(())
     }
 
     /// ### [6.1.6.2.11 BigInt::unsignedRightShift ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-bigint-unsignedRightShift)
@@ -715,6 +808,8 @@ impl<'a> BigInt<'a> {
         radix: u32,
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
+        let bits = x.magnitude_bits(agent);
+        agent.charge_steps(bigint_work_steps(bits, bits));
         String::from_string(
             agent,
             match x {
@@ -731,6 +826,8 @@ impl<'a> BigInt<'a> {
         x: Self,
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
+        let bits = x.magnitude_bits(agent);
+        agent.charge_steps(bigint_work_steps(bits, bits));
         String::from_string(
             agent,
             match x {
@@ -829,6 +926,7 @@ impl_value_from_n!(i32);
 
 impl<'a> CreateHeapData<BigIntHeapData, BigInt<'a>> for Heap {
     fn create(&mut self, data: BigIntHeapData) -> BigInt<'a> {
+        self.data_bytes_since_gc += usize::try_from(data.data.bits() / 8).unwrap_or(usize::MAX);
         self.bigints.push(data);
         self.alloc_counter += core::mem::size_of::<BigIntHeapData>();
         BigInt::BigInt(HeapBigInt(BaseIndex::last(&self.bigints)))

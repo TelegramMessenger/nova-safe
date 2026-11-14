@@ -1211,7 +1211,7 @@ fn apply_string_or_numeric_addition<'gc>(
 
     // 6. If lnum is a BigInt, then
     if let (Ok(lnum), Ok(rnum)) = (BigInt::try_from(lnum), BigInt::try_from(rnum)) {
-        Ok(BigInt::add(agent, lnum, rnum).into())
+        Ok(BigInt::add(agent, lnum, rnum).check_size(agent, gc)?.into())
     } else if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lnum), Number::try_from(rnum)) {
         Ok(Number::add(agent, lnum, rnum).into())
     } else {
@@ -1231,6 +1231,18 @@ fn bigint_binary_operator<'a>(
     rnum: BigInt<'a>,
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, BigInt<'a>> {
+    if matches!(
+        op_text,
+        Instruction::ApplyMultiplicationBinaryOperator
+            | Instruction::ApplyDivisionBinaryOperator
+            | Instruction::ApplyRemainderBinaryOperator
+    ) {
+        let steps = crate::ecmascript::bigint_work_steps(
+            lnum.magnitude_bits(agent),
+            rnum.magnitude_bits(agent),
+        );
+        agent.charge_steps(steps);
+    }
     match op_text {
         // a. If opText is **, return ? BigInt::exponentiate(lnum, rnum).
         Instruction::ApplyExponentialBinaryOperator => BigInt::exponentiate(agent, lnum, rnum, gc),
@@ -1249,15 +1261,25 @@ fn bigint_binary_operator<'a>(
             BigInt::signed_right_shift(agent, lnum, rnum, gc)
         }
         // -	BigInt	BigInt::subtract
-        Instruction::ApplySubtractionBinaryOperator => Ok(BigInt::subtract(agent, lnum, rnum)),
+        Instruction::ApplySubtractionBinaryOperator => {
+            BigInt::subtract(agent, lnum, rnum).check_size(agent, gc)
+        }
         // *	BigInt	BigInt::multiply
-        Instruction::ApplyMultiplicationBinaryOperator => Ok(BigInt::multiply(agent, lnum, rnum)),
+        Instruction::ApplyMultiplicationBinaryOperator => {
+            BigInt::multiply(agent, lnum, rnum).check_size(agent, gc)
+        }
         // |	BigInt	BigInt::bitwiseOR
-        Instruction::ApplyBitwiseORBinaryOperator => Ok(BigInt::bitwise_or(agent, lnum, rnum)),
+        Instruction::ApplyBitwiseORBinaryOperator => {
+            BigInt::bitwise_or(agent, lnum, rnum).check_size(agent, gc)
+        }
         // ^	BigInt	BigInt::bitwiseXOR
-        Instruction::ApplyBitwiseXORBinaryOperator => Ok(BigInt::bitwise_xor(agent, lnum, rnum)),
+        Instruction::ApplyBitwiseXORBinaryOperator => {
+            BigInt::bitwise_xor(agent, lnum, rnum).check_size(agent, gc)
+        }
         // &	BigInt	BigInt::bitwiseAND
-        Instruction::ApplyBitwiseAndBinaryOperator => Ok(BigInt::bitwise_and(agent, lnum, rnum)),
+        Instruction::ApplyBitwiseAndBinaryOperator => {
+            BigInt::bitwise_and(agent, lnum, rnum).check_size(agent, gc)
+        }
         _ => unreachable!(),
     }
 }

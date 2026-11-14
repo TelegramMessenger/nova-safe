@@ -159,7 +159,8 @@ pub(super) fn execute_bitwise_not<'gc>(
         };
 
         // b. Return BigInt::bitwiseNOT(oldValue).
-        vm.result = Some(BigInt::bitwise_not(agent, old_value).unbind().into());
+        let result = BigInt::bitwise_not(agent, old_value).check_size(agent, gc)?;
+        vm.result = Some(result.unbind().into());
     }
     Ok(())
 }
@@ -382,7 +383,9 @@ pub(super) fn execute_apply_addition_binary_operator<'gc>(
         agent.check_concat_length(lstr, rstr, gc)?;
         String::concat(agent, [lstr, rstr], gc).into()
     } else if let (Ok(lnum), Ok(rnum)) = (BigInt::try_from(lval), BigInt::try_from(rval)) {
-        BigInt::add(agent, lnum, rnum).into()
+        BigInt::add(agent, lnum, rnum)
+            .check_size(agent, gc.into_nogc())?
+            .into()
     } else {
         with_vm_gc(
             agent,
