@@ -113,6 +113,9 @@ pub(crate) struct ExecutableHeapData<'a> {
     pub(crate) instructions: Arc<[u8]>,
     pub(crate) caches: Box<[PropertyLookupCache<'static>]>,
     pub(crate) constants: Box<[Value<'static>]>,
+    /// Constants past the 16-bit indices, loaded by the Wide instructions:
+    /// literals of a script with more distinct constants than those fit.
+    pub(crate) wide_constants: Box<[Value<'static>]>,
     pub(crate) shapes: Box<[ObjectShape<'static>]>,
     pub(crate) function_expressions: Box<[FunctionExpression<'static>]>,
     pub(crate) arrow_function_expressions: Box<[ArrowFunctionExpression<'static>]>,
@@ -279,6 +282,16 @@ impl<'gc> Executable<'gc> {
     }
 
     #[inline]
+    fn fetch_wide_constant(
+        self,
+        agent: &Agent,
+        index: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
+        self.get(agent).wide_constants[index].bind(gc)
+    }
+
+    #[inline]
     fn fetch_identifier(self, agent: &Agent, index: usize, gc: NoGcScope<'gc, '_>) -> String<'gc> {
         let value = self.get(agent).constants[index];
         let Ok(value) = String::try_from(value) else {
@@ -401,6 +414,16 @@ impl Scoped<'_, Executable<'static>> {
     }
 
     #[inline]
+    pub(super) fn fetch_wide_constant<'gc>(
+        &self,
+        agent: &Agent,
+        index: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
+        self.get(agent).fetch_wide_constant(agent, index, gc)
+    }
+
+    #[inline]
     pub(super) fn fetch_function_expression<'a, 'gc>(
         &self,
         agent: &'a Agent,
@@ -469,6 +492,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             instructions: _,
             caches,
             constants,
+            wide_constants,
             shapes,
             function_expressions,
             arrow_function_expressions,
@@ -478,6 +502,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
         } = self;
         instance_initializer.mark_values(queues);
         constants.mark_values(queues);
+        wide_constants.mark_values(queues);
         arrow_function_expressions.mark_values(queues);
         caches.mark_values(queues);
         shapes.mark_values(queues);
@@ -490,6 +515,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             instructions: _,
             caches,
             constants,
+            wide_constants,
             shapes,
             function_expressions,
             arrow_function_expressions,
@@ -499,6 +525,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
         } = self;
         instance_initializer.sweep_values(compactions);
         constants.sweep_values(compactions);
+        wide_constants.sweep_values(compactions);
         arrow_function_expressions.sweep_values(compactions);
         caches.sweep_values(compactions);
         shapes.sweep_values(compactions);

@@ -650,6 +650,12 @@ impl Vm {
             Instruction::LoadConstant => {
                 execute_load_constant(agent, vm, executable, instr, gc.into_nogc())
             }
+            Instruction::LoadConstantWide => {
+                execute_load_constant_wide(agent, vm, executable, instr, gc.into_nogc())
+            }
+            Instruction::StoreConstantWide => {
+                execute_store_constant_wide(agent, vm, executable, instr, gc.into_nogc())
+            }
             Instruction::LoadStoreSwap => vm.execute_load_store_swap(),
             Instruction::UpdateEmpty => vm.execute_update_empty(),
             Instruction::Swap => vm.execute_swap(),

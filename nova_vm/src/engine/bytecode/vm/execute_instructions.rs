@@ -263,6 +263,28 @@ pub(super) fn execute_load_constant(
     vm.stack.push(constant.unbind());
 }
 
+pub(super) fn execute_load_constant_wide(
+    agent: &Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: NoGcScope,
+) {
+    let constant = executable.fetch_wide_constant(agent, instr.get_wide_index(), gc);
+    vm.stack.push(constant.unbind());
+}
+
+pub(super) fn execute_store_constant_wide(
+    agent: &Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: NoGcScope,
+) {
+    let constant = executable.fetch_wide_constant(agent, instr.get_wide_index(), gc);
+    vm.result = Some(constant.unbind());
+}
+
 #[inline(always)]
 pub(super) fn execute_store_constant(
     agent: &mut Agent,

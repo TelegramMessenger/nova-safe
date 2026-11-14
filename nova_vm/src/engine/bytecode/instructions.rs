@@ -28,6 +28,9 @@ pub(crate) enum Instruction {
     GetValueFromIndex,
     /// Store a constant as the result value.
     StoreConstant,
+    /// Store a constant from the wide constant table (past the 16-bit
+    /// indices) as the result value.
+    StoreConstantWide,
     /// Pop a value from the stack without storing it anywhere.
     PopStack,
     /// Jump to another instruction by setting the instruction pointer.
@@ -124,6 +127,9 @@ pub(crate) enum Instruction {
     LoadReplace,
     /// Load a constant and add it to the stack.
     LoadConstant,
+    /// Load a constant from the wide constant table (past the 16-bit indices)
+    /// and add it to the stack.
+    LoadConstantWide,
     /// Swaps the last value in the stack and the result value.
     LoadStoreSwap,
     /// Perform UpdateEmpty with the value coming from the top of the stack,
@@ -556,6 +562,8 @@ impl Instruction {
             | Self::Jump
             | Self::JumpIfNot
             | Self::JumpIfTrue
+            | Self::LoadConstantWide
+            | Self::StoreConstantWide
             | Self::ObjectDefineGetter
             | Self::ObjectDefineMethod
             | Self::ObjectDefineSetter
@@ -607,7 +615,9 @@ impl Instruction {
                 | Self::Jump
                 | Self::JumpIfNot
                 | Self::JumpIfTrue
+                | Self::LoadConstantWide
                 | Self::PushExceptionJumpTarget
+                | Self::StoreConstantWide
         )
     }
 
@@ -856,6 +866,15 @@ impl Instr {
             }
             _ => panic_no_argument(),
         }
+    }
+
+    /// The 32-bit index of a wide constant instruction.
+    pub(crate) fn get_wide_index(&self) -> usize {
+        debug_assert!(matches!(
+            self.kind,
+            Instruction::LoadConstantWide | Instruction::StoreConstantWide
+        ));
+        self.args.double_arg() as usize
     }
 
     pub(crate) fn get_jump_slot(&self) -> usize {
@@ -1163,6 +1182,7 @@ impl Instruction {
         const LOADTOINDEX: u8 = Instruction::PutValueToIndex.as_u8();
         const LOADCOPY: u8 = Instruction::LoadCopy.as_u8();
         const LOADCONSTANT: u8 = Instruction::LoadConstant.as_u8();
+        const LOADCONSTANTWIDE: u8 = Instruction::LoadConstantWide.as_u8();
         const LOADSTORESWAP: u8 = Instruction::LoadStoreSwap.as_u8();
         const LOADREPLACE: u8 = Instruction::LoadReplace.as_u8();
         const UPDATEEMPTY: u8 = Instruction::UpdateEmpty.as_u8();
@@ -1190,6 +1210,7 @@ impl Instruction {
         const STORE: u8 = Instruction::Store.as_u8();
         const STORECOPY: u8 = Instruction::StoreCopy.as_u8();
         const STORECONSTANT: u8 = Instruction::StoreConstant.as_u8();
+        const STORECONSTANTWIDE: u8 = Instruction::StoreConstantWide.as_u8();
         const STOREFROMINDEX: u8 = Instruction::GetValueFromIndex.as_u8();
         const STRINGCONCAT: u8 = Instruction::StringConcat.as_u8();
         const THROW: u8 = Instruction::Throw.as_u8();
@@ -1330,6 +1351,7 @@ impl Instruction {
             LOAD => Some(Instruction::Load),
             LOADCOPY => Some(Instruction::LoadCopy),
             LOADCONSTANT => Some(Instruction::LoadConstant),
+            LOADCONSTANTWIDE => Some(Instruction::LoadConstantWide),
             LOADSTORESWAP => Some(Instruction::LoadStoreSwap),
             LOADREPLACE => Some(Instruction::LoadReplace),
             LOADTOINDEX => Some(Instruction::PutValueToIndex),
@@ -1358,6 +1380,7 @@ impl Instruction {
             STORE => Some(Instruction::Store),
             STORECOPY => Some(Instruction::StoreCopy),
             STORECONSTANT => Some(Instruction::StoreConstant),
+            STORECONSTANTWIDE => Some(Instruction::StoreConstantWide),
             STOREFROMINDEX => Some(Instruction::GetValueFromIndex),
             STRINGCONCAT => Some(Instruction::StringConcat),
             THROW => Some(Instruction::Throw),

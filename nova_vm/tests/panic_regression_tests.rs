@@ -252,3 +252,29 @@ fn sloppy_block_function_declared_twice() {
     "#;
     assert_eq!(run(source, "out.join()", None), "1,3,b,2");
 }
+
+#[test]
+fn scripts_with_more_constants_than_16_bit_indices() {
+    let count = 70_000;
+    let mut source = std::string::String::from("var a = [");
+    for i in 0..count {
+        source.push_str(&format!("\"s{i}\","));
+    }
+    source.push_str("];\nvar nums = [");
+    for i in 0..count {
+        source.push_str(&format!("{i}.5,"));
+    }
+    source.push_str("];\nvar table = [");
+    for i in 0..count {
+        source.push_str(&format!("{{n:\"name{i}\",v:{i}}},"));
+    }
+    source.push_str(
+        "];\nvar after = { someNewProperty: 'late' };\n\
+         function late() { return 'late literal ' + after.someNewProperty; }\n\
+         var result = [a.length, a[65536], a[69999], nums[69999], table[69999].n, late()].join();",
+    );
+    assert_eq!(
+        run(&source, "result", None),
+        "70000,s65536,s69999,69999.5,name69999,late literal late"
+    );
+}

@@ -1491,7 +1491,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ArrayE
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
 
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        let elements_min_count = self.elements.len();
+        // The immediate is only a capacity hint: ArrayPush grows the array.
+        let elements_min_count = self.elements.len().min(usize::from(IndexType::MAX));
         ctx.add_instruction_with_immediate(Instruction::ArrayCreate, elements_min_count);
         if self.elements.is_empty() {
             return Ok(ValueOutput::Value);
