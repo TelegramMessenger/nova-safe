@@ -42,9 +42,11 @@ pub trait ToJsString {
 }
 
 #[cfg(feature = "to_js_string")]
+mod to_js_string;
+
+#[cfg(feature = "to_js_string")]
 impl ToJsString for f64 {
     fn to_js_string(&self) -> String {
-        let mut buffer = dragonbox_ecma::Buffer::new();
-        buffer.format(*self).to_string()
+        to_js_string::f64_to_js_string(*self)
     }
 }
