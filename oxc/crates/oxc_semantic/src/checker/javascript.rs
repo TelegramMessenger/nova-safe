@@ -37,7 +37,7 @@ pub fn check_unresolved_exports(program: &Program<'_>, ctx: &SemanticBuilder<'_>
                         ctx.scoping
                             .get_bindings(root_scope_id)
                             .keys()
-                            .map(oxc_span::Ident::as_str)
+                            .map(crate::ScopingName::as_str)
                             .collect()
                     });
                     let suggestion =

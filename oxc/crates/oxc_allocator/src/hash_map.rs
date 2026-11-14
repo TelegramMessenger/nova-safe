@@ -43,6 +43,14 @@ impl<'alloc, K, V, S> HashMap<'alloc, K, V, S> {
     }
 }
 
+impl<K, V, S: Default> Default for HashMap<'_, K, V, S> {
+    /// An empty map. It needs no `Allocator`: the map's storage is on the global heap.
+    #[inline]
+    fn default() -> Self {
+        Self(hashbrown::HashMap::with_hasher(S::default()), PhantomData)
+    }
+}
+
 impl<'alloc, K, V, S: Default> HashMap<'alloc, K, V, S> {
     #[inline]
     pub fn new_in(_allocator: &'alloc Allocator) -> Self {
