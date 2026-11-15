@@ -92,6 +92,12 @@ pub(crate) enum Instruction {
     /// GetValueFromIndex followed by Load: push a copy of the given stack
     /// slot, leaving the result register empty.
     LoadFromIndex,
+    /// EvaluatePropertyAccessWithIdentifierKey followed by GetValueWithCache.
+    /// The first immediate is the identifier, the second the cache.
+    GetPropertyWithCache,
+    /// EvaluatePropertyAccessWithIdentifierKey followed by
+    /// GetValueWithCacheKeepReference.
+    GetPropertyWithCacheKeepReference,
     /// PushReference followed by Load.
     PushReferenceAndLoad,
 
@@ -579,6 +585,8 @@ impl Instruction {
             | Self::ObjectDefineMethod
             | Self::ObjectDefineSetter
             | Self::PushExceptionJumpTarget
+            | Self::GetPropertyWithCache
+            | Self::GetPropertyWithCacheKeepReference
             | Self::ResolveBindingWithCache => 2,
             Self::PutValueToIndex
             | Self::GetValueFromIndex
@@ -640,6 +648,8 @@ impl Instruction {
             self,
             Self::GetValueWithCache
                 | Self::GetValueWithCacheKeepReference
+                | Self::GetPropertyWithCache
+                | Self::GetPropertyWithCacheKeepReference
                 | Self::PutValueWithCache
                 | Self::ResolveBindingWithCache
         )
@@ -672,6 +682,8 @@ impl Instruction {
                 | Self::CreateImmutableBinding
                 | Self::CreateMutableBinding
                 | Self::EvaluatePropertyAccessWithIdentifierKey
+                | Self::GetPropertyWithCache
+                | Self::GetPropertyWithCacheKeepReference
                 | Self::MakePrivateReference
                 | Self::MakeSuperPropertyReferenceWithIdentifierKey
                 | Self::ResolveBinding
@@ -1040,7 +1052,9 @@ impl Instr {
             Instruction::ObjectDefineGetter => "get function() {}".to_string(),
             Instruction::ObjectDefineMethod => "function() {}".to_string(),
             Instruction::ObjectDefineSetter => "set function() {}".to_string(),
-            Instruction::ResolveBindingWithCache => {
+            Instruction::ResolveBindingWithCache
+            | Instruction::GetPropertyWithCache
+            | Instruction::GetPropertyWithCacheKeepReference => {
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
                 format!("{key}, {arg1}")
             }
@@ -1147,6 +1161,9 @@ impl Instruction {
         const DIRECTEVALCALL: u8 = Instruction::DirectEvalCall.as_u8();
         const EVALUATECALL: u8 = Instruction::EvaluateCall.as_u8();
         const LOADFROMINDEX: u8 = Instruction::LoadFromIndex.as_u8();
+        const GETPROPERTYWITHCACHE: u8 = Instruction::GetPropertyWithCache.as_u8();
+        const GETPROPERTYWITHCACHEKEEPREFERENCE: u8 =
+            Instruction::GetPropertyWithCacheKeepReference.as_u8();
         const PUSHREFERENCEANDLOAD: u8 = Instruction::PushReferenceAndLoad.as_u8();
         const POPREFERENCEANDEVALUATECALL: u8 = Instruction::PopReferenceAndEvaluateCall.as_u8();
         const ISSTRICTLYEQUALCONSTANT: u8 = Instruction::IsStrictlyEqualConstant.as_u8();
@@ -1318,6 +1335,10 @@ impl Instruction {
             DIRECTEVALCALL => Some(Instruction::DirectEvalCall),
             EVALUATECALL => Some(Instruction::EvaluateCall),
             LOADFROMINDEX => Some(Instruction::LoadFromIndex),
+            GETPROPERTYWITHCACHE => Some(Instruction::GetPropertyWithCache),
+            GETPROPERTYWITHCACHEKEEPREFERENCE => {
+                Some(Instruction::GetPropertyWithCacheKeepReference)
+            }
             PUSHREFERENCEANDLOAD => Some(Instruction::PushReferenceAndLoad),
             POPREFERENCEANDEVALUATECALL => Some(Instruction::PopReferenceAndEvaluateCall),
             ISSTRICTLYEQUALCONSTANT => Some(Instruction::IsStrictlyEqualConstant),

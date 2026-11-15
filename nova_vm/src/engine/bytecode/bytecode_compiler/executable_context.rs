@@ -507,7 +507,24 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     ) {
         debug_assert_eq!(instruction.argument_count(), 1);
         debug_assert!(instruction.has_cache_index());
-        self.push_instruction(instruction);
+        let fused = match instruction {
+            Instruction::GetValueWithCache => Some(Instruction::GetPropertyWithCache),
+            Instruction::GetValueWithCacheKeepReference => {
+                Some(Instruction::GetPropertyWithCacheKeepReference)
+            }
+            _ => None,
+        };
+        if let Some(fused) = fused
+            && let Some(access) =
+                self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithIdentifierKey)
+        {
+            let identifier = self.operand_bytes(access);
+            self.drop_recent_instructions(access, 1);
+            self.push_instruction(fused);
+            self.instructions.extend_from_slice(&identifier);
+        } else {
+            self.push_instruction(instruction);
+        }
         let cache = self.add_cache(cache);
         self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
     }

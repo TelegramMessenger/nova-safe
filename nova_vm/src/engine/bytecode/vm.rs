@@ -601,6 +601,26 @@ impl Vm {
                 vm.execute_store_from_index(instr.get_first_index());
                 vm.execute_load();
             }
+            Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
+                execute_evaluate_property_access_with_identifier_key(
+                    agent,
+                    vm,
+                    executable.clone(),
+                    instr,
+                    gc.nogc(),
+                );
+                let keep_reference =
+                    matches!(instr.kind, Instruction::GetPropertyWithCacheKeepReference);
+                let get_value = Instr::new_with_arg(
+                    if keep_reference {
+                        Instruction::GetValueWithCacheKeepReference
+                    } else {
+                        Instruction::GetValueWithCache
+                    },
+                    instr.get_second_index() as IndexType,
+                );
+                execute_get_value(agent, vm, executable, get_value, true, keep_reference, gc)?
+            }
             Instruction::PushReferenceAndLoad => {
                 vm.execute_push_reference();
                 vm.execute_load();
@@ -645,6 +665,8 @@ impl Vm {
             | Instruction::EvaluatePropertyAccessWithIdentifierKey
             | Instruction::EvaluatePropertyAccessWithExpressionKey
             | Instruction::LoadFromIndex
+            | Instruction::GetPropertyWithCache
+            | Instruction::GetPropertyWithCacheKeepReference
             | Instruction::PushReferenceAndLoad => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }
