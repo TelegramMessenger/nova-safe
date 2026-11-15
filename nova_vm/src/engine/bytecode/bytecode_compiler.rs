@@ -2668,6 +2668,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::YieldE
         // Note: generators can be resumed with a Return instruction. For those
         // cases we need to generate Return handling here.
         let jump_over_return = ctx.add_instruction_with_jump_slot(Instruction::Jump);
+        // Note: resuming with a Return continues right after the Jump above,
+        // so that instruction pointer is reachable like a jump target.
+        let _ = ctx.get_jump_index_to_here();
         ctx.compile_return(true);
         ctx.set_jump_target_here(jump_over_return);
         Ok(ValueOutput::Value)
