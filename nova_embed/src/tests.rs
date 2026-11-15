@@ -216,6 +216,48 @@ fn host_functions_return_values() {
         engine.evaluate("__h() * 2", false),
         Ok(Completion::Number(5.0))
     );
+    // A lone surrogate comes back as it went out, a pair joins, and a byte
+    // that is no UTF-8 becomes U+FFFD.
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(
+        b"a\xED\xA0\x80b\xED\xA0\xBD\xED\xB8\x80\xFFc".to_vec(),
+    ));
+    assert_eq!(
+        engine.evaluate("__h() === 'a\\ud800b\\ud83d\\ude00\\ufffdc' ? 1 : 0", false),
+        Ok(Completion::Number(1.0))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(b"\xED\xA0\x80".to_vec()));
+    assert_eq!(
+        engine.evaluate("__h() === '\\ud800' ? 1 : 0", false),
+        Ok(Completion::Number(1.0))
+    );
+    assert_eq!(
+        engine.evaluate("function same(a, b) { return a === b && a.length; }", false),
+        Ok(Completion::Undefined)
+    );
+    assert_eq!(
+        engine.call_with_bytes("same", &[b"x\xED\xB0\x80", b"x\xED\xB0\x80"]),
+        Ok(Completion::Number(2.0))
+    );
+    assert_eq!(
+        engine.evaluate("function echo(a) { return a; }", false),
+        Ok(Completion::Undefined)
+    );
+    assert_eq!(
+        engine.call_with_bytes("echo", &[b"\xED\xA0\x80"]),
+        Ok(Completion::String(b"\xED\xA0\x80".to_vec()))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::RangeError("too long".into()));
+    assert_eq!(
+        engine.evaluate(
+            "try { __h(); 'returned' } catch (e) { (e instanceof RangeError) + ' ' + e.message }",
+            false
+        ),
+        Ok(Completion::String("true too long".into()))
+    );
+    assert_eq!(
+        engine.evaluate("__h()", false),
+        Err(Error::Exception("RangeError: too long".into()))
+    );
 }
 
 #[test]

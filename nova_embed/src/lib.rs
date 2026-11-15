@@ -391,6 +391,16 @@ impl Engine {
     /// Calls the captured function `name` (or else the global of that name)
     /// with string arguments and `undefined` as `this`.
     pub fn call(&mut self, name: &str, args: &[&str]) -> Result<Completion, Error> {
+        let args: Vec<&[u8]> = args.iter().map(|arg| arg.as_bytes()).collect();
+        self.call_with_bytes(name, &args)
+    }
+
+    /// As [`Engine::call`], with each argument as bytes: UTF-8, or the WTF-8
+    /// of [`HostArg::String`] and [`Completion::String`], so that a string
+    /// the engine handed out goes back in unchanged (lone surrogates
+    /// included). Any other byte that is not part of a UTF-8 sequence
+    /// becomes U+FFFD.
+    pub fn call_with_bytes(&mut self, name: &str, args: &[&[u8]]) -> Result<Completion, Error> {
         self.enter(|live, shared| {
             let realm = &live.realm;
             let captured = &live.captured;
@@ -411,7 +421,11 @@ impl Engine {
                 let function = function.scope(agent, gc.nogc());
                 let mut arguments: Vec<Value<'static>> = args
                     .iter()
-                    .map(|arg| JsString::from_str(agent, arg, gc.nogc()).unbind().into())
+                    .map(|arg| {
+                        values::string_from_bytes(agent, arg, gc.nogc())
+                            .unbind()
+                            .into()
+                    })
                     .collect();
                 let result = function
                     .get(agent)

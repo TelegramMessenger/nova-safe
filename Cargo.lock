@@ -702,6 +702,7 @@ name = "nova_embed"
 version = "1.0.0"
 dependencies = [
  "nova_vm",
+ "wtf8",
 ]
 
 [[package]]

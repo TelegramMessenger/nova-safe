@@ -175,7 +175,10 @@ int32_t nova_engine_capture(const nova_engine *engine, const uint8_t *name, size
                             nova_result *out);
 
 /* Calls the captured function `name`, else the global `name`, with string
- * arguments and `this` undefined. NOVA_NOT_A_FUNCTION if it is not one. */
+ * arguments and `this` undefined. NOVA_NOT_A_FUNCTION if it is not one. An
+ * argument is UTF-8, or WTF-8 as nova_arg has it, so a string the engine
+ * handed out goes back in unchanged; any other byte that is not part of a
+ * UTF-8 sequence becomes U+FFFD. */
 int32_t nova_engine_call(const nova_engine *engine, const uint8_t *name, size_t name_len, const nova_str *args,
                          size_t argc, nova_result *out);
 
@@ -199,11 +202,14 @@ int32_t nova_engine_collect_garbage(const nova_engine *engine);
 void nova_result_free(nova_result *result);
 
 /* Inside a host function callback only, on the `ret` it was given. Strings
- * and bytes are copied. */
+ * and bytes are copied. A string is UTF-8, or WTF-8 as nova_arg has it; any
+ * other byte that is not part of a UTF-8 sequence becomes U+FFFD. */
 void nova_return_null(nova_return *ret);
 void nova_return_number(nova_return *ret, double number);
 void nova_return_string(nova_return *ret, const uint8_t *ptr, size_t len);
 void nova_return_bytes(nova_return *ret, const uint8_t *ptr, size_t len);
+/* The call throws a RangeError with this message, which the script may catch. */
+void nova_return_range_error(nova_return *ret, const uint8_t *ptr, size_t len);
 
 /* Which limits this build enforces. Without NOVA_LIMIT_INTERRUPT a script that
  * never ends is never stopped; without NOVA_LIMIT_HEAP the memory limit is not

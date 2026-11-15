@@ -625,13 +625,13 @@ pub unsafe extern "C" fn nova_engine_call(
             // SAFETY: forwarded contract.
             return unsafe { refuse(out, NOVA_INVALID, "bad arguments") };
         };
-        owned.push(String::from_utf8_lossy(&bytes).into_owned());
+        owned.push(bytes);
     }
     // SAFETY: forwarded contract.
     unsafe {
         with_engine(handle, out, |engine| {
-            let args: Vec<&str> = owned.iter().map(String::as_str).collect();
-            engine.call(&name, &args)
+            let args: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
+            engine.call_with_bytes(&name, &args)
         })
     }
 }
@@ -809,8 +809,9 @@ pub unsafe extern "C" fn nova_return_number(ret: *mut NovaReturn, number: f64) {
     unsafe { set_return(ret, HostReturn::Number(number)) };
 }
 
-/// The host function returns a string (UTF-8, copied; invalid sequences
-/// become U+FFFD).
+/// The host function returns a string (copied): UTF-8, or WTF-8 as host
+/// function arguments have it (a lone surrogate as its own 3-byte sequence);
+/// any other byte that is not part of a UTF-8 sequence becomes U+FFFD.
 ///
 /// # Safety
 /// As `nova_return_null`; `ptr` readable for `len` bytes.
@@ -820,10 +821,12 @@ pub unsafe extern "C" fn nova_return_string(ret: *mut NovaReturn, ptr: *const u8
     let Some(bytes) = (unsafe { read_bytes(ptr, len) }) else {
         return;
     };
-    let text = String::from_utf8(bytes)
-        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    let value = match String::from_utf8(bytes) {
+        Ok(text) => HostReturn::String(text),
+        Err(error) => HostReturn::StringBytes(error.into_bytes()),
+    };
     // SAFETY: forwarded contract.
-    unsafe { set_return(ret, HostReturn::String(text)) };
+    unsafe { set_return(ret, value) };
 }
 
 /// The host function returns a new ArrayBuffer with a copy of the bytes.
@@ -838,6 +841,23 @@ pub unsafe extern "C" fn nova_return_bytes(ret: *mut NovaReturn, ptr: *const u8,
     };
     // SAFETY: forwarded contract.
     unsafe { set_return(ret, HostReturn::ArrayBuffer(bytes)) };
+}
+
+/// The host function throws a RangeError with this message (UTF-8, copied;
+/// invalid sequences become U+FFFD), which the script may catch.
+///
+/// # Safety
+/// As `nova_return_null`; `ptr` readable for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nova_return_range_error(ret: *mut NovaReturn, ptr: *const u8, len: usize) {
+    // SAFETY: forwarded contract.
+    let Some(bytes) = (unsafe { read_bytes(ptr, len) }) else {
+        return;
+    };
+    let text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    // SAFETY: forwarded contract.
+    unsafe { set_return(ret, HostReturn::RangeError(text)) };
 }
 
 static VERSION: LazyLock<String> = LazyLock::new(|| {

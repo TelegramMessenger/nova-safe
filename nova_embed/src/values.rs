@@ -6,11 +6,12 @@
 
 use nova_vm::{
     ecmascript::{
-        Agent, ArgumentsList, ArrayBuffer, InternalMethods, JsResult, Number, Object, PropertyKey,
-        String as JsString, TypedArray, Value,
+        Agent, ArgumentsList, ArrayBuffer, ExceptionType, InternalMethods, JsResult, Number,
+        Object, PropertyKey, String as JsString, TypedArray, Value,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable},
 };
+use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{ArgumentMode, Error, MAX_HOST_ARGUMENTS, Shared, hooks, limits};
 
@@ -55,9 +56,17 @@ pub enum HostReturn {
     Undefined,
     Null,
     String(String),
+    /// A string as bytes: UTF-8, or the WTF-8 of [`HostArg::String`] (a lone
+    /// surrogate as its own 3-byte sequence), so that a string the engine
+    /// handed out comes back unchanged. Any other byte that is not part of a
+    /// UTF-8 sequence becomes U+FFFD.
+    StringBytes(Vec<u8>),
     Number(f64),
     /// A new ArrayBuffer holding a copy of the bytes.
     ArrayBuffer(Vec<u8>),
+    /// The call throws a RangeError with this message, which the script may
+    /// catch: how a host refuses an argument (one that is too long, say).
+    RangeError(String),
 }
 
 /// The value a script evaluation or a call completed with: strings (as
@@ -67,6 +76,51 @@ pub enum Completion {
     Undefined,
     String(Vec<u8>),
     Number(f64),
+}
+
+/// A string from bytes a host hands in: UTF-8, or WTF-8 as the engine hands
+/// strings out (a lone surrogate as its own 3-byte sequence). Any other byte
+/// that is not part of a UTF-8 sequence becomes U+FFFD.
+pub(crate) fn string_from_bytes<'gc>(
+    agent: &mut Agent,
+    bytes: &[u8],
+    gc: NoGcScope<'gc, '_>,
+) -> JsString<'gc> {
+    match core::str::from_utf8(bytes) {
+        Ok(text) => JsString::from_str(agent, text, gc),
+        Err(_) => JsString::from_wtf8_buf(agent, wtf8_lossy(bytes), gc),
+    }
+}
+
+fn wtf8_lossy(bytes: &[u8]) -> Wtf8Buf {
+    let mut buf = Wtf8Buf::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let error = match core::str::from_utf8(rest) {
+            Ok(valid) => {
+                buf.push_str(valid);
+                break;
+            }
+            Err(error) => error,
+        };
+        let (valid, after) = rest.split_at(error.valid_up_to());
+        buf.push_str(&String::from_utf8_lossy(valid));
+        if let [0xED, second @ 0xA0..=0xBF, third @ 0x80..=0xBF, ..] = after {
+            // A surrogate as generalized UTF-8; `push` joins a trail
+            // surrogate with a lead one before it, as WTF-8 requires.
+            let code = 0xD000 | (u32::from(second & 0x3F) << 6) | u32::from(third & 0x3F);
+            match CodePoint::from_u32(code) {
+                Some(surrogate) => buf.push(surrogate),
+                None => buf.push_char('\u{FFFD}'),
+            }
+            rest = after.get(3..).unwrap_or(&[]);
+        } else {
+            buf.push_char('\u{FFFD}');
+            let skip = error.error_len().unwrap_or(after.len()).max(1);
+            rest = after.get(skip..).unwrap_or(&[]);
+        }
+    }
+    buf
 }
 
 fn number_of(agent: &Agent, value: Value) -> Option<f64> {
@@ -161,11 +215,15 @@ fn to_value<'gc>(
         HostReturn::Undefined => Value::Undefined,
         HostReturn::Null => Value::Null,
         HostReturn::String(text) => JsString::from_string(agent, text, gc).into(),
+        HostReturn::StringBytes(bytes) => string_from_bytes(agent, &bytes, gc).into(),
         HostReturn::Number(number) => Number::from_f64(agent, number, gc).into(),
         HostReturn::ArrayBuffer(bytes) => {
             let buffer = ArrayBuffer::new(agent, bytes.len(), gc)?;
             buffer.as_mut_slice(agent).copy_from_slice(&bytes);
             buffer.into()
+        }
+        HostReturn::RangeError(message) => {
+            return Err(agent.throw_exception(ExceptionType::RangeError, message, gc));
         }
     })
 }

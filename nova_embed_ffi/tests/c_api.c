@@ -40,6 +40,9 @@ static void host(void *context, uint32_t id, const nova_arg *args, size_t argc, 
         nova_return_bytes(ret, bytes, sizeof bytes);
     } else if (id == 3) {
         nova_return_null(ret);
+    } else if (id == 4) {
+        static const char refusal[] = "too long";
+        nova_return_range_error(ret, (const uint8_t *)refusal, sizeof refusal - 1);
     }
 }
 
@@ -83,6 +86,14 @@ int main(void) {
 
     assert(eval(engine, "__n() === null ? 1 : 0", &out) == NOVA_OK);
     assert(out.kind == NOVA_VALUE_NUMBER && out.number == 1);
+
+    assert(nova_engine_register(engine, (const uint8_t *)"__r", 3, 4, 0, NOVA_ARGS_VALUES, NULL) == NOVA_OK);
+    assert(eval(engine, "try { __r(); 'returned' } catch (e) { (e instanceof RangeError) + ' ' + e.message }", &out) == NOVA_OK);
+    expect_string(&out, "true too long");
+    nova_result_free(&out);
+    assert(eval(engine, "__r()", &out) == NOVA_EXCEPTION);
+    expect_string(&out, "RangeError: too long");
+    nova_result_free(&out);
 
     assert(eval(engine, "function f(a, b) { return a + b; } globalThis.log = []; Promise.resolve().then(() => log.push('job'));", &out) == NOVA_OK);
     assert(nova_engine_has_pending_job(engine));
