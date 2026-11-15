@@ -342,8 +342,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         LabelledStatement
     }
 
-    /// Exit a labelled statement.
-    pub(super) fn exit_label(&mut self, st: LabelledStatement) {
+    /// Exit a labelled statement. Returns true if a break targets the label,
+    /// which makes the end of the labelled statement reachable.
+    pub(super) fn exit_label(&mut self, st: LabelledStatement) -> bool {
         core::mem::forget(st);
         let Some(ControlFlowStackEntry::LabelledStatement {
             label: _,
@@ -354,6 +355,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         };
         if let Some(incoming_control_flows) = incoming_control_flows {
             incoming_control_flows.compile(&mut self.executable);
+            true
+        } else {
+            false
         }
     }
 
@@ -1717,9 +1721,10 @@ pub(crate) struct LabelledStatement;
 impl Undroppable for LabelledStatement {}
 
 impl LabelledStatement {
+    /// Returns true if a break targets the label.
     #[inline(always)]
-    pub(crate) fn exit(self, ctx: &mut CompileContext) {
-        ctx.exit_label(self);
+    pub(crate) fn exit(self, ctx: &mut CompileContext) -> bool {
+        ctx.exit_label(self)
     }
 }
 

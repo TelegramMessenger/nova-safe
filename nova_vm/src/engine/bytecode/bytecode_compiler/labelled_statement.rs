@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::engine::bytecode::bytecode_compiler::StatementResult;
+use core::ops::ControlFlow;
+
+use crate::engine::bytecode::bytecode_compiler::{StatementContinue, StatementResult};
 
 use super::{CompileContext, CompileEvaluation, CompileLabelledEvaluation};
 
@@ -35,7 +37,13 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
             oxc_ast::ast::Statement::WhileStatement(st) => st.compile_labelled(label_set, ctx),
             _ => self.body.compile(ctx),
         };
-        st.exit(ctx);
+        let broken_out_of = st.exit(ctx);
+        if broken_out_of && result.is_break() {
+            // A `break label` inside the body ends here: code after the
+            // labelled statement is reachable even though the body itself
+            // ended abruptly.
+            return ControlFlow::Continue(StatementContinue::Value);
+        }
         result
     }
 }

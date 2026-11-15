@@ -560,3 +560,36 @@ fn concise_arrow_bodies_return_the_value_of_their_expression() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A `break` to the label of a block, an `if` or another labelled statement
+/// ends that statement normally, so the code after it is reachable even
+/// when the labelled body itself ends abruptly. The compiler used to drop
+/// everything after such a statement (the rest of a function body or of a
+/// script). Expectations recorded with QuickJS.
+#[test]
+fn code_after_a_broken_out_of_label_runs() {
+    let source = r#"
+var results = [];
+function t(f) { try { results.push(String(f())); } catch (e) { results.push("thrown " + e); } }
+t(function () { lbl: { break lbl; } return 1; });
+t(function () { var r = 0; lbl: { r = 1; if (r) break lbl; r = 2; } r += 10; return r; });
+t(function () { lbl: { if (true) break lbl; return 2; } return 3; });
+t(function () { a: b: { break a; } return 4; });
+t(function () { function f(c) { lbl: if (c) break lbl; else return 5; return 6; } return f(true) + "/" + f(false); });
+t(function () { lbl2: { try { break lbl2; } finally { } } return 7; });
+t(function () { var log = []; lbl: { try { break lbl; } finally { log.push("f"); } } log.push("after"); return log.join(); });
+t(function () { function* g() { lbl: { yield 1; break lbl; } yield 2; } return [...g()].join(); });
+t(function () { return eval("1; lbl: { 2; break lbl; }"); });
+t(function () { return eval("1; lbl: { break lbl; }"); });
+t(function () { return eval("lbl: { 3; break lbl; } 4;"); });
+t(function () { var n = 0; outer: for (var i = 0; i < 3; i++) { inner: { if (i === 1) break inner; n += 10; } n += 1; } return n; });
+t(function () { lbl: { throw 1; } });
+t(function () { var x = 0; lbl: switch (1) { case 1: { x = 1; break lbl; } } return x + 1; });
+t(() => { lbl: { break lbl; } return 9; });
+var out = 0; lbl: { break lbl; } out = 8; results.push(String(out));
+"#;
+    assert_eq!(
+        run(source, "results.join(' | ')", None),
+        "1 | 11 | 3 | 4 | 6/5 | 7 | f,after | 1,2 | 2 | 1 | 4 | 23 | thrown 1 | 2 | 9 | 8"
+    );
+}
