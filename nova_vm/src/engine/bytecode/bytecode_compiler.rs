@@ -2880,7 +2880,19 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Expres
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UpdateExpression<'s> {
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        let lref = match &self.argument {
+        compile_update_expression(self, ctx, true)
+    }
+}
+
+/// With `keep_value` false the old or new value is not left in the result
+/// register: the caller discards it.
+fn compile_update_expression<'s, 'gc>(
+    this: &'s ast::UpdateExpression<'s>,
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+    keep_value: bool,
+) -> Result<ValueOutput<'gc>, ExpressionError> {
+    {
+        let lref = match &this.argument {
             ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(x) => x.compile(ctx),
             ast::SimpleAssignmentTarget::ComputedMemberExpression(x) => x.compile(ctx)?,
             ast::SimpleAssignmentTarget::PrivateFieldExpression(x) => x.compile(ctx)?,
@@ -2917,14 +2929,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Update
         };
         lref.get_value_keep_reference(ctx)?;
         ctx.add_instruction(Instruction::ToNumeric);
-        let value_on_stack = if !self.prefix {
+        let value_on_stack = if keep_value && !this.prefix {
             // The return value of postfix increment/decrement is the value
             // after ToNumeric.
             Some(ctx.load_copy_to_stack())
         } else {
             None
         };
-        match self.operator {
+        match this.operator {
             oxc_syntax::operator::UpdateOperator::Increment => {
                 ctx.add_instruction(Instruction::Increment);
             }
@@ -2932,10 +2944,44 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Update
                 ctx.add_instruction(Instruction::Decrement);
             }
         }
-        let value_on_stack = value_on_stack.unwrap_or_else(|| ctx.load_copy_to_stack());
+        let value_on_stack = if keep_value {
+            Some(value_on_stack.unwrap_or_else(|| ctx.load_copy_to_stack()))
+        } else {
+            None
+        };
         let result = lref.put_value(ctx, ValueOutput::Value);
-        value_on_stack.store(ctx);
+        if let Some(value_on_stack) = value_on_stack {
+            value_on_stack.store(ctx);
+        }
         result.map(|_| ValueOutput::Value)
+    }
+}
+
+/// Compiles an expression whose value is discarded: assignments and updates
+/// then leave the result register as their PutValue leaves it.
+fn compile_discarded_expression<'s>(
+    expression: &'s ast::Expression<'s>,
+    ctx: &mut CompileContext<'_, 's, '_, '_>,
+) -> Result<(), ExpressionError> {
+    match expression {
+        ast::Expression::ParenthesizedExpression(e) => {
+            compile_discarded_expression(&e.expression, ctx)
+        }
+        ast::Expression::AssignmentExpression(e) => {
+            assignment::compile_assignment_expression(e, ctx, false).map(|_| ())
+        }
+        ast::Expression::UpdateExpression(e) => {
+            compile_update_expression(e, ctx, false).map(|_| ())
+        }
+        ast::Expression::SequenceExpression(e) => {
+            for expression in &e.expressions {
+                if !expression.is_literal() {
+                    compile_discarded_expression(expression, ctx)?;
+                }
+            }
+            Ok(())
+        }
+        _ => expression.compile(ctx)?.get_value(ctx).map(|_| ()),
     }
 }
 
@@ -2946,6 +2992,12 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Expres
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // 1. Let exprRef be ? Evaluation of Expression.
         // 2. Return ? GetValue(exprRef).
+        if ctx.discard_completion {
+            return match compile_discarded_expression(&self.expression, ctx) {
+                Ok(()) => ControlFlow::Continue(StatementContinue::Value),
+                Err(err) => ControlFlow::Break(err.into()),
+            };
+        }
         value_result_to_statement_result(
             self.expression.compile(ctx).and_then(|r| r.get_value(ctx)),
         )
@@ -2980,7 +3032,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::IfStat
         let st = ctx.enter_if_statement();
         // a. Let stmtCompletion be Completion(Evaluation of the first Statement).
         let consequent_stmt_completion = self.consequent.compile(ctx);
-        st.exit(ctx, false);
+        st.exit(ctx, ctx.discard_completion);
+        if ctx.discard_completion && self.alternate.is_none() {
+            for jump in jumps_to_else {
+                ctx.set_jump_target_here(jump);
+            }
+            return ControlFlow::Continue(StatementContinue::Value);
+        }
         // 4. Else,
         let jump_over_else = if consequent_stmt_completion.is_continue() {
             Some(ctx.add_instruction_with_jump_slot(Instruction::Jump))
@@ -2994,7 +3052,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::IfStat
             // a. Let stmtCompletion be Completion(Evaluation of the second Statement).
             let st = ctx.enter_if_statement();
             let _stmt_completion = alternate.compile(ctx);
-            st.exit(ctx, false);
+            st.exit(ctx, ctx.discard_completion);
         } else {
             for jump in jumps_to_else {
                 ctx.set_jump_target_here(jump);
@@ -3915,16 +3973,23 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast
         }
 
         // 1. Let V be undefined.
-        ctx.add_instruction(Instruction::Empty);
+        if !ctx.discard_completion {
+            ctx.add_instruction(Instruction::Empty);
+        }
         let v = ctx.push_stack_result_value(Some(Value::Undefined));
         // 3. Repeat,
         let l = ctx.enter_loop(label_set.cloned());
-        let jump_over_continue = ctx.add_instruction_with_jump_slot(Instruction::Jump);
+        let jump_over_continue = (!ctx.discard_completion
+            || create_per_iteration_env
+            || self.update.is_some())
+        .then(|| ctx.add_instruction_with_jump_slot(Instruction::Jump));
         let continue_label = ctx.get_jump_index_to_here();
         // Note: to save one Jump in continue cases, the LoopContinues work is
         // here.
         // d. If result.[[Value]] is not empty, set V to result.[[Value]].
-        ctx.add_instruction(Instruction::LoadReplace);
+        if !ctx.discard_completion {
+            ctx.add_instruction(Instruction::LoadReplace);
+        }
         // e. Perform ? CreatePerIterationEnvironment(perIterationBindings).
         if create_per_iteration_env {
             create_per_iteration_environment(ctx, &per_iteration_env_lets);
@@ -3932,13 +3997,18 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast
         // f. If increment is not empty, then
         if let Some(update) = &self.update {
             // i. Let incRef be ? Evaluation of increment.
-            let inc_ref = update.compile(ctx);
             // ii. Perform ? GetValue(incRef).
             // Note: no early exit, as this path is not guaranteed to run.
-            let _ = inc_ref.and_then(|r| r.get_value(ctx));
+            if ctx.discard_completion {
+                let _ = compile_discarded_expression(update, ctx);
+            } else {
+                let _ = update.compile(ctx).and_then(|r| r.get_value(ctx));
+            }
         }
 
-        ctx.set_jump_target_here(jump_over_continue);
+        if let Some(jump_over_continue) = jump_over_continue {
+            ctx.set_jump_target_here(jump_over_continue);
+        }
 
         // a. If test is not empty, then
         let test_result = if let Some(test) = &self.test {
@@ -4364,16 +4434,23 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
         ctx: &mut CompileContext<'_, 's, '_, '_>,
     ) -> Self::Output {
         // 1. Let V be undefined.
-        ctx.add_instruction(Instruction::Empty);
+        if !ctx.discard_completion {
+            ctx.add_instruction(Instruction::Empty);
+        }
         let v = ctx.push_stack_result_value(Some(Value::Undefined));
         // 2. Repeat
         let l = ctx.enter_loop(label_set.cloned());
-        let jump_over_continue = ctx.add_instruction_with_jump_slot(Instruction::Jump);
-        let continue_label = ctx.get_jump_index_to_here();
-        // f. If stmtResult.[[Value]] is not EMPTY, set V to
-        //    stmtResult.[[Value]].
-        ctx.add_instruction(Instruction::LoadReplace);
-        ctx.set_jump_target_here(jump_over_continue);
+        let continue_label = if ctx.discard_completion {
+            ctx.get_jump_index_to_here()
+        } else {
+            let jump_over_continue = ctx.add_instruction_with_jump_slot(Instruction::Jump);
+            let continue_label = ctx.get_jump_index_to_here();
+            // f. If stmtResult.[[Value]] is not EMPTY, set V to
+            //    stmtResult.[[Value]].
+            ctx.add_instruction(Instruction::LoadReplace);
+            ctx.set_jump_target_here(jump_over_continue);
+            continue_label
+        };
 
         // a. Let exprRef be ? Evaluation of Expression.
         // OPTIMISATION: while(true) loops are pretty common, skip the test.
@@ -4436,17 +4513,22 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
         ctx: &mut CompileContext<'_, 's, '_, '_>,
     ) -> Self::Output {
         // 1. Let V be undefined.
-        ctx.add_instruction(Instruction::Empty);
+        if !ctx.discard_completion {
+            ctx.add_instruction(Instruction::Empty);
+        }
         let v = ctx.push_stack_result_value(Some(Value::Undefined));
         // 2. Repeat,
         let l = ctx.enter_loop(label_set.cloned());
-        let jump_over_continue = ctx.add_instruction_with_jump_slot(Instruction::Jump);
+        let jump_over_continue = (!ctx.discard_completion || !is_boolean_literal_true(&self.test))
+            .then(|| ctx.add_instruction_with_jump_slot(Instruction::Jump));
         // Note: to save one Jump in continue cases, the LoopContinues work is
         // here.
         // c. If stmtResult.[[Value]] is not empty, set V to
         //    stmtResult.[[Value]].
         let continue_label = ctx.get_jump_index_to_here();
-        ctx.add_instruction(Instruction::LoadReplace);
+        if !ctx.discard_completion {
+            ctx.add_instruction(Instruction::LoadReplace);
+        }
         let expr_result = if is_boolean_literal_true(&self.test) {
             // OPTIMISATION: do {} while(true) loops are still somewhat common,
             // skip the test.
@@ -4468,7 +4550,9 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
         let stmt_result = if let Err(err) = expr_result {
             ControlFlow::Break(err.into())
         } else {
-            ctx.set_jump_target_here(jump_over_continue);
+            if let Some(jump_over_continue) = jump_over_continue {
+                ctx.set_jump_target_here(jump_over_continue);
+            }
             // a. Let stmtResult be Completion(Evaluation of Statement).
             let stmt_result = self.body.compile(ctx);
             // b. If LoopContinues(stmtResult, labelSet) is false,

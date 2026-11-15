@@ -23,16 +23,28 @@ use crate::engine::{
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::AssignmentExpression<'s> {
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
+        compile_assignment_expression(self, ctx, true)
+    }
+}
+
+/// With `keep_value` false the value of a plain or compound assignment is not
+/// left in the result register: the caller discards it.
+pub(super) fn compile_assignment_expression<'s, 'gc>(
+    this: &'s ast::AssignmentExpression<'s>,
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+    keep_value: bool,
+) -> Result<ValueOutput<'gc>, ExpressionError> {
+    {
         let mut do_named_evaluation = false;
         // 1. Let lref be ? Evaluation of LeftHandSideExpression.
-        let lref = match &self.left {
+        let lref = match &this.left {
             ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
                 let place = identifier.compile(ctx);
                 // NOTE: If the left hand side does not constitute the start of
                 // the assignment expression span, then it means that the left
                 // side is inside parentheses and NamedEvaluation should not
                 // happen.
-                do_named_evaluation = self.span.start == identifier.span.start;
+                do_named_evaluation = this.span.start == identifier.span.start;
                 place
             }
             ast::AssignmentTarget::ComputedMemberExpression(expression) => {
@@ -42,17 +54,17 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
             ast::AssignmentTarget::ArrayAssignmentTarget(_)
             | ast::AssignmentTarget::ObjectAssignmentTarget(_) => {
                 assert_eq!(
-                    self.operator,
+                    this.operator,
                     AssignmentOperator::Assign,
                     "SyntaxError: Invalid left-hand side in assignment expression"
                 );
                 // 2. Let assignmentPattern be the AssignmentPattern that is covered by LeftHandSideExpression.
                 // 3. Let rRef be ? Evaluation of AssignmentExpression.
                 // 4. Let rVal be ? GetValue(rRef).
-                let rval = self.right.compile(ctx)?.get_value(ctx)?;
+                let rval = this.right.compile(ctx)?.get_value(ctx)?;
                 // 5. Perform ? DestructuringAssignmentEvaluation of assignmentPattern with argument rVal.
                 let rval_copy = ctx.load_copy_to_stack();
-                let result = self.left.compile_pattern_target(ctx);
+                let result = this.left.compile_pattern_target(ctx);
                 // 6. Return rVal.
                 rval_copy.store(ctx);
                 return result.map(|_| rval);
@@ -70,7 +82,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
                 let PlaceOrValue::Place(place) = x.expression.compile(ctx)? else {
                     unreachable!()
                 };
-                do_named_evaluation = self.span.start == x.span.start;
+                do_named_evaluation = this.span.start == x.span.start;
                 place
             }
             #[cfg(feature = "typescript")]
@@ -78,7 +90,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
                 let PlaceOrValue::Place(place) = x.expression.compile(ctx)? else {
                     unreachable!()
                 };
-                do_named_evaluation = self.span.start == x.span.start;
+                do_named_evaluation = this.span.start == x.span.start;
                 place
             }
             #[cfg(feature = "typescript")]
@@ -86,7 +98,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
                 let PlaceOrValue::Place(place) = x.expression.compile(ctx)? else {
                     unreachable!()
                 };
-                do_named_evaluation = self.span.start == x.span.start;
+                do_named_evaluation = this.span.start == x.span.start;
                 place
             }
             #[cfg(not(feature = "typescript"))]
@@ -96,14 +108,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
             ast::AssignmentTarget::TSTypeAssertion(_) => unreachable!(),
         };
 
-        if self.operator.is_assign() {
-            let push_reference = lref.has_reference() && !self.right.is_literal();
+        if this.operator.is_assign() {
+            let push_reference = lref.has_reference() && !this.right.is_literal();
 
             if push_reference {
                 ctx.add_instruction(Instruction::PushReference);
             }
 
-            if do_named_evaluation && is_anonymous_function_definition(&self.right) {
+            if do_named_evaluation && is_anonymous_function_definition(&this.right) {
                 ctx.add_instruction_with_constant(
                     Instruction::StoreConstant,
                     lref.identifier().unwrap(),
@@ -111,9 +123,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
                 ctx.name_identifier = Some(NamedEvaluationParameter::Result);
             }
 
-            let rval = self.right.compile(ctx)?.get_value(ctx)?;
+            let rval = this.right.compile(ctx)?.get_value(ctx)?;
 
-            let rval_copy = ctx.load_copy_to_stack();
+            let rval_copy = keep_value.then(|| ctx.load_copy_to_stack());
 
             if push_reference {
                 ctx.add_instruction(Instruction::PopReference);
@@ -121,12 +133,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
 
             let result = lref.put_value(ctx, rval);
             // ... Return rval.
-            rval_copy.store(ctx);
+            if let Some(rval_copy) = rval_copy {
+                rval_copy.store(ctx);
+            }
             result.map(|_| rval)
-        } else if let Some(operator) = self.operator.to_logical_operator() {
+        } else if let Some(operator) = this.operator.to_logical_operator() {
             // 2. Let lval be ? GetValue(lref).
             lref.get_value_keep_reference(ctx)?;
-            let push_reference = lref.has_reference() && !self.right.is_literal();
+            let push_reference = lref.has_reference() && !this.right.is_literal();
             if push_reference {
                 ctx.add_instruction(Instruction::PushReference);
             }
@@ -160,7 +174,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
                 // 5. If IsAnonymousFunctionDefinition(AssignmentExpression)
                 // is true and IsIdentifierRef of LeftHandSideExpression is true,
                 // then
-                if do_named_evaluation && is_anonymous_function_definition(&self.right) {
+                if do_named_evaluation && is_anonymous_function_definition(&this.right) {
                     // a. Let lhs be the StringValue of LeftHandSideExpression.
                     ctx.add_instruction_with_constant(
                         Instruction::StoreConstant,
@@ -173,7 +187,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
                 // a. Let rref be ? Evaluation of AssignmentExpression.
                 // b. Let rval be ? GetValue(rref).
                 // Note: no early exits because this path is not unconditional.
-                let Ok(rval) = self.right.compile(ctx).and_then(|r| r.get_value(ctx)) else {
+                let Ok(rval) = this.right.compile(ctx).and_then(|r| r.get_value(ctx)) else {
                     // If we're here then the code will never get to the end of
                     // the else branch. When we exit the 'rval block the only
                     // possible path forward is the one where we jumped over the
@@ -236,13 +250,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
             // 2. let lval be ? GetValue(lref).
             let _lval = lref.get_value_keep_reference(ctx)?;
             let lval_copy = ctx.load_to_stack();
-            let do_push_reference = lref.has_reference() && !self.right.is_literal();
+            let do_push_reference = lref.has_reference() && !this.right.is_literal();
             if do_push_reference {
                 ctx.add_instruction(Instruction::PushReference);
             }
             // 3. Let rref be ? Evaluation of AssignmentExpression.
             // 4. Let rval be ? GetValue(rref).
-            let _rval = match self.right.compile(ctx).and_then(|r| r.get_value(ctx)) {
+            let _rval = match this.right.compile(ctx).and_then(|r| r.get_value(ctx)) {
                 Ok(r) => r,
                 Err(err) => {
                     lval_copy.forget(ctx);
@@ -252,7 +266,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
 
             // 5. Let assignmentOpText be the source text matched by AssignmentOperator.
             // 6. Let opText be the sequence of Unicode code points associated with assignmentOpText in the following table:
-            let op_text = self.operator.to_binary_operator().unwrap();
+            let op_text = this.operator.to_binary_operator().unwrap();
             // 7. Let r be ? ApplyStringOrNumericBinaryOperator(lval, opText, rval).
             let op_text = match op_text {
                 ast::BinaryOperator::Addition => Instruction::ApplyAdditionBinaryOperator,
@@ -276,7 +290,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
             // Consumed by instruction.
             lval_copy.forget(ctx);
             ctx.add_instruction(op_text);
-            let r_copy = ctx.load_copy_to_stack();
+            let r_copy = keep_value.then(|| ctx.load_copy_to_stack());
             let r = ValueOutput::Value;
             if do_push_reference {
                 ctx.add_instruction(Instruction::PopReference);
@@ -284,7 +298,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
             // 8. Perform ? PutValue(lref, r).
             let result = lref.put_value(ctx, r);
             // 9. Return r.
-            r_copy.store(ctx);
+            if let Some(r_copy) = r_copy {
+                r_copy.store(ctx);
+            }
             result.map(|_| r)
         }
     }

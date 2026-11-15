@@ -109,6 +109,11 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     /// Set when the code uses syntax the compiler does not support; the
     /// finished executable then panics when run.
     unsupported: Option<&'static str>,
+    /// True while a function body other than a concise arrow body is
+    /// compiled: nothing observes its completion values, unlike those of
+    /// Script or eval code, so the result register may be left empty or stale
+    /// between statements.
+    pub(super) discard_completion: bool,
 }
 
 impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> {
@@ -133,6 +138,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             generator_kind: None,
             runtime_strict: false,
             unsupported: None,
+            discard_completion: false,
         }
     }
 
@@ -1141,6 +1147,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             eprintln!();
         }
 
+        // A concise arrow body is an expression statement whose value the
+        // implicit return reads.
+        self.discard_completion = !data.ast.is_concise_body();
         let mut stack_variables =
             Vec::with_capacity(data.ast.formal_parameters().parameters_count());
 
