@@ -154,6 +154,44 @@ fn host_functions_receive_their_id_and_owned_arguments() {
     );
 }
 
+/// A class field's initializer runs when an instance is made, after the
+/// function that declared the class has returned: the bindings it reads must
+/// not live in that function's stack slots.
+#[test]
+fn class_fields_read_the_bindings_of_the_enclosing_function() {
+    let (mut engine, _) = engine();
+    let source = r#"
+        var out = [];
+        function a() { let r = 1; return class { x = r; }; }
+        out.push(new (a())().x);
+        function b() { var r = 2; return class { x = r; }; }
+        out.push(new (b())().x);
+        function c(r) { return class { x = r; }; }
+        out.push(new (c(3))().x);
+        function d() { const r = 4; return class { static x = r; }; }
+        out.push(d().x);
+        function e() { class r { v = 5; } return class { x = new r; }; }
+        out.push(new (e())().x.v);
+        function f() { function r() { return 6; } return class { x = r(); }; }
+        out.push(new (f())().x);
+        function g() { for (const r of [7]) { return class { x = r; }; } }
+        out.push(new (g())().x);
+        function h() { let r = 8; return class { [r] = r + 1; }; }
+        out.push(new (h())()[8]);
+        function i() { let r = 10; class K { x = r; } r = 11; return new K().x; }
+        out.push(i());
+        function k() { try { throw 12; } catch (r) { return class { x = { y: [r] }; }; } }
+        out.push(new (k())().x.y[0]);
+        { let r = 13; var M = class { x = r; }; }
+        out.push(new M().x);
+        out.join(' ')
+    "#;
+    assert_eq!(
+        engine.evaluate(source, false),
+        Ok(Completion::String("1 2 3 4 5 6 7 9 11 12 13".into()))
+    );
+}
+
 #[test]
 fn host_functions_return_values() {
     let (mut engine, recorder) = engine();

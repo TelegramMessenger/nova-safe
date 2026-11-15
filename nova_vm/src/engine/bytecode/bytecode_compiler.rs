@@ -631,6 +631,25 @@ fn variable_escapes_scope(
             };
             scope = s;
         }
+        // A class field's initializer is a function of its own, run when an
+        // instance (or the class, for a static field) is made, but it has no
+        // scope of its own in the semantic data: the reference sits in the
+        // class scope, with no function scope between it and the
+        // declaration.
+        let mut node = ref_id;
+        while nodes.get_node(node).scope_id() != decl_scope {
+            if matches!(
+                nodes.get_node(node).kind(),
+                oxc_ast::AstKind::PropertyDefinition(_) | oxc_ast::AstKind::AccessorProperty(_)
+            ) {
+                return true;
+            }
+            let parent = nodes.parent_id(node);
+            if parent == node {
+                break;
+            }
+            node = parent;
+        }
         // Classes can refer to themselves both during their creation and in
         // field declarations that escape creation time. We need to check for
         // them.
