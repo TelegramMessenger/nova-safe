@@ -345,7 +345,9 @@ fn for_in_of_body_evaluation<'s, 'gc>(
     // l. Corollary: If LoopContinues(result, labelSet) is true, then
     //    jump to loop start.
     // m. If result.[[Value]] is not empty, set V to result.[[Value]].
-    ctx.add_instruction(Instruction::LoadReplace);
+    if !ctx.discard_completion {
+        ctx.add_instruction(Instruction::LoadReplace);
+    }
     ctx.add_jump_instruction_to_index(Instruction::Jump, loop_start);
     // Note: this block is here for handling of exceptions iterator loops;
     // these need to perform (Async)IteratorClose. ENUMERATE iteration does not

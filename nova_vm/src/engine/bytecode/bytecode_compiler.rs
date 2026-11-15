@@ -4318,7 +4318,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ThrowS
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::TryStatement<'s> {
     type Output = StatementResult<'gc>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        ctx.add_instruction(Instruction::Empty);
+        if !ctx.discard_completion {
+            ctx.add_instruction(Instruction::Empty);
+        }
         let try_finally_block = self
             .finalizer
             .is_some()
@@ -4357,7 +4359,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::TrySta
             // finally block then we'll have to handle the jump out ourselves.
             ctx.set_jump_target_here(jump_over_catch_blocks);
         }
-        if !ctx.is_unreachable() {
+        if !ctx.is_unreachable() && !ctx.discard_completion {
             // 4. Return ? UpdateEmpty(C, undefined).
             ctx.add_instruction_with_constant(Instruction::LoadConstant, Value::Undefined);
             ctx.add_instruction(Instruction::UpdateEmpty);

@@ -1015,7 +1015,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     /// present in the finaliser stack, the method instead jumps to a
     /// finally-block that ends with a jump to the final target.
     pub(super) fn compile_break(&mut self, label: Option<&'script LabelIdentifier<'script>>) {
-        let mut has_result = false;
+        // In a function body the result need not be undefined rather than
+        // empty: nothing observes it.
+        let mut has_result = self.discard_completion;
         for entry in self.control_flow_stack.iter_mut().rev() {
             if entry.is_break_target_for(label) {
                 // Stop iterating the stack when we find our target and push
@@ -1041,7 +1043,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     /// present in the finaliser stack, the method instead jumps to a
     /// finally-block that ends with a jump to the final target.
     pub(super) fn compile_continue(&mut self, label: Option<&'script LabelIdentifier<'script>>) {
-        let mut has_result = false;
+        let mut has_result = self.discard_completion;
         for entry in self.control_flow_stack.iter_mut().rev() {
             if entry.is_continue_target_for(label) {
                 // Stop iterating the stack when we find our target and push
