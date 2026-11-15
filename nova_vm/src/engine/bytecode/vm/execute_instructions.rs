@@ -2038,10 +2038,7 @@ pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, instr: Instr) {
 #[inline(always)]
 pub(super) fn execute_jump_if_true(agent: &Agent, vm: &mut Vm, instr: Instr) {
     let result = vm.result.take().unwrap();
-    let Value::Boolean(result) = result else {
-        unreachable!()
-    };
-    if result {
+    if to_boolean(agent, result) {
         let ip = instr.get_jump_slot();
         if agent.options.print_internals {
             eprintln!("Comparison succeeded, jumping to {ip}");

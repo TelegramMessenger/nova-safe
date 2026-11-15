@@ -135,7 +135,7 @@ pub(crate) enum Instruction {
     /// as the result value.
     IsConstructor,
     /// Jump to another instruction by setting the instruction pointer if the
-    /// current result is `true`.
+    /// current result is truthy.
     JumpIfTrue,
     /// Load the result value, if present, to the top of the stack, replacing
     /// the previous top of the stack value.

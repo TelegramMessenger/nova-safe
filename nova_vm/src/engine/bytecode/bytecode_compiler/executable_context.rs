@@ -360,6 +360,21 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     pub(super) fn add_instruction_with_jump_slot(&mut self, instruction: Instruction) -> JumpIndex {
         debug_assert_eq!(instruction.argument_count(), 2);
         debug_assert!(instruction.has_jump_slot());
+        let instruction = match instruction {
+            Instruction::JumpIfNot | Instruction::JumpIfTrue => {
+                if let Some(not) = self.recent_instruction(0, Instruction::LogicalNot) {
+                    self.drop_recent_instructions(not, 1);
+                    if instruction == Instruction::JumpIfNot {
+                        Instruction::JumpIfTrue
+                    } else {
+                        Instruction::JumpIfNot
+                    }
+                } else {
+                    instruction
+                }
+            }
+            _ => instruction,
+        };
         self.push_instruction(instruction);
         self.add_jump_index()
     }

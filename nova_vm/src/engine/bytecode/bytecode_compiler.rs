@@ -2116,6 +2116,55 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ChainE
     }
 }
 
+/// Compiles `expression` where only ToBoolean of its value is used: the
+/// returned jumps are taken when that is `jump_when`, and execution falls
+/// through otherwise. The result register is empty on both paths, as it is
+/// after JumpIfNot. `!`, `&&` and `||` jump directly instead of computing
+/// their value first; the operands run in the same order and ToBoolean has no
+/// side effects.
+pub(crate) fn compile_jump_if<'s>(
+    expression: &'s ast::Expression<'s>,
+    jump_when: bool,
+    ctx: &mut CompileContext<'_, 's, '_, '_>,
+) -> Result<Vec<JumpIndex>, ExpressionError> {
+    match expression {
+        ast::Expression::ParenthesizedExpression(e) => {
+            compile_jump_if(&e.expression, jump_when, ctx)
+        }
+        ast::Expression::UnaryExpression(e) if e.operator == UnaryOperator::LogicalNot => {
+            compile_jump_if(&e.argument, !jump_when, ctx)
+        }
+        ast::Expression::LogicalExpression(e)
+            if e.operator != oxc_syntax::operator::LogicalOperator::Coalesce =>
+        {
+            let short_circuits_when = e.operator == oxc_syntax::operator::LogicalOperator::Or;
+            if short_circuits_when == jump_when {
+                let mut jumps = compile_jump_if(&e.left, jump_when, ctx)?;
+                if let Ok(right) = compile_jump_if(&e.right, jump_when, ctx) {
+                    jumps.extend(right);
+                }
+                Ok(jumps)
+            } else {
+                let to_end = compile_jump_if(&e.left, short_circuits_when, ctx)?;
+                let jumps = compile_jump_if(&e.right, jump_when, ctx).unwrap_or_default();
+                for jump in to_end {
+                    ctx.set_jump_target_here(jump);
+                }
+                Ok(jumps)
+            }
+        }
+        _ => {
+            expression.compile(ctx)?.get_value(ctx)?;
+            let instruction = if jump_when {
+                Instruction::JumpIfTrue
+            } else {
+                Instruction::JumpIfNot
+            };
+            Ok(vec![ctx.add_instruction_with_jump_slot(instruction)])
+        }
+    }
+}
+
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     for ast::ConditionalExpression<'s>
 {
@@ -2126,10 +2175,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // 1. Let lref be ? Evaluation of ShortCircuitExpression.
         // 2. Let lval be ToBoolean(? GetValue(lref)).
-        let _lval = self.test.compile(ctx)?.get_value(ctx)?;
         // Jump over first AssignmentExpression (consequent) if test fails.
-        // Note: JumpIfNot performs ToBoolean from above step.
-        let jump_to_second = ctx.add_instruction_with_jump_slot(Instruction::JumpIfNot);
+        let jumps_to_second = compile_jump_if(&self.test, false, ctx)?;
         // 3. If lval is true, then
         // a. Let trueRef be ? Evaluation of the first AssignmentExpression.
         // b. Return ? GetValue(trueRef).
@@ -2137,7 +2184,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
         // Jump over second AssignmentExpression (alternate).
         let jump_over_second = ctx.add_instruction_with_jump_slot(Instruction::Jump);
         // 4. Else,
-        ctx.set_jump_target_here(jump_to_second);
+        for jump in jumps_to_second {
+            ctx.set_jump_target_here(jump);
+        }
         // a. Let falseRef be ? Evaluation of the second AssignmentExpression.
         // b. Return ? GetValue(falseRef).
         let false_ref = self.alternate.compile(ctx).and_then(|c| c.get_value(ctx));
@@ -2923,9 +2972,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::IfStat
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
         // 1. Let exprRef be ? Evaluation of Expression.
         // 2. Let exprValue be ToBoolean(? GetValue(exprRef)).
-        value_result_to_statement_result(self.test.compile(ctx).and_then(|r| r.get_value(ctx)))?;
         // 3. If exprValue is true, then
-        let jump_to_else = ctx.add_instruction_with_jump_slot(Instruction::JumpIfNot);
+        let jumps_to_else = match compile_jump_if(&self.test, false, ctx) {
+            Ok(jumps) => jumps,
+            Err(err) => return ControlFlow::Break(err.into()),
+        };
         let st = ctx.enter_if_statement();
         // a. Let stmtCompletion be Completion(Evaluation of the first Statement).
         let consequent_stmt_completion = self.consequent.compile(ctx);
@@ -2937,13 +2988,17 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::IfStat
             None
         };
         if let Some(alternate) = &self.alternate {
-            ctx.set_jump_target_here(jump_to_else);
+            for jump in jumps_to_else {
+                ctx.set_jump_target_here(jump);
+            }
             // a. Let stmtCompletion be Completion(Evaluation of the second Statement).
             let st = ctx.enter_if_statement();
             let _stmt_completion = alternate.compile(ctx);
             st.exit(ctx, false);
         } else {
-            ctx.set_jump_target_here(jump_to_else);
+            for jump in jumps_to_else {
+                ctx.set_jump_target_here(jump);
+            }
             // 3. If exprValue is false, then
             // a. Return undefined.
             ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
@@ -3888,14 +3943,12 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast
         // a. If test is not empty, then
         let test_result = if let Some(test) = &self.test {
             // i. Let testRef be ? Evaluation of test.
-            let test_ref = test.compile(ctx);
             // ii. Let testValue be ? GetValue(testRef).
-            let test_value = test_ref.and_then(|r| r.get_value(ctx));
             // iii. If ToBoolean(testValue) is false, return V.
             // jump over consequent if test fails
-            test_value.map(|_| Some(ctx.add_instruction_with_jump_slot(Instruction::JumpIfNot)))
+            compile_jump_if(test, false, ctx)
         } else {
-            Ok(None)
+            Ok(Vec::new())
         };
 
         let result = if let Err(err) = test_result.as_ref() {
@@ -3927,8 +3980,10 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast
         }
 
         // iii. If ToBoolean(testValue) is false, return V.
-        if let Ok(Some(end_jump)) = test_result {
-            ctx.set_jump_target_here(end_jump);
+        if let Ok(end_jumps) = test_result {
+            for end_jump in end_jumps {
+                ctx.set_jump_target_here(end_jump);
+            }
         }
         // Note: exit_loop performs UpdateEmpty; if we jumped here from test
         // failure then result is currently empty and UpdateEmpty will pop V
@@ -4324,13 +4379,11 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
         // OPTIMISATION: while(true) loops are pretty common, skip the test.
         let expr_result = if !is_boolean_literal_true(&self.test) {
             // b. Let exprValue be ? GetValue(exprRef).
-            let expr_value = self.test.compile(ctx).and_then(|r| r.get_value(ctx));
-
             // c. If ToBoolean(exprValue) is false, return V.
             // jump over loop jump if test fails
-            expr_value.map(|_| Some(ctx.add_instruction_with_jump_slot(Instruction::JumpIfNot)))
+            compile_jump_if(&self.test, false, ctx)
         } else {
-            Ok(None)
+            Ok(Vec::new())
         };
 
         // d. Let stmtResult be Completion(Evaluation of Statement).
@@ -4357,8 +4410,10 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
         //    stmtResult.[[Value]].
 
         // c. If ToBoolean(exprValue) is false, return V.
-        if let Ok(Some(end_jump)) = expr_result {
-            ctx.set_jump_target_here(end_jump);
+        if let Ok(end_jumps) = expr_result {
+            for end_jump in end_jumps {
+                ctx.set_jump_target_here(end_jump);
+            }
         }
         // Note: exit_loop performs UpdateEmpty; if we jumped here from test
         // failure then result is currently empty and UpdateEmpty will pop V
@@ -4396,20 +4451,18 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
             // OPTIMISATION: do {} while(true) loops are still somewhat common,
             // skip the test.
             // f. If ToBoolean(exprValue) is false, return V.
-            Ok(None)
+            Ok(Vec::new())
         } else if is_boolean_literal_false(&self.test) {
             // OPTIMISATION: do {} while(false) loops appear in tests; this is
             // a dumb optimisation: continue can never return to the beginning
             // of the loop.
             // f. If ToBoolean(exprValue) is false, return V.
-            Ok(Some(ctx.add_instruction_with_jump_slot(Instruction::Jump)))
+            Ok(vec![ctx.add_instruction_with_jump_slot(Instruction::Jump)])
         } else {
             // d. Let exprRef be ? Evaluation of Expression.
             // e. Let exprValue be ? GetValue(exprRef).
-            let expr_value = self.test.compile(ctx).and_then(|r| r.get_value(ctx));
-
             // f. If ToBoolean(exprValue) is false, return V.
-            expr_value.map(|_| Some(ctx.add_instruction_with_jump_slot(Instruction::JumpIfNot)))
+            compile_jump_if(&self.test, false, ctx)
         };
 
         let stmt_result = if let Err(err) = expr_result {
@@ -4437,8 +4490,10 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
             ctx.add_instruction(Instruction::Throw);
         }
         // f. If ToBoolean(exprValue) is false, return V.
-        if let Ok(Some(jump_to_end)) = expr_result {
-            ctx.set_jump_target_here(jump_to_end.clone());
+        if let Ok(jumps_to_end) = expr_result {
+            for jump_to_end in jumps_to_end {
+                ctx.set_jump_target_here(jump_to_end);
+            }
         }
         // Note: exit_loop performs UpdateEmpty; if we jumped here from test
         // failure then result is currently empty and UpdateEmpty will pop V
