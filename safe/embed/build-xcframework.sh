@@ -69,11 +69,11 @@ build() {
     python3 -I "$ROOT/safe/embed/weak_personality.py" "$BUILD_DIR/nova_embed_ffi-$target.o"
     rm -f "$BUILD_DIR/libnova_embed_ffi-$target.a"
     libtool -static -o "$BUILD_DIR/libnova_embed_ffi-$target.a" "$BUILD_DIR/nova_embed_ffi-$target.o"
-    if ! nm -m "$BUILD_DIR/libnova_embed_ffi-$target.a" | grep -Eq ' weak external (\[no dead strip\] )?_rust_eh_personality$'; then
+    if ! nm --no-llvm-bc -m "$BUILD_DIR/libnova_embed_ffi-$target.a" | grep -Eq ' weak external (\[no dead strip\] )?_rust_eh_personality$'; then
         echo "_rust_eh_personality is not a weak external definition for $target"
         exit 1
     fi
-    exported="$(nm -gU "$BUILD_DIR/libnova_embed_ffi-$target.a" | awk 'NF == 3 { print $3 }' | grep -v -e '^_nova_' -e '^_rust_eh_personality$' || true)"
+    exported="$(nm --no-llvm-bc -gU "$BUILD_DIR/libnova_embed_ffi-$target.a" | awk 'NF == 3 { print $3 }' | grep -v -e '^_nova_' -e '^_rust_eh_personality$' || true)"
     if [ -n "$exported" ]; then
         echo "symbols other than nova_* are exported for $target:"
         echo "$exported"
