@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::width::usize_from_i64;
 use core::ops::ControlFlow;
 
 use crate::{
@@ -188,7 +187,9 @@ impl FunctionPrototype {
         target = scoped_target.get(agent);
         let mut scoped_f = None;
         // 4. Let L be 0.
-        let mut l = 0;
+        // L is a u64, not a usize: a target's "length" goes up to 2^53 - 1 on a
+        // 32-bit target as well. u64::MAX stands for +∞.
+        let mut l: u64 = 0;
         // 5. Let targetHasLength be ? HasOwnProperty(Target, "length").
         let target_has_length = if let TryResult::Continue(result) = try_has_own_property(
             agent,
@@ -253,13 +254,13 @@ impl FunctionPrototype {
                         // 3. Let argCount be the number of elements in args.
                         let arg_count = args_len;
                         // 4. Set L to max(targetLenAsInt - argCount, 0).
-                        l = usize_from_i64(0.max(target_len.into_i64() - arg_count as i64));
+                        l = 0.max(target_len.into_i64() - arg_count as i64) as u64;
                     }
                     _ => {
                         // i. If targetLen is +∞𝔽, then
                         if target_len.is_pos_infinity_(agent) {
                             // 1. Set L to +∞.
-                            l = usize::MAX;
+                            l = u64::MAX;
                         } else if target_len.is_neg_infinity_(agent) {
                             // ii. Else if targetLen is -∞𝔽, then
                             // 1. Set L to 0.
@@ -273,7 +274,7 @@ impl FunctionPrototype {
                             // 3. Let argCount be the number of elements in args.
                             let arg_count = args_len;
                             // 4. Set L to max(targetLenAsInt - argCount, 0).
-                            l = usize_from_i64(0.max(target_len_as_int - arg_count as i64));
+                            l = 0.max(target_len_as_int - arg_count as i64) as u64;
                         }
                     }
                 }
@@ -284,8 +285,8 @@ impl FunctionPrototype {
         // A length past the heap data's u8, or a bound function whose
         // prototype is not %Function.prototype% (it has a backing object from
         // its creation), keeps "length" as a property of the backing object.
-        if l > usize::from(u8::MAX) || f.get_backing_object(agent).is_some() {
-            let length = if l == usize::MAX {
+        if l > u64::from(u8::MAX) || f.get_backing_object(agent).is_some() {
+            let length = if l == u64::MAX {
                 Number::pos_inf()
             } else {
                 Number::from_f64(agent, l as f64, gc.nogc())

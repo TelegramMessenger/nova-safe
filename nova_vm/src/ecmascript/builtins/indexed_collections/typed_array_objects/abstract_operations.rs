@@ -920,7 +920,9 @@ pub(crate) fn allocate_typed_array_buffer<'a, T: Viewable>(
     let element_size = size_of::<T>();
 
     // 3. Let byteLength be elementSize × length.
-    let byte_length = element_size * length;
+    // A product past usize::MAX (a 32-bit target: a length of 2^30 eight-byte
+    // elements) is refused by the allocation below like any too large one.
+    let byte_length = element_size.saturating_mul(length);
 
     // 4. Let data be ? AllocateArrayBuffer(%ArrayBuffer%, byteLength).
     let data = ArrayBuffer::new(agent, byte_length, gc)?;

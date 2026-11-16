@@ -2,17 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::width::usize_from_i64;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinGetter,
         BuiltinIntrinsicConstructor, ExceptionType, Function, IteratorRecord, JsResult, Number,
         Object, PropertyKey, ProtoIntrinsics, Realm, SmallInteger, String, Value, array_create,
-        builders::BuiltinFunctionBuilder, call_function, construct, create_data_property_or_throw,
-        get, get_iterator_from_method, get_method, get_prototype_from_constructor,
-        if_abrupt_close_iterator, is_array, is_callable, is_constructor, iterator_close_with_error,
-        iterator_step_value, length_of_array_like, same_value_zero, set, throw_not_callable,
-        to_object, to_uint32_number, try_create_data_property_or_throw, unwrap_try,
+        array_create_of_length, builders::BuiltinFunctionBuilder, call_function, construct,
+        create_data_property_or_throw, get, get_iterator_from_method, get_method,
+        get_prototype_from_constructor, if_abrupt_close_iterator, is_array, is_callable,
+        is_constructor, iterator_close_with_error, iterator_step_value, length_of_array_like,
+        same_value_zero, set, throw_not_callable, to_object, to_uint32_number,
+        try_create_data_property_or_throw, unwrap_try,
     },
     engine::{Bindable, GcScope, Scopable},
     heap::{IntrinsicConstructorIndexes, WellKnownSymbols},
@@ -397,16 +397,10 @@ impl ArrayConstructor {
         } else {
             // 10. Else,
             // a. Let A be ? ArrayCreate(len).
-            array_create(
-                agent,
-                usize_from_i64(len),
-                usize_from_i64(len),
-                None,
-                gc.nogc(),
-            )
-            .unbind()?
-            .bind(gc.nogc())
-            .into()
+            array_create_of_length(agent, len as u64, None, gc.nogc())
+                .unbind()?
+                .bind(gc.nogc())
+                .into()
         };
 
         let a = a.scope(agent, gc.nogc());

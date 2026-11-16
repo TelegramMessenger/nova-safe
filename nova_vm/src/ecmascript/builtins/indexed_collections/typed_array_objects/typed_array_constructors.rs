@@ -807,7 +807,7 @@ fn typed_array_constructor<'gc, T: Viewable>(
             let element_length = src_record.typed_array_length(agent);
 
             // 10. Let byteLength be elementSize × elementLength.
-            let byte_length = element_size * element_length;
+            let byte_length = element_size.saturating_mul(element_length);
             let buffer = ArrayBuffer::new(agent, byte_length, gc.nogc())
                 .unbind()?
                 .bind(gc.nogc());

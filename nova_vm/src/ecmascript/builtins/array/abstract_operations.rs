@@ -101,7 +101,7 @@ pub(crate) fn array_create<'a>(
 pub(crate) fn array_species_create<'a>(
     agent: &mut Agent,
     original_array: Object,
-    length: usize,
+    length: u64,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, Object<'a>> {
     let nogc = gc.nogc();
@@ -110,7 +110,7 @@ pub(crate) fn array_species_create<'a>(
     let original_is_array = is_array(agent, original_array, nogc).unbind()?;
     // 2. If isArray is false, return ? ArrayCreate(length).
     if !original_is_array {
-        let new_array = array_create(agent, length, length, None, gc.into_nogc())?;
+        let new_array = array_create_of_length(agent, length, None, gc.into_nogc())?;
         return Ok(new_array.into());
     }
     // 3. Let C be ? Get(originalArray, "constructor").
@@ -160,7 +160,7 @@ pub(crate) fn array_species_create<'a>(
     }
     // 6. If C is undefined, return ? ArrayCreate(length).
     if c.is_undefined() {
-        let new_array = array_create(agent, length, length, None, gc.into_nogc())?;
+        let new_array = array_create_of_length(agent, length, None, gc.into_nogc())?;
         return Ok(new_array.into());
     }
     // 7. If IsConstructor(C) is false, throw a TypeError exception.
@@ -180,6 +180,26 @@ pub(crate) fn array_species_create<'a>(
         None,
         gc,
     )
+}
+
+/// [`array_create`] for a length that is still the specification's integer:
+/// one past 2^32 - 1 throws the RangeError of ArrayCreate's first step here.
+/// A `usize` cannot carry such a length to `array_create` on a 32-bit target.
+pub(crate) fn array_create_of_length<'a>(
+    agent: &mut Agent,
+    length: u64,
+    proto: Option<Object>,
+    gc: NoGcScope<'a, '_>,
+) -> JsResult<'a, Array<'a>> {
+    // 1. If length > 2**32 - 1, throw a RangeError exception.
+    let Ok(length) = u32::try_from(length) else {
+        return Err(agent.throw_exception_with_static_message(
+            ExceptionType::RangeError,
+            "invalid array length",
+            gc,
+        ));
+    };
+    array_create(agent, length as usize, length as usize, proto, gc)
 }
 
 /// ### [10.4.2.4 ArraySetLength ( A, Desc )](https://tc39.es/ecma262/#sec-arraysetlength)

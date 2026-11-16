@@ -12,12 +12,13 @@ use crate::{
         Agent, ArgumentsList, ArrayIterator, BUILTIN_STRING_MEMORY, Behaviour, Builtin,
         BuiltinIntrinsic, CollectionIteratorKind, ExceptionType, Function, InternalMethods,
         JsResult, Number, Object, Primitive, PropertyKey, Realm, SmallInteger, String, Value,
-        array_create, array_species_create, builders::OrdinaryObjectBuilder, call_function,
-        create_data_property_or_throw, delete_property_or_throw, get, has_property, invoke,
-        is_array, is_callable, is_strictly_equal, length_of_array_like, same_value_zero, set,
-        to_boolean, to_integer_or_infinity, to_number, to_object, to_string, to_string_primitive,
-        try_create_data_property_or_throw, try_length_of_array_like, try_merge_sort_by,
-        try_result_into_js, try_to_integer_or_infinity, try_to_string, unwrap_try,
+        array_create_of_length, array_species_create, builders::OrdinaryObjectBuilder,
+        call_function, create_data_property_or_throw, delete_property_or_throw, get, has_property,
+        invoke, is_array, is_callable, is_strictly_equal, length_of_array_like, same_value_zero,
+        set, to_boolean, to_integer_or_infinity, to_number, to_object, to_string,
+        to_string_primitive, try_create_data_property_or_throw, try_length_of_array_like,
+        try_merge_sort_by, try_result_into_js, try_to_integer_or_infinity, try_to_string,
+        unwrap_try,
     },
     engine::{Bindable, GcScope, NoGcScope, Rootable, Scopable, ScopableCollection, Scoped},
     heap::{ArenaAccessSoAMut, Heap, HeapIndexHandle, IntrinsicFunctionIndexes, WellKnownSymbols},
@@ -1990,7 +1991,7 @@ impl ArrayPrototype {
         };
         let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
         // 4. Let A be ? ArraySpeciesCreate(O, len).
-        let a = array_species_create(agent, o.get(agent), usize_from_i64(len), gc.reborrow())
+        let a = array_species_create(agent, o.get(agent), len as u64, gc.reborrow())
             .unbind()?
             .scope(agent, gc.nogc());
         // 5. Let k be 0.
@@ -2893,9 +2894,14 @@ impl ArrayPrototype {
                 };
                 let array = array.scope(agent, nogc);
                 let count = end.saturating_sub(start);
-                let a = array_species_create(agent, array.get(agent).into(), count, gc.reborrow())
-                    .unbind()?
-                    .scope(agent, gc.nogc());
+                let a = array_species_create(
+                    agent,
+                    array.get(agent).into(),
+                    count as u64,
+                    gc.reborrow(),
+                )
+                .unbind()?
+                .scope(agent, gc.nogc());
                 if count == 0 {
                     set(
                         agent,
@@ -3014,8 +3020,9 @@ impl ArrayPrototype {
             .unbind()?
             .scope(agent, nogc);
         // 2. Let len be ? LengthOfArrayLike(O).
-        let len =
-            usize_from_i64(length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()?);
+        // Indexes are u64, not usize: an array-like's length goes up to 2^53 - 1 on
+        // a 32-bit target as well.
+        let len = length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()? as u64;
         // 3. Let relativeStart be ? ToIntegerOrInfinity(start).
         let relative_start =
             to_integer_or_infinity(agent, start.get(agent), gc.reborrow()).unbind()?;
@@ -3024,10 +3031,10 @@ impl ArrayPrototype {
             0
         } else if relative_start.is_negative() {
             // 5. Else if relativeStart < 0, let k be max(len + relativeStart, 0).
-            usize_from_i64((len as i64 + relative_start.into_i64()).max(0))
+            (len as i64 + relative_start.into_i64()).max(0) as u64
         } else {
             // 6. Else, let k be min(relativeStart, len).
-            usize_from_i64(relative_start.into_i64()).min(len)
+            (relative_start.into_i64() as u64).min(len)
         };
 
         // 7. If end is undefined, let relativeEnd be len; else let relativeEnd be ? ToIntegerOrInfinity(end).
@@ -3042,10 +3049,10 @@ impl ArrayPrototype {
                 0
             } else if relative_end.is_negative() {
                 // 9. Else if relativeEnd < 0, let final be max(len + relativeEnd, 0).
-                usize_from_i64((len as i64 + relative_end.into_i64()).max(0))
+                (len as i64 + relative_end.into_i64()).max(0) as u64
             } else {
                 // 10. Else, let final be min(relativeEnd, len).
-                usize_from_i64(relative_end.into_i64()).min(len)
+                (relative_end.into_i64() as u64).min(len)
             }
         };
         // 11. Let count be max(final - k, 0).
@@ -3324,7 +3331,9 @@ impl ArrayPrototype {
             .unbind()?
             .scope(agent, gc.nogc());
         // 2. Let len be ? LengthOfArrayLike(O).
-        let len = length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()?;
+        // Indexes and counts are u64, not usize: an array-like's length goes up to
+        // 2^53 - 1 on a 32-bit target as well.
+        let len = length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()? as u64;
         // 3. Let relativeStart be ? ToIntegerOrInfinity(start).
         let relative_start =
             to_integer_or_infinity(agent, start.get(agent), gc.reborrow()).unbind()?;
@@ -3333,13 +3342,13 @@ impl ArrayPrototype {
             0
         } else if relative_start.is_negative() {
             // 5. Else if relativeStart < 0, let actualStart be max(len + relativeStart, 0).
-            usize_from_i64((len as i64 + relative_start.into_i64()).max(0))
+            (len as i64 + relative_start.into_i64()).max(0) as u64
         } else {
             // 6. Else, let actualStart be min(relativeStart, len).
-            usize_from_i64(relative_start.into_i64().min(len as i64))
+            relative_start.into_i64().min(len as i64) as u64
         };
         // 7. Let itemCount be the number of elements in items.
-        let item_count = items.len();
+        let item_count = items.len() as u64;
         // 8. If start is not present, then
         let actual_delete_count = if arguments.is_empty() {
             // a. Let actualDeleteCount be 0.
@@ -3347,19 +3356,17 @@ impl ArrayPrototype {
         } else if arguments.len() == 1 {
             // 9. Else if deleteCount is not present, then
             // a. Let actualDeleteCount be len - actualStart.
-            usize_from_i64(len) - actual_start
+            len - actual_start
         } else {
             // 10. Else,
             // a. Let dc be ? ToIntegerOrInfinity(deleteCount).
             let dc =
                 to_integer_or_infinity(agent, delete_count.get(agent), gc.reborrow()).unbind()?;
             // b. Let actualDeleteCount be the result of clamping dc between 0 and len - actualStart.
-            usize_from_i64(dc.into_i64().max(0)).min(usize_from_i64(len) - actual_start)
+            (dc.into_i64().max(0) as u64).min(len - actual_start)
         };
         // 11. If len + itemCount - actualDeleteCount > 2**53 - 1, throw a TypeError exception.
-        if usize_from_i64(len) + item_count - actual_delete_count
-            > usize_from_i64(SmallInteger::MAX)
-        {
+        if len + item_count - actual_delete_count > SmallInteger::MAX as u64 {
             return Err(agent.throw_exception_with_static_message(
                 ExceptionType::TypeError,
                 "Target index overflowed",
@@ -3371,7 +3378,7 @@ impl ArrayPrototype {
             .unbind()?
             .scope(agent, gc.nogc());
         // 13. Let k be 0.
-        let mut k = 0;
+        let mut k: u64 = 0;
         // 14. Repeat, while k < actualDeleteCount,
         while k < actual_delete_count {
             agent.poll_interrupt(gc.nogc()).unbind()?;
@@ -3412,7 +3419,7 @@ impl ArrayPrototype {
                 // a. Set k to actualStart.
                 k = actual_start;
                 // b. Repeat, while k < (len - actualDeleteCount),
-                while k < (usize_from_i64(len) - actual_delete_count) {
+                while k < (len - actual_delete_count) {
                     agent.poll_interrupt(gc.nogc()).unbind()?;
                     // i. Let from be ! ToString(𝔽(k + actualDeleteCount)).
                     let from = (k + actual_delete_count).try_into().unwrap();
@@ -3444,9 +3451,9 @@ impl ArrayPrototype {
                     // v. Set k to k + 1.
                 }
                 // c. Set k to len.
-                k = usize_from_i64(len);
+                k = len;
                 // d. Repeat, while k > (len - actualDeleteCount + itemCount),
-                while k > (usize_from_i64(len) - actual_delete_count + item_count) {
+                while k > (len - actual_delete_count + item_count) {
                     agent.poll_interrupt(gc.nogc()).unbind()?;
                     // i. Perform ? DeletePropertyOrThrow(O, ! ToString(𝔽(k - 1))).
                     delete_property_or_throw(
@@ -3463,7 +3470,7 @@ impl ArrayPrototype {
             Ordering::Greater => {
                 // 17. Else if itemCount > actualDeleteCount, then
                 // a. Set k to (len - actualDeleteCount).
-                k = usize_from_i64(len) - actual_delete_count;
+                k = len - actual_delete_count;
                 // b. Repeat, while k > actualStart,
                 while k > actual_start {
                     agent.poll_interrupt(gc.nogc()).unbind()?;
@@ -3642,15 +3649,9 @@ impl ArrayPrototype {
         // 2. Let len be ? LengthOfArrayLike(O).
         let len = length_of_array_like(agent, o.unbind(), gc.reborrow()).unbind()?;
         // 3. Let A be ? ArrayCreate(len).
-        let a = array_create(
-            agent,
-            usize_from_i64(len),
-            usize_from_i64(len),
-            None,
-            gc.nogc(),
-        )
-        .unbind()?
-        .scope(agent, gc.nogc());
+        let a = array_create_of_length(agent, len as u64, None, gc.nogc())
+            .unbind()?
+            .scope(agent, gc.nogc());
         // 4. Let k be 0.
         let mut k = 0;
         // 5. Repeat, while k < len,
@@ -3705,12 +3706,12 @@ impl ArrayPrototype {
             .unbind()?
             .scope(agent, gc.nogc());
         // 3. Let len be ? LengthOfArrayLike(obj).
-        let len =
-            usize_from_i64(length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()?);
+        let len = length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()?;
         // 4. Let A be ? ArrayCreate(len).
-        let a = array_create(agent, len, len, None, gc.nogc())
+        let a = array_create_of_length(agent, len as u64, None, gc.nogc())
             .unbind()?
             .scope(agent, gc.nogc());
+        let len = usize_from_i64(len);
         // 5. Let SortCompare be a new Abstract Closure with parameters (x, y)
         // that captures comparator and performs the following steps when
         // called:
@@ -3759,8 +3760,9 @@ impl ArrayPrototype {
             .unbind()?
             .scope(agent, gc.nogc());
         // 2. Let len be ? LengthOfArrayLike(O).
-        let len =
-            usize_from_i64(length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()?);
+        // Indexes and counts are u64, not usize: an array-like's length goes up to
+        // 2^53 - 1 on a 32-bit target as well.
+        let len = length_of_array_like(agent, o.get(agent), gc.reborrow()).unbind()? as u64;
         // 3. Let relativeStart be ? ToIntegerOrInfinity(start).
         let relative_start =
             to_integer_or_infinity(agent, start.get(agent), gc.reborrow()).unbind()?;
@@ -3769,13 +3771,13 @@ impl ArrayPrototype {
             0
         } else if relative_start.is_negative() {
             // 5. Else if relativeStart < 0, let actualStart be max(len + relativeStart, 0).
-            usize_from_i64((len as i64 + relative_start.into_i64()).max(0))
+            (len as i64 + relative_start.into_i64()).max(0) as u64
         } else {
             // 6. Else, let actualStart be min(relativeStart, len).
-            usize_from_i64(relative_start.into_i64().min(len as i64))
+            relative_start.into_i64().min(len as i64) as u64
         };
         // 7. Let insertCount be the number of elements in items.
-        let insert_count = items.len();
+        let insert_count = items.len() as u64;
         // 8. If start is not present, then
         let actual_skip_count = if arguments.is_empty() {
             // a. Let actualSkipCount be 0.
@@ -3790,11 +3792,11 @@ impl ArrayPrototype {
             let dc =
                 to_integer_or_infinity(agent, skip_count.get(agent), gc.reborrow()).unbind()?;
             // b. Let actualSkipCount be the result of clamping dc between 0 and len - actualStart.
-            usize_from_i64(dc.into_i64().max(0)).min(len - actual_start)
+            (dc.into_i64().max(0) as u64).min(len - actual_start)
         };
         // 11. Let newLen be len + insertCount - actualSkipCount.
         let new_len = len + insert_count - actual_skip_count;
-        if new_len > usize_from_i64(SmallInteger::MAX) {
+        if new_len > SmallInteger::MAX as u64 {
             return Err(agent.throw_exception_with_static_message(
                 ExceptionType::TypeError,
                 "Target index overflowed",
@@ -3802,12 +3804,12 @@ impl ArrayPrototype {
             ));
         };
         // 13. Let A be ? ArrayCreate(newLen).
-        let a = array_create(agent, new_len, new_len, None, gc.nogc())
+        let a = array_create_of_length(agent, new_len, None, gc.nogc())
             .unbind()?
             .bind(gc.nogc());
         let scoped_a = a.scope(agent, gc.nogc());
         // 14. Let i be 0.
-        let mut i = 0;
+        let mut i: u64 = 0;
         // 15. Let r be actualStart + actualSkipCount.
         let mut r = actual_start + actual_skip_count;
         // 16. Repeat, while i < actualStart,
@@ -4126,15 +4128,9 @@ impl ArrayPrototype {
             ));
         }
         // 7. Let A be ? ArrayCreate(len).
-        let a = array_create(
-            agent,
-            usize_from_i64(len),
-            usize_from_i64(len),
-            None,
-            gc.nogc(),
-        )
-        .unbind()?
-        .scope(agent, gc.nogc());
+        let a = array_create_of_length(agent, len as u64, None, gc.nogc())
+            .unbind()?
+            .scope(agent, gc.nogc());
         // 8. Let k be 0.
         let mut k = 0;
         // 9. Repeat, while k < len,
