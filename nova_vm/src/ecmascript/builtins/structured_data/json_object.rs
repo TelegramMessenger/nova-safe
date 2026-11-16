@@ -4,6 +4,7 @@
 
 mod json_parser;
 
+use crate::width::{usize_from_i64, usize_from_u64};
 use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{
@@ -252,7 +253,7 @@ impl JSONObject {
                 // 1. Set PropertyList to a new empty List.
                 // The list grows as entries come: `len` is the script's word.
                 property_list = Some(
-                    Vec::<PropertyKey>::with_capacity((len as usize).min(1024))
+                    Vec::<PropertyKey>::with_capacity(usize_from_i64(len).min(1024))
                         .scope(agent, gc.nogc()),
                 );
                 // 3. Let k be 0.
@@ -1186,7 +1187,7 @@ fn serialize_json_array<'a, 'b>(
     // 5. Let partial be a new empty List.
     state
         .result
-        .reserve(open.len() + close.len() + (len as usize) * (separator.len() + 1));
+        .reserve(open.len() + close.len() + usize_from_u64(len) * (separator.len() + 1));
     state.result.push_str(open);
     // 7. Let index be 0.
     // 8. Repeat, while index < len,

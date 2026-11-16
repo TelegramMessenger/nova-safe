@@ -4,6 +4,7 @@
 
 //! ### [6.2.9 Data Blocks](https://tc39.es/ecma262/#sec-data-blocks)
 
+use crate::width::usize_from_u64;
 #[cfg(feature = "shared-array-buffer")]
 use std::{
     collections::hash_map::Entry,
@@ -253,7 +254,7 @@ impl DataBlock {
     /// A detached block stays detached.
     pub(crate) fn realloc(&mut self, new_byte_length: usize) {
         // Max byte length should be within safe integer length.
-        debug_assert!(new_byte_length < 2usize.pow(53));
+        debug_assert!((new_byte_length as u64) < 2u64.pow(53));
         let Some(bytes) = self.bytes.take() else {
             // Detached.
             return;
@@ -289,13 +290,8 @@ impl SharedDataBlockMaxByteLength {
     #[inline(always)]
     fn new(size: usize, growable: bool) -> Self {
         if growable {
-            if cfg!(target_pointer_width = "64") {
-                Self(size | 0x8000_0000_0000_0000)
-            } else if cfg!(target_pointer_width = "32") {
-                Self(size | 0x8000_0000)
-            } else {
-                panic!()
-            }
+            // The top bit of a usize, whatever its width.
+            Self(size | !(usize::MAX >> 1))
         } else {
             Self(size)
         }
@@ -307,13 +303,7 @@ impl SharedDataBlockMaxByteLength {
     /// the byte length of an static SharedArrayBuffer.
     #[inline(always)]
     fn max_byte_length(self) -> usize {
-        if cfg!(target_pointer_width = "64") {
-            self.0 & 0x7FFF_FFFF_FFFF_FFFF
-        } else if cfg!(target_pointer_width = "32") {
-            self.0 & 0x7FFF_FFFF
-        } else {
-            panic!()
-        }
+        self.0 & (usize::MAX >> 1)
     }
 
     /// Returns true if the SharedDataBlock has a 0 maximum byte length.
@@ -781,7 +771,7 @@ pub(crate) fn create_byte_data_block<'a>(
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, DataBlock> {
     agent.check_allocation(usize::try_from(size).unwrap_or(usize::MAX), gc)?;
-    agent.heap.data_bytes_since_gc += size as usize;
+    agent.heap.data_bytes_since_gc += usize_from_u64(size);
     // 1. If size > 2**53 - 1, throw a RangeError exception.
     if let Some(db) = usize::try_from(size)
         .ok()
@@ -823,7 +813,7 @@ pub(crate) fn create_shared_byte_data_block<'a>(
     let size = max_byte_length.unwrap_or(byte_length);
     assert!(byte_length <= size);
     agent.check_allocation(usize::try_from(size).unwrap_or(usize::MAX), gc)?;
-    agent.heap.data_bytes_since_gc += size as usize;
+    agent.heap.data_bytes_since_gc += usize_from_u64(size);
     // 1. Let db be a new Shared Data Block value consisting of size bytes. If
     //    it is impossible to create such a Shared Data Block, throw a
     //    RangeError exception.
@@ -831,7 +821,10 @@ pub(crate) fn create_shared_byte_data_block<'a>(
         .ok()
         .filter(|&size| size as u64 <= DATA_BLOCK_SIZE_LIMIT)
         .and_then(|_| {
-            SharedDataBlock::new(byte_length as usize, max_byte_length.map(|s| s as usize))
+            SharedDataBlock::new(
+                usize_from_u64(byte_length),
+                max_byte_length.map(|s| usize_from_u64(s)),
+            )
         })
     {
         // 2. Let execution be the [[CandidateExecution]] field of the

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use core::f64::consts;
 use std::ops::ControlFlow;
 use xsum::{Xsum, XsumAuto, XsumLarge, XsumSmall, XsumVariant, constants::XSUM_THRESHOLD};
@@ -1600,7 +1601,7 @@ impl MathObject {
         // algorithm's correctness won't be affected, but performance might be.
         let len_estimate: Option<usize> = if let Ok(items) = Object::try_from(items) {
             match try_length_of_array_like(agent, items, gc.nogc()) {
-                ControlFlow::Continue(len) => Some(len as usize),
+                ControlFlow::Continue(len) => Some(usize_from_i64(len)),
                 ControlFlow::Break(_) => None,
             }
         } else {
@@ -1656,7 +1657,7 @@ impl MathObject {
             count += 1;
             // ii. If count ≥ 2**53, then
             // iii. NOTE: The above case is not expected to be reached in practice and is included only so that implementations may rely on inputs being "reasonably sized" without violating this specification.
-            if count >= 1 << 53 {
+            if count as u64 >= 1 << 53 {
                 // 1. Let error be ThrowCompletion(a newly created RangeError object).
                 let error = agent.throw_exception_with_static_message(
                     ExceptionType::RangeError,

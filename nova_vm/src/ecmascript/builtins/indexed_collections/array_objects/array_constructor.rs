@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinGetter,
@@ -396,10 +397,16 @@ impl ArrayConstructor {
         } else {
             // 10. Else,
             // a. Let A be ? ArrayCreate(len).
-            array_create(agent, len as usize, len as usize, None, gc.nogc())
-                .unbind()?
-                .bind(gc.nogc())
-                .into()
+            array_create(
+                agent,
+                usize_from_i64(len),
+                usize_from_i64(len),
+                None,
+                gc.nogc(),
+            )
+            .unbind()?
+            .bind(gc.nogc())
+            .into()
         };
 
         let a = a.scope(agent, gc.nogc());

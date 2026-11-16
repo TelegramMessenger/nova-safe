@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::Ordering;
+use crate::width::{usize_from_i64, usize_from_u64};
 
 #[cfg(feature = "shared-array-buffer")]
 use crate::ecmascript::{GenericSharedTypedArray, SharedTypedArrayRecord};
@@ -346,7 +347,7 @@ pub(crate) trait TypedArrayAbstractOperations<'ta>: Copy + Sized {
         if index < 0 {
             return None;
         }
-        let index = index as usize;
+        let index = usize_from_i64(index);
         // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, unordered).
         let cached_buffer_byte_length: CachedBufferByteLength =
             self.get_cached_buffer_byte_length(agent, Ordering::Unordered);
@@ -725,13 +726,13 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
         match buffer {
             AnyArrayBuffer::ArrayBuffer(buffer) => {
                 let o = typed_array_create::<T>(agent, o_proto);
-                o.initialise_data(agent, buffer, offset as usize, None);
+                o.initialise_data(agent, buffer, usize_from_u64(offset), None);
                 Ok(o.into())
             }
             #[cfg(feature = "shared-array-buffer")]
             AnyArrayBuffer::SharedArrayBuffer(buffer) => {
                 let o = shared_typed_array_create::<T>(agent, o_proto);
-                o.initialise_data(agent, buffer, offset as usize, None);
+                o.initialise_data(agent, buffer, usize_from_u64(offset), None);
                 Ok(o.into())
             }
         }
@@ -773,7 +774,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
             ));
         };
 
-        let new_byte_length = new_byte_length as usize;
+        let new_byte_length = usize_from_u64(new_byte_length);
         let array_length = new_byte_length / element_size;
         // c. Set O.[[ByteLength]] to newByteLength.
         // d. Set O.[[ArrayLength]] to newByteLength / elementSize.
@@ -785,7 +786,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
                 o.initialise_data(
                     agent,
                     buffer,
-                    offset as usize,
+                    usize_from_u64(offset),
                     Some((new_byte_length, array_length)),
                 );
                 Ok(o.into())
@@ -796,7 +797,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
                 o.initialise_data(
                     agent,
                     buffer,
-                    offset as usize,
+                    usize_from_u64(offset),
                     Some((new_byte_length, array_length)),
                 );
                 Ok(o.into())
@@ -867,7 +868,8 @@ pub(crate) fn initialize_typed_array_from_array_like<'a, T: Viewable>(
     let o = o.scope(agent, gc.nogc());
     let scoped_array_like = array_like.scope(agent, gc.nogc());
     // 1. Let len be ? LengthOfArrayLike(arrayLike).
-    let len = length_of_array_like(agent, array_like.unbind(), gc.reborrow()).unbind()? as usize;
+    let len =
+        usize_from_i64(length_of_array_like(agent, array_like.unbind(), gc.reborrow()).unbind()?);
 
     // 2. Perform ? AllocateTypedArrayBuffer(O, len).
     allocate_typed_array_buffer::<T>(agent, o.get(agent), len, gc.nogc()).unbind()?;

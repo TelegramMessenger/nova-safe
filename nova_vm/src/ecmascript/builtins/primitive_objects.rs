@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use crate::{
     ecmascript::{
         Agent, BIGINT_DISCRIMINANT, BOOLEAN_DISCRIMINANT, BUILTIN_STRING_MEMORY, BigInt,
@@ -427,7 +428,7 @@ impl<'a> InternalMethods<'a> for PrimitiveObject<'a> {
                 return TryResult::Continue(false);
             } else if let PropertyKey::Integer(index) = property_key {
                 let index = index.into_i64();
-                if index >= 0 && (index as usize) < string.utf16_len_(agent) {
+                if index >= 0 && usize_from_i64(index) < string.utf16_len_(agent) {
                     return TryResult::Continue(false);
                 }
             }

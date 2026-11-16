@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use core::str::FromStr;
 use small_string::SmallString;
 use std::cmp::Ordering;
@@ -562,7 +563,7 @@ impl StringPrototype {
             Ok(Value::Undefined)
         } else {
             // 6. Let cp be CodePointAt(S, position).
-            let cp = s.code_point_at_(agent, position as usize);
+            let cp = s.code_point_at_(agent, usize_from_i64(position));
             // 7. Return 𝔽(cp.[[CodePoint]]).
             Ok(Value::from(cp.to_u32()))
         }
@@ -704,7 +705,7 @@ impl StringPrototype {
             String::try_from(search_string),
             end_position,
         ) {
-            (s, search_str, position.into_i64().max(0) as usize)
+            (s, search_str, usize_from_i64(position.into_i64().max(0)))
         } else {
             let search_string = search_string.scope(agent, nogc);
             let end_position = end_position.scope(agent, nogc);
@@ -740,11 +741,13 @@ impl StringPrototype {
                 usize::MAX
             } else {
                 // else let pos be ? ToIntegerOrInfinity(endPosition).
-                to_integer_or_infinity(agent, end_position, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc())
-                    .into_i64()
-                    .max(0) as usize
+                usize_from_i64(
+                    to_integer_or_infinity(agent, end_position, gc.reborrow())
+                        .unbind()?
+                        .bind(gc.nogc())
+                        .into_i64()
+                        .max(0),
+                )
             };
 
             let nogc = gc.nogc();
@@ -809,7 +812,7 @@ impl StringPrototype {
             String::try_from(search_string),
             position,
         ) {
-            (s, search_str, position.into_i64().max(0) as usize)
+            (s, search_str, usize_from_i64(position.into_i64().max(0)))
         } else {
             let position = position.scope(agent, nogc);
             let search_string = search_string.scope(agent, nogc);
@@ -841,11 +844,13 @@ impl StringPrototype {
             // 6. Let pos be ? ToIntegerOrInfinity(position).
             let position = position.get(agent);
             let position_is_undefined = position.is_undefined();
-            let pos = to_integer_or_infinity(agent, position, gc.reborrow())
-                .unbind()?
-                .bind(gc.nogc())
-                .into_i64()
-                .max(0) as usize;
+            let pos = usize_from_i64(
+                to_integer_or_infinity(agent, position, gc.reborrow())
+                    .unbind()?
+                    .bind(gc.nogc())
+                    .into_i64()
+                    .max(0),
+            );
             // 7. Assert: If position is undefined, then pos is 0.
             assert!(!position_is_undefined || pos == 0);
 
@@ -901,7 +906,7 @@ impl StringPrototype {
             String::try_from(search_string),
             position,
         ) {
-            (s, search_str, position.into_i64().max(0) as usize)
+            (s, search_str, usize_from_i64(position.into_i64().max(0)))
         } else {
             let search_string = search_string.scope(agent, nogc);
             let position = position.scope(agent, nogc);
@@ -920,10 +925,12 @@ impl StringPrototype {
             let search_str = search_string.replace_self(agent, search_str.unbind());
             // 4. Let pos be ? ToIntegerOrInfinity(position).
             // 5. Assert: If position is undefined, then pos is 0.
-            let pos = to_integer_or_infinity(agent, position.get(agent), gc.reborrow())
-                .unbind()?
-                .into_i64()
-                .max(0) as usize;
+            let pos = usize_from_i64(
+                to_integer_or_infinity(agent, position.get(agent), gc.reborrow())
+                    .unbind()?
+                    .into_i64()
+                    .max(0),
+            );
 
             let nogc = gc.nogc();
             (
@@ -998,7 +1005,7 @@ impl StringPrototype {
             String::try_from(search_string),
             position,
         ) {
-            (s, search_str, position.into_i64().max(0) as usize)
+            (s, search_str, usize_from_i64(position.into_i64().max(0)))
         } else {
             let search_string = search_string.scope(agent, nogc);
             let position = position.scope(agent, nogc);
@@ -1021,7 +1028,7 @@ impl StringPrototype {
                 // 6. If numPos is NaN, let pos be +∞;
                 usize::MAX
             } else if let Value::Integer(position) = position {
-                position.into_i64().max(0) as usize
+                usize_from_i64(position.into_i64().max(0))
             } else {
                 // 4. Let numPos be ? ToNumber(position).
                 let scoped_search_str = search_str.scope(agent, gc.nogc());
@@ -1034,9 +1041,11 @@ impl StringPrototype {
                     usize::MAX
                 } else {
                     // otherwise, let pos be! ToIntegerOrInfinity(numPos).
-                    to_integer_or_infinity_number(agent, num_pos)
-                        .into_i64()
-                        .max(0) as usize
+                    usize_from_i64(
+                        to_integer_or_infinity_number(agent, num_pos)
+                            .into_i64()
+                            .max(0),
+                    )
                 }
             };
 
@@ -1561,12 +1570,15 @@ impl StringPrototype {
         }
 
         agent
-            .check_string_length(s.utf16_len_(agent).saturating_mul(n as usize), gc.nogc())
+            .check_string_length(
+                s.utf16_len_(agent).saturating_mul(usize_from_i64(n)),
+                gc.nogc(),
+            )
             .unbind()?;
         // 6. Return the String value that is made from n copies of S appended together.
         Ok(Value::from_string(
             agent,
-            s.to_string_lossy_(agent).repeat(n as usize),
+            s.to_string_lossy_(agent).repeat(usize_from_i64(n)),
             gc.into_nogc(),
         ))
     }
@@ -1824,11 +1836,11 @@ impl StringPrototype {
             // 6. Else if intStart < 0, let from be max(len + intStart, 0).
             let len = i64::try_from(s.get(agent).utf16_len_(agent)).unwrap();
             let int_start = int_start.into_i64();
-            Some((len + int_start).max(0) as usize)
+            Some(usize_from_i64((len + int_start).max(0)))
         } else {
             // 7. Else, let from be min(intStart, len).
             let len = s.get(agent).utf16_len_(agent);
-            let int_start = int_start.into_i64() as usize;
+            let int_start = usize_from_i64(int_start.into_i64());
             if int_start >= len {
                 None
             } else {
@@ -1850,11 +1862,11 @@ impl StringPrototype {
                 // 10. Else if intEnd < 0, let to be max(len + intEnd, 0).
                 let len = i64::try_from(s.get(agent).utf16_len_(agent)).unwrap();
                 let int_end = int_end.into_i64();
-                Some((len + int_end).max(0) as usize)
+                Some(usize_from_i64((len + int_end).max(0)))
             } else {
                 // 11. Else, let to be min(intEnd, len).
                 let len = s.get(agent).utf16_len_(agent);
-                let int_end = int_end.into_i64() as usize;
+                let int_end = usize_from_i64(int_end.into_i64());
                 if int_end >= len { None } else { Some(int_end) }
             }
         };
@@ -2088,7 +2100,7 @@ impl StringPrototype {
         let position_option = if position.is_undefined() {
             Some(0)
         } else if let Value::Integer(position) = position {
-            Some(position.into_i64().max(0) as usize)
+            Some(usize_from_i64(position.into_i64().max(0)))
         } else {
             None
         };
@@ -2135,11 +2147,13 @@ impl StringPrototype {
             let start = if position.is_undefined() {
                 0
             } else {
-                to_integer_or_infinity(agent, position, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc())
-                    .into_i64()
-                    .max(0) as usize
+                usize_from_i64(
+                    to_integer_or_infinity(agent, position, gc.reborrow())
+                        .unbind()?
+                        .bind(gc.nogc())
+                        .into_i64()
+                        .max(0),
+                )
             };
 
             (
@@ -2235,10 +2249,10 @@ impl StringPrototype {
 
         let len = s.utf16_len_(agent);
         // 6. Let finalStart be the result of clamping intStart between 0 and len.
-        let final_start = (int_start.into_i64().max(0) as usize).min(len);
+        let final_start = usize_from_i64(int_start.into_i64().max(0)).min(len);
         // 7. Let finalEnd be the result of clamping intEnd between 0 and len.
         let final_end = if let Some(int_end) = int_end {
-            (int_end.into_i64().max(0) as usize).min(len)
+            usize_from_i64(int_end.into_i64().max(0)).min(len)
         } else {
             len
         };
@@ -2611,10 +2625,13 @@ impl StringPrototype {
         // 11. Return the substring of S from intStart to intEnd.
         let gc = gc.into_nogc();
         let s = scoped_s.get(agent).bind(gc);
-        Ok(
-            s.utf16_substring(agent, int_start as usize, int_end as usize, gc)
-                .into(),
+        Ok(s.utf16_substring(
+            agent,
+            usize_from_i64(int_start),
+            usize_from_i64(int_end),
+            gc,
         )
+        .into())
     }
 
     /// ### [B.2.2.2 String.prototype.anchor ( name )](https://tc39.es/ecma262/#sec-string.prototype.anchor)
@@ -3037,7 +3054,7 @@ fn string_pad<'gc>(
 
     // 4. Let fillLen be maxLength - stringLength.
     // Note: we checked that max_len > string_len above; this is always >0.
-    let fill_len = max_len.wrapping_sub(string_len) as usize;
+    let fill_len = usize_from_i64(max_len.wrapping_sub(string_len));
 
     let fill_string_len = fill_string.utf16_len_(agent);
 

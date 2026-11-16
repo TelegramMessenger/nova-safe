@@ -62,11 +62,19 @@ impl Hash for StringBuffer {
 }
 
 impl StringRecord {
-    /// The maximum UTf-16 length of a JS string, according to the spec (2^53 - 1).
-    const MAX_UTF16_LENGTH: usize = (1 << 53) - 1;
+    /// The maximum UTf-16 length of a JS string, according to the spec (2^53 - 1);
+    /// on a 32-bit target, what a `usize` can hold.
+    const MAX_UTF16_LENGTH: usize = {
+        let spec: u64 = (1 << 53) - 1;
+        if spec > usize::MAX as u64 {
+            usize::MAX
+        } else {
+            spec as usize
+        }
+    };
 
     /// The maximum UTF-8 length of a JS string.
-    const MAX_UTF8_LENGTH: usize = 3 * Self::MAX_UTF16_LENGTH;
+    const MAX_UTF8_LENGTH: usize = Self::MAX_UTF16_LENGTH.saturating_mul(3);
 
     /// Get the byte length of the string.
     pub(crate) fn len(&self) -> usize {

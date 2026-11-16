@@ -1867,8 +1867,20 @@ pub(crate) type ElementArray2Pow12 = ElementArray<4096>;
 pub(crate) type ElementArray2Pow16 = ElementArray<65536>;
 /// Element arrays of up to 16777216 elements
 pub(crate) type ElementArray2Pow24 = ElementArray<16777216>;
+/// Slots of the largest size class: 2^32. On a 32-bit target, where a `usize`
+/// cannot hold 2^32, it is 2^31, the largest power of two that fits. The
+/// storages of this class are dynamic (they hold only the slots in use), so
+/// this is an upper bound and nothing else, and 2^31 slots of eight bytes
+/// each do not fit a 32-bit address space anyway: an allocation that large
+/// fails before the bound is reached.
+#[cfg(target_pointer_width = "64")]
+pub(crate) const LARGEST_CLASS_SLOTS: usize = 1 << 32;
+#[cfg(not(target_pointer_width = "64"))]
+pub(crate) const LARGEST_CLASS_SLOTS: usize = 1 << (usize::BITS - 1);
+const _LARGEST_CLASS_IS_DYNAMIC: () = assert!(LARGEST_CLASS_SLOTS > DYNAMIC_STORAGE_SLOTS);
+
 /// Element arrays of up to 4294967296 elements
-pub(crate) type ElementArray2Pow32 = ElementArray<4294967296>;
+pub(crate) type ElementArray2Pow32 = ElementArray<LARGEST_CLASS_SLOTS>;
 
 /// The value of a key slot past the keys of every shape using the storage. It
 /// is a Private Name that is never handed out: `Agent::create_private_names`
@@ -2016,7 +2028,7 @@ pub(crate) type PropertyKeyArray2Pow16 = PropertyKeyArray<65536>;
 /// Property key arrays of up to 16777216 elements
 pub(crate) type PropertyKeyArray2Pow24 = PropertyKeyArray<16777216>;
 /// Property key arrays of up to 4294967296 elements
-pub(crate) type PropertyKeyArray2Pow32 = PropertyKeyArray<4294967296>;
+pub(crate) type PropertyKeyArray2Pow32 = PropertyKeyArray<LARGEST_CLASS_SLOTS>;
 
 #[derive(Debug)]
 pub(crate) struct ElementArrays {

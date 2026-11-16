@@ -92,6 +92,7 @@ pub mod engine;
 pub mod heap;
 mod hashing;
 mod table;
+mod width;
 
 /// DTrace / SystemTap USDT probes in Nova VM.
 #[cfg(feature = "probes")]

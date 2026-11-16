@@ -147,7 +147,7 @@ impl Heap {
             e2pow12, k2pow12, 1usize << 12;
             e2pow16, k2pow16, 1usize << 16;
             e2pow24, k2pow24, 1usize << 24;
-            e2pow32, k2pow32, 1usize << 32;
+            e2pow32, k2pow32, crate::heap::element_array::LARGEST_CLASS_SLOTS;
         }
         total
     }

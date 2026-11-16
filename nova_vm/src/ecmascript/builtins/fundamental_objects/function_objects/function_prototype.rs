@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use core::ops::ControlFlow;
 
 use crate::{
@@ -252,7 +253,7 @@ impl FunctionPrototype {
                         // 3. Let argCount be the number of elements in args.
                         let arg_count = args_len;
                         // 4. Set L to max(targetLenAsInt - argCount, 0).
-                        l = 0.max(target_len.into_i64() - arg_count as i64) as usize;
+                        l = usize_from_i64(0.max(target_len.into_i64() - arg_count as i64));
                     }
                     _ => {
                         // i. If targetLen is +∞𝔽, then
@@ -272,7 +273,7 @@ impl FunctionPrototype {
                             // 3. Let argCount be the number of elements in args.
                             let arg_count = args_len;
                             // 4. Set L to max(targetLenAsInt - argCount, 0).
-                            l = 0.max(target_len_as_int - arg_count as i64) as usize;
+                            l = usize_from_i64(0.max(target_len_as_int - arg_count as i64));
                         }
                     }
                 }

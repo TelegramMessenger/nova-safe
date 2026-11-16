@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, ExceptionType, JsResult,
@@ -103,7 +104,7 @@ impl NumberPrototype {
                 gc,
             ));
         }
-        let f = f as usize;
+        let f = usize_from_i64(f);
 
         // 6. Set x to ℝ(x).
         let mut x = x.into_f64_(agent);
@@ -174,7 +175,7 @@ impl NumberPrototype {
         }
         // 7. Set x to ℝ(x).
         let x = x.into_f64_(agent);
-        let string = crate::ecmascript::f64_to_fixed(x, f as usize);
+        let string = crate::ecmascript::f64_to_fixed(x, usize_from_i64(f));
         Ok(Value::from_string(agent, string, gc))
     }
 

@@ -480,6 +480,7 @@ mod tests {
     use super::HashTable;
     use std::hash::{BuildHasher, RandomState};
 
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn table_is_as_small_as_hashbrowns() {
         assert_eq!(core::mem::size_of::<HashTable<u32>>(), 32);

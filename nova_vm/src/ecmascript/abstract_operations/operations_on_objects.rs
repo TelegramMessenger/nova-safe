@@ -4,6 +4,7 @@
 
 //! ## [7.3 Operations on Objects](https://tc39.es/ecma262/#sec-operations-on-objects)
 
+use crate::width::usize_from_i64;
 use core::ops::ControlFlow;
 
 use crate::{
@@ -1163,7 +1164,7 @@ pub(crate) fn create_list_from_array_like<'gc>(
             let scoped_object = object.scope(agent, gc.nogc());
             // 3. Let len be ? LengthOfArrayLike(obj).
             let len = length_of_array_like(agent, object.unbind(), gc.reborrow()).unbind()?;
-            let len = usize::try_from(len).unwrap();
+            let len = usize_from_i64(len);
             if len > MAX_ARGUMENTS {
                 return Err(throw_too_many_arguments(agent, gc.into_nogc()));
             }
@@ -1226,7 +1227,7 @@ pub(crate) fn create_property_key_list_from_array_like<'a, 'b>(
     let scoped_object = object.scope(agent, gc.nogc());
     // 3. Let len be ? LengthOfArrayLike(obj).
     let len = length_of_array_like(agent, object.unbind(), gc.reborrow()).unbind()?;
-    let len = usize::try_from(len).unwrap();
+    let len = usize_from_i64(len);
     // 4. Let list be a new empty List.
     // The list grows as keys come: `len` is the script's word only.
     let mut list = Vec::<PropertyKey>::with_capacity(len.min(1024)).scope(agent, gc.nogc());

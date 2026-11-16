@@ -1,4 +1,5 @@
 use crate::ecmascript::Ordering;
+use crate::width::usize_from_u64;
 
 use crate::{
     ecmascript::{
@@ -180,7 +181,7 @@ pub(crate) fn get_view_value<'gc, T: Viewable>(
     let get_index = if let Some(res) =
         try_result_into_js(try_to_index(agent, request_index, gc.nogc())).unbind()?
     {
-        res as usize
+        usize_from_u64(res)
     } else {
         match get_view_value_scope_slow(agent, view.unbind(), request_index.unbind(), gc.reborrow())
         {
@@ -249,7 +250,7 @@ fn get_view_value_scope_slow<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, (AnyDataView<'gc>, usize)> {
     let scoped_view = view.scope(agent, gc.nogc());
-    let index = to_index(agent, request_index, gc).unbind()? as usize;
+    let index = usize_from_u64(to_index(agent, request_index, gc).unbind()?);
     Ok((scoped_view.take(agent), index))
 }
 
@@ -283,11 +284,11 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
     let get_index = if let Some(res) =
         try_result_into_js(try_to_index(agent, request_index, gc.nogc())).unbind()?
     {
-        res as usize
+        usize_from_u64(res)
     } else {
         let scoped_view = view.scope(agent, gc.nogc());
         let scoped_value = value.scope(agent, gc.nogc());
-        let res = to_index(agent, request_index.unbind(), gc.reborrow()).unbind()? as usize;
+        let res = usize_from_u64(to_index(agent, request_index.unbind(), gc.reborrow()).unbind()?);
         view = scoped_view.get(agent).bind(gc.nogc());
         value = scoped_value.get(agent).bind(gc.nogc());
         res

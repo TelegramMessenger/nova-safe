@@ -56,7 +56,7 @@ pub(super) fn get_template_object<'a>(
     // 7. Let count be the number of elements in the List cookedStrings.
     // 8. Assert: count ≤ 2**32 - 1.
     let len = template_literal.quasis.len();
-    debug_assert!(len < 2usize.pow(32));
+    debug_assert!((len as u64) < 2u64.pow(32));
     // 11. Let index be 0.
     // 12. Repeat, while index < count,
 

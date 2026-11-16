@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::Ordering;
+use crate::width::{usize_from_i64, usize_from_u64};
 
 use crate::{
     ecmascript::{
@@ -227,10 +228,10 @@ impl SharedArrayBufferPrototype {
             0
         } else if relative_start.is_negative() {
             // 7. Else if relativeStart < 0, let first be max(len + relativeStart, 0).
-            (len as u64).saturating_sub(relative_start.into_i64().unsigned_abs()) as usize
+            usize_from_u64((len as u64).saturating_sub(relative_start.into_i64().unsigned_abs()))
         } else {
             // 8. Else, let first be min(relativeStart, len).
-            relative_start.into_i64().min(len as i64) as usize
+            usize_from_i64(relative_start.into_i64().min(len as i64))
         };
         // 9. If end is undefined, let relativeEnd be len;
         let final_end = if end.is_undefined() {
@@ -244,10 +245,10 @@ impl SharedArrayBufferPrototype {
                 0
             } else if relative_end.is_negative() {
                 // 11. Else if relativeEnd < 0, let final be max(len + relativeEnd, 0).
-                (len as u64).saturating_sub(relative_end.into_i64().unsigned_abs()) as usize
+                usize_from_u64((len as u64).saturating_sub(relative_end.into_i64().unsigned_abs()))
             } else {
                 // 12. Else, let final be min(relativeEnd, len).
-                relative_end.into_i64().min(len as i64) as usize
+                usize_from_i64(relative_end.into_i64().min(len as i64))
             }
         };
         // 13. Let newLen be max(final - first, 0).

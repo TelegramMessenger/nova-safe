@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{
@@ -341,7 +342,7 @@ impl StringConstructor {
                 // 6. Let R be the empty String.
                 // The result grows as literals come: `literalCount` is the
                 // script's word only.
-                let mut r = Wtf8Buf::with_capacity((literal_count as usize).min(1024));
+                let mut r = Wtf8Buf::with_capacity(usize_from_i64(literal_count).min(1024));
 
                 // 7. Let nextIndex be 0.
                 // 8. Repeat,

@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::Ordering;
+use crate::width::usize_from_u64;
 
 use crate::{
     ecmascript::{
@@ -910,7 +911,7 @@ fn typed_array_constructor<'gc, T: Viewable>(
     allocate_typed_array::<T>(
         agent,
         new_target.unbind(),
-        Some(element_length as usize),
+        Some(usize_from_u64(element_length)),
         gc,
     )
     .map(|typed_array| typed_array.into())

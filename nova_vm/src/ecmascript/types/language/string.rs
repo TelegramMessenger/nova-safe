@@ -6,6 +6,7 @@ include!(concat!(env!("OUT_DIR"), "/builtin_strings.rs"));
 mod data;
 pub(crate) mod search;
 
+use crate::width::usize_from_i64;
 pub(crate) use data::*;
 
 pub use small_string::SmallString;
@@ -814,8 +815,8 @@ impl<'a> String<'a> {
             })
         } else if let PropertyKey::Integer(index) = property_key {
             let index = index.into_i64();
-            if index >= 0 && (index as usize) < self.utf16_len_(agent) {
-                let ch = self.char_code_at_(agent, index as usize);
+            if index >= 0 && usize_from_i64(index) < self.utf16_len_(agent) {
+                let ch = self.char_code_at_(agent, usize_from_i64(index));
                 Some(PropertyDescriptor {
                     value: Some(SmallString::from_code_point(ch).into()),
                     writable: Some(false),
@@ -843,8 +844,8 @@ impl<'a> String<'a> {
             Some(super::Number::from(smi).into())
         } else if let PropertyKey::Integer(index) = property_key {
             let index = index.into_i64();
-            if index >= 0 && (index as usize) < self.utf16_len_(agent) {
-                let ch = self.char_code_at_(agent, index as usize);
+            if index >= 0 && usize_from_i64(index) < self.utf16_len_(agent) {
+                let ch = self.char_code_at_(agent, usize_from_i64(index));
                 Some(SmallString::from_code_point(ch).into())
             } else {
                 None

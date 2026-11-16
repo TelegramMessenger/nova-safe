@@ -29,7 +29,7 @@ pub(crate) fn array_create<'a>(
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, Array<'a>> {
     // 1. If length > 2**32 - 1, throw a RangeError exception.
-    if length > (2usize.pow(32) - 1) {
+    if length as u64 > 2u64.pow(32) - 1 {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::RangeError,
             "invalid array length",

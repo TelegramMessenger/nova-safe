@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_u64;
 use std::{
     ops::ControlFlow,
     sync::{Arc, Mutex},
@@ -391,7 +392,7 @@ impl AtomicsObject {
                     gc.into_nogc(),
                 ));
             }
-            let access_index = access_index as usize;
+            let access_index = usize_from_u64(access_index);
             // 5. Let typedArray be taRecord.[[Object]].
             let offset = typed_array.byte_offset(agent);
             let byte_index_in_buffer =
@@ -890,7 +891,7 @@ fn validate_atomic_access<'gc>(
             gc.into_nogc(),
         ));
     }
-    let access_index = access_index as usize;
+    let access_index = usize_from_u64(access_index);
     // 8. Return (accessIndex × elementSize) + offset.
     // NOTE: access_index has been checked to be within length of the
     // typed_array buffer, which means that its byte_offset must also be.
@@ -921,7 +922,7 @@ fn try_validate_atomic_access<'gc>(
             )
             .into();
     }
-    let access_index = access_index as usize;
+    let access_index = usize_from_u64(access_index);
     // 5. Let typedArray be taRecord.[[Object]].
     let typed_array = ta_record.object;
     // 6. Let elementSize be TypedArrayElementSize(typedArray).
@@ -1254,7 +1255,7 @@ fn atomic_load_slow<'gc>(
             gc.into_nogc(),
         ));
     }
-    let access_index = access_index as usize;
+    let access_index = usize_from_u64(access_index);
     // 5. Let typedArray be taRecord.[[Object]].
     // 6. Let elementSize be TypedArrayElementSize(typedArray).
     // 7. Let offset be typedArray.[[ByteOffset]].
