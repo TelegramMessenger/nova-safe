@@ -3970,15 +3970,23 @@ impl ElementArrays {
         entries: &[ObjectEntry<'a>],
     ) -> Result<ElementsVector<'a>, TryReserveError> {
         let length = entries.len();
-        let mut keys: Vec<PropertyKey> = Vec::with_capacity(length);
-        let mut values: Vec<Option<Value>> = Vec::with_capacity(length);
+        // The values of a few entries are gathered on the stack: an object
+        // made by a built-in (the result of an iterator's `next`, a
+        // property descriptor) allocated and freed two vectors here.
+        let mut few: [Option<Value>; 8] = [None; 8];
+        let mut many: Vec<Option<Value>> = Vec::new();
+        let values: &mut [Option<Value>] = if length <= few.len() {
+            &mut few[..length]
+        } else {
+            many.resize(length, None);
+            &mut many
+        };
         let mut descriptors: Option<ElementDescriptorMap<'static>> = None;
         for (index, entry) in entries.iter().enumerate() {
-            let ObjectEntry { key, value } = entry;
+            let ObjectEntry { key: _, value } = entry;
             let (maybe_descriptor, maybe_value) =
                 ElementDescriptor::from_object_entry_property_descriptor(value);
-            keys.push(*key);
-            values.push(maybe_value);
+            values[index] = maybe_value;
             if let Some(descriptor) = maybe_descriptor {
                 if descriptors.is_none() {
                     descriptors = Some(Default::default());
@@ -3989,7 +3997,7 @@ impl ElementArrays {
                     .insert(index as u32, descriptor.unbind());
             }
         }
-        self.allocate_object_property_storage(length, &values, descriptors)
+        self.allocate_object_property_storage(length, values, descriptors)
     }
 
     pub(crate) fn get_keys_raw<'a>(
