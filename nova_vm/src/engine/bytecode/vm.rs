@@ -391,15 +391,29 @@ impl Vm {
         if agent.check_gc() {
             self.trigger_gc(agent, gc.reborrow());
         }
-        while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
+        // The instruction pointer is a local across the plain instructions,
+        // which only jumps move: read and written in the Vm between every
+        // two of them, it was the longest step of going from one to the
+        // next. It is in the Vm, where everything else looks for it, around
+        // every instruction that is not plain and whenever the loop is left.
+        let mut ip = self.ip;
+        while let Some(instr) = Instr::consume_instruction(&instructions, &mut ip) {
             if print_internals {
                 Self::print_executing(instr.kind);
             }
             // Most of what runs is plain: it goes straight to the next
             // instruction, with no result to look at and nothing to release.
-            match Self::execute_plain_instruction(agent, self, &executable, instr, gc.nogc()) {
+            match Self::execute_plain_instruction(
+                agent,
+                self,
+                &mut ip,
+                &executable,
+                instr,
+                gc.nogc(),
+            ) {
                 Plain::Done => continue,
                 Plain::Looped => {
+                    self.ip = ip;
                     if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
                         return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
                     }
@@ -410,6 +424,7 @@ impl Vm {
                 }
                 Plain::No => {}
             }
+            self.ip = ip;
             let result =
                 Self::execute_instruction(agent, self, executable.clone(), instr, gc.reborrow());
             match result {
@@ -429,6 +444,8 @@ impl Vm {
                     }
                 }
             }
+            // A jump, or the handler of what was thrown.
+            ip = self.ip;
             agent.stack_refs.get_mut().truncate(stack_depth);
             agent
                 .stack_ref_collections
@@ -438,6 +455,8 @@ impl Vm {
                 self.trigger_gc(agent, gc.reborrow());
             }
         }
+
+        self.ip = ip;
 
         if agent.termination().is_some() {
             return ExecutionResult::Throw(agent.termination_error(gc.into_nogc()));
@@ -587,6 +606,7 @@ impl Vm {
     fn execute_plain_instruction(
         agent: &mut Agent,
         vm: &mut Vm,
+        ip: &mut usize,
         executable: &Scoped<Executable>,
         instr: Instr,
         gc: NoGcScope,
@@ -615,23 +635,23 @@ impl Vm {
                 vm.execute_load();
             }
             Instruction::Jump => {
-                let from = vm.ip;
-                execute_jump(agent, vm, instr);
-                if vm.ip < from {
+                let from = *ip;
+                execute_jump(agent, ip, instr);
+                if *ip < from {
                     return Plain::Looped;
                 }
             }
             Instruction::JumpIfNot => {
-                let from = vm.ip;
-                execute_jump_if_not(agent, vm, instr);
-                if vm.ip < from {
+                let from = *ip;
+                execute_jump_if_not(agent, vm, ip, instr);
+                if *ip < from {
                     return Plain::Looped;
                 }
             }
             Instruction::JumpIfTrue => {
-                let from = vm.ip;
-                execute_jump_if_true(agent, vm, instr);
-                if vm.ip < from {
+                let from = *ip;
+                execute_jump_if_true(agent, vm, ip, instr);
+                if *ip < from {
                     return Plain::Looped;
                 }
             }
@@ -1241,7 +1261,11 @@ impl Vm {
             Instruction::IsUndefined => vm.execute_is_undefined(),
             Instruction::IsObject => vm.execute_is_object(),
             Instruction::IsConstructor => execute_is_constructor(agent, vm),
-            Instruction::JumpIfTrue => execute_jump_if_true(agent, vm, instr),
+            Instruction::JumpIfTrue => {
+                let mut ip = vm.ip;
+                execute_jump_if_true(agent, vm, &mut ip, instr);
+                vm.ip = ip;
+            }
             Instruction::LoadReplace => vm.execute_load_replace(),
             Instruction::LoadConstant => {
                 execute_load_constant(agent, vm, executable, instr, gc.into_nogc())

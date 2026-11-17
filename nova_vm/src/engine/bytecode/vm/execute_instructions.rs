@@ -2163,18 +2163,18 @@ pub(super) fn execute_make_super_property_reference_with_identifier_key<'gc>(
 }
 
 #[inline(always)]
-pub(super) fn execute_jump(agent: &Agent, vm: &mut Vm, instr: Instr) {
-    let ip = instr.get_jump_slot();
+pub(super) fn execute_jump(agent: &Agent, ip: &mut usize, instr: Instr) {
+    let target = instr.get_jump_slot();
     if agent.options.print_internals {
-        eprintln!("Jumping to {ip}");
+        eprintln!("Jumping to {target}");
     }
-    vm.ip = ip;
+    *ip = target;
 }
 
 #[inline(always)]
-pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, instr: Instr) {
+pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, ip: &mut usize, instr: Instr) {
     let result = vm.result.take().unwrap();
-    let ip = instr.get_jump_slot();
+    let target = instr.get_jump_slot();
     // A comparison left a Boolean: no conversion to make.
     let truthy = match result {
         Value::Boolean(value) => value,
@@ -2182,25 +2182,25 @@ pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, instr: Instr) {
     };
     if !truthy {
         if agent.options.print_internals {
-            eprintln!("Comparison failed, jumping to {ip}");
+            eprintln!("Comparison failed, jumping to {target}");
         }
-        vm.ip = ip;
+        *ip = target;
     }
 }
 
 #[inline(always)]
-pub(super) fn execute_jump_if_true(agent: &Agent, vm: &mut Vm, instr: Instr) {
+pub(super) fn execute_jump_if_true(agent: &Agent, vm: &mut Vm, ip: &mut usize, instr: Instr) {
     let result = vm.result.take().unwrap();
     let truthy = match result {
         Value::Boolean(value) => value,
         _ => to_boolean(agent, result),
     };
     if truthy {
-        let ip = instr.get_jump_slot();
+        let target = instr.get_jump_slot();
         if agent.options.print_internals {
-            eprintln!("Comparison succeeded, jumping to {ip}");
+            eprintln!("Comparison succeeded, jumping to {target}");
         }
-        vm.ip = ip;
+        *ip = target;
     }
 }
 
