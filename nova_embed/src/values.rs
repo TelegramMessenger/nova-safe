@@ -6,11 +6,12 @@
 
 use nova_vm::{
     ecmascript::{
-        Agent, ArgumentsList, ArrayBuffer, InternalMethods, JsResult, Number, Object, PropertyKey,
-        String as JsString, TypedArray, Value,
+        Agent, ArgumentsList, ArrayBuffer, ExceptionType, InternalMethods, JsResult, Number,
+        Object, PropertyKey, String as JsString, TypedArray, Value,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable},
 };
+use wtf8::Wtf8Buf;
 
 use crate::{ArgumentMode, Error, MAX_HOST_ARGUMENTS, Shared, hooks, limits};
 
@@ -55,9 +56,16 @@ pub enum HostReturn {
     Undefined,
     Null,
     String(String),
+    /// A string as WTF-8 (see [`HostArg::String`]), so that a lone surrogate
+    /// a script handed out comes back as it was; bytes that are not WTF-8
+    /// become U+FFFD.
+    Wtf8(Vec<u8>),
     Number(f64),
     /// A new ArrayBuffer holding a copy of the bytes.
     ArrayBuffer(Vec<u8>),
+    /// The call throws a RangeError with this message, which the script can
+    /// catch like any other.
+    RangeError(String),
 }
 
 /// The value a script evaluation or a call completed with: strings (as
@@ -161,6 +169,10 @@ fn to_value<'gc>(
         HostReturn::Undefined => Value::Undefined,
         HostReturn::Null => Value::Null,
         HostReturn::String(text) => JsString::from_string(agent, text, gc).into(),
+        HostReturn::Wtf8(bytes) => string_from_wtf8(agent, &bytes, gc).into(),
+        HostReturn::RangeError(message) => {
+            return Err(agent.throw_exception(ExceptionType::RangeError, message, gc));
+        }
         HostReturn::Number(number) => Number::from_f64(agent, number, gc).into(),
         HostReturn::ArrayBuffer(bytes) => {
             let buffer = ArrayBuffer::new(agent, bytes.len(), gc)?;
@@ -168,6 +180,18 @@ fn to_value<'gc>(
             buffer.into()
         }
     })
+}
+
+/// A string from bytes that should be WTF-8 ([`Wtf8Buf::from_bytes_lossy`]).
+pub(crate) fn string_from_wtf8<'gc>(
+    agent: &mut Agent,
+    bytes: &[u8],
+    gc: NoGcScope<'gc, '_>,
+) -> JsString<'gc> {
+    match core::str::from_utf8(bytes) {
+        Ok(text) => JsString::from_str(agent, text, gc),
+        Err(_) => JsString::from_wtf8_buf(agent, Wtf8Buf::from_bytes_lossy(bytes), gc),
+    }
 }
 
 /// `globalThis[name]`; getters run.

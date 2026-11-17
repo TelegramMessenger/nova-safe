@@ -13,3 +13,4 @@ publish = false
 
 [dependencies]
 nova_vm = { path = "../nova_vm", default-features = false, features = ["widget"] }
+wtf8 = { workspace = true }

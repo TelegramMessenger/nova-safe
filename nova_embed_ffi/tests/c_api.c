@@ -40,6 +40,12 @@ static void host(void *context, uint32_t id, const nova_arg *args, size_t argc, 
         nova_return_bytes(ret, bytes, sizeof bytes);
     } else if (id == 3) {
         nova_return_null(ret);
+    } else if (id == 4) {
+        static const char reason[] = "refused by C";
+        nova_return_range_error(ret, (const uint8_t *)reason, sizeof reason - 1);
+    } else if (id == 5) {
+        static const uint8_t lone[] = {'x', 0xED, 0xA0, 0x80};
+        nova_return_string(ret, lone, sizeof lone);
     }
 }
 
@@ -111,6 +117,34 @@ int main(void) {
     assert(nova_engine_collect_garbage(engine) == NOVA_OK);
     assert(nova_engine_set_memory_limit(engine, 16u << 20) == NOVA_OK);
     (void)nova_engine_memory_used(engine);
+
+    assert(nova_engine_register(engine, (const uint8_t *)"__throws", 8, 4, 0, NOVA_ARGS_VALUES, &out) == NOVA_OK);
+    assert(nova_engine_register(engine, (const uint8_t *)"__lone", 6, 5, 0, NOVA_ARGS_VALUES, &out) == NOVA_OK);
+    assert(eval(engine, "try { __throws(); 'returned' } catch (e) { e.name + ': ' + e.message }", &out) == NOVA_OK);
+    expect_string(&out, "RangeError: refused by C");
+    nova_result_free(&out);
+    assert(eval(engine, "__throws()", &out) == NOVA_EXCEPTION);
+    expect_string(&out, "RangeError: refused by C");
+    nova_result_free(&out);
+    assert(eval(engine, "var s = __lone(); s.length + ':' + s.charCodeAt(1).toString(16)", &out) == NOVA_OK);
+    expect_string(&out, "2:d800");
+    nova_result_free(&out);
+    assert(eval(engine, "function units(s) { return s.length + ':' + s.charCodeAt(0).toString(16); }", &out) == NOVA_OK);
+    static const uint8_t trail[] = {0xED, 0xB0, 0x80};
+    nova_str wtf8[1] = {{trail, sizeof trail}};
+    assert(nova_engine_call(engine, (const uint8_t *)"units", 5, wtf8, 1, &out) == NOVA_OK);
+    expect_string(&out, "1:dc00");
+    nova_result_free(&out);
+
+    assert(eval(engine, "try { new ArrayBuffer(32 << 20); 'no' } catch (e) { e.name }", &out) == NOVA_OK);
+    expect_string(&out, "RangeError");
+    nova_result_free(&out);
+    assert(nova_engine_set_out_of_memory_fatal(engine, true) == NOVA_OK);
+    assert(eval(engine, "try { new ArrayBuffer(32 << 20); 'no' } catch (e) { e.name }", &out) == NOVA_OUT_OF_MEMORY);
+    nova_result_free(&out);
+    assert(eval(engine, "1 + 1", &out) == NOVA_OK && out.number == 2);
+    assert(nova_engine_set_out_of_memory_fatal(engine, false) == NOVA_OK);
+    assert(nova_engine_set_out_of_memory_fatal(NULL, true) == NOVA_INVALID);
 
     static const char compiled_source[] = "var k = (globalThis.k || 0) + 1; 'k' + k";
     nova_script *script = nova_script_compile((const uint8_t *)compiled_source, sizeof compiled_source - 1, &out);

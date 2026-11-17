@@ -80,7 +80,9 @@ pub trait Host {
 #[derive(Debug, Clone, Copy)]
 pub struct EngineOptions {
     /// Heap bytes a script may use before it is ended with
-    /// [`Error::OutOfMemory`]; 0 means no limit.
+    /// [`Error::OutOfMemory`]; 0 means no limit. One allocation the limit has
+    /// no room for is a RangeError unless
+    /// [`Engine::set_out_of_memory_fatal`] says otherwise.
     pub memory_limit: usize,
     /// Native stack bytes JavaScript calls may use before a `RangeError`;
     /// 0 means the engine's default.
@@ -391,6 +393,14 @@ impl Engine {
     /// Calls the captured function `name` (or else the global of that name)
     /// with string arguments and `undefined` as `this`.
     pub fn call(&mut self, name: &str, args: &[&str]) -> Result<Completion, Error> {
+        let args: Vec<&[u8]> = args.iter().map(|arg| arg.as_bytes()).collect();
+        self.call_wtf8(name, &args)
+    }
+
+    /// [`Engine::call`] with arguments as WTF-8 (see [`HostArg::String`]), so
+    /// that a string a script handed out goes back in with its lone
+    /// surrogates; bytes that are not WTF-8 become U+FFFD.
+    pub fn call_wtf8(&mut self, name: &str, args: &[&[u8]]) -> Result<Completion, Error> {
         self.enter(|live, shared| {
             let realm = &live.realm;
             let captured = &live.captured;
@@ -411,7 +421,11 @@ impl Engine {
                 let function = function.scope(agent, gc.nogc());
                 let mut arguments: Vec<Value<'static>> = args
                     .iter()
-                    .map(|arg| JsString::from_str(agent, arg, gc.nogc()).unbind().into())
+                    .map(|arg| {
+                        values::string_from_wtf8(agent, arg, gc.nogc())
+                            .unbind()
+                            .into()
+                    })
                     .collect();
                 let result = function
                     .get(agent)
@@ -475,6 +489,19 @@ impl Engine {
         self.options.memory_limit = bytes;
         self.enter(|live, _| {
             limits::set_heap_limit(&mut live.agent, bytes);
+            Ok(())
+        })
+    }
+
+    /// Chooses what one allocation the memory limit has no room for does. By
+    /// default it throws a RangeError: caught, the script goes on just under
+    /// the limit; uncaught, the call ends with [`Error::OutOfMemory`]. With
+    /// `fatal` it ends the script with [`Error::OutOfMemory`] wherever it
+    /// happens, as going over the limit does: no `catch`, promise reaction
+    /// or getter keeps the script running.
+    pub fn set_out_of_memory_fatal(&mut self, fatal: bool) -> Result<(), Error> {
+        self.enter(|live, _| {
+            limits::set_out_of_memory_fatal(&mut live.agent, fatal);
             Ok(())
         })
     }
