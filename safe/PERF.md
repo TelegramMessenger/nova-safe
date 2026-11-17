@@ -34,23 +34,23 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 4.0x |
-| math | 4 | 9.7x | 3.8x |
+| call | 14 | 10.4x | 3.8x |
 | typed | 4 | 10.6x | 3.3x |
-| prop | 13 | 7.1x | 3.3x |
-| string | 26 | 10.6x | 3.0x |
+| math | 4 | 9.7x | 3.2x |
+| prop | 13 | 7.1x | 3.2x |
+| string | 26 | 10.6x | 2.9x |
 | app | 8 | 6.1x | 2.9x |
-| loop | 11 | 11.1x | 2.8x |
 | array | 14 | 5.8x | 2.8x |
+| loop | 11 | 11.1x | 2.5x |
 | map, set | 4 | 4.6x | 2.4x |
-| regexp | 4 | 2.4x | 1.9x |
-| gc | 3 of 5 | 3.6x | 1.6x |
+| regexp | 4 | 2.4x | 2.0x |
+| gc | 3 of 5 | 3.6x | 1.5x |
 | json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.9x |
+| all | 108 | 7.6x | 2.8x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
-(38x, area 7); after it come generators (7x), then calls that bind an arguments object or go through an accessor
-(5-6x). 60 of the 108 cases are above 3x and 21 at or under 2x. One case ran Nova out of memory before
+(38x, area 7); after it come generators (6.5x), then calls that bind an arguments object or go through an accessor
+(5-6x). 55 of the 108 cases are above 3x and 22 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -94,6 +94,21 @@ The executable, which every instruction that fetches a constant, a name, a cache
 looked up through its rooted handle once and again only after a collection has run (the heap counts them), not
 by each of those instructions; and `this` of a call that keeps it in its execution context is read by the loop
 itself. A property read and written in a loop went from 5.4x to 4.7x.
+
+A `switch` tested its cases one after another, three instructions a case, the comparison among them on the
+slow path, and kept a completion value that a function body never returns. A `switch` whose selectors are all
+literals (Numbers, a minus sign allowed, Strings, Booleans, null) is one instruction now: `JumpToCase` looks the
+value up in a table kept with the executable, by index where the selectors are integers close together and by
+comparing in order otherwise, which is what the tests did, since literals have no effect and the first equal
+one wins. Selectors that are not literals keep their tests. In a function body the cases keep no completion
+value. A `switch` of eight cases in a loop went from 5.0x to 1.8x.
+
+`===`, `!==`, `==` and `!=` before a jump are one instruction with it, as `<` already was; two integers are
+compared in place and two values of one type are loosely equal where they are strictly equal, so only operands
+of different types take the general way. `x === 3` on its own no longer leaves the loop of plain
+instructions, and neither do the instructions that only move a value or test it for null and undefined, or
+the ones that enter and leave the handler every loop pushes. A loop of strict comparisons went from 3.9x to
+2.5x, testing each character of a string against five literals from 1.5x to 1.1x.
 
 Tried and dropped: giving every plain instruction the length of its own to advance by, so that where the next
 instruction is would not wait for the table of lengths. It made loops 13-32% slower; the table is not what the
@@ -166,12 +181,25 @@ that stack and freed it when it returned; the emptied stacks are kept, and a `Vm
 to it. (Pooling them with the two stacks every call takes made a plain call 7% slower.) A method call went from
 5.7x to 4.3x, calls to 4.0x.
 
+A call of a built-in function went the same way as any call: the arguments copied to a list, the caller's `Vm`
+moved aside, an execution context pushed, the function found through three dispatches: for `Math.floor(x)`
+most of the time of the call. The functions of Math that only compute a Number from Numbers
+(`floor`, `ceil`, `round`, `trunc`, `abs`, `sqrt`, `sign`, and `max` and `min` of integers) are marked when
+their function objects are made, and the call instruction runs a marked function in place when its arguments
+are Numbers: the same code the function runs after converting its argument, which takes no collector scope
+and so cannot collect, throw or call anything. Any other argument, and a function put in their place, takes
+the call. `Math.floor(Math.sqrt(i)) + Math.max(i & 7, 3)` went from 4.8x to 2.9x, rounding and clamping in a
+loop from 4.4x to 2.8x. What is left of those is reading `Math` and the function off it (areas 2 and 4).
+Next: the same for the trigonometric functions and `pow`, and for `charCodeAt` and its like on strings.
+
 Left: what is left is spread thin, with no single cost much above a tenth: the caller's `Vm` moved aside and
 back for the collector around every call, the callee's made and recycled, the execution context, the copy of
-the arguments out of the caller's stack; under all of it the dispatch of area 1, a quarter of the time.
+the arguments out of the caller's stack; under all of it the dispatch of area 1, a quarter of the time, and
+half a dozen native frames between the caller's loop and the callee's, each saving and restoring its registers.
 Functions with a rest parameter, defaults or an arguments object still bind the old way (5-6x), and generators
-are 8x. Recursion is also shallower: about 2.7 KB of native stack per call level against 0.9 KB. Next: keep one
-`Vm` across calls. Reach: about 3x.
+are 6.5x. Recursion is also shallower: about 2.7 KB of native stack per call level against 0.9 KB. Next, and
+the largest step left anywhere: run a called function in the caller's loop (a frame pushed on the one `Vm`,
+no native call), which removes most of the list above at once. Reach: about 2x.
 
 ### 4. Properties
 
@@ -293,6 +321,12 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   that now measures at collections. The limit holds as before: a script that keeps objects of 200 properties
   under an 8 MB limit, in a loop or through calls, ends at the same point with and without this round's
   changes. Not fixed here (the allocator's own count on `android-dev` replaces the estimate).
+
+- A `let` or `const` of one `case` read in another case that is entered first (`switch (2) { case 1: let x;
+  case 2: x; }`) gives undefined where it must throw a ReferenceError: the variable is a stack slot and the
+  compiler takes it for initialized. Upstream. Not fixed.
+- One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
+  runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
 
 ## Checking a change
 
