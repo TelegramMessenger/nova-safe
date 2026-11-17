@@ -132,6 +132,36 @@ impl Wtf8Buf {
         }
     }
 
+    /// Decode bytes that should be WTF-8, such as a string another engine
+    /// handed out. Well-formed UTF-8 is kept; the three bytes of a surrogate
+    /// stay that surrogate, and a lead followed by a trail joins into one
+    /// code point as WTF-8 requires; any other byte sequence becomes U+FFFD
+    /// the way [`String::from_utf8_lossy`] replaces it.
+    pub fn from_bytes_lossy(bytes: &[u8]) -> Wtf8Buf {
+        let mut result = Wtf8Buf::with_capacity(bytes.len());
+        let mut rest = bytes;
+        loop {
+            let error = match core::str::from_utf8(rest) {
+                Ok(text) => {
+                    result.push_str(text);
+                    return result;
+                }
+                Err(error) => error,
+            };
+            let (valid, invalid) = rest.split_at(error.valid_up_to());
+            result.push_str(core::str::from_utf8(valid).unwrap_or_default());
+            if let [0xED, second @ 0xA0..=0xBF, third @ 0x80..=0xBF, ..] = *invalid {
+                let code = 0xD000 | (u16::from(second & 0x3F) << 6) | u16::from(third & 0x3F);
+                result.push(CodePoint::from_u16(code));
+                rest = &invalid[3..];
+            } else {
+                result.bytes.extend_from_slice(UTF8_REPLACEMENT_CHARACTER);
+                let skipped = error.error_len().unwrap_or(invalid.len());
+                rest = &invalid[skipped..];
+            }
+        }
+    }
+
     /// Decode potentially ill-formed UTF-16: pairs become supplementary code
     /// points, lone surrogates stay surrogate code points.
     pub fn from_ill_formed_utf16(v: &[u16]) -> Wtf8Buf {
@@ -803,6 +833,57 @@ mod tests {
         let rebuilt: Wtf8Buf = s.code_points().collect();
         assert_eq!(rebuilt, s);
         assert_eq!(format!("{s:?}"), "\"A\\u{D800}💩\\u{DFFF}é\u{FFFF}\"");
+    }
+
+    #[test]
+    fn bytes_decode_as_wtf8_and_replace_the_rest() {
+        let units = [0x41, 0xD800, 0xD83D, 0xDCA9, 0xDFFF, 0xE9, 0xFFFF];
+        let s = Wtf8Buf::from_ill_formed_utf16(&units);
+        assert_eq!(Wtf8Buf::from_bytes_lossy(s.as_bytes()), s);
+        assert_eq!(Wtf8Buf::from_bytes_lossy(b"").as_str(), Some(""));
+        assert_eq!(
+            Wtf8Buf::from_bytes_lossy("aé💩b".as_bytes()).as_str(),
+            Some("aé💩b")
+        );
+        // A lead and a trail encoded apart (CESU-8) are one code point.
+        assert_eq!(
+            Wtf8Buf::from_bytes_lossy(&[0xED, 0xA0, 0xBD, 0xED, 0xB2, 0xA9]).as_str(),
+            Some("💩")
+        );
+        // A trail before a lead stays two surrogates.
+        assert_eq!(
+            Wtf8Buf::from_bytes_lossy(&[0xED, 0xB2, 0xA9, 0xED, 0xA0, 0xBD])
+                .to_ill_formed_utf16()
+                .collect::<Vec<_>>(),
+            [0xDCA9, 0xD83D]
+        );
+        // What neither UTF-8 nor a surrogate is, String::from_utf8_lossy's way.
+        for bytes in [
+            &b"a\xFFb"[..],
+            &[0x61, 0xC0, 0x80, 0x62],
+            &[0xE2, 0x82],
+            &[0xED, 0xA0],
+            &[0xED, 0xA0, 0x41],
+            &[0xF4, 0x90, 0x80, 0x80],
+            &[0x80, 0xED, 0xA0, 0x80, 0xF0, 0x9F],
+        ] {
+            let decoded = Wtf8Buf::from_bytes_lossy(bytes);
+            let surrogate = |w: &[u8]| w[0] == 0xED && w[1] >= 0xA0 && w[2] >= 0x80;
+            if !bytes.windows(3).any(surrogate) {
+                assert_eq!(
+                    decoded.as_str(),
+                    Some(&*String::from_utf8_lossy(bytes)),
+                    "{bytes:02X?}"
+                );
+            }
+            assert_eq!(Wtf8Buf::from_bytes_lossy(decoded.as_bytes()), decoded);
+        }
+        assert_eq!(
+            Wtf8Buf::from_bytes_lossy(&[0x80, 0xED, 0xA0, 0x80, 0xF0, 0x9F])
+                .to_ill_formed_utf16()
+                .collect::<Vec<_>>(),
+            [0xFFFD, 0xD800, 0xFFFD]
+        );
     }
 
     #[test]
