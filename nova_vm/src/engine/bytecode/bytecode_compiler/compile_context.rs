@@ -458,6 +458,20 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         StackVariable
     }
 
+    /// A stack variable whose slot holds its value before the code starts: a
+    /// parameter that the call itself puts there
+    /// (Executable::stack_parameters). Nothing is compiled for it.
+    pub(super) fn push_filled_stack_variable(
+        &mut self,
+        symbol: oxc_semantic::SymbolId,
+    ) -> StackVariable {
+        let idx = self.executable.push_stack();
+        self.stack_variables.push((symbol, idx));
+        self.control_flow_stack
+            .push(ControlFlowStackEntry::StackValue);
+        StackVariable
+    }
+
     /// Pop a lexical variable.
     fn pop_stack_variable(&mut self, var: StackVariable) {
         core::mem::forget(var);
@@ -1145,6 +1159,17 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     /// with class constructors.
     pub(crate) fn set_call_environment(&mut self, call_environment: CallEnvironment) {
         self.executable.set_call_environment(call_environment);
+    }
+
+    /// Says that the function being compiled keeps its parameters in its
+    /// first `count` stack slots, filled by whoever starts its code.
+    pub(super) fn set_stack_parameters(&mut self, count: u16) {
+        self.executable.set_stack_parameters(count);
+    }
+
+    /// How many values the code compiled so far leaves on the stack here.
+    pub(super) fn stack_depth(&self) -> usize {
+        self.executable.stack_depth()
     }
 
     /// Returns the environment a \[\[Call]] of the function needs (see

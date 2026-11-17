@@ -126,6 +126,11 @@ pub(crate) struct ExecutableHeapData<'a> {
     /// The environment a \[\[Call]] of the function this executable is the body
     /// of creates: see function_declaration_instantiation::instantiation.
     pub(crate) call_environment: CallEnvironment,
+    /// The function this executable is the body of keeps its parameters in
+    /// its first so many stack slots and reads its arguments nowhere else:
+    /// whoever starts the code puts the arguments there
+    /// (function_declaration_instantiation::instantiation, Vm::execute).
+    pub(crate) stack_parameters: Option<u16>,
     /// Where each place in the instructions that names a variable of an
     /// enclosing scope found it the last time; nothing here is known to the
     /// collector.
@@ -309,6 +314,11 @@ impl<'gc> Executable<'gc> {
     }
 
     #[inline]
+    fn stack_parameters(self, agent: &Agent) -> Option<u16> {
+        self.get(agent).stack_parameters
+    }
+
+    #[inline]
     fn fetch_binding_site(self, agent: &Agent, index: usize) -> BindingSite {
         self.get(agent)
             .binding_sites
@@ -460,6 +470,12 @@ impl Scoped<'_, Executable<'static>> {
         self.get(agent).fetch_constant(agent, index, gc)
     }
 
+    /// See [`ExecutableHeapData::stack_parameters`].
+    #[inline]
+    pub(super) fn stack_parameters(&self, agent: &Agent) -> Option<u16> {
+        self.get(agent).stack_parameters(agent)
+    }
+
     #[inline]
     pub(super) fn fetch_binding_site(&self, agent: &Agent, index: usize) -> BindingSite {
         self.get(agent).fetch_binding_site(agent, index)
@@ -555,6 +571,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment: _,
+            stack_parameters: _,
             binding_sites: _,
             _gc: _,
         } = self;
@@ -580,6 +597,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment: _,
+            stack_parameters: _,
             binding_sites: _,
             _gc: _,
         } = self;

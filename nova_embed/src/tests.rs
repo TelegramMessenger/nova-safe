@@ -2148,3 +2148,143 @@ globalThisIsRealm1=global global [object Number]:0"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A function whose parameters are plain names in stack slots starts with
+/// its arguments there: fewer and more arguments than parameters, parameters
+/// that are assigned to or captured, every other kind of parameter list
+/// beside them, every way of calling, and arguments that are objects kept
+/// through calls that collect.
+#[test]
+fn calls_put_their_arguments_in_the_parameters_stack_slots() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(calls_put_arguments)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn calls_put_arguments() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+function two(a, b) { return String(a) + "/" + String(b); }
+function none() { return "none"; }
+function one(a) { a = a === undefined ? "dflt" : a; return a; }
+function locals(a, b, c) { var d = a + b; let e = d * c; { let f = e - a; var g = f + 1; } return [a, b, c, d, e, g].join(); }
+log("counts", function () { return [two(), two(1), two(1, 2), two(1, 2, 3), none(1, 2), one(), one(5)].join(" "); });
+log("locals", function () { return locals(1, 2, 3) + " " + locals(4, 5, 6); });
+log("reassign", function () { function f(a, b) { a = a + 1; b += a; a++; return a + "," + b; } return f(1, 2) + " " + f(10, 20); });
+log("captured", function () { function f(a, b) { return function () { return a + b; }; } function g(a, b) { var h = function () { return b; }; b = b * 2; return a + h(); } return f(1, 2)() + " " + g(1, 2) + " " + g(3, 4); });
+log("mixedKinds", function () {
+  function dflt(a, b = a + 1) { return a + b; }
+  function rest(a, ...r) { return a + ":" + r.join(); }
+  function dstr({ x }, [y], z) { return x + y + z; }
+  function args(a, b) { return arguments.length + ":" + a + ":" + arguments[1]; }
+  function dup(a, a) { return a; }
+  function evalIt(a, b) { return eval("a + b"); }
+  return [dflt(1), dflt(1, 5), rest(1, 2, 3), rest(1), dstr({ x: 1 }, [2], 3), args(1, 2, 3), args(1), dup(1, 2), evalIt(2, 3)].join(" ");
+});
+log("strictAndArrows", function () { "use strict"; function f(a, b) { return a - b; } var g = (a, b) => a * b, h = a => a + 1, k = () => 7; return [f(5, 2), g(3, 4), h(1), k(9), f(1)].join(" "); });
+log("recursion", function () { function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); } function acc(n, total) { return n ? acc(n - 1, total + n) : total; } return fib(6) + " " + acc(6, 0); });
+log("builtinCallers", function () {
+  var seen = [];
+  [10, 20].forEach(function (v, i) { seen.push(v + i); });
+  var mapped = [1, 2, 3].map(function (v) { return v * 2; });
+  var reduced = [1, 2, 3].reduce(function (a, v, i, all) { return a + v * i + all.length; }, 0);
+  var sorted = [3, 1, 2].sort(function (a, b) { return a - b; });
+  var filtered = [1, 2, 3, 4].filter(function (v, i) { return (v + i) % 3; });
+  var replaced = "a-b".replace(/-/, function (m, at, all) { return m + at + all.length; });
+  return [seen, mapped, reduced, sorted, filtered, replaced].join(" | ");
+});
+log("callApplyBind", function () {
+  function f(a, b) { return String(this) + ":" + a + ":" + b; }
+  var list = [1, 2, 3];
+  var r = [f.call("t", 1), f.apply("t", list), f.bind("t", 9)(8), f.bind("t", 9, 8, 7)(6), Reflect.apply(f, "t", [1, 2])];
+  return r.join(" ") + " " + list.join();
+});
+log("spread", function () { function f(a, b, c) { return [a, b, c].join(); } var xs = [1, 2]; return f(...xs) + " " + f(0, ...xs, 9) + " " + f(...[], ...xs) + " " + xs.join(); });
+log("constructors", function () {
+  function P(x, y) { this.x = x; this.y = y; }
+  P.prototype.sum = function (k) { return (this.x + this.y) * k; };
+  class C { constructor(a, b) { this.v = a + (b === undefined ? 100 : b); } add(n) { return this.v + n; } static make(a, b) { return new C(a, b); } }
+  class D extends C { constructor(a, b) { super(a, b); this.w = a; } add(n, m) { return super.add(n) + m + this.w; } }
+  return [new P(1, 2).sum(3), new P(1).y, new C(1, 2).add(3), new C(1).v, C.make(2, 3).v, new D(1, 2).add(3, 4), new D(5).v].join(" ");
+});
+log("accessors", function () { var o = { _v: 1, get v() { return this._v; }, set v(x) { this._v = x * 2; } }; o.v = 5; return o.v; });
+log("generators", function () {
+  function* gen(a, b) { var got = yield a; yield b + got; return a + b; }
+  var g = gen(1, 2), h = gen(10);
+  var r = [g.next().value, g.next(5).value, g.next().value, h.next().value, String(h.next(1).value)];
+  function* inf(start, step) { for (;;) { yield start; start += step; } }
+  var it = inf(1, 2); it.next(); it.next();
+  return r.join(" ") + " " + it.next().value;
+});
+log("asyncFunctions", function () { var seen = []; async function f(a, b) { var c = await a; return c + b; } f(1, 2).then(function (v) { seen.push(v); }); return typeof f(1, 2).then; });
+log("collectionDuringCalls", function () {
+  // Arguments that are objects, kept through calls that allocate enough for collections.
+  function build(tag, depth) { var junk = []; for (var i = 0; i < 300; i++) junk.push({ i: i, s: "x" + i }); return depth ? build(tag, depth - 1) : tag; }
+  function keep(a, b, c) { var first = build(a, 3); var s = 0; for (var i = 0; i < 20; i++) s += build({ n: i }, 1).n; return first.name + b.name + c.name + s; }
+  var r = "";
+  for (var k = 0; k < 30; k++) r = keep({ name: "a" + k }, { name: "b" }, { name: "c" });
+  return r;
+});
+log("manyParameters", function () { function f(a, b, c, d, e, f2, g, h, i, j) { return a + b + c + d + e + f2 + g + h + i + j; } return f(1, 2, 3, 4, 5, 6, 7, 8, 9, 10) + " " + f(1, 2, 3); });
+log("valuesOfEveryKind", function () { function id(x) { return x; } var sym = Symbol("s"); return [id(1.5), id(-0) === 0 && 1 / id(-0), id("str"), id(null), id(undefined), id(true), typeof id(sym), id(10n), id([1, 2]).length, id(id)(3)].join(" "); });
+log("tagged", function () { function tag(strings, a, b) { return strings.join("_") + a + b; } return tag`x${1}y${2}z`; });
+log("throwing", function () { function f(a, b) { if (a > b) throw new RangeError("a>b"); return a; } var r = []; for (var i = 0; i < 4; i++) { try { r.push(f(i, 1)); } catch (e) { r.push(e.message); } } return r.join(); });
+out.join("\n")
+"#;
+    let expected = r#"counts0=undefined/undefined 1/undefined 1/2 1/2 none dflt 5
+counts1=undefined/undefined 1/undefined 1/2 1/2 none dflt 5
+locals0=1,2,3,3,9,9 4,5,6,9,54,51
+locals1=1,2,3,3,9,9 4,5,6,9,54,51
+reassign0=3,4 12,31
+reassign1=3,4 12,31
+captured0=3 5 11
+captured1=3 5 11
+mixedKinds0=3 6 1:2,3 1: 6 3:1:2 1:1:undefined 2 5
+mixedKinds1=3 6 1:2,3 1: 6 3:1:2 1:1:undefined 2 5
+strictAndArrows0=3 12 2 7 NaN
+strictAndArrows1=3 12 2 7 NaN
+recursion0=8 21
+recursion1=8 21
+builtinCallers0=10,21 | 2,4,6 | 17 | 1,2,3 | 1,3,4 | a-13b
+builtinCallers1=10,21 | 2,4,6 | 17 | 1,2,3 | 1,3,4 | a-13b
+callApplyBind0=t:1:undefined t:1:2 t:9:8 t:9:8 t:1:2 1,2,3
+callApplyBind1=t:1:undefined t:1:2 t:9:8 t:9:8 t:1:2 1,2,3
+spread0=1,2, 0,1,2 1,2, 1,2
+spread1=1,2, 0,1,2 1,2, 1,2
+constructors0=9  6 101 5 11 105
+constructors1=9  6 101 5 11 105
+accessors0=10
+accessors1=10
+generators0=1 7 3 10 NaN 5
+generators1=1 7 3 10 NaN 5
+asyncFunctions0=function
+asyncFunctions1=function
+collectionDuringCalls0=a29bc190
+collectionDuringCalls1=a29bc190
+manyParameters0=55 NaN
+manyParameters1=55 NaN
+valuesOfEveryKind0=1.5 -Infinity str   true symbol 10 2 3
+valuesOfEveryKind1=1.5 -Infinity str   true symbol 10 2 3
+tagged0=x_y_z12
+tagged1=x_y_z12
+throwing0=0,1,a>b,a>b
+throwing1=0,1,a>b,a>b"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

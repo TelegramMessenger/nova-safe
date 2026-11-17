@@ -94,6 +94,7 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// after each super call of the constructor.
     instance_initializer: Option<Executable<'gc>>,
     call_environment: CallEnvironment,
+    stack_parameters: Option<u16>,
     /// Set when an index did not fit its bytecode operand: the executable
     /// is finished as one that throws this SyntaxError.
     too_many: Option<&'static str>,
@@ -122,6 +123,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             class_initializer_bytecodes: Vec::new(),
             instance_initializer: None,
             call_environment: CallEnvironment::Function,
+            stack_parameters: None,
             too_many: None,
         }
     }
@@ -226,6 +228,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.class_initializer_bytecodes.clear();
         self.instance_initializer = None;
         self.call_environment = CallEnvironment::Function;
+        self.stack_parameters = None;
         self.too_many = None;
         let message = self.create_string(message);
         self.add_instruction_with_constant(Instruction::StoreConstant, message);
@@ -275,6 +278,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 .collect(),
             instance_initializer: self.instance_initializer.unbind(),
             call_environment: self.call_environment,
+            stack_parameters: self.stack_parameters,
             binding_sites: vec![BindingSite::UNKNOWN; self.binding_sites].into_boxed_slice(),
             _gc: PhantomData,
         })
@@ -770,6 +774,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
 
     pub(super) fn set_call_environment(&mut self, call_environment: CallEnvironment) {
         self.call_environment = call_environment;
+    }
+
+    pub(super) fn set_stack_parameters(&mut self, count: u16) {
+        self.stack_parameters = Some(count);
     }
 
     pub(super) fn set_instance_initializer(&mut self, executable: Executable<'gc>) {

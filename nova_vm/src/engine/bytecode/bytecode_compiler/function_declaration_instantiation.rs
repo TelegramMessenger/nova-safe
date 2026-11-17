@@ -228,9 +228,39 @@ pub(crate) fn instantiation<'s>(
         ctx.add_instruction(Instruction::EnterDeclarativeEnvironment);
     }
 
+    // The call puts the arguments in the parameters' stack slots itself
+    // (Executable::stack_parameters, Vm::execute) when that is all there is
+    // to binding them: every parameter a plain name kept in a stack slot,
+    // those the function's first slots, and the arguments read nowhere else
+    // (no arguments object, no rest parameter, no parameter expressions).
+    // Nothing is compiled for the parameters then, and no arguments iterator
+    // is there to pop.
+    let direct_parameters = !arguments_object_needed
+        && !has_parameter_expressions
+        && !has_duplicates
+        && formals.rest.is_none()
+        && env_parameters.is_empty()
+        && ctx.stack_depth() == 0
+        && stack_parameters.len() == formals.items.len()
+        && formals.items.iter().all(|parameter| {
+            matches!(
+                parameter.pattern,
+                oxc_ast::ast::BindingPattern::BindingIdentifier(_)
+            )
+        });
+    let direct_parameters = if direct_parameters {
+        u16::try_from(stack_parameters.len()).ok()
+    } else {
+        None
+    };
+
     // 21. For each String paramName of parameterNames, do
     for param_name in &stack_parameters {
-        stack_variables.push(ctx.push_stack_variable(*param_name, false));
+        stack_variables.push(if direct_parameters.is_some() {
+            ctx.push_filled_stack_variable(*param_name)
+        } else {
+            ctx.push_stack_variable(*param_name, false)
+        });
     }
     if !env_parameters.is_empty() {
         bindings_in_environment = true;
@@ -316,7 +346,9 @@ pub(crate) fn instantiation<'s>(
     // 26. Else,
     //   a. Perform ? IteratorBindingInitialization of formals with arguments
     //      iteratorRecord and env.
-    if formals.has_parameter() {
+    if let Some(count) = direct_parameters {
+        ctx.set_stack_parameters(count);
+    } else if formals.has_parameter() {
         if has_parameter_expressions {
             // Note: ignore errors here for safety.
             let lexical_binding_state = ctx.lexical_binding_state;
@@ -339,8 +371,10 @@ pub(crate) fn instantiation<'s>(
             );
         }
     }
-    // Remove the arguments iterator from the iterator stack.
-    ctx.add_instruction(Instruction::IteratorPop);
+    if direct_parameters.is_none() {
+        // Remove the arguments iterator from the iterator stack.
+        ctx.add_instruction(Instruction::IteratorPop);
+    }
 
     // 27. If hasParameterExpressions is false, then
     if !has_parameter_expressions {
