@@ -34,22 +34,22 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 7.7x |
-| typed | 4 | 10.6x | 6.7x |
-| math | 4 | 9.7x | 5.9x |
-| prop | 13 | 7.1x | 5.1x |
-| app | 8 | 6.1x | 5.0x |
-| array | 14 | 5.8x | 4.6x |
-| loop | 11 | 11.1x | 4.4x |
-| string | 26 | 10.6x | 3.9x |
-| map, set | 4 | 4.6x | 3.1x |
-| regexp | 4 | 2.4x | 2.2x |
+| call | 14 | 10.4x | 7.1x |
+| math | 4 | 9.7x | 6.0x |
+| typed | 4 | 10.6x | 5.5x |
+| app | 8 | 6.1x | 4.8x |
+| prop | 13 | 7.1x | 4.7x |
+| array | 14 | 5.8x | 4.4x |
+| loop | 11 | 11.1x | 4.2x |
+| string | 26 | 10.6x | 3.6x |
+| map, set | 4 | 4.6x | 2.9x |
 | gc | 3 of 5 | 3.6x | 2.1x |
-| json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 4.5x |
+| regexp | 4 | 2.4x | 2.1x |
+| json | 2 | 1.0x | 0.9x |
+| all | 108 | 7.6x | 4.2x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 4.2x, and the worst is now prepending
-(38x, area 7). One case ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of
+The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
+(38x, area 7); after it come calls and property access at 9-12x. One case ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
 What is written in Rust or C on both sides is level: JSON, RegExp, `indexOf`, `split`/`join`, `sort`. The gap is in
@@ -73,7 +73,7 @@ fail, run a script or scope a value (stack moves, constants, jumps, strict equal
 arithmetic of two integers) go straight to the next instruction, with no result to look at and nothing to release;
 arguments are read as four bytes of which an instruction uses what it has; the interrupt countdown is taken at
 backward jumps and at calls (8 steps each) and no longer at every instruction. A plain counting loop went from
-12.4x to 3.0x, loops from 11.1x to 4.4x, and everything else gained with them. A JavaScript call also takes less
+12.4x to 3.1x, loops from 11.1x to 4.4x, and everything else gained with them. A JavaScript call also takes less
 native stack (1,683 nested calls where there were 1,510).
 
 Left: 1.3 ns an instruction, of which the dispatch is still 60% (the instruction pointer goes through memory, the
@@ -84,25 +84,29 @@ constant and operate), which is where QuickJS's 8 instructions for the same iter
 
 ### 2. Variables that are not locals of the running function
 
-Every read or write of a closure variable, a module-level variable or a global resolves the name at run time:
-`ResolveBinding` walks the environment chain, looks the name up in each record, builds a Reference, and
-`GetValue`/`PutValue` goes through it. A loop over a closure variable is 8.2x and over a global 9.3x (they were
-18x and 17x), and widget code is closures over a module scope. QuickJS resolves these when it compiles, to an
-index.
+Every read or write of a closure variable, a module-level variable or a global resolved the name at run time:
+`ResolveBinding` walks the environment chain and looks the name up in each record, builds a Reference, and
+`GetValue`/`PutValue` goes through it. Widget code is closures over a module scope, so this is in every case that
+is not a bare loop. QuickJS resolves these when it compiles, to an index.
 
-Measured: remembering, per place in the code, where the name was found (environments outwards, slot) and checking
-that with one comparison is sound wherever no `with` or direct `eval` is in scope, and it gains only 3-8% on a
-closure variable one level out. The lookup is the small part; the Reference built for every access and the three
-general instructions it passes through are the large one. The change is kept aside (`git stash`, "binding sites")
-until it carries its weight.
+Done, for variables of enclosing functions and blocks. Each place in the code that names such a variable remembers
+where the name was found (a `BindingSite`: so many environments out, at such a slot), and reads and writes the
+variable there with one instruction and no Reference. That is sound wherever no `with` and no direct `eval` is in
+any scope between the name and its declaration, which the compiler knows; the remembered place is still checked
+when it is used (the kinds of the records on the way, the name at the slot), and anything unusual (a variable not
+yet initialized, a constant written to) takes the general way and gives the error that way gives. A loop over a
+closure variable went from 18x to 5.5x, and calls, property and element access gained 10-30% with it, since the
+functions and objects they use are closure variables.
 
-Next: on top of the remembered place, one instruction that reads the variable into the result and one that writes
-it, with no Reference; then the same for globals through the existing property cache. Reach: about 4-5x for these
-cases.
+Remembering the place alone, with the Reference kept, gained 3-8%: the lookup was the small part and the
+Reference the large one.
+
+Left: globals (`loop/global-variable` 9.4x) still go through a Reference, with a property cache; the same two
+instructions over that cache are next. Top-level `let`/`const` and module variables are resolved the long way.
 
 ### 3. Calls
 
-A JavaScript call is 13-16x. Each one makes a new `Vm`, an execution context, a function environment record even
+A JavaScript call is 9-12x (it was 13-20x; what it gained came from areas 1 and 2). Each one makes a new `Vm`, an execution context, a function environment record even
 when nothing captures its variables, and binds its arguments through the general binding-pattern code. Recursion is
 also shallower: about 2.7 KB of native stack per call level against 0.9 KB.
 
@@ -111,7 +115,7 @@ stack slots; the `Vm`'s stacks reused across calls. Reach: about 5-6x.
 
 ### 4. Properties
 
-`o.x` is 8-20x: the access builds a Reference record and then reads through the inline cache, and the profile shows
+`o.x` is 7-12x (it was 8-23x): the access builds a Reference record and then reads through the inline cache, and the profile shows
 generic own-property lookups next to it. Object creation is not the problem (literals 1.5x).
 
 Next: one instruction for a named get and one for a named put that consult the cache directly, and a check that puts
@@ -119,11 +123,11 @@ hit it. Reach: about 4x.
 
 ### 5. Array and typed array elements
 
-`a[i]` is 11-16x through the same Reference path with a generic property key; `typedArray.length` is a getter call
+`a[i]` is 6-8x (it was 11-19x) through the same Reference path with a generic property key; `typedArray.length` is a getter call
 on every loop test.
 
 Done: a typed array no longer converts a key such as `length` to a Number and back on every access to learn that it
-is not an index (typed array loops 10.6x to 8.1x). Next: element get/put instructions with a short way for arrays
+is not an index (typed array loops 10.6x to 8.1x then; 5.5x now). Next: element get/put instructions with a short way for arrays
 and typed arrays under an integer index; `length` of an array or typed array without a call. Reach: about 4x.
 
 ### 6. Numbers
@@ -134,7 +138,7 @@ integers, and comparisons of two Numbers no longer park the `Vm` for a collectio
 whose result is an integer or a Boolean are now handled in the loop itself (area 1).
 
 Left: a double that does not fit the 56-bit inline form is allocated on the heap, so most float arithmetic
-allocates (`math/` 5.9x, `typed/float64-math` 10x). The fix is a value layout with inline doubles, which touches
+allocates (`math/` 6.0x, `typed/float64-math` 8x). The fix is a value layout with inline doubles, which touches
 every `match` on `Value`: large, and after the items above.
 
 ### 7. Building strings
@@ -175,4 +179,5 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 
 `cargo test -p nova_vm -p nova_embed -p nova_embed_ffi -p wtf8`, the widget sandbox's own suite against the built
 library (224 tests in process, over the stream and hosted, the attack corpus, the compat corpus), then
-`safe/bench/run.py --baseline …` for the numbers. test262 has not been run for these changes.
+`safe/bench/run.py --baseline …` for the numbers, and test262 as `safe/tools/gate.sh` runs it (no unexpected
+result; 14 tests that timed out now pass).
