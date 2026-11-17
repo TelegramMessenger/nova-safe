@@ -352,6 +352,10 @@ impl Vm {
             return ExecutionResult::Throw(agent.throw_stack_overflow(gc.into_nogc()));
         }
         let stack_depth = agent.stack_refs.borrow().len();
+        // What an instruction scoped it cannot use after it either: a loop of
+        // object destructurings in one call would otherwise keep a key set
+        // per iteration until the function returns, and run out of memory.
+        let collections_depth = agent.stack_ref_collections.borrow().len();
         let instructions = executable.get_instructions(agent);
         while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
             agent.limits.countdown -= 1;
@@ -378,6 +382,10 @@ impl Vm {
                 }
             }
             agent.stack_refs.get_mut().truncate(stack_depth);
+            agent
+                .stack_ref_collections
+                .get_mut()
+                .truncate(collections_depth);
         }
 
         if agent.termination().is_some() {
