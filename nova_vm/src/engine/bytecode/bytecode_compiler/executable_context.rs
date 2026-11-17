@@ -412,6 +412,46 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             }
             _ => instruction,
         };
+        // An equality and the jump on it, as one instruction.
+        let instruction = match instruction {
+            Instruction::JumpIfNot | Instruction::JumpIfTrue => {
+                let (strict, loose) = if instruction == Instruction::JumpIfNot {
+                    (
+                        Instruction::JumpIfNotStrictlyEqual,
+                        Instruction::JumpIfNotLooselyEqual,
+                    )
+                } else {
+                    (
+                        Instruction::JumpIfStrictlyEqual,
+                        Instruction::JumpIfLooselyEqual,
+                    )
+                };
+                if let Some(equal) = self.recent_instruction(0, Instruction::IsStrictlyEqual) {
+                    self.drop_recent_instructions(equal, 1);
+                    strict
+                } else if let Some(equal) = self.recent_instruction(0, Instruction::IsLooselyEqual)
+                {
+                    self.drop_recent_instructions(equal, 1);
+                    loose
+                } else if let Some(equal) =
+                    self.recent_instruction(0, Instruction::IsStrictlyEqualConstant)
+                    && let Some(local) = self.recent_instruction(1, Instruction::GetValueFromIndex)
+                {
+                    // A local and a constant: both operands by one
+                    // instruction, the test by another.
+                    let slot = self.operand_bytes(local);
+                    let constant = self.operand_bytes(equal);
+                    self.drop_recent_instructions(local, 2);
+                    self.push_instruction(Instruction::LoadFromIndexStoreConstant);
+                    self.instructions.extend_from_slice(&slot);
+                    self.instructions.extend_from_slice(&constant);
+                    strict
+                } else {
+                    instruction
+                }
+            }
+            _ => instruction,
+        };
         // The test of a loop or an `if`, a comparison and the jump on it,
         // as one instruction.
         let instruction = if instruction == Instruction::JumpIfNot {
