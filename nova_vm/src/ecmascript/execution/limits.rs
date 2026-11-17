@@ -87,9 +87,9 @@ pub(crate) struct Limits {
     /// ([`HostHooks::allocated_bytes`](crate::ecmascript::HostHooks::allocated_bytes))
     /// when it keeps one, else the estimate.
     live_bytes_after_gc: usize,
-    /// How many counted bytes one byte of the allocation counter stood for at
-    /// the last garbage collection (1 without the embedder's count).
-    counted_per_estimated: usize,
+    /// With the embedder's count: how many counted bytes one estimated byte
+    /// stood for at the last garbage collection, in 256ths.
+    counted_per_estimated: Option<usize>,
     /// Allocations after which the next garbage collection runs.
     pub(crate) gc_threshold: usize,
     /// Address of a local in the outermost host entry, 0 outside one.
@@ -104,7 +104,7 @@ impl Default for Limits {
             termination: None,
             heap_limit: None,
             live_bytes_after_gc: 0,
-            counted_per_estimated: 1,
+            counted_per_estimated: None,
             gc_threshold: GC_ALLOCATION_INTERVAL,
             stack_base: 0,
             stack_limit: DEFAULT_STACK_LIMIT,
@@ -158,16 +158,23 @@ impl Limits {
     fn update_gc_threshold(&mut self, interval: usize) {
         self.gc_threshold = match self.heap_limit {
             Some(limit) => {
-                // The allocation counter sees less than the estimate finds
-                // live afterwards (element and property storage moves), so
-                // collect after a quarter of the headroom.
-                // The embedder's count grows faster still: by
-                // `counted_per_estimated` bytes for each of the counter's.
-                let headroom = limit.saturating_sub(self.live_bytes_after_gc)
-                    / self.counted_per_estimated;
-                interval.min(
-                    (headroom / 4).max(MIN_GC_ALLOCATION_INTERVAL / self.counted_per_estimated),
-                )
+                let headroom = limit.saturating_sub(self.live_bytes_after_gc);
+                match self.counted_per_estimated {
+                    // The embedder's count is exact, and the allocation
+                    // counter paces in estimated bytes: collect when half the
+                    // headroom is used, in the counter's bytes. (A heap that
+                    // gets past the limit before that is collected by the
+                    // next poll, before it is judged.)
+                    Some(ratio) => {
+                        let estimated = |counted: usize| counted.saturating_mul(256) / ratio;
+                        interval
+                            .min((estimated(headroom) / 2).max(estimated(MIN_GC_ALLOCATION_INTERVAL)))
+                    }
+                    // The allocation counter sees less than the estimate
+                    // finds live afterwards (element and property storage
+                    // moves), so collect after a quarter of the headroom.
+                    None => interval.min((headroom / 4).max(MIN_GC_ALLOCATION_INTERVAL)),
+                }
             }
             None => interval,
         };
@@ -535,11 +542,11 @@ impl Agent {
             Some(counted) => {
                 self.limits.live_bytes_after_gc = counted;
                 self.limits.counted_per_estimated =
-                    counted.div_ceil(estimated.max(1)).clamp(1, 16);
+                    Some((counted.saturating_mul(256) / estimated.max(1)).clamp(256, 16 * 256));
             }
             None => {
                 self.limits.live_bytes_after_gc = estimated;
-                self.limits.counted_per_estimated = 1;
+                self.limits.counted_per_estimated = None;
             }
         }
         self.heap.gc_alloc_limit = self.heap.gc_alloc_limit.max(
