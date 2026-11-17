@@ -443,9 +443,9 @@ impl<'a> FunctionInternalProperties<'a> for ECMAScriptFunction<'a> {
         if call_environment != CallEnvironment::Function {
             // OPTIMISATION: Only the function's own code asks for the this
             // binding of its Function Environment Record, so the record is
-            // never observed: keep the this value of a strict
-            // OrdinaryCallBindThis in the execution context, and the
-            // function's bindings, if any, in a Declarative Environment Record.
+            // never observed: keep the this value of OrdinaryCallBindThis in
+            // the execution context, and the function's bindings, if any, in
+            // a Declarative Environment Record.
             prepare_for_call_without_function_environment(
                 agent,
                 f,
@@ -734,8 +734,10 @@ fn call_environment(agent: &Agent, f: ECMAScriptFunction) -> CallEnvironment {
 /// Environment Record: the callee context's LexicalEnvironment and
 /// VariableEnvironment are F.[[Environment]], or a new Declarative Environment
 /// Record in it for the function's bindings. A function that does not take
-/// this lexically gets thisArgument as its this value, as a strict
-/// OrdinaryCallBindThis would bind it.
+/// this lexically gets the this value that OrdinaryCallBindThis would bind:
+/// thisArgument for a strict function; for one that is not, the global this
+/// value of its realm in place of undefined and null, and an object made of
+/// any other primitive.
 fn prepare_for_call_without_function_environment(
     agent: &mut Agent,
     f: ECMAScriptFunction,
@@ -751,14 +753,27 @@ fn prepare_for_call_without_function_environment(
         outer_env
     };
     let ecmascript_function_object = &f.get(agent).ecmascript_function;
-    debug_assert!(ecmascript_function_object.strict);
-    let this_value = match ecmascript_function_object.this_mode {
+    let this_mode = ecmascript_function_object.this_mode;
+    let this_value = match this_mode {
+        // 2. If thisMode is LEXICAL, return UNUSED.
         ThisMode::Lexical => None,
-        _ => Some(CallThisValue {
-            value: this_argument.unbind(),
-            variable_environment: environment.unbind(),
-        }),
-    };
+        // 6. a. If thisArgument is either undefined or null, then
+        //       iii. Let thisValue be globalEnv.[[GlobalThisValue]].
+        ThisMode::Global if this_argument.is_undefined() || this_argument.is_null() => {
+            let global_env = agent
+                .get_realm_record_by_id(ecmascript_function_object.realm)
+                .global_env
+                .unwrap();
+            Some(global_env.get_this_binding(agent).into())
+        }
+        // 5. If thisMode is STRICT, then let thisValue be thisArgument; and
+        // an object is itself in 6.b. A primitive is made an object below.
+        ThisMode::Strict | ThisMode::Global => Some(this_argument),
+    }
+    .map(|value: Value| CallThisValue {
+        value: value.unbind(),
+        variable_environment: environment.unbind(),
+    });
     let callee_context = ExecutionContext {
         ecmascript_code: Some(ECMAScriptCodeEvaluationState {
             lexical_environment: environment.unbind(),
@@ -773,6 +788,17 @@ fn prepare_for_call_without_function_environment(
         script_or_module: Some(ecmascript_function_object.script_or_module.unbind()),
     };
     agent.push_execution_context(callee_context);
+    if this_mode == ThisMode::Global
+        && !this_argument.is_undefined()
+        && !this_argument.is_null()
+        && !this_argument.is_object()
+    {
+        // 6. b. i. Let thisValue be ! ToObject(thisArgument).
+        //       ii. NOTE: ToObject produces wrapper objects using calleeRealm,
+        //           which is the running one now.
+        let wrapper = to_object(agent, this_argument, gc).unwrap();
+        agent.set_running_call_this_value(wrapper.unbind().into());
+    }
 }
 
 /// ### [10.2.1.2 OrdinaryCallBindThis ( F, calleeContext, thisArgument )](https://tc39.es/ecma262/#sec-ordinarycallbindthis)

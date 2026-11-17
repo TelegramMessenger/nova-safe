@@ -52,8 +52,8 @@ use super::{
 /// > ECMAScript that predate ECMAScript 2015.
 ///
 /// Returns the environment a \[\[Call]] of the function needs. Nothing can
-/// observe the Function Environment Record of a strict function with no
-/// parameter expressions, no arguments object and no direct eval, that does
+/// observe the Function Environment Record of a function with no parameter
+/// expressions, no arguments object and no direct eval, that does
 /// not refer to `new.target` or `super`, and in which no nested arrow function
 /// refers to `this`, `new.target` or `super`: such a function's call keeps
 /// the this value in the execution context, and a Declarative Environment
@@ -91,9 +91,10 @@ pub(crate) fn instantiation<'s>(
     is_lexical: bool,
 ) -> CallEnvironment {
     let environment_use = FunctionEnvironmentUse::of(func);
-    let mut this_free = strict
-        && !ctx.scope_contains_direct_eval(func.scope_id())
-        && !environment_use.this_environment;
+    // Strict or not: what a function that is not strict makes of its this
+    // argument (OrdinaryCallBindThis) is made when it is called.
+    let mut this_free =
+        !ctx.scope_contains_direct_eval(func.scope_id()) && !environment_use.this_environment;
     // 1. Let calleeContext be the running execution context.
     // 2. Let code be func.[[ECMAScriptCode]].
     let body = func.ecmascript_code();
