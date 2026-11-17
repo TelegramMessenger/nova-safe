@@ -369,7 +369,7 @@ impl Heap {
         let string_hasher = &mut heap.string_hasher;
         let string_lookup_table = &mut heap.string_lookup_table;
         for builtin_string in BUILTIN_STRINGS_LIST.iter() {
-            let hash = string_hasher.hash_one(Wtf8Str::from_str(builtin_string));
+            let hash = string_hasher.hash_text(builtin_string.as_bytes());
             let data = StringRecord::from_static_str(builtin_string);
             String::insert_string_with_hash(
                 strings,
@@ -475,6 +475,35 @@ impl Heap {
         }
     }
 
+    /// Allocates `message`, which is the heap string `prefix` with more text
+    /// after it, as [`Heap::alloc_wtf8_buf`] would, hashing only what was
+    /// added when `prefix` kept the state of its own hash; the new string
+    /// keeps its state in turn.
+    ///
+    /// # Correctness
+    ///
+    /// As for [`Heap::alloc_wtf8_buf`], and `message` must start with the
+    /// bytes of `prefix` unchanged.
+    pub(crate) fn alloc_wtf8_buf_after(
+        &mut self,
+        message: Wtf8Buf,
+        prefix: HeapString<'static>,
+    ) -> String<'static> {
+        let prefix_state = self.strings[prefix.get_index()].hash_state.as_deref();
+        let (hash, state) = self
+            .string_hasher
+            .hash_text_from(prefix_state, message.as_bytes());
+        let found = self.string_lookup_table.find(hash, |heap_string| {
+            self.strings[heap_string.get_index()].as_wtf8() == message.as_wtf8()
+        });
+        if let Some(&found) = found {
+            return found.into();
+        }
+        let mut data = StringRecord::from_wtf8_buf(message);
+        data.hash_state = Some(Box::new(state));
+        self.create((data, hash))
+    }
+
     /// Allocate a static string onto the Agent heap
     ///
     /// This method will currently iterate through all heap strings to look for
@@ -507,7 +536,7 @@ impl Heap {
     /// Find existing heap String or return the strings hash.
     fn find_equal_wtf8(&self, message: Wtf8Str<'_>) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);
-        let hash = self.string_hasher.hash_one(message);
+        let hash = self.string_hasher.hash_text(message.as_bytes());
         self.string_lookup_table
             .find(hash, |heap_string| {
                 let heap_str = self.strings[heap_string.get_index()].as_wtf8();

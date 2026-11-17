@@ -7,12 +7,19 @@ use std::borrow::Cow;
 
 use wtf8::{CodePoint, Wtf8Buf, Wtf8Str};
 
-use crate::heap::{CompactionLists, HeapMarkAndSweep, WorkQueues};
+use crate::{
+    hashing::{RandomState, TextHashState},
+    heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct StringRecord {
     pub(crate) data: StringBuffer,
     pub(crate) mapping: OnceCell<IndexMapping>,
+    /// Where the string table's hash of this string can be continued from:
+    /// kept for a long string that a concatenation made, so that appending
+    /// to it again hashes what is appended and not the whole string.
+    pub(crate) hash_state: Option<Box<TextHashState>>,
 }
 
 impl PartialEq for StringRecord {
@@ -75,6 +82,22 @@ impl StringRecord {
 
     /// The maximum UTF-8 length of a JS string.
     const MAX_UTF8_LENGTH: usize = Self::MAX_UTF16_LENGTH.saturating_mul(3);
+
+    /// The string's hash in the heap's string table.
+    pub(crate) fn table_hash(&self, hasher: &RandomState) -> u64 {
+        match &self.hash_state {
+            Some(state) => hasher.hash_text_from(Some(state), self.as_bytes()).0,
+            None => hasher.hash_text(self.as_bytes()),
+        }
+    }
+
+    /// Bytes the record holds besides its text.
+    pub(crate) fn extra_bytes(&self) -> usize {
+        match &self.hash_state {
+            Some(_) => core::mem::size_of::<TextHashState>(),
+            None => 0,
+        }
+    }
 
     /// Get the byte length of the string.
     pub(crate) fn len(&self) -> usize {
@@ -372,6 +395,7 @@ impl StringRecord {
         StringRecord {
             data: StringBuffer::Owned(Wtf8Buf::from_str(str)),
             mapping: OnceCell::new(),
+            hash_state: None,
         }
     }
 
@@ -381,6 +405,7 @@ impl StringRecord {
         StringRecord {
             data: StringBuffer::Static(Wtf8Str::from_str(str)),
             mapping: OnceCell::new(),
+            hash_state: None,
         }
     }
 
@@ -390,6 +415,7 @@ impl StringRecord {
         StringRecord {
             data: StringBuffer::Owned(Wtf8Buf::from_string(str)),
             mapping: OnceCell::new(),
+            hash_state: None,
         }
     }
 
@@ -399,6 +425,7 @@ impl StringRecord {
         StringRecord {
             data: StringBuffer::Owned(str),
             mapping: OnceCell::new(),
+            hash_state: None,
         }
     }
 }
@@ -408,6 +435,7 @@ impl HeapMarkAndSweep for StringRecord {
         let Self {
             data: _,
             mapping: _,
+            hash_state: _,
         } = self;
     }
 
@@ -415,6 +443,7 @@ impl HeapMarkAndSweep for StringRecord {
         let Self {
             data: _,
             mapping: _,
+            hash_state: _,
         } = self;
     }
 }

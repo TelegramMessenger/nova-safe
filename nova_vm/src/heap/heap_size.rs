@@ -122,7 +122,7 @@ impl Heap {
         }
         total += vec_bytes(&self.strings);
         for string in self.strings.iter() {
-            total += string.len();
+            total += string.len() + string.extra_bytes();
         }
         let value_size = size_of::<Option<Value<'static>>>();
         let key_size = size_of::<PropertyKey<'static>>();

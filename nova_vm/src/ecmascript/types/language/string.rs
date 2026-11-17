@@ -282,6 +282,25 @@ impl<'a> String<'a> {
             String(Wtf8Buf),
         }
         let strings = strings.as_ref();
+        // A long string with more appended, the step of every loop that
+        // builds text: the result's hash continues from the left string's.
+        if let [String::String(left), right] = strings
+            && !right.is_empty_string()
+        {
+            let left_text = left.get(agent).as_wtf8();
+            let len = left_text.len() + right.len_(agent);
+            let joins_surrogate_pair = left_text.final_lead_surrogate().is_some()
+                && right.as_wtf8_(agent).initial_trail_surrogate().is_some();
+            if len >= LONG_CONCATENATION && !joins_surrogate_pair {
+                let mut result = Wtf8Buf::with_capacity(len);
+                result.push_wtf8(left_text);
+                result.push_wtf8(right.as_wtf8_(agent));
+                return agent
+                    .heap
+                    .alloc_wtf8_buf_after(result, left.unbind())
+                    .bind(gc);
+            }
+        }
         let mut status = if strings.len() > 1 {
             let len = strings.iter().fold(0usize, |a, s| a + s.len_(agent));
             if len > 7 {
@@ -949,7 +968,7 @@ impl<'gc> String<'gc> {
         let index = BaseIndex::last(strings);
         let s = HeapString(index);
         string_lookup_table.insert_unique(hash, s, |s| {
-            string_hasher.hash_one(strings[s.get_index()].as_wtf8())
+            strings[s.get_index()].table_hash(string_hasher)
         });
         s
     }
@@ -963,7 +982,7 @@ impl<'gc> String<'gc> {
     ) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);
         let message = Wtf8Str::from_str(message);
-        let hash = string_hasher.hash_one(message);
+        let hash = string_hasher.hash_text(message.as_bytes());
         string_lookup_table
             .find(hash, |s| {
                 let heap_str = strings[s.get_index()].as_wtf8();
@@ -1029,17 +1048,20 @@ impl Scoped<'_, String<'static>> {
     }
 }
 
+/// Bytes from which a concatenation keeps the state of its hash for the next
+/// one ([`Heap::alloc_wtf8_buf_after`]); shorter strings are cheap to hash.
+const LONG_CONCATENATION: usize = 256;
+
 impl<'a> CreateHeapData<(StringRecord, u64), String<'a>> for Heap {
     fn create(&mut self, (data, hash): (StringRecord, u64)) -> String<'a> {
         self.alloc_counter += core::mem::size_of::<StringRecord>();
-        self.data_bytes_since_gc += data.len();
+        self.data_bytes_since_gc += data.len() + data.extra_bytes();
         self.strings.push(data);
         let index = BaseIndex::last(&self.strings);
         let s = HeapString(index);
         self.alloc_counter += core::mem::size_of::<HeapString>();
         self.string_lookup_table.insert_unique(hash, s, |s| {
-            let s = self.strings[s.get_index()].as_wtf8();
-            self.string_hasher.hash_one(s)
+            self.strings[s.get_index()].table_hash(&self.string_hasher)
         });
         String::String(s)
     }
