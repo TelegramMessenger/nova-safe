@@ -4448,6 +4448,66 @@ fn create_per_iteration_environment<'gc>(
     }
 }
 
+/// Where the statements of a `switch` case are entered from: the jump of its
+/// own test, or a case of the switch table that tests them all.
+enum CaseStart {
+    Jump(JumpIndex),
+    Table(usize, usize),
+}
+
+/// The selectors of the cases of a `switch` statement, where they are all
+/// literals: Number, String, Boolean or null, or a Number literal with a
+/// minus sign.
+fn literal_case_selectors<'s, 'gc>(
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+    cases: &'s [ast::SwitchCase<'s>],
+) -> Option<Vec<Value<'gc>>> {
+    fn negated<'s>(test: &'s ast::Expression<'s>) -> Option<&'s ast::NumericLiteral<'s>> {
+        let ast::Expression::UnaryExpression(unary) = test else {
+            return None;
+        };
+        match &unary.argument {
+            ast::Expression::NumericLiteral(literal)
+                if unary.operator == UnaryOperator::UnaryNegation =>
+            {
+                Some(literal)
+            }
+            _ => None,
+        }
+    }
+    let tests = || cases.iter().filter_map(|case| case.test.as_ref());
+    if tests().next().is_none()
+        || !tests().all(|test| {
+            matches!(
+                test,
+                ast::Expression::NumericLiteral(_)
+                    | ast::Expression::StringLiteral(_)
+                    | ast::Expression::BooleanLiteral(_)
+                    | ast::Expression::NullLiteral(_)
+            ) || negated(test).is_some()
+        })
+    {
+        return None;
+    }
+    Some(
+        tests()
+            .map(|test| match test {
+                ast::Expression::NumericLiteral(literal) => ctx.create_number(literal.value).into(),
+                ast::Expression::StringLiteral(literal) => {
+                    let (agent, gc) = ctx.get_agent_and_gc();
+                    string_literal_to_wtf8(agent, literal, gc).into()
+                }
+                ast::Expression::BooleanLiteral(literal) => literal.value.into(),
+                ast::Expression::NullLiteral(_) => Value::Null,
+                _ => match negated(test) {
+                    Some(literal) => ctx.create_number(-literal.value).into(),
+                    None => unreachable!(),
+                },
+            })
+            .collect(),
+    )
+}
+
 impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
     for ast::SwitchStatement<'s>
 {
@@ -4482,6 +4542,12 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
             let mut default_case_index = None;
             let mut cases = Vec::with_capacity(self.cases.len());
             let mut end_unreachable = false;
+            // Selectors that are all literals: evaluating them does nothing
+            // and comparing them in order finds the first equal one, which
+            // one instruction does by a table.
+            let switch_table = literal_case_selectors(ctx, &self.cases)
+                .and_then(|selectors| switch_value.jump_to_case(ctx, &selectors));
+            let mut table_cases = 0;
             for case in &self.cases {
                 let Some(test) = &case.test else {
                     // Default case test does not care about the write order:
@@ -4493,6 +4559,11 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     cases.push((case, None));
                     continue;
                 };
+                if let Some(table) = switch_table {
+                    cases.push((case, Some(CaseStart::Table(table, table_cases))));
+                    table_cases += 1;
+                    continue;
+                }
                 // We have switchValue somewhere on the stack, and we want to
                 // compare it to the test value. IsStrictlyEqual consumes one
                 // value from the top of the stack and compares that to the
@@ -4515,7 +4586,7 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     // b. If found is true then [evaluate case]
                     let jump_to_case_evaluation =
                         ctx.add_instruction_with_jump_slot(Instruction::JumpIfTrue);
-                    cases.push((case, Some(jump_to_case_evaluation)));
+                    cases.push((case, Some(CaseStart::Jump(jump_to_case_evaluation))));
                 } else {
                     // If the evaluation or GetValue of a test expression fails
                     // unconditionally, any remaining test cases become
@@ -4547,14 +4618,19 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     // 11. Let defaultR be Completion(Evaluation of DefaultClause).
                     let previous_jump = cases[default_case_index as usize]
                         .1
-                        .replace(jump_to_default_case);
+                        .replace(CaseStart::Jump(jump_to_default_case));
                     debug_assert!(previous_jump.is_none());
                     None
                 } else {
                     // If nothing matched and default case doesn't exist then we
                     // need to set V to undefined here.
-                    ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
-                    v.write(ctx);
+                    if !ctx.discard_completion {
+                        ctx.add_instruction_with_constant(
+                            Instruction::StoreConstant,
+                            Value::Undefined,
+                        );
+                        v.write(ctx);
+                    }
                     Some(ctx.add_instruction_with_jump_slot(Instruction::Jump))
                 }
             };
@@ -4566,8 +4642,10 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
             // block. Hence, control flow never enters here normally.
 
             let mut prev_result = ControlFlow::Break(StatementBreak::Break);
-            'cases: for (case, jump_index) in cases.into_iter() {
-                let fallthrough_jump = if prev_result.is_break() {
+            'cases: for (case, case_start) in cases.into_iter() {
+                // A function body keeps no V: a case that is entered and one
+                // that is fallen into start at the same place.
+                let fallthrough_jump = if prev_result.is_break() || ctx.discard_completion {
                     // OPTIMISATION: if previous case ended with a break or an
                     // otherwise terminal instruction, we don't need a
                     // fallthrough jump at the beginning of the next case.
@@ -4576,17 +4654,22 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     Some(ctx.add_instruction_with_jump_slot(Instruction::Jump))
                 };
                 // Jump from IsStrictlyEqual comparison to here.
-                let Some(jump_index) = jump_index else {
+                let Some(case_start) = case_start else {
                     // This can only happen if the default case is unreachable
                     // due to some test always failing. In that case we do not
                     // need to generate code for it.
                     continue;
                 };
-                ctx.set_jump_target_here(jump_index.clone());
+                match case_start {
+                    CaseStart::Jump(jump_index) => ctx.set_jump_target_here(jump_index),
+                    CaseStart::Table(table, case) => ctx.set_switch_target_here(table, case),
+                }
 
-                // 1. Let V be undefined.
-                ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
-                v.write(ctx);
+                if !ctx.discard_completion {
+                    // 1. Let V be undefined.
+                    ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
+                    v.write(ctx);
+                }
 
                 if let Some(fallthrough_jump) = fallthrough_jump {
                     ctx.set_jump_target_here(fallthrough_jump);
@@ -4599,22 +4682,30 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     continue 'cases;
                 }
 
-                v.read(ctx);
-                let v_copy = ctx.load_to_stack();
+                let mut v_copy = if ctx.discard_completion {
+                    None
+                } else {
+                    v.read(ctx);
+                    Some(ctx.load_to_stack())
+                };
 
                 for ele in &case.consequent {
                     prev_result = ele.compile(ctx);
                     if prev_result.is_break() {
                         // Continue to next case if the rest of the current case
                         // becomes unreachable.
-                        v_copy.forget(ctx);
+                        if let Some(v_copy) = v_copy.take() {
+                            v_copy.forget(ctx);
+                        }
                         continue 'cases;
                     }
                 }
                 // ii. If R.[[Value]] is not empty, set V to R.[[Value]].
                 // iii. If R is an abrupt completion, return ? UpdateEmpty(R, V).
-                v_copy.update_empty(ctx);
-                v.write(ctx);
+                if let Some(v_copy) = v_copy.take() {
+                    v_copy.update_empty(ctx);
+                    v.write(ctx);
+                }
             }
 
             if let Some(jump_to_end) = jump_to_end {

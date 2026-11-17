@@ -26,6 +26,12 @@ pub(crate) enum Instruction {
     IncrementIndex,
     /// `--` of the variable in a stack slot, likewise.
     DecrementIndex,
+    /// The tests of a `switch` whose `case` selectors are all literals, as
+    /// one instruction: jumps to the first case that the value in the stack
+    /// slot given by the first argument is strictly equal to, by the switch
+    /// table the second argument names, and goes on to the next instruction
+    /// where there is none.
+    JumpToCase,
     /// LoadFromIndex followed by StoreConstant, as one instruction: a local
     /// and a constant, the operands of `i < 10` or `x * 2`. The arguments
     /// are the stack slot and the constant.
@@ -645,6 +651,7 @@ impl Instruction {
             // Number of repetitions and lexical status
             Self::BeginSimpleArrayBindingPattern
             | Self::BindArguments
+            | Self::JumpToCase
             | Self::BindingPatternBindNamed
             | Self::BindingPatternBindToIndex
             | Self::ClassDefineConstructor
@@ -1121,6 +1128,9 @@ impl Instr {
             Instruction::BindArguments => {
                 format!("{{ first slot: {arg0}, count: {arg1} }}")
             }
+            Instruction::JumpToCase => {
+                format!("{{ slot: {arg0}, table: {arg1} }}")
+            }
             Instruction::LoadFromIndexStoreConstant => {
                 format!(
                     "{arg0}, {}",
@@ -1360,6 +1370,7 @@ impl Instruction {
         const JUMPIFLOOSELYEQUAL: u8 = Instruction::JumpIfLooselyEqual.as_u8();
         const INCREMENTINDEX: u8 = Instruction::IncrementIndex.as_u8();
         const DECREMENTINDEX: u8 = Instruction::DecrementIndex.as_u8();
+        const JUMPTOCASE: u8 = Instruction::JumpToCase.as_u8();
         const LESSTHAN: u8 = Instruction::LessThan.as_u8();
         const LESSTHANEQUALS: u8 = Instruction::LessThanEquals.as_u8();
         const LOAD: u8 = Instruction::Load.as_u8();
@@ -1561,6 +1572,7 @@ impl Instruction {
             JUMPIFLOOSELYEQUAL => Some(Instruction::JumpIfLooselyEqual),
             INCREMENTINDEX => Some(Instruction::IncrementIndex),
             DECREMENTINDEX => Some(Instruction::DecrementIndex),
+            JUMPTOCASE => Some(Instruction::JumpToCase),
             LESSTHAN => Some(Instruction::LessThan),
             LESSTHANEQUALS => Some(Instruction::LessThanEquals),
             LOAD => Some(Instruction::Load),

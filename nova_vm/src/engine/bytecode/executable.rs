@@ -5,7 +5,7 @@
 use crate::{
     ecmascript::{
         Agent, BindingSite, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, ObjectShape,
-        PropertyKey, PropertyLookupCache, SourceCode, String, Value,
+        PropertyKey, PropertyLookupCache, SourceCode, String, Value, is_strictly_equal,
     },
     engine::{
         Bindable, NoGcScope, Scoped,
@@ -135,7 +135,61 @@ pub(crate) struct ExecutableHeapData<'a> {
     /// enclosing scope found it the last time; nothing here is known to the
     /// collector.
     pub(crate) binding_sites: Box<[BindingSite]>,
+    /// The `case` selectors of each `switch` that tests them with one
+    /// JumpToCase instruction; nothing here is known to the collector, the
+    /// selectors are among the constants.
+    pub(crate) switch_tables: Arc<[SwitchTable]>,
     pub(crate) _gc: PhantomData<Value<'a>>,
+}
+
+/// The `case` selectors of a `switch` statement that are all literals, for
+/// the JumpToCase instruction.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SwitchTable {
+    /// The selectors in source order: the index of each among the constants,
+    /// and where the statements of its case start.
+    pub(crate) cases: Box<[(u16, u32)]>,
+    /// For selectors that are all integers close to one another: the lowest
+    /// of them, and where the case of each integer from it on starts, 0 for
+    /// an integer that no case has. An integer finds its case here without
+    /// a comparison.
+    pub(crate) dense: Option<(i64, Box<[u32]>)>,
+}
+
+impl SwitchTable {
+    /// How far apart the selectors of a table with a `dense` part may be.
+    const DENSE_RANGE: i64 = 256;
+
+    /// The table of `cases`, whose selectors are those `constants`.
+    pub(crate) fn new(cases: Vec<(u16, u32)>, constants: &[Value]) -> Self {
+        let integers = cases
+            .iter()
+            .map(|&(selector, target)| match constants[selector as usize] {
+                Value::Integer(integer) => Some((integer.into_i64(), target)),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        let dense = integers.and_then(|integers| {
+            let lowest = integers.iter().map(|&(integer, _)| integer).min()?;
+            let highest = integers.iter().map(|&(integer, _)| integer).max()?;
+            let range = usize::try_from(highest - lowest)
+                .ok()
+                .filter(|range| *range < Self::DENSE_RANGE as usize)?;
+            let mut targets = vec![0; range + 1];
+            for (integer, target) in integers {
+                // The first of two cases with one selector is the one taken.
+                let slot = &mut targets[(integer - lowest) as usize];
+                if *slot == 0 {
+                    *slot = target;
+                }
+            }
+            Some((lowest, targets.into_boxed_slice()))
+        });
+        Self {
+            cases: cases.into_boxed_slice(),
+            dense,
+        }
+    }
 }
 
 /// The environment a \[\[Call]] of an ECMAScript function creates for its code.
@@ -330,6 +384,33 @@ impl<'gc> Executable<'gc> {
             .get(index)
             .copied()
             .unwrap_or(BindingSite::ELSEWHERE)
+    }
+
+    /// Where the `switch` whose table is at `index` goes for `value`: to
+    /// the first case whose selector IsStrictlyEqual(value, selector) holds
+    /// for, if there is one.
+    #[inline]
+    pub(super) fn switch_target(self, agent: &Agent, index: usize, value: Value) -> Option<usize> {
+        let data = self.get(agent);
+        let table = data.switch_tables.get(index)?;
+        if let (Value::Integer(value), Some((lowest, targets))) = (value, &table.dense) {
+            // Every selector is an integer: no other case could match.
+            let target = usize::try_from(value.into_i64() - lowest)
+                .ok()
+                .and_then(|distance| targets.get(distance))
+                .copied()
+                .unwrap_or(0);
+            return (target != 0).then_some(target as usize);
+        }
+        table
+            .cases
+            .iter()
+            .find(|&&(selector, _)| {
+                data.constants
+                    .get(selector as usize)
+                    .is_some_and(|selector| is_strictly_equal(agent, value, *selector))
+            })
+            .map(|&(_, target)| target as usize)
     }
 
     fn set_binding_site(self, agent: &mut Agent, index: usize, site: BindingSite) {
@@ -583,6 +664,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             call_environment: _,
             stack_parameters: _,
             binding_sites: _,
+            switch_tables: _,
             _gc: _,
         } = self;
         instance_initializer.mark_values(queues);
@@ -609,6 +691,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             call_environment: _,
             stack_parameters: _,
             binding_sites: _,
+            switch_tables: _,
             _gc: _,
         } = self;
         instance_initializer.sweep_values(compactions);

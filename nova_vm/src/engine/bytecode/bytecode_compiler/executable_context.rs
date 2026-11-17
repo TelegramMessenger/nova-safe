@@ -29,7 +29,7 @@ use crate::{
 };
 
 use super::{IndexType, JumpIndex};
-use crate::engine::CallEnvironment;
+use crate::engine::{CallEnvironment, SwitchTable};
 
 /// The ThrowError immediate of an executable that stands in for code using
 /// syntax the compiler does not support. Running it panics, as compiling that
@@ -76,6 +76,9 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// How many BindingSites the instructions use: one for each place in the
     /// code that names a variable whose scope chain is fixed.
     binding_sites: usize,
+    /// Switch tables being built: for each, the constant of every selector
+    /// and where the statements of its case start, once that is known.
+    switch_tables: Vec<Vec<(IndexType, u32)>>,
     /// Constants being built
     constants: Vec<Value<'gc>>,
     constant_indexes: AHashMap<ConstantKey<'gc>, usize>,
@@ -113,6 +116,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             caches: Vec::new(),
             cache_indexes: AHashMap::default(),
             binding_sites: 0,
+            switch_tables: Vec::new(),
             constants: Vec::new(),
             constant_indexes: AHashMap::default(),
             wide_constants: Vec::new(),
@@ -218,6 +222,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.recent_len = 0;
         self.caches.clear();
         self.cache_indexes.clear();
+        self.switch_tables.clear();
         self.constants.clear();
         self.constant_indexes.clear();
         self.wide_constants.clear();
@@ -263,6 +268,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 self.function_expressions[index].template.executable = Some(stub);
             }
         }
+        let switch_tables = core::mem::take(&mut self.switch_tables)
+            .into_iter()
+            .map(|cases| SwitchTable::new(cases, &self.constants))
+            .collect();
         self.agent.heap.create(ExecutableHeapData {
             instructions: self.instructions.into(),
             caches: self.caches.unbind().into_boxed_slice(),
@@ -280,6 +289,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             call_environment: self.call_environment,
             stack_parameters: self.stack_parameters,
             binding_sites: vec![BindingSite::UNKNOWN; self.binding_sites].into_boxed_slice(),
+            switch_tables,
             _gc: PhantomData,
         })
     }
@@ -503,6 +513,45 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         JumpIndex {
             index: self.instructions.len(),
         }
+    }
+
+    /// A switch table for the `selectors` of a `switch` statement's cases,
+    /// in source order, and the JumpToCase instruction that tests the value
+    /// in the stack slot `slot` by it. Returns the table: each case sets
+    /// where it starts with [`Self::set_switch_target_here`]. None, and no
+    /// instruction, if the executable has no room for the table.
+    pub(super) fn add_switch_table(
+        &mut self,
+        slot: usize,
+        selectors: &[Value<'gc>],
+    ) -> Option<usize> {
+        let table = self.switch_tables.len();
+        if IndexType::try_from(table).is_err()
+            || IndexType::try_from(slot).is_err()
+            || self.constants.len() + selectors.len() >= WIDE_CONSTANTS_FROM
+        {
+            return None;
+        }
+        let cases = selectors
+            .iter()
+            .map(|selector| (self.add_constant(*selector) as IndexType, 0))
+            .collect();
+        self.switch_tables.push(cases);
+        self.add_instruction_with_immediate_and_immediate(Instruction::JumpToCase, slot, table);
+        Some(table)
+    }
+
+    /// The case `case` of the switch table `table` starts here.
+    pub(super) fn set_switch_target_here(&mut self, table: usize, case: usize) {
+        // A jump target: nothing before it is fused with what follows, and
+        // a Jump just before it stays.
+        self.forget_recent_instructions();
+        self.current_instruction_pointer_is_unreachable = false;
+        let Ok(target) = u32::try_from(self.instructions.len()) else {
+            self.too_many.get_or_insert(TOO_MANY_VALUES);
+            return;
+        };
+        self.switch_tables[table][case].1 = target;
     }
 
     pub(super) fn add_cache(&mut self, cache: PropertyLookupCache<'gc>) -> usize {
