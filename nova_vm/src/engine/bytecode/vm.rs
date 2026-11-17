@@ -281,6 +281,33 @@ impl Vm {
     ) -> ExecutionResult<'gc> {
         let mut vm = Vm::new(agent);
 
+        let stack_parameters = executable.stack_parameters(agent);
+        let (arguments, direct) = match (arguments, stack_parameters) {
+            (Some(arguments), Some(count)) => (None, Some((arguments, count))),
+            (arguments, _) => (arguments, None),
+        };
+        if let Some((arguments, count)) = direct {
+            // The code keeps its parameters in its first stack slots and
+            // reads its arguments nowhere else: they go there, undefined for
+            // those not given, and those beyond the parameters are dropped.
+            // The caller's copies are not kept up to date through a
+            // collection from here on, so none is left to be read.
+            let mut given = arguments.iter_mut();
+            for _ in 0..count {
+                let value = given.next().map_or(Value::Undefined, |argument| {
+                    core::mem::replace(argument, Value::Undefined)
+                });
+                vm.stack.push(value);
+            }
+            for argument in given {
+                *argument = Value::Undefined;
+            }
+            if agent.options.print_internals {
+                vm.print_internals(agent, executable.clone(), gc.nogc());
+            }
+            return vm.inner_execute(agent, executable, gc);
+        }
+
         if let Some(arguments) = arguments {
             ArgumentsList::from_mut_slice(arguments).with_scoped(
                 agent,
