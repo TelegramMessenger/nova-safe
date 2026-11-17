@@ -1570,8 +1570,9 @@ impl StringPrototype {
         }
 
         agent
-            .check_string_length(
+            .check_string_size(
                 s.utf16_len_(agent).saturating_mul(usize_from_i64(n)),
+                s.len_(agent).saturating_mul(usize_from_i64(n)),
                 gc.nogc(),
             )
             .unbind()?;
@@ -3062,11 +3063,17 @@ fn string_pad<'gc>(
     //    concatenations of fillString truncated to length fillLen.
     let fill_count = fill_len / fill_string_len;
     let overflow_len = fill_len % fill_string_len;
-    let fill_buf = fill_string.as_wtf8_(agent);
     let wtf8_index = fill_string
         .utf8_index_(agent, overflow_len)
         .unwrap_or(overflow_len * 3);
-    let mut buf = Wtf8Buf::with_capacity(s.len_(agent) + fill_count * fill_buf.len() + wtf8_index);
+    // The filler's bytes, not its code units, are what the result takes.
+    let bytes = fill_count
+        .saturating_mul(fill_string.len_(agent))
+        .saturating_add(s.len_(agent))
+        .saturating_add(wtf8_index);
+    agent.check_allocation(bytes, gc)?;
+    let fill_buf = fill_string.as_wtf8_(agent);
+    let mut buf = Wtf8Buf::with_capacity(bytes);
 
     // 6. If placement is start, return the string-concatenation of
     //    truncatedStringFiller and S.

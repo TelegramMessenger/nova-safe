@@ -765,6 +765,11 @@ impl GcAgent {
         self.agent.set_heap_limit(limit);
     }
 
+    /// See [`Agent::set_heap_limit_refusal_terminates`].
+    pub fn set_heap_limit_refusal_terminates(&mut self, terminates: bool) {
+        self.agent.set_heap_limit_refusal_terminates(terminates);
+    }
+
     /// See [`Agent::heap_size`].
     pub fn heap_size(&self) -> usize {
         self.agent.heap_size()
