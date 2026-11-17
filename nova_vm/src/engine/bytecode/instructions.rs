@@ -19,6 +19,22 @@ pub(crate) enum Instruction {
     Load,
     /// Load the result value to the given stack slot.
     PutValueToIndex,
+    /// `++` of the variable in the stack slot given by the argument, where
+    /// the value of the expression is not used: GetValueFromIndex, ToNumeric,
+    /// Increment and PutValueToIndex as one instruction, which leaves no
+    /// result.
+    IncrementIndex,
+    /// `--` of the variable in a stack slot, likewise.
+    DecrementIndex,
+    /// LoadFromIndex followed by StoreConstant, as one instruction: a local
+    /// and a constant, the operands of `i < 10` or `x * 2`. The arguments
+    /// are the stack slot and the constant.
+    LoadFromIndexStoreConstant,
+    /// LoadFromIndex followed by GetValueFromIndex: two locals, the operands
+    /// of `a + b`. The arguments are the two stack slots.
+    LoadFromIndexGetFromIndex,
+    /// LoadFromIndex twice: two locals as arguments of a call.
+    LoadFromIndexLoadFromIndex,
     /// Add the result value to the stack, without removing it as the result
     /// value.
     LoadCopy,
@@ -137,6 +153,15 @@ pub(crate) enum Instruction {
     /// Jump to another instruction by setting the instruction pointer if the
     /// current result is truthy.
     JumpIfTrue,
+    /// LessThan followed by JumpIfNot, as one instruction: the test of most
+    /// loops. The comparison leaves no result.
+    JumpIfNotLessThan,
+    /// LessThanEquals followed by JumpIfNot.
+    JumpIfNotLessThanEquals,
+    /// GreaterThan followed by JumpIfNot.
+    JumpIfNotGreaterThan,
+    /// GreaterThanEquals followed by JumpIfNot.
+    JumpIfNotGreaterThanEquals,
     /// Load the result value, if present, to the top of the stack, replacing
     /// the previous top of the stack value.
     LoadReplace,
@@ -613,6 +638,13 @@ impl Instruction {
             | Self::Jump
             | Self::JumpIfNot
             | Self::JumpIfTrue
+            | Self::LoadFromIndexStoreConstant
+            | Self::LoadFromIndexGetFromIndex
+            | Self::LoadFromIndexLoadFromIndex
+            | Self::JumpIfNotLessThan
+            | Self::JumpIfNotLessThanEquals
+            | Self::JumpIfNotGreaterThan
+            | Self::JumpIfNotGreaterThanEquals
             | Self::LoadConstantWide
             | Self::StoreConstantWide
             | Self::ObjectDefineGetter
@@ -630,6 +662,8 @@ impl Instruction {
             | Self::PutGlobalAtSite
             | Self::PutValueAtSite => 2,
             Self::PutValueToIndex
+            | Self::IncrementIndex
+            | Self::DecrementIndex
             | Self::GetValueFromIndex
             | Self::ArrayCreate
             | Self::BeginSimpleObjectBindingPattern
@@ -678,6 +712,10 @@ impl Instruction {
                 | Self::Jump
                 | Self::JumpIfNot
                 | Self::JumpIfTrue
+                | Self::JumpIfNotLessThan
+                | Self::JumpIfNotLessThanEquals
+                | Self::JumpIfNotGreaterThan
+                | Self::JumpIfNotGreaterThanEquals
                 | Self::LoadConstantWide
                 | Self::PushExceptionJumpTarget
                 | Self::StoreConstantWide
@@ -769,6 +807,10 @@ impl Instruction {
                 | Self::Jump
                 | Self::JumpIfNot
                 | Self::JumpIfTrue
+                | Self::JumpIfNotLessThan
+                | Self::JumpIfNotLessThanEquals
+                | Self::JumpIfNotGreaterThan
+                | Self::JumpIfNotGreaterThanEquals
                 | Self::PushExceptionJumpTarget
                 | Self::IteratorStepValue
         )
@@ -1047,6 +1089,15 @@ impl Instr {
             Instruction::BindArguments => {
                 format!("{{ first slot: {arg0}, count: {arg1} }}")
             }
+            Instruction::LoadFromIndexStoreConstant => {
+                format!(
+                    "{arg0}, {}",
+                    debug_print_constant(agent, exe.clone(), arg1 as usize, gc)
+                )
+            }
+            Instruction::LoadFromIndexGetFromIndex | Instruction::LoadFromIndexLoadFromIndex => {
+                format!("{arg0}, {arg1}")
+            }
             Instruction::BindingPatternBindNamed => {
                 format!(
                     "{{ {}: {} }}",
@@ -1262,6 +1313,15 @@ impl Instruction {
         const JUMP: u8 = Instruction::Jump.as_u8();
         const JUMPIFNOT: u8 = Instruction::JumpIfNot.as_u8();
         const JUMPIFTRUE: u8 = Instruction::JumpIfTrue.as_u8();
+        const LOADFROMINDEXSTORECONSTANT: u8 = Instruction::LoadFromIndexStoreConstant.as_u8();
+        const LOADFROMINDEXGETFROMINDEX: u8 = Instruction::LoadFromIndexGetFromIndex.as_u8();
+        const LOADFROMINDEXLOADFROMINDEX: u8 = Instruction::LoadFromIndexLoadFromIndex.as_u8();
+        const JUMPIFNOTLESSTHAN: u8 = Instruction::JumpIfNotLessThan.as_u8();
+        const JUMPIFNOTLESSTHANEQUALS: u8 = Instruction::JumpIfNotLessThanEquals.as_u8();
+        const JUMPIFNOTGREATERTHAN: u8 = Instruction::JumpIfNotGreaterThan.as_u8();
+        const JUMPIFNOTGREATERTHANEQUALS: u8 = Instruction::JumpIfNotGreaterThanEquals.as_u8();
+        const INCREMENTINDEX: u8 = Instruction::IncrementIndex.as_u8();
+        const DECREMENTINDEX: u8 = Instruction::DecrementIndex.as_u8();
         const LESSTHAN: u8 = Instruction::LessThan.as_u8();
         const LESSTHANEQUALS: u8 = Instruction::LessThanEquals.as_u8();
         const LOAD: u8 = Instruction::Load.as_u8();
@@ -1448,6 +1508,15 @@ impl Instruction {
             JUMP => Some(Instruction::Jump),
             JUMPIFNOT => Some(Instruction::JumpIfNot),
             JUMPIFTRUE => Some(Instruction::JumpIfTrue),
+            LOADFROMINDEXSTORECONSTANT => Some(Instruction::LoadFromIndexStoreConstant),
+            LOADFROMINDEXGETFROMINDEX => Some(Instruction::LoadFromIndexGetFromIndex),
+            LOADFROMINDEXLOADFROMINDEX => Some(Instruction::LoadFromIndexLoadFromIndex),
+            JUMPIFNOTLESSTHAN => Some(Instruction::JumpIfNotLessThan),
+            JUMPIFNOTLESSTHANEQUALS => Some(Instruction::JumpIfNotLessThanEquals),
+            JUMPIFNOTGREATERTHAN => Some(Instruction::JumpIfNotGreaterThan),
+            JUMPIFNOTGREATERTHANEQUALS => Some(Instruction::JumpIfNotGreaterThanEquals),
+            INCREMENTINDEX => Some(Instruction::IncrementIndex),
+            DECREMENTINDEX => Some(Instruction::DecrementIndex),
             LESSTHAN => Some(Instruction::LessThan),
             LESSTHANEQUALS => Some(Instruction::LessThanEquals),
             LOAD => Some(Instruction::Load),

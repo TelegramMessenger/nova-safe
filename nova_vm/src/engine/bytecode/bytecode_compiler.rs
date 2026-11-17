@@ -3256,6 +3256,24 @@ fn compile_update_expression<'s, 'gc>(
             | ast::SimpleAssignmentTarget::TSAsExpression(_)
             | ast::SimpleAssignmentTarget::TSTypeAssertion(_) => unreachable!(),
         };
+        // `i++` of a variable in a stack slot whose value nothing uses: one
+        // instruction for the four below.
+        if !keep_value
+            && let Place::Stack {
+                stack_slot,
+                mutable: true,
+                ..
+            } = lref
+        {
+            ctx.add_instruction_with_immediate(
+                match this.operator {
+                    oxc_syntax::operator::UpdateOperator::Increment => Instruction::IncrementIndex,
+                    oxc_syntax::operator::UpdateOperator::Decrement => Instruction::DecrementIndex,
+                },
+                stack_slot as usize,
+            );
+            return Ok(ValueOutput::Value);
+        }
         let lref = lref.assignment_target(ctx, true);
         lref.get_value_keep_reference(ctx)?;
         ctx.add_instruction(Instruction::ToNumeric);

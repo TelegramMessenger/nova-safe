@@ -297,6 +297,12 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     self.instructions[start] = Instruction::LoadFromIndex.as_u8();
                     return;
                 }
+                if let Some(start) =
+                    self.recent_instruction(0, Instruction::LoadFromIndexGetFromIndex)
+                {
+                    self.instructions[start] = Instruction::LoadFromIndexLoadFromIndex.as_u8();
+                    return;
+                }
                 if let Some(start) = self.recent_instruction(0, Instruction::PushReference) {
                     self.instructions[start] = Instruction::PushReferenceAndLoad.as_u8();
                     return;
@@ -318,6 +324,19 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                         self.instructions.extend_from_slice(&operand);
                         return;
                     }
+                }
+                // The same local and constant, already made one instruction.
+                if let Some(fused) =
+                    self.recent_instruction(0, Instruction::LoadFromIndexStoreConstant)
+                {
+                    let slot = self.operand_bytes(fused);
+                    let constant = [self.instructions[fused + 3], self.instructions[fused + 4]];
+                    self.drop_recent_instructions(fused, 1);
+                    self.push_instruction(Instruction::GetValueFromIndex);
+                    self.instructions.extend_from_slice(&slot);
+                    self.push_instruction(Instruction::IsStrictlyEqualConstant);
+                    self.instructions.extend_from_slice(&constant);
+                    return;
                 }
             }
             Instruction::Return => {
@@ -383,6 +402,36 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 }
             }
             _ => instruction,
+        };
+        // The test of a loop or an `if`, a comparison and the jump on it,
+        // as one instruction.
+        let instruction = if instruction == Instruction::JumpIfNot {
+            let fused = [
+                (Instruction::LessThan, Instruction::JumpIfNotLessThan),
+                (
+                    Instruction::LessThanEquals,
+                    Instruction::JumpIfNotLessThanEquals,
+                ),
+                (Instruction::GreaterThan, Instruction::JumpIfNotGreaterThan),
+                (
+                    Instruction::GreaterThanEquals,
+                    Instruction::JumpIfNotGreaterThanEquals,
+                ),
+            ]
+            .into_iter()
+            .find_map(|(comparison, fused)| {
+                self.recent_instruction(0, comparison)
+                    .map(|start| (start, fused))
+            });
+            match fused {
+                Some((start, fused)) => {
+                    self.drop_recent_instructions(start, 1);
+                    fused
+                }
+                None => instruction,
+            }
+        } else {
+            instruction
         };
         self.push_instruction(instruction);
         self.add_jump_index()
@@ -471,6 +520,17 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             self.add_index(immediate);
             return;
         }
+        // Two locals in a row, as one instruction.
+        if instruction == Instruction::GetValueFromIndex
+            && let Some(load) = self.recent_instruction(0, Instruction::LoadFromIndex)
+        {
+            let slot = self.operand_bytes(load);
+            self.drop_recent_instructions(load, 1);
+            self.push_instruction(Instruction::LoadFromIndexGetFromIndex);
+            self.instructions.extend_from_slice(&slot);
+            self.add_index(immediate);
+            return;
+        }
         self.push_instruction(instruction);
         self.add_index(immediate);
     }
@@ -505,6 +565,18 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             }
             self.push_instruction(wide_instruction);
             self.add_double_index(index);
+            return;
+        }
+        // A local and then a constant, as one instruction.
+        if instruction == Instruction::StoreConstant
+            && let Some(load) = self.recent_instruction(0, Instruction::LoadFromIndex)
+        {
+            let slot = self.operand_bytes(load);
+            self.drop_recent_instructions(load, 1);
+            self.push_instruction(Instruction::LoadFromIndexStoreConstant);
+            self.instructions.extend_from_slice(&slot);
+            let constant = self.add_constant(constant);
+            self.add_index_of(constant, TOO_MANY_NAMES);
             return;
         }
         self.push_instruction(instruction);

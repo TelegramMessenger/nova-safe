@@ -2162,6 +2162,54 @@ pub(super) fn execute_make_super_property_reference_with_identifier_key<'gc>(
     Ok(())
 }
 
+/// A comparison with the jump on it, or `++` or `--` of a stack slot, as
+/// the instructions it was fused from: the comparison or the conversion can
+/// run a script.
+///
+/// One function of its own, like the fallbacks for global names: the
+/// instruction loop's frame holds none of this.
+#[inline(never)]
+pub(super) fn execute_fused_instruction<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    instr: Instr,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    match instr.kind {
+        Instruction::IncrementIndex | Instruction::DecrementIndex => {
+            let slot = instr.get_first_index();
+            // GetValueFromIndex, ToNumeric
+            vm.result = Some(vm.stack[slot]);
+            execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+            // Increment or Decrement
+            if instr.kind == Instruction::IncrementIndex {
+                execute_increment(agent, vm, gc.into_nogc());
+            } else {
+                execute_decrement(agent, vm, gc.into_nogc());
+            }
+            // PutValueToIndex
+            vm.stack[slot] = vm.result.take().unwrap();
+            Ok(())
+        }
+        _ => {
+            match instr.kind {
+                Instruction::JumpIfNotLessThan => execute_less_than(agent, vm, gc),
+                Instruction::JumpIfNotLessThanEquals => execute_less_than_equals(agent, vm, gc),
+                Instruction::JumpIfNotGreaterThan => execute_greater_than(agent, vm, gc),
+                Instruction::JumpIfNotGreaterThanEquals => {
+                    execute_greater_than_equals(agent, vm, gc)
+                }
+                _ => unreachable!(),
+            }?;
+            // JumpIfNot
+            let mut ip = vm.ip;
+            execute_jump_if_not(agent, vm, &mut ip, instr);
+            vm.ip = ip;
+            Ok(())
+        }
+    }
+}
+
 #[inline(always)]
 pub(super) fn execute_jump(agent: &Agent, ip: &mut usize, instr: Instr) {
     let target = instr.get_jump_slot();
