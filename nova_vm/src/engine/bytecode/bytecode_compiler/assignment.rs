@@ -27,6 +27,46 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
     }
 }
 
+/// `object[key] = value` with the object and the key kept on the stack:
+/// the order of evaluation is the one of the Reference way (the object, the
+/// key, the value, then the key made a property key as the assignment is
+/// made).
+fn compile_element_assignment<'s, 'gc>(
+    target: &'s ast::ComputedMemberExpression<'s>,
+    right: &'s ast::Expression<'s>,
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+) -> Result<ValueOutput<'gc>, ExpressionError> {
+    // 1. Let baseReference be ? Evaluation of MemberExpression.
+    // 2. Let baseValue be ? GetValue(baseReference).
+    target.object.compile(ctx)?.get_value(ctx)?;
+    ctx.add_instruction(Instruction::Load);
+    let object_on_stack = ctx.mark_stack_value();
+    // 3. Let propertyNameReference be ? Evaluation of Expression.
+    // 4. Let propertyNameValue be ? GetValue(propertyNameReference).
+    if let Err(err) = target
+        .expression
+        .compile(ctx)
+        .and_then(|r| r.get_value(ctx))
+    {
+        object_on_stack.forget(ctx);
+        return Err(err);
+    }
+    ctx.add_instruction(Instruction::Load);
+    let key_on_stack = ctx.mark_stack_value();
+    let rval = match right.compile(ctx).and_then(|r| r.get_value(ctx)) {
+        Ok(rval) => rval,
+        Err(err) => {
+            key_on_stack.forget(ctx);
+            object_on_stack.forget(ctx);
+            return Err(err);
+        }
+    };
+    key_on_stack.forget(ctx);
+    object_on_stack.forget(ctx);
+    ctx.add_instruction(Instruction::PutValueWithExpressionKey);
+    Ok(rval)
+}
+
 /// With `keep_value` false the value of a plain or compound assignment is not
 /// left in the result register: the caller discards it.
 pub(super) fn compile_assignment_expression<'s, 'gc>(
@@ -35,6 +75,19 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
     keep_value: bool,
 ) -> Result<ValueOutput<'gc>, ExpressionError> {
     {
+        // `a[i] = v` whose value nothing uses: the object and the key stay
+        // on the stack while the value is evaluated, and one instruction
+        // assigns, with no Reference to make, keep and take back.
+        if !keep_value
+            && this.operator.is_assign()
+            && let ast::AssignmentTarget::ComputedMemberExpression(target) = &this.left
+            && !target.optional
+            && !target.object.is_super()
+            && !target.expression.is_literal()
+            && ctx.optional_chains.is_none()
+        {
+            return compile_element_assignment(target, &this.right, ctx);
+        }
         let mut do_named_evaluation = false;
         // 1. Let lref be ? Evaluation of LeftHandSideExpression.
         let lref = match &this.left {

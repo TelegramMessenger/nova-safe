@@ -902,6 +902,31 @@ impl Vm {
                 }
                 vm.result = Some(value);
             }
+            // The same read with the base and the key where the expression
+            // left them: no Reference is made of them first.
+            Instruction::GetValueWithExpressionKey => {
+                let (Some(&base), Some(Value::Integer(index))) = (vm.stack.last(), vm.result)
+                else {
+                    return Plain::No;
+                };
+                let index = index.into_i64();
+                let value = if let Value::Array(array) = base {
+                    let Some(&Some(value)) = usize::try_from(index)
+                        .ok()
+                        .and_then(|index| array.as_slice(agent).get(index))
+                    else {
+                        return Plain::No;
+                    };
+                    value.unbind()
+                } else {
+                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                        return Plain::No;
+                    };
+                    value
+                };
+                vm.stack.pop();
+                vm.result = Some(value);
+            }
             // `a[i] = v` for an element the Array has, as a plain value, or
             // for a TypedArray and a Number.
             Instruction::PutValue => {
@@ -931,6 +956,33 @@ impl Vm {
                 }
                 vm.result = None;
                 vm.reference = None;
+            }
+            // The same assignment with the object and the key on the stack.
+            Instruction::PutValueWithExpressionKey => {
+                let (Some(value), [.., base, Value::Integer(index)]) =
+                    (vm.result, vm.stack.as_slice())
+                else {
+                    return Plain::No;
+                };
+                let (base, index) = (*base, index.into_i64());
+                if let Value::Array(array) = base {
+                    let Ok(index) = u32::try_from(index) else {
+                        return Plain::No;
+                    };
+                    let storage = array.get_storage(agent);
+                    if !matches!(storage.values.get(index as usize), Some(Some(_)))
+                        || storage
+                            .descriptors
+                            .is_some_and(|descriptors| descriptors.contains_key(&index))
+                    {
+                        return Plain::No;
+                    }
+                    array.as_mut_slice(agent)[index as usize] = Some(value);
+                } else if !Self::set_typed_array_element(agent, base, index, value) {
+                    return Plain::No;
+                }
+                vm.stack.truncate(vm.stack.len() - 2);
+                vm.result = None;
             }
             // A Number is its own numeric value: the counter of nearly every
             // loop.
@@ -1245,8 +1297,10 @@ impl Vm {
             | Instruction::JumpIfNotGreaterThan
             | Instruction::JumpIfNotGreaterThanEquals
             | Instruction::IncrementIndex
-            | Instruction::DecrementIndex => {
-                execute_fused_instruction(agent, vm, instr, gc)?;
+            | Instruction::DecrementIndex
+            | Instruction::GetValueWithExpressionKey
+            | Instruction::PutValueWithExpressionKey => {
+                execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
                 execute_evaluate_property_access_with_identifier_key(
@@ -1352,6 +1406,8 @@ impl Vm {
             | Instruction::JumpIfNotGreaterThanEquals
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
+            | Instruction::GetValueWithExpressionKey
+            | Instruction::PutValueWithExpressionKey
             | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }

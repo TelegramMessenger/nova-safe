@@ -105,6 +105,17 @@ pub(crate) enum Instruction {
     /// the top of the stack and the `propertyNameValue` in result register,
     /// and store the result in the reference register.
     EvaluatePropertyAccessWithExpressionKey,
+    /// EvaluatePropertyAccessWithExpressionKey followed by GetValue, as one
+    /// instruction: `a[i]` read for its value, with no Reference when the
+    /// base is an Array or a TypedArray and the key an integer.
+    GetValueWithExpressionKey,
+    /// `a[i] = v` where the value of the assignment is not used: the object
+    /// and the key are the two values on top of the stack, where they stayed
+    /// while the value was evaluated into the result register. PutValue to
+    /// the Reference that EvaluatePropertyAccessWithExpressionKey would have
+    /// made of them, with no Reference when the object is an Array or a
+    /// TypedArray and the key an integer.
+    PutValueWithExpressionKey,
     /// GetValueFromIndex followed by Load: push a copy of the given stack
     /// slot, leaving the result register empty.
     LoadFromIndex,
@@ -1313,6 +1324,8 @@ impl Instruction {
         const JUMP: u8 = Instruction::Jump.as_u8();
         const JUMPIFNOT: u8 = Instruction::JumpIfNot.as_u8();
         const JUMPIFTRUE: u8 = Instruction::JumpIfTrue.as_u8();
+        const GETVALUEWITHEXPRESSIONKEY: u8 = Instruction::GetValueWithExpressionKey.as_u8();
+        const PUTVALUEWITHEXPRESSIONKEY: u8 = Instruction::PutValueWithExpressionKey.as_u8();
         const LOADFROMINDEXSTORECONSTANT: u8 = Instruction::LoadFromIndexStoreConstant.as_u8();
         const LOADFROMINDEXGETFROMINDEX: u8 = Instruction::LoadFromIndexGetFromIndex.as_u8();
         const LOADFROMINDEXLOADFROMINDEX: u8 = Instruction::LoadFromIndexLoadFromIndex.as_u8();
@@ -1508,6 +1521,8 @@ impl Instruction {
             JUMP => Some(Instruction::Jump),
             JUMPIFNOT => Some(Instruction::JumpIfNot),
             JUMPIFTRUE => Some(Instruction::JumpIfTrue),
+            GETVALUEWITHEXPRESSIONKEY => Some(Instruction::GetValueWithExpressionKey),
+            PUTVALUEWITHEXPRESSIONKEY => Some(Instruction::PutValueWithExpressionKey),
             LOADFROMINDEXSTORECONSTANT => Some(Instruction::LoadFromIndexStoreConstant),
             LOADFROMINDEXGETFROMINDEX => Some(Instruction::LoadFromIndexGetFromIndex),
             LOADFROMINDEXLOADFROMINDEX => Some(Instruction::LoadFromIndexLoadFromIndex),

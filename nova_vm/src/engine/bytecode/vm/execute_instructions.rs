@@ -2172,10 +2172,25 @@ pub(super) fn execute_make_super_property_reference_with_identifier_key<'gc>(
 pub(super) fn execute_fused_instruction<'gc>(
     agent: &mut Agent,
     vm: &mut Vm,
+    executable: Scoped<Executable>,
     instr: Instr,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     match instr.kind {
+        Instruction::GetValueWithExpressionKey => {
+            // EvaluatePropertyAccessWithExpressionKey, GetValue
+            execute_evaluate_property_access_with_expression_key(agent, vm, gc.nogc());
+            execute_get_value(agent, vm, executable, instr, false, false, gc)
+        }
+        Instruction::PutValueWithExpressionKey => {
+            // The key goes where EvaluatePropertyAccessWithExpressionKey
+            // takes it from, the value back where PutValue does.
+            let value = vm.result.take().unwrap();
+            vm.result = vm.stack.pop();
+            execute_evaluate_property_access_with_expression_key(agent, vm, gc.nogc());
+            vm.result = Some(value);
+            execute_put_value(agent, vm, executable, instr, false, gc)
+        }
         Instruction::IncrementIndex | Instruction::DecrementIndex => {
             let slot = instr.get_first_index();
             // GetValueFromIndex, ToNumeric
