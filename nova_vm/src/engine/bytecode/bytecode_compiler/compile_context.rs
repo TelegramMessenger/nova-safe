@@ -1265,6 +1265,11 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.executable.add_instruction(instruction);
     }
 
+    /// The case `case` of the switch table `table` starts here.
+    pub(super) fn set_switch_target_here(&mut self, table: usize, case: usize) {
+        self.executable.set_switch_target_here(table, case);
+    }
+
     pub(super) fn add_instruction_with_jump_slot(&mut self, instruction: Instruction) -> JumpIndex {
         self.executable.add_instruction_with_jump_slot(instruction)
     }
@@ -1637,6 +1642,21 @@ impl StackResultValue {
     /// Write a value into the StackResultValue stack slot.
     pub(crate) fn write(&self, ctx: &mut CompileContext) {
         ctx.add_instruction_with_immediate(Instruction::PutValueToIndex, self.stack_slot as usize);
+    }
+
+    /// Test the value in the stack slot against the `selectors` of a
+    /// `switch` statement's cases, in source order, by one instruction that
+    /// jumps to the first case it is strictly equal to. Returns the switch
+    /// table, whose cases say where they start with
+    /// [`CompileContext::set_switch_target_here`]; None, with nothing added,
+    /// if the executable has no room for it.
+    pub(crate) fn jump_to_case<'gc>(
+        &self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        selectors: &[Value<'gc>],
+    ) -> Option<usize> {
+        ctx.executable
+            .add_switch_table(self.stack_slot as usize, selectors)
     }
 
     /// UpdateEmpty an StackResultValue from the stack into the result register.

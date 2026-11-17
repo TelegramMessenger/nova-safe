@@ -879,6 +879,13 @@ impl Vm {
                     }
                 }
             }
+            // The tests of a `switch` on literals: its cases only follow it.
+            Instruction::JumpToCase => {
+                let value = vm.stack[instr.get_first_index()];
+                if let Some(target) = code.switch_target(agent, instr.get_second_index(), value) {
+                    *ip = target;
+                }
+            }
             Instruction::UpdateEmpty => vm.execute_update_empty(),
             Instruction::LoadReplace => vm.execute_load_replace(),
             Instruction::Empty => vm.execute_empty(),
@@ -1425,6 +1432,7 @@ impl Vm {
             | Instruction::JumpIfNot
             | Instruction::JumpIfTrue
             | Instruction::IsStrictlyEqual
+            | Instruction::JumpToCase
             | Instruction::CreateImmutableBinding
             | Instruction::CreateMutableBinding
             | Instruction::InitializeReferencedBinding
@@ -1592,6 +1600,7 @@ impl Vm {
             | Instruction::JumpIfStrictlyEqual
             | Instruction::JumpIfNotLooselyEqual
             | Instruction::JumpIfLooselyEqual
+            | Instruction::JumpToCase
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
             | Instruction::GetValueWithExpressionKey

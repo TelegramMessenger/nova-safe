@@ -2870,3 +2870,204 @@ destructuring1=1,3,dflt,h,2"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A `switch` on literals jumps by its table and `===`, `!==`, `==` and `!=`
+/// are tested by the instructions that jump on them: both do what comparing
+/// in order with IsStrictlyEqual and IsLooselyEqual does, for integers
+/// inside and outside the table, the zeros, NaN, doubles, strings of both
+/// kinds, BigInts, symbols and objects, for duplicate and missing cases, a
+/// `default` anywhere, selectors that are not literals, completion values,
+/// and for operands that are converted, in the order they are.
+#[test]
+fn switch_and_equality_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(switch_and_equality)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn switch_and_equality() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message.length; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+var big = 1e20, half = 0.5;
+var values = [0, 1, 2, 3, 7, 8, -1, -2, 255, 256, 1000, 100000, -0, 0.5 + half, 1.5, 2.5, NaN, Infinity, -Infinity, big, "1", "", "a", "abc", "a long string of text", "a long" + " string of text", true, false, null, undefined, 1n, 2n, {}, [], [1], Symbol.iterator, function () {}];
+function each(f) { var r = []; for (var i = 0; i < values.length; i++) r.push(f(values[i])); return r.join(","); }
+log("dense", function () { return each(function (v) { switch (v) { case 0: return "z"; case 1: return "o"; case 2: return "t"; case 3: return "h"; case 7: return "s"; default: return "-"; } }); });
+log("denseNoDefault", function () { return each(function (v) { var r = "n"; switch (v) { case 1: r = "o"; break; case 2: r = "t"; break; case 8: r = "e"; } return r; }); });
+log("negative", function () { return each(function (v) { switch (v) { case -1: return "m1"; case -2: return "m2"; case -0: return "mz"; case 1: return "p1"; } return "-"; }); });
+log("sparse", function () { return each(function (v) { switch (v) { case 1: return "a"; case 1000: return "b"; case 100000: return "c"; case 256: return "d"; default: return "-"; } }); });
+log("floats", function () { return each(function (v) { switch (v) { case 1.5: return "a"; case 2.5: return "b"; case 1e20: return "c"; case 0: return "z"; case 1: return "o"; default: return "-"; } }); });
+log("strings", function () { return each(function (v) { switch (v) { case "1": return "one"; case "": return "empty"; case "a": return "a"; case "abc": return "abc"; case "a long string of text": return "long"; default: return "-"; } }); });
+log("mixed", function () { return each(function (v) { switch (v) { case 1: return "n1"; case "1": return "s1"; case true: return "T"; case false: return "F"; case null: return "N"; case 0: return "n0"; case "": return "se"; default: return "-"; } }); });
+log("duplicates", function () { return each(function (v) { switch (v) { case 1: return "first"; case 2: return "two"; case 1: return "second"; case "a": return "sa"; case "a": return "sb"; default: return "-"; } }); });
+log("defaultFirst", function () { return each(function (v) { var r = ""; switch (v) { default: r += "d"; case 1: r += "1"; break; case 2: r += "2"; case 3: r += "3"; } return r; }); });
+log("defaultMiddle", function () { return each(function (v) { var r = ""; switch (v) { case 1: r += "1"; default: r += "d"; case 2: r += "2"; break; case 3: r += "3"; } return r; }); });
+log("emptyCases", function () { return each(function (v) { var r = "x"; switch (v) { case 0: case 1: case 2: r = "low"; break; case 3: case 7: case 8: r = "mid"; case 255: case 256: } return r; }); });
+log("onlyDefault", function () { return each(function (v) { switch (v) { default: return typeof v; } }); });
+log("emptySwitch", function () { var n = 0; switch (n++) { } switch (n++) { case 5: } return n; });
+log("loopBreakContinue", function () {
+  var r = "";
+  outer: for (var i = 0; i < 12; i++) {
+    switch (i % 6) {
+      case 0: r += "a"; continue;
+      case 1: r += "b"; break;
+      case 2: r += "c"; continue outer;
+      case 3: for (var j = 0; j < 3; j++) { switch (j) { case 1: continue; case 2: break; default: r += "j"; } r += j; } break;
+      case 4: if (i > 6) break outer; r += "e";
+      default: r += "f";
+    }
+    r += "|";
+  }
+  return r;
+});
+log("lexical", function () {
+  var fs = [];
+  for (var i = 0; i < 4; i++) {
+    switch (i) { case 0: let a = "A" + i; fs.push(function () { return a; }); break; case 1: const b = "B"; fs.push(function () { return b + i; }); break; case 2: function inner() { return "I"; } fs.push(inner); break; default: class C { m() { return "C"; } } fs.push(function () { return new C().m(); }); }
+  }
+  return fs.map(function (f) { return f(); }).join();
+});
+log("sideEffects", function () {
+  var order = "";
+  function k(v) { order += v; return v; }
+  var r = [];
+  for (var v = 0; v < 5; v++) { switch (v) { case k(1): r.push("a"); break; case 2: r.push("b"); break; case k(3): r.push("c"); break; default: r.push("d"); case k(9): r.push("e"); } order += ";"; }
+  return r.join("") + "|" + order;
+});
+log("thrownSelector", function () { var r = ""; for (var v = 0; v < 3; v++) { try { switch (v) { case 0: r += "0"; break; case (function () { throw new RangeError("x"); })(): r += "never"; break; default: r += "d"; } } catch (e) { r += e.constructor.name; } } return r; });
+log("getterDiscriminant", function () { var n = 0, o = { get v() { n++; return 2; } }; var r = ""; switch (o.v) { case 1: r = "1"; break; case 2: r = "2"; break; case 3: r = "3"; } return r + n; });
+log("completion", function () {
+  return [eval("switch (1) { case 1: 5 }"), eval("switch (2) { case 1: 5; default: }"), eval("switch (1) { case 1: 5; case 2: 6; break; case 3: 7 }"), eval("1; switch (3) { case 1: 5; break; }"), eval("2; switch ('b') { case 'a': 5; break; default: case 'b': }"), eval("3; do { switch (1) { case 1: 9; continue; } } while (false)"), eval("4; l: switch (1) { case 1: 8; break l; }"), eval("switch (2) { case 1: 'a'; case 2: case 3: 'c'; case 4: }"), eval("var q = 0; for (var i = 0; i < 3; i++) switch (i) { case 0: 'x'; break; case 1: q; break; default: }")].join();
+});
+log("generator", function () {
+  function* g(v) { switch (v) { case 1: yield "a"; case 2: var got = yield "b"; yield got; break; case "s": try { yield "t"; } finally { yield "f"; } default: yield "d"; } return "r"; }
+  var r = []; for (var v of [1, 2, "s", 9]) { var it = g(v), step = it.next(); while (!step.done) { r.push(step.value); step = it.next("sent"); } r.push(step.value); }
+  return r.join();
+});
+log("asyncAndTry", function () {
+  var r = "";
+  function f(v) { try { switch (v) { case 1: return "one"; case 2: throw new Error("two"); case 3: break; default: return "dflt"; } return "after"; } catch (e) { return "caught" + e.message; } finally { r += v; } }
+  return [f(1), f(2), f(3), f(4)].join() + r;
+});
+log("nested", function () { var r = ""; for (var a = 0; a < 3; a++) for (var b = 0; b < 3; b++) switch (a) { case 0: switch (b) { case 0: r += "00"; break; case 1: r += "01"; default: r += "0d"; } break; case 1: switch ("k" + b) { case "k0": r += "10"; break; case "k2": r += "12"; } default: r += "x" + b; } return r; });
+log("manyCases", function () {
+  var src = "switch (v) {"; for (var i = 0; i < 300; i++) src += "case " + (i * 3) + ": return " + i + ";"; src += "default: return -1; }";
+  var f = new Function("v", src), g = new Function("v", src.replace("case 0:", "case 5000000:"));
+  return [f(0), f(3), f(4), f(897), f(900), f(-3), f("3"), g(0), g(5000000), g(897), g(1.5)].join();
+});
+log("wideStrings", function () {
+  var src = "switch (v) {"; for (var i = 0; i < 40; i++) src += "case 'key number " + i + "': return " + i + ";"; src += "}";
+  var f = new Function("v", src);
+  return [f("key number 0"), f("key number " + 39), f("key number 40"), f(39)].join();
+});
+log("arrowAndMethods", function () { var o = { m(v) { switch (v) { case 1: return this.k; default: return "d"; } }, k: "K" }; var a = (v) => { switch (v) { case "x": return 1; } return 0; }; return o.m(1) + o.m(2) + a("x") + a("y"); });
+log("strictOps", function () { return each(function (v) { var r = ""; if (v === 1) r += "a"; if (v !== 1) r += "b"; if (v === "a") r += "c"; if (v === null) r += "d"; if (v !== undefined) r += "e"; if (v === v) r += "f"; if (v === 0) r += "g"; if (1.5 === v) r += "h"; if (v === true) r += "i"; return r; }); });
+log("looseOps", function () { return each(function (v) { var r = ""; try { if (v == 1) r += "a"; if (v != 1) r += "b"; if (v == "a") r += "c"; if (v == null) r += "d"; if (v != undefined) r += "e"; if (v == v) r += "f"; if (v == 0) r += "g"; if ("1" == v) r += "h"; if (v == true) r += "i"; if (v == "") r += "j"; } catch (e) { r += e.constructor.name; } return r; }); });
+log("pairs", function () { var r = []; for (var i = 0; i < values.length; i += 3) for (var j = 0; j < values.length; j += 2) { var a = values[i], b = values[j], bits = 0; try { if (a === b) bits |= 1; if (a !== b) bits |= 2; if (a == b) bits |= 4; if (a != b) bits |= 8; bits |= (a === b ? 16 : 0) | (a == b ? 32 : 0); } catch (e) { bits = "T"; } r.push(bits); } return r.join(""); });
+log("coercionOrder", function () {
+  var order = "";
+  var a = { valueOf: function () { order += "a"; return 1; } }, b = { toString: function () { order += "b"; return "1"; }, valueOf: undefined };
+  var r = ""; if (a == 1) r += "1"; if (1 != a) r += "2"; if (a == b) r += "3"; if (b == "1") r += "4"; if (a != "1") r += "5"; if (a === 1) r += "6"; if (b == true) r += "7";
+  var thrower = { valueOf: function () { throw new TypeError("no"); } };
+  try { if (thrower == 1) r += "8"; } catch (e) { r += "T"; }
+  try { while (thrower != 1) r += "9"; } catch (e) { r += "U"; }
+  return r + "|" + order;
+});
+log("backEdges", function () {
+  var r = "", i = 0; do { i++; } while (i !== 5); r += i;
+  i = 0; do { i++; } while (i != "7"); r += i;
+  i = 0; do { i += 0.5; } while (!(i === 3)); r += i;
+  var s = ""; do { s += "x"; } while (s != "xxx"); r += s;
+  var n = 10; while (n !== 0) n--; r += n; for (var k = 0; k != 4; k++) r += k;
+  var o = { valueOf: function () { return 2; } }, c = 0; do { c++; } while (c != o); r += c;
+  return r;
+});
+log("conditionForms", function () { var a = 3, b = "3", u, r = ""; r += a === 3 ? "a" : "b"; r += a == b && a !== b ? "c" : "d"; r += (u == null || a === 4) ? "e" : "f"; r += !(a === 3) ? "g" : "h"; r += !(a != b) ? "i" : "j"; if (!(u !== undefined)) r += "k"; var t = a === 3; r += t; var arr = [1, 2, 3], hits = 0; for (var i = 0; i < arr.length; i++) if (arr[i] === a || arr[i] == "1") hits++; return r + hits; });
+log("bigintAndSymbol", function () { var s = Symbol("s"), t = s, r = ""; if (s === t) r += "a"; if (s == t) r += "b"; if (1n == 1) r += "c"; if (1n === 1) r += "d"; if (2n == "2") r += "e"; if (10n ** 30n == 10n ** 30n) r += "f"; if (10n ** 30n === 10n ** 30n) r += "g"; try { if (s == "s") r += "h"; } catch (e) { r += "T"; } switch (2n) { case 2: r += "i"; break; default: r += "j"; } return r; });
+log("nullish", function () { return each(function (v) { var r = ""; if (v == null) r += "n"; if (v === undefined) r += "u"; if (v === null) r += "l"; r += (v ?? "dflt") === "dflt" ? "d" : "v"; if (!v) r += "!"; if (!!v === true) r += "t"; return r; }); });
+out.join("\n")
+"#;
+    let expected = r#"dense0=z,o,t,h,s,-,-,-,-,-,-,-,z,o,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+dense1=z,o,t,h,s,-,-,-,-,-,-,-,z,o,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+denseNoDefault0=n,o,t,n,n,e,n,n,n,n,n,n,n,o,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n
+denseNoDefault1=n,o,t,n,n,e,n,n,n,n,n,n,n,o,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n,n
+negative0=mz,p1,-,-,-,-,m1,m2,-,-,-,-,mz,p1,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+negative1=mz,p1,-,-,-,-,m1,m2,-,-,-,-,mz,p1,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+sparse0=-,a,-,-,-,-,-,-,-,d,b,c,-,a,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+sparse1=-,a,-,-,-,-,-,-,-,d,b,c,-,a,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+floats0=z,o,-,-,-,-,-,-,-,-,-,-,z,o,a,b,-,-,-,c,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+floats1=z,o,-,-,-,-,-,-,-,-,-,-,z,o,a,b,-,-,-,c,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+strings0=-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,one,empty,a,abc,long,long,-,-,-,-,-,-,-,-,-,-,-
+strings1=-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,one,empty,a,abc,long,long,-,-,-,-,-,-,-,-,-,-,-
+mixed0=n0,n1,-,-,-,-,-,-,-,-,-,-,n0,n1,-,-,-,-,-,-,s1,se,-,-,-,-,T,F,N,-,-,-,-,-,-,-,-
+mixed1=n0,n1,-,-,-,-,-,-,-,-,-,-,n0,n1,-,-,-,-,-,-,s1,se,-,-,-,-,T,F,N,-,-,-,-,-,-,-,-
+duplicates0=-,first,two,-,-,-,-,-,-,-,-,-,-,first,-,-,-,-,-,-,-,-,sa,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+duplicates1=-,first,two,-,-,-,-,-,-,-,-,-,-,first,-,-,-,-,-,-,-,-,sa,-,-,-,-,-,-,-,-,-,-,-,-,-,-
+defaultFirst0=d1,1,23,3,d1,d1,d1,d1,d1,d1,d1,d1,d1,1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1
+defaultFirst1=d1,1,23,3,d1,d1,d1,d1,d1,d1,d1,d1,d1,1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1,d1
+defaultMiddle0=d2,1d2,2,3,d2,d2,d2,d2,d2,d2,d2,d2,d2,1d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2
+defaultMiddle1=d2,1d2,2,3,d2,d2,d2,d2,d2,d2,d2,d2,d2,1d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2,d2
+emptyCases0=low,low,low,mid,mid,mid,x,x,x,x,x,x,low,low,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x
+emptyCases1=low,low,low,mid,mid,mid,x,x,x,x,x,x,low,low,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x
+onlyDefault0=number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,string,string,string,string,string,string,boolean,boolean,object,undefined,bigint,bigint,object,object,object,symbol,function
+onlyDefault1=number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,number,string,string,string,string,string,string,boolean,boolean,object,undefined,bigint,bigint,object,object,object,symbol,function
+emptySwitch0=2
+emptySwitch1=2
+loopBreakContinue0=ab|cj02|ef|f|ab|cj02|
+loopBreakContinue1=ab|cj02|ef|f|ab|cj02|
+lexical0=A0,B4,I,C
+lexical1=A0,B4,I,C
+sideEffects0=deabcde|139;1;1;13;139;
+sideEffects1=deabcde|139;1;1;13;139;
+thrownSelector0=0RangeErrorRangeError
+thrownSelector1=0RangeErrorRangeError
+getterDiscriminant0=21
+getterDiscriminant1=21
+completion0=5,,6,,,9,8,c,
+completion1=5,,6,,,9,8,c,
+generator0=a,b,sent,r,b,sent,r,t,f,d,r,d,r
+generator1=a,b,sent,r,b,sent,r,t,f,d,r,d,r
+asyncAndTry0=one,caughttwo,after,dflt1234
+asyncAndTry1=one,caughttwo,after,dflt1234
+nested0=00010d0d10x0x112x2x0x1x2
+nested1=00010d0d10x0x112x2x0x1x2
+manyCases0=0,1,-1,299,-1,-1,-1,-1,0,299,-1
+manyCases1=0,1,-1,299,-1,-1,-1,-1,0,299,-1
+wideStrings0=0,39,,
+wideStrings1=0,39,,
+arrowAndMethods0=Kd10
+arrowAndMethods1=Kd10
+strictOps0=befg,aef,bef,bef,bef,bef,bef,bef,bef,bef,bef,bef,befg,aef,befh,bef,be,bef,bef,bef,bef,bef,bcef,bef,bef,bef,befi,bef,bdef,bf,bef,bef,bef,bef,bef,bef,bef
+strictOps1=befg,aef,bef,bef,bef,bef,bef,bef,bef,bef,bef,bef,befg,aef,befh,bef,be,bef,bef,bef,bef,bef,bcef,bef,bef,bef,befi,bef,bdef,bf,bef,bef,bef,bef,bef,bef,bef
+looseOps0=befgj,aefhi,bef,bef,bef,bef,bef,bef,bef,bef,bef,bef,befgj,aefhi,bef,bef,be,bef,bef,bef,aefhi,befgj,bcef,bef,bef,bef,aefhi,befgj,bdf,bdf,aefhi,bef,bef,befgj,aefhi,bef,bef
+looseOps1=befgj,aefhi,bef,bef,bef,bef,bef,bef,bef,bef,bef,bef,befgj,aefhi,bef,bef,be,bef,bef,bef,aefhi,befgj,bcef,bef,bef,bef,aefhi,befgj,bdf,bdf,aefhi,bef,bef,befgj,aefhi,bef,bef
+pairs0=53101010101053101010101010101010101010101010101010101010101010101010101010101010105310101010101010101010101010101010101010101010101010101010101010101010531010101010531010101010101010101010101010101010101010101010101010101010101010101010101010101053101010101010101010381010101010381010101010101010101010101010101010101010101010105310101010101038101010101038101010101010101010101010101010101010101010103810103810531038103810101010103810101010101010101010101010101010101010101010101010101010101053
+pairs1=53101010101053101010101010101010101010101010101010101010101010101010101010101010105310101010101010101010101010101010101010101010101010101010101010101010531010101010531010101010101010101010101010101010101010101010101010101010101010101010101010101053101010101010101010381010101010381010101010101010101010101010101010101010101010105310101010101038101010101038101010101010101010101010101010101010101010103810103810531038103810101010103810101010101010101010101010101010101010101010101010101010101053
+coercionOrder0=147TU|aabab
+coercionOrder1=147TU|aabab
+backEdges0=573xxx001232
+backEdges1=573xxx001232
+conditionForms0=acehiktrue2
+conditionForms1=acehiktrue2
+bigintAndSymbol0=abcefgj
+bigintAndSymbol1=abcefgj
+nullish0=v!,vt,vt,vt,vt,vt,vt,vt,vt,vt,vt,vt,v!,vt,vt,vt,v!,vt,vt,vt,vt,v!,vt,vt,vt,vt,vt,v!,nld!,nud!,vt,vt,vt,vt,vt,vt,vt
+nullish1=v!,vt,vt,vt,vt,vt,vt,vt,vt,vt,vt,vt,v!,vt,vt,vt,v!,vt,vt,vt,vt,v!,vt,vt,vt,vt,vt,v!,nld!,nud!,vt,vt,vt,vt,vt,vt,vt"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

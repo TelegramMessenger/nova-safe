@@ -49,7 +49,7 @@ use crate::{
 use small_string::SmallString;
 
 use super::{GlobalDeclarations, HostDefined, Script, ScriptRecord};
-use crate::engine::CallEnvironment;
+use crate::engine::{CallEnvironment, SwitchTable};
 
 /// Why a script could not be exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +200,9 @@ struct CompiledExecutable {
     /// How many binding sites the instructions have; what each remembers
     /// belongs to the Agent that runs them.
     binding_sites: usize,
+    /// The switch tables refer to constants by index and to instructions:
+    /// they are the same in every Agent.
+    switch_tables: Arc<[SwitchTable]>,
 }
 
 #[derive(PartialEq)]
@@ -414,6 +417,7 @@ impl Exporter<'_> {
             call_environment,
             stack_parameters,
             binding_sites,
+            switch_tables,
             _gc: _,
         } = executable.get(self.agent).clone();
 
@@ -491,6 +495,7 @@ impl Exporter<'_> {
             call_environment,
             stack_parameters,
             binding_sites: binding_sites.len(),
+            switch_tables,
         });
         self.executable_ids.insert(index, id);
         self.in_progress.pop();
@@ -937,6 +942,7 @@ impl<'a> Importer<'_, 'a, '_> {
             stack_parameters: compiled.stack_parameters,
             binding_sites: vec![crate::ecmascript::BindingSite::UNKNOWN; compiled.binding_sites]
                 .into_boxed_slice(),
+            switch_tables: compiled.switch_tables.clone(),
             _gc: core::marker::PhantomData,
         })
     }
