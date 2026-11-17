@@ -648,6 +648,25 @@ impl Vm {
                 vm.execute_store_from_index(instr.get_first_index());
                 vm.execute_load();
             }
+            // A local and a constant, two locals: the operands of most
+            // binary expressions, and the arguments of many calls.
+            Instruction::LoadFromIndexStoreConstant => {
+                let value = vm.stack[instr.get_first_index()];
+                vm.stack.push(value);
+                let constant = executable.fetch_constant(agent, instr.get_second_index(), gc);
+                vm.result = Some(constant.unbind());
+            }
+            Instruction::LoadFromIndexGetFromIndex => {
+                let value = vm.stack[instr.get_first_index()];
+                vm.stack.push(value);
+                vm.result = Some(vm.stack[instr.get_second_index()]);
+            }
+            Instruction::LoadFromIndexLoadFromIndex => {
+                let value = vm.stack[instr.get_first_index()];
+                vm.stack.push(value);
+                let value = vm.stack[instr.get_second_index()];
+                vm.stack.push(value);
+            }
             Instruction::StoreConstant => {
                 execute_store_constant(agent, vm, executable.clone(), instr, gc)
             }
@@ -681,6 +700,49 @@ impl Vm {
                 if *ip < from {
                     return Plain::Looped;
                 }
+            }
+            // The test of most loops, on two integers.
+            Instruction::JumpIfNotLessThan
+            | Instruction::JumpIfNotLessThanEquals
+            | Instruction::JumpIfNotGreaterThan
+            | Instruction::JumpIfNotGreaterThanEquals => {
+                let (Some(&Value::Integer(left)), Some(Value::Integer(right))) =
+                    (vm.stack.last(), vm.result)
+                else {
+                    return Plain::No;
+                };
+                let (left, right) = (left.into_i64(), right.into_i64());
+                let holds = match instr.kind {
+                    Instruction::JumpIfNotLessThan => left < right,
+                    Instruction::JumpIfNotLessThanEquals => left <= right,
+                    Instruction::JumpIfNotGreaterThan => left > right,
+                    _ => left >= right,
+                };
+                vm.stack.pop();
+                vm.result = None;
+                if !holds {
+                    let from = *ip;
+                    *ip = instr.get_jump_slot();
+                    if *ip < from {
+                        return Plain::Looped;
+                    }
+                }
+            }
+            // `i++` and `i--` of an integer in a stack slot.
+            Instruction::IncrementIndex | Instruction::DecrementIndex => {
+                let slot = instr.get_first_index();
+                let Value::Integer(value) = vm.stack[slot] else {
+                    return Plain::No;
+                };
+                let step = if instr.kind == Instruction::IncrementIndex {
+                    1
+                } else {
+                    -1
+                };
+                let Ok(value) = SmallInteger::try_from(value.into_i64() + step) else {
+                    return Plain::No;
+                };
+                vm.stack[slot] = Value::Integer(value);
             }
             Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc),
             Instruction::CreateImmutableBinding => {
@@ -1124,6 +1186,9 @@ impl Vm {
             | Instruction::PushReference
             | Instruction::PopReference
             | Instruction::PushReferenceAndLoad
+            | Instruction::LoadFromIndexStoreConstant
+            | Instruction::LoadFromIndexGetFromIndex
+            | Instruction::LoadFromIndexLoadFromIndex
             | Instruction::Jump
             | Instruction::JumpIfNot
             | Instruction::JumpIfTrue
@@ -1173,6 +1238,16 @@ impl Vm {
                 execute_put_value(agent, vm, executable, instr, cache, gc)?
             }
             Instruction::ToNumeric => execute_to_numeric(agent, vm, gc)?,
+            // What the fused instructions stand for, where their operands
+            // are not two integers, or not an integer.
+            Instruction::JumpIfNotLessThan
+            | Instruction::JumpIfNotLessThanEquals
+            | Instruction::JumpIfNotGreaterThan
+            | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::IncrementIndex
+            | Instruction::DecrementIndex => {
+                execute_fused_instruction(agent, vm, instr, gc)?;
+            }
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
                 execute_evaluate_property_access_with_identifier_key(
                     agent,
@@ -1268,6 +1343,15 @@ impl Vm {
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference
             | Instruction::PushReferenceAndLoad
+            | Instruction::LoadFromIndexStoreConstant
+            | Instruction::LoadFromIndexGetFromIndex
+            | Instruction::LoadFromIndexLoadFromIndex
+            | Instruction::JumpIfNotLessThan
+            | Instruction::JumpIfNotLessThanEquals
+            | Instruction::JumpIfNotGreaterThan
+            | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::IncrementIndex
+            | Instruction::DecrementIndex
             | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }

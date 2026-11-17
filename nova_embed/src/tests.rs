@@ -2288,3 +2288,121 @@ throwing1=0,1,a>b,a>b"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `i++` of a local as one instruction and a comparison with the jump on it
+/// are what the instructions they stand for are: for integers, and for
+/// everything that takes their general way (doubles, strings, BigInts,
+/// objects with a `valueOf`, symbols, the largest integers, constants and
+/// variables not yet initialized).
+#[test]
+fn fused_loop_instructions_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(fused_loop_instructions)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn fused_loop_instructions() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+log("forInts", function () { var s = 0; for (var i = 0; i < 10; i++) s += i; for (var j = 10; j > 0; j--) s += j; for (var k = 0; k <= 3; k++) s += k; for (var m = 3; m >= 0; m--) s += m; return s; });
+log("whileAndDo", function () { var i = 0, n = 0; while (i < 5) { i++; n += 2; } do { n--; i--; } while (i > 0); return i + "," + n; });
+log("letLoops", function () { var fs = []; for (let i = 0; i < 3; i++) fs.push(function () { return i; }); return fs.map(function (f) { return f(); }).join(); });
+log("floats", function () { var x = 0.5, n = 0; for (var i = 0.5; i < 3; i++) n++; x++; x--; x++; return n + "," + x + "," + i; });
+log("strings", function () { var s = "5", t = "abc", n = 0; s++; t++; for (var i = "0"; i < "3"; i++) n++; return s + "," + t + "," + n + "," + typeof i + "," + ("a" < "b") + "," + ("10" < "9") + "," + ("10" < 9); });
+log("bigints", function () { var b = 5n; b++; b--; b++; var n = 0; for (var i = 0n; i < 3n; i++) n++; return b + "," + n + "," + typeof i + "," + (2n < 3) + "," + (2n > 1.5); });
+log("mixedBigint", function () { var b = 1n; return b < "2"; });
+log("objects", function () {
+  var calls = [];
+  var o = { valueOf: function () { calls.push("v"); return 3; } };
+  var p = { valueOf: function () { calls.push("p"); return 1; } };
+  var n = 0;
+  for (var i = p; i < o; i++) n++;
+  var q = { valueOf: function () { calls.push("q"); return 7; } };
+  q++;
+  return n + "," + i + "," + q + "," + calls.join("");
+});
+log("orderOfConversion", function () { var seen = []; var a = { valueOf() { seen.push("a"); return 1; } }, b = { valueOf() { seen.push("b"); return 2; } }; var r = [a < b, a > b, a <= b, a >= b]; return r.join() + ":" + seen.join(""); });
+log("nanAndUndefined", function () { var u, n = NaN, c = 0; u++; n++; if (u < 1) c++; if (!(u < 1)) c += 10; if (n >= n) c += 100; if (undefined <= undefined) c += 1000; if (null <= 0) c += 10000; return u + "," + n + "," + c; });
+log("symbols", function () { var s = Symbol(); try { s++; } catch (e) { return e.constructor.name + (function () { try { return s < 1; } catch (e2) { return ":" + e2.constructor.name; } })(); } });
+log("largeIntegers", function () { var a = 9007199254740991, b = -9007199254740991, c = 2147483647; a++; b--; c++; var d = 9007199254740990; d++; d++; return [a, b, c, d, a < a + 1, 9007199254740992 < 9007199254740993].join(); });
+log("negativeZero", function () { var z = -1; z++; var w = 0; w--; w++; return (1 / z) + "," + (1 / w) + "," + (0 < -0) + "," + (-0 >= 0); });
+log("throwInTest", function () { var n = 0; var bad = { valueOf() { throw new RangeError("no"); } }; try { for (var i = 0; i < bad; i++) n++; } catch (e) { return e.message + n + i; } });
+log("closureCounter", function () { var c = 0; function inc() { c++; return c; } inc(); inc(); var d = 10; (function () { d--; d--; })(); return c + "," + d; });
+log("ifAndTernary", function () { var a = 3, b = 5, r = []; if (a < b) r.push("lt"); if (a > b) r.push("gt"); else r.push("ngt"); r.push(a <= 3 ? "le" : "nle", b >= 6 ? "ge" : "nge"); if (!(a < b)) r.push("x"); if (a < b && b < 10 || a > 100) r.push("and"); return r.join(); });
+log("nested", function () { var t = 0; for (var i = 0; i < 4; i++) { for (var j = i; j < 4; j++) { if (j > 2) continue; if (i >= 3) break; t += i * j; } } return t; });
+log("valueUsed", function () { var i = 1; var a = i++; var b = ++i; var c = i--; var d = --i; var e = (i++, i); var arr = [0, 0]; var k = 0; arr[k++] = 5; arr[k++] = 6; return [a, b, c, d, e, i, arr, k].join(); });
+log("constUpdate", function () { const c = 1; try { c++; } catch (e) { return e.constructor.name + c; } });
+log("tdzUpdate", function () { try { x++; } catch (e) { var m = e.constructor.name; } let x = 1; x++; return m + x; });
+log("generatorLoop", function () { function* g(n) { for (var i = 0; i < n; i++) yield i; } var s = 0; for (var v of g(5)) s += v; var it = g(2); it.next(); it.next(); return s + "," + it.next().done; });
+log("argumentsLoop", function () { function sum() { var s = 0; for (var i = 0; i < arguments.length; i++) s += arguments[i]; return s; } return sum(1, 2, 3, 4); });
+log("switchInLoop", function () { var s = ""; for (var i = 0; i < 5; i++) { switch (i) { case 1: s += "a"; break; case 3: s += "c"; continue; default: s += i; } s += "."; } return s; });
+log("labels", function () { var n = 0; outer: for (var i = 0; i < 5; i++) { for (var j = 0; j < 5; j++) { if (j > i) continue outer; if (i > 3) break outer; n++; } } return n; });
+out.join("\n")
+"#;
+    let expected = r#"forInts0=112
+forInts1=112
+whileAndDo0=0,5
+whileAndDo1=0,5
+letLoops0=0,1,2
+letLoops1=0,1,2
+floats0=3,1.5,3.5
+floats1=3,1.5,3.5
+strings0=6,NaN,3,number,true,true,false
+strings1=6,NaN,3,number,true,true,false
+bigints0=6,3,bigint,true,true
+bigints1=6,3,bigint,true,true
+mixedBigint0=true
+mixedBigint1=true
+objects0=2,3,8,pvpvvq
+objects1=2,3,8,pvpvvq
+orderOfConversion0=true,false,true,false:abababab
+orderOfConversion1=true,false,true,false:abababab
+nanAndUndefined0=NaN,NaN,10010
+nanAndUndefined1=NaN,NaN,10010
+symbols0=TypeError:TypeError
+symbols1=TypeError:TypeError
+largeIntegers0=9007199254740992,-9007199254740992,2147483648,9007199254740992,false,false
+largeIntegers1=9007199254740992,-9007199254740992,2147483648,9007199254740992,false,false
+negativeZero0=Infinity,Infinity,false,true
+negativeZero1=Infinity,Infinity,false,true
+throwInTest0=no00
+throwInTest1=no00
+closureCounter0=2,8
+closureCounter1=2,8
+ifAndTernary0=lt,ngt,le,nge,and
+ifAndTernary1=lt,ngt,le,nge,and
+nested0=7
+nested1=7
+valueUsed0=1,3,3,1,2,2,5,6,2
+valueUsed1=1,3,3,1,2,2,5,6,2
+constUpdate0=TypeError1
+constUpdate1=TypeError1
+tdzUpdate0=ReferenceError2
+tdzUpdate1=ReferenceError2
+generatorLoop0=10,true
+generatorLoop1=10,true
+argumentsLoop0=10
+argumentsLoop1=10
+switchInLoop0=0.a.2.c4.
+switchInLoop1=0.a.2.c4.
+labels0=10
+labels1=10"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
