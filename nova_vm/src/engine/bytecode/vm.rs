@@ -16,11 +16,11 @@ use crate::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType,
         InternalMethods, InternalSlots, JsError, JsResult, Number, Object, Primitive, Promise,
         PropertyKey, Reference, SmallInteger, String, TryGetResult, Value, binding_value_at_site,
-        call_function, get_method, is_callable, ordinary_has_instance,
-        ordinary_set_own_data_at_offset, reference_is_at_global_site, set_binding_value_at_site,
-        take_pooled_arguments_vec, to_boolean, to_numeric, to_numeric_primitive, to_primitive,
-        to_property_key, to_string_primitive, try_get_object_method, try_resolve_binding_at_site,
-        try_result_into_option_js,
+        call_function, get_method, is_callable, is_same_type, is_strictly_equal,
+        ordinary_has_instance, ordinary_set_own_data_at_offset, reference_is_at_global_site,
+        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
+        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
+        try_get_object_method, try_resolve_binding_at_site, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -826,7 +826,71 @@ impl Vm {
                 };
                 vm.result = Some(this);
             }
-            Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc),
+            Instruction::IsStrictlyEqual => {
+                let left = vm.stack.pop().unwrap();
+                let right = vm.result.unwrap();
+                vm.result = Some(Self::strictly_equal(agent, left, right).into());
+            }
+            // `x === 3`: the constant is compared where it is.
+            Instruction::IsStrictlyEqualConstant => {
+                let left = vm.result.unwrap();
+                let right = code.fetch_constant(agent, instr.get_first_index(), gc);
+                vm.result = Some(Self::strictly_equal(agent, left, right).into());
+            }
+            // Two values of one type are loosely equal where they are
+            // strictly equal: nothing is converted.
+            Instruction::IsLooselyEqual => {
+                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+                    return Plain::No;
+                };
+                if !is_same_type(left, right) {
+                    return Plain::No;
+                }
+                vm.stack.pop();
+                vm.result = Some(Self::strictly_equal(agent, left, right).into());
+            }
+            // The test of an `if` on an equality, and the jump on it.
+            Instruction::JumpIfNotStrictlyEqual
+            | Instruction::JumpIfStrictlyEqual
+            | Instruction::JumpIfNotLooselyEqual
+            | Instruction::JumpIfLooselyEqual => {
+                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+                    return Plain::No;
+                };
+                let strict = matches!(
+                    instr.kind,
+                    Instruction::JumpIfNotStrictlyEqual | Instruction::JumpIfStrictlyEqual
+                );
+                if !strict && !is_same_type(left, right) {
+                    return Plain::No;
+                }
+                let equal = Self::strictly_equal(agent, left, right);
+                let jumps_if_equal = matches!(
+                    instr.kind,
+                    Instruction::JumpIfStrictlyEqual | Instruction::JumpIfLooselyEqual
+                );
+                vm.stack.pop();
+                vm.result = None;
+                if equal == jumps_if_equal {
+                    let from = *ip;
+                    *ip = instr.get_jump_slot();
+                    if *ip < from {
+                        return Plain::Looped;
+                    }
+                }
+            }
+            Instruction::UpdateEmpty => vm.execute_update_empty(),
+            Instruction::LoadReplace => vm.execute_load_replace(),
+            Instruction::Empty => vm.execute_empty(),
+            Instruction::StoreCopy => vm.execute_store_copy(),
+            Instruction::IsNullOrUndefined => vm.execute_is_null_or_undefined(),
+            Instruction::IsNull => vm.execute_is_null(),
+            Instruction::IsUndefined => vm.execute_is_undefined(),
+            Instruction::LogicalNot => execute_logical_not(agent, vm),
+            Instruction::PushExceptionJumpTarget => {
+                execute_push_exception_jump_target(agent, vm, instr, gc)
+            }
+            Instruction::PopExceptionJumpTarget => vm.execute_pop_exception_jump_target(),
             Instruction::CreateImmutableBinding => {
                 execute_create_immutable_binding(agent, executable.clone(), instr, gc)
             }
@@ -1084,6 +1148,15 @@ impl Vm {
             _ => return Plain::No,
         }
         Plain::Done
+    }
+
+    /// IsStrictlyEqual(x, y), with two integers compared in place.
+    #[inline(always)]
+    fn strictly_equal(agent: &Agent, x: Value, y: Value) -> bool {
+        if let (Value::Integer(x), Value::Integer(y)) = (x, y) {
+            return x.into_i64() == y.into_i64();
+        }
+        is_strictly_equal(agent, x, y)
     }
 
     /// EvaluatePropertyAccessWithIdentifierKey, with the key fetched from the
@@ -1403,6 +1476,10 @@ impl Vm {
             | Instruction::JumpIfNotLessThanEquals
             | Instruction::JumpIfNotGreaterThan
             | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::JumpIfNotStrictlyEqual
+            | Instruction::JumpIfStrictlyEqual
+            | Instruction::JumpIfNotLooselyEqual
+            | Instruction::JumpIfLooselyEqual
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
             | Instruction::GetValueWithExpressionKey
@@ -1511,6 +1588,10 @@ impl Vm {
             | Instruction::JumpIfNotLessThanEquals
             | Instruction::JumpIfNotGreaterThan
             | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::JumpIfNotStrictlyEqual
+            | Instruction::JumpIfStrictlyEqual
+            | Instruction::JumpIfNotLooselyEqual
+            | Instruction::JumpIfLooselyEqual
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
             | Instruction::GetValueWithExpressionKey

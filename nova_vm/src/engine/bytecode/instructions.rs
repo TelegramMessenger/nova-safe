@@ -173,6 +173,15 @@ pub(crate) enum Instruction {
     JumpIfNotGreaterThan,
     /// GreaterThanEquals followed by JumpIfNot.
     JumpIfNotGreaterThanEquals,
+    /// IsStrictlyEqual followed by JumpIfNot, as one instruction: the test
+    /// of `if (a === b)`.
+    JumpIfNotStrictlyEqual,
+    /// IsStrictlyEqual followed by JumpIfTrue: the test of `if (a !== b)`.
+    JumpIfStrictlyEqual,
+    /// IsLooselyEqual followed by JumpIfNot: the test of `if (a == b)`.
+    JumpIfNotLooselyEqual,
+    /// IsLooselyEqual followed by JumpIfTrue: the test of `if (a != b)`.
+    JumpIfLooselyEqual,
     /// Load the result value, if present, to the top of the stack, replacing
     /// the previous top of the stack value.
     LoadReplace,
@@ -656,6 +665,10 @@ impl Instruction {
             | Self::JumpIfNotLessThanEquals
             | Self::JumpIfNotGreaterThan
             | Self::JumpIfNotGreaterThanEquals
+            | Self::JumpIfNotStrictlyEqual
+            | Self::JumpIfStrictlyEqual
+            | Self::JumpIfNotLooselyEqual
+            | Self::JumpIfLooselyEqual
             | Self::LoadConstantWide
             | Self::StoreConstantWide
             | Self::ObjectDefineGetter
@@ -727,6 +740,10 @@ impl Instruction {
                 | Self::JumpIfNotLessThanEquals
                 | Self::JumpIfNotGreaterThan
                 | Self::JumpIfNotGreaterThanEquals
+                | Self::JumpIfNotStrictlyEqual
+                | Self::JumpIfStrictlyEqual
+                | Self::JumpIfNotLooselyEqual
+                | Self::JumpIfLooselyEqual
                 | Self::LoadConstantWide
                 | Self::PushExceptionJumpTarget
                 | Self::StoreConstantWide
@@ -822,6 +839,10 @@ impl Instruction {
                 | Self::JumpIfNotLessThanEquals
                 | Self::JumpIfNotGreaterThan
                 | Self::JumpIfNotGreaterThanEquals
+                | Self::JumpIfNotStrictlyEqual
+                | Self::JumpIfStrictlyEqual
+                | Self::JumpIfNotLooselyEqual
+                | Self::JumpIfLooselyEqual
                 | Self::PushExceptionJumpTarget
                 | Self::IteratorStepValue
         )
@@ -1333,6 +1354,10 @@ impl Instruction {
         const JUMPIFNOTLESSTHANEQUALS: u8 = Instruction::JumpIfNotLessThanEquals.as_u8();
         const JUMPIFNOTGREATERTHAN: u8 = Instruction::JumpIfNotGreaterThan.as_u8();
         const JUMPIFNOTGREATERTHANEQUALS: u8 = Instruction::JumpIfNotGreaterThanEquals.as_u8();
+        const JUMPIFNOTSTRICTLYEQUAL: u8 = Instruction::JumpIfNotStrictlyEqual.as_u8();
+        const JUMPIFSTRICTLYEQUAL: u8 = Instruction::JumpIfStrictlyEqual.as_u8();
+        const JUMPIFNOTLOOSELYEQUAL: u8 = Instruction::JumpIfNotLooselyEqual.as_u8();
+        const JUMPIFLOOSELYEQUAL: u8 = Instruction::JumpIfLooselyEqual.as_u8();
         const INCREMENTINDEX: u8 = Instruction::IncrementIndex.as_u8();
         const DECREMENTINDEX: u8 = Instruction::DecrementIndex.as_u8();
         const LESSTHAN: u8 = Instruction::LessThan.as_u8();
@@ -1530,6 +1555,10 @@ impl Instruction {
             JUMPIFNOTLESSTHANEQUALS => Some(Instruction::JumpIfNotLessThanEquals),
             JUMPIFNOTGREATERTHAN => Some(Instruction::JumpIfNotGreaterThan),
             JUMPIFNOTGREATERTHANEQUALS => Some(Instruction::JumpIfNotGreaterThanEquals),
+            JUMPIFNOTSTRICTLYEQUAL => Some(Instruction::JumpIfNotStrictlyEqual),
+            JUMPIFSTRICTLYEQUAL => Some(Instruction::JumpIfStrictlyEqual),
+            JUMPIFNOTLOOSELYEQUAL => Some(Instruction::JumpIfNotLooselyEqual),
+            JUMPIFLOOSELYEQUAL => Some(Instruction::JumpIfLooselyEqual),
             INCREMENTINDEX => Some(Instruction::IncrementIndex),
             DECREMENTINDEX => Some(Instruction::DecrementIndex),
             LESSTHAN => Some(Instruction::LessThan),

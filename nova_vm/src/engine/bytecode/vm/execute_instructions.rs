@@ -2206,6 +2206,32 @@ pub(super) fn execute_fused_instruction<'gc>(
             vm.stack[slot] = vm.result.take().unwrap();
             Ok(())
         }
+        Instruction::JumpIfNotStrictlyEqual
+        | Instruction::JumpIfStrictlyEqual
+        | Instruction::JumpIfNotLooselyEqual
+        | Instruction::JumpIfLooselyEqual => {
+            // IsStrictlyEqual or IsLooselyEqual
+            if matches!(
+                instr.kind,
+                Instruction::JumpIfNotStrictlyEqual | Instruction::JumpIfStrictlyEqual
+            ) {
+                execute_is_strictly_equal(agent, vm, gc.nogc());
+            } else {
+                execute_is_loosely_equal(agent, vm, gc)?;
+            }
+            // JumpIfNot or JumpIfTrue
+            let mut ip = vm.ip;
+            if matches!(
+                instr.kind,
+                Instruction::JumpIfStrictlyEqual | Instruction::JumpIfLooselyEqual
+            ) {
+                execute_jump_if_true(agent, vm, &mut ip, instr);
+            } else {
+                execute_jump_if_not(agent, vm, &mut ip, instr);
+            }
+            vm.ip = ip;
+            Ok(())
+        }
         _ => {
             match instr.kind {
                 Instruction::JumpIfNotLessThan => execute_less_than(agent, vm, gc),
