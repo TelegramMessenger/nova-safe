@@ -83,8 +83,13 @@ pub(crate) struct Limits {
     pub(crate) countdown: u32,
     termination: Option<TerminationReason>,
     heap_limit: Option<usize>,
-    /// Live bytes found by the last garbage collection.
+    /// Live bytes found by the last garbage collection: the embedder's count
+    /// ([`HostHooks::allocated_bytes`](crate::ecmascript::HostHooks::allocated_bytes))
+    /// when it keeps one, else the estimate.
     live_bytes_after_gc: usize,
+    /// How many counted bytes one byte of the allocation counter stood for at
+    /// the last garbage collection (1 without the embedder's count).
+    counted_per_estimated: usize,
     /// Allocations after which the next garbage collection runs.
     pub(crate) gc_threshold: usize,
     /// Address of a local in the outermost host entry, 0 outside one.
@@ -99,6 +104,7 @@ impl Default for Limits {
             termination: None,
             heap_limit: None,
             live_bytes_after_gc: 0,
+            counted_per_estimated: 1,
             gc_threshold: GC_ALLOCATION_INTERVAL,
             stack_base: 0,
             stack_limit: DEFAULT_STACK_LIMIT,
@@ -155,8 +161,13 @@ impl Limits {
                 // The allocation counter sees less than the estimate finds
                 // live afterwards (element and property storage moves), so
                 // collect after a quarter of the headroom.
-                let headroom = limit.saturating_sub(self.live_bytes_after_gc);
-                interval.min((headroom / 4).max(MIN_GC_ALLOCATION_INTERVAL))
+                // The embedder's count grows faster still: by
+                // `counted_per_estimated` bytes for each of the counter's.
+                let headroom = limit.saturating_sub(self.live_bytes_after_gc)
+                    / self.counted_per_estimated;
+                interval.min(
+                    (headroom / 4).max(MIN_GC_ALLOCATION_INTERVAL / self.counted_per_estimated),
+                )
             }
             None => interval,
         };
@@ -180,9 +191,14 @@ impl Agent {
         self.limits.heap_limit
     }
 
-    /// A cheap running estimate of the bytes the heap holds: what the last
-    /// garbage collection found live plus what was allocated since.
+    /// The bytes the heap limit counts: the embedder's count of the engine's
+    /// allocations when it keeps one, else a cheap running estimate of the
+    /// bytes the heap holds (what the last garbage collection found live plus
+    /// what was allocated since).
     pub fn heap_size(&self) -> usize {
+        if let Some(counted) = self.host_hooks.allocated_bytes() {
+            return counted;
+        }
         self.limits
             .live_bytes_after_gc
             .saturating_add(self.heap.alloc_counter)
@@ -329,10 +345,14 @@ impl Agent {
         } else if let Some(limit) = self.limits.heap_limit
             && self.heap_size() > limit
         {
-            let uncollectable = self
-                .limits
-                .live_bytes_after_gc
-                .saturating_add(self.root_stack_bytes());
+            // The embedder's count has the rooted handles in it already.
+            let uncollectable = match self.host_hooks.allocated_bytes() {
+                Some(_) => self.limits.live_bytes_after_gc,
+                None => self
+                    .limits
+                    .live_bytes_after_gc
+                    .saturating_add(self.root_stack_bytes()),
+            };
             if (self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0)
                 || uncollectable > limit
                 // A native loop that allocates never reaches the collection
@@ -510,7 +530,18 @@ impl Agent {
     /// terminates the running script if it is over the heap limit.
     pub(crate) fn after_gc(&mut self) {
         self.heap.data_bytes_since_gc = 0;
-        self.limits.live_bytes_after_gc = self.heap.estimate_live_bytes();
+        let estimated = self.heap.estimate_live_bytes();
+        match self.host_hooks.allocated_bytes() {
+            Some(counted) => {
+                self.limits.live_bytes_after_gc = counted;
+                self.limits.counted_per_estimated =
+                    counted.div_ceil(estimated.max(1)).clamp(1, 16);
+            }
+            None => {
+                self.limits.live_bytes_after_gc = estimated;
+                self.limits.counted_per_estimated = 1;
+            }
+        }
         self.heap.gc_alloc_limit = self.heap.gc_alloc_limit.max(
             (self.limits.live_bytes_after_gc / 2).min(MAX_LIVE_BYTES_GC_ALLOCATION_INTERVAL),
         );

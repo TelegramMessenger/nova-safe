@@ -67,6 +67,10 @@ impl HostHooks for EmbedHooks {
         current().is_some_and(|shared| shared.host.should_interrupt())
     }
 
+    fn allocated_bytes(&self) -> Option<usize> {
+        current().and_then(|shared| shared.host.allocated_bytes())
+    }
+
     fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
         current().map_or(0, |shared| {
             shared.host.local_time_zone_offset(epoch_seconds)

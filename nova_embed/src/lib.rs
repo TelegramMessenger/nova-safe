@@ -74,6 +74,15 @@ pub trait Host {
         let _ = epoch_seconds;
         0
     }
+
+    /// Bytes this engine's allocations hold right now, when the embedder's
+    /// allocator counts them. With it the memory limit bounds these bytes
+    /// and [`Engine::memory_used`] returns them; without it (the default)
+    /// both go by the engine's estimate of its heap, which leaves out what
+    /// the heap's vectors keep spare and the tables beside them.
+    fn allocated_bytes(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Limits fixed when the engine is created.
@@ -474,10 +483,14 @@ impl Engine {
         })
     }
 
-    /// Bytes of the engine's heap in use (0 for a dead engine).
+    /// Bytes of the engine's heap in use (0 for a dead engine): the host's
+    /// count ([`Host::allocated_bytes`]) when it keeps one.
     pub fn memory_used(&mut self) -> usize {
         match &mut self.state {
             State::Live(live) => {
+                if let Some(counted) = self.shared.host.allocated_bytes() {
+                    return counted;
+                }
                 catch_unwind(AssertUnwindSafe(|| limits::heap_size(&live.agent))).unwrap_or(0)
             }
             State::Dead(_) => 0,

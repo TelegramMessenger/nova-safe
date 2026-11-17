@@ -119,8 +119,12 @@ typedef bool (*nova_interrupt_fn)(void *context);
 /* A new engine with one realm and the standard globals; NULL on failure, with
  * the reason in `error` (may be NULL). `host` is required, `interrupt` may be
  * NULL. Both must stay callable with `context` until nova_engine_free.
- * memory_limit: heap bytes (0: none); a script that goes past it ends with
- * NOVA_OUT_OF_MEMORY. stack_limit: native stack bytes JavaScript may use,
+ * memory_limit: bytes (0: none); a script that goes past it ends with
+ * NOVA_OUT_OF_MEMORY. The bytes are counted by the library's allocator: all
+ * that the engine's allocations hold, its heap with what the heap keeps
+ * spare, its tables, compiled code and the temporaries of the running call
+ * (a script compiled with nova_script_compile is counted on no engine, what
+ * an engine makes of it when it evaluates it is). stack_limit: native stack bytes JavaScript may use,
  * counted from the call into the engine (0: 1 MB); deeper calls throw a
  * catchable RangeError. Leave a quarter of the thread's stack free (about
  * 2.8 KB per JavaScript call level in a release build). The interrupt
@@ -190,7 +194,8 @@ bool nova_engine_has_pending_job(const nova_engine *engine);
  * run. */
 int32_t nova_engine_run_job(const nova_engine *engine, bool *ran, nova_result *out);
 
-/* Bytes of the engine's heap in use (0 once dead). */
+/* Bytes the engine's allocations hold right now, as the memory limit counts
+ * them (0 once dead). */
 size_t nova_engine_memory_used(const nova_engine *engine);
 
 /* Sets the memory limit in bytes (0: none). */

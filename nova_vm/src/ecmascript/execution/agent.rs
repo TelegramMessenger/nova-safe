@@ -386,6 +386,18 @@ pub trait HostHooks: core::fmt::Debug {
         false
     }
 
+    /// Bytes the engine's allocations hold right now, when the embedder's
+    /// allocator counts them for this Agent. With it the heap limit
+    /// ([`Agent::set_heap_limit`]) bounds these bytes, which nothing a script
+    /// builds stays out of, instead of the engine's own estimate of its
+    /// heap. The default is `None`: the estimate.
+    ///
+    /// Called at every interrupt poll and after every garbage collection:
+    /// keep it to an atomic load.
+    fn allocated_bytes(&self) -> Option<usize> {
+        None
+    }
+
     /// Seconds east of UTC of the host's local time zone at `epoch_seconds`
     /// (seconds since the epoch), daylight saving time included: the offset
     /// of Date's local time. The default is UTC.
