@@ -8,9 +8,9 @@ use xsum::{Xsum, XsumAuto, XsumLarge, XsumSmall, XsumVariant, constants::XSUM_TH
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, ExceptionType,
-        IteratorRecord, JsResult, Number, Object, Primitive, Realm, String, Value,
-        builders::OrdinaryObjectBuilder, get_iterator, iterator_close_with_error,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, DirectBuiltin,
+        ExceptionType, IteratorRecord, JsResult, Number, Object, Primitive, Realm, RegularFn,
+        String, Value, builders::OrdinaryObjectBuilder, get_iterator, iterator_close_with_error,
         iterator_step_value, require_object_coercible, throw_not_callable, to_number,
         to_number_primitive, to_uint32, try_length_of_array_like,
     },
@@ -19,6 +19,68 @@ use crate::{
 };
 
 pub(crate) struct MathObject;
+
+impl MathObject {
+    /// Which of the functions of Math the interpreter may run in place:
+    /// those that only compute a Number from Numbers.
+    pub(crate) fn direct_builtin(function: RegularFn) -> Option<DirectBuiltin> {
+        let functions: [(RegularFn, DirectBuiltin); 9] = [
+            (Self::floor, DirectBuiltin::MathFloor),
+            (Self::max, DirectBuiltin::MathMax),
+            (Self::min, DirectBuiltin::MathMin),
+            (Self::round, DirectBuiltin::MathRound),
+            (Self::abs, DirectBuiltin::MathAbs),
+            (Self::sqrt, DirectBuiltin::MathSqrt),
+            (Self::ceil, DirectBuiltin::MathCeil),
+            (Self::trunc, DirectBuiltin::MathTrunc),
+            (Self::sign, DirectBuiltin::MathSign),
+        ];
+        functions
+            .into_iter()
+            .find(|(candidate, _)| core::ptr::fn_addr_eq(*candidate, function))
+            .map(|(_, direct)| direct)
+    }
+
+    /// The result of the function `direct` names for `arguments`, where it
+    /// takes Numbers as they are and there is one: what a call of the
+    /// function returns for them, with nothing else done. None for any other
+    /// arguments.
+    #[inline]
+    pub(crate) fn run_direct<'gc>(
+        agent: &mut Agent,
+        direct: DirectBuiltin,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        if matches!(direct, DirectBuiltin::MathMax | DirectBuiltin::MathMin) {
+            // Integers: the highest or the lowest is one of them.
+            let mut found: Option<i64> = None;
+            for argument in arguments {
+                let Value::Integer(integer) = argument else {
+                    return None;
+                };
+                let integer = integer.into_i64();
+                found = Some(match found {
+                    None => integer,
+                    Some(found) if direct == DirectBuiltin::MathMax => found.max(integer),
+                    Some(found) => found.min(integer),
+                });
+            }
+            return Number::try_from(found?).ok().map(|number| number.into());
+        }
+        let n = Number::try_from(*arguments.first()?).ok()?;
+        Some(match direct {
+            DirectBuiltin::MathAbs => Self::abs_number(agent, n, gc),
+            DirectBuiltin::MathCeil => Self::ceil_number(agent, n, gc),
+            DirectBuiltin::MathFloor => Self::floor_number(agent, n, gc),
+            DirectBuiltin::MathRound => Self::round_number(agent, n, gc),
+            DirectBuiltin::MathSign => Self::sign_number(agent, n, gc),
+            DirectBuiltin::MathSqrt => Self::sqrt_number(agent, n, gc),
+            DirectBuiltin::MathTrunc => Self::trunc_number(agent, n, gc),
+            DirectBuiltin::MathMax | DirectBuiltin::MathMin => return None,
+        })
+    }
+}
 
 struct MathObjectAbs;
 impl Builtin for MathObjectAbs {
@@ -343,7 +405,12 @@ impl MathObject {
         let n = to_number(agent, arguments.get(0), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
-        Ok(n.abs(agent).unbind().into())
+        Ok(Self::abs_number(agent, n.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.abs of a Number.
+    fn abs_number<'gc>(agent: &mut Agent, n: Number<'gc>, _: NoGcScope<'gc, '_>) -> Value<'gc> {
+        n.abs(agent).into()
     }
 
     fn acos<'gc>(
@@ -569,25 +636,30 @@ impl MathObject {
             .unbind()?
             .bind(gc.nogc());
 
+        Ok(Self::ceil_number(agent, n.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.ceil of a Number.
+    fn ceil_number<'gc>(agent: &mut Agent, n: Number<'gc>, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
         // 4. If n is an integral Number, return n.
         if n.is_integer_(agent) {
-            return Ok(n.unbind().into());
+            return n.into();
         }
 
         // 2. If n is not finite or n is either +0𝔽 or -0𝔽, return n.
         if !n.is_finite_(agent) || n.is_pos_zero_(agent) || n.is_neg_zero_(agent) {
-            return Ok(n.unbind().into());
+            return n.into();
         }
 
         let n = n.into_f64_(agent);
 
         // 3. If n < -0𝔽 and n > -1𝔽, return -0𝔽.
         if n < -0.0 && n > -1.0 {
-            return Ok(Value::neg_zero());
+            return Value::neg_zero();
         }
 
         // 5. Return the smallest (closest to -∞) integral Number value that is not less than n.
-        Ok(Value::from_f64(agent, n.ceil(), gc.into_nogc()))
+        Value::from_f64(agent, n.ceil(), gc)
     }
 
     fn clz32<'gc>(
@@ -742,25 +814,30 @@ impl MathObject {
             .unbind()?
             .bind(gc.nogc());
 
+        Ok(Self::floor_number(agent, n.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.floor of a Number.
+    fn floor_number<'gc>(agent: &mut Agent, n: Number<'gc>, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
         // 4. If n is an integral Number, return n.
         if n.is_integer_(agent) {
-            return Ok(n.unbind().into());
+            return n.into();
         }
 
         // 2. If n is not finite or n is either +0𝔽 or -0𝔽, return n.
         if !n.is_finite_(agent) || n.is_pos_zero_(agent) || n.is_neg_zero_(agent) {
-            return Ok(n.unbind().into());
+            return n.into();
         }
 
         let n = n.into_f64_(agent);
 
         // 3. If n < 1𝔽 and n > +0𝔽, return +0𝔽.
         if n < 1.0 && n > 0.0 {
-            return Ok(Value::pos_zero());
+            return Value::pos_zero();
         }
 
         // 5. Return the greatest (closest to +∞) integral Number value that is not greater than n.
-        Ok(Value::from_f64(agent, n.floor(), gc.into_nogc()))
+        Value::from_f64(agent, n.floor(), gc)
     }
 
     fn fround<'gc>(
@@ -1321,27 +1398,32 @@ impl MathObject {
             .unbind()?
             .bind(gc.nogc());
 
+        Ok(Self::round_number(agent, n.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.round of a Number.
+    fn round_number<'gc>(agent: &mut Agent, n: Number<'gc>, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
         // 2. If n is not finite or n is an integral Number, return n.
         if !n.is_finite_(agent) || n.is_integer_(agent) {
-            return Ok(n.unbind().into());
+            return n.into();
         }
 
         let n = n.into_f64_(agent);
 
         // 3. If n < 0.5𝔽 and n > +0𝔽, return +0𝔽.
         if n < 0.5 && n > 0.0 {
-            return Ok(Value::pos_zero());
+            return Value::pos_zero();
         }
 
         // 4. If n < -0𝔽 and n ≥ -0.5𝔽, return -0𝔽.
         if (-0.5..-0.0).contains(&n) {
-            return Ok(Value::neg_zero());
+            return Value::neg_zero();
         }
 
         // 5. Return the integral Number closest to n, preferring the Number closer to +∞ in the case of a tie.
         let floor = n.floor();
         let rounded = if n - floor >= 0.5 { floor + 1.0 } else { floor };
-        Ok(Value::from_f64(agent, rounded, gc.into_nogc()))
+        Value::from_f64(agent, rounded, gc)
     }
 
     fn sign<'gc>(
@@ -1354,16 +1436,21 @@ impl MathObject {
         let n = to_number(agent, arguments.get(0), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
+        Ok(Self::sign_number(agent, n.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.sign of a Number.
+    fn sign_number<'gc>(agent: &mut Agent, n: Number<'gc>, _: NoGcScope<'gc, '_>) -> Value<'gc> {
         // 2. If n is one of NaN, +0𝔽, or -0𝔽, return n.
         if n.is_nan_(agent) || n.is_pos_zero_(agent) || n.is_neg_zero_(agent) {
-            return Ok(n.unbind().into());
+            return n.into();
         }
         // 3. If n < -0𝔽, return -1𝔽.
         if n.is_sign_negative_(agent) {
-            return Ok(Value::from(-1));
+            return Value::from(-1);
         }
         // 4. Return 1𝔽.
-        Ok(Value::from(1))
+        Value::from(1)
     }
 
     fn sin<'gc>(
@@ -1418,17 +1505,26 @@ impl MathObject {
         let n_number = to_number(agent, arguments.get(0), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
+        Ok(Self::sqrt_number(agent, n_number.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.sqrt of a Number.
+    fn sqrt_number<'gc>(
+        agent: &mut Agent,
+        n_number: Number<'gc>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         let n = n_number.into_f64_(agent);
         // 2. If n is one of NaN, +0𝔽, -0𝔽, or +∞𝔽, return n.
         if n.is_nan() || n == 0.0 || n == f64::INFINITY {
-            return Ok(n_number.unbind().into());
+            return n_number.into();
         }
         // 3. If n < -0𝔽, return NaN.
         if n < -0.0 {
-            return Ok(Value::nan());
+            return Value::nan();
         }
         // 4. Return an implementation-approximated Number value representing the square root of ℝ(n).
-        Ok(Value::from_f64(agent, n.sqrt(), gc.into_nogc()))
+        Value::from_f64(agent, n.sqrt(), gc)
     }
 
     fn tan<'gc>(
@@ -1491,25 +1587,34 @@ impl MathObject {
         let n_number = to_number(agent, arguments.get(0), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
+        Ok(Self::trunc_number(agent, n_number.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.trunc of a Number.
+    fn trunc_number<'gc>(
+        agent: &mut Agent,
+        n_number: Number<'gc>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         let n = n_number.into_f64_(agent);
 
         // 2. If n is not finite or n is either +0𝔽 or -0𝔽, return n.
         if !n.is_finite() || n == 0.0 {
-            return Ok(n_number.unbind().into());
+            return n_number.into();
         }
 
         // 3. If n < 1𝔽 and n > +0𝔽, return +0𝔽.
         if n < 1.0 && n > 0.0 {
-            return Ok(Value::pos_zero());
+            return Value::pos_zero();
         }
 
         // 4. If n < -0𝔽 and n > -1𝔽, return -0𝔽.
         if n < -0.0 && n > -1.0 {
-            return Ok(Value::neg_zero());
+            return Value::neg_zero();
         }
 
         // 5. Return the integral Number nearest n in the direction of +0𝔽.
-        Ok(Value::from_f64(agent, n.trunc(), gc.into_nogc()))
+        Value::from_f64(agent, n.trunc(), gc)
     }
 
     /// ### [3.1 Math.f16round ( x )](https://tc39.es/proposal-float16array/#sec-math.f16round)

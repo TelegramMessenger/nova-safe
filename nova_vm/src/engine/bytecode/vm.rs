@@ -29,7 +29,7 @@ use crate::{
             iterator::VmIteratorRecord,
         },
     },
-    heap::{CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
+    heap::{ArenaAccess, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
 };
 
 #[derive(Debug, Bindable)]
@@ -977,6 +977,33 @@ impl Vm {
                         vm.stack[slot] = value.unbind();
                     }
                 }
+            }
+            // A call of a built-in function that only computes a value from
+            // arguments like these: computed here, with no call made.
+            Instruction::EvaluateCall | Instruction::PopReferenceAndEvaluateCall => {
+                let count = instr.get_first_index();
+                let Some(first) = vm.stack.len().checked_sub(count) else {
+                    return Plain::No;
+                };
+                if count == IndexType::MAX as usize || first == 0 {
+                    return Plain::No;
+                }
+                let Value::BuiltinFunction(function) = vm.stack[first - 1] else {
+                    return Plain::No;
+                };
+                let Some(direct) = function.get(agent).direct else {
+                    return Plain::No;
+                };
+                let Some(result) = direct.run(agent, &vm.stack[first..], gc) else {
+                    return Plain::No;
+                };
+                let result = result.unbind();
+                vm.stack.truncate(first - 1);
+                if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+                    vm.reference_stack.pop();
+                }
+                vm.reference = None;
+                vm.result = Some(result);
             }
             // `o.p` where the property cache knows the shape of `o`, and the
             // length of an Array.

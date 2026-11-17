@@ -2991,3 +2991,124 @@ nullish1=v!,vt,vt,vt,vt,vt,vt,vt,vt,vt,vt,vt,v!,vt,vt,vt,v!,vt,vt,vt,vt,v!,vt,vt
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The functions of Math that are computed in place of a call return what
+/// the call returns: for every kind of Number, the zeros among them, for
+/// arguments that are converted (in order, and where the conversion
+/// throws), for the functions under another name or `this`, and not at all
+/// once another function is put in their place.
+#[test]
+fn direct_builtin_calls_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(direct_builtin_calls)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn direct_builtin_calls() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message.length; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+function show(v) { return typeof v === "number" ? (Object.is(v, -0) ? "-0" : String(v)) : typeof v + ":" + String(v); }
+var nums = [0, -0, 1, -1, 2, 7, 0.5, -0.5, 0.49999999999999994, 1.5, -1.5, 2.5, -2.5, 0.1, -0.1, 0.9, -0.9, 1e-320, 4, 9, 2.25, 1e21, -1e21, 4503599627370495.5, 9007199254740991, -9007199254740991, 9007199254740993, 4294967296, 2147483647.5, -2147483648.5, NaN, Infinity, -Infinity, 123456789.123, 1e300, 5e-324];
+var names = ["floor", "ceil", "round", "trunc", "abs", "sqrt", "sign"];
+log("direct", function () {
+  var r = [];
+  for (var i = 0; i < nums.length; i++) { var x = nums[i]; r.push([Math.floor(x), Math.ceil(x), Math.round(x), Math.trunc(x), Math.abs(x), Math.sqrt(x), Math.sign(x)].map(show).join(" ")); }
+  return r.join("|");
+});
+log("directEqualsApplied", function () {
+  var bad = [];
+  for (var i = 0; i < nums.length; i++) {
+    var x = nums[i], direct = [Math.floor(x), Math.ceil(x), Math.round(x), Math.trunc(x), Math.abs(x), Math.sqrt(x), Math.sign(x)];
+    for (var k = 0; k < names.length; k++) { var applied = Reflect.apply(Math[names[k]], undefined, [x]); if (!Object.is(direct[k], applied)) bad.push(names[k] + "(" + show(x) + ")"); }
+  }
+  for (var a = 0; a < nums.length; a += 2) for (var b = 0; b < nums.length; b += 3) {
+    var p = nums[a], q = nums[b];
+    if (!Object.is(Math.max(p, q), Reflect.apply(Math.max, null, [p, q]))) bad.push("max" + show(p) + "," + show(q));
+    if (!Object.is(Math.min(p, q), Reflect.apply(Math.min, null, [p, q]))) bad.push("min" + show(p) + "," + show(q));
+  }
+  return bad.length + ":" + bad.join();
+});
+log("maxMin", function () { return [Math.max(), Math.min(), Math.max(3), Math.min(3), Math.max(1, 2), Math.min(1, 2), Math.max(-1, -2, -3), Math.min(5, 4, 3, 2, 9), Math.max(0, -0), Math.min(0, -0), Math.max(-0, 0), Math.min(-0, 0), Math.max(1, 2.5), Math.min(1.5, 2), Math.max(1, NaN), Math.min(NaN, 1), Math.max(1, "3"), Math.min("0x10", 20), Math.max(1, undefined), Math.min(null, 1), Math.max(9007199254740991, 9007199254740990), Math.min(-9007199254740991, 1), Math.max(Infinity, 1), Math.min(-Infinity, 1), Math.max.apply(null, [4, 8, 2]), Math.max(...[1, 5, 3]), Math.min(...[]), Math.max(true, false)].map(show).join(" "); });
+log("conversions", function () {
+  var order = "";
+  var o = { valueOf: function () { order += "v"; return 2.5; } }, s = { toString: function () { order += "s"; return "9"; }, valueOf: undefined };
+  var r = [Math.floor(o), Math.ceil(s), Math.round("2.5"), Math.trunc("-7.9"), Math.abs("-3"), Math.sqrt("16"), Math.sign("-2"), Math.floor(), Math.ceil(undefined), Math.round(null), Math.trunc(true), Math.abs([]), Math.sqrt([4]), Math.sign({}), Math.floor("x"), Math.floor(1.5, o), Math.max(o, s, 1), Math.min(o, s)].map(show).join(" ");
+  return r + "|" + order;
+});
+log("throws", function () {
+  var r = [];
+  var fs = [function () { return Math.floor(1n); }, function () { return Math.abs(Symbol()); }, function () { return Math.max(1, 2n); }, function () { return Math.min(1, { valueOf: function () { throw new RangeError("boom"); } }); }, function () { return Math.sqrt({ valueOf: function () { throw 5; } }); }, function () { return Math.round(Symbol.iterator); }];
+  for (var i = 0; i < fs.length; i++) { try { r.push(show(fs[i]())); } catch (e) { r.push(e && e.constructor ? e.constructor.name : String(e)); } }
+  return r.join();
+});
+log("aliases", function () {
+  var f = Math.floor, mx = Math.max, o = { m: Math.min, r: Math.round }, arr = [Math.abs, Math.sqrt];
+  function call(fn, a, b) { return fn(a, b); }
+  return [f(2.7), mx(1, 9), o.m(4, 2), o.r(2.5), arr[0](-3), arr[1](49), call(Math.trunc, -2.9), call(Math.max, 2, 3), (0, Math.ceil)(1.2), Math["floor"](3.9), Math.floor.call(null, 4.9), Math.max.bind(null, 10)(3), [1.5, 2.5, -0.5].map(Math.round).map(show).join("/"), [3, 1, 2].reduce(function (a, b) { return Math.max(a, b); })].join();
+});
+log("patched", function () {
+  var original = Math.floor, calls = 0, r = [];
+  Math.floor = function (x) { calls++; return "patched" + x; };
+  r.push(Math.floor(1.5));
+  Math.floor = original; r.push(Math.floor(1.5));
+  var m = Math.max; Math.max = Math.min; r.push(Math.max(1, 2)); Math.max = m; r.push(Math.max(1, 2));
+  var desc = Object.getOwnPropertyDescriptor(Math, "abs");
+  Object.defineProperty(Math, "abs", { get: function () { calls++; return function () { return "getter"; }; }, configurable: true });
+  r.push(Math.abs(-1)); Object.defineProperty(Math, "abs", desc); r.push(Math.abs(-1));
+  return r.join() + "|" + calls;
+});
+log("thisAndNew", function () { var r = []; r.push(Math.floor.call({}, 1.5), Math.max.call(5, 1, 2), Math.floor.length, Math.max.length, Math.floor.name, typeof Math.sqrt); try { new Math.floor(1); } catch (e) { r.push(e.constructor.name); } try { Math.floor.caller; r.push("ok"); } catch (e) { r.push(e.constructor.name); } return r.join(); });
+log("inExpressions", function () {
+  var total = 0, parts = [];
+  for (var i = 0; i < 40; i++) total += Math.floor(Math.sqrt(i)) + Math.max(i & 7, 3) - Math.min(i, 5) + Math.abs(i - 20) * Math.sign(i - 10) + Math.round(i / 3) + Math.ceil(i / 7) + Math.trunc(-i / 4);
+  parts.push(total);
+  var x = 10.75; parts.push(Math.floor(x) + Math.floor(-x), Math.round(x) === 11, Math.floor(x / 0), Math.floor(-0) === 0, 1 / Math.floor(-0), 1 / Math.ceil(-0.5), 1 / Math.round(-0.2), 1 / Math.trunc(-0.9), 1 / Math.abs(-0), 1 / Math.sqrt(-0), 1 / Math.sign(-0), 1 / Math.max(-0, -0), 1 / Math.min(0, 0));
+  function nested(n) { return n < 2 ? Math.max(n, 0) : nested(Math.floor(n / 2)) + Math.min(n & 1, 1); }
+  parts.push(nested(1000), nested(12345.9));
+  return parts.join();
+});
+log("argumentCounts", function () { function f() { return Math.max.apply(Math, arguments); } var big = []; for (var i = 0; i < 300; i++) big.push(i % 97); return [f(1, 2, 3), f(), Math.floor(1.5, 2, 3), Math.max(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), Math.min(...big), Math.max(...big), Math.max(...big, 1.5, "200")].map(show).join(); });
+log("generatorAndAsync", function () { function* g() { var x = yield Math.floor(1.5); yield Math.max(x, 3); yield* [Math.sqrt(81)]; } var it = g(); return [it.next().value, it.next(7).value, it.next().value].join(); });
+out.join("\n")
+"#;
+    let expected = r#"direct0=0 0 0 0 0 0 0|-0 -0 -0 -0 0 -0 -0|1 1 1 1 1 1 1|-1 -1 -1 -1 1 NaN -1|2 2 2 2 2 1.4142135623730951 1|7 7 7 7 7 2.6457513110645907 1|0 1 1 0 0.5 0.7071067811865476 1|-1 -0 -0 -0 0.5 NaN -1|0 1 0 0 0.49999999999999994 0.7071067811865475 1|1 2 2 1 1.5 1.224744871391589 1|-2 -1 -1 -1 1.5 NaN -1|2 3 3 2 2.5 1.5811388300841898 1|-3 -2 -2 -2 2.5 NaN -1|0 1 0 0 0.1 0.31622776601683794 1|-1 -0 -0 -0 0.1 NaN -1|0 1 1 0 0.9 0.9486832980505138 1|-1 -0 -1 -0 0.9 NaN -1|0 1 0 0 1e-320 9.99994433575849e-161 1|4 4 4 4 4 2 1|9 9 9 9 9 3 1|2 3 2 2 2.25 1.5 1|1e+21 1e+21 1e+21 1e+21 1e+21 31622776601.683792 1|-1e+21 -1e+21 -1e+21 -1e+21 1e+21 NaN -1|4503599627370495 4503599627370496 4503599627370496 4503599627370495 4503599627370495.5 67108863.99999999 1|9007199254740991 9007199254740991 9007199254740991 9007199254740991 9007199254740991 94906265.62425154 1|-9007199254740991 -9007199254740991 -9007199254740991 -9007199254740991 9007199254740991 NaN -1|9007199254740992 9007199254740992 9007199254740992 9007199254740992 9007199254740992 94906265.62425156 1|4294967296 4294967296 4294967296 4294967296 4294967296 65536 1|2147483647 2147483648 2147483648 2147483647 2147483647.5 46340.95000644678 1|-2147483649 -2147483648 -2147483648 -2147483648 2147483648.5 NaN -1|NaN NaN NaN NaN NaN NaN NaN|Infinity Infinity Infinity Infinity Infinity Infinity 1|-Infinity -Infinity -Infinity -Infinity Infinity NaN -1|123456789 123456790 123456789 123456789 123456789.123 11111.111066090556 1|1e+300 1e+300 1e+300 1e+300 1e+300 1e+150 1|0 1 0 0 5e-324 2.2227587494850775e-162 1
+direct1=0 0 0 0 0 0 0|-0 -0 -0 -0 0 -0 -0|1 1 1 1 1 1 1|-1 -1 -1 -1 1 NaN -1|2 2 2 2 2 1.4142135623730951 1|7 7 7 7 7 2.6457513110645907 1|0 1 1 0 0.5 0.7071067811865476 1|-1 -0 -0 -0 0.5 NaN -1|0 1 0 0 0.49999999999999994 0.7071067811865475 1|1 2 2 1 1.5 1.224744871391589 1|-2 -1 -1 -1 1.5 NaN -1|2 3 3 2 2.5 1.5811388300841898 1|-3 -2 -2 -2 2.5 NaN -1|0 1 0 0 0.1 0.31622776601683794 1|-1 -0 -0 -0 0.1 NaN -1|0 1 1 0 0.9 0.9486832980505138 1|-1 -0 -1 -0 0.9 NaN -1|0 1 0 0 1e-320 9.99994433575849e-161 1|4 4 4 4 4 2 1|9 9 9 9 9 3 1|2 3 2 2 2.25 1.5 1|1e+21 1e+21 1e+21 1e+21 1e+21 31622776601.683792 1|-1e+21 -1e+21 -1e+21 -1e+21 1e+21 NaN -1|4503599627370495 4503599627370496 4503599627370496 4503599627370495 4503599627370495.5 67108863.99999999 1|9007199254740991 9007199254740991 9007199254740991 9007199254740991 9007199254740991 94906265.62425154 1|-9007199254740991 -9007199254740991 -9007199254740991 -9007199254740991 9007199254740991 NaN -1|9007199254740992 9007199254740992 9007199254740992 9007199254740992 9007199254740992 94906265.62425156 1|4294967296 4294967296 4294967296 4294967296 4294967296 65536 1|2147483647 2147483648 2147483648 2147483647 2147483647.5 46340.95000644678 1|-2147483649 -2147483648 -2147483648 -2147483648 2147483648.5 NaN -1|NaN NaN NaN NaN NaN NaN NaN|Infinity Infinity Infinity Infinity Infinity Infinity 1|-Infinity -Infinity -Infinity -Infinity Infinity NaN -1|123456789 123456790 123456789 123456789 123456789.123 11111.111066090556 1|1e+300 1e+300 1e+300 1e+300 1e+300 1e+150 1|0 1 0 0 5e-324 2.2227587494850775e-162 1
+directEqualsApplied0=0:
+directEqualsApplied1=0:
+maxMin0=-Infinity Infinity 3 3 2 1 -1 2 0 -0 0 -0 2.5 1.5 NaN NaN 3 16 NaN 0 9007199254740991 -9007199254740991 Infinity -Infinity 8 5 Infinity 1
+maxMin1=-Infinity Infinity 3 3 2 1 -1 2 0 -0 0 -0 2.5 1.5 NaN NaN 3 16 NaN 0 9007199254740991 -9007199254740991 Infinity -Infinity 8 5 Infinity 1
+conversions0=2 9 3 -7 3 4 -1 NaN NaN 0 1 0 2 NaN NaN 1 9 2.5|vsvsvs
+conversions1=2 9 3 -7 3 4 -1 NaN NaN 0 1 0 2 NaN NaN 1 9 2.5|vsvsvs
+throws0=TypeError,TypeError,TypeError,RangeError,Number,TypeError
+throws1=TypeError,TypeError,TypeError,RangeError,Number,TypeError
+aliases0=2,9,2,3,3,7,-2,3,2,3,4,10,2/3/-0,3
+aliases1=2,9,2,3,3,7,-2,3,2,3,4,10,2/3/-0,3
+patched0=patched1.5,1,1,2,getter,1|2
+patched1=patched1.5,1,1,2,getter,1|2
+thisAndNew0=1,2,1,2,floor,function,TypeError,TypeError
+thisAndNew1=1,2,1,2,floor,function,TypeError,TypeError
+inExpressions0=423,-1,true,Infinity,true,-Infinity,-Infinity,-Infinity,-Infinity,Infinity,-Infinity,-Infinity,-Infinity,Infinity,6,6
+inExpressions1=423,-1,true,Infinity,true,-Infinity,-Infinity,-Infinity,-Infinity,Infinity,-Infinity,-Infinity,-Infinity,Infinity,6,6
+argumentCounts0=3,-Infinity,1,10,0,96,200
+argumentCounts1=3,-Infinity,1,10,0,96,200
+generatorAndAsync0=1,7,9
+generatorAndAsync1=1,7,9"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

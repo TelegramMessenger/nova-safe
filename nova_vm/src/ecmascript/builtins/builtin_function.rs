@@ -8,8 +8,8 @@ use std::borrow::Cow;
 use crate::{
     ecmascript::{
         Agent, BUILTIN_STRING_MEMORY, BuiltinFunctionHeapData, ExceptionType, ExecutionContext,
-        Function, FunctionInternalProperties, InternalSlots, JsResult, Object, OrdinaryObject,
-        PropertyKey, Realm, ScopedValuesIterator, String, Value, function_handle,
+        Function, FunctionInternalProperties, InternalSlots, JsResult, MathObject, Object,
+        OrdinaryObject, PropertyKey, Realm, ScopedValuesIterator, String, Value, function_handle,
     },
     engine::{Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData},
     heap::{
@@ -338,6 +338,45 @@ pub type ConstructorFn = for<'gc> fn(
     Option<Object>,
     GcScope<'gc, '_>,
 ) -> JsResult<'gc, Value<'gc>>;
+
+/// A built-in function whose result for arguments it takes as they are is
+/// computed from them alone, with no effect: the interpreter runs it in
+/// place for such arguments, with no call made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectBuiltin {
+    MathAbs,
+    MathCeil,
+    MathFloor,
+    MathMax,
+    MathMin,
+    MathRound,
+    MathSign,
+    MathSqrt,
+    MathTrunc,
+}
+
+impl DirectBuiltin {
+    /// The function of `behaviour`, if it is one of these.
+    pub(crate) fn of(behaviour: Behaviour) -> Option<Self> {
+        match behaviour {
+            Behaviour::Regular(function) => MathObject::direct_builtin(function),
+            Behaviour::Constructor(_) => None,
+        }
+    }
+
+    /// What a call of the function with `arguments` returns, where it needs
+    /// nothing but them and does nothing else; None where the call is to be
+    /// made.
+    #[inline]
+    pub(crate) fn run<'gc>(
+        self,
+        agent: &mut Agent,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        MathObject::run_direct(agent, self, arguments, gc)
+    }
+}
 
 /// Calling convention of a builtin function.
 #[allow(unpredictable_function_pointer_comparisons)]
@@ -805,6 +844,7 @@ pub fn create_builtin_function<'a>(
         .heap
         .create(BuiltinFunctionHeapData {
             behaviour,
+            direct: DirectBuiltin::of(behaviour),
             initial_name: Some(initial_name),
             // 10. Perform SetFunctionLength(func, length).
             length: args.length as u8,
@@ -850,6 +890,7 @@ impl HeapMarkAndSweep for BuiltinFunctionHeapData<'static> {
             realm,
             initial_name,
             behaviour: _,
+            direct: _,
         } = self;
         realm.mark_values(queues);
         initial_name.mark_values(queues);
@@ -863,6 +904,7 @@ impl HeapMarkAndSweep for BuiltinFunctionHeapData<'static> {
             realm,
             initial_name,
             behaviour: _,
+            direct: _,
         } = self;
         realm.sweep_values(compactions);
         initial_name.sweep_values(compactions);
