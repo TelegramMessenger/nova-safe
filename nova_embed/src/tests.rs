@@ -1843,6 +1843,177 @@ crossScriptLet=62,later!"#;
     assert_eq!(found.lines().count(), expected.lines().count());
 }
 
+/// The elements and the length of a TypedArray read and written without a
+/// Reference are what \[\[Get]] and \[\[Set]] give: every element type,
+/// indexes outside the length, values that need a conversion, buffers that
+/// are resized, and a `length` that is not the accessor of
+/// %TypedArray%.prototype.
+#[test]
+fn typed_array_elements_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(typed_array_elements)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn typed_array_elements() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 3; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+var kinds = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array];
+log("readWrite", function () {
+  var parts = [];
+  for (var k = 0; k < kinds.length; k++) {
+    var a = new kinds[k](4);
+    a[0] = 300.7; a[1] = -3; a[2] = 4294967295; a[3] = 0.1;
+    parts.push(a[0] + "/" + a[1] + "/" + a[2] + "/" + a[3]);
+  }
+  return parts.join(" ");
+});
+log("outside", function () {
+  var a = new Uint8Array(2);
+  a[2] = 9; a[-1] = 9; a[5000000000] = 9; a[1.5] = 9; a["x"] = 9;
+  return [a[2], a[-1], a[5000000000], a[1.5], a.x, a.length, Object.keys(a).join()].join("/");
+});
+log("converted", function () {
+  var a = new Int16Array(6);
+  a[0] = "12"; a[1] = { valueOf: function () { return 7; } }; a[2] = undefined; a[3] = null; a[4] = true; a[5] = NaN;
+  var f = new Float64Array(3);
+  f[0] = "1.5"; f[1] = undefined; f[2] = -0;
+  return Array.prototype.join.call(a) + " " + f[0] + "," + f[1] + "," + (1 / f[2]);
+});
+log("bigint", function () {
+  var a = new BigInt64Array(2), u = new BigUint64Array(1);
+  a[0] = 5n; a[1] = -(2n ** 63n); u[0] = -1n;
+  var r = a[0] + "/" + a[1] + "/" + u[0] + "/" + typeof a[0];
+  try { a[0] = 1; } catch (e) { r += "/" + e.constructor.name; }
+  return r + "/" + a[0];
+});
+log("bigintToNumberArray", function () { var a = new Uint8Array(1); a[0] = 1n; return a[0]; });
+log("symbolValue", function () { var a = new Uint8Array(1); a[0] = Symbol(); return a[0]; });
+log("sum", function () {
+  var a = new Uint8Array(1000), s = 0;
+  for (var i = 0; i < a.length; i++) a[i] = i * 7;
+  for (var j = 0; j < a.length; j++) s += a[j];
+  return s;
+});
+log("floats", function () {
+  var x = new Float64Array(100), y = new Float32Array(100), s = 0;
+  for (var i = 0; i < x.length; i++) { x[i] = i * 0.37; y[i] = x[i] / 3; }
+  for (var j = 0; j < x.length; j++) s += x[j] + y[j];
+  return s;
+});
+log("holesAndNaN", function () { var f = new Float32Array(3); f[0] = NaN; f[1] = Infinity; f[2] = -Infinity; return f[0] + "," + f[1] + "," + f[2] + "," + f[3]; });
+log("subarray", function () { var a = new Uint16Array([1, 2, 3, 4, 5]); var b = a.subarray(1, 4); b[0] = 20; b[3] = 99; return a.join() + "|" + b.join() + "|" + b.length + "|" + b[3]; });
+log("resizable", function () {
+  var buffer = new ArrayBuffer(4, { maxByteLength: 16 }), tracking = new Uint8Array(buffer), fixed = new Uint8Array(buffer, 2, 2);
+  tracking[3] = 3; fixed[1] = 7;
+  var r = [tracking.length, fixed.length, tracking[3], fixed[1]];
+  buffer.resize(8); tracking[7] = 8;
+  r.push(tracking.length, tracking[7], fixed.length);
+  buffer.resize(3); tracking[3] = 1;
+  r.push(tracking.length, tracking[3], fixed.length, fixed[1]);
+  return r.join("/");
+});
+log("lengthKinds", function () {
+  class Sub extends Uint8Array { get length() { return 42; } }
+  class Plain extends Uint8Array {}
+  var own = new Uint8Array(3);
+  Object.defineProperty(own, "length", { value: "own", configurable: true });
+  function len(a) { return a.length; }
+  var r = [len(new Uint8Array(5)), len(new Sub(2)), len(new Plain(7)), len(own), len(new Float64Array(9)), len([1, 2]), len("abc"), len({ length: "o" })];
+  delete own.length;
+  r.push(len(own));
+  return r.join("/");
+});
+log("lengthPatched", function () {
+  var proto = Object.getPrototypeOf(Uint8Array.prototype);
+  var original = Object.getOwnPropertyDescriptor(proto, "length");
+  function len(a) { return a.length; }
+  var a = new Uint8Array(4);
+  var r = [len(a), len(a)];
+  Object.defineProperty(proto, "length", { get: function () { return "patched"; }, configurable: true });
+  r.push(len(a));
+  Object.defineProperty(proto, "length", { get: original.get, configurable: true });
+  r.push(len(a));
+  Object.defineProperty(proto, "length", { value: 77, configurable: true });
+  r.push(len(a));
+  Object.defineProperty(proto, "length", original);
+  r.push(len(a), original.get.call(new Int8Array(3)));
+  try { original.get.call({}); } catch (e) { r.push(e.constructor.name); }
+  return r.join("/");
+});
+log("stringIndexKeys", function () { var a = new Uint8Array(3); a["1"] = 4; var k = "2"; a[k] = 5; return a[1] + "/" + a["2"] + "/" + a[0]; });
+log("otherReceiver", function () { var a = new Uint8Array(2); var o = Object.create(a); o[0] = 5; o[5] = 6; return a[0] + "/" + o[0] + "/" + Object.keys(o).join() + "/" + o[5]; });
+log("frozenStyle", function () { "use strict"; var a = new Uint8Array(2); a[9] = 1; a[0] += 5; a[1]++; a[1] *= 300; return a.join(); });
+out.join("\n")
+"#;
+    let expected = r#"readWrite0=44/-3/-1/0 44/253/255/0 255/0/255/0 300/-3/-1/0 300/65533/65535/0 300/-3/-1/0 300/4294967293/4294967295/0 300.70001220703125/-3/4294967296/0.10000000149011612 300.7/-3/4294967295/0.1
+readWrite1=44/-3/-1/0 44/253/255/0 255/0/255/0 300/-3/-1/0 300/65533/65535/0 300/-3/-1/0 300/4294967293/4294967295/0 300.70001220703125/-3/4294967296/0.10000000149011612 300.7/-3/4294967295/0.1
+readWrite2=44/-3/-1/0 44/253/255/0 255/0/255/0 300/-3/-1/0 300/65533/65535/0 300/-3/-1/0 300/4294967293/4294967295/0 300.70001220703125/-3/4294967296/0.10000000149011612 300.7/-3/4294967295/0.1
+outside0=////9/2/0,1,x
+outside1=////9/2/0,1,x
+outside2=////9/2/0,1,x
+converted0=12,7,0,0,1,0 1.5,NaN,-Infinity
+converted1=12,7,0,0,1,0 1.5,NaN,-Infinity
+converted2=12,7,0,0,1,0 1.5,NaN,-Infinity
+bigint0=5/-9223372036854775808/18446744073709551615/bigint/TypeError/5
+bigint1=5/-9223372036854775808/18446744073709551615/bigint/TypeError/5
+bigint2=5/-9223372036854775808/18446744073709551615/bigint/TypeError/5
+bigintToNumberArray0=TypeError
+bigintToNumberArray1=TypeError
+bigintToNumberArray2=TypeError
+symbolValue0=TypeError
+symbolValue1=TypeError
+symbolValue2=TypeError
+sum0=126516
+sum1=126516
+sum2=126516
+floats0=2442.0000000000005
+floats1=2442.0000000000005
+floats2=2442.0000000000005
+holesAndNaN0=NaN,Infinity,-Infinity,undefined
+holesAndNaN1=NaN,Infinity,-Infinity,undefined
+holesAndNaN2=NaN,Infinity,-Infinity,undefined
+subarray0=1,20,3,4,5|20,3,4|3|undefined
+subarray1=1,20,3,4,5|20,3,4|3|undefined
+subarray2=1,20,3,4,5|20,3,4|3|undefined
+resizable0=4/2/7/7/8/8/2/3//0/
+resizable1=4/2/7/7/8/8/2/3//0/
+resizable2=4/2/7/7/8/8/2/3//0/
+lengthKinds0=5/42/7/own/9/2/3/o/3
+lengthKinds1=5/42/7/own/9/2/3/o/3
+lengthKinds2=5/42/7/own/9/2/3/o/3
+lengthPatched0=4/4/patched/4/77/4/3/TypeError
+lengthPatched1=4/4/patched/4/77/4/3/TypeError
+lengthPatched2=4/4/patched/4/77/4/3/TypeError
+stringIndexKeys0=4/5/0
+stringIndexKeys1=4/5/0
+stringIndexKeys2=4/5/0
+otherReceiver0=0/5/0/undefined
+otherReceiver1=0/5/0/undefined
+otherReceiver2=0/5/0/undefined
+frozenStyle0=5,44
+frozenStyle1=5,44
+frozenStyle2=5,44"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
 /// The this value of a call that makes no Function Environment Record is
 /// the one OrdinaryCallBindThis binds, for functions that are not strict as
 /// for strict ones: the global this value for undefined and null, an object

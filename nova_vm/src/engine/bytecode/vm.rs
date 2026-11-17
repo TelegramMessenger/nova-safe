@@ -9,6 +9,8 @@ use execute_instructions::*;
 
 use wtf8::Wtf8Buf;
 
+#[cfg(feature = "array-buffer")]
+use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayPrototype};
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType,
@@ -762,29 +764,39 @@ impl Vm {
                 vm.result = None;
                 vm.reference = None;
             }
-            // `a[i]` of an Array that has an element there.
+            // `a[i]` of an Array that has an element there, or of a
+            // TypedArray within its length.
             Instruction::GetValue | Instruction::GetValueKeepReference => {
-                let Some((Value::Array(array), index)) = vm
+                let Some((base, index)) = vm
                     .reference
                     .as_ref()
                     .and_then(Reference::element_base_and_index)
                 else {
                     return Plain::No;
                 };
-                let Some(&Some(value)) = usize::try_from(index)
-                    .ok()
-                    .and_then(|index| array.as_slice(agent).get(index))
-                else {
-                    return Plain::No;
+                let value = if let Value::Array(array) = base {
+                    let Some(&Some(value)) = usize::try_from(index)
+                        .ok()
+                        .and_then(|index| array.as_slice(agent).get(index))
+                    else {
+                        return Plain::No;
+                    };
+                    value.unbind()
+                } else {
+                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                        return Plain::No;
+                    };
+                    value
                 };
                 if instr.kind == Instruction::GetValue {
                     vm.reference = None;
                 }
-                vm.result = Some(value.unbind());
+                vm.result = Some(value);
             }
-            // `a[i] = v` for an element the Array has, as a plain value.
+            // `a[i] = v` for an element the Array has, as a plain value, or
+            // for a TypedArray and a Number.
             Instruction::PutValue => {
-                let (Some(value), Some((Value::Array(array), index))) = (
+                let (Some(value), Some((base, index))) = (
                     vm.result,
                     vm.reference
                         .as_ref()
@@ -792,18 +804,22 @@ impl Vm {
                 ) else {
                     return Plain::No;
                 };
-                let Ok(index) = u32::try_from(index) else {
-                    return Plain::No;
-                };
-                let storage = array.get_storage(agent);
-                if !matches!(storage.values.get(index as usize), Some(Some(_)))
-                    || storage
-                        .descriptors
-                        .is_some_and(|descriptors| descriptors.contains_key(&index))
-                {
+                if let Value::Array(array) = base {
+                    let Ok(index) = u32::try_from(index) else {
+                        return Plain::No;
+                    };
+                    let storage = array.get_storage(agent);
+                    if !matches!(storage.values.get(index as usize), Some(Some(_)))
+                        || storage
+                            .descriptors
+                            .is_some_and(|descriptors| descriptors.contains_key(&index))
+                    {
+                        return Plain::No;
+                    }
+                    array.as_mut_slice(agent)[index as usize] = Some(value);
+                } else if !Self::set_typed_array_element(agent, base, index, value) {
                     return Plain::No;
                 }
-                array.as_mut_slice(agent)[index as usize] = Some(value);
                 vm.result = None;
                 vm.reference = None;
             }
@@ -874,8 +890,86 @@ impl Vm {
                 (key == PropertyKey::from(BUILTIN_STRING_MEMORY.length))
                     .then(|| array.len(agent).into())
             }
+            #[cfg(feature = "array-buffer")]
+            value => Self::typed_array_length(agent, value, executable, instr, gc),
+            #[cfg(not(feature = "array-buffer"))]
             _ => None,
         }
+    }
+
+    /// `a[i]` of a TypedArray, for an index within its length: the element,
+    /// read from the buffer. Outside the length the general way gives
+    /// undefined.
+    #[cfg(feature = "array-buffer")]
+    #[inline]
+    fn typed_array_element(
+        agent: &mut Agent,
+        base: Value,
+        index: i64,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let array = AnyTypedArray::try_from(base).ok()?;
+        let element = array.typed_array_get_element(agent, index, gc)?;
+        Some(Value::from(element).unbind())
+    }
+
+    #[cfg(not(feature = "array-buffer"))]
+    #[inline]
+    fn typed_array_element(
+        _: &mut Agent,
+        _: Value,
+        _: i64,
+        _: NoGcScope,
+    ) -> Option<Value<'static>> {
+        None
+    }
+
+    /// `a[i] = v` of a TypedArray and a value that needs no conversion (a
+    /// Number, or a BigInt where the elements are BigInts): written to the
+    /// buffer, or dropped outside the length, as TypedArraySetElement has
+    /// it.
+    #[cfg(feature = "array-buffer")]
+    #[inline]
+    fn set_typed_array_element(agent: &mut Agent, base: Value, index: i64, value: Value) -> bool {
+        AnyTypedArray::try_from(base)
+            .is_ok_and(|array| array.set_element_unconverted(agent, index, value))
+    }
+
+    #[cfg(not(feature = "array-buffer"))]
+    #[inline]
+    fn set_typed_array_element(_: &mut Agent, _: Value, _: i64, _: Value) -> bool {
+        false
+    }
+
+    /// `a.length` of a TypedArray, where the property cache finds for its
+    /// shape the accessor of %TypedArray%.prototype: what the accessor
+    /// returns, without the call.
+    #[cfg(feature = "array-buffer")]
+    fn typed_array_length(
+        agent: &mut Agent,
+        value: Value,
+        executable: &Scoped<Executable>,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let array = AnyTypedArray::try_from(value).ok()?;
+        let key = executable.fetch_property_key(agent, instr.get_first_index(), gc);
+        if key != PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
+            return None;
+        }
+        let cache = executable.fetch_cache(agent, instr.get_second_index(), gc);
+        let shape = array.object_shape(agent);
+        let (offset, Some(prototype)) = cache.find_cached_property_offset(agent, shape)? else {
+            return None;
+        };
+        if offset.is_unset() {
+            return None;
+        }
+        let TryGetResult::Get(getter) = prototype.get_own_property_at_offset(agent, offset, gc)
+        else {
+            return None;
+        };
+        TypedArrayPrototype::is_length_getter(agent, getter).then(|| array.length_value(agent))
     }
 
     /// `++` or `--` of an integer that stays one.

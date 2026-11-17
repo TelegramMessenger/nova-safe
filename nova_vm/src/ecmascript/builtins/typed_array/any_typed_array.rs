@@ -1110,6 +1110,65 @@ impl<'a> From<AnyTypedArray<'a>> for HeapRootData {
         value.into()
     }
 }
+impl<'a> AnyTypedArray<'a> {
+    /// Whether the elements are BigInts.
+    fn holds_bigints(self) -> bool {
+        let this = self;
+        for_any_typed_array!(
+            this,
+            _array,
+            <TA as crate::ecmascript::Viewable>::IS_BIGINT,
+            TA
+        )
+    }
+
+    /// `O[index] = value` for an integer index (TypedArraySetElement) and a
+    /// value that is already what the elements are made from, a Number, or
+    /// a BigInt for the BigInt types: no conversion that could run a script
+    /// is left. False leaves the assignment to \[\[Set]].
+    pub(crate) fn set_element_unconverted(
+        self,
+        agent: &mut Agent,
+        index: i64,
+        value: Value,
+    ) -> bool {
+        let value: Numeric = if self.holds_bigints() {
+            let Ok(value) = crate::ecmascript::BigInt::try_from(value) else {
+                return false;
+            };
+            value.into()
+        } else {
+            let Ok(value) = crate::ecmascript::Number::try_from(value) else {
+                return false;
+            };
+            value.into()
+        };
+        self.typed_array_set_element(agent, index, value);
+        true
+    }
+
+    /// What the `length` accessor of %TypedArray%.prototype returns for this
+    /// TypedArray.
+    pub(crate) fn length_value(self, agent: &Agent) -> Value<'static> {
+        let this = self;
+        let length = for_any_typed_array!(this, o, {
+            // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, seq-cst).
+            let cached_buffer_byte_length =
+                o.get_cached_buffer_byte_length(agent, crate::ecmascript::Ordering::SeqCst);
+
+            // 5. If IsTypedArrayOutOfBounds(taRecord) is true, return +0𝔽.
+            if o.is_typed_array_out_of_bounds(agent, cached_buffer_byte_length) {
+                return Value::pos_zero();
+            }
+
+            // 6. Let length be TypedArrayLength(taRecord).
+            o.typed_array_length(agent, cached_buffer_byte_length)
+        });
+        // 7. Return 𝔽(length).
+        Value::try_from(length as i64).unwrap()
+    }
+}
+
 impl<'a> TryFrom<Object<'a>> for AnyTypedArray<'a> {
     type Error = ();
     #[inline]
