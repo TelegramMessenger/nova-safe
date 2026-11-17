@@ -1333,6 +1333,19 @@ impl Agent {
         self.execution_context_stack.push(context);
     }
 
+    /// Replaces the this value that the running execution context keeps for
+    /// a call without a Function Environment Record.
+    pub(crate) fn set_running_call_this_value(&mut self, value: Value<'static>) {
+        if let Some(this_value) = self
+            .execution_context_stack
+            .last_mut()
+            .and_then(|context| context.ecmascript_code.as_mut())
+            .and_then(|code| code.this_value.as_mut())
+        {
+            this_value.value = value;
+        }
+    }
+
     pub(crate) fn pop_execution_context(&mut self) -> Option<ExecutionContext> {
         self.execution_context_stack.pop()
     }

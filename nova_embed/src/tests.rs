@@ -500,19 +500,26 @@ fn the_heap_limit_ends_a_script_that_goes_past_it() {
 #[test]
 fn memory_used_follows_the_heap() {
     let (mut engine, _, _) = engine_pair();
+    assert!(engine.memory_used() > 0);
+    // What is in use is known at a collection; between two it is what the
+    // last one found and what was allocated since, as far as that is
+    // counted.
+    engine.collect_garbage().unwrap();
     let before = engine.memory_used();
-    assert!(before > 0);
     engine
         .evaluate(
             "globalThis.big = Array.from({ length: 20000 }, (_, i) => ({ i, s: 'v' + i }));",
             false,
         )
         .unwrap();
+    // The callback's calls leave no garbage that would stand in for the
+    // objects' property storage, which is counted when it is found live.
+    engine.collect_garbage().unwrap();
     let grown = engine.memory_used();
-    assert!(grown > before + (1 << 20), "{before} -> {grown}");
+    assert!(grown > before + (3 << 18), "{before} -> {grown}");
     engine.evaluate("globalThis.big = null", false).unwrap();
     engine.collect_garbage().unwrap();
-    assert!(engine.memory_used() < grown / 2);
+    assert!(engine.memory_used() < before + (grown - before) / 2);
 }
 
 fn engine_pair() -> (Engine, (), ()) {
@@ -1827,6 +1834,141 @@ crossScriptLet=62,later!"#;
     assert!(engine.evaluate(first, false).is_ok());
     assert!(engine.evaluate(second, false).is_ok());
     let Ok(Completion::String(found)) = engine.evaluate(third, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The this value of a call that makes no Function Environment Record is
+/// the one OrdinaryCallBindThis binds, for functions that are not strict as
+/// for strict ones: the global this value for undefined and null, an object
+/// made of a primitive (one for the whole call), and the Function
+/// Environment Record where an arrow function, `arguments`, a parameter
+/// default or an `eval` needs it.
+#[test]
+fn calls_bind_the_this_value_of_their_mode() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(calls_bind_this)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn calls_bind_this() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+function describe(v) {
+  if (v === globalThis) return "global";
+  if (v === undefined) return "undefined";
+  if (v === null) return "null";
+  var t = typeof v;
+  if (t !== "object" && t !== "function") return t + ":" + String(v);
+  return Object.prototype.toString.call(v) + (v.valueOf && typeof v.valueOf() !== "object" ? ":" + String(v.valueOf()) : "");
+}
+function sloppy() { return this; }
+function strict() { "use strict"; return this; }
+function sloppyNoThis(a) { return a + 1; }
+function sloppyLocals(a) { var b = a * 2; let c = b + 1; return function () { return c; }; }
+function sloppyTwice() { return this === this && typeof this; }
+var thisArgs = [undefined, null, 5, "s", true, Symbol.iterator, 10n, {}, [], sloppy];
+log("sloppyCall", function () { return thisArgs.map(function (t) { return describe(sloppy.call(t)); }).join(" | "); });
+log("strictCall", function () { return thisArgs.map(function (t) { return describe(strict.call(t)); }).join(" | "); });
+log("plain", function () { return describe(sloppy()) + " " + describe(strict()) + " " + sloppyNoThis(1) + " " + sloppyLocals(2)(); });
+log("wrapperIdentity", function () { var a = sloppy.call(5), b = sloppy.call(5); return (a === b) + " " + (a == 5) + " " + sloppyTwice.call("x") + " " + (a instanceof Number); });
+log("apply", function () { return describe(sloppy.apply(7)) + " " + describe(Reflect.apply(sloppy, "r", [])) + " " + describe(sloppy.bind(false)()) + " " + describe(sloppy.bind()()); });
+Number.prototype.me = function () { return this; };
+Number.prototype.strictMe = function () { "use strict"; return this; };
+String.prototype.kind = function () { return typeof this; };
+log("methodsOnPrimitives", function () { return describe((5).me()) + " " + describe((5).strictMe()) + " " + "abc".kind() + " " + describe(1.5.me()); });
+Object.defineProperty(String.prototype, "viaGetter", { get: function () { return typeof this; }, configurable: true });
+Object.defineProperty(String.prototype, "viaStrictGetter", { get: function () { "use strict"; return typeof this; }, configurable: true });
+var seenBySetter;
+Object.defineProperty(Number.prototype, "viaSetter", { set: function (v) { seenBySetter = typeof this + v; }, configurable: true });
+log("accessors", function () { (3).viaSetter = "!"; return "s".viaGetter + " " + "s".viaStrictGetter + " " + seenBySetter; });
+log("callbacks", function () {
+  var a = [1].map(function () { return describe(this); })[0];
+  var b = [1].map(function () { return describe(this); }, 5)[0];
+  var c = [1].map(function () { "use strict"; return describe(this); }, 5)[0];
+  var d; [1].forEach(function () { d = describe(this); }, "t");
+  return [a, b, c, d].join(" | ");
+});
+log("arrowInside", function () {
+  function outer() { return (() => this)(); }
+  function deeper() { return (() => (() => typeof this)())(); }
+  return describe(outer.call(5)) + " " + describe(outer()) + " " + deeper.call("s");
+});
+log("constructing", function () {
+  function F(v) { this.v = v; }
+  function G() { return typeof this; }
+  var f = new F(3);
+  return f.v + " " + (f instanceof F) + " " + typeof new G() + " " + describe(F.call(undefined, 4)) + " " + globalThis.v;
+});
+log("generators", function () {
+  function* gen() { yield typeof this; yield this === globalThis; }
+  var a = gen.call(5), b = gen();
+  return a.next().value + " " + a.next().value + " " + b.next().value + " " + b.next().value;
+});
+log("asyncAndArguments", function () {
+  async function asyncThis() { return typeof this; }
+  function withArguments() { return typeof this + arguments.length; }
+  function withDefault(a = typeof this) { return a; }
+  function withEval() { return eval("typeof this"); }
+  var seen; asyncThis.call(5).then(function (v) { seen = v; });
+  return withArguments.call(5, 1, 2) + " " + withDefault.call(5) + " " + withEval.call(5) + " " + withArguments() + " " + withDefault();
+});
+log("recursion", function () { function fact(n) { return n < 2 ? 1 : n * fact(n - 1); } function count(n) { return n ? count.call(n, n - 1) + 1 : 0; } return fact(10) + " " + count(20); });
+log("classesAndMethods", function () {
+  var o = { m: function () { return this === o; }, n() { return describe(this); } };
+  class C { m() { return this instanceof C; } static s() { return this === C; } }
+  var m = o.m, n = o.n;
+  return o.m() + " " + m() + " " + describe(n()) + " " + new C().m() + " " + C.s() + " " + describe(n.call(1));
+});
+log("globalThisIsRealm", function () { var f = new Function("return this"); return describe(f()) + " " + describe(f.call(null)) + " " + describe(f.call(0)); });
+out.join("\n")
+"#;
+    let expected = r#"sloppyCall0=global | global | [object Number]:5 | [object String]:s | [object Boolean]:true | [object Symbol]:Symbol(Symbol.iterator) | [object BigInt]:10 | [object Object] | [object Array] | [object Function]:function sloppy() { return this; }
+sloppyCall1=global | global | [object Number]:5 | [object String]:s | [object Boolean]:true | [object Symbol]:Symbol(Symbol.iterator) | [object BigInt]:10 | [object Object] | [object Array] | [object Function]:function sloppy() { return this; }
+strictCall0=undefined | null | number:5 | string:s | boolean:true | symbol:Symbol(Symbol.iterator) | bigint:10 | [object Object] | [object Array] | [object Function]:function sloppy() { return this; }
+strictCall1=undefined | null | number:5 | string:s | boolean:true | symbol:Symbol(Symbol.iterator) | bigint:10 | [object Object] | [object Array] | [object Function]:function sloppy() { return this; }
+plain0=global undefined 2 5
+plain1=global undefined 2 5
+wrapperIdentity0=false true object true
+wrapperIdentity1=false true object true
+apply0=[object Number]:7 [object String]:r [object Boolean]:false global
+apply1=[object Number]:7 [object String]:r [object Boolean]:false global
+methodsOnPrimitives0=[object Number]:5 number:5 object [object Number]:1.5
+methodsOnPrimitives1=[object Number]:5 number:5 object [object Number]:1.5
+accessors0=object string object!
+accessors1=object string object!
+callbacks0=global | [object Number]:5 | number:5 | [object String]:t
+callbacks1=global | [object Number]:5 | number:5 | [object String]:t
+arrowInside0=[object Number]:5 global object
+arrowInside1=[object Number]:5 global object
+constructing0=3 true object undefined 4
+constructing1=3 true object undefined 4
+generators0=object false object true
+generators1=object false object true
+asyncAndArguments0=object2 object object object0 object
+asyncAndArguments1=object2 object object object0 object
+recursion0=3628800 20
+recursion1=3628800 20
+classesAndMethods0=true false string:global true true string:[object Number]:1
+classesAndMethods1=true false string:global true true string:[object Number]:1
+globalThisIsRealm0=global global [object Number]:0
+globalThisIsRealm1=global global [object Number]:0"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
         panic!("the checks did not run");
     };
     let found = std::string::String::from_utf8(found).expect("text");
