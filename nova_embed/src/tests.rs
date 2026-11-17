@@ -750,6 +750,206 @@ fn garbage_does_not_refuse_an_allocation_under_the_heap_limit() {
     );
 }
 
+fn fatal(memory_limit: usize) -> Engine {
+    let (mut engine, _, _) = limited(memory_limit, 0);
+    engine.set_out_of_memory_fatal(true).unwrap();
+    engine
+}
+
+/// With out of memory fatal, an allocation the limit has no room for ends
+/// the script wherever a script could otherwise catch it and go on.
+#[test]
+fn a_refused_allocation_ends_the_script_when_out_of_memory_is_fatal() {
+    for script in [
+        "try { new ArrayBuffer(16 << 20); 'no' } catch (e) { e.name }",
+        "try { new ArrayBuffer(16 << 20); } finally { globalThis.ran = 1; }",
+        "var a = []; for (;;) { try { a.push(new Array(100000).fill(1.5)); } catch (e) {} }",
+        "var a = []; for (;;) { try { a.push(new ArrayBuffer(3 << 20)); } catch (e) {} }",
+        "throw { get name() { new ArrayBuffer(16 << 20); return 'Quiet'; }, message: 'm' };",
+        "throw { get name() { try { new ArrayBuffer(16 << 20); } catch (e) {} return 'Quiet'; }, message: 'm' };",
+        "(async function () { try { new ArrayBuffer(16 << 20); } catch (e) {} globalThis.ran = 1; })();",
+        "try { 'x'.repeat(12 << 20); } catch (e) {} globalThis.ran = 1;",
+        "try { btoa('a'.repeat(7 << 20)); } catch (e) {} globalThis.ran = 1;",
+    ] {
+        let mut engine = fatal(8 << 20);
+        assert_eq!(
+            engine.evaluate(script, false),
+            Err(Error::OutOfMemory),
+            "{script}"
+        );
+        assert!(engine.memory_used() < 16 << 20, "{script}");
+    }
+    // A promise job cannot swallow it either, and the queue goes on after.
+    let mut engine = fatal(8 << 20);
+    engine
+        .evaluate(
+            "Promise.resolve().then(function () { try { new ArrayBuffer(16 << 20); } catch (e) {} globalThis.ran = 1; }); Promise.resolve().then(function () { globalThis.next = 1; });",
+            false,
+        )
+        .unwrap();
+    assert_eq!(engine.run_pending_job(), Err(Error::OutOfMemory));
+    assert_eq!(engine.run_pending_job(), Ok(true));
+    assert_eq!(
+        engine.evaluate("typeof ran + ',' + next", false),
+        Ok(Completion::String("undefined,1".into()))
+    );
+    // The choice can be undone.
+    engine.set_out_of_memory_fatal(false).unwrap();
+    assert_eq!(
+        engine.evaluate(
+            "try { new ArrayBuffer(16 << 20); 'no' } catch (e) { e.name }",
+            false
+        ),
+        Ok(Completion::String("RangeError".into()))
+    );
+}
+
+/// A script that ends when it is out of memory does not end for garbage:
+/// what it dropped makes room for what it allocates next.
+#[test]
+fn garbage_does_not_end_a_script_when_out_of_memory_is_fatal() {
+    let mut engine = fatal(8 << 20);
+    assert_eq!(
+        engine.evaluate(
+            "var n = 0; for (var i = 0; i < 40; i++) { var b = new ArrayBuffer(5 << 20); n += b.byteLength; b = null; } n",
+            false
+        ),
+        Ok(Completion::Number(40.0 * 5242880.0))
+    );
+    assert_eq!(
+        engine.evaluate(
+            "var n = 0; for (var i = 0; i < 40; i++) { var s = 'x'.repeat(6 << 20); n += s.length; s = null; var a = new Array(600000).fill(1.5); n += a.length; a = null; } n",
+            false
+        ),
+        Ok(Completion::Number(40.0 * (6291456.0 + 600000.0)))
+    );
+    assert_eq!(
+        engine.evaluate(
+            "var keep = new ArrayBuffer(5 << 20); keep.byteLength",
+            false
+        ),
+        Ok(Completion::Number(5242880.0))
+    );
+    // Held, not dropped: there is no room for another.
+    assert_eq!(
+        engine.evaluate(
+            "try { var more = new ArrayBuffer(5 << 20); } catch (e) {} 'went on'",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+}
+
+/// A string outside ASCII takes more bytes than code units: the limit counts
+/// the bytes before the string is built, not after.
+#[test]
+fn strings_outside_ascii_are_refused_by_their_bytes() {
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    for builder in [
+        "'\\u0436'.repeat(5 << 20)",
+        "'\\u4e2d'.repeat(3 << 20)",
+        "''.padEnd(5 << 20, '\\u0436')",
+        "'x'.padStart(3 << 20, '\\u4e2d\\u6587')",
+    ] {
+        assert_eq!(
+            engine.evaluate(
+                &format!("try {{ {builder}.length }} catch (e) {{ e.name }}"),
+                false
+            ),
+            Ok(Completion::String("RangeError".into())),
+            "{builder}"
+        );
+        assert!(engine.memory_used() < 8 << 20, "{builder}");
+    }
+    assert_eq!(
+        engine.evaluate(
+            "'\\u0436'.repeat(1 << 20).length + ''.padEnd(1 << 20, '\\u4e2d').length",
+            false
+        ),
+        Ok(Completion::Number(2097152.0))
+    );
+}
+
+/// A string a script handed out goes back in as it was: call arguments and
+/// what a host function returns are WTF-8, as what comes out is.
+#[test]
+fn lone_surrogates_go_back_into_the_engine() {
+    let (mut engine, recorder) = engine();
+    engine
+        .register_function("__h", 1, 0, ArgumentMode::Values)
+        .unwrap();
+    engine
+        .evaluate(
+            "function units(s) { var r = []; for (var i = 0; i < s.length; i++) r.push(s.charCodeAt(i).toString(16)); return r.join(' '); } function same(s) { return s; }",
+            false,
+        )
+        .unwrap();
+    let lone: &[u8] = b"a\xED\xA0\x80b\xED\xB0\x80";
+    assert_eq!(
+        engine.call_with_bytes("units", &[lone]),
+        Ok(Completion::String("61 d800 62 dc00".into()))
+    );
+    assert_eq!(
+        engine.call_with_bytes("same", &[lone]),
+        Ok(Completion::String(lone.to_vec()))
+    );
+    // A lead and a trail encoded apart are the one code point they spell.
+    assert_eq!(
+        engine.call_with_bytes("same", &[b"\xED\xA0\xBD\xED\xB2\xA9"]),
+        Ok(Completion::String("\u{1F4A9}".into()))
+    );
+    // Bytes that are not WTF-8 are replaced, as before.
+    assert_eq!(
+        engine.call_with_bytes("units", &[b"a\xFF\xC0\x80"]),
+        Ok(Completion::String("61 fffd fffd fffd".into()))
+    );
+    assert_eq!(
+        engine.call("units", &["\u{e9}\u{1F4A9}"]),
+        Ok(Completion::String("e9 d83d dca9".into()))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(lone.to_vec()));
+    assert_eq!(
+        engine.evaluate("units(__h())", false),
+        Ok(Completion::String("61 d800 62 dc00".into()))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(b"\xFFok".to_vec()));
+    assert_eq!(
+        engine.evaluate("units(__h())", false),
+        Ok(Completion::String("fffd 6f 6b".into()))
+    );
+}
+
+/// A host function can throw: a RangeError the script catches like any other.
+#[test]
+fn a_host_function_can_throw_a_range_error() {
+    let (mut engine, recorder) = engine();
+    engine
+        .register_function("__h", 1, 0, ArgumentMode::Values)
+        .unwrap();
+    *recorder.reply.borrow_mut() = Some(HostReturn::RangeError("too much \u{e9}".into()));
+    assert_eq!(
+        engine.evaluate(
+            "try { __h(); 'returned' } catch (e) { (e instanceof RangeError) + ':' + e.name + ':' + e.message }",
+            false
+        ),
+        Ok(Completion::String("true:RangeError:too much \u{e9}".into()))
+    );
+    assert_eq!(
+        engine.evaluate("__h()", false),
+        Err(Error::Exception("RangeError: too much \u{e9}".into()))
+    );
+    // What a script does to RangeError does not reach the host's throw.
+    assert_eq!(
+        engine.evaluate(
+            "var seen = 0; globalThis.RangeError = function () { seen++; }; Object.defineProperty(Error.prototype, 'message', { set: function () { seen++; } }); try { __h(); } catch (e) { e.message + ':' + seen }",
+            false
+        ),
+        Ok(Completion::String("too much \u{e9}:0".into()))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::Number(1.0));
+    assert_eq!(engine.evaluate("__h()", false), Ok(Completion::Number(1.0)));
+}
+
 /// `atob` and `btoa` behave as quickjs-ng's (the expected text is what its
 /// `qjs` printed for the same script; only the engine's own messages for
 /// ToString(Symbol) and for `new` on a non-constructor differ), so the trusted validator decodes `data:`

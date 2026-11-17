@@ -231,11 +231,7 @@ fn btoa<'gc>(
     };
     agent.check_string_length(units.len().div_ceil(3).saturating_mul(4), gc)?;
     let Some(text) = base64_encode(&units) else {
-        return Err(agent.throw_exception_with_static_message(
-            ExceptionType::RangeError,
-            "Out of memory",
-            gc,
-        ));
+        return Err(agent.throw_out_of_memory("Out of memory", gc));
     };
     poll_for(agent, text.len(), gc)?;
     Ok(JsString::from_string(agent, text, gc).into())

@@ -35,6 +35,10 @@ pub(crate) fn set_heap_limit(agent: &mut GcAgent, bytes: usize) {
     agent.set_heap_limit(if bytes == 0 { None } else { Some(bytes) });
 }
 
+pub(crate) fn set_out_of_memory_fatal(agent: &mut GcAgent, fatal: bool) {
+    agent.set_heap_limit_refusal_terminates(fatal);
+}
+
 pub(crate) fn heap_size(agent: &GcAgent) -> usize {
     agent.heap_size()
 }

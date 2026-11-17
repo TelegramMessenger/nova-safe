@@ -8,7 +8,10 @@
  * - An engine handle is used by one thread at a time; calls may come from
  *   different threads as long as they do not overlap.
  * - Input buffers are (pointer, length): read during the call and copied, never
- *   kept. A NULL pointer is allowed with length 0. Strings are UTF-8.
+ *   kept. A NULL pointer is allowed with length 0. Source and names are UTF-8;
+ *   the strings a script receives (nova_engine_call arguments,
+ *   nova_return_string) are WTF-8 as a host function's arguments are, so one
+ *   it handed out goes back in unchanged; bytes that are not become U+FFFD.
  * - A nova_result passed as `out` is written whole (it may be uninitialized);
  *   its `bytes` belong to the library until nova_result_free. NULL `out` is
  *   allowed. On NOVA_OK it holds the value (NOVA_VALUE_UNDEFINED, _STRING or
@@ -200,6 +203,13 @@ size_t nova_engine_memory_used(const nova_engine *engine);
 
 /* Sets the memory limit in bytes (0: none). */
 int32_t nova_engine_set_memory_limit(const nova_engine *engine, size_t bytes);
+
+/* What one allocation the memory limit has no room for does. false, the
+ * default: it throws a RangeError; caught, the script goes on just under the
+ * limit, uncaught, the call ends with NOVA_OUT_OF_MEMORY. true: it ends the
+ * script with NOVA_OUT_OF_MEMORY wherever it happens, as going past the limit
+ * does, and no try/catch, promise reaction or getter keeps the script going. */
+int32_t nova_engine_set_out_of_memory_fatal(const nova_engine *engine, bool fatal);
 
 int32_t nova_engine_collect_garbage(const nova_engine *engine);
 

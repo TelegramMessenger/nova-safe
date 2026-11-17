@@ -612,7 +612,8 @@ pub unsafe extern "C" fn nova_engine_capture(
     status
 }
 
-/// Calls the captured (or global) function `name` with string arguments.
+/// Calls the captured (or global) function `name` with string arguments
+/// (WTF-8; bytes that are not become U+FFFD).
 ///
 /// # Safety
 /// `handle` as for every engine call; `name` readable for `name_len` bytes;
@@ -734,6 +735,26 @@ pub unsafe extern "C" fn nova_engine_set_memory_limit(
         with_engine(handle, core::ptr::null_mut(), |engine| {
             engine
                 .set_memory_limit(bytes)
+                .map(|()| Completion::Undefined)
+        })
+    }
+}
+
+/// Chooses whether one allocation the memory limit has no room for ends the
+/// script (NOVA_OUT_OF_MEMORY) instead of throwing a RangeError it can catch.
+///
+/// # Safety
+/// `handle` as for every engine call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nova_engine_set_out_of_memory_fatal(
+    handle: *const NovaEngine,
+    fatal: bool,
+) -> i32 {
+    // SAFETY: forwarded contract; no out-struct.
+    unsafe {
+        with_engine(handle, core::ptr::null_mut(), |engine| {
+            engine
+                .set_out_of_memory_fatal(fatal)
                 .map(|()| Completion::Undefined)
         })
     }
