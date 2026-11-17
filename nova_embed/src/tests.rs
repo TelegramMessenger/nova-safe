@@ -2601,3 +2601,137 @@ forLoops1=2450,1225"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `push` appends directly only where nothing else would happen: setters
+/// and read-only properties under integer keys on %Array.prototype% and
+/// %Object.prototype%, Proxies and other objects on the prototype chain,
+/// Arrays that cannot grow, subclasses and array-likes all take the
+/// general way. And a method or another named property of an Array found
+/// through the property cache is the one \[\[Get]] finds.
+#[test]
+fn array_push_and_methods_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(array_push_and_methods)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn array_push_and_methods() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message.length; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+log("plain", function () { var a = []; var r = [a.push(1), a.push(2, 3), a.push(), a.push(undefined, null)]; return r.join() + "|" + a.join() + "|" + a.length; });
+log("many", function () { var a = []; for (var i = 0; i < 1000; i++) a.push(i); var s = 0; while (a.length) s += a.pop(); return s + "," + a.length; });
+log("kinds", function () { var a = [0.5]; a.push("s", {}, [1], null, 10n, Symbol.iterator, -0, NaN); return a.length + "," + typeof a[2] + "," + (1 / a[7]) + "," + a[8]; });
+log("holesAndLength", function () { var a = [1, , 3]; a.push(4); var b = []; b.length = 5; b.push("x"); return a.length + ":" + (1 in a) + ":" + b.length + ":" + b[5] + ":" + (0 in b); });
+log("frozen", function () { var a = Object.freeze([1]); try { a.push(2); } catch (e) { var r = e.constructor.name; } try { Object.freeze([]).push(); } catch (e) { r += "/" + e.constructor.name; } return r + a.length; });
+log("sealedAndNonExtensible", function () { var a = Object.seal([1]), b = Object.preventExtensions([1]), r = []; try { a.push(2); } catch (e) { r.push(e.constructor.name); } try { b.push(2); } catch (e) { r.push(e.constructor.name); } return r.join() + a.length + b.length; });
+log("lengthNotWritable", function () { var a = [1, 2]; Object.defineProperty(a, "length", { writable: false }); try { a.push(3); } catch (e) { return e.constructor.name + a.length + (2 in a); } });
+log("elementAccessors", function () { var a = [1]; var seen = []; Object.defineProperty(a, 1, { set: function (v) { seen.push(v); }, get: function () { return "g"; }, configurable: true }); a.push("x"); return a.length + ":" + a[2] + ":" + seen.join(); });
+log("subclass", function () { class A extends Array { push(x) { return super.push(x, x); } } var a = new A(); a.push(1); class B extends Array {} var b = new B(); b.push(5, 6); return a.join() + "|" + b.join() + "|" + (b instanceof B) + b.length; });
+log("arrayLike", function () { var o = { length: 2 }; var r = Array.prototype.push.call(o, "a", "b"); var s = { length: "1" }; Array.prototype.push.call(s, "z"); return r + ":" + o[2] + o[3] + o.length + ":" + s[1] + s.length; });
+log("prototypeSetter", function () {
+  var seen = [];
+  Object.defineProperty(Array.prototype, "2", { set: function (v) { seen.push("set" + v); }, get: function () { return "proto"; }, configurable: true });
+  var a = [1, 2];
+  var r = a.push("x");
+  var own = Object.prototype.hasOwnProperty.call(a, 2);
+  delete Array.prototype[2];
+  Array.prototype.length = 0;
+  var b = [1, 2]; b.push("y");
+  return r + ":" + own + ":" + a.length + ":" + seen.join() + ":" + b.join() + ":" + Array.prototype.length;
+});
+log("objectPrototypeReadOnly", function () {
+  Object.defineProperty(Object.prototype, "1", { value: "ro", writable: false, configurable: true });
+  var a = [0], r;
+  try { r = a.push("x"); } catch (e) { r = e.constructor.name; }
+  var kept = a.length + ":" + a[1];
+  delete Object.prototype[1];
+  var b = [0]; b.push("y");
+  return r + ":" + kept + ":" + b.join();
+});
+log("objectPrototypeSetter", function () {
+  var seen = "";
+  Object.defineProperty(Object.prototype, "0", { set: function (v) { seen += v + ";"; }, configurable: true });
+  var a = [];
+  var r = a.push("first", "second");
+  delete Object.prototype[0];
+  return r + ":" + a.length + ":" + (0 in a) + ":" + a[1] + ":" + seen;
+});
+log("otherPrototype", function () { var a = [1]; Object.setPrototypeOf(a, { push: Array.prototype.push, 1: "inherited" }); var seen = []; var b = [1]; Object.setPrototypeOf(b, new Proxy(Array.prototype, { set: function (t, k, v, r) { seen.push(String(k)); return Reflect.set(t, k, v, r); } })); a.push("x"); b.push("y"); return a.length + a[1] + ":" + b.length + b[1] + ":" + seen.join(); });
+log("nullPrototype", function () { var a = [1]; Object.setPrototypeOf(a, null); var r = Array.prototype.push.call(a, 2); return r + ":" + a.length + ":" + Array.prototype.join.call(a); });
+log("arrayPrototypeChain", function () {
+  var original = Object.getPrototypeOf(Array.prototype);
+  var seen = "";
+  Object.setPrototypeOf(Array.prototype, new Proxy(original, { set: function (t, k, v, r) { seen += String(k) + ";"; return Reflect.set(t, k, v, r); } }));
+  var a = [1]; var r = a.push(2);
+  Object.setPrototypeOf(Array.prototype, original);
+  var b = [1]; b.push(3);
+  return r + ":" + a.join() + ":" + seen + ":" + b.join();
+});
+log("pushOverride", function () { var a = [1]; a.push = function (x) { return "own" + x; }; var r = a.push(2); var saved = Array.prototype.push; Array.prototype.push = function () { return "patched"; }; var b = []; var r2 = b.push(1); Array.prototype.push = saved; var r3 = b.push(1); return r + r2 + r3 + a.length + b.length; });
+log("methodsThroughCache", function () { var a = [3, 1, 2]; function use(x) { return x.slice().sort().join() + x.indexOf(1) + x.includes(2) + x.concat([9]).length + x.map(function (v) { return v * 2; }).join("") + x.at(-1); } var r = use(a) + use([5]); a.extra = "e"; a.join = function () { return "own"; }; return r + use(a) + a.extra + a.missing; });
+log("namedOnArray", function () { var a = [1]; function name(x) { return x.tag; } function has(x) { return x.constructor === Array; } var r = [name(a), has(a)]; a.tag = "t"; r.push(name(a), name([2]), has(a)); Array.prototype.tag = "proto"; r.push(name([3]), name(a)); delete Array.prototype.tag; r.push(name([4])); return r.join(); });
+log("duringIteration", function () { var a = [1, 2, 3], n = 0; for (var i = 0; i < a.length && n < 10; i++) { if (a[i] < 3) a.push(a[i] + 1); n++; } return a.join(); });
+log("spreadAndApply", function () { var a = [1]; a.push(...[2, 3]); a.push.apply(a, [4, 5]); Array.prototype.push.apply(a, [6]); var p = a.push; var r; try { r = p(7); } catch (e) { r = e.constructor.name; } return a.join() + ":" + r; });
+out.join("\n")
+"#;
+    let expected = r#"plain0=1,3,3,5|1,2,3,,|5
+plain1=1,3,3,5|1,2,3,,|5
+many0=499500,0
+many1=499500,0
+kinds0=9,object,-Infinity,NaN
+kinds1=9,object,-Infinity,NaN
+holesAndLength0=4:false:6:x:false
+holesAndLength1=4:false:6:x:false
+frozen0=TypeError/TypeError1
+frozen1=TypeError/TypeError1
+sealedAndNonExtensible0=TypeError,TypeError11
+sealedAndNonExtensible1=TypeError,TypeError11
+lengthNotWritable0=TypeError2false
+lengthNotWritable1=TypeError2false
+elementAccessors0=3:x:
+elementAccessors1=3:x:
+subclass0=1,1|5,6|true2
+subclass1=1,1|5,6|true2
+arrayLike0=4:ab4:z2
+arrayLike1=4:ab4:z2
+prototypeSetter0=3:false:3:setx:1,2,y:0
+prototypeSetter1=3:false:3:setx:1,2,y:0
+objectPrototypeReadOnly0=TypeError:1:ro:0,y
+objectPrototypeReadOnly1=TypeError:1:ro:0,y
+objectPrototypeSetter0=2:2:false:second:first;
+objectPrototypeSetter1=2:2:false:second:first;
+otherPrototype0=2x:2y:1
+otherPrototype1=2x:2y:1
+nullPrototype0=2:2:1,2
+nullPrototype1=2:2:1,2
+arrayPrototypeChain0=2:1,2:1;:1,3
+arrayPrototypeChain1=2:1,2:1;:1,3
+pushOverride0=own2patched111
+pushOverride1=own2patched111
+methodsThroughCache0=1,2,31true462425-1false21051,2,31true46242eundefined
+methodsThroughCache1=1,2,31true462425-1false21051,2,31true46242eundefined
+namedOnArray0=,true,t,,true,proto,t,
+namedOnArray1=,true,t,,true,proto,t,
+duringIteration0=1,2,3,2,3,3
+duringIteration1=1,2,3,2,3,3
+spreadAndApply0=1,2,3,4,5,6:TypeError
+spreadAndApply1=1,2,3,4,5,6:TypeError"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

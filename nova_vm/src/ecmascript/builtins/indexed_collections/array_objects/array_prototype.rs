@@ -2164,6 +2164,26 @@ impl ArrayPrototype {
         mut items: ArgumentsList,
         gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
+        // An Array to which an element is simply appended
+        // (Array::appends_plainly): the steps below come to that for each
+        // item, and the length they set at the end is the one it has by
+        // then. Nothing here runs a script.
+        if let Value::Array(array) = this_value
+            && array.appends_plainly(agent)
+            && let Ok(count) = u32::try_from(items.len())
+            && let Some(length) = array.len(agent).checked_add(count)
+            && length < u32::MAX
+        {
+            if let Err(err) = array.reserve(agent, count) {
+                return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
+            }
+            for index in 0..items.len() {
+                if let Err(err) = array.push(agent, items.get(index).unbind()) {
+                    return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
+                }
+            }
+            return Ok(Value::from(length));
+        }
         // 1. Let O be ? ToObject(this value).
         let o = to_object(agent, this_value, gc.nogc())
             .unbind()?
