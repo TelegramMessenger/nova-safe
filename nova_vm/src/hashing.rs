@@ -187,6 +187,62 @@ impl RandomState {
     pub(crate) fn hash_one(&self, value: impl Hash) -> u64 {
         self.0.hash_one(value)
     }
+
+    /// The hash of a string's bytes in the heap's string table. The bytes go
+    /// to the hasher in blocks of [`TEXT_BLOCK`], whatever made the string,
+    /// so that the state at a block boundary ([`TextHashState`]) continues
+    /// into the hash of any longer string that starts with those bytes.
+    #[inline]
+    pub(crate) fn hash_text(&self, bytes: &[u8]) -> u64 {
+        if bytes.len() < TEXT_BLOCK {
+            return finish_text(self.0.build_hasher(), bytes);
+        }
+        self.hash_text_from(None, bytes).0
+    }
+
+    /// [`RandomState::hash_text`] of `bytes`, continued from `prefix` (the
+    /// state of a string whose hashed blocks `bytes` starts with) when there
+    /// is one, and the state to continue from for a string that starts with
+    /// `bytes`.
+    pub(crate) fn hash_text_from(
+        &self,
+        prefix: Option<&TextHashState>,
+        bytes: &[u8],
+    ) -> (u64, TextHashState) {
+        let (mut hasher, hashed) = match prefix {
+            Some(prefix) if prefix.hashed <= bytes.len() => (prefix.blocks.clone(), prefix.hashed),
+            _ => (self.0.build_hasher(), 0),
+        };
+        let mut blocks = bytes[hashed..].chunks_exact(TEXT_BLOCK);
+        for block in &mut blocks {
+            hasher.write(block);
+        }
+        let state = TextHashState {
+            blocks: hasher.clone(),
+            hashed: bytes.len() - blocks.remainder().len(),
+        };
+        (finish_text(hasher, blocks.remainder()), state)
+    }
+}
+
+/// Bytes a string hash takes at a time ([`RandomState::hash_text`]).
+pub(crate) const TEXT_BLOCK: usize = 64;
+
+/// A string hash after the whole blocks of its first `hashed` bytes: what a
+/// string that starts with those bytes continues from, so that appending to a
+/// long string hashes only what was appended.
+#[derive(Debug, Clone)]
+pub(crate) struct TextHashState {
+    blocks: DefaultHasher,
+    hashed: usize,
+}
+
+#[inline]
+fn finish_text(mut hasher: DefaultHasher, tail: &[u8]) -> u64 {
+    hasher.write(tail);
+    // As a string's Hash ends: no string's bytes are a prefix of another's.
+    hasher.write_u8(0xfe);
+    hasher.finish()
 }
 
 fn process_random_state() -> &'static std::hash::RandomState {

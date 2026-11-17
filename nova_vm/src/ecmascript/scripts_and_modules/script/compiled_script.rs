@@ -736,7 +736,7 @@ fn import_strings<'a>(
         let strings = &heap.strings;
         let hasher = &heap.string_hasher;
         heap.string_lookup_table.reserve(texts.len(), |string| {
-            hasher.hash_one(strings[string.get_index()].as_wtf8())
+            strings[string.get_index()].table_hash(hasher)
         });
     }
     texts
