@@ -787,25 +787,17 @@ impl Instr {
         let argument_bytes = ARGUMENT_BYTES[byte as usize] as usize;
         let args_ip = cur_ip + 1;
         *ip = args_ip + argument_bytes;
+        // The four bytes after the instruction, whichever of them are its
+        // arguments: an instruction reads only the arguments it has.
         let Some(&[a, b, c, d]) = instructions
             .get(args_ip..)
             .and_then(|bytes| bytes.first_chunk::<4>())
         else {
             return Some(Self::consume_short_arguments(kind, instructions, args_ip));
         };
-        let first = if argument_bytes >= 2 {
-            u16::from_ne_bytes([a, b])
-        } else {
-            0
-        };
-        let second = if argument_bytes == 4 {
-            u16::from_ne_bytes([c, d])
-        } else {
-            0
-        };
         Some(Instr {
             kind,
-            args: InstructionArgs([first, second]),
+            args: InstructionArgs([u16::from_ne_bytes([a, b]), u16::from_ne_bytes([c, d])]),
         })
     }
 
@@ -839,29 +831,25 @@ impl Instr {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn get_first_arg(&self) -> IndexType {
-        match self.kind.argument_count() {
-            1 => self.args.single_arg(),
-            2 => {
-                debug_assert!(!self.kind.has_double_arg());
-                self.args.two_args()[0]
-            }
-            _ => panic_no_argument(),
-        }
+        debug_assert!(
+            self.kind.argument_count() == 1
+                || (self.kind.argument_count() == 2 && !self.kind.has_double_arg())
+        );
+        self.args.single_arg()
     }
 
+    #[inline(always)]
     pub(crate) fn get_first_index(&self) -> usize {
         self.get_first_arg() as usize
     }
 
+    #[inline(always)]
     pub(crate) fn get_second_index(&self) -> usize {
-        match self.kind.argument_count() {
-            2 => {
-                debug_assert!(!self.kind.has_double_arg());
-                self.args.two_args()[1] as usize
-            }
-            _ => panic_not_two_arguments(),
-        }
+        debug_assert_eq!(self.kind.argument_count(), 2);
+        debug_assert!(!self.kind.has_double_arg());
+        self.args.two_args()[1] as usize
     }
 
     pub(crate) fn get_first_bool(&self) -> bool {
