@@ -117,30 +117,50 @@ pub(crate) struct Vm {
 #[derive(Debug)]
 pub(crate) struct SuspendedVm {
     ip: usize,
+    /// The stacks are kept as the vectors they were, with at most twice the
+    /// room they use (and room for a few values at least): cut to what they
+    /// hold, each `yield` of a generator and each `await` allocated them
+    /// anew and grew them again on the way back.
+    ///
     /// Note: Stack is empty only if the code contains no local variables
-    /// optimised into stack slots or temporarily stored Values. A heap clone is
-    /// probably often performed by the `stack.into_boxed_slice()` call.
-    stack: Box<[Value<'static>]>,
+    /// optimised into stack slots or temporarily stored Values.
+    stack: Vec<Value<'static>>,
     /// Note: Reference stack is non-empty only if the code awaits inside a call
-    /// expression. This means that usually no heap data clone is required.
-    reference_stack: Box<[Reference<'static>]>,
+    /// expression.
+    reference_stack: Vec<Reference<'static>>,
     /// Note: Iterator stack is non-empty only if the code awaits inside a
-    /// for-in or for-of loop. This means that often no heap data clone is
-    /// required.
-    iterator_stack: Box<[VmIteratorRecord<'static>]>,
+    /// for-in or for-of loop.
+    iterator_stack: Vec<VmIteratorRecord<'static>>,
     /// Note: Exception jump stack is non-empty only if the code awaits inside a
-    /// try block or an await for-of loop. This means that often no heap data
-    /// clone is required.
-    exception_jump_target_stack: Box<[ExceptionHandler<'static>]>,
+    /// try block or an await for-of loop.
+    exception_jump_target_stack: Vec<ExceptionHandler<'static>>,
+}
+
+/// Room a suspended stack keeps beyond what it holds: as much again, and
+/// never less than this many entries in all.
+const SUSPENDED_STACK_ROOM: usize = 8;
+
+/// Cuts a stack that is being suspended down to twice what it holds.
+fn fit_suspended_stack<T>(mut stack: Vec<T>) -> Vec<T> {
+    let room = (stack.len() * 2).max(SUSPENDED_STACK_ROOM);
+    if stack.is_empty() {
+        // Nothing to keep: no allocation either.
+        return Vec::new();
+    }
+    if stack.capacity() > room + SUSPENDED_STACK_ROOM {
+        stack.shrink_to(room);
+    }
+    stack
 }
 
 impl SuspendedVm {
     /// Bytes held by the suspended stacks, for the heap size estimate.
     pub(crate) fn heap_bytes(&self) -> usize {
-        core::mem::size_of_val(&*self.stack)
-            + core::mem::size_of_val(&*self.reference_stack)
-            + core::mem::size_of_val(&*self.iterator_stack)
-            + core::mem::size_of_val(&*self.exception_jump_target_stack)
+        self.stack.capacity() * core::mem::size_of::<Value<'static>>()
+            + self.reference_stack.capacity() * core::mem::size_of::<Reference<'static>>()
+            + self.iterator_stack.capacity() * core::mem::size_of::<VmIteratorRecord<'static>>()
+            + self.exception_jump_target_stack.capacity()
+                * core::mem::size_of::<ExceptionHandler<'static>>()
     }
 
     pub(crate) fn resume<'gc>(
@@ -205,7 +225,24 @@ impl SuspendedVm {
 const VM_STACK_POOL_LEN: usize = 32;
 const VM_STACK_POOL_MAX_CAPACITY: usize = 1024;
 
-pub(crate) type PooledVmStacks = (Vec<Value<'static>>, Vec<VmIteratorRecord<'static>>);
+/// The value and iterator stacks of a `Vm` that has run its code, emptied
+/// and kept for the next call.
+pub(crate) struct PooledVmStacks {
+    stack: Vec<Value<'static>>,
+    iterator_stack: Vec<VmIteratorRecord<'static>>,
+}
+
+/// Emptied Reference and exception handler stacks of `Vm`s that have run
+/// their code. A `Vm` starts without either and takes one here when it
+/// first pushes to it: most calls push to neither, and one that does (a
+/// method that assigns to `this.x`, a function with a loop) would allocate
+/// the stack and free it again. Kept apart from [`PooledVmStacks`], which
+/// every call takes and gives back.
+#[derive(Default)]
+pub(crate) struct SpareVmStacks {
+    references: Vec<Vec<Reference<'static>>>,
+    handlers: Vec<Vec<ExceptionHandler<'static>>>,
+}
 
 impl Vm {
     const EMPTY: Self = Self {
@@ -219,10 +256,13 @@ impl Vm {
     };
 
     fn new(agent: &mut Agent) -> Self {
-        let (stack, iterator_stack) = agent
-            .vm_stack_pool
-            .pop()
-            .unwrap_or_else(|| (Vec::with_capacity(32), Vec::new()));
+        let PooledVmStacks {
+            stack,
+            iterator_stack,
+        } = agent.vm_stack_pool.pop().unwrap_or_else(|| PooledVmStacks {
+            stack: Vec::with_capacity(32),
+            iterator_stack: Vec::new(),
+        });
         Self {
             ip: 0,
             stack,
@@ -235,6 +275,22 @@ impl Vm {
     }
 
     fn recycle(mut self, agent: &mut Agent) {
+        if self.reference_stack.capacity() != 0
+            && self.reference_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
+            && agent.spare_vm_stacks.references.len() < VM_STACK_POOL_LEN
+        {
+            let mut spare = core::mem::take(&mut self.reference_stack);
+            spare.clear();
+            agent.spare_vm_stacks.references.push(spare);
+        }
+        if self.exception_handler_stack.capacity() != 0
+            && self.exception_handler_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
+            && agent.spare_vm_stacks.handlers.len() < VM_STACK_POOL_LEN
+        {
+            let mut spare = core::mem::take(&mut self.exception_handler_stack);
+            spare.clear();
+            agent.spare_vm_stacks.handlers.push(spare);
+        }
         if self.stack.capacity() == 0
             || self.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
             || self.iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
@@ -242,31 +298,34 @@ impl Vm {
         {
             return;
         }
-        let mut stack = core::mem::take(&mut self.stack);
-        let mut iterator_stack = core::mem::take(&mut self.iterator_stack);
-        stack.clear();
-        iterator_stack.clear();
-        agent.vm_stack_pool.push((stack, iterator_stack));
+        let mut stacks = PooledVmStacks {
+            stack: core::mem::take(&mut self.stack),
+            iterator_stack: core::mem::take(&mut self.iterator_stack),
+        };
+        stacks.stack.clear();
+        stacks.iterator_stack.clear();
+        agent.vm_stack_pool.push(stacks);
     }
 
     fn suspend(mut self) -> SuspendedVm {
         SuspendedVm {
             ip: self.ip,
-            stack: core::mem::take(&mut self.stack).into_boxed_slice(),
-            reference_stack: core::mem::take(&mut self.reference_stack).into_boxed_slice(),
-            iterator_stack: core::mem::take(&mut self.iterator_stack).into_boxed_slice(),
-            exception_jump_target_stack: core::mem::take(&mut self.exception_handler_stack)
-                .into_boxed_slice(),
+            stack: fit_suspended_stack(core::mem::take(&mut self.stack)),
+            reference_stack: fit_suspended_stack(core::mem::take(&mut self.reference_stack)),
+            iterator_stack: fit_suspended_stack(core::mem::take(&mut self.iterator_stack)),
+            exception_jump_target_stack: fit_suspended_stack(core::mem::take(
+                &mut self.exception_handler_stack,
+            )),
         }
     }
 
     fn from_suspended(suspended: SuspendedVm) -> Self {
         Self {
             ip: suspended.ip,
-            stack: suspended.stack.into_vec(),
-            reference_stack: suspended.reference_stack.into_vec(),
-            iterator_stack: suspended.iterator_stack.into_vec(),
-            exception_handler_stack: suspended.exception_jump_target_stack.into_vec(),
+            stack: suspended.stack,
+            reference_stack: suspended.reference_stack,
+            iterator_stack: suspended.iterator_stack,
+            exception_handler_stack: suspended.exception_jump_target_stack,
             result: None,
             reference: None,
         }
@@ -424,6 +483,11 @@ impl Vm {
         // next. It is in the Vm, where everything else looks for it, around
         // every instruction that is not plain and whenever the loop is left.
         let mut ip = self.ip;
+        // The executable is looked up through its rooted handle here and
+        // after every collection, which is all that moves it, not by every
+        // instruction that fetches a constant, a name or a cache.
+        let mut code = executable.get(agent);
+        let mut collections = agent.heap.collections;
         while let Some(instr) = Instr::consume_instruction(&instructions, &mut ip) {
             if print_internals {
                 Self::print_executing(instr.kind);
@@ -435,6 +499,7 @@ impl Vm {
                 self,
                 &mut ip,
                 &executable,
+                code,
                 instr,
                 gc.nogc(),
             ) {
@@ -446,6 +511,8 @@ impl Vm {
                     }
                     if agent.check_gc() {
                         self.trigger_gc(agent, gc.reborrow());
+                        code = executable.get(agent);
+                        collections = agent.heap.collections;
                     }
                     continue;
                 }
@@ -480,6 +547,11 @@ impl Vm {
                 .truncate(collections_depth);
             if agent.check_gc() {
                 self.trigger_gc(agent, gc.reborrow());
+            }
+            if agent.heap.collections != collections {
+                // The instruction ran a collection, or one was due.
+                code = executable.get(agent);
+                collections = agent.heap.collections;
             }
         }
 
@@ -635,6 +707,7 @@ impl Vm {
         vm: &mut Vm,
         ip: &mut usize,
         executable: &Scoped<Executable>,
+        code: Executable,
         instr: Instr,
         gc: NoGcScope,
     ) -> Plain {
@@ -653,7 +726,7 @@ impl Vm {
             Instruction::LoadFromIndexStoreConstant => {
                 let value = vm.stack[instr.get_first_index()];
                 vm.stack.push(value);
-                let constant = executable.fetch_constant(agent, instr.get_second_index(), gc);
+                let constant = code.fetch_constant(agent, instr.get_second_index(), gc);
                 vm.result = Some(constant.unbind());
             }
             Instruction::LoadFromIndexGetFromIndex => {
@@ -668,16 +741,18 @@ impl Vm {
                 vm.stack.push(value);
             }
             Instruction::StoreConstant => {
-                execute_store_constant(agent, vm, executable.clone(), instr, gc)
+                let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
+                vm.result = Some(constant.unbind());
             }
             Instruction::LoadConstant => {
-                execute_load_constant(agent, vm, executable.clone(), instr, gc)
+                let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
+                vm.stack.push(constant.unbind());
             }
             Instruction::PopStack => vm.execute_pop_stack(),
-            Instruction::PushReference => vm.execute_push_reference(),
+            Instruction::PushReference => vm.execute_push_reference(agent),
             Instruction::PopReference => vm.execute_pop_reference(),
             Instruction::PushReferenceAndLoad => {
-                vm.execute_push_reference();
+                vm.execute_push_reference(agent);
                 vm.execute_load();
             }
             Instruction::Jump => {
@@ -744,6 +819,13 @@ impl Vm {
                 };
                 vm.stack[slot] = Value::Integer(value);
             }
+            // `this` of a call that keeps it in its execution context.
+            Instruction::ResolveThisBinding => {
+                let Some(this) = agent.running_call_this_value() else {
+                    return Plain::No;
+                };
+                vm.result = Some(this);
+            }
             Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc),
             Instruction::CreateImmutableBinding => {
                 execute_create_immutable_binding(agent, executable.clone(), instr, gc)
@@ -755,13 +837,7 @@ impl Vm {
                 execute_initialize_referenced_binding(agent, vm, gc)
             }
             Instruction::EvaluatePropertyAccessWithIdentifierKey => {
-                execute_evaluate_property_access_with_identifier_key(
-                    agent,
-                    vm,
-                    executable.clone(),
-                    instr,
-                    gc,
-                )
+                Self::property_reference_with_identifier_key(agent, vm, code, instr, gc)
             }
             Instruction::EvaluatePropertyAccessWithExpressionKey => {
                 execute_evaluate_property_access_with_expression_key(agent, vm, gc)
@@ -769,8 +845,8 @@ impl Vm {
             // A variable of an enclosing function, where it was found the
             // last time.
             Instruction::GetBindingAtSite | Instruction::GetGlobalAtSite => {
-                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
-                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
+                let site = code.fetch_binding_site(agent, instr.get_second_index());
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                     return Plain::No;
                 };
@@ -780,8 +856,8 @@ impl Vm {
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
-                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
-                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
+                let site = code.fetch_binding_site(agent, instr.get_second_index());
                 if !set_binding_value_at_site(agent, site, name, value, gc) {
                     return Plain::No;
                 }
@@ -790,8 +866,8 @@ impl Vm {
             // A name of the global scope that is about to be assigned to:
             // its Reference, made where the name was found the last time.
             Instruction::ResolveGlobalAtSite => {
-                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
-                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
+                let site = code.fetch_binding_site(agent, instr.get_second_index());
                 let strict = agent.is_evaluating_strict_code();
                 let Some(reference) = try_resolve_binding_at_site(agent, site, name, strict, gc)
                 else {
@@ -805,13 +881,13 @@ impl Vm {
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
-                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                let site = code.fetch_binding_site(agent, instr.get_second_index());
                 if !vm.reference.as_ref().is_some_and(|reference| {
                     reference_is_at_global_site(agent, site, reference, gc)
                 }) {
                     return Plain::No;
                 }
-                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
+                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
                 if !set_binding_value_at_site(agent, site, name, value, gc) {
                     return Plain::No;
                 }
@@ -834,18 +910,11 @@ impl Vm {
             // `o.p` where the property cache knows the shape of `o`, and the
             // length of an Array.
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
-                let Some(value) = Self::cached_property_value(agent, vm, executable, instr, gc)
-                else {
+                let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
                     return Plain::No;
                 };
                 if instr.kind == Instruction::GetPropertyWithCacheKeepReference {
-                    execute_evaluate_property_access_with_identifier_key(
-                        agent,
-                        vm,
-                        executable.clone(),
-                        instr,
-                        gc,
-                    );
+                    Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
                 } else {
                     vm.reference = None;
                 }
@@ -860,7 +929,7 @@ impl Vm {
                 let Some(Value::Object(object)) = reference.named_property_base() else {
                     return Plain::No;
                 };
-                let cache = executable.fetch_cache(agent, instr.get_first_index(), gc);
+                let cache = code.fetch_cache(agent, instr.get_first_index(), gc);
                 let shape = object.object_shape(agent);
                 let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
                     return Plain::No;
@@ -1017,6 +1086,23 @@ impl Vm {
         Plain::Done
     }
 
+    /// EvaluatePropertyAccessWithIdentifierKey, with the key fetched from the
+    /// executable the loop has at hand.
+    #[inline(always)]
+    fn property_reference_with_identifier_key(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        code: Executable,
+        instr: Instr,
+        gc: NoGcScope,
+    ) {
+        let property_key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+        let base_value = vm.result.take().unwrap().bind(gc);
+        let strict = agent.is_evaluating_strict_code();
+        vm.reference =
+            Some(Reference::new_property_reference(base_value, property_key, strict).unbind());
+    }
+
     /// The value of `o.p` for the object in the result register, when it is
     /// read without a call: a property the cache places for the shape of an
     /// ordinary object (its own or of a prototype, or known to be absent),
@@ -1025,13 +1111,13 @@ impl Vm {
     fn cached_property_value(
         agent: &mut Agent,
         vm: &Vm,
-        executable: &Scoped<Executable>,
+        code: Executable,
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         match vm.result? {
             Value::Object(object) => {
-                let cache = executable.fetch_cache(agent, instr.get_second_index(), gc);
+                let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
                 let shape = object.object_shape(agent);
                 let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
                 if offset.is_unset() {
@@ -1047,7 +1133,7 @@ impl Vm {
                 }
             }
             Value::Array(array) => {
-                let key = executable.fetch_property_key(agent, instr.get_first_index(), gc);
+                let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
                 if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
                     return Some(array.len(agent).into());
                 }
@@ -1058,7 +1144,7 @@ impl Vm {
                 // finds in the cache, under the shape of the Array's own
                 // properties or the one of all Arrays that have none.
                 let object = Object::from(array);
-                let cache = executable.fetch_cache(agent, instr.get_second_index(), gc);
+                let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
                 let shape = object.object_shape(agent);
                 let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
                 if offset.is_unset() {
@@ -1073,7 +1159,7 @@ impl Vm {
                 }
             }
             #[cfg(feature = "array-buffer")]
-            value => Self::typed_array_length(agent, value, executable, instr, gc),
+            value => Self::typed_array_length(agent, value, code, instr, gc),
             #[cfg(not(feature = "array-buffer"))]
             _ => None,
         }
@@ -1130,16 +1216,16 @@ impl Vm {
     fn typed_array_length(
         agent: &mut Agent,
         value: Value,
-        executable: &Scoped<Executable>,
+        code: Executable,
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         let array = AnyTypedArray::try_from(value).ok()?;
-        let key = executable.fetch_property_key(agent, instr.get_first_index(), gc);
+        let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
         if key != PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
             return None;
         }
-        let cache = executable.fetch_cache(agent, instr.get_second_index(), gc);
+        let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
         let shape = array.object_shape(agent);
         let (offset, Some(prototype)) = cache.find_cached_property_offset(agent, shape)? else {
             return None;
@@ -1818,8 +1904,28 @@ impl Vm {
     }
 
     #[inline(always)]
-    fn execute_push_reference(&mut self) {
+    fn execute_push_reference(&mut self, agent: &mut Agent) {
+        if self.reference_stack.capacity() == 0
+            && let Some(spare) = agent.spare_vm_stacks.references.pop()
+        {
+            self.reference_stack = spare;
+        }
         self.reference_stack.push(self.reference.take().unwrap());
+    }
+
+    /// The exception handler stack to push to: a spare one for the first
+    /// handler of this `Vm`.
+    #[inline(always)]
+    pub(super) fn exception_handlers(
+        &mut self,
+        agent: &mut Agent,
+    ) -> &mut Vec<ExceptionHandler<'static>> {
+        if self.exception_handler_stack.capacity() == 0
+            && let Some(spare) = agent.spare_vm_stacks.handlers.pop()
+        {
+            self.exception_handler_stack = spare;
+        }
+        &mut self.exception_handler_stack
     }
 
     #[inline(always)]
@@ -2427,10 +2533,10 @@ impl HeapMarkAndSweep for SuspendedVm {
             iterator_stack,
             exception_jump_target_stack,
         } = self;
-        stack.mark_values(queues);
-        reference_stack.mark_values(queues);
-        iterator_stack.mark_values(queues);
-        exception_jump_target_stack.mark_values(queues);
+        stack.as_slice().mark_values(queues);
+        reference_stack.as_slice().mark_values(queues);
+        iterator_stack.as_slice().mark_values(queues);
+        exception_jump_target_stack.as_slice().mark_values(queues);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
@@ -2441,10 +2547,12 @@ impl HeapMarkAndSweep for SuspendedVm {
             iterator_stack,
             exception_jump_target_stack,
         } = self;
-        stack.sweep_values(compactions);
-        reference_stack.sweep_values(compactions);
-        iterator_stack.sweep_values(compactions);
-        exception_jump_target_stack.sweep_values(compactions);
+        stack.as_mut_slice().sweep_values(compactions);
+        reference_stack.as_mut_slice().sweep_values(compactions);
+        iterator_stack.as_mut_slice().sweep_values(compactions);
+        exception_jump_target_stack
+            .as_mut_slice()
+            .sweep_values(compactions);
     }
 }
 

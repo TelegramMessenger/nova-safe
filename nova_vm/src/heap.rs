@@ -187,6 +187,10 @@ pub(crate) struct Heap {
     pub(crate) shape_key_hasher: crate::hashing::HandleState,
     /// Counts allocations for garbage collection triggering.
     pub(crate) alloc_counter: usize,
+    /// How many collections have run: what holds a handle that only a
+    /// collection moves (the instruction loop, its executable) looks the
+    /// handle up again when this has changed.
+    pub(crate) collections: u64,
     /// Bytes of string data, ArrayBuffer data and keyed collection entries
     /// allocated since the last garbage collection, for the heap limit. Not
     /// part of the garbage collector's pacing.
@@ -362,6 +366,7 @@ impl Heap {
             #[cfg(feature = "weak-refs")]
             weak_sets: Vec::with_capacity(0),
             alloc_counter: 0,
+            collections: 0,
             data_bytes_since_gc: 0,
             gc_alloc_limit: crate::heap::heap_gc::MIN_GC_ALLOC_LIMIT,
         };

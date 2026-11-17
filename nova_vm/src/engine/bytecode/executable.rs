@@ -298,8 +298,8 @@ impl<'gc> Executable<'gc> {
         &self.get(agent).constants[..]
     }
 
-    #[inline]
-    fn fetch_cache(
+    #[inline(always)]
+    pub(super) fn fetch_cache(
         self,
         agent: &Agent,
         index: usize,
@@ -308,8 +308,13 @@ impl<'gc> Executable<'gc> {
         self.get(agent).caches[index].bind(gc)
     }
 
-    #[inline]
-    fn fetch_constant(self, agent: &Agent, index: usize, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
+    #[inline(always)]
+    pub(super) fn fetch_constant(
+        self,
+        agent: &Agent,
+        index: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         self.get(agent).constants[index].bind(gc)
     }
 
@@ -318,8 +323,8 @@ impl<'gc> Executable<'gc> {
         self.get(agent).stack_parameters
     }
 
-    #[inline]
-    fn fetch_binding_site(self, agent: &Agent, index: usize) -> BindingSite {
+    #[inline(always)]
+    pub(super) fn fetch_binding_site(self, agent: &Agent, index: usize) -> BindingSite {
         self.get(agent)
             .binding_sites
             .get(index)
@@ -348,8 +353,13 @@ impl<'gc> Executable<'gc> {
         self.get(agent).wide_constants[index].bind(gc)
     }
 
-    #[inline]
-    fn fetch_identifier(self, agent: &Agent, index: usize, gc: NoGcScope<'gc, '_>) -> String<'gc> {
+    #[inline(always)]
+    pub(super) fn fetch_identifier(
+        self,
+        agent: &Agent,
+        index: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
         let value = self.get(agent).constants[index];
         let Ok(value) = String::try_from(value) else {
             handle_identifier_failure()
@@ -357,8 +367,8 @@ impl<'gc> Executable<'gc> {
         value.bind(gc)
     }
 
-    #[inline]
-    fn fetch_property_key(
+    #[inline(always)]
+    pub(super) fn fetch_property_key(
         self,
         agent: &Agent,
         index: usize,

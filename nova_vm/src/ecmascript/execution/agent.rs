@@ -41,7 +41,7 @@ use crate::{
     },
     engine::{
         Bindable, GcScope, Global, HeapRootCollection, HeapRootData, HeapRootRef, NoGcScope,
-        PooledVmStacks, Rootable, Vm,
+        PooledVmStacks, Rootable, SpareVmStacks, Vm,
     },
     heap::{
         ArenaAccess, CompactionLists, CreateHeapData, Heap, HeapIndexHandle, HeapMarkAndSweep,
@@ -955,6 +955,9 @@ pub struct Agent {
     pub(crate) vm_stack: Vec<Vm>,
     /// Emptied value and iterator stacks of finished VMs, reused by new ones.
     pub(crate) vm_stack_pool: Vec<PooledVmStacks>,
+    /// Emptied Reference and exception handler stacks of finished VMs, taken
+    /// by one that pushes to either.
+    pub(crate) spare_vm_stacks: SpareVmStacks,
     /// Emptied argument vectors, reused for call arguments.
     pub(crate) arguments_pool: Vec<Vec<Value<'static>>>,
     /// ### \[\[KeptAlive]]
@@ -994,6 +997,7 @@ impl Agent {
             stack_ref_collections: RefCell::new(Vec::with_capacity(32)),
             vm_stack: Vec::with_capacity(16),
             vm_stack_pool: Vec::new(),
+            spare_vm_stacks: SpareVmStacks::default(),
             arguments_pool: Vec::new(),
             #[cfg(feature = "weak-refs")]
             kept_alive: false,
@@ -1343,6 +1347,21 @@ impl Agent {
 
     pub(crate) fn push_execution_context(&mut self, context: ExecutionContext) {
         self.execution_context_stack.push(context);
+    }
+
+    /// The this value that the running execution context keeps for a call
+    /// without a Function Environment Record, while the call's own
+    /// environment is the one that `this` is asked of (ResolveThisBinding's
+    /// first case).
+    #[inline]
+    pub(crate) fn running_call_this_value(&self) -> Option<Value<'static>> {
+        let code = self
+            .execution_context_stack
+            .last()?
+            .ecmascript_code
+            .as_ref()?;
+        let this_value = code.this_value?;
+        (this_value.variable_environment == code.variable_environment).then_some(this_value.value)
     }
 
     /// Replaces the this value that the running execution context keeps for
@@ -1738,6 +1757,7 @@ impl HeapMarkAndSweep for Agent {
             stack_ref_collections,
             vm_stack,
             vm_stack_pool: _,
+            spare_vm_stacks: _,
             arguments_pool: _,
             options: _,
             symbol_id: _,
@@ -1796,6 +1816,7 @@ impl HeapMarkAndSweep for Agent {
             stack_ref_collections,
             vm_stack,
             vm_stack_pool: _,
+            spare_vm_stacks: _,
             arguments_pool: _,
             options: _,
             symbol_id: _,
