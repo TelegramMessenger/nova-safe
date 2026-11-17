@@ -34,23 +34,24 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 4.2x |
-| math | 4 | 9.7x | 3.9x |
-| typed | 4 | 10.6x | 3.5x |
+| call | 14 | 10.4x | 4.0x |
+| math | 4 | 9.7x | 3.8x |
+| typed | 4 | 10.6x | 3.3x |
 | prop | 13 | 7.1x | 3.3x |
-| string | 26 | 10.6x | 3.1x |
-| app | 8 | 6.1x | 3.0x |
-| loop | 11 | 11.1x | 2.9x |
+| string | 26 | 10.6x | 3.0x |
+| app | 8 | 6.1x | 2.9x |
+| loop | 11 | 11.1x | 2.8x |
 | array | 14 | 5.8x | 2.8x |
-| map, set | 4 | 4.6x | 2.6x |
-| regexp | 4 | 2.4x | 2.0x |
+| map, set | 4 | 4.6x | 2.4x |
+| regexp | 4 | 2.4x | 1.9x |
 | gc | 3 of 5 | 3.6x | 1.6x |
-| json | 2 | 1.0x | 0.9x |
-| all | 108 | 7.6x | 3.0x |
+| json | 2 | 1.0x | 1.0x |
+| all | 108 | 7.6x | 2.9x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
-(37x, area 7); after it come iterating a string by code point (10x) and generators (8x), then method calls and
-accessors (6x). One case ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of
+(38x, area 7); after it come generators (7x), then calls that bind an arguments object or go through an accessor
+(5-6x). 60 of the 108 cases are above 3x and 21 at or under 2x. One case ran Nova out of memory before
+(`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
 What is written in Rust or C on both sides is level: JSON, RegExp, `indexOf`, `split`/`join`, `sort`. The gap is in
@@ -88,6 +89,11 @@ instructions before), a comparison with the jump on it, a local followed by a co
 loop's own instructions of `for (var i = 0; i < n; i++)` are three where they were eight, and one iteration of
 `for (…) sum += i & 255` is nine instructions where it was fifteen (QuickJS: eight). Each fused instruction does on integers what the plain ones did; anything else takes
 the instructions it was fused from. Loops went from 3.9x to 2.9x (nested `while` loops 4.0x to 1.8x).
+
+The executable, which every instruction that fetches a constant, a name, a cache or a binding site needs, is
+looked up through its rooted handle once and again only after a collection has run (the heap counts them), not
+by each of those instructions; and `this` of a call that keeps it in its execution context is read by the loop
+itself. A property read and written in a loop went from 5.4x to 4.7x.
 
 Tried and dropped: giving every plain instruction the length of its own to advance by, so that where the next
 instruction is would not wait for the table of lengths. It made loops 13-32% slower; the table is not what the
@@ -153,7 +159,12 @@ object of a primitive) is made when the call is prepared and kept in the executi
 And a function whose parameters are all plain names in stack slots starts with its arguments there: the call
 copied them three times before (out of the caller's stack, into a list rooted for the collector, and from there
 one by one into the slots, with an instruction to make each slot first). `function add(a, b) { return a + b; }`
-was eight instructions and is three. A plain call is 4.4x, a callback 3.5x, calls 4.2x.
+was eight instructions and is three. A plain call is 4.4x, a callback 3.5x.
+
+A call whose code pushes a Reference (a method that assigns to `this.x`) or enters a loop or a `try` allocated
+that stack and freed it when it returned; the emptied stacks are kept, and a `Vm` takes one when it first pushes
+to it. (Pooling them with the two stacks every call takes made a plain call 7% slower.) A method call went from
+5.7x to 4.3x, calls to 4.0x.
 
 Left: what is left is spread thin, with no single cost much above a tenth: the caller's `Vm` moved aside and
 back for the collector around every call, the callee's made and recycled, the execution context, the copy of
@@ -208,6 +219,24 @@ buffer from 8.9x to 3.9x, arrays to 2.8x and the app cases from 3.8x to 3.0x.
 Left: a compound assignment to an element (`a[i] += 1`) and one whose value is used still make a Reference.
 Other built-ins that take a callback or build an Array (`map`, `filter`, `forEach`) run their general steps.
 Float64 elements allocate (area 6).
+
+### 5a. Iteration
+
+`for (var ch of string)` was 10x: every step called %StringIteratorPrototype%.next, which made an iterator result
+object (through two vectors allocated and freed for its two entries, a third of the time), and the loop then read
+`done` and `value` back with two general property lookups. A loop over a generator, a Map or any other iterator
+did the same reads.
+
+Done: an object made from a list of entries gathers their values on the stack; a String Iterator whose `next` is
+the original one is stepped directly, as an Array Iterator already was; and the `done` and `value` of a result
+that is an ordinary object with those as plain properties of its own are read from their slots. Iterating a
+string by code point is 3.7x, a Map 2.7x, a generator 7.0x (8.2x).
+
+Left: a generator makes its result object in its own bytecode at every `yield`, the loop still calls `next`
+through the built-in, and the generator's `Vm` and execution context are moved in and out of the generator at
+every step. Stepping a generator directly, with the yielded value handed over without an object, is next. (A
+suspended `Vm` keeps its stacks as vectors now instead of cutting them to size at every `yield`; that removed
+two reallocations a step and changed no measured time.)
 
 ### 6. Numbers
 
