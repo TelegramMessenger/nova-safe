@@ -823,6 +823,16 @@ fn number_shortcuts_keep_the_language_semantics() {
         "(function () { var x = 1; while (x < 1e21) x *= 10; return x === 1e21; })()",
         "(function () { var o = { valueOf: function () { return 3; } }; return o < 4 && o + 1 === 4 && !(o > 3); })()",
         "(function () { return (true ? 1 : 2) === 1 && !!'a' && !'' && !0 && !NaN && !!{} ; })()",
+        // Two integers: the operators that stay integers, and where they stop.
+        "(function (a, b) { return a + b === 9007199254740992 && a - -b === 9007199254740992 && -a - b === -9007199254740992; })(9007199254740991, 1)",
+        "(function (a, b) { return a * b === 1152921504606846976 && a * 3 === 3221225472 && Object.is(a * 0, 0) && Object.is(-a * 0, -0) && Object.is(0 * -1, -0); })(1073741824, 1073741824)",
+        "(function (a, b) { return a * b === 9007199254740992 * 4; })(4503599627370496, 8)",
+        "(function (a, b, z) { return a % b === 1 && Object.is(-4 % b, -1) && Object.is(-a % a, -0) && Object.is(z % a, 0) && a % -b === 1 && isNaN(a % z) && 5 % 5 === 0; })(7, 3, 0)",
+        "(function (a) { return (a | 0) === 5 && (a & 255) === 5 && (a ^ 1) === 4 && (2147483648 | 0) === -2147483648 && (4294967295 | 0) === -1 && (-1 & 4294967295) === -1; })(1099511627781)",
+        "(function (one) { return one << 31 === -2147483648 && one << 32 === 1 && one << 33 === 2 && one << -1 === -2147483648 && 5 >> 33 === 2 && -9 >> 1 === -5 && -1 >>> 0 === 4294967295 && -1 >>> 31 === 1 && -1 >>> 32 === 4294967295 && 1099511627781 >> 1 === 2 && 1099511627781 >>> 1 === 2; })(1)",
+        "(function (a, b) { return a < b && !(b < a) && a <= a && b >= a && !(a > b) && b > a && -9007199254740991 < 9007199254740991; })(-3, 4)",
+        "(function () { var i = 9007199254740990; i++; i++; i++; var j = -9007199254740990; j--; j--; j--; return i === 9007199254740992 && j === -9007199254740992; })()",
+        "(function () { var n = 0; for (var i = 10; i > -10; i--) n += i; for (var k = 0; k <= 4; k += 2) n -= k; var m = 0; do { m++; } while (m < 5); return n === 4 && m === 5; })()",
     ];
     for check in checks {
         assert_eq!(

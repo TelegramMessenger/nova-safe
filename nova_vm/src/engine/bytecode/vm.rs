@@ -12,10 +12,10 @@ use wtf8::Wtf8Buf;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType, JsError,
-        JsResult, Number, Object, Primitive, Promise, Reference, String, Value, call_function,
-        get_method, is_callable, ordinary_has_instance, take_pooled_arguments_vec, to_boolean,
-        to_numeric, to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
-        try_get_object_method, try_result_into_option_js,
+        JsResult, Number, Object, Primitive, Promise, Reference, SmallInteger, String, Value,
+        call_function, get_method, is_callable, ordinary_has_instance, take_pooled_arguments_vec,
+        to_boolean, to_numeric, to_numeric_primitive, to_primitive, to_property_key,
+        to_string_primitive, try_get_object_method, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -59,6 +59,21 @@ enum ContinuationKind {
     Yield,
     Await,
 }
+
+/// What [`Vm::execute_plain_instruction`] made of an instruction.
+enum Plain {
+    /// Executed.
+    Done,
+    /// Executed, and it jumped backwards: one turn of a loop.
+    Looped,
+    /// Not executed and nothing changed: the instruction is not a plain one,
+    /// or its operands are not what the short way takes.
+    No,
+}
+
+/// The steps a backward jump or a call counts for in the interrupt countdown:
+/// the instructions on the way to it are not counted one by one.
+const STEPS_PER_TURN: u32 = 8;
 
 /// VM exception handler.
 #[derive(Debug)]
@@ -357,18 +372,31 @@ impl Vm {
         // per iteration until the function returns, and run out of memory.
         let collections_depth = agent.stack_ref_collections.borrow().len();
         let instructions = executable.get_instructions(agent);
+        let print_internals = agent.options.print_internals;
+        // The host is asked whether to interrupt, and the heap limit checked,
+        // every so many calls and turns of loops: a script cannot run long
+        // without either.
+        if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+            return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
+        }
         while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
-            agent.limits.countdown -= 1;
-            if agent.limits.countdown == 0
-                && let Err(err) = agent.poll_interrupt_now(gc.nogc())
-            {
-                return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
-            }
             if agent.check_gc() {
                 self.trigger_gc(agent, gc.reborrow());
             }
-            if agent.options.print_internals {
+            if print_internals {
                 Self::print_executing(instr.kind);
+            }
+            // Most of what runs is plain: it goes straight to the next
+            // instruction, with no result to look at and nothing to release.
+            match Self::execute_plain_instruction(agent, self, &executable, instr, gc.nogc()) {
+                Plain::Done => continue,
+                Plain::Looped => {
+                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                        return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
+                    }
+                    continue;
+                }
+                Plain::No => {}
             }
             let result =
                 Self::execute_instruction(agent, self, executable.clone(), instr, gc.reborrow());
@@ -527,6 +555,198 @@ impl Vm {
         }
     }
 
+    /// The instructions that cannot fail, run a script or scope a value,
+    /// and, of the comparisons and the arithmetic, those of two integers.
+    /// The loop of `run` goes from these straight to the next instruction.
+    // Inlined into the loop of `run` in optimised builds, like
+    // `execute_instruction`.
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn execute_plain_instruction(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        executable: &Scoped<Executable>,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Plain {
+        match instr.kind {
+            Instruction::Load => vm.execute_load(),
+            Instruction::LoadCopy => vm.execute_load_copy(),
+            Instruction::PutValueToIndex => vm.execute_load_to_index(instr.get_first_index()),
+            Instruction::Store => vm.execute_store(),
+            Instruction::GetValueFromIndex => vm.execute_store_from_index(instr.get_first_index()),
+            Instruction::LoadFromIndex => {
+                vm.execute_store_from_index(instr.get_first_index());
+                vm.execute_load();
+            }
+            Instruction::StoreConstant => {
+                execute_store_constant(agent, vm, executable.clone(), instr, gc)
+            }
+            Instruction::LoadConstant => {
+                execute_load_constant(agent, vm, executable.clone(), instr, gc)
+            }
+            Instruction::PopStack => vm.execute_pop_stack(),
+            Instruction::PushReference => vm.execute_push_reference(),
+            Instruction::PopReference => vm.execute_pop_reference(),
+            Instruction::PushReferenceAndLoad => {
+                vm.execute_push_reference();
+                vm.execute_load();
+            }
+            Instruction::Jump => {
+                let from = vm.ip;
+                execute_jump(agent, vm, instr);
+                if vm.ip < from {
+                    return Plain::Looped;
+                }
+            }
+            Instruction::JumpIfNot => {
+                let from = vm.ip;
+                execute_jump_if_not(agent, vm, instr);
+                if vm.ip < from {
+                    return Plain::Looped;
+                }
+            }
+            Instruction::JumpIfTrue => {
+                let from = vm.ip;
+                execute_jump_if_true(agent, vm, instr);
+                if vm.ip < from {
+                    return Plain::Looped;
+                }
+            }
+            Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc),
+            Instruction::CreateImmutableBinding => {
+                execute_create_immutable_binding(agent, executable.clone(), instr, gc)
+            }
+            Instruction::CreateMutableBinding => {
+                execute_create_mutable_binding(agent, executable.clone(), instr, gc)
+            }
+            Instruction::InitializeReferencedBinding => {
+                execute_initialize_referenced_binding(agent, vm, gc)
+            }
+            Instruction::EvaluatePropertyAccessWithIdentifierKey => {
+                execute_evaluate_property_access_with_identifier_key(
+                    agent,
+                    vm,
+                    executable.clone(),
+                    instr,
+                    gc,
+                )
+            }
+            Instruction::EvaluatePropertyAccessWithExpressionKey => {
+                execute_evaluate_property_access_with_expression_key(agent, vm, gc)
+            }
+            // A Number is its own numeric value: the counter of nearly every
+            // loop.
+            Instruction::ToNumeric => {
+                if !matches!(
+                    vm.result,
+                    Some(Value::Integer(_) | Value::SmallF64(_) | Value::Number(_))
+                ) {
+                    return Plain::No;
+                }
+            }
+            Instruction::Increment => return vm.step_integer(1),
+            Instruction::Decrement => return vm.step_integer(-1),
+            Instruction::LessThan
+            | Instruction::LessThanEquals
+            | Instruction::GreaterThan
+            | Instruction::GreaterThanEquals
+            | Instruction::ApplyAdditionBinaryOperator
+            | Instruction::ApplySubtractionBinaryOperator
+            | Instruction::ApplyMultiplicationBinaryOperator
+            | Instruction::ApplyRemainderBinaryOperator
+            | Instruction::ApplyShiftLeftBinaryOperator
+            | Instruction::ApplyShiftRightBinaryOperator
+            | Instruction::ApplyShiftRightZeroFillBinaryOperator
+            | Instruction::ApplyBitwiseORBinaryOperator
+            | Instruction::ApplyBitwiseXORBinaryOperator
+            | Instruction::ApplyBitwiseAndBinaryOperator => {
+                return vm.operate_on_integers(instr.kind);
+            }
+            _ => return Plain::No,
+        }
+        Plain::Done
+    }
+
+    /// `++` or `--` of an integer that stays one.
+    #[inline(always)]
+    fn step_integer(&mut self, step: i64) -> Plain {
+        let Some(Value::Integer(value)) = self.result else {
+            return Plain::No;
+        };
+        let Ok(value) = SmallInteger::try_from(value.into_i64() + step) else {
+            return Plain::No;
+        };
+        self.result = Some(Value::Integer(value));
+        Plain::Done
+    }
+
+    /// A comparison or an arithmetic operator on two integers whose result is
+    /// a Boolean or an integer: nothing to convert and nothing to allocate.
+    #[inline(always)]
+    fn operate_on_integers(&mut self, kind: Instruction) -> Plain {
+        let (Some(&Value::Integer(left)), Some(Value::Integer(right))) =
+            (self.stack.last(), self.result)
+        else {
+            return Plain::No;
+        };
+        let (left, right) = (left.into_i64(), right.into_i64());
+        // ToInt32 and ToUint32 of an integer are its low 32 bits.
+        let (left32, right32) = (left as i32, right as i32);
+        let integer = match kind {
+            Instruction::LessThan => return self.finish_operation((left < right).into()),
+            Instruction::LessThanEquals => return self.finish_operation((left <= right).into()),
+            Instruction::GreaterThan => return self.finish_operation((left > right).into()),
+            Instruction::GreaterThanEquals => {
+                return self.finish_operation((left >= right).into());
+            }
+            Instruction::ApplyAdditionBinaryOperator => left + right,
+            Instruction::ApplySubtractionBinaryOperator => left - right,
+            Instruction::ApplyMultiplicationBinaryOperator => {
+                let Some(product) = left.checked_mul(right) else {
+                    return Plain::No;
+                };
+                // A zero product of a negative factor is -0: not an integer.
+                if product == 0 && (left < 0 || right < 0) {
+                    return Plain::No;
+                }
+                product
+            }
+            Instruction::ApplyRemainderBinaryOperator => {
+                // A zero remainder of a negative dividend is -0, and the
+                // remainder of a division by zero is NaN.
+                if left < 0 || right <= 0 {
+                    return Plain::No;
+                }
+                left % right
+            }
+            Instruction::ApplyShiftLeftBinaryOperator => {
+                i64::from(left32.wrapping_shl(right32 as u32))
+            }
+            Instruction::ApplyShiftRightBinaryOperator => {
+                i64::from(left32.wrapping_shr(right32 as u32))
+            }
+            Instruction::ApplyShiftRightZeroFillBinaryOperator => {
+                i64::from((left32 as u32).wrapping_shr(right32 as u32))
+            }
+            Instruction::ApplyBitwiseORBinaryOperator => i64::from(left32 | right32),
+            Instruction::ApplyBitwiseXORBinaryOperator => i64::from(left32 ^ right32),
+            Instruction::ApplyBitwiseAndBinaryOperator => i64::from(left32 & right32),
+            _ => return Plain::No,
+        };
+        let Ok(integer) = SmallInteger::try_from(integer) else {
+            return Plain::No;
+        };
+        self.finish_operation(Value::Integer(integer))
+    }
+
+    /// Replaces the two operands of a binary operator with its result.
+    #[inline(always)]
+    fn finish_operation(&mut self, result: Value<'static>) -> Plain {
+        self.stack.pop();
+        self.result = Some(result);
+        Plain::Done
+    }
+
     // Inlined into the loop of `run` in optimised builds, where it saves a
     // call for every instruction; unoptimised, the merged frame would take
     // many times the stack for every JavaScript call.
@@ -540,29 +760,29 @@ impl Vm {
     ) -> JsResult<'a, ContinuationKind> {
         // Hot instructions; apply #[inline(always)] to the execute methods.
         match instr.kind {
-            Instruction::Load => {
-                vm.execute_load();
+            Instruction::Load
+            | Instruction::LoadCopy
+            | Instruction::PutValueToIndex
+            | Instruction::Store
+            | Instruction::GetValueFromIndex
+            | Instruction::LoadFromIndex
+            | Instruction::StoreConstant
+            | Instruction::LoadConstant
+            | Instruction::PopStack
+            | Instruction::PushReference
+            | Instruction::PopReference
+            | Instruction::PushReferenceAndLoad
+            | Instruction::Jump
+            | Instruction::JumpIfNot
+            | Instruction::JumpIfTrue
+            | Instruction::IsStrictlyEqual
+            | Instruction::CreateImmutableBinding
+            | Instruction::CreateMutableBinding
+            | Instruction::InitializeReferencedBinding
+            | Instruction::EvaluatePropertyAccessWithIdentifierKey
+            | Instruction::EvaluatePropertyAccessWithExpressionKey => {
+                unreachable!("plain instruction not handled before execute_instruction")
             }
-            Instruction::LoadCopy => {
-                vm.execute_load_copy();
-            }
-            Instruction::PutValueToIndex => {
-                vm.execute_load_to_index(instr.get_first_index());
-            }
-            Instruction::Store => {
-                vm.execute_store();
-            }
-            Instruction::GetValueFromIndex => {
-                vm.execute_store_from_index(instr.get_first_index());
-            }
-            Instruction::StoreConstant => {
-                execute_store_constant(agent, vm, executable, instr, gc.into_nogc());
-            }
-            Instruction::PopStack => {
-                vm.execute_pop_stack();
-            }
-            Instruction::Jump => execute_jump(agent, vm, instr),
-            Instruction::JumpIfNot => execute_jump_if_not(agent, vm, instr),
             Instruction::ResolveBinding => {
                 execute_resolve_binding(agent, vm, executable, instr, gc)?;
             }
@@ -586,33 +806,6 @@ impl Vm {
                 execute_put_value(agent, vm, executable, instr, cache, gc)?
             }
             Instruction::ToNumeric => execute_to_numeric(agent, vm, gc)?,
-            Instruction::CreateImmutableBinding => {
-                execute_create_immutable_binding(agent, executable, instr, gc.into_nogc())
-            }
-            Instruction::CreateMutableBinding => {
-                execute_create_mutable_binding(agent, executable, instr, gc.into_nogc())
-            }
-            Instruction::InitializeReferencedBinding => {
-                execute_initialize_referenced_binding(agent, vm, gc.into_nogc())
-            }
-            Instruction::PushReference => vm.execute_push_reference(),
-            Instruction::PopReference => vm.execute_pop_reference(),
-            Instruction::EvaluatePropertyAccessWithIdentifierKey => {
-                execute_evaluate_property_access_with_identifier_key(
-                    agent,
-                    vm,
-                    executable,
-                    instr,
-                    gc.into_nogc(),
-                )
-            }
-            Instruction::EvaluatePropertyAccessWithExpressionKey => {
-                execute_evaluate_property_access_with_expression_key(agent, vm, gc.into_nogc())
-            }
-            Instruction::LoadFromIndex => {
-                vm.execute_store_from_index(instr.get_first_index());
-                vm.execute_load();
-            }
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
                 execute_evaluate_property_access_with_identifier_key(
                     agent,
@@ -632,10 +825,6 @@ impl Vm {
                     instr.get_second_index() as IndexType,
                 );
                 execute_get_value(agent, vm, executable, get_value, true, keep_reference, gc)?
-            }
-            Instruction::PushReferenceAndLoad => {
-                vm.execute_push_reference();
-                vm.execute_load();
             }
             // What every loop and expression is made of: one call from here,
             // not two.
@@ -659,11 +848,6 @@ impl Vm {
             | Instruction::ApplyBitwiseXORBinaryOperator
             | Instruction::ApplyBitwiseAndBinaryOperator => {
                 execute_apply_binary_operator(agent, vm, instr.kind, gc)?
-            }
-            Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc.into_nogc()),
-            Instruction::JumpIfTrue => execute_jump_if_true(agent, vm, instr),
-            Instruction::LoadConstant => {
-                execute_load_constant(agent, vm, executable, instr, gc.into_nogc())
             }
             Instruction::EvaluateCall => execute_evaluate_call(agent, vm, instr, gc)?,
             Instruction::Return => return Ok(ContinuationKind::Return),
