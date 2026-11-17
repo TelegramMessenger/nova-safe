@@ -199,6 +199,7 @@ impl Agent {
     /// [`Agent::set_heap_limit_refusal_terminates`]).
     pub fn set_heap_limit(&mut self, limit: Option<usize>) {
         self.limits.heap_limit = limit;
+        self.heap.text_join_budget.set_cap(limit);
         self.limits.update_gc_threshold(self.heap.gc_alloc_limit);
     }
 
@@ -254,6 +255,7 @@ impl Agent {
             .live_bytes_after_gc
             .saturating_add(self.heap.alloc_counter)
             .saturating_add(self.heap.data_bytes_since_gc)
+            .saturating_add(self.heap.text_join_budget.joined())
             .saturating_add(self.root_stack_bytes())
     }
 
@@ -404,7 +406,11 @@ impl Agent {
                     .live_bytes_after_gc
                     .saturating_add(self.root_stack_bytes()),
             };
-            if (self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0)
+            // Text joined since the last collection counts as allocated
+            // since then: the collection lets go of the pieces it was
+            // joined from.
+            let joined = self.heap.text_join_budget.joined();
+            if (self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0 && joined == 0)
                 || uncollectable > limit
                 // A native loop that allocates never reaches the collection
                 // the next instruction would run.
@@ -545,11 +551,26 @@ impl Agent {
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, ()> {
         let bytes = a.len_(self).saturating_add(b.len_(self));
-        if bytes > 4096 {
-            self.check_string_length(bytes, gc)
-        } else {
-            Ok(())
+        if bytes <= 4096 {
+            return Ok(());
         }
+        // Appending to a string that is being built allocates what is
+        // appended, not the whole text again: the text only has to fit the
+        // limit, which reading it is then held to.
+        if a.is_being_built_(self) {
+            if bytes > MAX_STRING_LENGTH {
+                return Err(self.throw_exception_with_static_message(
+                    ExceptionType::RangeError,
+                    "Invalid string length",
+                    gc,
+                ));
+            }
+            if self.limits.heap_limit.is_some_and(|limit| bytes > limit) {
+                return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
+            }
+            return self.check_allocation(b.len_(self), gc);
+        }
+        self.check_string_length(bytes, gc)
     }
 
     /// [`Agent::check_concat_length`] for a list of strings.
@@ -606,6 +627,7 @@ impl Agent {
     /// terminates the running script if it is over the heap limit.
     pub(crate) fn after_gc(&mut self) {
         self.heap.data_bytes_since_gc = 0;
+        self.heap.text_join_budget.settled();
         let estimated = self.heap.estimate_live_bytes();
         match self.host_hooks.allocated_bytes() {
             Some(counted) => {

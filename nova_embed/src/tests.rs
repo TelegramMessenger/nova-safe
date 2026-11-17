@@ -936,6 +936,82 @@ fn appended_strings_are_the_strings_they_spell() {
     }
 }
 
+/// A string that is being built is not copied until it is read: building is
+/// linear, and what reading the kept strings then allocates counts against
+/// the memory limit like any other allocation.
+#[test]
+fn text_joined_on_reading_counts_against_the_memory_limit() {
+    let mut engine = fatal(8 << 20);
+    let started = std::time::Instant::now();
+    assert_eq!(
+        engine.evaluate(
+            "var s = ''; for (var i = 0; i < 400000; i++) s += 'chunk'; s.length + ':' + s.slice(-7) + ':' + s.charCodeAt(1999999)",
+            false
+        ),
+        Ok(Completion::String("2000000:nkchunk:107".into()))
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    // Strings that are kept count for their whole text each, shared or not:
+    // 300 of them fit, are read (each read joins one) and still fit.
+    let mut engine = fatal(8 << 20);
+    assert_eq!(
+        engine.evaluate(
+            "var keep = []; var s = 'x'.repeat(300); for (var i = 0; i < 600; i++) { s += 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'; if (i % 2) keep.push(s); } keep.length",
+            false
+        ),
+        Ok(Completion::Number(300.0))
+    );
+    assert_eq!(
+        engine.evaluate(
+            "var n = 0; for (var r = 0; r < 4; r++) for (var k = 0; k < keep.length; k++) n += keep[k].charCodeAt(keep[k].length - 1); n",
+            false
+        ),
+        Ok(Completion::Number(4.0 * 300.0 * 121.0))
+    );
+    assert!(engine.memory_used() < 16 << 20);
+    engine.collect_garbage().unwrap();
+    assert!(engine.memory_used() < 8 << 20);
+    assert_eq!(
+        engine.evaluate("keep[299].length + keep[0].charCodeAt(0)", false),
+        Ok(Completion::Number(300.0 + 600.0 * 30.0 + 120.0))
+    );
+    // More of them than the limit has room for cost little to make, sharing
+    // their pieces, but cannot all be read: the joins stop at the limit,
+    // and with them the engine.
+    let mut engine = fatal(8 << 20);
+    let made = engine.evaluate(
+        "var keep = []; var s = 'x'.repeat(300); for (var i = 0; i < 3000; i++) { s += 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'; keep.push(s); } keep.length",
+        false,
+    );
+    assert!(
+        made == Ok(Completion::Number(3000.0)) || made == Err(Error::OutOfMemory),
+        "{made:?}"
+    );
+    if made.is_ok() {
+        assert_eq!(
+            engine.evaluate(
+                "var n = 0; for (var k = 0; k < keep.length; k++) n += keep[k].charCodeAt(0); n",
+                false
+            ),
+            Err(Error::OutOfMemory)
+        );
+        assert!(matches!(
+            engine.evaluate("1", false),
+            Err(Error::Dead(_)) | Err(Error::OutOfMemory)
+        ));
+    }
+    // A text of half the limit is built and read: the pieces and the joined
+    // copy do not both stay.
+    let mut engine = fatal(8 << 20);
+    assert_eq!(
+        engine.evaluate(
+            "var s = ''; for (var i = 0; i < 100000; i++) s += '0123456789012345678901234567890123456789'; var n = 0; for (var k = 0; k < 20000; k++) n += s.charCodeAt(k * 200); s.length + ':' + n",
+            false
+        ),
+        Ok(Completion::String("4000000:960000".into()))
+    );
+}
+
 /// What one instruction scoped is released when it ends: a long loop of
 /// object destructurings in one call does not fill the heap.
 #[test]
