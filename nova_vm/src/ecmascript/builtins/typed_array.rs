@@ -28,6 +28,15 @@ pub(crate) fn canonicalize_numeric_index_string(
     let Ok(numeric_index) = String::try_from(p.into_value_unchecked()) else {
         return;
     };
+    // The string of a Number starts with a digit, a minus sign, "Infinity"
+    // or "NaN": a name such as "length" is none, without converting it to a
+    // Number and back on every read.
+    if !matches!(
+        numeric_index.as_wtf8_(agent).as_bytes().first(),
+        Some(b'0'..=b'9' | b'-' | b'I' | b'N')
+    ) {
+        return;
+    }
     let numeric_index = canonical_numeric_index_string(agent, numeric_index, gc);
     let Some(numeric_index) = numeric_index else {
         return;
