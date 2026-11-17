@@ -34,12 +34,12 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 3.8x |
+| call | 14 | 10.4x | 3.5x |
 | typed | 4 | 10.6x | 3.3x |
 | math | 4 | 9.7x | 3.2x |
 | prop | 13 | 7.1x | 3.2x |
 | string | 26 | 10.6x | 2.9x |
-| app | 8 | 6.1x | 2.9x |
+| app | 8 | 6.1x | 2.8x |
 | array | 14 | 5.8x | 2.8x |
 | loop | 11 | 11.1x | 2.5x |
 | map, set | 4 | 4.6x | 2.4x |
@@ -50,7 +50,7 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
 (38x, area 7); after it come generators (6.5x), then calls that bind an arguments object or go through an accessor
-(5-6x). 55 of the 108 cases are above 3x and 22 at or under 2x. One case ran Nova out of memory before
+(5-6x). 55 of the 108 cases are above 3x and 23 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -192,14 +192,39 @@ the call. `Math.floor(Math.sqrt(i)) + Math.max(i & 7, 3)` went from 4.8x to 2.9x
 loop from 4.4x to 2.8x. What is left of those is reading `Math` and the function off it (areas 2 and 4).
 Next: the same for the trigonometric functions and `pow`, and for `charCodeAt` and its like on strings.
 
-Left: what is left is spread thin, with no single cost much above a tenth: the caller's `Vm` moved aside and
-back for the collector around every call, the callee's made and recycled, the execution context, the copy of
-the arguments out of the caller's stack; under all of it the dispatch of area 1, a quarter of the time, and
-half a dozen native frames between the caller's loop and the callee's, each saving and restoring its registers.
-Functions with a rest parameter, defaults or an arguments object still bind the old way (5-6x), and generators
-are 6.5x. Recursion is also shallower: about 2.7 KB of native stack per call level against 0.9 KB. Next, and
-the largest step left anywhere: run a called function in the caller's loop (a frame pushed on the one `Vm`,
-no native call), which removes most of the list above at once. Reach: about 2x.
+A call of a function still went through half a dozen native frames between the caller's loop of instructions
+and the callee's, each saving and restoring its registers, with the caller's `Vm` moved aside for the collector
+and a new one made for the callee. A `Vm` now runs the function itself, in the same loop, where the function
+is an ordinary one (not a generator, not async, not a class constructor), keeps its parameters in stack slots
+and needs no Function Environment Record: the call instruction puts the caller's stacks, its place and its
+code aside in a frame, pushes the callee's execution context as \[\[Call]] does, and goes on in the callee's
+code; `Return` takes the caller's state back, and an error that the callee does not handle goes to the
+caller's handlers, frame by frame. Everything else about the call is as it was: the execution context, the
+this value, the count of calls that ends recursion, the interrupt poll and the collection check on entry.
+The frames are slots of one stack that the Agent keeps: entering and leaving swap the stacks in a slot with
+the `Vm`'s, and the collector marks the slots in use. A call that is not run in place (from a built-in, of a
+bound function, a generator, a constructor) takes the native way as before, and its code runs its own calls
+in place.
+
+A plain call went from 4.5x to 3.6x, a method call from 4.2x to 3.6x, recursion from 4.5x to 3.4x, a call
+through the prototype chain from 4.3x to 3.5x; a callback of a built-in, which is called the native way, is
+1 to 5% slower than it was.
+Recursion of such functions no longer takes native stack: it ends at the 3,500th call wherever the native
+stack would have run out first (after 2,325 calls in the command-line build).
+
+Three things that cost more than the change saved until they were found. With the frame switch written
+inside the loop of instructions, the compiler kept the instruction pointer in memory, and the gain was 8%
+with every other kind of call 10-18% slower: the switch is now in a loop around that one, which is as it
+was. A `Vm` with the frames inside it was 32 bytes larger and no longer dropped in line: every native call
+paid for both (the frames are the Agent's for that reason). And the function that prepares the execution
+context, once shared by the two ways, stopped being inlined into the native one.
+
+Left: per call in place, the execution context (64 bytes pushed and removed), the frame, a rooted handle of
+the callee's executable, a count on its instructions; under them the dispatch of area 1. A stack shared by
+caller and callee, with the arguments left where they are, would take most of the frame away; it changes
+how every instruction finds a stack slot. Functions with a rest parameter, defaults or an arguments object
+still bind the old way and are called the native way (5-6x), and generators are 6.6x. Next: those, and `new`
+of a plain constructor, in place. Reach: about 2.5x.
 
 ### 4. Properties
 
