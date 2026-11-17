@@ -870,6 +870,109 @@ fn strings_outside_ascii_are_refused_by_their_bytes() {
     );
 }
 
+/// The interpreter's short ways for Numbers give what the long ways gave.
+#[test]
+fn number_shortcuts_keep_the_language_semantics() {
+    let (mut engine, _) = engine();
+    let checks = [
+        "Object.is(-1 * 0, -0)",
+        "Object.is(0 * -5, -0)",
+        "Object.is(2 * 0, 0)",
+        "Object.is(-0 + -0, -0)",
+        "Object.is(-0 + 0, 0)",
+        "Object.is(0 - 0, 0)",
+        "Object.is(-0 - 0, -0)",
+        "Object.is(5 - 5, 0)",
+        "9007199254740991 + 1 === 9007199254740992",
+        "9007199254740991 + 2 === 9007199254740992",
+        "-9007199254740991 - 2 === -9007199254740992",
+        "9007199254740991 + 9007199254740991 === 18014398509481982",
+        "0.1 + 0.2 === 0.30000000000000004",
+        "isNaN(Infinity - Infinity) && isNaN(Infinity + -Infinity) && isNaN(1 + NaN)",
+        "Infinity + 1 === Infinity && -Infinity - 1 === -Infinity",
+        "1 < 2 && !(2 < 1) && !(1 < 1) && 1 <= 1 && 2 > 1 && 2 >= 2",
+        "!(NaN < 1) && !(1 < NaN) && !(NaN <= NaN) && !(NaN >= NaN) && !(NaN > 1)",
+        "!(0 < -0) && !(-0 < 0) && 0 <= -0 && -0 >= 0",
+        "-Infinity < 1 && 1 < Infinity && !(Infinity < Infinity) && Infinity <= Infinity",
+        "1.5 < 2 && 2 > 1.5 && 0.1 + 0.2 > 0.3 && 1e300 * 10 < Infinity",
+        "'10' < '9' && !(10 < '9') && null < 1 && !(undefined < 1) && '2' > 1",
+        "(function () { var i = 9007199254740990; i++; i++; i++; return i === 9007199254740992; })()",
+        "(function () { var i = 0.5; i++; return i === 1.5; })()",
+        "(function () { var i = '4'; i++; return i === 5; })()",
+        "(function () { var n = 0; for (var i = 0; i < 1000; i++) { if (i % 3 === 0) n += i; else n -= 1; } return n === 166167; })()",
+        "(function () { var x = 1; while (x < 1e21) x *= 10; return x === 1e21; })()",
+        "(function () { var o = { valueOf: function () { return 3; } }; return o < 4 && o + 1 === 4 && !(o > 3); })()",
+        "(function () { return (true ? 1 : 2) === 1 && !!'a' && !'' && !0 && !NaN && !!{} ; })()",
+    ];
+    for check in checks {
+        assert_eq!(
+            engine.evaluate(&format!("String({check})"), false),
+            Ok(Completion::String("true".into())),
+            "{check}"
+        );
+    }
+}
+
+/// A string built by appending is the string it spells, whichever way it
+/// was built: its place in the string table continues from the left part's.
+#[test]
+fn appended_strings_are_the_strings_they_spell() {
+    let (mut engine, _) = engine();
+    let checks = [
+        "(function () { var s = ''; for (var i = 0; i < 3000; i++) s += 'chunk'; return s === 'chunk'.repeat(3000) && s.length === 15000; })()",
+        "(function () { var s = ''; for (var i = 0; i < 2000; i++) s += '\\u0436\\u4e2d'; var o = {}; o[s] = 1; return o['\\u0436\\u4e2d'.repeat(2000)] === 1; })()",
+        "(function () { var a = 'a'.repeat(300), b = 'b'.repeat(70), c = 'c'.repeat(5); return (a + b) + c === a + (b + c) && (a + b + c) === [a, b, c].join(''); })()",
+        "(function () { var m = new Map(); var s = 'x'.repeat(250); for (var i = 0; i < 200; i++) { s += i; m.set(s, i); } var t = 'x'.repeat(250); for (var j = 0; j < 200; j++) { t = t + String(j); if (m.get(t) !== j) return false; } return m.size === 200; })()",
+        "(function () { var lead = 'q'.repeat(300) + '\\ud83d', s = lead + '\\ude00'; return s.length === 302 && s === 'q'.repeat(300) + '\\ud83d\\ude00' && s.codePointAt(300) === 0x1f600; })()",
+        "(function () { var s = 'k'.repeat(255); var a = s + 'x', b = s + 'x', c = (s + 'x') + 'yz', d = s + 'xyz'; return a === b && c === d && c.length === 258; })()",
+        "(function () { var s = 'p'.repeat(1000); var t = s; for (var i = 0; i < 64; i++) t += 'z'; var u = s + 'z'.repeat(64); var set = new Set([t]); return set.has(u) && t.endsWith('z'.repeat(64)); })()",
+    ];
+    for check in checks {
+        assert_eq!(
+            engine.evaluate(&format!("String({check})"), false),
+            Ok(Completion::String("true".into())),
+            "{check}"
+        );
+    }
+}
+
+/// What one instruction scoped is released when it ends: a long loop of
+/// object destructurings in one call does not fill the heap.
+#[test]
+fn a_loop_of_object_destructurings_stays_within_the_heap_limit() {
+    let mut engine = fatal(8 << 20);
+    assert_eq!(
+        engine.evaluate(
+            "var point = { x: 3, y: 4, meta: { id: 7 } }; var s = 0; for (var i = 0; i < 300000; i++) { var { x, y, meta: { id } } = point; var { x: again, ...rest } = point; s += x + y + id + again + rest.y; } s",
+            false
+        ),
+        Ok(Completion::Number(300000.0 * 21.0))
+    );
+    assert!(engine.memory_used() < 4 << 20);
+}
+
+/// A typed array takes a key for an element only when it is the string of a
+/// Number; any other name is an ordinary property, found without converting
+/// it.
+#[test]
+fn typed_array_keys_that_are_not_numbers_are_ordinary_properties() {
+    let (mut engine, _) = engine();
+    let checks = [
+        "(function () { var t = new Uint8Array(4); t[1] = 7; return t.length === 4 && t['1'] === 7 && t[1] === 7 && t.byteLength === 4; })()",
+        "(function () { var t = new Uint8Array(4); t['01'] = 5; t.name = 'n'; return t['01'] === 5 && t.name === 'n' && t[1] === 0; })()",
+        "(function () { var t = new Uint8Array(4); t['NaN'] = 5; t['Infinity'] = 6; t['-0'] = 7; t['1.5'] = 8; t['-1'] = 9; return t['NaN'] === undefined && t['Infinity'] === undefined && t['-0'] === undefined && t['1.5'] === undefined && t['-1'] === undefined && Object.keys(t).length === 4; })()",
+        "(function () { var t = new Float64Array(2); t['Infinite'] = 1; t['Nan'] = 2; t['-x'] = 3; return t['Infinite'] === 1 && t['Nan'] === 2 && t['-x'] === 3; })()",
+        "(function () { var t = new Uint8Array(3), n = 0; for (var i = 0; i < t.length; i++) { t[i] = i + 1; n += t[i]; } return n === 6 && ('length' in t) && !('5' in t) && ('2' in t); })()",
+    ];
+    for check in checks {
+        assert_eq!(
+            engine.evaluate(&format!("String({check})"), false),
+            Ok(Completion::String("true".into())),
+            "{check}"
+        );
+    }
+}
+
 /// A string a script handed out goes back in as it was: call arguments and
 /// what a host function returns are WTF-8, as what comes out is.
 #[test]
