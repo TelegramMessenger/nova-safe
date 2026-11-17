@@ -59,6 +59,30 @@ use super::{
 /// the this value in the execution context, and a Declarative Environment
 /// Record holds its bindings, or no record at all when every parameter, var
 /// and lexical declaration lives in a stack slot.
+/// The first stack slot of the parameters when every one of them is a plain
+/// name kept in a stack slot, in order and with no rest parameter: they are
+/// then bound from the arguments by one instruction.
+fn consecutive_parameter_slots<'s>(
+    ctx: &CompileContext<'_, 's, '_, '_>,
+    formals: &'s oxc_ast::ast::FormalParameters<'s>,
+    has_duplicates: bool,
+) -> Option<usize> {
+    if has_duplicates || formals.rest.is_some() {
+        return None;
+    }
+    let mut first_slot = None;
+    for (index, parameter) in formals.items.iter().enumerate() {
+        let oxc_ast::ast::BindingPattern::BindingIdentifier(identifier) = &parameter.pattern else {
+            return None;
+        };
+        let slot = ctx.get_variable_stack_index(identifier.symbol_id())? as usize;
+        if slot != *first_slot.get_or_insert(slot) + index {
+            return None;
+        }
+    }
+    first_slot
+}
+
 pub(crate) fn instantiation<'s>(
     ctx: &mut CompileContext<'_, 's, '_, '_>,
     stack_variables: &mut Vec<StackVariable>,
@@ -298,6 +322,12 @@ pub(crate) fn instantiation<'s>(
             ctx.lexical_binding_state = !has_duplicates;
             let _ = formals.compile(ctx);
             ctx.lexical_binding_state = lexical_binding_state;
+        } else if let Some(first_slot) = consecutive_parameter_slots(ctx, formals, has_duplicates) {
+            ctx.add_instruction_with_immediate_and_immediate(
+                Instruction::BindArguments,
+                first_slot,
+                formals.items.len(),
+            );
         } else {
             simple_array_pattern(
                 ctx,
@@ -351,7 +381,12 @@ pub(crate) fn instantiation<'s>(
         // 31. Else,
         //   a. Let lexEnv be varEnv.
         // 32. Set the LexicalEnvironment of calleeContext to lexEnv.
-        if !strict {
+        // NOTE: the separate record is there for a direct eval, which looks
+        // in it for the lexical declarations its own vars would conflict
+        // with. Where no direct eval can run, nothing tells the two records
+        // apart and the lexical declarations go where a strict function's
+        // go.
+        if !strict && ctx.scope_contains_direct_eval(func.scope_id()) {
             // Note: these are not lexical scopes per-se, just something we
             // "start with". Thus, we do not use ctx.enter_lexical_scope().
             ctx.add_instruction(Instruction::EnterDeclarativeEnvironment);
