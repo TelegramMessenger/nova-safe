@@ -715,7 +715,7 @@ pub(crate) fn prepare_for_ordinary_call<'a>(
 /// throws in a Function Environment Record, every other function's comes from
 /// its compiled body.
 #[inline]
-fn call_environment(agent: &Agent, f: ECMAScriptFunction) -> CallEnvironment {
+pub(crate) fn call_environment(agent: &Agent, f: ECMAScriptFunction) -> CallEnvironment {
     let data = f.get(agent);
     if data
         .ecmascript_function
@@ -738,7 +738,9 @@ fn call_environment(agent: &Agent, f: ECMAScriptFunction) -> CallEnvironment {
 /// thisArgument for a strict function; for one that is not, the global this
 /// value of its realm in place of undefined and null, and an object made of
 /// any other primitive.
-fn prepare_for_call_without_function_environment(
+// Part of every such call, whichever way it is made: inlined into both.
+#[inline(always)]
+pub(crate) fn prepare_for_call_without_function_environment(
     agent: &mut Agent,
     f: ECMAScriptFunction,
     this_argument: Value,
