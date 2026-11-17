@@ -781,6 +781,183 @@ impl<'a> From<TryHasBindingContinue<'a>> for TryResult<'a, TryHasBindingContinue
     }
 }
 
+/// Where a name was found from one place in the code: so many Environment
+/// Records out from the running one, at such a place among the bindings
+/// there.
+///
+/// This is remembered only for a name whose scope chain cannot change
+/// between two runs of that place in the code (the compiler says so where
+/// no `with` and no direct `eval` is in scope): the records on the way are
+/// then declarative ones made by the same code in the same order every time,
+/// so where the name was found once is where it is found again. The
+/// remembered place is still checked when it is used, by the kinds of the
+/// records on the way and by the name at the place; when the check fails the
+/// name is resolved the long way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BindingSite {
+    outwards: u16,
+    slot: u32,
+}
+
+impl BindingSite {
+    /// Nothing is remembered yet.
+    pub(crate) const UNKNOWN: Self = Self {
+        outwards: u16::MAX,
+        slot: 0,
+    };
+
+    /// The name was found where no place can be remembered (the global or a
+    /// module record, or past one): it is resolved the long way every time.
+    pub(crate) const ELSEWHERE: Self = Self {
+        outwards: u16::MAX - 1,
+        slot: 0,
+    };
+
+    const FARTHEST: u16 = u16::MAX - 2;
+
+    /// The Environment Record this many records out from the running one,
+    /// if all on the way are declarative.
+    #[inline]
+    fn record<'a>(self, agent: &Agent, gc: NoGcScope<'a, '_>) -> Option<Environment<'a>> {
+        if self.outwards > Self::FARTHEST {
+            return None;
+        }
+        let environments = &agent.heap.environments;
+        let mut env = agent.current_lexical_environment(gc);
+        for _ in 0..self.outwards {
+            env = environments.declarative_record(env)?.outer_env()?.bind(gc);
+        }
+        Some(env)
+    }
+}
+
+impl Environments {
+    /// The bindings of a Declarative or a Function Environment Record.
+    #[inline]
+    fn declarative_record(&self, env: Environment) -> Option<&DeclarativeEnvironmentRecord> {
+        match env {
+            Environment::Declarative(e) => Some(self.get_declarative_environment(e)),
+            Environment::Function(e) => Some(self.get_declarative_environment(
+                self.get_function_environment(e).declarative_environment(),
+            )),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn declarative_record_mut(
+        &mut self,
+        env: Environment,
+    ) -> Option<&mut DeclarativeEnvironmentRecord> {
+        match env {
+            Environment::Declarative(e) => Some(self.get_declarative_environment_mut(e)),
+            Environment::Function(e) => {
+                let e = self.get_function_environment(e).declarative_environment();
+                Some(self.get_declarative_environment_mut(e))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The value of `name` where `site` remembers it, if the name is still found
+/// there and is initialized.
+#[inline]
+pub(crate) fn binding_value_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String,
+    gc: NoGcScope<'a, '_>,
+) -> Option<Value<'a>> {
+    let env = site.record(agent, gc)?;
+    agent
+        .heap
+        .environments
+        .declarative_record(env)?
+        .binding_at(site.slot, name)?
+        .value
+        .bind(gc)
+}
+
+/// Sets `name` where `site` remembers it to `value`, if the name is still
+/// found there, mutable and initialized; false leaves it to PutValue.
+#[inline]
+pub(crate) fn set_binding_value_at_site(
+    agent: &mut Agent,
+    site: BindingSite,
+    name: String,
+    value: Value,
+    gc: NoGcScope,
+) -> bool {
+    let Some(env) = site.record(agent, gc) else {
+        return false;
+    };
+    let Some(binding) = agent
+        .heap
+        .environments
+        .declarative_record_mut(env.unbind())
+        .and_then(|record| record.binding_at_mut(site.slot, name))
+    else {
+        return false;
+    };
+    if !binding.mutable || binding.value.is_none() {
+        return false;
+    }
+    binding.value = Some(value.unbind());
+    true
+}
+
+/// The Reference to `name` where `site` remembers it, if the name is still
+/// found there.
+#[inline]
+pub(crate) fn try_resolve_binding_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String<'a>,
+    strict: bool,
+    gc: NoGcScope<'a, '_>,
+) -> Option<Reference<'a>> {
+    let env = site.record(agent, gc)?;
+    agent
+        .heap
+        .environments
+        .declarative_record(env)?
+        .binding_at(site.slot, name)?;
+    Some(Reference::new_variable_reference(env, name, None, strict))
+}
+
+/// What to remember of where `reference` found its name
+/// ([`BindingSite`]).
+pub(crate) fn binding_site_of(agent: &Agent, reference: &Reference, gc: NoGcScope) -> BindingSite {
+    let (Reference::Variable(_) | Reference::VariableStrict(_)) = reference else {
+        return BindingSite::ELSEWHERE;
+    };
+    let base = reference.base_env();
+    let name = reference.referenced_name_string();
+    let environments = &agent.heap.environments;
+    let mut env = agent.current_lexical_environment(gc);
+    let mut outwards = 0u16;
+    loop {
+        let Some(record) = environments.declarative_record(env) else {
+            return BindingSite::ELSEWHERE;
+        };
+        if env == base.bind(gc) {
+            return match record.binding_slot(name) {
+                Some(slot) => BindingSite { outwards, slot },
+                None => BindingSite::ELSEWHERE,
+            };
+        }
+        let Some(outer) = record.outer_env() else {
+            return BindingSite::ELSEWHERE;
+        };
+        if outwards == BindingSite::FARTHEST {
+            return BindingSite::ELSEWHERE;
+        }
+        outwards += 1;
+        env = outer.bind(gc);
+    }
+}
+
 /// ### Try [9.1.2.1 GetIdentifierReference ( env, name, strict )](https://tc39.es/ecma262/#sec-getidentifierreference)
 ///
 /// The abstract operation GetIdentifierReference takes arguments env (an

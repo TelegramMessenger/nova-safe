@@ -326,6 +326,19 @@ pub(crate) enum Instruction {
     /// Store ResolveBinding() in the reference register using a property
     /// lookup cache.
     ResolveBindingWithCache,
+    /// Store ResolveBinding() in the reference register for a name whose
+    /// scope chain no `with` or direct `eval` can change, remembering where
+    /// the name was found (a BindingSite of the executable) for the next
+    /// time.
+    ResolveBindingAtSite,
+    /// Store in the result register the value of a name whose scope chain no
+    /// `with` or direct `eval` can change: GetValue(ResolveBinding()) with no
+    /// Reference when the name is where the BindingSite remembers it.
+    GetBindingAtSite,
+    /// Set a name whose scope chain no `with` or direct `eval` can change to
+    /// the value in the result register: PutValue(ResolveBinding(), value)
+    /// with no Reference when the name is where the BindingSite remembers it.
+    PutBindingAtSite,
     /// Store ResolveThisBinding() in the result register.
     ResolveThisBinding,
 
@@ -587,7 +600,10 @@ impl Instruction {
             | Self::PushExceptionJumpTarget
             | Self::GetPropertyWithCache
             | Self::GetPropertyWithCacheKeepReference
-            | Self::ResolveBindingWithCache => 2,
+            | Self::ResolveBindingWithCache
+            | Self::ResolveBindingAtSite
+            | Self::GetBindingAtSite
+            | Self::PutBindingAtSite => 2,
             Self::PutValueToIndex
             | Self::GetValueFromIndex
             | Self::ArrayCreate
@@ -688,6 +704,9 @@ impl Instruction {
                 | Self::MakeSuperPropertyReferenceWithIdentifierKey
                 | Self::ResolveBinding
                 | Self::ResolveBindingWithCache
+                | Self::ResolveBindingAtSite
+                | Self::GetBindingAtSite
+                | Self::PutBindingAtSite
                 | Self::VerifyIsObject
         );
 
@@ -1041,6 +1060,9 @@ impl Instr {
             Instruction::ObjectDefineMethod => "function() {}".to_string(),
             Instruction::ObjectDefineSetter => "set function() {}".to_string(),
             Instruction::ResolveBindingWithCache
+            | Instruction::ResolveBindingAtSite
+            | Instruction::GetBindingAtSite
+            | Instruction::PutBindingAtSite
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference => {
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
@@ -1229,6 +1251,9 @@ impl Instruction {
         const PUTVALUEWITHCACHE: u8 = Instruction::PutValueWithCache.as_u8();
         const RESOLVEBINDING: u8 = Instruction::ResolveBinding.as_u8();
         const RESOLVEBINDINGWITHCACHE: u8 = Instruction::ResolveBindingWithCache.as_u8();
+        const RESOLVEBINDINGATSITE: u8 = Instruction::ResolveBindingAtSite.as_u8();
+        const GETBINDINGATSITE: u8 = Instruction::GetBindingAtSite.as_u8();
+        const PUTBINDINGATSITE: u8 = Instruction::PutBindingAtSite.as_u8();
         const RESOLVETHISBINDING: u8 = Instruction::ResolveThisBinding.as_u8();
         const RETURN: u8 = Instruction::Return.as_u8();
         const STORE: u8 = Instruction::Store.as_u8();
@@ -1407,6 +1432,9 @@ impl Instruction {
             PUTVALUEWITHCACHE => Some(Instruction::PutValueWithCache),
             RESOLVEBINDING => Some(Instruction::ResolveBinding),
             RESOLVEBINDINGWITHCACHE => Some(Instruction::ResolveBindingWithCache),
+            RESOLVEBINDINGATSITE => Some(Instruction::ResolveBindingAtSite),
+            GETBINDINGATSITE => Some(Instruction::GetBindingAtSite),
+            PUTBINDINGATSITE => Some(Instruction::PutBindingAtSite),
             RESOLVETHISBINDING => Some(Instruction::ResolveThisBinding),
             RETURN => Some(Instruction::Return),
             STORE => Some(Instruction::Store),

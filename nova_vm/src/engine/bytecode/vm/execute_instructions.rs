@@ -7,17 +7,17 @@ use oxc_span::Span;
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, BigInt, BuiltinConstructorArgs,
-        ConstructorStatus, ECMAScriptFunction, Environment, ExceptionType, Function,
-        InternalMethods, InternalSlots, JsResult, Number, Numeric, Object,
+        Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, BigInt, BindingSite,
+        BuiltinConstructorArgs, ConstructorStatus, ECMAScriptFunction, Environment, ExceptionType,
+        Function, InternalMethods, InternalSlots, JsResult, Number, Numeric, Object,
         OrdinaryFunctionCreateParams, OrdinaryObject, Primitive, PrivateMethod, Promise,
         PropertyDescriptor, PropertyKey, PropertyKeySet, PropertyLookupCache, ProtoIntrinsics,
         Reference, ScriptOrModule, SetFunctionNamePrefix, SetResult, String, TryError,
-        TryGetValueContinue, TryHasResult, TryResult, Value, array_create, call, call_function,
-        call_proxy_set, construct, copy_data_properties, copy_data_properties_into_object,
-        create_builtin_constructor, create_data_property_or_throw,
-        create_unmapped_arguments_object, define_property_or_throw, evaluate_import_call,
-        get_this_environment, get_this_value, get_value, has_property,
+        TryGetValueContinue, TryHasResult, TryResult, Value, array_create, binding_site_of, call,
+        call_function, call_proxy_set, construct, copy_data_properties,
+        copy_data_properties_into_object, create_builtin_constructor,
+        create_data_property_or_throw, create_unmapped_arguments_object, define_property_or_throw,
+        evaluate_import_call, get_this_environment, get_this_value, get_value, has_property,
         initialize_derived_instance_elements, is_constructor, is_less_than, is_loosely_equal,
         is_private_reference, is_property_reference, is_strictly_equal, is_super_reference,
         is_unresolvable_reference, iterator_complete, iterator_value, make_constructor,
@@ -30,8 +30,8 @@ use crate::{
         to_property_key_complex, to_property_key_primitive, to_property_key_simple, to_string,
         to_string_primitive, try_copy_data_properties_into_object, try_create_data_property,
         try_define_property_or_throw, try_get_value, try_has_property,
-        try_initialize_referenced_binding, try_put_value, try_resolve_binding, try_result_into_js,
-        try_result_into_option_js, unwrap_try,
+        try_initialize_referenced_binding, try_put_value, try_resolve_binding,
+        try_resolve_binding_at_site, try_result_into_js, try_result_into_option_js, unwrap_try,
     },
     engine::{
         ActiveIterator, Bindable, GcScope, NoGcScope, Scopable, ScopableCollection, Scoped,
@@ -199,6 +199,81 @@ pub(super) fn execute_resolve_binding<'gc>(
 
     vm.reference = Some(reference.unbind());
     Ok(())
+}
+
+/// ResolveBinding where the scope chain is fixed: the name is looked for
+/// where it was found the last time (BindingSite), and only when it is not
+/// there resolved through the chain, which is then remembered.
+#[inline(always)]
+pub(super) fn execute_resolve_binding_at_site<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let identifier = executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
+    let site = executable.fetch_binding_site(agent, instr.get_second_index());
+    let strict = agent.is_evaluating_strict_code();
+    if let Some(reference) = try_resolve_binding_at_site(agent, site, identifier, strict, gc.nogc())
+    {
+        vm.reference = Some(reference.unbind());
+        return Ok(());
+    }
+    execute_resolve_binding_at_site_cold(agent, vm, executable, instr, site, gc)
+}
+
+#[inline(never)]
+fn execute_resolve_binding_at_site_cold<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    site: BindingSite,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    execute_resolve_binding(agent, vm, executable.clone(), instr, gc.reborrow()).unbind()?;
+    // A name once found outside the declarative records stays there.
+    if site == BindingSite::UNKNOWN
+        && let Some(reference) = &vm.reference
+    {
+        let found = binding_site_of(agent, reference, gc.nogc());
+        executable.set_binding_site(agent, instr.get_second_index(), found);
+    }
+    Ok(())
+}
+
+/// GetBindingAtSite when the name was not where it is remembered to be, or
+/// is not to be read from there (uninitialized): it is resolved through the
+/// chain, which is remembered, and read as GetValue reads it.
+pub(super) fn execute_get_binding_at_site<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let site = executable.fetch_binding_site(agent, instr.get_second_index());
+    execute_resolve_binding_at_site_cold(agent, vm, executable.clone(), instr, site, gc.reborrow())
+        .unbind()?;
+    execute_get_value(agent, vm, executable, instr, false, false, gc)
+}
+
+/// PutBindingAtSite when the name was not where it is remembered to be, or
+/// is not to be written there (immutable, uninitialized): it is resolved
+/// through the chain, which is remembered, and written as PutValue writes
+/// it.
+pub(super) fn execute_put_binding_at_site<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let site = executable.fetch_binding_site(agent, instr.get_second_index());
+    execute_resolve_binding_at_site_cold(agent, vm, executable.clone(), instr, site, gc.reborrow())
+        .unbind()?;
+    execute_put_value(agent, vm, executable, instr, false, gc)
 }
 
 pub(super) fn execute_resolve_binding_with_cache<'gc>(

@@ -196,6 +196,9 @@ struct CompiledExecutable {
     class_initializer_bytecodes: Box<[(Option<u32>, bool)]>,
     instance_initializer: Option<u32>,
     call_environment: CallEnvironment,
+    /// How many binding sites the instructions have; what each remembers
+    /// belongs to the Agent that runs them.
+    binding_sites: usize,
 }
 
 #[derive(PartialEq)]
@@ -408,6 +411,7 @@ impl Exporter<'_> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment,
+            binding_sites,
             _gc: _,
         } = executable.get(self.agent).clone();
 
@@ -483,6 +487,7 @@ impl Exporter<'_> {
             class_initializer_bytecodes: compiled_class_initializers.into_boxed_slice(),
             instance_initializer,
             call_environment,
+            binding_sites: binding_sites.len(),
         });
         self.executable_ids.insert(index, id);
         self.in_progress.pop();
@@ -926,6 +931,8 @@ impl<'a> Importer<'_, 'a, '_> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment: compiled.call_environment,
+            binding_sites: vec![crate::ecmascript::BindingSite::UNKNOWN; compiled.binding_sites]
+                .into_boxed_slice(),
             _gc: core::marker::PhantomData,
         })
     }

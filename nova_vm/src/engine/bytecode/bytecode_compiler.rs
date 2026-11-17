@@ -69,6 +69,11 @@ pub(crate) enum Place<'s, 'gc> {
     /// A variable in the environment. The variable data is stored in the
     /// declarative environment's hash map and accessed through a reference.
     Env { name: String<'gc> },
+    /// A variable in an environment that no `with` or direct `eval` can come
+    /// between it and this place in the code. Where it was found is
+    /// remembered (the BindingSite `site` of the executable), and it is read
+    /// and written there without a Reference.
+    Site { name: String<'gc>, site: IndexType },
     /// A variable in the global environment. The variable data is stored in
     /// the global object's properties and accessed through a reference.
     Global { name: String<'gc> },
@@ -83,7 +88,10 @@ pub(crate) enum Place<'s, 'gc> {
 impl<'s, 'gc> Place<'s, 'gc> {
     fn identifier(&self) -> Option<String<'gc>> {
         match self {
-            Place::Stack { name, .. } | Place::Env { name } | Place::Global { name } => Some(*name),
+            Place::Stack { name, .. }
+            | Place::Env { name }
+            | Place::Site { name, .. }
+            | Place::Global { name } => Some(*name),
             Place::Member { name } => name.and_then(|n| {
                 match n {
                     PropertyKey::SmallString(s) => Some(String::SmallString(s)),
@@ -106,8 +114,30 @@ impl<'s, 'gc> Place<'s, 'gc> {
         )
     }
 
-    fn initialise_referenced_binding_to_undefined(&self, ctx: &mut CompileContext) {
+    /// The Reference of a Site place into the reference register, for what
+    /// cannot be done without one.
+    fn resolve_site(
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        name: String<'gc>,
+        site: IndexType,
+    ) {
+        ctx.add_instruction_with_identifier_and_site(
+            Instruction::ResolveBindingAtSite,
+            name.to_property_key(),
+            site,
+        );
+    }
+
+    fn initialise_referenced_binding_to_undefined(
+        &self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+    ) {
         match self {
+            Place::Site { name, site } => {
+                Self::resolve_site(ctx, *name, *site);
+                ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
             Place::Env { .. } | Place::Global { .. } | Place::Member { .. } => {
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
@@ -124,8 +154,16 @@ impl<'s, 'gc> Place<'s, 'gc> {
         }
     }
 
-    fn initialise_referenced_binding(&self, ctx: &mut CompileContext, value: ValueOutput) {
+    fn initialise_referenced_binding(
+        &self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        value: ValueOutput,
+    ) {
         match self {
+            Place::Site { name, site } => {
+                Self::resolve_site(ctx, *name, *site);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
             Place::Env { .. } | Place::Global { .. } | Place::Member { .. } => {
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
@@ -174,6 +212,14 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCache, cache);
                 Ok(ValueOutput::Value)
             }
+            Place::Site { name, site } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetBindingAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(ValueOutput::Value)
+            }
             Place::Member { .. } | Place::Env { .. } => {
                 // Variable is stored in the environment or we don't know the
                 // property name at compile time. Caching doesn't help with these.
@@ -219,6 +265,15 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 // Property access. Caching helps with these.
                 let cache = ctx.create_property_lookup_cache(*name);
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCacheKeepReference, cache);
+                Ok(ValueOutput::Value)
+            }
+            Self::Site { name, site } => {
+                // Like a stack variable, there is no reference to keep.
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetBindingAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
                 Ok(ValueOutput::Value)
             }
             Self::Member { .. } | Self::Env { .. } => {
@@ -300,6 +355,14 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::PutValueWithCache, cache);
                 Ok(())
             }
+            Self::Site { name, site } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutBindingAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
             Self::Member { .. } | Self::Env { .. } => {
                 ctx.add_instruction(Instruction::PutValue);
                 Ok(())
@@ -328,6 +391,11 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 // declarations, as they always return `false`.
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, false);
                 Ok(false.into())
+            }
+            Self::Site { name, site } => {
+                Self::resolve_site(ctx, name, site);
+                ctx.add_instruction(Instruction::Delete);
+                Ok(ValueOutput::Value)
             }
             Self::Global { .. } | Self::Member { .. } | Self::Env { .. } => {
                 ctx.add_instruction(Instruction::Delete);
@@ -519,6 +587,14 @@ impl<'s, 'gc> PlaceOrValue<'s, 'gc> {
         matches!(self, PlaceOrValue::Place(Place::Stack { .. }))
     }
 
+    /// Puts the Reference of a place that is used without one (a Site) into
+    /// the reference register, for an operator that takes a Reference.
+    fn reference_into_register(&self, ctx: &mut CompileContext<'_, '_, 'gc, '_>) {
+        if let PlaceOrValue::Place(Place::Site { name, site }) = self {
+            Place::resolve_site(ctx, *name, *site);
+        }
+    }
+
     /// Returns true if the expression has a Reference on the reference stack
     /// associated with it.
     #[inline]
@@ -585,6 +661,31 @@ impl<'a, 's, 'gc, 'scope, T: CompileEvaluation<'a, 's, 'gc, 'scope>>
         ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
     ) {
         self.compile(ctx);
+    }
+}
+
+/// Whether the scopes from a reference out to the scope of its declaration
+/// are free of `with` and of direct `eval`: the two that can put a binding
+/// between a reference and its declaration at run time.
+fn scope_chain_is_fixed(
+    ctx: &CompileContext,
+    reference: oxc_semantic::NodeId,
+    declaration_scope: oxc_semantic::ScopeId,
+) -> bool {
+    let scoping = ctx.scoping();
+    let mut scope = ctx.nodes().get_node(reference).scope_id();
+    loop {
+        let flags = scoping.scope_flags(scope);
+        if flags.contains_direct_eval() || flags.is_with() {
+            return false;
+        }
+        if scope == declaration_scope {
+            return true;
+        }
+        let Some(parent) = scoping.scope_parent_id(scope) else {
+            return false;
+        };
+        scope = parent;
     }
 }
 
@@ -839,6 +940,11 @@ enum VariableKind {
     TemporalDeadZone,
     /// Stored in an environment.
     Local,
+    /// Stored in an environment, with no `with` and no direct `eval` in any
+    /// scope from the reference out to the declaration: the Environment
+    /// Records on the way are the same ones, made in the same order, every
+    /// time the reference runs.
+    LocalFixed,
     /// Found in the global scope.
     Global,
 }
@@ -871,6 +977,19 @@ impl VariableKind {
                     name.to_property_key(),
                 );
                 Place::Env { name }
+            }
+            VariableKind::LocalFixed => {
+                let name = ctx.create_string(name);
+                if let Some(site) = ctx.new_binding_site() {
+                    Place::Site { name, site }
+                } else {
+                    // More sites than an instruction can number.
+                    ctx.add_instruction_with_identifier(
+                        Instruction::ResolveBinding,
+                        name.to_property_key(),
+                    );
+                    Place::Env { name }
+                }
             }
             VariableKind::Global => {
                 let name = ctx.create_string(name);
@@ -954,6 +1073,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                             | symbol_flags.contains(SymbolFlags::Function))
                     {
                         VariableKind::Global
+                    } else if scope_chain_is_fixed(ctx, reference.node_id(), scope_id) {
+                        VariableKind::LocalFixed
                     } else {
                         VariableKind::Local
                     }
@@ -1123,6 +1244,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
                     // they have no Reference (and are known to be resolvable),
                     // we call GetValue directly.
                     val.get_value(ctx)?;
+                } else {
+                    // typeof of a name that is not found is "undefined".
+                    val.reference_into_register(ctx);
                 }
                 // 3. Set val to ? GetValue(val).
                 ctx.add_instruction(Instruction::Typeof);

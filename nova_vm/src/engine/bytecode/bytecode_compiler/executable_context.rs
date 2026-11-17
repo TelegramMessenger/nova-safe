@@ -18,8 +18,8 @@ use wtf8::Wtf8Buf;
 use crate::ecmascript::{RegExp, reg_exp_create_literal};
 use crate::{
     ecmascript::{
-        Agent, BigInt, ExceptionType, Number, ObjectShape, PropertyKey, PropertyLookupCache,
-        String, Value,
+        Agent, BigInt, BindingSite, ExceptionType, Number, ObjectShape, PropertyKey,
+        PropertyLookupCache, String, Value,
     },
     engine::{
         Bindable, Executable, ExecutableHeapData, FunctionExpression, Instruction, NoGcScope,
@@ -73,6 +73,9 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// Caches being built
     caches: Vec<PropertyLookupCache<'gc>>,
     cache_indexes: AHashMap<PropertyLookupCache<'gc>, usize>,
+    /// How many BindingSites the instructions use: one for each place in the
+    /// code that names a variable whose scope chain is fixed.
+    binding_sites: usize,
     /// Constants being built
     constants: Vec<Value<'gc>>,
     constant_indexes: AHashMap<ConstantKey<'gc>, usize>,
@@ -108,6 +111,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             recent_len: 0,
             caches: Vec::new(),
             cache_indexes: AHashMap::default(),
+            binding_sites: 0,
             constants: Vec::new(),
             constant_indexes: AHashMap::default(),
             wide_constants: Vec::new(),
@@ -271,6 +275,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 .collect(),
             instance_initializer: self.instance_initializer.unbind(),
             call_environment: self.call_environment,
+            binding_sites: vec![BindingSite::UNKNOWN; self.binding_sites].into_boxed_slice(),
             _gc: PhantomData,
         })
     }
@@ -557,6 +562,34 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.add_index_of(identifier, TOO_MANY_NAMES);
         let cache = self.add_cache(cache);
         self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
+    }
+
+    /// A new BindingSite of the executable, while an instruction can still
+    /// number one.
+    pub(super) fn new_binding_site(&mut self) -> Option<IndexType> {
+        let site = IndexType::try_from(self.binding_sites).ok()?;
+        self.binding_sites += 1;
+        Some(site)
+    }
+
+    /// One of the instructions that take a name and the BindingSite that
+    /// remembers where it was found.
+    pub(super) fn add_instruction_with_identifier_and_site(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        site: IndexType,
+    ) {
+        debug_assert!(matches!(
+            instruction,
+            Instruction::ResolveBindingAtSite
+                | Instruction::GetBindingAtSite
+                | Instruction::PutBindingAtSite
+        ));
+        self.push_instruction(instruction);
+        let identifier = self.add_identifier(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
+        self.instructions.extend_from_slice(&site.to_ne_bytes());
     }
 
     pub(super) fn add_instruction_with_identifier_and_constant(

@@ -13,9 +13,10 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType, JsError,
         JsResult, Number, Object, Primitive, Promise, Reference, SmallInteger, String, Value,
-        call_function, get_method, is_callable, ordinary_has_instance, take_pooled_arguments_vec,
-        to_boolean, to_numeric, to_numeric_primitive, to_primitive, to_property_key,
-        to_string_primitive, try_get_object_method, try_result_into_option_js,
+        binding_value_at_site, call_function, get_method, is_callable, ordinary_has_instance,
+        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
+        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
+        try_get_object_method, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -634,6 +635,27 @@ impl Vm {
             Instruction::EvaluatePropertyAccessWithExpressionKey => {
                 execute_evaluate_property_access_with_expression_key(agent, vm, gc)
             }
+            // A variable of an enclosing function, where it was found the
+            // last time.
+            Instruction::GetBindingAtSite => {
+                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
+                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                let Some(value) = binding_value_at_site(agent, site, name, gc) else {
+                    return Plain::No;
+                };
+                vm.result = Some(value.unbind());
+            }
+            Instruction::PutBindingAtSite => {
+                let Some(value) = vm.result else {
+                    return Plain::No;
+                };
+                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
+                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                if !set_binding_value_at_site(agent, site, name, value, gc) {
+                    return Plain::No;
+                }
+                vm.result = None;
+            }
             // A Number is its own numeric value: the counter of nearly every
             // loop.
             Instruction::ToNumeric => {
@@ -786,6 +808,15 @@ impl Vm {
             Instruction::ResolveBinding => {
                 execute_resolve_binding(agent, vm, executable, instr, gc)?;
             }
+            Instruction::ResolveBindingAtSite => {
+                execute_resolve_binding_at_site(agent, vm, executable, instr, gc)?;
+            }
+            Instruction::GetBindingAtSite => {
+                execute_get_binding_at_site(agent, vm, executable, instr, gc)?;
+            }
+            Instruction::PutBindingAtSite => {
+                execute_put_binding_at_site(agent, vm, executable, instr, gc)?;
+            }
             Instruction::GetValue
             | Instruction::GetValueWithCache
             | Instruction::GetValueKeepReference
@@ -876,6 +907,9 @@ impl Vm {
             | Instruction::Jump
             | Instruction::JumpIfNot
             | Instruction::ResolveBinding
+            | Instruction::ResolveBindingAtSite
+            | Instruction::GetBindingAtSite
+            | Instruction::PutBindingAtSite
             | Instruction::GetValue
             | Instruction::GetValueWithCache
             | Instruction::GetValueKeepReference
