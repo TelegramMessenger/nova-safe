@@ -34,22 +34,22 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 7.1x |
-| math | 4 | 9.7x | 6.0x |
+| call | 14 | 10.4x | 5.9x |
 | typed | 4 | 10.6x | 5.5x |
-| app | 8 | 6.1x | 4.8x |
-| prop | 13 | 7.1x | 4.7x |
-| array | 14 | 5.8x | 4.4x |
+| math | 4 | 9.7x | 5.5x |
 | loop | 11 | 11.1x | 4.2x |
-| string | 26 | 10.6x | 3.6x |
-| map, set | 4 | 4.6x | 2.9x |
-| gc | 3 of 5 | 3.6x | 2.1x |
+| prop | 13 | 7.1x | 4.1x |
+| app | 8 | 6.1x | 4.0x |
+| array | 14 | 5.8x | 3.7x |
+| string | 26 | 10.6x | 3.5x |
+| map, set | 4 | 4.6x | 2.8x |
 | regexp | 4 | 2.4x | 2.1x |
-| json | 2 | 1.0x | 0.9x |
-| all | 108 | 7.6x | 4.2x |
+| gc | 3 of 5 | 3.6x | 1.8x |
+| json | 2 | 1.0x | 1.0x |
+| all | 108 | 7.6x | 3.8x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
-(38x, area 7); after it come calls and property access at 9-12x. One case ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of
+(38x, area 7); after it come iterating a string by code point (10x), globals (9x) and calls (7-8x). One case ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
 What is written in Rust or C on both sides is level: JSON, RegExp, `indexOf`, `split`/`join`, `sort`. The gap is in
@@ -73,11 +73,14 @@ fail, run a script or scope a value (stack moves, constants, jumps, strict equal
 arithmetic of two integers) go straight to the next instruction, with no result to look at and nothing to release;
 arguments are read as four bytes of which an instruction uses what it has; the interrupt countdown is taken at
 backward jumps and at calls (8 steps each) and no longer at every instruction. A plain counting loop went from
-12.4x to 3.1x, loops from 11.1x to 4.4x, and everything else gained with them. A JavaScript call also takes less
+12.4x to 2.8x, loops from 11.1x to 4.2x, and everything else gained with them. A JavaScript call also takes less
 native stack (1,683 nested calls where there were 1,510).
 
-Left: 1.3 ns an instruction, of which the dispatch is still 60% (the instruction pointer goes through memory, the
-argument count through a table, and a collection is checked for before each instruction). Next: fewer
+A collection is no longer looked for before every instruction either, only where one can have become due: when
+code starts, after an instruction that is not plain, and on every turn of a loop.
+
+Left: 1.3 ns an instruction, of which the dispatch is still more than half (the instruction pointer goes through
+memory and the argument count through a table). Next: fewer
 instructions for the same code, by fusing the commonest pairs (compare and branch, increment a stack slot, load a
 constant and operate), which is where QuickJS's 8 instructions for the same iteration come from. Reach: about
 2-2.5x on plain loops.
@@ -95,40 +98,59 @@ variable there with one instruction and no Reference. That is sound wherever no 
 any scope between the name and its declaration, which the compiler knows; the remembered place is still checked
 when it is used (the kinds of the records on the way, the name at the slot), and anything unusual (a variable not
 yet initialized, a constant written to) takes the general way and gives the error that way gives. A loop over a
-closure variable went from 18x to 5.5x, and calls, property and element access gained 10-30% with it, since the
+closure variable went from 18x to 4.9x, and calls, property and element access gained 10-30% with it, since the
 functions and objects they use are closure variables.
 
 Remembering the place alone, with the Reference kept, gained 3-8%: the lookup was the small part and the
 Reference the large one.
 
-Left: globals (`loop/global-variable` 9.4x) still go through a Reference, with a property cache; the same two
+Left: globals (`loop/global-variable` 9.1x) still go through a Reference, with a property cache; the same two
 instructions over that cache are next. Top-level `let`/`const` and module variables are resolved the long way.
 
 ### 3. Calls
 
-A JavaScript call is 9-12x (it was 13-20x; what it gained came from areas 1 and 2). Each one makes a new `Vm`, an execution context, a function environment record even
-when nothing captures its variables, and binds its arguments through the general binding-pattern code. Recursion is
-also shallower: about 2.7 KB of native stack per call level against 0.9 KB.
+A JavaScript call was 13-20x. Each one made a new `Vm`, an execution context and a function environment record,
+bound its parameters through the general binding-pattern code (an iterator over the arguments, five instructions
+and more for two parameters), made a second environment record for the lexical declarations of a function that is
+not strict, and left through the cold path for unusual results.
 
-Next: no environment record for a function whose variables all live on the stack; parameters bound straight to
-stack slots; the `Vm`'s stacks reused across calls. Reach: about 5-6x.
+Done: one instruction binds the parameters of a function whose parameters are all plain names in stack slots; a
+function that is not strict and holds no direct `eval` makes no separate record for its lexical declarations (that
+record is only there for an `eval` to look in); `Return` ends the loop directly. A call is 7-8x.
+
+Left: what is left is spread thin, with no single cost much above a tenth: the `Vm` made and recycled for every call,
+the execution context, the function environment record of every function that is not strict (strict functions
+that do not need one already go without), the argument list scoped for the collector, and the copy of the
+arguments. Recursion is also shallower: about 2.7 KB of native stack per call level against 0.9 KB. Next: go
+without the function environment record for functions that are not strict but never look at `this`, as strict
+ones do; keep one `Vm` across calls. Reach: about 5x.
 
 ### 4. Properties
 
-`o.x` is 7-12x (it was 8-23x): the access builds a Reference record and then reads through the inline cache, and the profile shows
-generic own-property lookups next to it. Object creation is not the problem (literals 1.5x).
+`o.x` was 8-23x: the access built a Reference record and went through the general `[[Get]]` to reach the property
+cache, and `o.x = v` did not use the cache at all: it ran the whole of OrdinarySet, with two searches of the keys.
 
-Next: one instruction for a named get and one for a named put that consult the cache directly, and a check that puts
-hit it. Reach: about 4x.
+Done: where the property cache knows the shape of an ordinary object, `o.x` is read from the offset the cache gives
+(the object's own, or a prototype's, or known absent), and `o.x = v` writes an own writable data property there.
+Anything else (an accessor, a property that is not writable, a shape the cache does not know yet, an object that is
+not ordinary) takes the general way. One shape is 5.9x, four shapes 4.2x.
+
+Left: accessors are calls (`prop/getter-setter` 8x), and a method call (`prop/prototype-chain-method` 7x) is a
+call. Functions, Arrays and other objects with a backing object do not take the short way for their named
+properties yet.
 
 ### 5. Array and typed array elements
 
-`a[i]` is 6-8x (it was 11-19x) through the same Reference path with a generic property key; `typedArray.length` is a getter call
-on every loop test.
+`a[i]` was 11-19x through the same Reference path with a generic property key.
 
-Done: a typed array no longer converts a key such as `length` to a Number and back on every access to learn that it
-is not an index (typed array loops 10.6x to 8.1x then; 5.5x now). Next: element get/put instructions with a short way for arrays
-and typed arrays under an integer index; `length` of an array or typed array without a call. Reach: about 4x.
+Done: `a[i]` of an Array with an element there is read from the element storage, `a[i] = v` writes an element that
+is there as a plain value, and `a.length` is the length (5.0x for reads and writes in a loop, 4.3x for a grid). A
+hole, an index outside the Array, an accessor or an element that is not writable takes the general way. A typed
+array no longer converts a key such as `length` to a Number and back on every access to learn that it is not an
+index.
+
+Left: typed arrays (5.5x; 6-8x in loops) still go through a Reference for elements and a getter call for `length`.
+Next: the same short ways for typed arrays under an integer index. Reach: about 4x.
 
 ### 6. Numbers
 
@@ -138,7 +160,7 @@ integers, and comparisons of two Numbers no longer park the `Vm` for a collectio
 whose result is an integer or a Boolean are now handled in the loop itself (area 1).
 
 Left: a double that does not fit the 56-bit inline form is allocated on the heap, so most float arithmetic
-allocates (`math/` 6.0x, `typed/float64-math` 8x). The fix is a value layout with inline doubles, which touches
+allocates (`math/` 5.5x, `typed/float64-math` 8x). The fix is a value layout with inline doubles, which touches
 every `match` on `Value`: large, and after the items above.
 
 ### 7. Building strings
@@ -171,6 +193,8 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 - `-1 * 0` was `+0`: the integer short way of `Number::multiply` returned an integer zero. Fixed.
 - `String.prototype.repeat` goes through a lossy conversion, so a lone surrogate in the repeated string becomes
   U+FFFD (also listed open in `PLAN.md`). Not fixed.
+- `typeof x` before the `let x` of the same function panicked (the engine died): the compiler asked for a
+  Reference that a stack variable does not have. It throws a ReferenceError now. Fixed.
 - `with (object) { … }` evaluates the object and runs the body without an Object Environment Record, so the
   body never sees the object's properties (the bytecode compiler stops at step 2 of the statement's evaluation).
   Sloppy code only. Not fixed.
@@ -180,4 +204,4 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 `cargo test -p nova_vm -p nova_embed -p nova_embed_ffi -p wtf8`, the widget sandbox's own suite against the built
 library (224 tests in process, over the stream and hosted, the attack corpus, the compat corpus), then
 `safe/bench/run.py --baseline …` for the numbers, and test262 as `safe/tools/gate.sh` runs it (no unexpected
-result; 14 tests that timed out now pass).
+result; 13 tests that timed out now pass).
