@@ -446,6 +446,53 @@ fn huge_allocations_are_refused() {
     });
 }
 
+/// With [`Agent::set_heap_limit_refusal_terminates`] no handler keeps a
+/// script going past an allocation the limit has no room for, and garbage
+/// alone never ends one.
+#[test]
+fn a_refused_allocation_can_terminate_instead_of_throwing() {
+    on_big_stack(|| {
+        for source in [
+            "try { new ArrayBuffer(2 ** 27); 'caught' } catch (e) { String(e) }",
+            "try { 'x'.repeat(2 ** 27); } finally { globalThis.ran = 1; }",
+            "const a = []; for (;;) { try { a.push(new ArrayBuffer(1 << 24)); } catch {} }",
+            "Promise.resolve().then(() => { try { new ArrayBuffer(2 ** 27); } catch {} globalThis.ran = 1; });",
+        ] {
+            let mut engine = Engine::new();
+            engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+            engine.agent.set_heap_limit_refusal_terminates(true);
+            assert_eq!(
+                engine.run(source, Some(Duration::from_secs(60))),
+                Outcome::Terminated(TerminationReason::OutOfMemory),
+                "{source}"
+            );
+            assert!(engine.agent.heap_size() < 128 * 1024 * 1024, "{source}");
+            engine.agent.set_heap_limit(None);
+            assert_eq!(
+                engine.run("typeof ran", None),
+                Outcome::Value("undefined".into())
+            );
+        }
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+        engine.agent.set_heap_limit_refusal_terminates(true);
+        assert_eq!(
+            engine.run(
+                "let n = 0; for (let i = 0; i < 20; i++) { let b = new ArrayBuffer(40 << 20); n += b.byteLength; b = null; } n",
+                None
+            ),
+            Outcome::Value((20u64 * (40 << 20)).to_string())
+        );
+        // Without a heap limit nothing is refused for it, so nothing ends.
+        engine.agent.set_heap_limit(None);
+        assert_eq!(
+            engine.run("new ArrayBuffer(2 ** 31 + 1)", None),
+            thrown("RangeError: Allocation too large")
+        );
+        engine.assert_usable();
+    });
+}
+
 #[test]
 fn heap_limit_terminates_growing_scripts() {
     on_big_stack(|| {
