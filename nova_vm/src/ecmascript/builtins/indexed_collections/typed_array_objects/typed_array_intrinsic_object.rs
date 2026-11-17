@@ -9,9 +9,9 @@ use crate::{
     ecmascript::{
         Agent, AnyTypedArray, ArgumentsList, ArrayIterator, BUILTIN_STRING_MEMORY, Behaviour,
         Builtin, BuiltinGetter, BuiltinIntrinsic, BuiltinIntrinsicConstructor,
-        CollectionIteratorKind, ExceptionType, InternalMethods, JsResult, Number, Numeric, Object,
-        Primitive, PropertyKey, Realm, SmallInteger, String, TryGetResult,
-        TypedArrayAbstractOperations, Value, builders::BuiltinFunctionBuilder,
+        CollectionIteratorKind, ExceptionType, Function, InternalMethods, JsResult, Number,
+        Numeric, Object, Primitive, PropertyKey, Realm, RegularFn, SmallInteger, String,
+        TryGetResult, TypedArrayAbstractOperations, Value, builders::BuiltinFunctionBuilder,
         builders::OrdinaryObjectBuilder, call_function, find_via_predicate, for_any_typed_array,
         get, get_iterator_from_method, get_method, invoke, is_callable, is_constructor,
         iterator_to_list, length_of_array_like, same_value_zero, set, throw_not_callable,
@@ -22,7 +22,7 @@ use crate::{
         unwrap_try_get_value, unwrap_try_get_value_or_unset,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable},
-    heap::{IntrinsicConstructorIndexes, IntrinsicFunctionIndexes, WellKnownSymbols},
+    heap::{ArenaAccess, IntrinsicConstructorIndexes, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
 use super::abstract_operations::{
@@ -1706,21 +1706,23 @@ impl TypedArrayPrototype {
         // 3. Assert: O has a [[ViewedArrayBuffer]] internal slot.
         let o = require_internal_slot_typed_array(agent, o, gc)?;
 
-        let length = for_any_typed_array!(o, o, {
-            // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, seq-cst).
-            let cached_buffer_byte_length =
-                o.get_cached_buffer_byte_length(agent, Ordering::SeqCst);
+        // 4. to 7.
+        Ok(o.length_value(agent))
+    }
 
-            // 5. If IsTypedArrayOutOfBounds(taRecord) is true, return +0𝔽.
-            if o.is_typed_array_out_of_bounds(agent, cached_buffer_byte_length) {
-                return Ok(Value::pos_zero());
-            }
-
-            // 6. Let length be TypedArrayLength(taRecord).
-            o.typed_array_length(agent, cached_buffer_byte_length)
-        });
-        // 7. Return 𝔽(length).
-        Ok(Value::try_from(length as i64).unwrap())
+    /// Whether `function` is the `length` accessor of %TypedArray%.prototype,
+    /// in any realm: what a call of it with a TypedArray as `this` returns
+    /// is [`AnyTypedArray::length_value`], with no call.
+    pub(crate) fn is_length_getter(agent: &Agent, function: Function) -> bool {
+        let Function::BuiltinFunction(function) = function else {
+            return false;
+        };
+        // Two functions at one address do the same thing.
+        matches!(
+            function.get(agent).behaviour,
+            Behaviour::Regular(behaviour)
+                if core::ptr::fn_addr_eq(behaviour, Self::get_length as RegularFn)
+        )
     }
 
     /// ### [23.2.3.22 %TypedArray%.prototype.map ( callback \[ , thisArg \] )](https://tc39.es/ecma262/#sec-%typedarray%.prototype.map)
