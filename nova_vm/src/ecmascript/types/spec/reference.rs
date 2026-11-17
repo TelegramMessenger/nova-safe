@@ -168,6 +168,41 @@ impl<'a> Reference<'a> {
         }
     }
 
+    /// The base of a reference to a property by a name (`o.p`): not by a
+    /// private name, and not one of the super forms.
+    #[inline]
+    pub(crate) fn named_property_base(&self) -> Option<Value<'a>> {
+        match self {
+            Reference::Property(reference) | Reference::PropertyStrict(reference)
+                if !matches!(reference.referenced_name, PropertyKey::PrivateName(_)) =>
+            {
+                Some(reference.base)
+            }
+            _ => None,
+        }
+    }
+
+    /// The base and the index of a reference to an element by an integer
+    /// (`a[i]`), before or after the index was made a property key; not one
+    /// of the super forms.
+    #[inline]
+    pub(crate) fn element_base_and_index(&self) -> Option<(Value<'a>, i64)> {
+        match self {
+            Reference::PropertyExpression(reference)
+            | Reference::PropertyExpressionStrict(reference) => match reference.referenced_name {
+                Value::Integer(index) => Some((reference.base, index.into_i64())),
+                _ => None,
+            },
+            Reference::Property(reference) | Reference::PropertyStrict(reference) => {
+                match reference.referenced_name {
+                    PropertyKey::Integer(index) => Some((reference.base, index.into_i64())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn new_property_expression_reference(
         base: Value<'a>,
         referenced_name: Value<'a>,

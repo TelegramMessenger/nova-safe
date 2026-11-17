@@ -872,9 +872,108 @@ fn remembered_variable_places() {
         Ok(Completion::String("2".into()))
     );
     assert_eq!(
-        engine.evaluate("writeShared(5); writeShared(6); String(readShared() + shared)", false),
+        engine.evaluate(
+            "writeShared(5); writeShared(6); String(readShared() + shared)",
+            false
+        ),
         Ok(Completion::String("12".into()))
     );
+}
+
+/// Properties and elements read and written where the cache or the Array has
+/// them are the properties and elements the long way reads and writes: every
+/// check runs its accesses more than once, before and after what changes them.
+#[test]
+fn direct_property_and_element_access_keeps_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(direct_property_and_element_access)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn direct_property_and_element_access() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let checks = [
+        // Own, inherited and absent properties, and what moves them.
+        "(function () { function P() {} P.prototype.v = 1; var o = new P(); function get() { return o.v; } var r = [get(), get()]; P.prototype.v = 2; r.push(get()); o.v = 3; r.push(get(), P.prototype.v); delete o.v; r.push(get()); return r.join() === '1,1,2,3,2,2'; })()",
+        "(function () { var o = { a: 1 }; function get(x) { return x.missing; } var r = [get(o), get(o)]; o.missing = 5; r.push(get(o)); delete o.missing; r.push(get(o)); Object.prototype.missing = 7; r.push(get(o)); delete Object.prototype.missing; r.push(get(o)); return r.join() === ',,5,,7,'; })()",
+        "(function () { function get(x) { return x.k; } var shapes = [{ k: 1 }, { j: 0, k: 2 }, { k: 3, j: 0 }, Object.create({ k: 4 }), { j: 1 }]; var s = ''; for (var n = 0; n < 3; n++) for (var i = 0; i < shapes.length; i++) s += get(shapes[i]); return s === '1234undefined1234undefined1234undefined'; })()",
+        // Accessors are called, here and on the prototype.
+        "(function () { var calls = 0; var o = { get g() { calls++; return 9; }, set g(v) { calls += v; } }; function get() { return o.g; } function set(v) { o.g = v; } var r = get() + get(); set(10); set(10); return r === 18 && calls === 22; })()",
+        "(function () { var seen = []; var proto = { set s(v) { seen.push(v, this === o); } }; var o = Object.create(proto); function set(v) { o.s = v; } set(1); set(2); return seen.join() === '1,true,2,true' && !o.hasOwnProperty('s'); })()",
+        "(function () { var o = { v: 1 }; function get() { return o.v; } function set(x) { o.v = x; } set(2); var a = get(); Object.defineProperty(o, 'v', { get: function () { return 'got'; }, set: function (x) { a = x; }, configurable: true }); set(5); return get() === 'got' && a === 5; })()",
+        // A property that is not writable keeps its value; strict code throws.
+        "(function () { var o = { v: 1 }; function set(x) { o.v = x; } set(2); set(3); Object.defineProperty(o, 'v', { writable: false }); set(4); set(5); return o.v === 3; })()",
+        "(function () { 'use strict'; var o = { v: 1 }; function set(x) { o.v = x; } set(2); Object.freeze(o); var n = 0; for (var i = 0; i < 2; i++) { try { set(9); } catch (e) { if (e instanceof TypeError) n++; } } return o.v === 2 && n === 2; })()",
+        "(function () { var o = { v: 1 }; function set(x) { o.v = x; } set(2); Object.freeze(o); set(9); set(9); return o.v === 2; })()",
+        // An inherited data property is written to the object itself.
+        "(function () { var proto = { v: 1 }; function set(x, v) { x.v = v; } var a = Object.create(proto), b = Object.create(proto); set(a, 2); set(b, 3); set(a, 4); return a.v === 4 && b.v === 3 && proto.v === 1 && a.hasOwnProperty('v'); })()",
+        // Compound assignment, increment and method calls keep their object.
+        "(function () { var o = { n: 1, bump: function (by) { this.n += by; return this; } }; function f() { o.n += 2; o.n++; ++o.n; return o.bump(1).bump(1) === o; } return f() && f() && o.n === 13; })()",
+        "(function () { var a = { m: function () { return this; } }, b = { m: a.m }; function call(x) { return x.m(); } return call(a) === a && call(b) === b && call(a) === a && (0, a.m)() !== a; })()",
+        "(function () { var o = { f: function () { return 1; } }; function call() { return o.f(); } var r = call() + call(); o.f = function () { return 5; }; return r + call() === 7; })()",
+        // Primitives and other objects take the long way to the same result.
+        "(function () { function len(x) { return x.length; } var f = function (a, b) {}; var r = []; for (var i = 0; i < 2; i++) r.push(len('abc'), len([1, 2]), len(f), len({ length: 9 }), len(new Uint8Array(4))); return r.join() === '3,2,2,9,4,3,2,2,9,4'; })()",
+        "(function () { function len(a) { return a.length; } var a = [1, 2, 3]; var r = [len(a)]; a.push(4); r.push(len(a)); a.length = 1; r.push(len(a)); a[9] = 0; r.push(len(a)); return r.join() === '3,4,1,10'; })()",
+        // Elements: present, absent, holes, and what the prototype holds.
+        "(function () { function at(a, i) { return a[i]; } var a = [10, , 30]; var r = [at(a, 0), at(a, 1), at(a, 2), at(a, 3), at(a, -1), at(a, 1.5), at(a, '2')]; Array.prototype[1] = 'p'; r.push(at(a, 1)); delete Array.prototype[1]; r.push(at(a, 1)); a[-1] = 'neg'; r.push(at(a, -1)); return r.join() === '10,,30,,,,30,p,,neg'; })()",
+        "(function () { function put(a, i, v) { a[i] = v; } var a = [1, 2, 3]; put(a, 0, 'a'); put(a, 0, 'b'); put(a, 5, 'f'); put(a, 3, 'd'); put(a, '1', 'c'); return a.join() === 'b,c,3,d,,f' && a.length === 6; })()",
+        "(function () { function put(a, i, v) { a[i] = v; } var a = [1, 2, 3]; put(a, 1, 5); Object.freeze(a); put(a, 1, 9); put(a, 1, 9); return a.join() === '1,5,3'; })()",
+        "(function () { 'use strict'; function put(a, i, v) { a[i] = v; } var a = [1, 2]; put(a, 1, 5); Object.defineProperty(a, 1, { writable: false }); var n = 0; for (var i = 0; i < 2; i++) { try { put(a, 1, 9); } catch (e) { if (e instanceof TypeError) n++; } } return a[1] === 5 && n === 2; })()",
+        "(function () { var log = []; var a = [1, 2, 3]; Object.defineProperty(a, 1, { get: function () { log.push('get'); return 7; }, set: function (v) { log.push('set' + v); } }); function at(i) { return a[i]; } function put(i, v) { a[i] = v; } var r = at(1) + at(1) + at(0); put(1, 4); put(1, 5); put(0, 6); return r === 15 && log.join() === 'get,get,set4,set5' && a[0] === 6; })()",
+        "(function () { var a = [1, 2, 3]; function f(i) { a[i] += 10; a[i]++; ++a[i]; return a[i]; } return f(0) === 13 && f(0) === 25 && f(2) === 15 && a.join() === '25,2,15'; })()",
+        "(function () { var grid = [[1, 2], [3, 4]]; var s = 0; for (var n = 0; n < 2; n++) for (var y = 0; y < 2; y++) for (var x = 0; x < 2; x++) { grid[y][x] *= 2; s += grid[y][x]; } return s === 60 && grid.join() === '4,8,12,16'; })()",
+        "(function () { function at(x, i) { return x[i]; } var t = new Uint8Array([5, 6]); var o = { 0: 'zero', k: 'key' }; var r = []; for (var n = 0; n < 2; n++) r.push(at(t, 1), at('str', 1), at(o, 0), at(o, 'k'), at([7], 0)); return r.join() === '6,t,zero,key,7,6,t,zero,key,7'; })()",
+    ];
+    for check in checks {
+        assert_eq!(
+            engine.evaluate(&format!("String({check})"), false),
+            Ok(Completion::String("true".into())),
+            "{check}"
+        );
+    }
+}
+
+/// A call binds its parameters, and keeps its lexical declarations, as the
+/// long way did.
+#[test]
+fn calls_bind_their_parameters_and_declarations() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(calls_bind_parameters)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn calls_bind_parameters() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let checks = [
+        "(function () { function f(a, b, c) { return [a, b, c].join(); } return f() === ',,' && f(1) === '1,,' && f(1, 2, 3, 4) === '1,2,3' && f(undefined, null, 0) === ',,0'; })()",
+        "(function () { function f(a, b) { a = a || 5; b = b + 1; return a + b; } return f(0, 1) === 7 && f(2, 2) === 5 && isNaN(f()); })()",
+        "(function () { function f(a, a) { return a; } function g(a, b, a) { return a + b; } return f(1, 2) === 2 && f(1) === undefined && g(1, 2, 3) === 5; })()",
+        "(function () { function f(a, b) { return function () { return a + b; }; } function g(a, b, c) { var get = function () { return b; }; b = b * 2; return a + get() + c; } return f(1, 2)() === 3 && f(3, 4)() === 7 && g(1, 2, 3) === 8 && g(1, 2, 3) === 8; })()",
+        "(function () { function f(a, b) { return arguments.length + ':' + a + ':' + b + ':' + arguments[2]; } return f(1, 2, 3) === '3:1:2:3' && f(1) === '1:1:undefined:undefined'; })()",
+        "(function () { function f(a, b = a + 1, ...rest) { return a + b + rest.length; } function g({ x }, [y]) { return x + y; } return f(1) === 3 && f(1, 5, 0, 0) === 8 && g({ x: 1 }, [2]) === 3; })()",
+        "(function () { function fact(n, acc) { return n < 2 ? acc : fact(n - 1, acc * n); } var arrow = (a, b) => a - b; return fact(5, 1) === 120 && fact(6, 1) === 720 && arrow(5, 2) === 3 && arrow(1) !== arrow(1); })()",
+        "(function () { function C(a, b) { this.s = a + b; } var m = { f: function (a, b) { return this === m && a + b; } }; return new C(1, 2).s === 3 && new C(4, 5).s === 9 && m.f(1, 2) === 3 && m.f.call(m, 2, 3) === 5 && m.f.apply(m, [3, 4]) === 7; })()",
+        "(function () { function* g(a, b) { yield a; yield b; } async function h(a, b) { return a + b; } var it = g(1, 2); var seen; h(3, 4).then(function (v) { seen = v; }); return it.next().value === 1 && it.next().value === 2 && seen === undefined; })()",
+        // The lexical declarations of a sloppy function, with and without an eval.
+        "(function () { function f(k) { let x = k; const y = 2; class Z { static v() { return x + y; } } function inner() { return x * y; } x += 1; return Z.v() + inner(); } return f(1) === 8 && f(2) === 11; })()",
+        "(function () { function f() { var r = typeof x; let x = 1; return r; } var n = 0; for (var i = 0; i < 2; i++) { try { f(); } catch (e) { if (e instanceof ReferenceError) n++; } } return n === 2; })()",
+        "(function () { function f(code) { let x = 1; var before = x; eval(code); return before + ':' + x + ':' + (typeof y); } return f('') === '1:1:undefined' && f('var y = 2; x = 5') === '1:5:number'; })()",
+        "(function () { function f() { let x = 1; try { eval('var x = 2'); } catch (e) { return e instanceof SyntaxError && x === 1; } return false; } return f() && f(); })()",
+        "(function () { function f() { var fs = []; for (let i = 0; i < 3; i++) { let j = i; fs.push(function () { return i + j; }); } return fs.map(function (g) { return g(); }).join(); } return f() === '0,2,4' && f() === '0,2,4'; })()",
+    ];
+    for check in checks {
+        assert_eq!(
+            engine.evaluate(&format!("String({check})"), false),
+            Ok(Completion::String("true".into())),
+            "{check}"
+        );
+    }
 }
 
 /// The interpreter's short ways for Numbers give what the long ways gave.

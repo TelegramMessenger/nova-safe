@@ -11,12 +11,13 @@ use wtf8::Wtf8Buf;
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType, JsError,
-        JsResult, Number, Object, Primitive, Promise, Reference, SmallInteger, String, Value,
-        binding_value_at_site, call_function, get_method, is_callable, ordinary_has_instance,
-        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
-        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
-        try_get_object_method, try_result_into_option_js,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType,
+        InternalMethods, InternalSlots, JsError, JsResult, Number, Object, Primitive, Promise,
+        PropertyKey, Reference, SmallInteger, String, TryGetResult, Value, binding_value_at_site,
+        call_function, get_method, is_callable, ordinary_has_instance,
+        ordinary_set_own_data_at_offset, set_binding_value_at_site, take_pooled_arguments_vec,
+        to_boolean, to_numeric, to_numeric_primitive, to_primitive, to_property_key,
+        to_string_primitive, try_get_object_method, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -380,10 +381,14 @@ impl Vm {
         if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
             return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
         }
+        // A collection is looked for where one can have become due: when the
+        // code starts, after an instruction that is not plain (the plain ones
+        // allocate nothing on the heap), and on every turn of a loop, where
+        // the poll above can have asked for one.
+        if agent.check_gc() {
+            self.trigger_gc(agent, gc.reborrow());
+        }
         while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
-            if agent.check_gc() {
-                self.trigger_gc(agent, gc.reborrow());
-            }
             if print_internals {
                 Self::print_executing(instr.kind);
             }
@@ -395,6 +400,9 @@ impl Vm {
                     if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
                         return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
                     }
+                    if agent.check_gc() {
+                        self.trigger_gc(agent, gc.reborrow());
+                    }
                     continue;
                 }
                 Plain::No => {}
@@ -403,6 +411,14 @@ impl Vm {
                 Self::execute_instruction(agent, self, executable.clone(), instr, gc.reborrow());
             match result {
                 Ok(ContinuationKind::Normal) => {}
+                // The end of every call.
+                Ok(ContinuationKind::Return) if agent.termination().is_none() => {
+                    if print_internals {
+                        Self::print_exiting();
+                    }
+                    let result = self.result.unwrap_or(Value::Undefined);
+                    return ExecutionResult::Return(result.bind(gc.into_nogc()));
+                }
                 _ => {
                     if let Some(r) = self.handle_execute_instruction_abnormal_result(agent, result)
                     {
@@ -415,6 +431,9 @@ impl Vm {
                 .stack_ref_collections
                 .get_mut()
                 .truncate(collections_depth);
+            if agent.check_gc() {
+                self.trigger_gc(agent, gc.reborrow());
+            }
         }
 
         if agent.termination().is_some() {
@@ -656,6 +675,106 @@ impl Vm {
                 }
                 vm.result = None;
             }
+            // The parameters of a call, from its arguments.
+            Instruction::BindArguments => {
+                let first = instr.get_first_index();
+                let count = instr.get_second_index();
+                if let Some(VmIteratorRecord::SliceIterator(arguments)) = vm.iterator_stack.last() {
+                    for slot in first..first + count {
+                        let Some(value) = arguments.unshift(agent, gc) else {
+                            break;
+                        };
+                        vm.stack[slot] = value.unbind();
+                    }
+                }
+            }
+            // `o.p` where the property cache knows the shape of `o`, and the
+            // length of an Array.
+            Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
+                let Some(value) = Self::cached_property_value(agent, vm, executable, instr, gc)
+                else {
+                    return Plain::No;
+                };
+                if instr.kind == Instruction::GetPropertyWithCacheKeepReference {
+                    execute_evaluate_property_access_with_identifier_key(
+                        agent,
+                        vm,
+                        executable.clone(),
+                        instr,
+                        gc,
+                    );
+                } else {
+                    vm.reference = None;
+                }
+                vm.result = Some(value);
+            }
+            // `o.p = v` where the property cache knows the shape of `o` and
+            // `p` is a writable data property of its own.
+            Instruction::PutValueWithCache => {
+                let (Some(value), Some(reference)) = (vm.result, vm.reference.as_ref()) else {
+                    return Plain::No;
+                };
+                let Some(Value::Object(object)) = reference.named_property_base() else {
+                    return Plain::No;
+                };
+                let cache = executable.fetch_cache(agent, instr.get_first_index(), gc);
+                let shape = object.object_shape(agent);
+                let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
+                    return Plain::No;
+                };
+                if offset.is_unset()
+                    || !ordinary_set_own_data_at_offset(agent, object, offset, value)
+                {
+                    return Plain::No;
+                }
+                vm.result = None;
+                vm.reference = None;
+            }
+            // `a[i]` of an Array that has an element there.
+            Instruction::GetValue | Instruction::GetValueKeepReference => {
+                let Some((Value::Array(array), index)) = vm
+                    .reference
+                    .as_ref()
+                    .and_then(Reference::element_base_and_index)
+                else {
+                    return Plain::No;
+                };
+                let Some(&Some(value)) = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| array.as_slice(agent).get(index))
+                else {
+                    return Plain::No;
+                };
+                if instr.kind == Instruction::GetValue {
+                    vm.reference = None;
+                }
+                vm.result = Some(value.unbind());
+            }
+            // `a[i] = v` for an element the Array has, as a plain value.
+            Instruction::PutValue => {
+                let (Some(value), Some((Value::Array(array), index))) = (
+                    vm.result,
+                    vm.reference
+                        .as_ref()
+                        .and_then(Reference::element_base_and_index),
+                ) else {
+                    return Plain::No;
+                };
+                let Ok(index) = u32::try_from(index) else {
+                    return Plain::No;
+                };
+                let storage = array.get_storage(agent);
+                if !matches!(storage.values.get(index as usize), Some(Some(_)))
+                    || storage
+                        .descriptors
+                        .is_some_and(|descriptors| descriptors.contains_key(&index))
+                {
+                    return Plain::No;
+                }
+                array.as_mut_slice(agent)[index as usize] = Some(value);
+                vm.result = None;
+                vm.reference = None;
+            }
             // A Number is its own numeric value: the counter of nearly every
             // loop.
             Instruction::ToNumeric => {
@@ -687,6 +806,44 @@ impl Vm {
             _ => return Plain::No,
         }
         Plain::Done
+    }
+
+    /// The value of `o.p` for the object in the result register, when it is
+    /// read without a call: a property the cache places for the shape of an
+    /// ordinary object (its own or of a prototype, or known to be absent),
+    /// or the length of an Array.
+    #[inline(always)]
+    fn cached_property_value(
+        agent: &mut Agent,
+        vm: &Vm,
+        executable: &Scoped<Executable>,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        match vm.result? {
+            Value::Object(object) => {
+                let cache = executable.fetch_cache(agent, instr.get_second_index(), gc);
+                let shape = object.object_shape(agent);
+                let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
+                if offset.is_unset() {
+                    return Some(Value::Undefined);
+                }
+                let found = match prototype {
+                    Some(prototype) => prototype.get_own_property_at_offset(agent, offset, gc),
+                    None => object.get_own_property_at_offset(agent, offset, gc),
+                };
+                match found {
+                    TryGetResult::Value(value) => Some(value.unbind()),
+                    _ => None,
+                }
+            }
+            Value::Array(array) => {
+                let key = executable.fetch_property_key(agent, instr.get_first_index(), gc);
+                (key == PropertyKey::from(BUILTIN_STRING_MEMORY.length))
+                    .then(|| array.len(agent).into())
+            }
+            _ => None,
+        }
     }
 
     /// `++` or `--` of an integer that stays one.
@@ -927,7 +1084,8 @@ impl Vm {
             | Instruction::LoadFromIndex
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference
-            | Instruction::PushReferenceAndLoad => {
+            | Instruction::PushReferenceAndLoad
+            | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }
             Instruction::Return => return Ok(ContinuationKind::Return),

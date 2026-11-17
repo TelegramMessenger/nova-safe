@@ -402,6 +402,11 @@ pub(crate) enum Instruction {
     BeginSimpleObjectBindingPattern,
     /// Begin binding values using a sync iterator for known repetitions
     BeginSimpleArrayBindingPattern,
+    /// Bind the parameters of a function whose parameters are all plain
+    /// names kept in consecutive stack slots: the slots from the first
+    /// immediate on, as many as the second immediate says, take the next
+    /// arguments of the call, or stay undefined where there are no more.
+    BindArguments,
     /// In array binding patterns, bind the current result to the given
     /// identifier. In object binding patterns, bind the object's property with
     /// the identifier's name.
@@ -579,6 +584,7 @@ impl Instruction {
         match self {
             // Number of repetitions and lexical status
             Self::BeginSimpleArrayBindingPattern
+            | Self::BindArguments
             | Self::BindingPatternBindNamed
             | Self::BindingPatternBindToIndex
             | Self::ClassDefineConstructor
@@ -812,6 +818,10 @@ impl Instr {
             .get(args_ip..)
             .and_then(|bytes| bytes.first_chunk::<4>())
         else {
+            // The Return that ends a function has nothing after it.
+            if argument_bytes == 0 {
+                return Some(Instr::new(kind));
+            }
             return Some(Self::consume_short_arguments(kind, instructions, args_ip));
         };
         Some(Instr {
@@ -1010,6 +1020,9 @@ impl Instr {
             Instruction::BeginSimpleArrayBindingPattern => {
                 let arg1_equals = arg1 == 1;
                 format!("{{ length: {arg0}, env: {arg1_equals} }}")
+            }
+            Instruction::BindArguments => {
+                format!("{{ first slot: {arg0}, count: {arg1} }}")
             }
             Instruction::BindingPatternBindNamed => {
                 format!(
@@ -1287,6 +1300,7 @@ impl Instruction {
             Instruction::BeginSimpleObjectBindingPattern.as_u8();
         const BEGINSIMPLEARRAYBINDINGPATTERN: u8 =
             Instruction::BeginSimpleArrayBindingPattern.as_u8();
+        const BINDARGUMENTS: u8 = Instruction::BindArguments.as_u8();
         const BINDINGPATTERNBIND: u8 = Instruction::BindingPatternBind.as_u8();
         const BINDINGPATTERNBINDNAMED: u8 = Instruction::BindingPatternBindNamed.as_u8();
         const BINDINGPATTERNBINDTOINDEX: u8 = Instruction::BindingPatternBindToIndex.as_u8();
@@ -1466,6 +1480,7 @@ impl Instruction {
             EXITPRIVATEENVIRONMENT => Some(Instruction::ExitPrivateEnvironment),
             BEGINSIMPLEOBJECTBINDINGPATTERN => Some(Instruction::BeginSimpleObjectBindingPattern),
             BEGINSIMPLEARRAYBINDINGPATTERN => Some(Instruction::BeginSimpleArrayBindingPattern),
+            BINDARGUMENTS => Some(Instruction::BindArguments),
             BINDINGPATTERNBIND => Some(Instruction::BindingPatternBind),
             BINDINGPATTERNBINDNAMED => Some(Instruction::BindingPatternBindNamed),
             BINDINGPATTERNBINDTOINDEX => Some(Instruction::BindingPatternBindToIndex),
