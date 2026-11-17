@@ -116,11 +116,7 @@ impl<'s, 'gc> Place<'s, 'gc> {
 
     /// The Reference of a Site place into the reference register, for what
     /// cannot be done without one.
-    fn resolve_site(
-        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
-        name: String<'gc>,
-        site: IndexType,
-    ) {
+    fn resolve_site(ctx: &mut CompileContext<'_, '_, 'gc, '_>, name: String<'gc>, site: IndexType) {
         ctx.add_instruction_with_identifier_and_site(
             Instruction::ResolveBindingAtSite,
             name.to_property_key(),
@@ -1239,10 +1235,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
             UnaryOperator::Typeof => {
                 // 1. Let val be ? Evaluation of UnaryExpression.
                 let val = self.argument.compile(ctx)?;
-                if val.is_stack_variable() {
+                if val.is_stack_variable()
+                    || matches!(val, PlaceOrValue::Place(Place::TemporalDeadZone { .. }))
+                {
                     // Stack variables would normally be references but as
                     // they have no Reference (and are known to be resolvable),
-                    // we call GetValue directly.
+                    // we call GetValue directly. One that is not initialized
+                    // yet throws there, as typeof of it must.
                     val.get_value(ctx)?;
                 } else {
                     // typeof of a name that is not found is "undefined".
