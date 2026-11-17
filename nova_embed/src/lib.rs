@@ -39,8 +39,8 @@ use nova_vm::{
     ecmascript::{
         Agent, AgentOptions, Behaviour, BuiltinFunctionArgs, CompiledScript as VmCompiledScript,
         Function, GcAgent, InternalMethods, Job, Object, PropertyDescriptor, PropertyKey,
-        RealmRoot, String as JsString, Value, create_builtin_function, parse_module, parse_script,
-        script_evaluation,
+        RealmRoot, String as JsString, TextJoinOverLimit, Value, create_builtin_function,
+        parse_module, parse_script, script_evaluation,
     },
     engine::{Bindable, GcScope, Global, Scopable},
 };
@@ -98,7 +98,9 @@ pub enum Error {
     NotAFunction(String),
     /// [`Host::should_interrupt`] ended the script.
     Interrupted,
-    /// The script went past the memory limit.
+    /// The script went past the memory limit. When reading its strings did
+    /// (text that was appended to is joined when it is read), the engine is
+    /// dead as well: every later call returns [`Error::Dead`].
     OutOfMemory,
     /// The engine panicked, now or earlier; it never runs again.
     Dead(String),
@@ -245,6 +247,13 @@ impl Engine {
         drop(guard);
         match result {
             Ok(result) => result,
+            // Reading the script's strings would have taken more than the
+            // memory limit: the unwind went through the engine as a panic
+            // does, so it never runs again, but this is the limit at work.
+            Err(payload) if payload.is::<TextJoinOverLimit>() => {
+                self.kill("out of memory".to_owned());
+                Err(Error::OutOfMemory)
+            }
             Err(payload) => {
                 let reason = panic_text(&*payload);
                 self.kill(reason.clone());
