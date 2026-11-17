@@ -4,14 +4,16 @@
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, ExceptionType,
-        InternalMethods, InternalSlots, JsResult, OrdinaryObject, ProtoIntrinsics, Realm, String,
-        Value, builders::OrdinaryObjectBuilder, create_iter_result_object, object_handle,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, ExceptionType, Function,
+        InternalMethods, InternalSlots, JsResult, OrdinaryObject, ProtoIntrinsics, Realm,
+        RegularFn, String, Value, builders::OrdinaryObjectBuilder, create_iter_result_object,
+        object_handle,
     },
     engine::{Bindable, GcScope, NoGcScope},
     heap::{
-        CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep, HeapSweepWeakReference,
-        WellKnownSymbols, WorkQueues, arena_vec_access, {BaseIndex, HeapIndexHandle},
+        ArenaAccess, CompactionLists, CreateHeapData, Heap, HeapMarkAndSweep,
+        HeapSweepWeakReference, WellKnownSymbols, WorkQueues, arena_vec_access,
+        {BaseIndex, HeapIndexHandle},
     },
 };
 
@@ -141,10 +143,27 @@ impl StringIteratorPrototype {
                 gc,
             ));
         };
+        match Self::step(agent, generator, gc) {
+            // v. Perform ? GeneratorYield(CreateIteratorResultObject(resultString, false)).
+            // 11. Return ? result.
+            Some(result_string) => create_iter_result_object(agent, result_string, false, gc),
+            // 2. If state is completed, return CreateIteratorResultObject(undefined, true).
+            None => create_iter_result_object(agent, Value::Undefined, true, gc),
+        }
+        .map(|o| o.into())
+    }
+
+    /// One step of the String Iterator: the string of the next code point,
+    /// which `next` wraps in an iterator result object, or None when it
+    /// reports done.
+    pub(crate) fn step<'gc>(
+        agent: &mut Agent,
+        generator: StringIterator,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
         // 2. If state is completed, return CreateIteratorResultObject(undefined, true).
         if generator.is_completed(agent) {
-            return create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc())
-                .map(|o| o.into());
+            return None;
         }
         let StringIteratorHeapData { s, position, .. } = generator.get_data(agent);
         let position = *position;
@@ -162,10 +181,22 @@ impl StringIteratorPrototype {
         let next_index = position + result_string.len_(agent);
         // iv. Set position to nextIndex.
         generator.get_data_mut(agent).position = next_index;
-        // v. Perform ? GeneratorYield(CreateIteratorResultObject(resultString, false)).
-        // 11. Return ? result.
-        create_iter_result_object(agent, result_string.into(), false, gc.into_nogc())
-            .map(|o| o.into())
+        Some(Value::from(result_string).bind(gc))
+    }
+
+    /// Whether `function` is %StringIteratorPrototype%.next, in any realm:
+    /// what a call of it on a String Iterator returns is [`Self::step`] in
+    /// an iterator result object.
+    pub(crate) fn is_next(agent: &Agent, function: Function) -> bool {
+        let Function::BuiltinFunction(function) = function else {
+            return false;
+        };
+        // Two functions at one address do the same thing.
+        matches!(
+            function.get(agent).behaviour,
+            Behaviour::Regular(behaviour)
+                if core::ptr::fn_addr_eq(behaviour, Self::next as RegularFn)
+        )
     }
 
     pub(crate) fn create_intrinsic(agent: &mut Agent, realm: Realm<'static>) {

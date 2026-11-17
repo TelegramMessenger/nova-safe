@@ -8,11 +8,12 @@ use std::marker::PhantomData;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, ArrayIteratorPrototype, AsyncFromSyncIteratorPrototype,
-        BUILTIN_STRING_MEMORY, ExceptionType, InternalMethods, IteratorRecord, JsError, JsResult,
-        Object, OrdinaryObject, Promise, PropertyKey, PropertyKeySet, ScopedArgumentsList,
-        TryError, TryGetResult, TryResult, Value, call_function, create_async_from_sync_iterator,
-        create_iter_result_object, get, get_iterator_from_method, get_method, get_object_method,
-        throw_not_callable, to_boolean, try_get,
+        BUILTIN_STRING_MEMORY, ExceptionType, Function, InternalMethods, IteratorRecord, JsError,
+        JsResult, Object, OrdinaryObject, Promise, PropertyKey, PropertyKeySet,
+        ScopedArgumentsList, StringIteratorPrototype, TryError, TryGetResult, TryResult, Value,
+        call_function, create_async_from_sync_iterator, create_iter_result_object, get,
+        get_iterator_from_method, get_method, get_object_method, throw_not_callable, to_boolean,
+        try_get,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, ScopeToken, Scoped},
     heap::{CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
@@ -802,6 +803,26 @@ impl<'a> ArrayValuesIteratorRecord<'a> {
     }
 }
 
+/// The value of `object`'s own plain data property `key`, where reading it
+/// is no more than that: an ordinary object with few properties that has
+/// `key` among its own, with a value there and not an accessor. None leaves
+/// the read to \[\[Get]].
+fn own_data_property<'a>(agent: &Agent, object: Object<'a>, key: PropertyKey) -> Option<Value<'a>> {
+    let Object::Object(object) = object else {
+        return None;
+    };
+    let keys = object.get_property_keys(agent);
+    if keys.len() > 8 {
+        return None;
+    }
+    let index = keys.iter().position(|k| *k == key)?;
+    object
+        .get_elements_values(agent)
+        .get(index)
+        .copied()
+        .flatten()
+}
+
 struct GenericIterator<'a> {
     iter: ActiveIterator<'a>,
 }
@@ -869,6 +890,17 @@ impl<'a> GenericIterator<'a> {
         {
             return ArrayIteratorPrototype::step(agent, array_iterator.unbind(), gc);
         }
+        // The same for a String Iterator and its original next.
+        if let Object::StringIterator(string_iterator) = iterator
+            && let Ok(next_method) = Function::try_from(next_method)
+            && StringIteratorPrototype::is_next(agent, next_method)
+        {
+            return Ok(StringIteratorPrototype::step(
+                agent,
+                string_iterator.unbind(),
+                gc.into_nogc(),
+            ));
+        }
 
         let result = call_function(
             agent,
@@ -883,6 +915,21 @@ impl<'a> GenericIterator<'a> {
             return Err(throw_iterator_returned_non_object(agent, gc.into_nogc()));
         };
         let result = result.unbind().bind(gc.nogc());
+        // The result object nearly every iterator returns is an ordinary one
+        // with "done" and "value" as plain properties of its own (the one
+        // CreateIteratorResultObject makes, or a literal): \[\[Get]] of
+        // those is the value in the slot.
+        if let Some(done) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.done.into()) {
+            if to_boolean(agent, done) {
+                // The value of a result that is done is not read.
+                return Ok(None);
+            }
+            if let Some(value) =
+                own_data_property(agent, result, BUILTIN_STRING_MEMORY.value.into())
+            {
+                return Ok(Some(value.unbind().bind(gc.into_nogc())));
+            }
+        }
         let scoped_result = result.scope(agent, gc.nogc());
         // 1. Return ToBoolean(? Get(iterResult, "done")).
         let done = get(
