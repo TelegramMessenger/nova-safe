@@ -17,18 +17,19 @@ use crate::{
         call_function, call_proxy_set, construct, copy_data_properties,
         copy_data_properties_into_object, create_builtin_constructor,
         create_data_property_or_throw, create_unmapped_arguments_object, define_property_or_throw,
-        evaluate_import_call, get_this_environment, get_this_value, get_value, has_property,
-        initialize_derived_instance_elements, is_constructor, is_less_than, is_loosely_equal,
-        is_private_reference, is_property_reference, is_strictly_equal, is_super_reference,
-        is_unresolvable_reference, iterator_complete, iterator_value, make_constructor,
-        make_method, new_class_static_element_environment, new_declarative_environment,
-        new_private_environment, ordinary_function_create, ordinary_object_create_with_intrinsics,
-        perform_eval, private_element_find, put_value, resolve_binding, resolve_private_identifier,
-        resolve_this_binding, return_pooled_arguments_vec, set, set_function_name,
-        throw_no_proxy_private_names, throw_read_undefined_or_null_error, to_boolean, to_number,
-        to_number_primitive, to_numeric, to_numeric_primitive, to_object, to_property_key,
-        to_property_key_complex, to_property_key_primitive, to_property_key_simple, to_string,
-        to_string_primitive, try_copy_data_properties_into_object, try_create_data_property,
+        evaluate_import_call, get_this_environment, get_this_value, get_value,
+        global_scope_reference, has_property, initialize_derived_instance_elements, is_constructor,
+        is_less_than, is_loosely_equal, is_private_reference, is_property_reference,
+        is_strictly_equal, is_super_reference, is_unresolvable_reference, iterator_complete,
+        iterator_value, make_constructor, make_method, new_class_static_element_environment,
+        new_declarative_environment, new_private_environment, ordinary_function_create,
+        ordinary_object_create_with_intrinsics, perform_eval, private_element_find, put_value,
+        resolve_binding, resolve_private_identifier, resolve_this_binding,
+        return_pooled_arguments_vec, set, set_function_name, throw_no_proxy_private_names,
+        throw_read_undefined_or_null_error, to_boolean, to_number, to_number_primitive, to_numeric,
+        to_numeric_primitive, to_object, to_property_key, to_property_key_complex,
+        to_property_key_primitive, to_property_key_simple, to_string, to_string_primitive,
+        try_copy_data_properties_into_object, try_create_data_property,
         try_define_property_or_throw, try_get_value, try_has_property,
         try_initialize_referenced_binding, try_put_value, try_resolve_binding,
         try_resolve_binding_at_site, try_result_into_js, try_result_into_option_js, unwrap_try,
@@ -220,9 +221,43 @@ pub(super) fn execute_resolve_binding_at_site<'gc>(
         vm.reference = Some(reference.unbind());
         return Ok(());
     }
-    execute_resolve_binding_at_site_cold(agent, vm, executable, instr, site, gc)
+    execute_resolve_binding_at_site_cold(agent, vm, executable, instr, site, false, gc)
 }
 
+/// What is left of the instructions for a name of the global scope when the
+/// name is not where it is remembered to be: the name is resolved through
+/// the chain, or the Reference already made of it is read or written, as
+/// GetValue and PutValue do it.
+///
+/// One function of its own, so that the instruction loop's frame, which
+/// every nested call repeats, holds none of this.
+#[inline(never)]
+pub(super) fn execute_global_name_the_long_way<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    match instr.kind {
+        Instruction::ResolveGlobalAtSite => {
+            let site = executable.fetch_binding_site(agent, instr.get_second_index());
+            execute_resolve_binding_at_site_cold(agent, vm, executable, instr, site, true, gc)
+        }
+        Instruction::GetGlobalAtSite => {
+            execute_get_binding_at_site(agent, vm, executable, instr, true, gc)
+        }
+        Instruction::PutGlobalAtSite => {
+            execute_put_binding_at_site(agent, vm, executable, instr, true, gc)
+        }
+        Instruction::PutValueAtSite => execute_put_value(agent, vm, executable, instr, false, gc),
+        _ => unreachable!(),
+    }
+}
+
+/// ResolveBinding the long way, remembering where the name was found.
+/// `to_root`: the scope chain is fixed out to the global scope of a Script,
+/// so a place there is remembered as well.
 #[inline(never)]
 fn execute_resolve_binding_at_site_cold<'gc>(
     agent: &mut Agent,
@@ -230,15 +265,21 @@ fn execute_resolve_binding_at_site_cold<'gc>(
     executable: Scoped<Executable>,
     instr: Instr,
     site: BindingSite,
+    to_root: bool,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     execute_resolve_binding(agent, vm, executable.clone(), instr, gc.reborrow()).unbind()?;
-    // A name once found outside the declarative records stays there.
-    if site == BindingSite::UNKNOWN
+    // A name once found outside the declarative records stays there. In the
+    // global scope it can move (a lexical declaration is added, a property
+    // of the global object is deleted and made again), so there it is looked
+    // for again whenever it is not where it was.
+    if (site == BindingSite::UNKNOWN || (to_root && site != BindingSite::ELSEWHERE))
         && let Some(reference) = &vm.reference
     {
-        let found = binding_site_of(agent, reference, gc.nogc());
-        executable.set_binding_site(agent, instr.get_second_index(), found);
+        let found = binding_site_of(agent, reference, to_root, gc.nogc());
+        if found != site {
+            executable.set_binding_site(agent, instr.get_second_index(), found);
+        }
     }
     Ok(())
 }
@@ -251,11 +292,20 @@ pub(super) fn execute_get_binding_at_site<'gc>(
     vm: &mut Vm,
     executable: Scoped<Executable>,
     instr: Instr,
+    to_root: bool,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let site = executable.fetch_binding_site(agent, instr.get_second_index());
-    execute_resolve_binding_at_site_cold(agent, vm, executable.clone(), instr, site, gc.reborrow())
-        .unbind()?;
+    execute_resolve_binding_at_site_cold(
+        agent,
+        vm,
+        executable.clone(),
+        instr,
+        site,
+        to_root,
+        gc.reborrow(),
+    )
+    .unbind()?;
     execute_get_value(agent, vm, executable, instr, false, false, gc)
 }
 
@@ -268,11 +318,30 @@ pub(super) fn execute_put_binding_at_site<'gc>(
     vm: &mut Vm,
     executable: Scoped<Executable>,
     instr: Instr,
+    to_root: bool,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let site = executable.fetch_binding_site(agent, instr.get_second_index());
-    execute_resolve_binding_at_site_cold(agent, vm, executable.clone(), instr, site, gc.reborrow())
+    if to_root && site.is_global() {
+        // The name is declared in the global scope, or was found there when
+        // this assignment read it: the Reference that was resolved then is
+        // to the global scope, and resolving the name again would ask the
+        // global object for it once more than the assignment does.
+        let name = executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
+        let strict = agent.is_evaluating_strict_code();
+        vm.reference = Some(global_scope_reference(agent, name, strict, gc.nogc()).unbind());
+    } else {
+        execute_resolve_binding_at_site_cold(
+            agent,
+            vm,
+            executable.clone(),
+            instr,
+            site,
+            to_root,
+            gc.reborrow(),
+        )
         .unbind()?;
+    }
     execute_put_value(agent, vm, executable, instr, false, gc)
 }
 

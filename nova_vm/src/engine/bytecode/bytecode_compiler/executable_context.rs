@@ -585,6 +585,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             Instruction::ResolveBindingAtSite
                 | Instruction::GetBindingAtSite
                 | Instruction::PutBindingAtSite
+                | Instruction::ResolveGlobalAtSite
+                | Instruction::GetGlobalAtSite
+                | Instruction::PutGlobalAtSite
+                | Instruction::PutValueAtSite
         ));
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);

@@ -246,6 +246,12 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.source_code
     }
 
+    /// Whether the code being compiled is a Script's: its outermost scope
+    /// is then the global scope.
+    pub(crate) fn is_script(&self) -> bool {
+        self.source_code.is_script(self.get_agent())
+    }
+
     /// Scope analysis of the program being compiled.
     pub(crate) fn scoping(&self) -> &'script Scoping {
         self.scoping

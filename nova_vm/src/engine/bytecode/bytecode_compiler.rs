@@ -74,6 +74,23 @@ pub(crate) enum Place<'s, 'gc> {
     /// remembered (the BindingSite `site` of the executable), and it is read
     /// and written there without a Reference.
     Site { name: String<'gc>, site: IndexType },
+    /// A name of the global scope, in a Script, that no `with` or direct
+    /// `eval` can come between it and this place in the code: as a Site,
+    /// with the place remembered in the global scope (among its lexical
+    /// declarations, or among the properties of the global object).
+    /// `bound` says that the name is known to be bound where it is assigned
+    /// to: the Script itself declares it with `let`, `const` or `class`, or
+    /// the assignment has read it first.
+    GlobalSite {
+        name: String<'gc>,
+        site: IndexType,
+        bound: bool,
+    },
+    /// A GlobalSite that is being assigned to and may not be bound: its
+    /// Reference is in the reference register, resolved before the value is
+    /// evaluated as the specification has it, and the assignment is made at
+    /// the remembered place when that is what the Reference is to.
+    GlobalRef { name: String<'gc>, site: IndexType },
     /// A variable in the global environment. The variable data is stored in
     /// the global object's properties and accessed through a reference.
     Global { name: String<'gc> },
@@ -91,6 +108,8 @@ impl<'s, 'gc> Place<'s, 'gc> {
             Place::Stack { name, .. }
             | Place::Env { name }
             | Place::Site { name, .. }
+            | Place::GlobalSite { name, .. }
+            | Place::GlobalRef { name, .. }
             | Place::Global { name } => Some(*name),
             Place::Member { name } => name.and_then(|n| {
                 match n {
@@ -110,8 +129,42 @@ impl<'s, 'gc> Place<'s, 'gc> {
     fn has_reference(&self) -> bool {
         matches!(
             self,
-            Self::Env { .. } | Self::Global { .. } | Self::Member { .. }
+            Self::Env { .. } | Self::Global { .. } | Self::GlobalRef { .. } | Self::Member { .. }
         )
+    }
+
+    /// The place as the target of an assignment. `reads_first`: the
+    /// assignment reads the place before it evaluates the value (a compound
+    /// assignment, `++`), which throws for a name that is not bound; the
+    /// name is then bound where the value is assigned. Otherwise a name of
+    /// the global scope that may not be bound is resolved here: whether the
+    /// assignment throws, makes a property of the global object or sets a
+    /// declaration is decided by what is bound now, not by what the value's
+    /// evaluation leaves bound.
+    fn assignment_target(
+        self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        reads_first: bool,
+    ) -> Self {
+        match self {
+            Place::GlobalSite {
+                name,
+                site,
+                bound: false,
+            } => {
+                if reads_first {
+                    Place::GlobalSite {
+                        name,
+                        site,
+                        bound: true,
+                    }
+                } else {
+                    Self::resolve_global_site(ctx, name, site);
+                    Place::GlobalRef { name, site }
+                }
+            }
+            place => place,
+        }
     }
 
     /// The Reference of a Site place into the reference register, for what
@@ -119,6 +172,19 @@ impl<'s, 'gc> Place<'s, 'gc> {
     fn resolve_site(ctx: &mut CompileContext<'_, '_, 'gc, '_>, name: String<'gc>, site: IndexType) {
         ctx.add_instruction_with_identifier_and_site(
             Instruction::ResolveBindingAtSite,
+            name.to_property_key(),
+            site,
+        );
+    }
+
+    /// The same for a GlobalSite place.
+    fn resolve_global_site(
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        name: String<'gc>,
+        site: IndexType,
+    ) {
+        ctx.add_instruction_with_identifier_and_site(
+            Instruction::ResolveGlobalAtSite,
             name.to_property_key(),
             site,
         );
@@ -134,7 +200,15 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
-            Place::Env { .. } | Place::Global { .. } | Place::Member { .. } => {
+            Place::GlobalSite { name, site, .. } => {
+                Self::resolve_global_site(ctx, *name, *site);
+                ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
+            Place::Env { .. }
+            | Place::Global { .. }
+            | Place::GlobalRef { .. }
+            | Place::Member { .. } => {
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
@@ -160,7 +234,14 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 Self::resolve_site(ctx, *name, *site);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
-            Place::Env { .. } | Place::Global { .. } | Place::Member { .. } => {
+            Place::GlobalSite { name, site, .. } => {
+                Self::resolve_global_site(ctx, *name, *site);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
+            Place::Env { .. }
+            | Place::Global { .. }
+            | Place::GlobalRef { .. }
+            | Place::Member { .. } => {
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
             Place::Stack { stack_slot, .. } => {
@@ -216,7 +297,15 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 );
                 Ok(ValueOutput::Value)
             }
-            Place::Member { .. } | Place::Env { .. } => {
+            Place::GlobalSite { name, site, .. } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetGlobalAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(ValueOutput::Value)
+            }
+            Place::Member { .. } | Place::Env { .. } | Place::GlobalRef { .. } => {
                 // Variable is stored in the environment or we don't know the
                 // property name at compile time. Caching doesn't help with these.
                 ctx.add_instruction(Instruction::GetValue);
@@ -272,7 +361,16 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 );
                 Ok(ValueOutput::Value)
             }
-            Self::Member { .. } | Self::Env { .. } => {
+            Self::GlobalSite { name, site, .. } => {
+                // The same.
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetGlobalAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(ValueOutput::Value)
+            }
+            Self::Member { .. } | Self::Env { .. } | Self::GlobalRef { .. } => {
                 // Variable is stored in the environment or we don't know the
                 // property name at compile time. Caching doesn't help with these.
                 ctx.add_instruction(Instruction::GetValueKeepReference);
@@ -359,6 +457,42 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 );
                 Ok(())
             }
+            Self::GlobalSite {
+                name,
+                site,
+                bound: true,
+            } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutGlobalAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
+            Self::GlobalSite {
+                name,
+                site,
+                bound: false,
+            } => {
+                // An assignment target is made a GlobalRef before its value
+                // is evaluated (Place::assignment_target).
+                debug_assert!(false, "assignment to a global name not resolved beforehand");
+                Self::resolve_global_site(ctx, *name, *site);
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutValueAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
+            Self::GlobalRef { name, site } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutValueAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
             Self::Member { .. } | Self::Env { .. } => {
                 ctx.add_instruction(Instruction::PutValue);
                 Ok(())
@@ -393,7 +527,15 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction(Instruction::Delete);
                 Ok(ValueOutput::Value)
             }
-            Self::Global { .. } | Self::Member { .. } | Self::Env { .. } => {
+            Self::GlobalSite { name, site, .. } => {
+                Self::resolve_global_site(ctx, name, site);
+                ctx.add_instruction(Instruction::Delete);
+                Ok(ValueOutput::Value)
+            }
+            Self::Global { .. }
+            | Self::GlobalRef { .. }
+            | Self::Member { .. }
+            | Self::Env { .. } => {
                 ctx.add_instruction(Instruction::Delete);
                 // Can return `true` or `false`.
                 Ok(ValueOutput::Value)
@@ -586,8 +728,14 @@ impl<'s, 'gc> PlaceOrValue<'s, 'gc> {
     /// Puts the Reference of a place that is used without one (a Site) into
     /// the reference register, for an operator that takes a Reference.
     fn reference_into_register(&self, ctx: &mut CompileContext<'_, '_, 'gc, '_>) {
-        if let PlaceOrValue::Place(Place::Site { name, site }) = self {
-            Place::resolve_site(ctx, *name, *site);
+        match self {
+            PlaceOrValue::Place(Place::Site { name, site }) => {
+                Place::resolve_site(ctx, *name, *site);
+            }
+            PlaceOrValue::Place(Place::GlobalSite { name, site, .. }) => {
+                Place::resolve_global_site(ctx, *name, *site);
+            }
+            _ => {}
         }
     }
 
@@ -943,6 +1091,11 @@ enum VariableKind {
     LocalFixed,
     /// Found in the global scope.
     Global,
+    /// Found in the global scope of a Script, with no `with` and no direct
+    /// `eval` in any scope from the reference out to it. `declared`: by the
+    /// Script itself with `let`, `const` or `class`, so that it is always
+    /// bound.
+    GlobalFixed { declared: bool },
 }
 
 impl VariableKind {
@@ -985,6 +1138,25 @@ impl VariableKind {
                         name.to_property_key(),
                     );
                     Place::Env { name }
+                }
+            }
+            VariableKind::GlobalFixed { declared } => {
+                let name = ctx.create_string(name);
+                if let Some(site) = ctx.new_binding_site() {
+                    Place::GlobalSite {
+                        name,
+                        site,
+                        bound: declared,
+                    }
+                } else {
+                    // More sites than an instruction can number.
+                    let cache = ctx.create_property_lookup_cache(name.to_property_key());
+                    ctx.add_instruction_with_identifier_and_cache(
+                        Instruction::ResolveBindingWithCache,
+                        name,
+                        cache,
+                    );
+                    Place::Global { name }
                 }
             }
             VariableKind::Global => {
@@ -1061,20 +1233,35 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                 } else {
                     let scope_id = scoping.symbol_scope_id(s);
                     let scope_flags = scoping.scope_flags(scope_id);
+                    let top = scope_flags.contains(ScopeFlags::Top);
                     // Functions declarations and variables defined at the top
                     // level scope end up in the globalThis; we want a property
                     // lookup cache for those.
-                    if scope_flags.contains(ScopeFlags::Top)
+                    let global_object = top
                         && (symbol_flags.contains(SymbolFlags::FunctionScopedVariable)
-                            | symbol_flags.contains(SymbolFlags::Function))
-                    {
+                            | symbol_flags.contains(SymbolFlags::Function));
+                    let fixed = scope_chain_is_fixed(ctx, reference.node_id(), scope_id);
+                    if top && fixed && ctx.is_script() {
+                        // The top level scope of a Script is the global
+                        // scope.
+                        VariableKind::GlobalFixed {
+                            declared: !global_object,
+                        }
+                    } else if global_object {
                         VariableKind::Global
-                    } else if scope_chain_is_fixed(ctx, reference.node_id(), scope_id) {
+                    } else if fixed {
                         VariableKind::LocalFixed
                     } else {
                         VariableKind::Local
                     }
                 }
+            } else if ctx.is_script()
+                && scope_chain_is_fixed(ctx, reference.node_id(), scoping.root_scope_id())
+            {
+                // No SymbolId means this must be a global name, or one that
+                // the code does not declare (`arguments`), which is then
+                // found where it is on the first run.
+                VariableKind::GlobalFixed { declared: false }
             } else {
                 // No SymbolId means this must be a global name.
                 VariableKind::Global
@@ -3069,6 +3256,7 @@ fn compile_update_expression<'s, 'gc>(
             | ast::SimpleAssignmentTarget::TSAsExpression(_)
             | ast::SimpleAssignmentTarget::TSTypeAssertion(_) => unreachable!(),
         };
+        let lref = lref.assignment_target(ctx, true);
         lref.get_value_keep_reference(ctx)?;
         ctx.add_instruction(Instruction::ToNumeric);
         let value_on_stack = if keep_value && !this.prefix {

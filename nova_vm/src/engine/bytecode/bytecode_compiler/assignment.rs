@@ -107,6 +107,7 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
             | ast::AssignmentTarget::TSSatisfiesExpression(_) => unreachable!(),
             ast::AssignmentTarget::TSTypeAssertion(_) => unreachable!(),
         };
+        let lref = lref.assignment_target(ctx, !this.operator.is_assign());
 
         if this.operator.is_assign() {
             let push_reference = lref.has_reference() && !this.right.is_literal();
@@ -415,7 +416,8 @@ macro_rules! impl_assignment_target_variants {
                     &'s self,
                     ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
                 ) -> Result<Place<'s, 'gc>, ExpressionError> {
-                    compile_simple_target_variants!($ty, self, ctx)
+                    let place = compile_simple_target_variants!($ty, self, ctx)?;
+                    Ok(place.assignment_target(ctx, false))
                 }
 
                 fn compile_pattern_target<'a, 'gc, 'scope>(
@@ -482,7 +484,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     type Output = Result<Place<'s, 'gc>, ExpressionError>;
 
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        compile_simple_target_variants!(SimpleAssignmentTarget, self, ctx)
+        let place = compile_simple_target_variants!(SimpleAssignmentTarget, self, ctx)?;
+        Ok(place.assignment_target(ctx, false))
     }
 }
 
@@ -956,7 +959,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
             // result: binding / init
             // stack: []
         }
-        let place = self.binding.compile(ctx);
+        let place = self.binding.compile(ctx).assignment_target(ctx, false);
         // result: binding / init
         // stack: []
         // reference: &binding

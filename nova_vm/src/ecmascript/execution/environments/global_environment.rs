@@ -144,6 +144,20 @@ pub(crate) fn new_global_environment<'a>(
     // 9. Return env.
 }
 
+impl GlobalEnvironmentRecord {
+    /// \[\[DeclarativeRecord]]: the lexical declarations of the global scope.
+    #[inline]
+    pub(super) fn declarative_record(&self) -> DeclarativeEnvironment<'static> {
+        self.declarative_record
+    }
+
+    /// \[\[ObjectRecord]]: the Environment Record of the global object.
+    #[inline]
+    pub(super) fn object_record(&self) -> ObjectEnvironment<'static> {
+        self.object_record
+    }
+}
+
 impl<'e> GlobalEnvironment<'e> {
     pub(crate) fn get_binding_object(self, agent: &Agent) -> Object<'e> {
         self.get(agent).object_record.get_binding_object(agent)
