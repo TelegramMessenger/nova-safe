@@ -7,26 +7,30 @@ mod execute_instructions;
 
 use execute_instructions::*;
 
+use std::sync::Arc;
+
 use wtf8::Wtf8Buf;
 
 #[cfg(feature = "array-buffer")]
 use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayPrototype};
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType,
-        InternalMethods, InternalSlots, JsError, JsResult, Number, Object, Primitive, Promise,
-        PropertyKey, Reference, SmallInteger, String, TryGetResult, Value, binding_value_at_site,
-        call_function, get_method, is_callable, is_same_type, is_strictly_equal,
-        ordinary_has_instance, ordinary_set_own_data_at_offset, reference_is_at_global_site,
-        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
-        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
-        try_get_object_method, try_resolve_binding_at_site, try_result_into_option_js,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, ECMAScriptFunction, Environment,
+        ExceptionType, InternalMethods, InternalSlots, JsError, JsResult, Number, Object,
+        Primitive, Promise, PropertyKey, Reference, SmallInteger, String, TryGetResult, Value,
+        binding_value_at_site, call_function, get_method, get_this_value, is_callable,
+        is_property_reference, is_same_type, is_strictly_equal, ordinary_has_instance,
+        ordinary_set_own_data_at_offset, prepare_for_call_without_function_environment,
+        reference_is_at_global_site, set_binding_value_at_site, take_pooled_arguments_vec,
+        to_boolean, to_numeric, to_numeric_primitive, to_primitive, to_property_key,
+        to_string_primitive, try_get_object_method, try_resolve_binding_at_site,
+        try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
         bytecode::{
-            Executable, IndexType, Instruction, InstructionIter, instructions::Instr,
-            iterator::VmIteratorRecord,
+            CallEnvironment, Executable, IndexType, Instruction, InstructionIter,
+            instructions::Instr, iterator::VmIteratorRecord,
         },
     },
     heap::{ArenaAccess, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
@@ -74,6 +78,9 @@ enum Plain {
     /// Not executed and nothing changed: the instruction is not a plain one,
     /// or its operands are not what the short way takes.
     No,
+    /// Not executed and nothing changed: a call of an ECMAScript function,
+    /// which the Vm may run itself.
+    Call,
 }
 
 /// The steps a backward jump or a call counts for in the interrupt countdown:
@@ -112,6 +119,78 @@ pub(crate) struct Vm {
     exception_handler_stack: Vec<ExceptionHandler<'static>>,
     result: Option<Value<'static>>,
     reference: Option<Reference<'static>>,
+    /// How many functions this `Vm` is running in place of their calls, one
+    /// called by the other: the state of the code that made each call is in
+    /// a frame of [`VmFrames`], the last `depth` of those in use. See
+    /// [`Vm::enter_function`].
+    depth: usize,
+}
+
+/// What a `Vm` puts aside of the code that calls a function it runs itself,
+/// and takes back when the function returns or throws: the caller's stacks,
+/// where it goes on, and its code.
+#[derive(Debug)]
+struct Frame {
+    ip: usize,
+    /// The caller's stacks while the frame is in use; empty stacks for the
+    /// next function at this depth while it is not.
+    stack: Vec<Value<'static>>,
+    reference_stack: Vec<Reference<'static>>,
+    iterator_stack: Vec<VmIteratorRecord<'static>>,
+    exception_handler_stack: Vec<ExceptionHandler<'static>>,
+    /// The caller's executable, which the collector keeps current here
+    /// while the frame is in use.
+    executable: Executable<'static>,
+    instructions: Option<Arc<[u8]>>,
+    /// What the Agent's scoped values and scoped collections are cut back
+    /// to after each of the caller's instructions.
+    stack_depth: usize,
+    collections_depth: usize,
+    /// Where the scoped values of the caller's own call start: its
+    /// executable is the first of them. Not used for the code the `Vm` was
+    /// started with.
+    scope_base: usize,
+}
+
+/// The code that is running in a `Vm`, between two changes of it: the code
+/// the `Vm` was started with, or a function that a call of it, or of a
+/// function it called, runs in place of the call.
+struct Running<'s> {
+    executable: Scoped<'s, Executable<'static>>,
+    instructions: Arc<[u8]>,
+    /// What the Agent's scoped values and scoped collections are cut back
+    /// to after each instruction.
+    stack_depth: usize,
+    collections_depth: usize,
+    /// Where the scoped values of the call of this code start: see
+    /// [`Frame::scope_base`].
+    scope_base: usize,
+}
+
+/// Why the loop of instructions stops with the `Vm` not done.
+enum Change {
+    /// A call of a function that the `Vm` runs itself.
+    Call(CalledInPlace, Instr),
+    /// The function that is run in place of a call returns.
+    Return,
+    /// The code has no more instructions.
+    End,
+    /// An error that the running code did not handle.
+    Throw(JsError<'static>),
+    /// A function run in place of a call returned with a termination
+    /// pending: every caller ends too.
+    Terminate,
+}
+
+/// A function that a call instruction calls and the `Vm` runs itself.
+#[derive(Clone, Copy)]
+struct CalledInPlace {
+    function: ECMAScriptFunction<'static>,
+    executable: Executable<'static>,
+    /// How many parameters the function keeps in its first stack slots.
+    parameters: usize,
+    /// The function's bindings need a Declarative Environment Record.
+    declarative_environment: bool,
 }
 
 #[derive(Debug)]
@@ -223,6 +302,9 @@ impl SuspendedVm {
 }
 
 const VM_STACK_POOL_LEN: usize = 32;
+/// How many frames, with their stacks, stay with an Agent while none is in
+/// use.
+const SPARE_FRAMES: usize = 64;
 const VM_STACK_POOL_MAX_CAPACITY: usize = 1024;
 
 /// The value and iterator stacks of a `Vm` that has run its code, emptied
@@ -244,6 +326,67 @@ pub(crate) struct SpareVmStacks {
     handlers: Vec<Vec<ExceptionHandler<'static>>>,
 }
 
+/// The frames of every `Vm` of an Agent that runs functions in place of
+/// their calls: those of the `Vm` that is running are the last in use,
+/// under them those of the `Vm`s that wait for a call it is inside of. A
+/// `Vm` leaves none in use when it is done or suspended.
+///
+/// The frames after those in use are kept: each holds the emptied stacks
+/// of the last function that ran at its depth, for the next one.
+#[derive(Default)]
+pub(crate) struct VmFrames {
+    frames: Vec<Frame>,
+    in_use: usize,
+}
+
+impl HeapMarkAndSweep for VmFrames {
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        for frame in &self.frames[..self.in_use] {
+            let Frame {
+                ip: _,
+                stack,
+                reference_stack,
+                iterator_stack,
+                exception_handler_stack,
+                executable,
+                instructions: _,
+                stack_depth: _,
+                collections_depth: _,
+                scope_base: _,
+            } = frame;
+            stack.as_slice().mark_values(queues);
+            reference_stack.as_slice().mark_values(queues);
+            iterator_stack.as_slice().mark_values(queues);
+            exception_handler_stack.as_slice().mark_values(queues);
+            executable.mark_values(queues);
+        }
+    }
+
+    fn sweep_values(&mut self, compactions: &CompactionLists) {
+        for frame in &mut self.frames[..self.in_use] {
+            let Frame {
+                ip: _,
+                stack,
+                reference_stack,
+                iterator_stack,
+                exception_handler_stack,
+                executable,
+                instructions: _,
+                stack_depth: _,
+                collections_depth: _,
+                scope_base: _,
+            } = frame;
+            stack.as_mut_slice().sweep_values(compactions);
+            reference_stack.as_mut_slice().sweep_values(compactions);
+            iterator_stack.as_mut_slice().sweep_values(compactions);
+            exception_handler_stack
+                .as_mut_slice()
+                .sweep_values(compactions);
+            executable.sweep_values(compactions);
+        }
+    }
+}
+
 impl Vm {
     const EMPTY: Self = Self {
         ip: 0,
@@ -253,16 +396,24 @@ impl Vm {
         exception_handler_stack: Vec::new(),
         result: None,
         reference: None,
+        depth: 0,
     };
+
+    /// The value and iterator stacks for code that is about to run: emptied
+    /// ones that other code left, or new ones.
+    #[inline]
+    fn take_stacks(agent: &mut Agent) -> PooledVmStacks {
+        agent.vm_stack_pool.pop().unwrap_or_else(|| PooledVmStacks {
+            stack: Vec::with_capacity(32),
+            iterator_stack: Vec::new(),
+        })
+    }
 
     fn new(agent: &mut Agent) -> Self {
         let PooledVmStacks {
             stack,
             iterator_stack,
-        } = agent.vm_stack_pool.pop().unwrap_or_else(|| PooledVmStacks {
-            stack: Vec::with_capacity(32),
-            iterator_stack: Vec::new(),
-        });
+        } = Self::take_stacks(agent);
         Self {
             ip: 0,
             stack,
@@ -271,51 +422,92 @@ impl Vm {
             exception_handler_stack: Vec::new(),
             result: None,
             reference: None,
+            depth: 0,
         }
     }
 
-    fn recycle(mut self, agent: &mut Agent) {
-        if self.reference_stack.capacity() != 0
-            && self.reference_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
+    fn recycle(self, agent: &mut Agent) {
+        // Every part of the Vm goes somewhere: nothing is left to drop.
+        let Vm {
+            ip: _,
+            stack,
+            reference_stack,
+            iterator_stack,
+            exception_handler_stack,
+            result: _,
+            reference: _,
+            depth,
+        } = self;
+        debug_assert_eq!(depth, 0);
+        Self::recycle_stacks(
+            agent,
+            stack,
+            reference_stack,
+            iterator_stack,
+            exception_handler_stack,
+        );
+    }
+
+    /// Keeps the stacks of code that has run, emptied, for code that is
+    /// about to: the value and iterator stacks together, the other two
+    /// where they were ever pushed to.
+    #[inline(always)]
+    fn recycle_stacks(
+        agent: &mut Agent,
+        mut stack: Vec<Value<'static>>,
+        mut reference_stack: Vec<Reference<'static>>,
+        mut iterator_stack: Vec<VmIteratorRecord<'static>>,
+        mut exception_handler_stack: Vec<ExceptionHandler<'static>>,
+    ) {
+        if reference_stack.capacity() != 0
+            && reference_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
             && agent.spare_vm_stacks.references.len() < VM_STACK_POOL_LEN
         {
-            let mut spare = core::mem::take(&mut self.reference_stack);
-            spare.clear();
-            agent.spare_vm_stacks.references.push(spare);
+            reference_stack.clear();
+            agent.spare_vm_stacks.references.push(reference_stack);
         }
-        if self.exception_handler_stack.capacity() != 0
-            && self.exception_handler_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
+        if exception_handler_stack.capacity() != 0
+            && exception_handler_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
             && agent.spare_vm_stacks.handlers.len() < VM_STACK_POOL_LEN
         {
-            let mut spare = core::mem::take(&mut self.exception_handler_stack);
-            spare.clear();
-            agent.spare_vm_stacks.handlers.push(spare);
+            exception_handler_stack.clear();
+            agent.spare_vm_stacks.handlers.push(exception_handler_stack);
         }
-        if self.stack.capacity() == 0
-            || self.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
-            || self.iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+        if stack.capacity() == 0
+            || stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+            || iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
             || agent.vm_stack_pool.len() >= VM_STACK_POOL_LEN
         {
             return;
         }
-        let mut stacks = PooledVmStacks {
-            stack: core::mem::take(&mut self.stack),
-            iterator_stack: core::mem::take(&mut self.iterator_stack),
-        };
-        stacks.stack.clear();
-        stacks.iterator_stack.clear();
-        agent.vm_stack_pool.push(stacks);
+        stack.clear();
+        iterator_stack.clear();
+        agent.vm_stack_pool.push(PooledVmStacks {
+            stack,
+            iterator_stack,
+        });
     }
 
-    fn suspend(mut self) -> SuspendedVm {
+    fn suspend(self) -> SuspendedVm {
+        let Vm {
+            ip,
+            stack,
+            reference_stack,
+            iterator_stack,
+            exception_handler_stack,
+            result: _,
+            reference: _,
+            depth,
+        } = self;
+        // Only the code a `Vm` was started with yields or awaits: a function
+        // it runs in place of a call is neither a generator nor async.
+        debug_assert_eq!(depth, 0);
         SuspendedVm {
-            ip: self.ip,
-            stack: fit_suspended_stack(core::mem::take(&mut self.stack)),
-            reference_stack: fit_suspended_stack(core::mem::take(&mut self.reference_stack)),
-            iterator_stack: fit_suspended_stack(core::mem::take(&mut self.iterator_stack)),
-            exception_jump_target_stack: fit_suspended_stack(core::mem::take(
-                &mut self.exception_handler_stack,
-            )),
+            ip,
+            stack: fit_suspended_stack(stack),
+            reference_stack: fit_suspended_stack(reference_stack),
+            iterator_stack: fit_suspended_stack(iterator_stack),
+            exception_jump_target_stack: fit_suspended_stack(exception_handler_stack),
         }
     }
 
@@ -328,6 +520,7 @@ impl Vm {
             exception_handler_stack: suspended.exception_jump_target_stack,
             result: None,
             reference: None,
+            depth: 0,
         }
     }
 
@@ -462,7 +655,6 @@ impl Vm {
         // object destructurings in one call would otherwise keep a key set
         // per iteration until the function returns, and run out of memory.
         let collections_depth = agent.stack_ref_collections.borrow().len();
-        let instructions = executable.get_instructions(agent);
         let print_internals = agent.options.print_internals;
         // The host is asked whether to interrupt, and the heap limit checked,
         // every so many calls and turns of loops: a script cannot run long
@@ -477,90 +669,428 @@ impl Vm {
         if agent.check_gc() {
             self.trigger_gc(agent, gc.reborrow());
         }
-        // The instruction pointer is a local across the plain instructions,
-        // which only jumps move: read and written in the Vm between every
-        // two of them, it was the longest step of going from one to the
-        // next. It is in the Vm, where everything else looks for it, around
-        // every instruction that is not plain and whenever the loop is left.
-        let mut ip = self.ip;
-        // The executable is looked up through its rooted handle here and
-        // after every collection, which is all that moves it, not by every
-        // instruction that fetches a constant, a name or a cache.
-        let mut code = executable.get(agent);
-        let mut collections = agent.heap.collections;
-        while let Some(instr) = Instr::consume_instruction(&instructions, &mut ip) {
-            if print_internals {
-                Self::print_executing(instr.kind);
-            }
-            // Most of what runs is plain: it goes straight to the next
-            // instruction, with no result to look at and nothing to release.
-            match Self::execute_plain_instruction(
-                agent,
-                self,
-                &mut ip,
-                &executable,
-                code,
-                instr,
-                gc.nogc(),
-            ) {
-                Plain::Done => continue,
-                Plain::Looped => {
-                    self.ip = ip;
-                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
-                        return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
-                    }
-                    if agent.check_gc() {
-                        self.trigger_gc(agent, gc.reborrow());
-                        code = executable.get(agent);
-                        collections = agent.heap.collections;
-                    }
-                    continue;
+        // The code this Vm was started with. A function that one of its
+        // calls runs in place of the call has its own executable, and so
+        // has every function called from there: `running` is the code that
+        // runs now. It changes only between two runs of the loop of
+        // instructions below, which keeps what it reads of it in registers.
+        let base_executable = executable;
+        let mut running = Running {
+            executable: base_executable.clone(),
+            instructions: base_executable.get_instructions(agent),
+            stack_depth,
+            collections_depth,
+            scope_base: stack_depth,
+        };
+        loop {
+            let Running {
+                executable,
+                instructions,
+                stack_depth,
+                collections_depth,
+                scope_base,
+            } = running;
+            // The instruction pointer is a local across the plain
+            // instructions, which only jumps move: read and written in the
+            // Vm between every two of them, it was the longest step of going
+            // from one to the next. It is in the Vm, where everything else
+            // looks for it, around every instruction that is not plain and
+            // whenever the loop is left.
+            let mut ip = self.ip;
+            // The executable is looked up through its rooted handle here and
+            // after every collection, which is all that moves it, not by
+            // every instruction that fetches a constant, a name or a cache.
+            let mut code = executable.get(agent);
+            let mut collections = agent.heap.collections;
+            let change = loop {
+                let Some(instr) = Instr::consume_instruction(&instructions, &mut ip) else {
+                    break Change::End;
+                };
+                if print_internals {
+                    Self::print_executing(instr.kind);
                 }
-                Plain::No => {}
-            }
-            self.ip = ip;
-            let result =
-                Self::execute_instruction(agent, self, executable.clone(), instr, gc.reborrow());
-            match result {
-                Ok(ContinuationKind::Normal) => {}
-                // The end of every call.
-                Ok(ContinuationKind::Return) if agent.termination().is_none() => {
+                // Most of what runs is plain: it goes straight to the next
+                // instruction, with no result to look at and nothing to
+                // release.
+                match Self::execute_plain_instruction(
+                    agent,
+                    self,
+                    &mut ip,
+                    &executable,
+                    code,
+                    instr,
+                    gc.nogc(),
+                ) {
+                    Plain::Done => continue,
+                    Plain::Looped => {
+                        self.ip = ip;
+                        if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                            // No handler of the running code sees this one.
+                            break Change::Throw(err.unbind());
+                        }
+                        if agent.check_gc() {
+                            self.trigger_gc(agent, gc.reborrow());
+                            code = executable.get(agent);
+                            collections = agent.heap.collections;
+                        }
+                        continue;
+                    }
+                    // A call of a function that this Vm runs itself.
+                    Plain::Call => {
+                        if let Some(callee) = self.function_called_in_place(agent, instr) {
+                            break Change::Call(callee, instr);
+                        }
+                    }
+                    Plain::No => {}
+                }
+                self.ip = ip;
+                let result = Self::execute_instruction(
+                    agent,
+                    self,
+                    executable.clone(),
+                    instr,
+                    gc.reborrow(),
+                );
+                match result {
+                    Ok(ContinuationKind::Normal) => {}
+                    // The end of every call.
+                    Ok(ContinuationKind::Return) if agent.termination().is_none() => {
+                        if print_internals {
+                            Self::print_exiting();
+                        }
+                        if self.depth == 0 {
+                            let result = self.result.unwrap_or(Value::Undefined);
+                            return ExecutionResult::Return(result.bind(gc.into_nogc()));
+                        }
+                        break Change::Return;
+                    }
+                    Err(err) => {
+                        if !self.handle_error(agent, err) {
+                            break Change::Throw(err.unbind());
+                        }
+                    }
+                    Ok(kind) => {
+                        if self.depth != 0 {
+                            // Only the code a Vm is started with yields or
+                            // awaits: a function run in place of its call
+                            // returned with a termination pending.
+                            break Change::Terminate;
+                        }
+                        if let Some(r) =
+                            self.handle_execute_instruction_abnormal_result(agent, Ok(kind))
+                        {
+                            return r.unbind().bind(gc.into_nogc());
+                        }
+                    }
+                }
+                // A jump, or the handler of what was thrown.
+                ip = self.ip;
+                agent.stack_refs.get_mut().truncate(stack_depth);
+                agent
+                    .stack_ref_collections
+                    .get_mut()
+                    .truncate(collections_depth);
+                if agent.check_gc() {
+                    self.trigger_gc(agent, gc.reborrow());
+                }
+                if agent.heap.collections != collections {
+                    // The instruction ran a collection, or one was due.
+                    code = executable.get(agent);
+                    collections = agent.heap.collections;
+                }
+            };
+            // The running code changes: to a function called in place of
+            // its call, or back to the code that made such a call, where
+            // the function returns or throws.
+            let mut thrown = None;
+            running = Running {
+                executable,
+                instructions,
+                stack_depth,
+                collections_depth,
+                scope_base,
+            };
+            match change {
+                Change::Call(callee, instr) => {
+                    running = self.enter_function(
+                        agent,
+                        instr,
+                        callee,
+                        ip,
+                        code.unbind(),
+                        running,
+                        gc.nogc(),
+                    );
                     if print_internals {
-                        Self::print_exiting();
+                        self.print_internals(agent, running.executable.clone(), gc.nogc());
                     }
-                    let result = self.result.unwrap_or(Value::Undefined);
-                    return ExecutionResult::Return(result.bind(gc.into_nogc()));
+                    // As for the code a Vm is started with: the host is
+                    // asked, and a collection that is due is run.
+                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                        thrown = Some(err.unbind());
+                    } else if agent.check_gc() {
+                        self.trigger_gc(agent, gc.reborrow());
+                    }
                 }
-                _ => {
-                    if let Some(r) = self.handle_execute_instruction_abnormal_result(agent, result)
-                    {
-                        return r.unbind().bind(gc.into_nogc());
+                Change::End if self.depth == 0 => {
+                    self.ip = ip;
+                    break;
+                }
+                Change::Return | Change::End => {
+                    // The value of the function is the result of the call
+                    // instruction: undefined at the end of its code, or
+                    // where it returned none.
+                    if self.result.is_none() || matches!(change, Change::End) {
+                        self.result = Some(Value::Undefined);
                     }
+                    drop(running);
+                    running = self.leave_function(agent, &base_executable, gc.nogc());
+                }
+                Change::Throw(error) => thrown = Some(error),
+                Change::Terminate => {
+                    while self.depth != 0 {
+                        drop(running);
+                        running = self.leave_function(agent, &base_executable, gc.nogc());
+                    }
+                    return ExecutionResult::Throw(JsError::new(Value::Undefined));
                 }
             }
-            // A jump, or the handler of what was thrown.
-            ip = self.ip;
-            agent.stack_refs.get_mut().truncate(stack_depth);
-            agent
-                .stack_ref_collections
-                .get_mut()
-                .truncate(collections_depth);
-            if agent.check_gc() {
-                self.trigger_gc(agent, gc.reborrow());
-            }
-            if agent.heap.collections != collections {
-                // The instruction ran a collection, or one was due.
-                code = executable.get(agent);
-                collections = agent.heap.collections;
+            if let Some(error) = thrown {
+                // What the running code did not handle goes to the nearest
+                // handler of the code that called it in place; with none,
+                // the Vm ends with the error.
+                loop {
+                    if self.depth == 0 {
+                        if print_internals {
+                            Self::print_exiting_with_error();
+                        }
+                        return ExecutionResult::Throw(error.bind(gc.into_nogc()));
+                    }
+                    drop(running);
+                    running = self.leave_function(agent, &base_executable, gc.nogc());
+                    if self.handle_error(agent, error) {
+                        break;
+                    }
+                }
             }
         }
-
-        self.ip = ip;
 
         if agent.termination().is_some() {
             return ExecutionResult::Throw(agent.termination_error(gc.into_nogc()));
         }
         ExecutionResult::Return(Value::Undefined)
+    }
+
+    /// The function that a call instruction is about to call, if this `Vm`
+    /// runs it itself: an ordinary function (not a generator, not async, not
+    /// a class constructor) that keeps its parameters in its first stack
+    /// slots and is called without a Function Environment Record, called
+    /// with a number of arguments that the instruction states, where one
+    /// more call is not one too many.
+    #[inline]
+    fn function_called_in_place(&self, agent: &Agent, instr: Instr) -> Option<CalledInPlace> {
+        let count = instr.get_first_index();
+        if count == IndexType::MAX as usize {
+            return None;
+        }
+        let callee = self.stack.len().checked_sub(count + 1)?;
+        let Value::ECMAScriptFunction(function) = self.stack[callee] else {
+            return None;
+        };
+        let data = function.get(agent);
+        let kind = data.ecmascript_function.kind;
+        if kind.is_generator()
+            || kind.is_async()
+            || data
+                .ecmascript_function
+                .constructor_status
+                .is_class_constructor()
+        {
+            return None;
+        }
+        let executable = data.compiled_bytecode?;
+        let code = executable.get(agent);
+        let parameters = code.stack_parameters? as usize;
+        if code.call_environment == CallEnvironment::Function || agent.call_depth_exceeded() {
+            return None;
+        }
+        Some(CalledInPlace {
+            function,
+            executable,
+            parameters,
+            declarative_environment: code.call_environment == CallEnvironment::Declarative,
+        })
+    }
+
+    /// Starts the call of `callee`, which the call instruction `instr`
+    /// makes, in this `Vm`: what \[\[Call]] does up to the function's code.
+    /// The calling code, which goes on at `ip`, is put aside with its
+    /// stacks; the function's code finds them empty but for its parameters.
+    /// Returns the function's code as the code to run.
+    #[allow(clippy::too_many_arguments)]
+    fn enter_function<'s>(
+        &mut self,
+        agent: &mut Agent,
+        instr: Instr,
+        callee: CalledInPlace,
+        ip: usize,
+        code: Executable<'static>,
+        caller: Running,
+        gc: NoGcScope<'_, 's>,
+    ) -> Running<'s> {
+        // EvaluateCall: the this value of the call, from its Reference.
+        let reference = if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+            self.reference = None;
+            self.reference_stack.pop()
+        } else {
+            self.reference.take()
+        };
+        let this_value = match reference {
+            Some(reference) if is_property_reference(&reference) => {
+                get_this_value(&reference).bind(gc)
+            }
+            Some(reference) => reference
+                .base_env()
+                .with_base_object(agent)
+                .map_or(Value::Undefined, |object| object.into())
+                .bind(gc),
+            None => Value::Undefined,
+        };
+        // PrepareForOrdinaryCall and OrdinaryCallBindThis.
+        prepare_for_call_without_function_environment(
+            agent,
+            callee.function,
+            this_value,
+            callee.declarative_environment,
+            gc,
+        );
+        if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
+            let PooledVmStacks {
+                stack,
+                iterator_stack,
+            } = Self::take_stacks(agent);
+            agent.vm_frames.frames.push(Frame {
+                ip: 0,
+                stack,
+                reference_stack: Vec::new(),
+                iterator_stack,
+                exception_handler_stack: Vec::new(),
+                executable: code,
+                instructions: None,
+                stack_depth: 0,
+                collections_depth: 0,
+                scope_base: 0,
+            });
+        }
+        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        // The arguments go where the function keeps its parameters:
+        // undefined for those not given, and those beyond the parameters
+        // are dropped.
+        let first = self.stack.len() - instr.get_first_index();
+        let arguments = &self.stack[first..];
+        for index in 0..callee.parameters {
+            frame
+                .stack
+                .push(arguments.get(index).copied().unwrap_or(Value::Undefined));
+        }
+        self.stack.truncate(first - 1);
+        // The function's stacks are the Vm's, and the caller's wait in the
+        // frame.
+        core::mem::swap(&mut self.stack, &mut frame.stack);
+        core::mem::swap(&mut self.reference_stack, &mut frame.reference_stack);
+        core::mem::swap(&mut self.iterator_stack, &mut frame.iterator_stack);
+        core::mem::swap(
+            &mut self.exception_handler_stack,
+            &mut frame.exception_handler_stack,
+        );
+        frame.ip = ip;
+        frame.executable = code;
+        frame.instructions = Some(caller.instructions);
+        frame.stack_depth = caller.stack_depth;
+        frame.collections_depth = caller.collections_depth;
+        frame.scope_base = caller.scope_base;
+        agent.vm_frames.in_use += 1;
+        self.depth += 1;
+        self.ip = 0;
+        let stack_refs = agent.stack_refs.get_mut();
+        let scope_base = stack_refs.len();
+        let executable = callee.executable.scope(agent, gc);
+        Running {
+            executable,
+            instructions: callee.executable.get_instructions(agent),
+            stack_depth: agent.stack_refs.get_mut().len(),
+            collections_depth: agent.stack_ref_collections.get_mut().len(),
+            scope_base,
+        }
+    }
+
+    /// Ends the function this `Vm` runs in place of a call, which returned
+    /// or threw: its execution context is removed, and its stacks, emptied,
+    /// stay in the frame for the next function, while those of the calling
+    /// code are the `Vm`'s again. Returns the calling code as the code to
+    /// run; `base` is the executable the `Vm` was started with.
+    fn leave_function<'s>(
+        &mut self,
+        agent: &mut Agent,
+        base: &Scoped<'s, Executable<'static>>,
+        gc: NoGcScope<'_, 's>,
+    ) -> Running<'s> {
+        agent.remove_execution_context();
+        self.depth -= 1;
+        agent.vm_frames.in_use -= 1;
+        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        self.stack.clear();
+        self.reference_stack.clear();
+        self.iterator_stack.clear();
+        self.exception_handler_stack.clear();
+        core::mem::swap(&mut self.stack, &mut frame.stack);
+        core::mem::swap(&mut self.reference_stack, &mut frame.reference_stack);
+        core::mem::swap(&mut self.iterator_stack, &mut frame.iterator_stack);
+        core::mem::swap(
+            &mut self.exception_handler_stack,
+            &mut frame.exception_handler_stack,
+        );
+        if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
+            // A stack that grew large is not kept for the next function.
+            frame.stack = Vec::new();
+        }
+        self.ip = frame.ip;
+        self.reference = None;
+        let instructions = frame
+            .instructions
+            .take()
+            .expect("the frame of the calling code is in use");
+        let (stack_depth, collections_depth, scope_base) =
+            (frame.stack_depth, frame.collections_depth, frame.scope_base);
+        let caller_executable = frame.executable;
+        if agent.vm_frames.in_use == 0 {
+            // No frame is in use: the Agent keeps a few of them, and none
+            // of a deep recursion.
+            agent.vm_frames.frames.truncate(SPARE_FRAMES);
+        }
+        let executable = if self.depth == 0 {
+            agent.stack_refs.get_mut().truncate(stack_depth);
+            base.clone()
+        } else {
+            // The caller is itself run in place of a call: its executable
+            // is scoped anew where it was.
+            let executable = caller_executable;
+            agent.stack_refs.get_mut().truncate(scope_base);
+            let executable = executable.scope(agent, gc);
+            debug_assert_eq!(agent.stack_refs.get_mut().len(), stack_depth);
+            executable
+        };
+        agent
+            .stack_ref_collections
+            .get_mut()
+            .truncate(collections_depth);
+        Running {
+            executable,
+            instructions,
+            stack_depth,
+            collections_depth,
+            scope_base,
+        }
     }
 
     /// ## Panics
@@ -988,8 +1518,10 @@ impl Vm {
                 if count == IndexType::MAX as usize || first == 0 {
                     return Plain::No;
                 }
-                let Value::BuiltinFunction(function) = vm.stack[first - 1] else {
-                    return Plain::No;
+                let function = match vm.stack[first - 1] {
+                    Value::BuiltinFunction(function) => function,
+                    Value::ECMAScriptFunction(_) => return Plain::Call,
+                    _ => return Plain::No,
                 };
                 let Some(direct) = function.get(agent).direct else {
                     return Plain::No;
@@ -2567,7 +3099,9 @@ fn with_vm_gc<'a, 'b, R: 'a>(
     agent.vm_stack.push(core::mem::replace(vm, Vm::EMPTY));
     let result = work(agent, gc);
     assert_eq!(agent.vm_stack.len(), depth + 1, "VM Stack was misused");
-    *vm = agent.vm_stack.pop().unwrap();
+    // What is replaced is the empty Vm put there above, which nothing could
+    // reach in between: it holds nothing to free.
+    core::mem::forget(core::mem::replace(vm, agent.vm_stack.pop().unwrap()));
     result
 }
 
@@ -2611,6 +3145,7 @@ impl HeapMarkAndSweep for Vm {
             exception_handler_stack: exception_jump_target_stack,
             result,
             reference,
+            depth: _,
         } = self;
         stack.as_slice().mark_values(queues);
         reference_stack.as_slice().mark_values(queues);
@@ -2629,6 +3164,7 @@ impl HeapMarkAndSweep for Vm {
             exception_handler_stack: exception_jump_target_stack,
             result,
             reference,
+            depth: _,
         } = self;
         stack.as_mut_slice().sweep_values(compactions);
         reference_stack.as_mut_slice().sweep_values(compactions);

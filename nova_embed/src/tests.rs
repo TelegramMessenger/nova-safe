@@ -3112,3 +3112,255 @@ generatorAndAsync1=1,7,9"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A function that the interpreter runs in place of its call, in the loop
+/// of the calling code, does what a call of it does: its arguments and
+/// `this`, what it returns with and without a `return`, errors that pass
+/// through several such functions to a handler or a `finally` of any of
+/// them, iterators closed on the way out, closures, recursion, collections
+/// that run while many are entered, and the functions that are not run in
+/// place (generators, async and class code, callbacks of built-ins) calling
+/// and being called by those that are.
+#[test]
+fn functions_run_in_place_of_their_calls_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(functions_run_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn functions_run_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = (e && e.constructor ? e.constructor.name : typeof e) + ":" + (e && e.message ? e.message.length : String(e)); }
+    out.push(label + round + "=" + String(r));
+  }
+}
+log("plain", function () { function add(a, b) { return a + b; } function twice(f, x) { return f(f(x, 1), 2); } var s = 0; for (var i = 0; i < 50; i++) s = add(s, i & 7); return s + "," + twice(add, 5); });
+log("argumentCounts", function () { function f(a, b, c) { return [a, b, c].map(String).join("/"); } function g() { return "none"; } function h(a) { a = a + 1; return a; } return [f(), f(1), f(1, 2), f(1, 2, 3), f(1, 2, 3, 4, 5), g(1, 2, 3), g(), h(4), h()].join(); });
+log("noReturn", function () { function f(a) { a + 1; } function g(a) { if (a) return; } function h() { } function k(a) { if (a) { return 5; } } return [f(1), g(1), g(0), h(), k(0), k(1), typeof f(2)].join(); });
+log("recursion", function () { function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); } function even(n) { return n === 0 ? true : odd(n - 1); } function odd(n) { return n === 0 ? false : even(n - 1); } function sum(n) { return n === 0 ? 0 : n + sum(n - 1); } return [fib(15), even(200), odd(201), sum(1000)].join(); });
+log("throwAcrossFrames", function () {
+  var trail = "";
+  function c(x) { trail += "c"; if (x) throw new TypeError("deep"); return "ok"; }
+  function b(x) { trail += "b"; try { return c(x); } finally { trail += "B"; } }
+  function a(x) { trail += "a"; var r = b(x); trail += "A"; return r; }
+  var r = [];
+  r.push(a(0));
+  try { a(1); } catch (e) { r.push(e.constructor.name + e.message); }
+  function mid(x) { try { return a(x); } catch (e) { trail += "M"; return "caught"; } }
+  r.push(mid(1), mid(0));
+  function rethrow(x) { try { return a(x); } catch (e) { trail += "R"; throw e; } }
+  try { rethrow(1); } catch (e) { r.push("outer" + e.message); }
+  return r.join() + "|" + trail;
+});
+log("finallyOverrides", function () {
+  function f() { try { return "try"; } finally { return "finally"; } }
+  function g() { try { throw new Error("x"); } finally { return "swallowed"; } }
+  function h(n) { for (var i = 0; i < 3; i++) { try { if (i === n) return "ret" + i; } finally { if (i === 1) continue; } } return "end"; }
+  function thrower() { throw 7; }
+  function k() { try { thrower(); } catch (e) { return "caught" + e; } finally { out.length; } }
+  function nonError() { try { thrower(); } catch (e) { throw e + 1; } }
+  var r = [f(), g(), h(0), h(1), h(2), h(9), k()];
+  try { nonError(); } catch (e) { r.push(typeof e + e); }
+  return r.join();
+});
+log("thisBinding", function () {
+  "use sloppy";
+  var o = { v: 1, m: function () { return this === o ? "o" : typeof this; }, n: function (x) { return this.v + x; } };
+  function sloppy() { return this === undefined ? "undef" : this === globalThis ? "global" : typeof this; }
+  function strict() { "use strict"; return this === undefined ? "undef" : typeof this; }
+  var bare = o.m, r = [];
+  r.push(o.m(), bare(), o.n(o.n(1)), sloppy(), strict(), sloppy.call(5), strict.call(5), sloppy.call(null), strict.call(null), o["m"](), (0, o.m)(), (o.m)());
+  var arrow = { m: function () { return (() => this === arrow)(); } };
+  r.push(arrow.m());
+  function Ctor() { this.x = helper(2); function helper(n) { return n * 3; } }
+  r.push(new Ctor().x);
+  var nested = { a: { b: function () { return this === nested.a; } } };
+  r.push(nested.a.b());
+  return r.join();
+});
+log("nestedArguments", function () {
+  var order = "";
+  function t(x) { order += x; return x; }
+  function f(a, b, c) { return a + "-" + b + "-" + c; }
+  var o = { m: function (a, b) { return this.k + a + b; }, k: "K", g: function () { return this; } };
+  var r = [f(t("1"), f(t("2"), t("3"), t("4")), t("5")), o.m(o.g().k, o.m(t("x"), t("y"))), o.g().g().m(f(1, 2, 3), "")];
+  return r.join() + "|" + order;
+});
+log("closures", function () {
+  function counter() { var n = 0; return function () { n++; return n; }; }
+  var a = counter(), b = counter(); a(); a();
+  function make(i) { return function (x) { return function (y) { return i + x + y; }; }; }
+  var fs = []; for (let i = 0; i < 4; i++) fs.push(function () { return i * 2; });
+  function outer(x) { function inner(y) { return x * y; } return inner(3) + inner(4); }
+  return [a(), b(), make(1)(2)(3), fs.map(function (f) { return f(); }).join(""), outer(5)].join();
+});
+log("iteratorsAcrossCalls", function () {
+  var closed = [];
+  function source(name) { var i = 0; return { [Symbol.iterator]: function () { return this; }, next: function () { return { value: name + i, done: i++ >= 3 }; }, return: function () { closed.push(name); return {}; } }; }
+  function firstOf(it) { for (var v of it) return v; }
+  function findIn(it, wanted) { for (var v of it) { if (helper(v, wanted)) return v; } return "none"; }
+  function helper(a, b) { return a === b; }
+  function inner() { var r = ""; for (var k in { p: 1, q: 2 }) r += k; for (var c of "xy") r += c; return r; }
+  var r = [];
+  for (var v of source("a")) { r.push(v + inner()); if (v === "a1") break; }
+  r.push(firstOf(source("b")), findIn(source("c"), "c2"), findIn(source("d"), "zz"));
+  for (var w of [1, 2, 3]) { r.push(firstOf([w * 10, 99])); for (var u of [7]) r.push(helper(u, 7)); }
+  function thrower(it) { for (var v of it) throw new Error("mid"); }
+  try { thrower(source("e")); } catch (e) { r.push(e.message); }
+  var [p, q] = [firstOf("hello"), inner()];
+  r.push(p, q);
+  return r.join() + "|" + closed.join();
+});
+log("collectionsDeep", function () {
+  function build(n, acc) {
+    var mine = { id: n, text: "node" + n, list: [n, n + 1, n + 2], inner: { v: n * 2 } };
+    var junk = []; for (var i = 0; i < 40; i++) junk.push({ a: i, s: "j" + i + n });
+    if (n === 0) return mine.id + mine.text + mine.list.length + mine.inner.v;
+    var below = build(n - 1, mine);
+    return below.length > 0 && mine.text === "node" + n && mine.list[2] === n + 2 && mine.inner.v === n * 2 && junk[39].s === "j39" + n && (!acc || acc.id === n + 1) ? below + "." + n : "BROKEN" + n;
+  }
+  var r = build(300).length;
+  var keep = []; function grow(n) { var local = "s" + n; keep.push([local, { n: n }]); return n > 0 ? grow(n - 1) + local.length : 0; }
+  var total = grow(400);
+  return r + "," + total + "," + keep.length + "," + keep[0][0] + keep[400][1].n;
+});
+log("builtinsCallBack", function () {
+  function sq(x) { return x * x; } function cmp(a, b) { return lowLevel(a) - lowLevel(b); } function lowLevel(x) { return -x; }
+  function boom(x) { if (x === 3) throw new RangeError("three"); return x; }
+  var r = [[1, 2, 3].map(sq).join(""), [3, 1, 2].sort(cmp).join(""), [1, 2, 3, 4].reduce(function (a, b) { return a + sq(b); }, 0), [1, 2].flatMap(function (x) { return [x, sq(x)]; }).join("")];
+  try { [1, 2, 3, 4].forEach(function (x) { boom(x); }); } catch (e) { r.push(e.message); }
+  r.push("abc".replace(/b/, function (m) { return sq(4) + m; }), JSON.stringify({ a: 1 }, function (k, v) { return typeof v === "number" ? sq(v + 1) : v; }), Array.from({ length: 3 }, function (_, i) { return sq(i); }).join(""));
+  var m = new Map(); m.set("k", sq); r.push(m.get("k")(9));
+  return r.join();
+});
+log("accessorsAndProxies", function () {
+  var log2 = "";
+  function note(x) { log2 += x; return x; }
+  var o = { get g() { return note("g") + helper(); }, set s(v) { note("s" + v); }, valueOf: function () { return helper2(20); } };
+  function helper() { return "H"; } function helper2(n) { return n + 1; }
+  var p = new Proxy({}, { get: function (t, k) { return k === "f" ? function (a) { return note("p") + a; } : helper(); } });
+  o.s = 3;
+  return [o.g, o + 1, p.f(5), p.other, `${o}`].join() + "|" + log2;
+});
+log("classes", function () {
+  class A { constructor(v) { this.v = init(v); } get() { return this.v; } static make(v) { return new A(twice(v)); } sum(n) { return n === 0 ? 0 : n + this.sum(n - 1); } }
+  class B extends A { constructor(v) { super(v + 1); } get() { return super.get() * 2; } }
+  function init(v) { return v + 100; } function twice(v) { return v * 2; }
+  var r = [new A(1).get(), new B(1).get(), A.make(3).get(), new A(0).sum(50)];
+  try { A(); } catch (e) { r.push(e.constructor.name); }
+  function Old(v) { if (!(this instanceof Old)) return new Old(v); this.v = twice(v); }
+  Old.prototype.get = function () { return this.v; };
+  r.push(Old(4).get(), new Old(5).get());
+  return r.join();
+});
+log("generatorsAndAsync", function () {
+  function inc(x) { return x + 1; }
+  function* g(n) { var x = inc(n); var got = yield inc(x); yield inc(got) + helper(got); return inc(100); }
+  function helper(v) { return v * 2; }
+  var it = g(1), r = [it.next().value, it.next(10).value, it.next().value, it.next().done];
+  function caller() { var total = 0; for (var v of g(5)) total += v; return total; }
+  r.push(caller());
+  var seq = [];
+  async function af(x) { seq.push("a" + inc(x)); var y = await inc(x); seq.push("b" + inc(y)); return inc(y); }
+  af(1).then(function (v) { seq.push("then" + v); });
+  r.push(seq.join(""));
+  function throwsInGen() { function* t() { yield 1; fail(); } function fail() { throw new SyntaxError("gen"); } var i = t(); i.next(); try { i.next(); } catch (e) { return e.message; } }
+  r.push(throwsInGen());
+  return r.join();
+});
+log("applyBindCall", function () {
+  function f(a, b) { return (this && this.tag ? this.tag : "none") + a + b; }
+  function viaApply() { return f.apply({ tag: "T" }, [1, 2]); }
+  var bound = f.bind({ tag: "B" }, 7);
+  function useBound(x) { return bound(x); }
+  return [viaApply(), f.call({ tag: "C" }, 3, 4), useBound(8), Reflect.apply(f, null, [5, 6]), [1, 2].map(f.bind(null, 0)).join("")].join();
+});
+log("labelsAndSwitch", function () {
+  function classify(n) { switch (n % 4) { case 0: return "zero"; case 1: return name(n); default: break; } return "other"; }
+  function name(n) { return "one" + n; }
+  var r = "";
+  outer: for (var i = 0; i < 6; i++) { for (var j = 0; j < 3; j++) { if (classify(i + j) === "zero") continue outer; if (i === 4) break outer; r += classify(i) + j + ";"; } }
+  return r;
+});
+log("valuesReturned", function () {
+  function id(x) { return x; }
+  var s = Symbol("s"), o = {}, big = 2n ** 70n;
+  var vals = [undefined, null, true, 0, -0, 1.5, NaN, "str", "a longer string value", s, o, big, id];
+  var same = vals.every(function (v) { return Object.is(id(v), v) && Object.is(id(id(v)), v); });
+  function many() { return [id(1), id("a"), id(null)]; }
+  return same + "," + many().length + "," + typeof id(id) + "," + (1 / id(-0));
+});
+log("errorsInCalleeSetup", function () {
+  var r = [];
+  function notHere() { return missing + 1; }
+  try { notHere(); } catch (e) { r.push(e.constructor.name); }
+  function tdz() { return early; let early = 1; }
+  try { tdz(); } catch (e) { r.push(e.constructor.name); }
+  function callsNothing(f) { return f(); }
+  try { callsNothing(5); } catch (e) { r.push(e.constructor.name); }
+  try { callsNothing(undefined); } catch (e) { r.push(e.constructor.name); }
+  function ok() { return "fine"; }
+  r.push(callsNothing(ok));
+  var caughtInside = (function () { try { return callsNothing(null); } catch (e) { return "in"; } finally { r.push("fin"); } })();
+  r.push(caughtInside);
+  return r.join();
+});
+log("manyCallsOneLoop", function () { function a(x) { return b(x) + 1; } function b(x) { return c(x) + 1; } function c(x) { return d(x) + 1; } function d(x) { return x & 3; } var t = 0; for (var i = 0; i < 2000; i++) t += a(i); return t; });
+out.join("\n")
+"#;
+    let expected = r#"plain0=169,8
+plain1=169,8
+argumentCounts0=undefined/undefined/undefined,1/undefined/undefined,1/2/undefined,1/2/3,1/2/3,none,none,5,NaN
+argumentCounts1=undefined/undefined/undefined,1/undefined/undefined,1/2/undefined,1/2/3,1/2/3,none,none,5,NaN
+noReturn0=,,,,,5,undefined
+noReturn1=,,,,,5,undefined
+recursion0=610,true,true,500500
+recursion1=610,true,true,500500
+throwAcrossFrames0=ok,TypeErrordeep,caught,ok,outerdeep|abcBAabcBabcBMabcBAabcBR
+throwAcrossFrames1=ok,TypeErrordeep,caught,ok,outerdeep|abcBAabcBabcBMabcBAabcBR
+finallyOverrides0=finally,swallowed,ret0,end,ret2,end,caught7,number8
+finallyOverrides1=finally,swallowed,ret0,end,ret2,end,caught7,number8
+thisBinding0=o,object,3,global,undef,object,number,global,object,o,object,o,true,6,true
+thisBinding1=o,object,3,global,undef,object,number,global,object,o,object,o,true,6,true
+nestedArguments0=1-2-3-4-5,KKKxy,K1-2-3|12345xy
+nestedArguments1=1-2-3-4-5,KKKxy,K1-2-3|12345xy
+closures0=3,1,6,0246,35
+closures1=3,1,6,0246,35
+iteratorsAcrossCalls0=a0pqxy,a1pqxy,b0,c2,none,10,true,20,true,30,true,mid,h,pqxy|a,b,c,e
+iteratorsAcrossCalls1=a0pqxy,a1pqxy,b0,c2,none,10,true,20,true,30,true,mid,h,pqxy|a,b,c,e
+collectionsDeep0=1100,1492,401,s4000
+collectionsDeep1=1100,1492,401,s4000
+builtinsCallBack0=149,321,30,1124,three,a16bc,{"a":4},014,81
+builtinsCallBack1=149,321,30,1124,three,a16bc,{"a":4},014,81
+accessorsAndProxies0=gH,22,p5,H,[object Object]|s3gp
+accessorsAndProxies1=gH,22,p5,H,[object Object]|s3gp
+classes0=101,204,106,1275,TypeError,8,10
+classes1=101,204,106,1275,TypeError,8,10
+generatorsAndAsync0=3,31,101,true,NaN,a2,gen
+generatorsAndAsync1=3,31,101,true,NaN,a2,gen
+applyBindCall0=T12,C34,B78,none56,none01none02
+applyBindCall1=T12,C34,B78,none56,none01none02
+labelsAndSwitch0=one10;one11;one12;other0;other1;other0;one50;one51;one52;
+labelsAndSwitch1=one10;one11;one12;other0;other1;other0;one50;one51;one52;
+valuesReturned0=true,3,function,-Infinity
+valuesReturned1=true,3,function,-Infinity
+errorsInCalleeSetup0=ReferenceError,ReferenceError,TypeError,TypeError,fine,fin,in
+errorsInCalleeSetup1=ReferenceError,ReferenceError,TypeError,TypeError,fine,fin,in
+manyCallsOneLoop0=9000
+manyCallsOneLoop1=9000"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

@@ -41,7 +41,7 @@ use crate::{
     },
     engine::{
         Bindable, GcScope, Global, HeapRootCollection, HeapRootData, HeapRootRef, NoGcScope,
-        PooledVmStacks, Rootable, SpareVmStacks, Vm,
+        PooledVmStacks, Rootable, SpareVmStacks, Vm, VmFrames,
     },
     heap::{
         ArenaAccess, CompactionLists, CreateHeapData, Heap, HeapIndexHandle, HeapMarkAndSweep,
@@ -946,6 +946,9 @@ pub struct Agent {
     /// Emptied Reference and exception handler stacks of finished VMs, taken
     /// by one that pushes to either.
     pub(crate) spare_vm_stacks: SpareVmStacks,
+    /// The frames of the calls that `Vm`s run in place: see
+    /// [`VmFrames`].
+    pub(crate) vm_frames: VmFrames,
     /// Emptied argument vectors, reused for call arguments.
     pub(crate) arguments_pool: Vec<Vec<Value<'static>>>,
     /// ### \[\[KeptAlive]]
@@ -986,6 +989,7 @@ impl Agent {
             vm_stack: Vec::with_capacity(16),
             vm_stack_pool: Vec::new(),
             spare_vm_stacks: SpareVmStacks::default(),
+            vm_frames: VmFrames::default(),
             arguments_pool: Vec::new(),
             #[cfg(feature = "weak-refs")]
             kept_alive: false,
@@ -1305,10 +1309,17 @@ impl Agent {
         strict
     }
 
-    pub(crate) fn check_call_depth<'gc>(&mut self, gc: NoGcScope<'gc, '_>) -> JsResult<'gc, ()> {
+    /// Whether a call made now is one too many: see
+    /// [`check_call_depth`](Self::check_call_depth).
+    #[inline]
+    pub(crate) fn call_depth_exceeded(&self) -> bool {
         // Experimental number that caused stack overflow on local machine;
         // the native stack guard (Agent::set_stack_limit) is the real bound.
-        if self.execution_context_stack.len() > 3500 || self.stack_exhausted() {
+        self.execution_context_stack.len() > 3500 || self.stack_exhausted()
+    }
+
+    pub(crate) fn check_call_depth<'gc>(&mut self, gc: NoGcScope<'gc, '_>) -> JsResult<'gc, ()> {
+        if self.call_depth_exceeded() {
             Err(self.throw_exception_with_static_message(
                 ExceptionType::RangeError,
                 "Maximum call stack size exceeded",
@@ -1367,6 +1378,15 @@ impl Agent {
 
     pub(crate) fn pop_execution_context(&mut self) -> Option<ExecutionContext> {
         self.execution_context_stack.pop()
+    }
+
+    /// Removes the running execution context, which nothing is to be read
+    /// of: the context under it is the running one again.
+    #[inline]
+    pub(crate) fn remove_execution_context(&mut self) {
+        let depth = self.execution_context_stack.len();
+        self.execution_context_stack
+            .truncate(depth.saturating_sub(1));
     }
 
     pub(crate) fn current_source_code<'a>(&self, gc: NoGcScope<'a, '_>) -> SourceCode<'a> {
@@ -1746,6 +1766,7 @@ impl HeapMarkAndSweep for Agent {
             vm_stack,
             vm_stack_pool: _,
             spare_vm_stacks: _,
+            vm_frames,
             arguments_pool: _,
             options: _,
             symbol_id: _,
@@ -1772,6 +1793,7 @@ impl HeapMarkAndSweep for Agent {
             .iter()
             .for_each(|collection| collection.mark_values(queues));
         vm_stack.iter().for_each(|vm| vm.mark_values(queues));
+        vm_frames.mark_values(queues);
         global_symbol_registry.mark_values(queues);
         let mut last_filled_global_value = None;
         heap.globals
@@ -1805,6 +1827,7 @@ impl HeapMarkAndSweep for Agent {
             vm_stack,
             vm_stack_pool: _,
             spare_vm_stacks: _,
+            vm_frames,
             arguments_pool: _,
             options: _,
             symbol_id: _,
@@ -1833,6 +1856,7 @@ impl HeapMarkAndSweep for Agent {
         vm_stack
             .iter_mut()
             .for_each(|entry| entry.sweep_values(compactions));
+        vm_frames.sweep_values(compactions);
         global_symbol_registry.sweep_values(compactions);
     }
 }

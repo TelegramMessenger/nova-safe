@@ -333,7 +333,7 @@ impl<'gc> Executable<'gc> {
     /// The bytecode, shared: a running VM holds its own reference, so the
     /// bytecode outlives the Executable if that is dropped while it runs.
     #[inline]
-    fn get_instructions(self, agent: &Agent) -> Arc<[u8]> {
+    pub(super) fn get_instructions(self, agent: &Agent) -> Arc<[u8]> {
         self.get(agent).instructions.clone()
     }
 
