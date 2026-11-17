@@ -4,8 +4,8 @@
 
 use crate::{
     ecmascript::{
-        Agent, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, ObjectShape, PropertyKey,
-        PropertyLookupCache, SourceCode, String, Value,
+        Agent, BindingSite, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, ObjectShape,
+        PropertyKey, PropertyLookupCache, SourceCode, String, Value,
     },
     engine::{
         Bindable, NoGcScope, Scoped,
@@ -126,6 +126,10 @@ pub(crate) struct ExecutableHeapData<'a> {
     /// The environment a \[\[Call]] of the function this executable is the body
     /// of creates: see function_declaration_instantiation::instantiation.
     pub(crate) call_environment: CallEnvironment,
+    /// Where each place in the instructions that names a variable of an
+    /// enclosing scope found it the last time; nothing here is known to the
+    /// collector.
+    pub(crate) binding_sites: Box<[BindingSite]>,
     pub(crate) _gc: PhantomData<Value<'a>>,
 }
 
@@ -305,6 +309,26 @@ impl<'gc> Executable<'gc> {
     }
 
     #[inline]
+    fn fetch_binding_site(self, agent: &Agent, index: usize) -> BindingSite {
+        self.get(agent)
+            .binding_sites
+            .get(index)
+            .copied()
+            .unwrap_or(BindingSite::ELSEWHERE)
+    }
+
+    fn set_binding_site(self, agent: &mut Agent, index: usize, site: BindingSite) {
+        use crate::heap::DirectArenaAccessMut;
+        if let Some(slot) = self
+            .get_direct_mut(&mut agent.heap.executables)
+            .binding_sites
+            .get_mut(index)
+        {
+            *slot = site;
+        }
+    }
+
+    #[inline]
     fn fetch_wide_constant(
         self,
         agent: &Agent,
@@ -437,6 +461,15 @@ impl Scoped<'_, Executable<'static>> {
     }
 
     #[inline]
+    pub(super) fn fetch_binding_site(&self, agent: &Agent, index: usize) -> BindingSite {
+        self.get(agent).fetch_binding_site(agent, index)
+    }
+
+    pub(super) fn set_binding_site(&self, agent: &mut Agent, index: usize, site: BindingSite) {
+        self.get(agent).set_binding_site(agent, index, site)
+    }
+
+    #[inline]
     pub(super) fn fetch_wide_constant<'gc>(
         &self,
         agent: &Agent,
@@ -522,6 +555,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment: _,
+            binding_sites: _,
             _gc: _,
         } = self;
         instance_initializer.mark_values(queues);
@@ -546,6 +580,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment: _,
+            binding_sites: _,
             _gc: _,
         } = self;
         instance_initializer.sweep_values(compactions);

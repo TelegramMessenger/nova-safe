@@ -1278,6 +1278,20 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             .add_instruction_with_identifier(instruction, identifier);
     }
 
+    pub(super) fn new_binding_site(&mut self) -> Option<IndexType> {
+        self.executable.new_binding_site()
+    }
+
+    pub(super) fn add_instruction_with_identifier_and_site(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        site: IndexType,
+    ) {
+        self.executable
+            .add_instruction_with_identifier_and_site(instruction, identifier, site);
+    }
+
     pub(super) fn add_instruction_with_cache(
         &mut self,
         instruction: Instruction,

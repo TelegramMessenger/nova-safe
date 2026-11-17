@@ -790,6 +790,93 @@ fn strings_outside_ascii_are_refused_by_their_bytes() {
     );
 }
 
+/// A variable found where it was found the last time is the variable the
+/// scope chain gives: every check runs its references more than once.
+#[test]
+fn remembered_variable_places_keep_the_language_semantics() {
+    // An unoptimised build nests few calls within the default stack limit.
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(remembered_variable_places)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn remembered_variable_places() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let checks = [
+        // Closure variables, read and written, at several distances.
+        "(function () { var a = 1; function f() { return a; } var r = f() + f(); a = 5; return r === 2 && f() === 5; })()",
+        "(function () { var n = 0; function inc() { n += 1; } for (var i = 0; i < 100; i++) inc(); return n === 100; })()",
+        "(function () { var a = 1; return (function () { var b = 2; return (function () { var c = 3; var s = 0; for (var i = 0; i < 10; i++) s += a + b + c; return s; })(); })() === 60; })()",
+        // Each closure keeps the variable of its own call or iteration.
+        "(function () { function make(v) { return function () { return v; }; } var a = make(1), b = make(2); return a() === 1 && b() === 2 && a() === 1; })()",
+        "(function () { var fs = []; for (let i = 0; i < 5; i++) fs.push(function () { return i; }); var s = ''; for (var k = 0; k < 5; k++) s += fs[k]() + '' + fs[k](); return s === '0011223344'; })()",
+        "(function () { var fs = []; for (var i = 0; i < 3; i++) { let j = i * 2; fs.push(function () { j += 1; return j; }); } return fs[0]() === 1 && fs[0]() === 2 && fs[2]() === 5 && fs[1]() === 3; })()",
+        // The same code at different depths of recursion.
+        "(function () { var total = 0; function walk(d) { var here = d; function add() { total += here; } add(); if (d > 0) walk(d - 1); add(); } walk(4); return total === 20; })()",
+        // Shadowing: the nearest declaration wins, in each block of its own.
+        "(function () { var x = 'outer'; function f(flag) { var r = []; { let x = 'block'; r.push((function () { return x; })()); } r.push((function () { return x; })()); return r.join(); } return f() === 'block,outer' && f() === 'block,outer'; })()",
+        "(function () { var x = 1; function g() { return x; } function h() { var x = 2; return g() + (function () { return x; })(); } return h() === 3 && h() === 3; })()",
+        "(function () { function f(x) { return function () { try { throw 9; } catch (x) { return (function () { return x; })(); } }; } var g = f(1); return g() === 9 && g() === 9; })()",
+        // The temporal dead zone throws every time, then the value is read.
+        "(function () { var n = 0; function f() { function get() { return x; } try { get(); } catch (e) { if (e instanceof ReferenceError) n++; } let x = 7; return get(); } return f() === 7 && f() === 7 && n === 2; })()",
+        "(function () { var n = 0; function f() { function set() { x = 3; } try { set(); } catch (e) { if (e instanceof ReferenceError) n++; } let x = 7; set(); return x; } return f() === 3 && f() === 3 && n === 2; })()",
+        // A constant refuses every write; sloppy and strict.
+        "(function () { const c = 1; var n = 0; function w() { c = 2; } for (var i = 0; i < 3; i++) { try { w(); } catch (e) { if (e instanceof TypeError) n++; } } return n === 3 && c === 1; })()",
+        "(function () { 'use strict'; const c = 1; var n = 0; function w() { c = 2; } for (var i = 0; i < 3; i++) { try { w(); } catch (e) { if (e instanceof TypeError) n++; } } return n === 3 && c === 1; })()",
+        // The name of a function expression is read-only and silently so.
+        "(function () { var f = function me(n) { me = null; return n > 0 ? me(n - 1) + 1 : 0; }; return f(3) === 3 && f(3) === 3; })()",
+        // Compound assignment, increment, typeof and delete through a closure.
+        "(function () { var v = 1; function f() { v *= 2; v++; return typeof v; } return f() === 'number' && f() === 'number' && v === 7; })()",
+        "(function () { var v = 1; function f() { return delete v; } return f() === false && f() === false && v === 1; })()",
+        // A direct eval can put a variable between a reference and its
+        // declaration: such references are resolved every time.
+        "(function () { var x = 1; function mid(code) { function g() { return x; } var before = g(); eval(code); return before + ',' + g(); } return mid('') === '1,1' && mid('var x = 2') === '1,2' && mid('') === '1,1'; })()",
+        "(function () { var x = 1; function mid(code) { { eval(code); } return (function () { return x; })(); } return mid('') === 1 && mid('var x = 2') === 2 && mid('') === 1; })()",
+        "(function () { var x = 1; function mid(code) { var g = eval('(function () { return x; })'); var before = g(); eval(code); return before + ',' + g(); } return mid('') === '1,1' && mid('var x = 2') === '1,2'; })()",
+        "(function () { var r = []; function f() { eval('var q = 1; var h = function () { return q; }'); r.push(h()); q = 5; r.push(h()); eval('var q = 8'); r.push(h()); } f(); f(); return r.join() === '1,5,8,1,5,8'; })()",
+        // Parameters, their defaults and `arguments`.
+        "(function () { function f(a, b = function () { return a; }) { var a2 = a; a = 9; return b() + a2; } return f(1) === 10 && f(2) === 11; })()",
+        "(function () { function f(a) { function g() { return arguments.length + a; } return g(1, 2) + g(); } return f(10) === 22 && f(1) === 4; })()",
+        // Generators and async functions come back to their own variables.
+        "(function () { function* gen(a) { var b = a; var get = function () { return a + b; }; while (true) { b += yield get(); } } var g = gen(1), h = gen(10); g.next(); h.next(); return g.next(1).value === 3 && h.next(1).value === 21 && g.next(1).value === 4; })()",
+        // Classes: methods see the class and what encloses it.
+        "(function () { var k = 3; class A { static make() { return new A(); } get v() { return k; } } k = 4; return A.make().v === 4 && A.make().v === 4; })()",
+        // What is done to a variable without a Reference, and what needs one.
+        "(function () { var a = 1, b = 2; function swap() { [a, b] = [b, a]; } swap(); var one = a === 2 && b === 1; swap(); return one && a === 1 && b === 2; })()",
+        "(function () { var x = 5; function f() { var before = x++; var after = ++x; x -= 2; x **= 2; return before + ',' + after + ',' + x; } return f() === '5,7,25' && f() === '25,27,625'; })()",
+        "(function () { var x; var out = []; function f(list) { for (x of list) out.push(x); for (x in { k: 1 }) out.push(x); } f([1, 2]); f([3]); return out.join() === '1,2,k,3,k' && x === 'k'; })()",
+        "(function () { var a = null, b = 0, c = 1; function f() { a ??= 4; b ||= 5; c &&= 6; return a + b + c; } return f() === 15 && f() === 15; })()",
+        "(function () { var x = 1; function f() { try { x = (function () { throw 3; })(); } catch (e) { return x + e; } } return f() === 4 && f() === 4 && x === 1; })()",
+        "(function () { var x = 0; function f() { x = (x = 1, x + 1); return x; } return f() === 2 && f() === 2; })()",
+        "(function () { var g = function () { return this; }; function sloppy() { return g(); } function strict() { 'use strict'; return g(); } return sloppy() === sloppy() && strict() === sloppy() && sloppy() === globalThis; })()",
+        "(function () { 'use strict'; var g = function () { return this; }; function f() { return g(); } return f() === undefined && f() === undefined; })()",
+        "(function () { var x = 1; function f() { return typeof x + typeof f + typeof missing; } return f() === 'numberfunctionundefined' && f() === 'numberfunctionundefined'; })()",
+        "(function () { var o = { v: 1 }; function f(k) { o.v += k; o = { v: o.v * 2 }; return o.v; } return f(1) === 4 && f(1) === 10; })()",
+        "(function () { var fs = []; for (var i = 0; i < 3; i++) (function (j) { fs.push(function (d) { j += d; return j; }); })(i * 10); return fs[1](1) === 11 && fs[1](1) === 12 && fs[2](5) === 25 && fs[0](0) === 0; })()",
+        // Top-level lexical declarations are not variables of a function.
+        "(function () { return typeof topLexical === 'undefined'; })()",
+    ];
+    for check in checks {
+        assert_eq!(
+            engine.evaluate(&format!("String({check})"), false),
+            Ok(Completion::String("true".into())),
+            "{check}"
+        );
+    }
+    // Script-level `let`: later scripts and their functions see one variable.
+    assert_eq!(
+        engine.evaluate("let shared = 1; function readShared() { return shared; } function writeShared(v) { shared = v; } String(readShared() + readShared())", false),
+        Ok(Completion::String("2".into()))
+    );
+    assert_eq!(
+        engine.evaluate("writeShared(5); writeShared(6); String(readShared() + shared)", false),
+        Ok(Completion::String("12".into()))
+    );
+}
+
 /// The interpreter's short ways for Numbers give what the long ways gave.
 #[test]
 fn number_shortcuts_keep_the_language_semantics() {
