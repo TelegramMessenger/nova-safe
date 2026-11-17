@@ -1048,8 +1048,29 @@ impl Vm {
             }
             Value::Array(array) => {
                 let key = executable.fetch_property_key(agent, instr.get_first_index(), gc);
-                (key == PropertyKey::from(BUILTIN_STRING_MEMORY.length))
-                    .then(|| array.len(agent).into())
+                if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
+                    return Some(array.len(agent).into());
+                }
+                if key.into_u32().is_some() {
+                    return None;
+                }
+                // A named property (`a.push`): what \[\[Get]] of an Array
+                // finds in the cache, under the shape of the Array's own
+                // properties or the one of all Arrays that have none.
+                let object = Object::from(array);
+                let cache = executable.fetch_cache(agent, instr.get_second_index(), gc);
+                let shape = object.object_shape(agent);
+                let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
+                if offset.is_unset() {
+                    return Some(Value::Undefined);
+                }
+                match prototype
+                    .unwrap_or(object)
+                    .get_own_property_at_offset(agent, offset, gc)
+                {
+                    TryGetResult::Value(value) => Some(value.unbind()),
+                    _ => None,
+                }
             }
             #[cfg(feature = "array-buffer")]
             value => Self::typed_array_length(agent, value, executable, instr, gc),

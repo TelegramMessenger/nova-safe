@@ -187,6 +187,50 @@ impl<'a> Array<'a> {
 
     /// An array is dense if it contains no holes or getters.
     ///
+    /// Whether an element assigned at or past the Array's length is made
+    /// there and nothing else happens: `Set(A, index, value, true)` finds no
+    /// such property on the Array, asks its prototypes, and ends in
+    /// CreateDataProperty on the Array when none of them has one either.
+    ///
+    /// So: the Array has no element descriptors, can grow (it is extensible
+    /// and its length is writable), and inherits from the realm's
+    /// %Array.prototype% and that from %Object.prototype%, neither of which
+    /// has a property under an integer key (a setter or a read-only
+    /// property there would take the assignment). All of it is looked at
+    /// every time: nothing remembers an earlier answer.
+    pub(crate) fn appends_plainly(self, agent: &Agent) -> bool {
+        if !self.is_trivial(agent)
+            || !self.length_writable(agent)
+            || !self.internal_extensible(agent)
+        {
+            return false;
+        }
+        let intrinsics = agent.current_realm_record().intrinsics();
+        let array_prototype = intrinsics.array_prototype();
+        if self.internal_prototype(agent) != Some(array_prototype.into()) {
+            return false;
+        }
+        // %Array.prototype% is an Array: its elements, and its other
+        // properties.
+        if array_prototype.len(agent) != 0 {
+            return false;
+        }
+        let array_prototype = intrinsics.array_prototype_backing_object();
+        let object_prototype = intrinsics.object_prototype();
+        if array_prototype.internal_prototype(agent) != Some(object_prototype.into())
+            || object_prototype.internal_prototype(agent).is_some()
+        {
+            return false;
+        }
+        let no_integer_keys = |object: OrdinaryObject| {
+            object
+                .get_property_keys(agent)
+                .iter()
+                .all(|key| !matches!(key, PropertyKey::Integer(_)))
+        };
+        no_integer_keys(array_prototype) && no_integer_keys(object_prototype)
+    }
+
     /// A dense array's properties can be accessed without calling into
     /// JavaScript. This does not necessarily mean that all the slots in the
     /// array contain a Value; some may be None but those slots are setters
