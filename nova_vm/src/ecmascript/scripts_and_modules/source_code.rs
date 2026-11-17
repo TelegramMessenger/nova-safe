@@ -97,6 +97,7 @@ impl<'a> SourceCode<'a> {
             .map_err(|errors| interrupted_errors(agent, errors))?;
         let source_code = agent.heap.create(SourceCodeHeapData {
             source: source.unbind(),
+            script: matches!(source_type, SourceCodeType::Script { .. }),
         });
         let (scoping, nodes) = (&scoping, &nodes);
         let is_strict = source_type.is_strict() || program.has_use_strict_directive();
@@ -147,7 +148,13 @@ impl<'a> SourceCode<'a> {
         .map_err(|errors| interrupted_errors(agent, errors))?;
         let (scoping, nodes) = check_program(&program, source_type, &interrupt)
             .map_err(|errors| interrupted_errors(agent, errors))?;
-        let source_code = agent.heap.create(SourceCodeHeapData { source }).unbind();
+        let source_code = agent
+            .heap
+            .create(SourceCodeHeapData {
+                source,
+                script: matches!(source_type, SourceCodeType::Script { .. }),
+            })
+            .unbind();
         let (scoping, nodes) = (&scoping, &nodes);
         let is_strict = source_type.is_strict() || program.has_use_strict_directive();
         Ok(f(
@@ -184,7 +191,19 @@ impl<'a> SourceCode<'a> {
         } else {
             agent.heap.alloc_unlisted_str(source_text)
         };
-        agent.heap.create(SourceCodeHeapData { source }).bind(gc)
+        agent
+            .heap
+            .create(SourceCodeHeapData {
+                source,
+                script: true,
+            })
+            .bind(gc)
+    }
+
+    /// Whether this is the code of a Script: its outermost scope is the
+    /// global scope, which the code of an `eval` or a Module is not.
+    pub(crate) fn is_script(self, agent: &Agent) -> bool {
+        self.get(agent).script
     }
 
     /// Manually drop a SourceCode.
@@ -221,6 +240,8 @@ pub(crate) struct SourceCodeHeapData<'a> {
     /// is known and required to be a HeapString because functions created
     /// in the eval call keep its span to give their source text.
     source: HeapString<'a>,
+    /// The code is a Script's ([`SourceCode::is_script`]).
+    script: bool,
 }
 
 impl Debug for SourceCodeHeapData<'_> {
@@ -241,12 +262,12 @@ impl<'a> CreateHeapData<SourceCodeHeapData<'a>, SourceCode<'a>> for Heap {
 
 impl HeapMarkAndSweep for SourceCodeHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
-        let Self { source } = self;
+        let Self { source, script: _ } = self;
         source.mark_values(queues);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
-        let Self { source } = self;
+        let Self { source, script: _ } = self;
         source.sweep_values(compactions);
     }
 }

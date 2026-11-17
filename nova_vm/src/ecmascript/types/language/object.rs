@@ -497,6 +497,20 @@ impl<'a> OrdinaryObject<'a> {
         )
     }
 
+    /// The keys of the Object's properties, in the order of its property
+    /// storage.
+    pub(crate) fn get_property_keys<'b>(self, agent: &'b Agent) -> &'b [PropertyKey<'a>] {
+        let Heap {
+            elements,
+            objects,
+            object_shapes,
+            ..
+        } = &agent.heap;
+        self.get_direct(objects)
+            .get_shape()
+            .keys(object_shapes, elements)
+    }
+
     /// The value slots of the Object's property storage, without its
     /// descriptors: None is an accessor property.
     pub(crate) fn get_elements_values<'b>(self, agent: &'b Agent) -> &'b [Option<Value<'a>>] {

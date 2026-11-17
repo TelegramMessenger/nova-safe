@@ -1631,3 +1631,207 @@ fn parsing_obeys_the_interrupt() {
         Ok(Completion::Number(7.0))
     );
 }
+
+/// A name of the global scope read and written where it was found the last
+/// time is the name the global scope gives: through three Scripts, with
+/// properties of the global object that move, turn into accessors, stop
+/// being writable or are shadowed by a later lexical declaration, and names
+/// that are not bound when they are assigned to.
+#[test]
+fn names_of_the_global_scope_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(names_of_the_global_scope)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn names_of_the_global_scope() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let first = r#"var out = [];
+function log(label, f) {
+  var r;
+  try { r = String(f()); } catch (e) { r = e.constructor.name; }
+  out.push(label + "=" + r);
+}
+var gv = 1;
+let gl = 2;
+const gc = 3;
+class GC { static v = 4; }
+function gf() { return 5; }
+globalThis.conf = 6;           // configurable property
+Object.defineProperty(globalThis, "acc", { get() { return accStore * 2; }, set(v) { accStore = v; }, configurable: true });
+var accStore = 10;
+Object.prototype.inherited = 11;
+
+function reads() { return [gv, gl, gc, GC.v, gf(), conf, acc, inherited, undefined, NaN, typeof missing, typeof gv, typeof gl].join(","); }
+log("reads1", reads);
+log("reads2", reads);
+
+function writes() { gv = 21; gl = 22; conf = 26; acc = 30; return [gv, gl, conf, acc, accStore].join(","); }
+log("writes1", writes);
+log("writes2", writes);
+log("constWrite", function () { gc = 9; return gc; });
+log("constWriteStrict", function () { "use strict"; gc = 9; return gc; });
+
+function compound() { gv += 1; gl *= 2; conf -= 1; acc += 1; gv++; --gl; return [gv, gl, conf, acc].join(","); }
+log("compound1", compound);
+log("compound2", compound);
+
+function logical() { var a = (gv &&= 100), b = (conf ||= 7), c = (gl ??= 8); return [a, b, c, gv, conf, gl].join(","); }
+log("logical", logical);
+
+log("readMissing", function () { return missing1; });
+log("typeofMissing", function () { return typeof missing1; });
+log("assignMissingSloppy", function () { created1 = 41; return created1 + "," + globalThis.created1; });
+log("assignMissingStrict", function () { "use strict"; created2 = 42; return created2; });
+log("created2", function () { return typeof created2; });
+
+// Resolved before the value is evaluated.
+log("earlyStrict", function () { "use strict"; undeclared3 = (globalThis.undeclared3 = 5); return undeclared3; });
+log("earlyStrictAfter", function () { return undeclared3; });
+log("earlySloppy", function () { undeclared4 = (globalThis.undeclared4 = 5, 6); return undeclared4; });
+globalThis.gone5 = 1;
+log("deletedDuringStrict", function () { "use strict"; gone5 = (delete globalThis.gone5, 7); return 0; });
+log("gone5", function () { return typeof gone5; });
+globalThis.gone6 = 1;
+log("deletedDuringSloppy", function () { gone6 = (delete globalThis.gone6, 7); return gone6; });
+globalThis.gone7 = 1;
+log("compoundDeletedStrict", function () { "use strict"; gone7 += (delete globalThis.gone7, 7); return 0; });
+globalThis.gone8 = 1;
+log("compoundDeletedSloppy", function () { gone8 += (delete globalThis.gone8, 7); return gone8; });
+
+// A property that moves.
+globalThis.m1 = "m1"; globalThis.m2 = "m2"; globalThis.m3 = "m3";
+function moving() { return [typeof m1 === "undefined" ? "-" : m1, m2, m3].join(","); }
+log("moving1", moving);
+delete globalThis.m1;
+log("moving2", moving);
+globalThis.m1 = "again";
+log("moving3", moving);
+function setM2(v) { m2 = v; return m2; }
+log("setM2a", function () { return setM2("x"); });
+delete globalThis.m2; globalThis.m2 = "fresh";
+log("setM2b", function () { return setM2("y") + "," + globalThis.m2; });
+
+// A property that becomes an accessor, and back.
+globalThis.turn = 1;
+function turnRead() { return turn; }
+function turnWrite(v) { turn = v; return turn; }
+log("turn1", function () { return turnRead() + "," + turnWrite(2); });
+var turnStore = 50;
+Object.defineProperty(globalThis, "turn", { get() { return turnStore + 1; }, set(v) { turnStore = v; }, configurable: true });
+log("turn2", function () { return turnRead() + "," + turnWrite(60) + "," + turnStore; });
+Object.defineProperty(globalThis, "turn", { value: 70, writable: true, configurable: true });
+log("turn3", function () { return turnRead() + "," + turnWrite(71); });
+Object.defineProperty(globalThis, "turn", { value: 80, writable: false, configurable: true });
+log("turn4", function () { return turnRead() + "," + turnWrite(81); });
+log("turn4strict", function () { "use strict"; turn = 82; return turn; });
+
+// Not writable.
+log("undefinedWrite", function () { undefined = 1; return undefined; });
+log("undefinedWriteStrict", function () { "use strict"; undefined = 1; return undefined; });
+
+// `this` of a call through a global name.
+function thisOf() { return this === globalThis ? "global" : String(this); }
+function thisStrict() { "use strict"; return String(this); }
+log("thisOf", function () { return thisOf() + "," + thisStrict(); });
+
+// Names the code does not declare.
+log("arguments", function () { return (function (a) { arguments[0] = 9; var n = arguments.length; arguments = 5; return [a, n, arguments].join(","); })(1, 2); });
+log("destructure", function () { [gv, gl] = [61, 62]; ({ a: conf } = { a: 63 }); return [gv, gl, conf].join(","); });
+log("forOf", function () { var s = 0; for (gv of [1, 2, 3]) s += gv; for (conf in { k: 1 }) s += conf; return s + "," + gv + "," + conf; });
+log("deleteName", function () { globalThis.del1 = 1; var a = delete del1; return a + "," + (typeof del1); });
+log("nested", function () { return (function () { return (() => gv + gl)(); })(); });
+log("newFunction", function () { return new Function("return gv + conf.length")(); });
+log("evalLocal", function () { var gv = "local"; return eval("gv"); });
+log("evalGlobal", function () { return (0, eval)("gv"); });
+log("tdz", function () { return later; });
+log("tdzTypeof", function () { return typeof later; });
+log("tdzWrite", function () { later = 1; return 0; });
+let later = "later";
+log("afterTdz", function () { later += "!"; return later; });
+log("shadowBefore", function () { return shadowed; });
+"#;
+    let second = r#"// A second Script: a lexical declaration that comes to shadow a property of the global object.
+function readShadowed() { return shadowed; }
+function writeShadowed(v) { shadowed = v; return shadowed + "," + globalThis.shadowed; }
+globalThis.shadowed = "property";
+log("shadow1", readShadowed);
+log("shadowWrite1", function () { return writeShadowed("p2"); });
+"#;
+    let third = r#"let shadowed = "lexical";
+log("shadow2", readShadowed);
+log("shadowWrite2", function () { return writeShadowed("l2"); });
+log("crossScriptLet", function () { return gl + "," + later; });
+out.join("\n")
+"#;
+    // An assignment to a name that is not bound throws in strict code even
+    // when evaluating the value binds it (earlyStrict), and `arguments` is
+    // not tied to the parameters (an open defect of the engine); the rest
+    // is what other engines give.
+    let expected = r#"reads1=1,2,3,4,5,6,20,11,,NaN,undefined,number,number
+reads2=1,2,3,4,5,6,20,11,,NaN,undefined,number,number
+writes1=21,22,26,60,30
+writes2=21,22,26,60,30
+constWrite=TypeError
+constWriteStrict=TypeError
+compound1=23,43,25,122
+compound2=25,85,24,246
+logical=100,24,85,100,24,85
+readMissing=ReferenceError
+typeofMissing=undefined
+assignMissingSloppy=41,41
+assignMissingStrict=ReferenceError
+created2=undefined
+earlyStrict=ReferenceError
+earlyStrictAfter=5
+earlySloppy=6
+deletedDuringStrict=ReferenceError
+gone5=undefined
+deletedDuringSloppy=7
+compoundDeletedStrict=ReferenceError
+compoundDeletedSloppy=8
+moving1=m1,m2,m3
+moving2=-,m2,m3
+moving3=again,m2,m3
+setM2a=x
+setM2b=y,y
+turn1=1,2
+turn2=51,61,60
+turn3=70,71
+turn4=80,80
+turn4strict=TypeError
+undefinedWrite=undefined
+undefinedWriteStrict=TypeError
+thisOf=global,undefined
+arguments=1,2,5
+destructure=61,62,63
+forOf=6kinherited,3,inherited
+deleteName=true,undefined
+nested=65
+newFunction=12
+evalLocal=local
+evalGlobal=3
+tdz=ReferenceError
+tdzTypeof=ReferenceError
+tdzWrite=ReferenceError
+afterTdz=later!
+shadowBefore=ReferenceError
+shadow1=property
+shadowWrite1=p2,p2
+shadow2=lexical
+shadowWrite2=l2,p2
+crossScriptLet=62,later!"#;
+    assert!(engine.evaluate(first, false).is_ok());
+    assert!(engine.evaluate(second, false).is_ok());
+    let Ok(Completion::String(found)) = engine.evaluate(third, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

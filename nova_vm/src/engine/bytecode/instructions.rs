@@ -339,6 +339,21 @@ pub(crate) enum Instruction {
     /// the value in the result register: PutValue(ResolveBinding(), value)
     /// with no Reference when the name is where the BindingSite remembers it.
     PutBindingAtSite,
+    /// ResolveBindingAtSite for a name whose scope chain is fixed all the way
+    /// out to the global scope of a Script: where it was found is remembered
+    /// there too.
+    ResolveGlobalAtSite,
+    /// GetBindingAtSite for such a name.
+    GetGlobalAtSite,
+    /// PutBindingAtSite for such a name, where the name is known to be bound
+    /// (a lexical declaration of the Script, or a name that GetGlobalAtSite
+    /// has just read for the same assignment).
+    PutGlobalAtSite,
+    /// Set the Reference that ResolveGlobalAtSite left in the reference
+    /// register to the value in the result register: PutValue(reference,
+    /// value), written at the place the BindingSite remembers when that is
+    /// what the Reference is to.
+    PutValueAtSite,
     /// Store ResolveThisBinding() in the result register.
     ResolveThisBinding,
 
@@ -609,7 +624,11 @@ impl Instruction {
             | Self::ResolveBindingWithCache
             | Self::ResolveBindingAtSite
             | Self::GetBindingAtSite
-            | Self::PutBindingAtSite => 2,
+            | Self::PutBindingAtSite
+            | Self::ResolveGlobalAtSite
+            | Self::GetGlobalAtSite
+            | Self::PutGlobalAtSite
+            | Self::PutValueAtSite => 2,
             Self::PutValueToIndex
             | Self::GetValueFromIndex
             | Self::ArrayCreate
@@ -713,6 +732,10 @@ impl Instruction {
                 | Self::ResolveBindingAtSite
                 | Self::GetBindingAtSite
                 | Self::PutBindingAtSite
+                | Self::ResolveGlobalAtSite
+                | Self::GetGlobalAtSite
+                | Self::PutGlobalAtSite
+                | Self::PutValueAtSite
                 | Self::VerifyIsObject
         );
 
@@ -1076,6 +1099,10 @@ impl Instr {
             | Instruction::ResolveBindingAtSite
             | Instruction::GetBindingAtSite
             | Instruction::PutBindingAtSite
+            | Instruction::ResolveGlobalAtSite
+            | Instruction::GetGlobalAtSite
+            | Instruction::PutGlobalAtSite
+            | Instruction::PutValueAtSite
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference => {
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
@@ -1267,6 +1294,10 @@ impl Instruction {
         const RESOLVEBINDINGATSITE: u8 = Instruction::ResolveBindingAtSite.as_u8();
         const GETBINDINGATSITE: u8 = Instruction::GetBindingAtSite.as_u8();
         const PUTBINDINGATSITE: u8 = Instruction::PutBindingAtSite.as_u8();
+        const RESOLVEGLOBALATSITE: u8 = Instruction::ResolveGlobalAtSite.as_u8();
+        const GETGLOBALATSITE: u8 = Instruction::GetGlobalAtSite.as_u8();
+        const PUTGLOBALATSITE: u8 = Instruction::PutGlobalAtSite.as_u8();
+        const PUTVALUEATSITE: u8 = Instruction::PutValueAtSite.as_u8();
         const RESOLVETHISBINDING: u8 = Instruction::ResolveThisBinding.as_u8();
         const RETURN: u8 = Instruction::Return.as_u8();
         const STORE: u8 = Instruction::Store.as_u8();
@@ -1449,6 +1480,10 @@ impl Instruction {
             RESOLVEBINDINGATSITE => Some(Instruction::ResolveBindingAtSite),
             GETBINDINGATSITE => Some(Instruction::GetBindingAtSite),
             PUTBINDINGATSITE => Some(Instruction::PutBindingAtSite),
+            RESOLVEGLOBALATSITE => Some(Instruction::ResolveGlobalAtSite),
+            GETGLOBALATSITE => Some(Instruction::GetGlobalAtSite),
+            PUTGLOBALATSITE => Some(Instruction::PutGlobalAtSite),
+            PUTVALUEATSITE => Some(Instruction::PutValueAtSite),
             RESOLVETHISBINDING => Some(Instruction::ResolveThisBinding),
             RETURN => Some(Instruction::Return),
             STORE => Some(Instruction::Store),

@@ -246,6 +246,12 @@ impl DeclarativeEnvironmentRecord {
         self.outer_env
     }
 
+    /// How many bindings the record holds.
+    #[inline]
+    pub(super) fn binding_count(&self) -> usize {
+        self.bindings.entries.len()
+    }
+
     /// The place of the binding for `name`, for [`Self::binding_at`].
     pub(super) fn binding_slot(&self, name: String) -> Option<u32> {
         self.bindings

@@ -15,9 +15,10 @@ use crate::{
         InternalMethods, InternalSlots, JsError, JsResult, Number, Object, Primitive, Promise,
         PropertyKey, Reference, SmallInteger, String, TryGetResult, Value, binding_value_at_site,
         call_function, get_method, is_callable, ordinary_has_instance,
-        ordinary_set_own_data_at_offset, set_binding_value_at_site, take_pooled_arguments_vec,
-        to_boolean, to_numeric, to_numeric_primitive, to_primitive, to_property_key,
-        to_string_primitive, try_get_object_method, try_result_into_option_js,
+        ordinary_set_own_data_at_offset, reference_is_at_global_site, set_binding_value_at_site,
+        take_pooled_arguments_vec, to_boolean, to_numeric, to_numeric_primitive, to_primitive,
+        to_property_key, to_string_primitive, try_get_object_method, try_resolve_binding_at_site,
+        try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -656,7 +657,7 @@ impl Vm {
             }
             // A variable of an enclosing function, where it was found the
             // last time.
-            Instruction::GetBindingAtSite => {
+            Instruction::GetBindingAtSite | Instruction::GetGlobalAtSite => {
                 let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
                 let site = executable.fetch_binding_site(agent, instr.get_second_index());
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
@@ -664,7 +665,7 @@ impl Vm {
                 };
                 vm.result = Some(value.unbind());
             }
-            Instruction::PutBindingAtSite => {
+            Instruction::PutBindingAtSite | Instruction::PutGlobalAtSite => {
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
@@ -674,6 +675,37 @@ impl Vm {
                     return Plain::No;
                 }
                 vm.result = None;
+            }
+            // A name of the global scope that is about to be assigned to:
+            // its Reference, made where the name was found the last time.
+            Instruction::ResolveGlobalAtSite => {
+                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
+                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                let strict = agent.is_evaluating_strict_code();
+                let Some(reference) = try_resolve_binding_at_site(agent, site, name, strict, gc)
+                else {
+                    return Plain::No;
+                };
+                vm.reference = Some(reference.unbind());
+            }
+            // The assignment through that Reference, at the place in the
+            // global scope it is to.
+            Instruction::PutValueAtSite => {
+                let Some(value) = vm.result else {
+                    return Plain::No;
+                };
+                let site = executable.fetch_binding_site(agent, instr.get_second_index());
+                if !vm.reference.as_ref().is_some_and(|reference| {
+                    reference_is_at_global_site(agent, site, reference, gc)
+                }) {
+                    return Plain::No;
+                }
+                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc);
+                if !set_binding_value_at_site(agent, site, name, value, gc) {
+                    return Plain::No;
+                }
+                vm.result = None;
+                vm.reference = None;
             }
             // The parameters of a call, from its arguments.
             Instruction::BindArguments => {
@@ -969,10 +1001,16 @@ impl Vm {
                 execute_resolve_binding_at_site(agent, vm, executable, instr, gc)?;
             }
             Instruction::GetBindingAtSite => {
-                execute_get_binding_at_site(agent, vm, executable, instr, gc)?;
+                execute_get_binding_at_site(agent, vm, executable, instr, false, gc)?;
             }
             Instruction::PutBindingAtSite => {
-                execute_put_binding_at_site(agent, vm, executable, instr, gc)?;
+                execute_put_binding_at_site(agent, vm, executable, instr, false, gc)?;
+            }
+            Instruction::ResolveGlobalAtSite
+            | Instruction::GetGlobalAtSite
+            | Instruction::PutGlobalAtSite
+            | Instruction::PutValueAtSite => {
+                execute_global_name_the_long_way(agent, vm, executable, instr, gc)?;
             }
             Instruction::GetValue
             | Instruction::GetValueWithCache
@@ -1067,6 +1105,10 @@ impl Vm {
             | Instruction::ResolveBindingAtSite
             | Instruction::GetBindingAtSite
             | Instruction::PutBindingAtSite
+            | Instruction::ResolveGlobalAtSite
+            | Instruction::GetGlobalAtSite
+            | Instruction::PutGlobalAtSite
+            | Instruction::PutValueAtSite
             | Instruction::GetValue
             | Instruction::GetValueWithCache
             | Instruction::GetValueKeepReference

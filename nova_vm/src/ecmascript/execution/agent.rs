@@ -21,7 +21,6 @@
 
 use crate::hashing::AHashMap;
 
-#[cfg(test)]
 use crate::ecmascript::GlobalEnvironment;
 #[cfg(feature = "shared-array-buffer")]
 use crate::ecmascript::SharedArrayBuffer;
@@ -1161,7 +1160,7 @@ impl Agent {
     }
 
     /// Get current Realm's global environment.
-    #[cfg(test)]
+    #[inline]
     pub(crate) fn current_global_env<'a>(&self, gc: NoGcScope<'a, '_>) -> GlobalEnvironment<'a> {
         let realm = self.current_realm(gc);
         let Some(e) = realm.get(self).global_env else {
