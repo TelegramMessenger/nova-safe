@@ -2673,19 +2673,19 @@ pub(super) fn execute_throw_error<'gc>(
 }
 
 pub(super) fn execute_push_exception_jump_target(
-    agent: &Agent,
+    agent: &mut Agent,
     vm: &mut Vm,
     instr: Instr,
     gc: NoGcScope,
 ) {
-    vm.exception_handler_stack
-        .push(ExceptionHandler::CatchBlock {
-            // Note: jump slots are passed to us in 32 bits, this
-            // conversion is lossless.
-            ip: instr.get_jump_slot() as u32,
-            lexical_environment: agent.current_lexical_environment(gc).unbind(),
-            variable_environment: agent.current_variable_environment(gc).unbind(),
-        });
+    let handler = ExceptionHandler::CatchBlock {
+        // Note: jump slots are passed to us in 32 bits, this
+        // conversion is lossless.
+        ip: instr.get_jump_slot() as u32,
+        lexical_environment: agent.current_lexical_environment(gc).unbind(),
+        variable_environment: agent.current_variable_environment(gc).unbind(),
+    };
+    vm.exception_handlers(agent).push(handler);
 }
 
 pub(super) fn execute_instanceof_operator<'gc>(
