@@ -757,7 +757,10 @@ impl<'a> Number<'a> {
             let x = x.into_i64();
             let y = y.into_i64();
             let result = x.checked_mul(y);
-            if let Some(result) = result {
+            // A zero product of a negative factor is -0, which no integer is.
+            if let Some(result) = result
+                && (result != 0 || (x >= 0 && y >= 0))
+            {
                 if let Ok(result) = SmallInteger::try_from(result) {
                     return result.into();
                 }
@@ -975,40 +978,17 @@ impl<'a> Number<'a> {
     /// rules of IEEE 754-2019 binary double-precision arithmetic, producing
     /// the sum of its arguments.
     pub(crate) fn add(agent: &mut Agent, x: Self, y: Self) -> Self {
-        // 1. If x is NaN or y is NaN, return NaN.
-        if x.is_nan_(agent) || y.is_nan_(agent) {
-            return Number::nan();
+        // Two integers: the sum of two safe integers cannot overflow an
+        // i64, and it is the IEEE sum whenever it is itself a safe integer.
+        if let (Self::Integer(x), Self::Integer(y)) = (x, y) {
+            let (x, y) = (x.into_i64(), y.into_i64());
+            if let Ok(sum) = SmallInteger::try_from(x + y) {
+                return Self::Integer(sum);
+            }
+            return agent.heap.create(x as f64 + y as f64);
         }
-
-        // 2. If x is +∞𝔽 and y is -∞𝔽, return NaN.
-        if x.is_pos_infinity_(agent) && y.is_neg_infinity_(agent) {
-            return Number::nan();
-        }
-
-        // 3. If x is -∞𝔽 and y is +∞𝔽, return NaN.
-        if x.is_neg_infinity_(agent) && y.is_pos_infinity_(agent) {
-            return Number::nan();
-        }
-
-        // 4. If x is either +∞𝔽 or -∞𝔽, return x.
-        if x.is_pos_infinity_(agent) || x.is_neg_infinity_(agent) {
-            return x;
-        }
-
-        // 5. If y is either +∞𝔽 or -∞𝔽, return y.
-        if y.is_pos_infinity_(agent) || y.is_neg_infinity_(agent) {
-            return y;
-        }
-
-        // 6. Assert: x and y are both finite.
-        debug_assert!(x.is_finite_(agent) && y.is_finite_(agent));
-
-        // 7. If x is -0𝔽 and y is -0𝔽, return -0𝔽.
-        if x.is_neg_zero_(agent) && y.is_neg_zero_(agent) {
-            return Number::neg_zero();
-        }
-
-        // 8. Return 𝔽(ℝ(x) + ℝ(y)).
+        // Steps 1 to 8 are IEEE 754 addition: a NaN operand or infinities of
+        // opposite sign give NaN, an infinity gives itself, -0 + -0 is -0.
         agent.heap.create(x.into_f64_(agent) + y.into_f64_(agent))
     }
 
@@ -1019,9 +999,17 @@ impl<'a> Number<'a> {
     /// producing the difference of its operands; x is the minuend and y is the
     /// subtrahend.
     pub(crate) fn subtract(agent: &mut Agent, x: Self, y: Self) -> Self {
-        // 1. Return Number::add(x, Number::unaryMinus(y)).
-        let negated_y = Number::unary_minus(agent, y);
-        Number::add(agent, x, negated_y)
+        // Two integers, as in Number::add.
+        if let (Self::Integer(x), Self::Integer(y)) = (x, y) {
+            let (x, y) = (x.into_i64(), y.into_i64());
+            if let Ok(difference) = SmallInteger::try_from(x - y) {
+                return Self::Integer(difference);
+            }
+            return agent.heap.create(x as f64 - y as f64);
+        }
+        // 1. Return Number::add(x, Number::unaryMinus(y)): IEEE 754
+        // subtraction.
+        agent.heap.create(x.into_f64_(agent) - y.into_f64_(agent))
     }
 
     /// ### [6.1.6.1.9 Number::leftShift ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-number-leftShift)
@@ -1071,66 +1059,18 @@ impl<'a> Number<'a> {
 
     /// ### [6.1.6.1.12 Number::lessThan ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-number-lessThan)
     pub fn less_than(agent: &Agent, x: Self, y: Self) -> Option<bool> {
-        // 1. If x is NaN, return undefined.
-        if x.is_nan_(agent) {
-            return None;
+        if let (Self::Integer(x), Self::Integer(y)) = (x, y) {
+            return Some(x.into_i64() < y.into_i64());
         }
-
-        // 2. If y is NaN, return undefined.
-        if y.is_nan_(agent) {
-            return None;
+        // Steps 1 to 11 are the IEEE 754 comparison, with undefined for a
+        // NaN operand: equal values and zeros of either sign are not less,
+        // nothing is above +∞ or below -∞.
+        let (x, y) = (x.into_f64_(agent), y.into_f64_(agent));
+        if x.is_nan() || y.is_nan() {
+            None
+        } else {
+            Some(x < y)
         }
-
-        // 3. If x is y, return false.
-        if Number::is(agent, x, y) {
-            return Some(false);
-        }
-
-        // 4. If x is +0𝔽 and y is -0𝔽, return false.
-        if x.is_pos_zero_(agent) && y.is_neg_zero_(agent) {
-            return Some(false);
-        }
-
-        // 5. If x is -0𝔽 and y is +0𝔽, return false.
-        if x.is_neg_zero_(agent) && y.is_pos_zero_(agent) {
-            return Some(false);
-        }
-
-        // 6. If x is +∞𝔽, return false.
-        if x.is_pos_infinity_(agent) {
-            return Some(false);
-        }
-
-        // 7. If y is +∞𝔽, return true.
-        if y.is_pos_infinity_(agent) {
-            return Some(true);
-        }
-
-        // 8. If y is -∞𝔽, return false.
-        if y.is_neg_infinity_(agent) {
-            return Some(false);
-        }
-
-        // 9. If x is -∞𝔽, return true.
-        if x.is_neg_infinity_(agent) {
-            return Some(true);
-        }
-
-        // 10. Assert: x and y are finite.
-        assert!(x.is_finite_(agent) && y.is_finite_(agent));
-
-        // 11. If ℝ(x) < ℝ(y), return true. Otherwise, return false.
-        Some(match (x, y) {
-            (Number::Number(x), Number::Number(y)) => x.get(agent) < y.get(agent),
-            (Number::Number(x), Number::Integer(y)) => x.get(agent) < &(y.into_i64() as f64),
-            (Number::Number(x), Number::SmallF64(y)) => x.get(agent) < &y.into_f64(),
-            (Number::Integer(x), Number::Number(y)) => &(x.into_i64() as f64) < y.get(agent),
-            (Number::Integer(x), Number::Integer(y)) => x.into_i64() < y.into_i64(),
-            (Number::Integer(x), Number::SmallF64(y)) => (x.into_i64() as f64) < y.into_f64(),
-            (Number::SmallF64(x), Number::Number(y)) => &x.into_f64() < y.get(agent),
-            (Number::SmallF64(x), Number::Integer(y)) => x.into_f64() < y.into_i64() as f64,
-            (Number::SmallF64(x), Number::SmallF64(y)) => x.into_f64() < y.into_f64(),
-        })
     }
 
     /// ### [6.1.6.1.13 Number::equal ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-number-equal)

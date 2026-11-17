@@ -519,6 +519,10 @@ impl Vm {
         }
     }
 
+    // Inlined into the loop of `run` in optimised builds, where it saves a
+    // call for every instruction; unoptimised, the merged frame would take
+    // many times the stack for every JavaScript call.
+    #[cfg_attr(not(debug_assertions), inline(always))]
     fn execute_instruction<'a>(
         agent: &mut Agent,
         vm: &mut Vm,
@@ -625,6 +629,36 @@ impl Vm {
                 vm.execute_push_reference();
                 vm.execute_load();
             }
+            // What every loop and expression is made of: one call from here,
+            // not two.
+            Instruction::LessThan => execute_less_than(agent, vm, gc)?,
+            Instruction::LessThanEquals => execute_less_than_equals(agent, vm, gc)?,
+            Instruction::GreaterThan => execute_greater_than(agent, vm, gc)?,
+            Instruction::GreaterThanEquals => execute_greater_than_equals(agent, vm, gc)?,
+            Instruction::Increment => execute_increment(agent, vm, gc.into_nogc()),
+            Instruction::Decrement => execute_decrement(agent, vm, gc.into_nogc()),
+            Instruction::ApplyAdditionBinaryOperator => {
+                execute_apply_addition_binary_operator(agent, vm, gc)?
+            }
+            Instruction::ApplySubtractionBinaryOperator
+            | Instruction::ApplyMultiplicationBinaryOperator
+            | Instruction::ApplyDivisionBinaryOperator
+            | Instruction::ApplyRemainderBinaryOperator
+            | Instruction::ApplyShiftLeftBinaryOperator
+            | Instruction::ApplyShiftRightBinaryOperator
+            | Instruction::ApplyShiftRightZeroFillBinaryOperator
+            | Instruction::ApplyBitwiseORBinaryOperator
+            | Instruction::ApplyBitwiseXORBinaryOperator
+            | Instruction::ApplyBitwiseAndBinaryOperator => {
+                execute_apply_binary_operator(agent, vm, instr.kind, gc)?
+            }
+            Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc.into_nogc()),
+            Instruction::JumpIfTrue => execute_jump_if_true(agent, vm, instr),
+            Instruction::LoadConstant => {
+                execute_load_constant(agent, vm, executable, instr, gc.into_nogc())
+            }
+            Instruction::EvaluateCall => execute_evaluate_call(agent, vm, instr, gc)?,
+            Instruction::Return => return Ok(ContinuationKind::Return),
             _ => return Self::execute_cold_instruction(agent, vm, executable, instr, gc),
         }
 

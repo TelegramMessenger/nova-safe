@@ -340,6 +340,10 @@ pub(super) fn execute_to_numeric<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let arg0 = vm.result.unwrap().bind(gc.nogc());
+    // A Number is its own numeric value: the counter of nearly every loop.
+    if Number::try_from(arg0).is_ok() {
+        return Ok(());
+    }
     let result = if let Ok(arg0) = Primitive::try_from(arg0) {
         to_numeric_primitive(agent, arg0.unbind(), gc.into_nogc())
     } else {
@@ -2027,7 +2031,12 @@ pub(super) fn execute_jump(agent: &Agent, vm: &mut Vm, instr: Instr) {
 pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, instr: Instr) {
     let result = vm.result.take().unwrap();
     let ip = instr.get_jump_slot();
-    if !to_boolean(agent, result) {
+    // A comparison left a Boolean: no conversion to make.
+    let truthy = match result {
+        Value::Boolean(value) => value,
+        _ => to_boolean(agent, result),
+    };
+    if !truthy {
         if agent.options.print_internals {
             eprintln!("Comparison failed, jumping to {ip}");
         }
@@ -2038,7 +2047,11 @@ pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, instr: Instr) {
 #[inline(always)]
 pub(super) fn execute_jump_if_true(agent: &Agent, vm: &mut Vm, instr: Instr) {
     let result = vm.result.take().unwrap();
-    if to_boolean(agent, result) {
+    let truthy = match result {
+        Value::Boolean(value) => value,
+        _ => to_boolean(agent, result),
+    };
+    if truthy {
         let ip = instr.get_jump_slot();
         if agent.options.print_internals {
             eprintln!("Comparison succeeded, jumping to {ip}");
@@ -2080,6 +2093,11 @@ pub(super) fn execute_less_than<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, lnum, rnum) == Some(true)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2098,6 +2116,11 @@ pub(super) fn execute_less_than_equals<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, rnum, lnum) == Some(false)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2116,6 +2139,11 @@ pub(super) fn execute_greater_than<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, rnum, lnum) == Some(true)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2134,6 +2162,11 @@ pub(super) fn execute_greater_than_equals<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, lnum, rnum) == Some(false)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
