@@ -2735,3 +2735,138 @@ spreadAndApply1=1,2,3,4,5,6:TypeError"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A `for…of` loop steps a String Iterator and reads the `done` and `value`
+/// of an ordinary result object directly: what it sees is what the general
+/// protocol sees, for strings of every kind of code point, generators,
+/// result objects with accessors, inherited or missing properties, Proxies
+/// and other exotic results, and a `next` or `Symbol.iterator` put in place
+/// of the original.
+#[test]
+fn iteration_keeps_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(iteration_semantics)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn iteration_semantics() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message.length; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+function codes(s) { var r = []; for (var i = 0; i < s.length; i++) r.push(s.charCodeAt(i).toString(16)); return r.join("."); }
+log("stringForOf", function () { var r = []; for (var ch of "aж中😀b") r.push(ch.length + ":" + codes(ch)); return r.join(" "); });
+log("stringEmptyAndSurrogates", function () { var r = []; for (var c of "") r.push("never"); for (var d of "\ud83d" + "x" + "\ude00\ud83d") r.push(codes(d)); return r.join(" ") + "|" + r.length; });
+log("stringObjectAndSpread", function () { var a = [...new String("héy")], b = Array.from("a😀"), c = [..."xy"].join("-"); var [p, q, ...rest] = "hello"; return a.join() + "|" + b.length + "|" + c + "|" + p + q + rest.join(""); });
+log("stringIteratorByHand", function () { var it = "ab"[Symbol.iterator](); var r = [it.next(), it.next(), it.next(), it.next()]; return r.map(function (x) { return x.value + ":" + x.done + ":" + Object.keys(x).join(""); }).join(" ") + "|" + Object.prototype.toString.call(it) + "|" + (it[Symbol.iterator]() === it); });
+log("stringIteratorPatched", function () {
+  var proto = Object.getPrototypeOf(""[Symbol.iterator]());
+  var original = proto.next, calls = 0;
+  proto.next = function () { calls++; return original.call(this); };
+  var r = []; for (var ch of "ab") r.push(ch);
+  proto.next = function () { return { done: calls++ > 3, value: "p" }; };
+  for (var c2 of "zz") r.push(c2);
+  proto.next = original;
+  for (var c3 of "q") r.push(c3);
+  return r.join() + "|" + calls;
+});
+log("stringSymbolIteratorPatched", function () { var original = String.prototype[Symbol.iterator]; String.prototype[Symbol.iterator] = function () { var i = 0, s = this; return { next: function () { return i < 2 ? { value: s + i++, done: false } : { done: true }; } }; }; var r = []; try { for (var x of "k") r.push(x); } finally { String.prototype[Symbol.iterator] = original; } for (var y of "k") r.push(y); return r.join(); });
+log("generators", function () {
+  function* g(n) { for (var i = 0; i < n; i++) yield i * 2; return "ret"; }
+  var r = []; for (var v of g(4)) r.push(v);
+  var it = g(2); var a = [it.next(), it.next(), it.next(), it.next()].map(function (x) { return x.value + ":" + x.done; });
+  var closed = []; function* h() { try { yield 1; yield 2; } finally { closed.push("fin"); } }
+  for (var w of h()) { closed.push(w); break; }
+  return r.join() + "|" + a.join(" ") + "|" + closed.join() + "|" + [...g(3)].join("") + "|" + Array.from(g(2), function (x) { return x + 1; }).join();
+});
+log("generatorDelegation", function () { function* inner() { var got = yield "a"; yield got; return "r"; } function* outer() { var r = yield* inner(); yield r; yield* [7, 8]; yield* "xy"; } var it = outer(); var first = it.next().value, second = it.next("sent").value; var rest = []; for (var v of it) rest.push(v); return first + second + "|" + rest.join(); });
+log("generatorThrowAndReturn", function () { function* g() { try { yield 1; } catch (e) { yield "caught:" + e; } yield 3; } var it = g(); it.next(); var a = it.throw("boom").value; var b = it.return("early"); var c = it.next(); return a + "|" + b.value + ":" + b.done + "|" + c.value + ":" + c.done; });
+log("customIterators", function () {
+  function make(results) { var i = 0; return { [Symbol.iterator]: function () { return { next: function () { return results[i++]; } }; } }; }
+  var r = [];
+  for (var a of make([{ value: 1, done: false }, { value: 2 }, { done: true, value: "ignored" }])) r.push(a);
+  for (var b of make([{ done: 0, value: "zero" }, { done: "", value: "empty" }, { done: 1 }])) r.push(b);
+  for (var c of make([{ done: false }, { done: true }])) r.push(String(c));
+  return r.join();
+});
+log("resultWithAccessors", function () {
+  var seen = [];
+  var it = { [Symbol.iterator]: function () { var n = 0; return { next: function () { n++; return { get done() { seen.push("done" + n); return n > 2; }, get value() { seen.push("value" + n); return n * 10; } }; } }; } };
+  var r = []; for (var v of it) r.push(v);
+  return r.join() + "|" + seen.join();
+});
+log("resultInherited", function () { var proto = { done: false, value: "inherited" }; var n = 0; var it = { [Symbol.iterator]: function () { return { next: function () { n++; var o = Object.create(proto); if (n > 2) o.done = true; if (n === 2) o.value = "own"; return o; } }; } }; var r = []; for (var v of it) r.push(v); return r.join(); });
+log("resultExotic", function () {
+  var seen = [];
+  var n = 0;
+  var it = { [Symbol.iterator]: function () { return { next: function () { n++; return new Proxy({ done: n > 1, value: "p" + n }, { get: function (t, k) { seen.push(String(k)); return t[k]; } }); } }; } };
+  var r = []; for (var v of it) r.push(v);
+  var arr = { [Symbol.iterator]: function () { var k = 0; return { next: function () { k++; var a = [k]; a.done = k > 2; a.value = "arr" + k; return a; } }; } };
+  for (var w of arr) r.push(w);
+  var frozen = { [Symbol.iterator]: function () { var k = 0; return { next: function () { k++; return Object.freeze({ value: "f" + k, done: k > 1 }); } }; } };
+  for (var x of frozen) r.push(x);
+  return r.join() + "|" + seen.join();
+});
+log("resultNotObject", function () { var it = { [Symbol.iterator]: function () { return { next: function () { return 5; } }; } }; for (var v of it) return "no"; });
+log("resultManyProperties", function () { var it = { [Symbol.iterator]: function () { var k = 0; return { next: function () { k++; return { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, value: "big" + k, done: k > 1 }; } }; } }; var r = []; for (var v of it) r.push(v); return r.join(); });
+log("mapsAndSets", function () { var m = new Map([[1, "a"], [2, "b"]]), s = new Set(["x", "y"]); var r = []; for (var [k, v] of m) r.push(k + v); for (var e of s) r.push(e); for (var k2 of m.keys()) r.push(k2); for (var en of s.entries()) r.push(en.join("")); return r.join(); });
+log("arraysAndArguments", function () { var r = []; for (var v of [1, , 3]) r.push(String(v)); (function () { for (var a of arguments) r.push(a); })("p", "q"); for (var [i, e] of ["x", "y"].entries()) r.push(i + e); var ta = new Uint8Array([7, 8]); for (var t of ta) r.push(t); return r.join(); });
+log("breakAndReturnCalls", function () { var seen = []; var it = { [Symbol.iterator]: function () { var n = 0; return { next: function () { return { value: n++, done: false }; }, return: function () { seen.push("return"); return {}; } }; } }; for (var v of it) { if (v > 1) break; } try { for (var w of it) { throw new Error("x"); } } catch (e) { seen.push("caught"); } return seen.join(); });
+log("destructuring", function () { function* g() { yield 1; yield 2; yield 3; } var [a, , c = "d", d = "dflt"] = g(); var [x, ...ys] = "h😀y"; return [a, c, d, x, ys.length].join(); });
+out.join("\n")
+"#;
+    let expected = r#"stringForOf0=1:61 1:436 1:4e2d 2:d83d.de00 1:62
+stringForOf1=1:61 1:436 1:4e2d 2:d83d.de00 1:62
+stringEmptyAndSurrogates0=d83d 78 de00 d83d|4
+stringEmptyAndSurrogates1=d83d 78 de00 d83d|4
+stringObjectAndSpread0=h,é,y|2|x-y|hello
+stringObjectAndSpread1=h,é,y|2|x-y|hello
+stringIteratorByHand0=a:false:valuedone b:false:valuedone undefined:true:valuedone undefined:true:valuedone|[object String Iterator]|true
+stringIteratorByHand1=a:false:valuedone b:false:valuedone undefined:true:valuedone undefined:true:valuedone|[object String Iterator]|true
+stringIteratorPatched0=a,b,p,q|5
+stringIteratorPatched1=a,b,p,q|5
+stringSymbolIteratorPatched0=k0,k1,k
+stringSymbolIteratorPatched1=k0,k1,k
+generators0=0,2,4,6|0:false 2:false ret:true undefined:true|1,fin|024|1,3
+generators1=0,2,4,6|0:false 2:false ret:true undefined:true|1,fin|024|1,3
+generatorDelegation0=asent|r,7,8,x,y
+generatorDelegation1=asent|r,7,8,x,y
+generatorThrowAndReturn0=caught:boom|early:true|undefined:true
+generatorThrowAndReturn1=caught:boom|early:true|undefined:true
+customIterators0=1,2,zero,empty,undefined
+customIterators1=1,2,zero,empty,undefined
+resultWithAccessors0=10,20|done1,value1,done2,value2,done3
+resultWithAccessors1=10,20|done1,value1,done2,value2,done3
+resultInherited0=inherited,own
+resultInherited1=inherited,own
+resultExotic0=p1,arr1,arr2,f1|done,value,done
+resultExotic1=p1,arr1,arr2,f1|done,value,done
+resultNotObject0=TypeError:37
+resultNotObject1=TypeError:37
+resultManyProperties0=big1
+resultManyProperties1=big1
+mapsAndSets0=1a,2b,x,y,1,2,xx,yy
+mapsAndSets1=1a,2b,x,y,1,2,xx,yy
+arraysAndArguments0=1,undefined,3,p,q,0x,1y,7,8
+arraysAndArguments1=1,undefined,3,p,q,0x,1y,7,8
+breakAndReturnCalls0=return,return,caught
+breakAndReturnCalls1=return,return,caught
+destructuring0=1,3,dflt,h,2
+destructuring1=1,3,dflt,h,2"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
