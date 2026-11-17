@@ -2406,3 +2406,118 @@ labels1=10"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `a[i]` read and `a[i] = v` assigned by one instruction each are the
+/// Reference way: the order in which the object, the key and the value are
+/// evaluated, when the key is made a property key, a base that is null,
+/// keys of every kind, accessors and read-only elements, Proxies, typed
+/// arrays, strings and plain objects.
+#[test]
+fn element_access_keeps_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(element_access)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn element_access() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = e.constructor.name + ":" + e.message; }
+    out.push(label + round + "=" + String(r));
+  }
+}
+log("arrayReadWrite", function () { var a = [1, 2, 3]; a[0] = 10; a[2] = a[0] + a[1]; var i = 1; a[i] = a[i] * 5; return a.join() + "|" + a[5] + "|" + a[-1] + "|" + a.length; });
+log("arrayGrowAndHoles", function () { var a = [1, , 3]; a[1] = 2; a[5] = 6; a[3] = a[4]; var s = []; for (var i = 0; i < a.length; i++) s.push(i in a ? a[i] : "hole"); return s.join() + "|" + a.length; });
+log("keysOfOtherKinds", function () { var a = [1, 2, 3]; var k = "1", f = 1.5, n = -0, big = 4294967295; a[k] = "s"; a[f] = "f"; a[n] = "z"; a[big] = "b"; a["x"] = "p"; a[true] = "t"; a[null] = "n"; var sym = Symbol("y"); a[sym] = "sy"; return [a[k], a[f], a[n], a[big], a.x, a[true], a[null], a[sym], a.length, Object.keys(a).join("/")].join(); });
+log("objectKeys", function () { var seen = []; var a = [0, 0]; var key = { toString: function () { seen.push("key"); return "1"; } }; function val() { seen.push("val"); return 7; } a[key] = val(); var r = a[key]; return a.join() + ":" + r + ":" + seen.join(); });
+log("order", function () {
+  var seen = [];
+  function obj() { seen.push("obj"); return target; }
+  function key() { seen.push("key"); return 0; }
+  function val() { seen.push("val"); return 5; }
+  var target = [9];
+  obj()[key()] = val();
+  var got = obj()[key()];
+  return seen.join() + ":" + got;
+});
+log("nullBase", function () { var seen = []; function key() { seen.push("key"); return 0; } function val() { seen.push("val"); return 5; } var n = null; try { n[key()] = val(); } catch (e) { seen.push(e.constructor.name); } try { var u; u[key()]; } catch (e) { seen.push(e.constructor.name); } return seen.join(); });
+log("rhsThrows", function () { var a = [1, 2]; var i = 0; try { a[i] = (function () { throw new RangeError("r"); })(); } catch (e) { return e.message + a.join(); } });
+log("accessorsOnIndices", function () { var a = [1, 2, 3], store = "s"; Object.defineProperty(a, 1, { get: function () { return store + "!"; }, set: function (v) { store = v; }, configurable: true }); var i = 1; a[i] = "w"; var r = a[i]; Object.defineProperty(a, 0, { value: "ro", writable: false }); var j = 0; a[j] = "changed"; return r + "," + a[j] + "," + store; });
+log("frozenAndStrict", function () { "use strict"; var a = Object.freeze([1, 2]); var i = 0; try { a[i] = 9; } catch (e) { return e.constructor.name + a[i]; } });
+log("lengthAndSubclass", function () { class A extends Array {} var a = new A(3); var i = 0; a[i] = "x"; a[3] = "y"; var b = [1, 2, 3]; b.length = 1; var k = 2; b[k] = "z"; return a.length + ":" + a[i] + ":" + b.length + ":" + b.join(); });
+log("typedArrays", function () { var u = new Uint8Array(4), f = new Float64Array(2); var i = 1; u[i] = 300; u[9] = 1; u[i + 1] = "7"; f[0] = 0.5; f[i] = u[i] + f[0]; return Array.from(u).join() + "|" + f[1] + "|" + u[9] + "|" + f[i]; });
+log("plainObjects", function () { var o = {}; var i = 3, k = "name"; o[i] = "three"; o[k] = "n"; o[i + 1] = o[i] + "+"; return o[3] + "," + o[4] + "," + o.name + "," + Object.keys(o).join("/"); });
+log("strings", function () { var s = "héllo"; var i = 1; var r = s[i] + s[0] + s[9] + s[-1]; try { (function () { "use strict"; s[i] = "x"; })(); } catch (e) { r += e.constructor.name; } var t = "abc"; t[0] = "z"; return r + t; });
+log("argumentsObject", function () { function f() { var i = 0; arguments[i] = "changed"; arguments[2] = "added"; return arguments[i] + arguments.length + arguments[2]; } return f("a", "b"); });
+log("proxy", function () { var seen = []; var p = new Proxy([1, 2], { get: function (t, k, r) { seen.push("get:" + String(k)); return Reflect.get(t, k, r); }, set: function (t, k, v, r) { seen.push("set:" + String(k)); return Reflect.set(t, k, v, r); } }); var i = 0; p[i] = 5; var x = p[i] + p[i + 1]; return seen.join() + ":" + x; });
+log("compoundAndUpdate", function () { var a = [1, 2, 3]; var i = 0; a[i] += 5; a[i]++; ++a[i]; a[i + 1] *= 2; a[2]--; var b = a[i]++; return a.join() + ":" + b; });
+log("chained", function () { var a = [0, 0], b = [0, 0]; var i = 0, j = 1; a[i] = b[j] = 5; var c = (a[j] = 7); return a.join() + "|" + b.join() + "|" + c; });
+log("nestedAccess", function () { var m = [[1, 2], [3, 4]]; var i = 1, j = 0; m[i][j] = m[j][i] + 10; m[j][i + 1] = m[i][j]; return m.join("|"); });
+log("keyChangesBase", function () { var a = [1, 2, 3]; var b = a; function k() { a = [7, 8, 9]; return 1; } b[k()] = "set"; var r = a[k()]; return b.join() + "|" + r; });
+log("valueChangesArray", function () { var a = [1, 2, 3]; var i = 2; a[i] = (a.length = 1, "late"); var b = [1, 2, 3]; b[0] = (Object.freeze(b), "frozen?"); return a.join() + "|" + a.length + "|" + b.join(); });
+log("spreadAndCalls", function () { var fs = [function (x) { return this.length + x; }]; var i = 0; var r = fs[i](10); var o = { 0: function () { return this === o; } }; return r + "," + o[i](); });
+log("deleteAndIn", function () { var a = [1, 2, 3]; var i = 1; delete a[i]; return (i in a) + "," + a[i] + "," + a.length; });
+log("forLoops", function () { var a = new Array(50); for (var i = 0; i < a.length; i++) a[i] = i * 2; var s = 0; for (var j = 0; j < a.length; j++) s += a[j]; var t = new Int32Array(50); for (var k = 0; k < t.length; k++) t[k] = a[k] - k; var u = 0; for (var q = 0; q < t.length; q++) u += t[q]; return s + "," + u; });
+out.join("\n")
+"#;
+    let expected = r#"arrayReadWrite0=10,10,12|undefined|undefined|3
+arrayReadWrite1=10,10,12|undefined|undefined|3
+arrayGrowAndHoles0=1,2,3,,hole,6|6
+arrayGrowAndHoles1=1,2,3,,hole,6|6
+keysOfOtherKinds0=s,f,z,b,p,t,n,sy,3,0/1/2/1.5/4294967295/x/true/null
+keysOfOtherKinds1=s,f,z,b,p,t,n,sy,3,0/1/2/1.5/4294967295/x/true/null
+objectKeys0=0,7:7:val,key,key
+objectKeys1=0,7:7:val,key,key
+order0=obj,key,val,obj,key:5
+order1=obj,key,val,obj,key:5
+nullBase0=key,val,TypeError,key,TypeError
+nullBase1=key,val,TypeError,key,TypeError
+rhsThrows0=r1,2
+rhsThrows1=r1,2
+accessorsOnIndices0=w!,ro,w
+accessorsOnIndices1=w!,ro,w
+frozenAndStrict0=TypeError1
+frozenAndStrict1=TypeError1
+lengthAndSubclass0=4:x:3:1,,z
+lengthAndSubclass1=4:x:3:1,,z
+typedArrays0=0,44,7,0|44.5|undefined|44.5
+typedArrays1=0,44,7,0|44.5|undefined|44.5
+plainObjects0=three,three+,n,3/4/name
+plainObjects1=three,three+,n,3/4/name
+strings0=éhundefinedundefinedTypeErrorabc
+strings1=éhundefinedundefinedTypeErrorabc
+argumentsObject0=changed2added
+argumentsObject1=changed2added
+proxy0=set:0,get:0,get:1:7
+proxy1=set:0,get:0,get:1:7
+compoundAndUpdate0=9,4,2:8
+compoundAndUpdate1=9,4,2:8
+chained0=5,7|0,5|7
+chained1=5,7|0,5|7
+nestedAccess0=1,2,12|12,4
+nestedAccess1=1,2,12|12,4
+keyChangesBase0=1,set,3|8
+keyChangesBase1=1,set,3|8
+valueChangesArray0=1,,late|3|1,2,3
+valueChangesArray1=1,,late|3|1,2,3
+spreadAndCalls0=11,true
+spreadAndCalls1=11,true
+deleteAndIn0=false,undefined,3
+deleteAndIn1=false,undefined,3
+forLoops0=2450,1225
+forLoops1=2450,1225"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

@@ -339,6 +339,15 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     return;
                 }
             }
+            // `a[i]` read for its value, as one instruction.
+            Instruction::GetValue => {
+                if let Some(start) =
+                    self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithExpressionKey)
+                {
+                    self.instructions[start] = Instruction::GetValueWithExpressionKey.as_u8();
+                    return;
+                }
+            }
             Instruction::Return => {
                 while let Some(pop) = self.recent_instruction(0, Instruction::PopStack) {
                     self.drop_recent_instructions(pop, 1);
