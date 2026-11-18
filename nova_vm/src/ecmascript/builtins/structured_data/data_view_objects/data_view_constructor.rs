@@ -113,7 +113,7 @@ impl DataViewConstructor {
                     .bind(gc.nogc()),
             );
             // b. If offset + viewByteLength > bufferByteLength, throw a RangeError exception.
-            if offset + view_byte_length > buffer_byte_length {
+            if offset.saturating_add(view_byte_length) > buffer_byte_length {
                 return Err(agent.throw_exception_with_static_message(
                     ExceptionType::RangeError,
                     "offset is outside the bounds of the buffer",
@@ -169,7 +169,7 @@ impl DataViewConstructor {
         // 14. If byteLength is not undefined, then
         if let Some(view_byte_length) = view_byte_length {
             // a. If offset + viewByteLength > bufferByteLength, throw a RangeError exception.
-            if offset + view_byte_length > buffer_byte_length {
+            if offset.saturating_add(view_byte_length) > buffer_byte_length {
                 return Err(agent.throw_exception_with_static_message(
                     ExceptionType::RangeError,
                     "offset is outside the bounds of the buffer",

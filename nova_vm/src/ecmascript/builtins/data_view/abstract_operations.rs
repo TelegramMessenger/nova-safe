@@ -139,7 +139,7 @@ pub(crate) fn is_view_out_of_bounds(
     let byte_offset_end = if let Some(byte_length) = byte_length {
         // 7. Else,
         // a. Let byteOffsetEnd be byteOffsetStart + view.[[ByteLength]].
-        byte_offset_start + byte_length
+        byte_offset_start.saturating_add(byte_length)
     } else {
         // a. Let byteOffsetEnd be bufferByteLength.
         buffer_byte_length
@@ -219,7 +219,9 @@ pub(crate) fn get_view_value<'gc, T: Viewable>(
     let element_size = size_of::<T>();
 
     // 11. If getIndex + elementSize > viewSize, throw a RangeError exception.
-    if get_index + element_size > view_size {
+    // An index that does not fit a usize is usize::MAX here (a 32-bit
+    // target): the sum must not wrap around to a small one.
+    if get_index.saturating_add(element_size) > view_size {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::RangeError,
             "Index out of bounds",
@@ -347,7 +349,9 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
     // 12. Let elementSize be the Element Size value specified in Table 69 for Element Type type.
     let element_size = size_of::<T>();
     // 13. If getIndex + elementSize > viewSize, throw a RangeError exception.
-    if get_index + element_size > view_size {
+    // An index that does not fit a usize is usize::MAX here (a 32-bit
+    // target): the sum must not wrap around to a small one.
+    if get_index.saturating_add(element_size) > view_size {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::RangeError,
             "Index out of bounds",
