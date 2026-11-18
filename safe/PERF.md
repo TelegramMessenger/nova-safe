@@ -36,21 +36,21 @@ below.
 |---|---|---|---|
 | call | 14 | 10.4x | 3.2x |
 | typed | 4 | 10.6x | 3.0x |
-| math | 4 | 9.7x | 2.8x |
 | prop | 13 | 7.1x | 2.7x |
+| math | 4 | 9.7x | 2.7x |
 | array | 14 | 5.8x | 2.6x |
 | string | 26 | 10.6x | 2.5x |
 | app | 8 | 6.1x | 2.5x |
-| map, set | 4 | 4.6x | 2.3x |
+| map, set | 4 | 4.6x | 2.4x |
 | loop | 11 | 11.1x | 1.9x |
 | regexp | 4 | 2.4x | 1.9x |
-| gc | 3 of 5 | 3.6x | 1.5x |
-| json | 2 | 1.0x | 0.9x |
+| gc | 3 of 5 | 3.6x | 1.4x |
+| json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 2.5x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(38x, area 7); after it come generators (6.3x), then calls that bind an arguments object or go through an accessor
-(5-6x). 46 of the 108 cases are above 3x and 31 at or under 2x. One case ran Nova out of memory before
+(37x, area 7); after it come generators (6.4x), then calls that bind an arguments object or go through an accessor
+(5-6x). 44 of the 108 cases are above 3x and 30 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -157,10 +157,15 @@ instructions now, 16% fewer, and `Load` is one in eleven. Reading and writing a 
 
 What the step between two instructions costs was looked at again on that loop: 31 machine instructions, 40% of
 its samples, with the bytecode's address and length read from the stack twice each. Not changed in this round;
-fewer instructions a turn was the surer gain. What the same count says to fuse next: an operator and the
-store of its result in a local (`ApplyAdditionBinaryOperator` then `PutValueToIndex` is 3.6% of what runs),
-the push of what an operator with a constant made (2.9%), the function of a method call and its Reference
-(2.0%), the last argument and the call (2.4%).
+fewer instructions a turn was the surer gain.
+
+The round after took the next sequences of that count: an operator and the store of its value in a local or
+the push of it (`ApplyBinaryOperatorAndMove`), the push of what an operator with a constant made (a bit of that
+instruction), and the function of a method call with its Reference (`LoadPropertyWithCachePushReference`).
+The run of every case is 215 million instructions, a quarter fewer than the 286 million, and `Load` is one in
+twenty-one. The time moved far less than the count this time: 2.47x to 2.46x over all, the math cases 2.8x to
+2.7x. An instruction that only moved a value cost little beside the dispatch, and the dispatch of the fused
+one remains; what is left to fuse (the last argument and its call, at 2.5% of what runs) will give less still.
 
 Left: about 1 ns an instruction, of which the dispatch is still about half (a quarter of the time of a loop of
 plain calls is the twenty machine instructions between two bytecode instructions: the bounds check, the argument
@@ -270,10 +275,19 @@ was. A `Vm` with the frames inside it was 32 bytes larger and no longer dropped 
 paid for both (the frames are the Agent's for that reason). And the function that prepares the execution
 context, once shared by the two ways, stopped being inlined into the native one.
 
-Left: per call in place, the execution context (64 bytes pushed and removed), the frame, a rooted handle of
-the callee's executable, a count on its instructions; under them the dispatch of area 1. A stack shared by
-caller and callee, with the arguments left where they are, would take most of the frame away; it changes
-how every instruction finds a stack slot. Functions with a rest parameter, defaults or an arguments object
+Sampled again after the instructions around a call were fused (a call with a computed argument is five
+instructions in the caller where it was seven): entering and leaving the function are 41% of a plain call,
+two functions of 682 and 220 machine instructions with the samples spread over them, and no one step stands
+out. The
+return no longer goes the general way, and a frame keeps the callee's bytecode for the next call from its
+depth instead of counting a reference up and down each time; neither moved the time by more than 1%.
+
+Left: per call in place, the execution context (pushed and removed), the frame with the four stacks swapped
+into it and back, a rooted handle of the callee's executable; under them the dispatch of area 1. A stack
+shared by caller and callee, with the arguments left where they are, would take most of the frame away; it
+changes how every instruction finds a stack slot, and the three other stacks would have to be shared with
+it or still be swapped (an instruction that binds parameters looks at the top of the iterator stack, which
+would be the caller's). Functions with a rest parameter, defaults or an arguments object
 still bind the old way and are called the native way (5-6x), and generators are 6.6x. Next: those, and `new`
 of a plain constructor, in place. Reach: about 2.5x.
 
