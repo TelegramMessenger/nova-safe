@@ -3209,10 +3209,19 @@ pub(super) fn execute_iterator_step_value<'gc>(
     instr: Instr,
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    // An Array walked element by element: where the next element is a
-    // value, the step is no more than reading it.
+    // A step that runs nothing is taken here. Of an Array walked element
+    // by element: where the next element is a value, the step is no more
+    // than reading it. And of the properties `for`-`in` goes through,
+    // where no object among them is a Proxy.
     let plain = match vm.get_active_iterator_mut() {
         VmIteratorRecord::ArrayValues(iterator) => iterator.plain_next(agent, gc.nogc()).unbind(),
+        VmIteratorRecord::ObjectProperties(iterator) => {
+            match try_result_into_option_js(iterator.try_step_value(agent, gc.nogc())) {
+                Some(Ok(step)) => Some(step.unbind()),
+                Some(Err(err)) => return Err(err.unbind().bind(gc.into_nogc())),
+                None => None,
+            }
+        }
         _ => None,
     };
     let result = match plain {
