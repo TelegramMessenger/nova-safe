@@ -384,6 +384,166 @@ pub(crate) struct SpareVmStacks {
     handlers: Vec<Vec<ExceptionHandler<'static>>>,
 }
 
+/// A function that native code calls again and again: the callback of an
+/// Array method, called for every element; a comparator. \[\[Call]] of an
+/// ECMAScript function from native code makes a `Vm` for the call and
+/// lets go of it after, finds out each time what kind of function it is
+/// and how its code takes its arguments, and roots its executable; here
+/// that is done once, and each call is the execution context of the call
+/// (PrepareForOrdinaryCall and OrdinaryCallBindThis, as for any call), the
+/// arguments put where the function's parameters are, and the code run.
+///
+/// For a function that the interpreter could run in place of a call
+/// instruction with its arguments in its first stack slots: an ordinary
+/// function (not a generator, not async, not a class constructor) that is
+/// compiled, keeps its parameters on the stack, and needs no Function
+/// Environment Record. Any other is called the general way by whoever
+/// would have used this.
+pub(crate) struct RepeatedCall<'s> {
+    function: Scoped<'s, ECMAScriptFunction<'static>>,
+    executable: Scoped<'s, Executable<'static>>,
+    /// How many parameters the function keeps in its first stack slots.
+    parameters: usize,
+    /// The function's bindings need a Declarative Environment Record.
+    declarative_environment: bool,
+    /// The `Vm` of every call: empty between two of them.
+    vm: Vm,
+}
+
+impl<'s> RepeatedCall<'s> {
+    /// None where `function` is not one that this is for.
+    pub(crate) fn new(
+        agent: &mut Agent,
+        function: Function,
+        gc: NoGcScope<'_, 's>,
+    ) -> Option<Self> {
+        let Function::ECMAScriptFunction(function) = function else {
+            return None;
+        };
+        let data = function.get(agent);
+        let kind = data.ecmascript_function.kind;
+        if kind.is_generator()
+            || kind.is_async()
+            || data
+                .ecmascript_function
+                .constructor_status
+                .is_class_constructor()
+        {
+            return None;
+        }
+        let executable = data.compiled_bytecode?;
+        let code = executable.get(agent);
+        let parameters = usize::from(code.stack_parameters?);
+        let declarative_environment = match code.call_environment {
+            CallEnvironment::Function => return None,
+            environment => environment == CallEnvironment::Declarative,
+        };
+        let function = function.scope(agent, gc);
+        let executable = executable.scope(agent, gc);
+        Some(Self {
+            function,
+            executable,
+            parameters,
+            declarative_environment,
+            vm: Vm::new(agent),
+        })
+    }
+
+    /// Call(F, thisArgument, arguments).
+    pub(crate) fn call<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        this_argument: Value,
+        arguments: &[Value],
+        gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Value<'gc>> {
+        agent.check_call_depth(gc.nogc()).unbind()?;
+        // 2. Let calleeContext be PrepareForOrdinaryCall(F, undefined).
+        // 5. Perform OrdinaryCallBindThis(F, calleeContext, thisArgument).
+        prepare_for_call_without_function_environment(
+            agent,
+            self.function.get(agent),
+            this_argument,
+            self.declarative_environment,
+            gc.nogc(),
+        );
+        // The arguments go where the function keeps its parameters:
+        // undefined for those not given, and those beyond the parameters
+        // are dropped.
+        let vm = &mut self.vm;
+        vm.stack.extend((0..self.parameters).map(|index| {
+            arguments
+                .get(index)
+                .map_or(Value::Undefined, |argument| argument.unbind())
+        }));
+        // 6. Let result be Completion(OrdinaryCallEvaluateBody(F,
+        //    argumentsList)).
+        let result = vm.run(agent, self.executable.clone(), gc);
+        vm.reset();
+        // 7. Remove calleeContext from the execution context stack and
+        //    restore callerContext as the running execution context.
+        agent.remove_execution_context();
+        // 8. If result is a return completion, return result.[[Value]].
+        // 9. ReturnIfAbrupt(result).
+        result.into_js_result()
+    }
+
+    /// Gives the stacks of the `Vm` back for other code to run with.
+    pub(crate) fn finish(self, agent: &mut Agent) {
+        self.vm.recycle(agent);
+    }
+}
+
+/// The callback of a built-in that calls it again and again (once for every
+/// element, for every comparison): called through a [`RepeatedCall`] where
+/// it is a function that is for, and the general way where it is not.
+pub(crate) struct Callback<'s> {
+    function: Scoped<'s, Function<'static>>,
+    repeated: Option<RepeatedCall<'s>>,
+}
+
+impl<'s> Callback<'s> {
+    pub(crate) fn new(
+        agent: &mut Agent,
+        function: Scoped<'s, Function<'static>>,
+        gc: NoGcScope<'_, 's>,
+    ) -> Self {
+        let repeated = RepeatedCall::new(agent, function.get(agent), gc);
+        Self { function, repeated }
+    }
+
+    /// Call(callbackfn, thisArgument, arguments). The arguments are not
+    /// to be read after it.
+    #[inline]
+    pub(crate) fn call<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        this_argument: Value,
+        arguments: &mut [Value<'static>],
+        gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Value<'gc>> {
+        match &mut self.repeated {
+            Some(repeated) => repeated.call(agent, this_argument, arguments, gc),
+            None => call_function(
+                agent,
+                self.function.get(agent),
+                this_argument,
+                Some(ArgumentsList::from_mut_slice(arguments)),
+                gc,
+            ),
+        }
+    }
+
+    /// The built-in is done calling: the stacks of the `Vm` it called with
+    /// are given back. One that is dropped instead (the built-in threw)
+    /// lets go of them.
+    pub(crate) fn finish(self, agent: &mut Agent) {
+        if let Some(repeated) = self.repeated {
+            repeated.finish(agent);
+        }
+    }
+}
+
 /// The frames of every `Vm` of an Agent that runs functions in place of
 /// their calls: those of the `Vm` that is running are the last in use,
 /// under them those of the `Vm`s that wait for a call it is inside of. A
@@ -696,6 +856,21 @@ impl Vm {
         let result = self.run(agent, executable, gc);
         self.recycle(agent);
         result
+    }
+
+    /// Leaves the `Vm` as a new one is, with its stacks emptied: what the
+    /// code that ran left on them (the values of its variables; an
+    /// iterator or a handler it was thrown out of) is no one's.
+    fn reset(&mut self) {
+        debug_assert_eq!(self.depth, 0);
+        debug_assert_eq!(self.handler_base, 0);
+        self.ip = 0;
+        self.result = None;
+        self.reference = None;
+        self.stack.clear();
+        self.reference_stack.clear();
+        self.iterator_stack.clear();
+        self.exception_handler_stack.clear();
     }
 
     fn run<'gc>(

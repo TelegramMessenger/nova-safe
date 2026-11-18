@@ -7,13 +7,13 @@ use crate::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinGetter,
         BuiltinIntrinsicConstructor, ExceptionType, Function, IteratorRecord, JsResult, Number,
         Object, PropertyKey, ProtoIntrinsics, Realm, SmallInteger, String, Value, array_create,
-        builders::BuiltinFunctionBuilder, call_function, construct, create_data_property_or_throw,
+        builders::BuiltinFunctionBuilder, construct, create_data_property_or_throw,
         get, get_iterator_from_method, get_method, get_prototype_from_constructor,
         if_abrupt_close_iterator, is_array, is_callable, is_constructor, iterator_close_with_error,
         iterator_step_value, length_of_array_like, same_value_zero, set, throw_not_callable,
         to_object, to_uint32_number, try_create_data_property_or_throw, unwrap_try,
     },
-    engine::{Bindable, GcScope, Scopable},
+    engine::{Bindable, Callback, GcScope, Scopable},
     heap::{IntrinsicConstructorIndexes, WellKnownSymbols},
 };
 
@@ -194,7 +194,7 @@ impl ArrayConstructor {
 
         // 1. Let C be the this value.
         // 2. If mapfn is undefined, then
-        let mapping = if mapfn.is_undefined() {
+        let mut mapping = if mapfn.is_undefined() {
             // a. Let mapping be false.
             None
         } else {
@@ -209,7 +209,8 @@ impl ArrayConstructor {
             };
 
             // b. Let mapping be true.
-            Some(mapfn.scope(agent, gc.nogc()))
+            let mapfn = mapfn.scope(agent, gc.nogc());
+            Some(Callback::new(agent, mapfn, gc.nogc()))
         };
         let scoped_this_value = this_value.scope(agent, gc.nogc());
         let scoped_items = items.scope(agent, gc.nogc());
@@ -325,17 +326,17 @@ impl ArrayConstructor {
                 };
 
                 // v. If mapping is true, then
-                let mapped_value = if let Some(mapping) = &mapping {
+                let mapped_value = if let Some(mapping) = &mut mapping {
                     // 1. Let mappedValue be Completion(Call(mapfn, thisArg, « next, 𝔽(k) »)).
-                    let mapped_value = call_function(
-                        agent,
-                        mapping.get(agent),
-                        scoped_this_arg.get(agent),
-                        Some(ArgumentsList::from_mut_slice(&mut [next.unbind(), fk])),
-                        gc.reborrow(),
-                    )
-                    .unbind()
-                    .bind(gc.nogc());
+                    let mapped_value = mapping
+                        .call(
+                            agent,
+                            scoped_this_arg.get(agent),
+                            &mut [next.unbind(), fk],
+                            gc.reborrow(),
+                        )
+                        .unbind()
+                        .bind(gc.nogc());
 
                     // 2. IfAbruptCloseIterator(mappedValue, iteratorRecord).
                     let iterator_record = IteratorRecord {
@@ -423,17 +424,17 @@ impl ArrayConstructor {
                 .bind(gc.nogc());
 
             // c. If mapping is true, then
-            let mapped_value = if let Some(mapping) = &mapping {
+            let mapped_value = if let Some(mapping) = &mut mapping {
                 // i. Let mappedValue be ? Call(mapfn, thisArg, « kValue, 𝔽(k) »).
-                call_function(
-                    agent,
-                    mapping.get(agent),
-                    scoped_this_arg.get(agent),
-                    Some(ArgumentsList::from_mut_slice(&mut [k_value.unbind(), fk])),
-                    gc.reborrow(),
-                )
-                .unbind()?
-                .bind(gc.nogc())
+                mapping
+                    .call(
+                        agent,
+                        scoped_this_arg.get(agent),
+                        &mut [k_value.unbind(), fk],
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc())
             } else {
                 // d. Else,
                 // i. Let mappedValue be kValue.
@@ -454,6 +455,9 @@ impl ArrayConstructor {
             k += 1;
         }
 
+        if let Some(mapping) = mapping {
+            mapping.finish(agent);
+        }
         // 13. Perform ? Set(A, "length", 𝔽(len), true).
         set(
             agent,

@@ -18,11 +18,40 @@ use crate::{
         try_create_data_property_or_throw, try_length_of_array_like, try_merge_sort_by,
         try_result_into_js, try_to_integer_or_infinity, try_to_string, unwrap_try,
     },
-    engine::{Bindable, GcScope, NoGcScope, Rootable, Scopable, ScopableCollection, Scoped},
+    engine::{
+        Bindable, Callback, GcScope, NoGcScope, Rootable, Scopable, ScopableCollection, Scoped,
+    },
     heap::{ArenaAccessSoAMut, Heap, HeapIndexHandle, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
 pub(crate) struct ArrayPrototype;
+
+/// HasProperty(O, k) and, where the property is there, Get(O, k): Some of
+/// the value, or None for a property that is not there. Where `o` is an
+/// Array whose element `k` is a value (not a hole, not an accessor), the
+/// two come to reading it, and nothing runs.
+#[inline]
+fn present_element<'gc>(
+    agent: &mut Agent,
+    o: &Scoped<Object<'static>>,
+    k: i64,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, Option<Value<'gc>>> {
+    if let Object::Array(array) = o.get(agent)
+        && let Ok(index) = usize::try_from(k)
+        && let Some(Some(value)) = array.as_slice(agent).get(index)
+    {
+        return Ok(Some(value.bind(gc.into_nogc())));
+    }
+    // a. Let Pk be ! ToString(𝔽(k)).
+    let pk = PropertyKey::Integer(k.try_into().unwrap());
+    // b. Let kPresent be ? HasProperty(O, Pk).
+    if !has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()? {
+        return Ok(None);
+    }
+    // i. Let kValue be ? Get(O, Pk).
+    get(agent, o.get(agent), pk, gc).map(Some)
+}
 
 struct ArrayPrototypeAt;
 impl Builtin for ArrayPrototypeAt {
@@ -774,45 +803,42 @@ impl ArrayPrototype {
             ));
         };
         let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
+        let mut callback = Callback::new(agent, callback_fn, gc.nogc());
         // 4. Let k be 0.
         let mut k = 0;
         // 5. Repeat, while k < len,
         while k < len {
             agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
-            let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
-            let k_present = has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
             // c. If kPresent is true, then
-            if k_present {
-                // i. Let kValue be ? Get(O, Pk).
-                let k_value = get(agent, o.get(agent), pk, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
-                // ii. Let testResult be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
-                let f_k = Number::try_from(k).unwrap().into();
-                let test_result = call_function(
-                    agent,
-                    callback_fn.get(agent),
-                    this_arg.get(agent),
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        k_value.unbind(),
-                        f_k,
-                        o.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = present_element(agent, &o, k, gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
+            if let Some(k_value) = k_value {
+                // ii. Let testResult be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
+                let f_k = Number::try_from(k).unwrap().into();
+                let test_result = callback
+                    .call(
+                        agent,
+                        this_arg.get(agent),
+                        &mut [k_value.unbind(), f_k, o.get(agent).into()],
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc());
                 let test_result = to_boolean(agent, test_result);
                 // iii. If testResult is false, return false.
                 if !test_result {
+                    callback.finish(agent);
                     return Ok(test_result.into());
                 }
             }
             // d. Set k to k + 1.
             k += 1;
         }
+        callback.finish(agent);
         // 6. Return true.
         Ok(true.into())
     }
@@ -1023,34 +1049,29 @@ impl ArrayPrototype {
         // 6. Let to be 0.
         let mut to: u32 = 0;
         let mut scoped_k_value: Scoped<Value> = Value::Undefined.scope_static(gc.nogc());
+        let mut callback = Callback::new(agent, callback_fn, gc.nogc());
         // 7. Repeat, while k < len,
         while k < len {
             agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
-            let pk = PropertyKey::from(SmallInteger::try_from(k).unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
-            let k_present = has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
             // c. If kPresent is true, then
-            if k_present {
-                // i. Let kValue be ? Get(O, Pk).
-                let k_value = get(agent, o.get(agent), pk, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
-                scoped_k_value.replace(agent, k_value.unbind());
-                // ii. Let selected be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
-                let result = call_function(
-                    agent,
-                    callback_fn.get(agent),
-                    this_arg.get(agent),
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        k_value.unbind(),
-                        k.try_into().unwrap(),
-                        o.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = present_element(agent, &o, k, gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
+            if let Some(k_value) = k_value {
+                scoped_k_value.replace(agent, k_value.unbind());
+                // ii. Let selected be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
+                let result = callback
+                    .call(
+                        agent,
+                        this_arg.get(agent),
+                        &mut [k_value.unbind(), k.try_into().unwrap(), o.get(agent).into()],
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc());
                 let selected = to_boolean(agent, result);
                 // iii. If selected is true, then
                 if selected {
@@ -1070,6 +1091,7 @@ impl ArrayPrototype {
             // d. Set k to k + 1.
             k += 1;
         }
+        callback.finish(agent);
         // 8. Return A.
         Ok(a.get(agent).into())
     }
@@ -1365,6 +1387,7 @@ impl ArrayPrototype {
             ));
         };
         let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
+        let mut callback = Callback::new(agent, callback_fn, gc.nogc());
 
         // 4. Let k be 0.
         let mut k = 0;
@@ -1372,32 +1395,27 @@ impl ArrayPrototype {
         while k < len {
             agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
-            let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
-            let k_present = has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
             // c. If kPresent is true, then
-            if k_present {
-                // i. Let kValue be ? Get(O, Pk).
-                let k_value = get(agent, o.get(agent), pk, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = present_element(agent, &o, k, gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc());
+            if let Some(k_value) = k_value {
                 // ii. Perform ? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »).
-                call_function(
-                    agent,
-                    callback_fn.get(agent),
-                    this_arg.get(agent),
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        k_value.unbind(),
-                        k.try_into().unwrap(),
-                        o.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
-                .unbind()?;
+                callback
+                    .call(
+                        agent,
+                        this_arg.get(agent),
+                        &mut [k_value.unbind(), k.try_into().unwrap(), o.get(agent).into()],
+                        gc.reborrow(),
+                    )
+                    .unbind()?;
             }
             // d. Set k to k + 1.
             k += 1;
         }
+        callback.finish(agent);
         // 6. Return undefined.
         Ok(Value::Undefined)
     }
@@ -1980,6 +1998,7 @@ impl ArrayPrototype {
         let a = array_species_create(agent, o.get(agent), len as usize, gc.reborrow())
             .unbind()?
             .scope(agent, gc.nogc());
+        let mut callback = Callback::new(agent, callback_fn, gc.nogc());
         // 5. Let k be 0.
         let mut k = 0;
         // 6. Repeat, while k < len,
@@ -1988,26 +2007,21 @@ impl ArrayPrototype {
             // a. Let Pk be ! ToString(𝔽(k)).
             let pk = PropertyKey::Integer(k.try_into().unwrap());
             // b. Let kPresent be ? HasProperty(O, Pk).
-            let k_present = has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
             // c. If kPresent is true, then
-            if k_present {
-                // i. Let kValue be ? Get(O, Pk).
-                let k_value = get(agent, o.get(agent), pk, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = present_element(agent, &o, k, gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc());
+            if let Some(k_value) = k_value {
                 // ii. Let mappedValue be ? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »).
-                let mapped_value = call_function(
-                    agent,
-                    callback_fn.get(agent),
-                    this_arg.get(agent),
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        k_value.unbind(),
-                        k.try_into().unwrap(),
-                        o.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
-                .unbind()?;
+                let mapped_value = callback
+                    .call(
+                        agent,
+                        this_arg.get(agent),
+                        &mut [k_value.unbind(), k.try_into().unwrap(), o.get(agent).into()],
+                        gc.reborrow(),
+                    )
+                    .unbind()?;
                 // iii. Perform ? CreateDataPropertyOrThrow(A, Pk, mappedValue).
                 create_data_property_or_throw(
                     agent,
@@ -2021,6 +2035,7 @@ impl ArrayPrototype {
             // d. Set k to k + 1.
             k += 1;
         }
+        callback.finish(agent);
         // 7. Return A.
         Ok(a.get(agent).into())
     }
@@ -2353,44 +2368,41 @@ impl ArrayPrototype {
             }
         }
 
+        let mut callback = Callback::new(agent, callback_fn, gc.nogc());
         // 9. Repeat, while k < len,
         while k < len {
             agent.poll_interrupt(gc.nogc()).unbind()?;
-            let k_int = k.try_into().unwrap();
+            let k_int: SmallInteger = k.try_into().unwrap();
             // a. Let Pk be ! ToString(𝔽(k)).
-            let pk = PropertyKey::Integer(k_int);
-
             // b. Let kPresent be ? HasProperty(O, Pk).
-            let k_present = has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
-
             // c. If kPresent is true, then
-            if k_present {
-                // i. Let kValue be ? Get(O, Pk).
-                let k_value = get(agent, o.get(agent), pk, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
-
-                // ii. Set accumulator to ? Call(callbackfn, undefined, « accumulator, kValue, 𝔽(k), O »).
-                let result = call_function(
-                    agent,
-                    callback_fn.get(agent),
-                    Value::Undefined,
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        accumulator.get(agent),
-                        k_value.unbind(),
-                        Number::from(k_int).into(),
-                        o.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = present_element(agent, &o, k, gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
+            if let Some(k_value) = k_value {
+                // ii. Set accumulator to ? Call(callbackfn, undefined, « accumulator, kValue, 𝔽(k), O »).
+                let result = callback
+                    .call(
+                        agent,
+                        Value::Undefined,
+                        &mut [
+                            accumulator.get(agent),
+                            k_value.unbind(),
+                            Number::from(k_int).into(),
+                            o.get(agent).into(),
+                        ],
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc());
                 accumulator.replace(agent, result.unbind());
             }
 
             // d. Set k to k + 1.
             k += 1;
         }
+        callback.finish(agent);
 
         // 10. Return accumulator.
         Ok(accumulator.get(agent))
@@ -2519,43 +2531,40 @@ impl ArrayPrototype {
             }
         }
 
+        let mut callback = Callback::new(agent, callback_fn, gc.nogc());
         // 9. Repeat, while k ≥ 0,
         while k >= 0 {
             agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
-            let pk = PropertyKey::try_from(k).unwrap();
-
             // b. Let kPresent be ? HasProperty(O, Pk).
-            let k_present = has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
-
             // c. If kPresent is true, then
-            if k_present {
-                // i. Let kValue be ? Get(O, Pk).
-                let k_value = get(agent, o.get(agent), pk, gc.reborrow())
-                    .unbind()?
-                    .bind(gc.nogc());
-
-                // ii. Set accumulator to ? Call(callbackfn, undefined, « accumulator, kValue, 𝔽(k), O »).
-                let result = call_function(
-                    agent,
-                    callback_fn.get(agent),
-                    Value::Undefined,
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        accumulator.get(agent),
-                        k_value.unbind(),
-                        Number::try_from(k).unwrap().into(),
-                        o.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = present_element(agent, &o, k, gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
+            if let Some(k_value) = k_value {
+                // ii. Set accumulator to ? Call(callbackfn, undefined, « accumulator, kValue, 𝔽(k), O »).
+                let result = callback
+                    .call(
+                        agent,
+                        Value::Undefined,
+                        &mut [
+                            accumulator.get(agent),
+                            k_value.unbind(),
+                            Number::try_from(k).unwrap().into(),
+                            o.get(agent).into(),
+                        ],
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc());
                 accumulator.replace(agent, result.unbind());
             }
 
             // d. Set k to k - 1.
             k -= 1;
         }
+        callback.finish(agent);
 
         // 10. Return accumulator.
         Ok(accumulator.get(agent))
@@ -3164,41 +3173,40 @@ impl ArrayPrototype {
             ));
         };
         let callback_fn = callback_fn.replace_self(agent, stack_callback_fn.unbind());
+        let mut callback = Callback::new(agent, callback_fn, gc.nogc());
         // 4. Let k be 0.
         let mut k = 0;
         // 5. Repeat, while k < len,
         while k < len {
             agent.poll_interrupt(gc.nogc()).unbind()?;
             // a. Let Pk be ! ToString(𝔽(k)).
-            let pk = k.try_into().unwrap();
             // b. Let kPresent be ? HasProperty(O, Pk).
-            let k_present = has_property(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
             // c. If kPresent is true, then
-            if k_present {
-                // i. Let kValue be ? Get(O, Pk).
-                let k_value = get(agent, o.get(agent), pk, gc.reborrow()).unbind()?;
-                // ii. Let testResult be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
-                let test_result = call_function(
-                    agent,
-                    callback_fn.get(agent),
-                    this_arg.get(agent),
-                    Some(ArgumentsList::from_mut_slice(&mut [
-                        k_value.unbind(),
-                        k.try_into().unwrap(),
-                        o.get(agent).into(),
-                    ])),
-                    gc.reborrow(),
-                )
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = present_element(agent, &o, k, gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
+            if let Some(k_value) = k_value {
+                // ii. Let testResult be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
+                let test_result = callback
+                    .call(
+                        agent,
+                        this_arg.get(agent),
+                        &mut [k_value.unbind(), k.try_into().unwrap(), o.get(agent).into()],
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc());
                 // iii. If testResult is true, return true.
                 if test_result == Value::Boolean(true) || to_boolean(agent, test_result) {
+                    callback.finish(agent);
                     return Ok(true.into());
                 }
             }
             // d. Set k to k + 1.
             k += 1;
         }
+        callback.finish(agent);
         // 6. Return false.
         Ok(false.into())
     }
@@ -4367,11 +4375,12 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
         ));
     };
     let predicate = predicate.replace_self(agent, stack_predicate.unbind());
+    let mut callback = Callback::new(agent, predicate, gc.nogc());
     // 4. For each integer k of indices, do
     fn check<'gc, T: 'static + Rootable + InternalMethods<'static>>(
         agent: &mut Agent,
         o: Scoped<T>,
-        predicate: Scoped<Function>,
+        callback: &mut Callback,
         this_arg: Scoped<Value>,
         k: u64,
         mut gc: GcScope<'gc, '_>,
@@ -4387,19 +4396,19 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
         let scoped_k_value = k_value.scope(agent, gc.nogc());
 
         // d. Let testResult be ? Call(predicate, thisArg, « kValue, 𝔽(k), O »).
-        let test_result = call_function(
-            agent,
-            predicate.get(agent),
-            this_arg.get(agent),
-            Some(ArgumentsList::from_mut_slice(&mut [
-                k_value.unbind(),
-                Number::try_from(k).unwrap().into(),
-                o.get(agent).into(),
-            ])),
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
+        let test_result = callback
+            .call(
+                agent,
+                this_arg.get(agent),
+                &mut [
+                    k_value.unbind(),
+                    Number::try_from(k).unwrap().into(),
+                    o.get(agent).into(),
+                ],
+                gc.reborrow(),
+            )
+            .unbind()?
+            .bind(gc.nogc());
         // e. If ToBoolean(testResult) is true, return the Record { [[Index]]: 𝔽(k), [[Value]]: kValue }.
         if to_boolean(agent, test_result) {
             Ok(Some((k, scoped_k_value.take(agent))))
@@ -4416,7 +4425,7 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
             let result = match check(
                 agent,
                 o.clone(),
-                predicate.clone(),
+                &mut callback,
                 this_arg.clone(),
                 k,
                 gc.reborrow(),
@@ -4428,7 +4437,9 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
             };
             if let Some((index, value)) = result {
                 let index = i64::try_from(index).expect("Index overflowed JavaScript safe integer");
-                return Ok((index, value.unbind().bind(gc.into_nogc())));
+                let value = value.unbind();
+                callback.finish(agent);
+                return Ok((index, value.bind(gc.into_nogc())));
             }
         }
     } else {
@@ -4439,7 +4450,7 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
             let result = match check(
                 agent,
                 o.clone(),
-                predicate.clone(),
+                &mut callback,
                 this_arg.clone(),
                 k,
                 gc.reborrow(),
@@ -4449,10 +4460,13 @@ pub(crate) fn find_via_predicate<'gc, T: 'static + Rootable + InternalMethods<'s
             };
             if let Some((index, value)) = result {
                 let index = i64::try_from(index).expect("Index overflowed JavaScript safe integer");
-                return Ok((index, value.unbind().bind(gc.into_nogc())));
+                let value = value.unbind();
+                callback.finish(agent);
+                return Ok((index, value.bind(gc.into_nogc())));
             }
         }
     };
+    callback.finish(agent);
     // 5. Return the Record { [[Index]]: -1𝔽, [[Value]]: undefined }.
     Ok((-1, Value::Undefined))
 }
@@ -4680,10 +4694,14 @@ fn sort_indexed_properties<'gc, 'scope, const SKIP_HOLES: bool>(
             .map(|index| items[index].get(agent).bind(gc))
             .collect());
     }
+    let mut comparator = comparator.map(|comparator| Callback::new(agent, comparator, gc.nogc()));
     try_merge_sort_by(&mut items, |a, b| {
-        compare_array_elements(agent, a, b, comparator.clone(), gc.reborrow())
+        compare_array_elements(agent, a, b, comparator.as_mut(), gc.reborrow())
             .map_err(|err| err.unbind())
     })?;
+    if let Some(comparator) = comparator {
+        comparator.finish(agent);
+    }
     let gc = gc.into_nogc();
     // 5. Return items.
     Ok(items.into_iter().map(|v| v.get(agent).bind(gc)).collect())
@@ -4749,7 +4767,7 @@ fn compare_array_elements<'a>(
     agent: &mut Agent,
     scoped_x: &Scoped<Value>,
     scoped_y: &Scoped<Value>,
-    comparator: Option<Scoped<Function>>,
+    comparator: Option<&mut Callback>,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, Ordering> {
     let x = scoped_x.get(agent).bind(gc.nogc());
@@ -4767,15 +4785,15 @@ fn compare_array_elements<'a>(
     // 4. If comparator is not undefined, then
     if let Some(comparator) = comparator {
         // a. Let v be ? ToNumber(? Call(comparator, undefined, « x, y »)).
-        let v = call_function(
-            agent,
-            comparator.get(agent),
-            Value::Undefined,
-            Some(ArgumentsList::from_mut_slice(&mut [x.unbind(), y.unbind()])),
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
+        let v = comparator
+            .call(
+                agent,
+                Value::Undefined,
+                &mut [x.unbind(), y.unbind()],
+                gc.reborrow(),
+            )
+            .unbind()?
+            .bind(gc.nogc());
         let v = to_number(agent, v.unbind(), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
