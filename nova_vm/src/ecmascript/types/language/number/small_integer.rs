@@ -17,6 +17,27 @@ pub struct SmallInteger {
 }
 number_value!(SmallInteger, Integer);
 
+/// The u64 whose bytes in memory are a zero and then `data`: what
+/// `u64::from_ne_bytes([0, data[0], …, data[6]])` gives.
+///
+/// Put together on a little-endian target from the three pieces that seven
+/// bytes are read from memory as (four, two and one), with shifts: written
+/// as the array of eight bytes, every read of a small Number in the
+/// interpreter became a vector shuffle of a dozen instructions.
+#[inline(always)]
+pub(super) const fn seven_bytes_after_zero(data: [u8; 7]) -> u64 {
+    if cfg!(target_endian = "little") {
+        let [a, b, c, d, e, f, g] = data;
+        let low = u32::from_le_bytes([a, b, c, d]) as u64;
+        let middle = u16::from_le_bytes([e, f]) as u64;
+        ((g as u64) << 56) | (middle << 40) | (low << 8)
+    } else {
+        u64::from_ne_bytes([
+            0, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
+        ])
+    }
+}
+
 impl core::fmt::Debug for SmallInteger {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", Into::<i64>::into(*self))
@@ -44,9 +65,7 @@ impl SmallInteger {
     pub const fn into_i64(self) -> i64 {
         let SmallInteger { data } = self;
 
-        let number = i64::from_ne_bytes([
-            0, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
-        ]);
+        let number = seven_bytes_after_zero(data) as i64;
 
         if cfg!(target_endian = "little") {
             number >> 8
