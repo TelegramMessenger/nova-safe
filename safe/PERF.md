@@ -38,29 +38,29 @@ below.
 | call | 14 | 10.4x | 2.2x |
 | math | 4 | 9.7x | 2.0x |
 | string | 26 | 10.6x | 1.5x |
-| prop | 13 | 7.1x | 1.9x |
+| prop | 13 | 7.1x | 1.8x |
 | map, set | 4 | 4.6x | 1.7x |
 | app | 8 | 6.1x | 1.7x |
-| array | 14 | 5.8x | 1.6x |
+| array | 14 | 5.8x | 1.7x |
 | regexp | 4 | 2.4x | 1.7x |
-| loop | 11 | 11.1x | 1.4x |
+| loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.9x |
-| all | 108 | 7.6x | 1.7x |
+| all | 108 | 7.6x | 1.6x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst is now a generator (4.2x), then typed `Float64Array`
-arithmetic (3.3x), an object literal with a spread (3.2x) and the properties of one object read and
-written in a loop (3.2x). 5 of the 108 cases are above 3x and 69 at or under 2x, 13 of them at or under
-QuickJS's time. Over all cases it is 1.67x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7). The worst is now a generator (4.1x), then typed `Float64Array`
+arithmetic (3.3x), a step of a particle animation (3.2x) and the properties of one object read and
+written in a loop (3.1x). 4 of the 108 cases are above 3x and 72 at or under 2x, 14 of them at or under
+QuickJS's time. Over all cases it is 1.65x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
 stepping a generator without a result object took it to 1.88x. The arguments object in a stack slot halved
 one case of the 108 and left the mean where it was, the string hash that follows from the hashes of
 what is concatenated took it to 1.78x, more built-in functions run in place of a call to 1.71x, and
-chains of `+` compiled as one concatenation to 1.68x, and the arithmetic of doubles done as that took
-it here.
+chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles done as that to 1.67x,
+and objects copied by their shape took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -551,6 +551,27 @@ that reads it anywhere, through the property cache of its place, into a stack sl
 in one. Every object pattern is compiled that way now. `prop/destructuring`, an object pattern and an
 array pattern, went from 3.7x to 2.0x with that, and to 1.5x with the array pattern's part (area 5a).
 
+`{ ...base, e: i }` and `Object.assign({}, last, { f: 1 })` (`prop/object-spread-assign`, 3.2x) each
+went the whole way of the specification for every property: the list of the source's keys, a descriptor
+made of each property, the value read, and the property defined or assigned on the target. There was a
+shorter way for the spread, a copy of the source's shape and values, that never ran (below). A source
+whose properties are all plain data properties under String keys, which is nearly every object that is
+spread, now gives an empty target its shape and a copy of its values: the copy is what the steps make
+(the same keys in the same order, each property writable, enumerable and configurable, the target
+extensible whatever the source is). `Object.assign` assigns the properties of such a source one by one
+with no list of keys and no descriptors, where the target takes each without a setter or a trap; where
+it does not, the steps do all of it from the first key, and what was assigned is assigned again, which
+nothing can see. The case went to 1.9x.
+
+`key in object` looked for the key among the object's own keys one by one, where every other lookup of
+an object with 32 keys or more uses the table of its shape's keys. An object used as a dictionary of 500
+keys, with `in` at every step (`prop/dictionary-churn`, 2.8x), spent a third of its time there; it went
+to 1.8x. Properties together went from 1.9x to 1.8x, all cases from 1.67x to 1.65x.
+
+Tried on the way and not kept: the keys of a small object compared as the 64 bits each is, in place of
+kind by kind and field by field. It read a twelfth slower (`prop/dynamic-string-key`, where a computed
+String key is looked up among eight; a fifth of that case is the search, and it is 2.6x).
+
 ### 5. Array and typed array elements
 
 `a[i]` was 11-19x through the same Reference path with a generic property key.
@@ -1038,6 +1059,15 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   after the block in sloppy code (Annex B.3.3), here or in the build this started from; Node does it.
   Found by the script written for the arguments object's stack slot. Not fixed.
 
+- The shorter way of an object spread (`{ ...source }` as a copy of the source's shape and values) had
+  never run, here or in the build this started from, and would have made broken objects if it had: it was
+  asked of the source with the source for its argument, so the target was never empty in its eyes; it
+  took the target's shape for the source's; and it let through properties that are not writable or not
+  configurable, whose copies are both. Found by reading it for the profile of the spread. Written again,
+  with a script of fifty-five checks against Node as its test.
+- `Object.prototype.__proto__` is not an accessor here, nor in the build this started from: `in` and a
+  read find `__proto__` on no object, and `Object.assign({}, JSON.parse('{"__proto__": {}}'))` makes an
+  own property of that name where Node sets the prototype. Annex B.2.2.1; not added.
 - `String.prototype.repeat` made each lone surrogate of the text U+FFFD, and did not make a pair of a
   trail surrogate at the start with a lead surrogate at the end of the copy before; so here and in the
   build this started from. Found by the script written for the functions run in place; fixed, with that
