@@ -13,15 +13,21 @@ file states what protects the process from a hostile script, what is trusted, an
    panic; it cannot read or write memory it does not own. `safe/tools/unsafe_report.py` counts what is left: 0.
 2. **A small, audited C ABI.** `nova_embed_ffi` is the only crate with `unsafe` (`#![deny(unsafe_op_in_unsafe_fn)]`,
    every block commented with its precondition): byte buffers are copied into owned Rust values at once, results are
-   owned by the caller and freed once, re-entry from a host callback is refused, every entry point runs under
-   `catch_unwind` and a panic marks the engine dead (never touched again). Only `nova_*` symbols are exported.
+   owned by the caller and freed once, re-entry from a host callback is refused, every entry point that runs the
+   engine does so under `catch_unwind` and a panic marks the engine dead (never touched again); the ones that only
+   fill a host function's return slot, free a result or set the time zone callback run none of the engine. Only
+   `nova_*` symbols are exported. The crate also holds the allocator that counts each engine's bytes for the memory
+   limit (`meter.rs`, from the Android line): a header in front of every block names the account of the engine it was
+   allocated for. What is read from a header picks a counter; it is never used as an address or a size.
 3. **One engine per widget, no shared state between engines.** Each widget has its own Agent and heap. Host function
    ids live in Rust, never in the JS heap; the hook stack is per call and per thread.
 4. **Resource limits** (so a script can only hurt itself): an interrupt polled every 4096 instructions, inside
-   long native loops and while parsing ends a script with a termination no `try`/`catch`/`finally` can stop; a heap limit; a native
+   long native loops, at every call that native code makes and while parsing ends a script with a termination no
+   `try`/`catch`/`finally` can stop; a heap limit; a native
    stack guard that turns deep recursion (JS calls, bound functions, Proxy chains, JSON, `flat`, generators) into a
    catchable `RangeError`; a nesting pre-scan that turns too-deep source into a `SyntaxError` before the parser runs;
-   huge single allocations refused before allocating; RegExp matching with a step budget (no ReDoS hang).
+   huge single allocations refused before allocating; RegExp matching with a step budget (no ReDoS hang) and
+   backtracking stacks bounded together by the room the heap limit leaves.
 5. **The XPC sandbox.** Widgets run in `WidgetEngineService.xpc`, sandboxed with no file or network access and no
    JIT entitlement; the app re-validates everything a widget sends.
 
@@ -31,7 +37,7 @@ Of the engine's Rust code, nothing but `std`, `rustc`/LLVM and the C ABI crate i
 - `rustc`/LLVM and Rust's `std` (including std's copy of `hashbrown` behind `HashMap`). No crate of the widget build
   uses the `hashbrown` crate: the engine's hash tables with caller-supplied hashes are the in-tree `table.rs`, and
   the parser's maps wrap std's `HashMap`.
-- `nova_embed_ffi`, the C ABI (layer 2).
+- `nova_embed_ffi`, the C ABI and its counting allocator (layer 2).
 
 Every other crate the engine links (28 in the widget build, `safe/TCB.md`) has no `unsafe`, and the compiler checks
 that: the parser stack (oxc 0.124.0, vendored in `oxc/crates`, `safe/OXC.md`), our forks, and four small registry
@@ -76,12 +82,41 @@ service.
 - `safe/tools/gc_audit/`: makes the borrow checker list every handle parameter used after a call that can run
   JavaScript, plus a runtime sweep of every builtin with arguments that force a collection.
 - A review of the C ABI and the Swift wrapper (no memory-safety finding) and the C ABI under ASan/UBSan.
+- The Android line (32-bit targets, the allocator that counts for the memory limit, strings and errors across the C
+  ABI) was read by four independent reviews when the two lines were joined: the allocator line by line against the
+  `GlobalAlloc` contract, every entry point of the C ABI against its header, every changed conversion of the 32-bit
+  port, and the memory limit from where bytes are counted to where a script ends. None found a way to read or write
+  memory the engine does not own. Found and fixed, each with a regression test: DataView bounds that wrapped around
+  on a 32-bit target (the one defect the port brought; read, not run, since no 32-bit target runs on the build
+  machine), and in what both lines share: `JSON.stringify` of a Proxy with a made-up length asked the allocator for
+  2^54 bytes, which ends the process; loops of native code whose every step calls a built-in function (an iterator's
+  `next`, a Proxy's trap) were not reached by the interrupt; the backtracking stacks of a RegExp search were bounded
+  one by one, by a fixed bound, and a nest of lookarounds held one each; the copies of a host function's arguments
+  were made without asking the limit. The C ABI crate's tests, with tests of the allocator in safe code (alignments
+  up to 4096, growing, shrinking, zeroed, freed on another thread, exact accounts), run under AddressSanitizer with
+  no report. Not run: Miri, for which the build machine has no nightly toolchain.
 
 ## What remains (honestly)
 
 - A bug in `rustc`, LLVM, `std` or `nova_embed_ffi` could still break the guarantees; the sandbox is the wall behind
   that.
 - Denial of service inside one widget (it burns its own CPU quota until the interrupt stops it).
+- The memory limit is asked at a poll (every 4096 steps), by the allocations that ask before they allocate, and
+  after a collection; and the collector is paced by the records allocated, not by the bytes of strings. A script
+  that makes long strings with a built-in that does not ask first (`substring`, `slice`, the case conversions,
+  `normalize`) can hold many times the limit for the steps until the next poll ends it, and one that makes much
+  long garbage can be ended as out of memory with a small live heap. An allocation that asks first is refused only
+  where no collection could make room for it, so a native loop of such allocations is bounded by the poll as well.
+  Parsing (`eval` of a long source) is outside the limit. Known from the reviews; not fixed.
+- What a host must keep to, where the header says less: a callback and its context stay in use until the outermost
+  call into the engine returns, also when `nova_engine_free` was called inside a callback (the free waits, the
+  script does not); result bytes are freed with `nova_result_free` alone; an engine string comes with a length and
+  may hold NUL and lone surrogates. The desktop host keeps to these, as the reviews read it. The Android host was
+  not part of them.
+- The allocator's count reads as 0 if it ever wrapped around, the 1024th engine alive at once is counted by the
+  estimate instead, and nothing checks that the allocator is the one the final link uses. On a 32-bit target its
+  16-byte header asks the system for more alignment than its `malloc` gives, for every block. Not changed here: it
+  is the Android line's code, and `unsafe`.
 - Correctness differences against QuickJS: on the 501 corpus widgets, 497 produce exactly QuickJS's output; the other
   three differ in an error's stack text, in nova_cli's module-loader message, and in one case where Nova follows the
   specification and QuickJS does not (`regexp-delete-recompile`). They change what a widget shows, not what it can

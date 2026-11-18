@@ -34,29 +34,38 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.7x |
+| typed | 4 | 10.6x | 2.8x |
 | call | 14 | 10.4x | 2.4x |
 | math | 4 | 9.7x | 2.4x |
+| app | 8 | 6.1x | 2.1x |
 | string | 26 | 10.6x | 2.0x |
-| app | 8 | 6.1x | 2.0x |
 | prop | 13 | 7.1x | 2.0x |
 | map, set | 4 | 4.6x | 2.0x |
-| array | 14 | 5.8x | 1.7x |
-| regexp | 4 | 2.4x | 1.7x |
+| array | 14 | 5.8x | 1.8x |
+| regexp | 4 | 2.4x | 1.8x |
 | loop | 11 | 11.1x | 1.4x |
 | gc | 3 of 5 | 3.6x | 1.2x |
-| json | 2 | 1.0x | 0.9x |
+| json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 1.9x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 2.6x, and the worst is now prepending
-(36x, area 7); after it come generators (5.8x), rows of HTML appended to a string (5.2x), then calls that
-bind an arguments object (4.6x). 15 of the 108 cases are above 3x and 53 at or under 2x, 14 of them at or
+(37x, area 7); after it come generators (5.9x), calls that bind an arguments object (4.8x), then typed
+`Float64Array` arithmetic (3.9x). 13 of the 108 cases are above 3x and 53 at or under 2x, 13 of them at or
 under QuickJS's time. Over all cases it is 1.91x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, and the round of
-what an appended text keeps of its end took it here. One case
-ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
-cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
+what an appended text keeps of its end took it to 1.91x.
+
+It is 1.91x on top of the Android line as well, by two things that cancel. That line counts what the
+engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
+of each block, a counter and a thread-local read): the cases that allocate most pay for it (a linked list
+built and dropped 17% slower, array literals 15%, serializing to JSON 9%, numbers joined 9%; 2% over all
+cases). And texts are compared by their pieces where the string table looks a new one up (area 7), which
+halved the time of the rows of HTML (5.2x to 2.7x) and took a seventh off escaping HTML.
+
+One case ran Nova out of memory before (`prop/destructuring`). With the count, 50,000 closures no longer
+fit the 8 MB that the estimate let them have; they do not fit QuickJS's either, nor do 30,000 retained
+objects, which Nova does hold.
 
 What is written in Rust or C on both sides is level: JSON, RegExp, `indexOf`, `split`/`join`, `sort`. The gap is in
 running JavaScript itself.
@@ -658,10 +667,17 @@ A piece is also at least twice as long as the one after it now. It only had to b
 with ever shorter strings had as many pieces as steps, and letting go of it went as deep. A text has no more
 pieces than its length has bits.
 
-Rows of HTML appended to one string (5.2x) read 8% faster in the suite and 9% slower by their best run. The
-bytes of a piece are counted as they are allocated now, where each piece a merge went through was counted
-before; the collector therefore runs less often, fewer runs have a collection in them, and the string table
-is larger between two collections, which every lookup of a new string pays for.
+Rows of HTML appended to one string (5.2x then) read 8% faster in the suite and 9% slower by their best run
+after that change, and what was written here took the larger string table between two collections for the
+reason. It was not that. A run of the case builds the text of the run before again, and so does a widget that
+renders what it rendered before: every step makes the string the same step made last time, the string table
+finds it, and to compare the two it joined both, the whole text copied twice for each thing appended. How
+often that happened went by how many of the last run's strings a collection had left in the table, so by
+how often the collector ran. An appended text is compared by its pieces now, with a buffer or with another
+appended text, and nothing is joined for it; texts that continue one text share its pieces, and from where
+both come to the same piece the rest is the same unlooked at, so the step that makes again what it made
+before compares what it added. The rows of HTML went from 0.39 to 0.20 ms (2.7x), escaping HTML a character
+at a time from 1.7x to 1.5x.
 
 Sampled over the eight application cases together, a short concatenation was the largest thing to be named:
 two fifths of the canvas command buffer, where each command makes `"rgb(" + r + ",10," + b + ")"`. A String
@@ -856,6 +872,22 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   was under a load of ninety at the time; three runs on a quiet machine passed. The limit is wall-clock time.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
+
+- The joins of the texts that the string table compared (area 7) were counted against what may be joined
+  between two collections, and a join past that ends the engine as out of memory. With the estimate the
+  collector ran often enough to hide it. On top of the Android line, which counts what the engine allocates
+  and collects less often for it, the rows of HTML ended the engine on their thirteenth run and the escaping
+  of HTML on its second, with 6 MB in use under a limit of 64 MB: the benchmark found it after the two lines
+  were joined, and no test had. Fixed with the comparison, with a test that runs both under the count.
+- Joining the two lines brought their checks together, and reading the Android line's changes for it found
+  defects in what both share (`safe/SECURITY.md`, "How it was tested"): a process that `JSON.stringify` of a
+  Proxy with a made-up length ended, native loops the interrupt did not reach, a RegExp search's stacks
+  outside the memory limit, a host function's arguments copied without asking it, and DataView bounds that
+  wrapped around on a 32-bit target. Fixed, each with its test.
+- A fix on one line for a function the other had copied does not conflict: the Android line made `Math.max`
+  take +0 over -0 without `f64::max` (which answers -0 on 32-bit ARM), and the copy of that fold which runs
+  `Math.max` in place of a call kept the old line through the rebase. Found by comparing every commit before
+  and after; the copy has the fix.
 
 ## Checking a change
 
