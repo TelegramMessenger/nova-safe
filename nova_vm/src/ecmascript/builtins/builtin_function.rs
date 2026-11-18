@@ -354,6 +354,9 @@ pub(crate) enum DirectBuiltin {
     MathSign,
     MathSqrt,
     MathTrunc,
+    MathSin,
+    MathCos,
+    MathPow,
     StringCharCodeAt,
 }
 
