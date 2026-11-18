@@ -8376,3 +8376,47 @@ loops: 20000 true -1893346297 25000 true 4 24995 10890 988283121 012345678910 29
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// JSON.stringify takes the length of an Array from the value, and a Proxy
+/// of an Array answers any. The text is not given room for all of it at
+/// once (the allocator ended the process where it had none), and the loop
+/// over the elements asks the host's interrupt and the memory limit though
+/// no script runs in it when the Proxy's trap is a built-in function: the
+/// text is refused when the limit has no room for more of it (or the script
+/// ends as out of memory, whichever the limit finds first), and the engine
+/// goes on.
+#[test]
+fn stringify_of_a_length_without_elements_is_bounded() {
+    let (mut engine, stop, _) = limited(8 << 20, 0);
+    let refused = engine.evaluate(
+        "var made = new Proxy([], { get: Math.abs.bind(null, 2 ** 53 - 1) });
+         try { JSON.stringify(made); 'returned' } catch (e) { e.constructor.name }",
+        false,
+    );
+    assert!(
+        refused == Ok(Completion::String("RangeError".into()))
+            || refused == Err(Error::OutOfMemory),
+        "{refused:?}"
+    );
+    assert_eq!(
+        engine.evaluate(
+            "var short = []; short.length = 5; short[2] = 'x';
+             JSON.stringify(short) + JSON.stringify(new Proxy([1, [2]], {}), null, 1).length
+                 + JSON.stringify(new Proxy([], { get: Math.abs.bind(null, 3) }))",
+            false
+        ),
+        Ok(Completion::String(
+            "[null,null,\"x\",null,null]17[3,3,3]".into()
+        ))
+    );
+    stop.set(true);
+    assert_eq!(
+        engine.evaluate("JSON.stringify(made)", false),
+        Err(Error::Interrupted)
+    );
+    stop.set(false);
+    assert_eq!(
+        engine.evaluate("JSON.stringify([1, 'two', [3]])", false),
+        Ok(Completion::String("[1,\"two\",[3]]".into()))
+    );
+}

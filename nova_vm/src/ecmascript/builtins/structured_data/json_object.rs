@@ -1025,11 +1025,15 @@ fn serialize_json_object<'a, 'b>(
 
     let mut first_inserted = false;
 
-    // Assume most properties will indeed get serialised properly.
+    // Assume most properties will indeed get serialised properly; of the
+    // first ones, since an indent as deep as the nesting goes with every
+    // one of them.
     state.result.reserve(
-        open.len()
-            + close.len()
-            + k.len(agent) * (separator.len() + 3 + key_value_separator.len() + 1),
+        (open.len() + close.len()).saturating_add(
+            k.len(agent)
+                .min(1024)
+                .saturating_mul(separator.len() + 3 + key_value_separator.len() + 1),
+        ),
     );
     // 7. Let partial be a new empty List.
     // 8. For each element P of K, do
@@ -1185,13 +1189,30 @@ fn serialize_json_array<'a, 'b>(
     };
 
     // 5. Let partial be a new empty List.
-    state
-        .result
-        .reserve(open.len() + close.len() + usize_from_u64(len) * (separator.len() + 1));
+    // Room for the first elements only: the length is what the value says
+    // it is, and a Proxy of an Array says anything. Room for all of them was
+    // asked of the allocator, which ends the process when it has none.
+    state.result.reserve(
+        (open.len() + close.len()).saturating_add(
+            usize_from_u64(len)
+                .min(1024)
+                .saturating_mul(separator.len() + 1),
+        ),
+    );
     state.result.push_str(open);
     // 7. Let index be 0.
     // 8. Repeat, while index < len,
     for index in 0..len {
+        // No script runs for an element that is a primitive, or that a
+        // Proxy's trap answers when the trap is a built-in function: the
+        // host's interrupt is asked here, and the text is held to the limit
+        // as it grows, not only where an Array or object begins.
+        agent.poll_interrupt(gc.nogc()).unbind()?;
+        if index & 0xFF == 0xFF {
+            agent
+                .check_string_length(state.result.len(), gc.nogc())
+                .unbind()?;
+        }
         if index > 0 {
             state.result.push_str(separator);
         }
