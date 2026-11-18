@@ -1710,6 +1710,22 @@ impl Vm {
                 step!(PopStack);
                 vm.execute_pop_stack()
             }
+            // The step of `for`-`of` over an Array that is walked element
+            // by element, where the element is a value or the walk is over.
+            Instruction::IteratorStepValue => {
+                step!(IteratorStepValue);
+                let Some(VmIteratorRecord::ArrayValues(walk)) = vm.iterator_stack.last_mut() else {
+                    return Plain::No;
+                };
+                let Some(step) = walk.plain_next(agent, gc) else {
+                    return Plain::No;
+                };
+                vm.result = step.unbind();
+                if step.is_none() {
+                    // Iterator finished: jump to escape the iterator loop.
+                    *ip = instr.get_jump_slot();
+                }
+            }
             Instruction::PushReference => {
                 step!(PushReference);
                 vm.execute_push_reference(agent)

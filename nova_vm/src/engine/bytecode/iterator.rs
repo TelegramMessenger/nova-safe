@@ -273,6 +273,26 @@ impl<'a> VmIteratorRecord<'a> {
         }
     }
 
+    /// GetIterator(obj, sync) where it runs nothing and makes no iterator:
+    /// `obj` is an Array that is iterated the way the realm set out with,
+    /// which is walked element by element. Nearly every Array is, and the
+    /// method is found by the shape of the array
+    /// ([`Array::is_iterated_by_values`]). None leaves it to
+    /// [`VmIteratorRecord::from_value`].
+    #[inline]
+    pub(super) fn of_array_walked<'gc>(
+        agent: &mut Agent,
+        obj: Value<'gc>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<VmIteratorRecord<'gc>> {
+        let Value::Array(array) = obj else {
+            return None;
+        };
+        array
+            .is_iterated_by_values(agent, gc)
+            .then(|| VmIteratorRecord::ArrayValues(ArrayValuesIteratorRecord::new(array)))
+    }
+
     /// ### [7.4.4 GetIterator ( obj, kind )](https://tc39.es/ecma262/#sec-getiterator)
     ///
     /// The abstract operation GetIterator takes arguments obj (an ECMAScript
@@ -286,15 +306,8 @@ impl<'a> VmIteratorRecord<'a> {
         mut gc: GcScope<'a, '_>,
     ) -> JsResult<'a, Self> {
         let value = obj.bind(gc.nogc());
-        // An Array that is iterated the way the realm set out with is
-        // walked element by element, with no iterator object: nearly every
-        // Array, and the method is found by the shape of the array.
-        if let Value::Array(array) = value
-            && array.is_iterated_by_values(agent, gc.nogc())
-        {
-            return Ok(VmIteratorRecord::ArrayValues(
-                ArrayValuesIteratorRecord::new(array.unbind()),
-            ));
+        if let Some(walk) = VmIteratorRecord::of_array_walked(agent, value, gc.nogc()) {
+            return Ok(walk.unbind());
         }
         let scoped_value = value.scope(agent, gc.nogc());
         // a. Let method be ? GetMethod(obj, %Symbol.iterator%).

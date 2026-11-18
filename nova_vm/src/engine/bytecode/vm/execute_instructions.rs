@@ -3177,6 +3177,12 @@ pub(super) fn execute_get_iterator_sync<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let expr_value = vm.result.take().unwrap();
+    // An Array that is walked element by element: nothing runs to find
+    // that out, and the `Vm` stays where it is.
+    if let Some(walk) = VmIteratorRecord::of_array_walked(agent, expr_value, gc.nogc()) {
+        vm.iterator_stack.push(walk.unbind());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
