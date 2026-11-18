@@ -38,6 +38,33 @@ impl FunctionEnvironmentUse {
         finder.visit_function_body(func.ecmascript_code());
         finder.found
     }
+
+    /// Whether an expression among `formals` makes a function: a function
+    /// expression, an arrow function or a class, each of which closes over
+    /// the Environment Record that the parameters are in.
+    pub(super) fn makes_functions<'s>(formals: &'s ast::FormalParameters<'s>) -> bool {
+        let mut finder = FunctionFinder { found: false };
+        finder.visit_formal_parameters(formals);
+        finder.found
+    }
+}
+
+struct FunctionFinder {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for FunctionFinder {
+    fn visit_function(&mut self, _: &'a ast::Function<'a>, _: ScopeFlags) {
+        self.found = true;
+    }
+
+    fn visit_arrow_function_expression(&mut self, _: &'a ast::ArrowFunctionExpression<'a>) {
+        self.found = true;
+    }
+
+    fn visit_class(&mut self, _: &'a ast::Class<'a>) {
+        self.found = true;
+    }
 }
 
 struct Finder {
