@@ -593,6 +593,67 @@ impl<'a> OrdinaryObject<'a> {
             .bind(gc)
     }
 
+    /// Where `cache` places `object.name` for the shape of this Object, if
+    /// that is in an ordinary object: the Object itself or the one it
+    /// inherits the property from, and the slot there.
+    fn place_by_cache(
+        self,
+        agent: &Agent,
+        cache: PropertyLookupCache,
+    ) -> Option<(OrdinaryObject<'static>, u32)> {
+        let shape = self.get_direct(&agent.heap.objects).get_shape();
+        let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
+        if offset.is_unset() {
+            return None;
+        }
+        let holder = match prototype {
+            None => self.unbind(),
+            Some(Object::Object(prototype)) => prototype.unbind(),
+            Some(_) => return None,
+        };
+        Some((holder, offset.get_property_offset() as u32))
+    }
+
+    /// The getter of `object.name` where `cache` knows the shape of this
+    /// Object and the property is an accessor, of its own or inherited,
+    /// whose getter is an ECMAScript function: what \[\[Get]] would call
+    /// with the Object as the this value. Asked only where
+    /// [`OrdinaryObject::value_by_cache`] found no value.
+    #[inline(never)]
+    pub(crate) fn getter_by_cache<'gc>(
+        self,
+        agent: &Agent,
+        cache: PropertyLookupCache,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<ECMAScriptFunction<'gc>> {
+        let (holder, slot) = self.place_by_cache(agent, cache)?;
+        let descriptor = holder.get_elements_storage(agent).descriptors?.get(&slot)?;
+        match descriptor.getter_function(gc)? {
+            Function::ECMAScriptFunction(getter) => Some(getter),
+            _ => None,
+        }
+    }
+
+    /// The setter of `object.name` where `cache` knows the shape of this
+    /// Object and the property is an accessor, of its own or inherited,
+    /// whose setter is an ECMAScript function: what \[\[Set]] would call
+    /// with the Object as the this value and the value assigned. Asked only
+    /// where [`OrdinaryObject::set_value_by_cache`] did not set a value.
+    #[inline(never)]
+    pub(crate) fn setter_by_cache<'gc>(
+        self,
+        agent: &Agent,
+        cache: PropertyLookupCache,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<ECMAScriptFunction<'gc>> {
+        let (holder, slot) = self.place_by_cache(agent, cache)?;
+        let descriptor = holder.get_elements_storage(agent).descriptors?.get(&slot)?;
+        match descriptor.setter_function(gc)? {
+            Function::ECMAScriptFunction(setter) => Some(setter),
+            _ => None,
+        }
+    }
+
     /// `object.name = value` where `cache` knows the shape of this Object
     /// and places the property in it as its own: set where it is a data
     /// property that is writable. As [`OrdinaryObject::value_by_cache`],

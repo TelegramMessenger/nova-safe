@@ -5771,3 +5771,135 @@ others: 5 2 3 1 4 12 6 1 6 6 12 7 bound/1/2/0 bound/1/9/2 TypeError|5 2 3 1 4 12
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The getter and the setter of a property, which the interpreter calls in
+/// place of the read or the assignment where the property cache of the
+/// place knows them: of the object itself, of a class and of what it
+/// inherits from; what a getter sees of `this` and of `arguments`, a
+/// getter that reads another, one that throws, and what a setter returns;
+/// accessors redefined, made data properties and deleted under the code
+/// that reads them; getters that are bound, native, arrows, generators or
+/// have a default parameter, and one that calls itself until the stack is
+/// full. And `instanceof`, with the method every function inherits and
+/// with others. What is expected is what Node prints for the same script.
+#[test]
+fn accessors_called_in_place_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(accessors_called_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn accessors_called_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+var print = function (s) { all.push(s); };
+function show(name, v) { print(name + ": " + v); }
+function twice(f) { var out = []; for (var round = 0; round < 3; round++) { try { out.push(f()); } catch (e) { out.push("threw " + e.constructor.name + " " + e.message); } } return out.join("|"); }
+function read(o) { return o.p; }
+function write(o, v) { o.p = v; }
+// Getters and setters of the object itself, of a class, of what it inherits from.
+show("where", twice(function () {
+  var log = [];
+  var own = { _p: 1, get p() { log.push("get own"); return this._p; }, set p(v) { log.push("set own " + v); this._p = v * 2; return "ignored"; } };
+  class K { constructor() { this._p = 10; } get p() { log.push("get K"); return this._p + 1; } set p(v) { log.push("set K " + v); this._p = v; } static get p() { return "static " + this.name; } }
+  class L extends K { get p() { return "L:" + super.p; } }
+  class M extends K { }
+  var k = new K(), l = new L(), m = new M(), child = Object.create(own);
+  var out = [read(own), read(k), read(l), read(m), read(child), read(K), read(M)];
+  write(own, 3); write(k, 20); write(l, 30); write(m, 40); write(child, 5);
+  out.push(read(own), read(k), read(l), read(m), read(child), own._p, child.hasOwnProperty("_p"), child.hasOwnProperty("p"), Object.keys(m).join("+"));
+  return out.join() + " " + log.join(";");
+}));
+// What a getter sees and does: this, arguments, its own property, another getter, a throw.
+show("inside", twice(function () {
+  var depth = 0, log = [];
+  var o = {
+    n: 3,
+    get self() { return this; },
+    get count() { return arguments.length; },
+    get nested() { return this.inner + 1; },
+    get inner() { return this.n * 2; },
+    get thrower() { throw new RangeError("from the getter"); },
+    get recursive() { depth++; return depth < 20 ? this.recursive + 1 : 0; },
+    get strictThis() { "use strict"; return typeof this; },
+    get undefinedValue() { },
+    get viaLocal() { var self = this; return self.inner + self.n; },
+    set logged(v) { log.push(typeof this + ":" + v + ":" + arguments.length); },
+    set thrower2(v) { throw new TypeError("from the setter " + v); },
+    set chain(v) { this.logged = v + 1; this.n = v; },
+  };
+  var out = [o.self === o, o.count, o.nested, o.inner, o.recursive, o.strictThis, String(o.undefinedValue), o.viaLocal];
+  try { o.thrower; } catch (e) { out.push(e.message); }
+  o.logged = 1; o.chain = 7; out.push(o.n, log.join("+"));
+  try { o.thrower2 = 9; } catch (e) { out.push(e.message); }
+  var value = (o.logged = "kept"); out.push(value);
+  out.push(eval("o.logged = 'by eval'"), (o.chain = 4, o.n));
+  var primitive = Object.defineProperty(Number.prototype, "twice", { get: function () { return this * 2; }, configurable: true }); out.push((5).twice, typeof Object.getOwnPropertyDescriptor(Number.prototype, "twice").get); delete Number.prototype.twice;
+  return out.join();
+}));
+// Accessors that change under the code that reads them.
+show("changes", twice(function () {
+  var o = { get p() { return "first getter"; } }, out = [read(o)];
+  Object.defineProperty(o, "p", { get: function () { return "second getter"; }, configurable: true }); out.push(read(o));
+  Object.defineProperty(o, "p", { value: "now data", writable: true, configurable: true }); out.push(read(o)); write(o, "written"); out.push(read(o));
+  Object.defineProperty(o, "p", { get: undefined, set: undefined, configurable: true }); out.push(String(read(o))); write(o, 1); out.push(String(read(o)));
+  Object.defineProperty(o, "p", { set: function (v) { this.q = v; }, configurable: true }); write(o, "through the setter"); out.push(String(read(o)), o.q);
+  delete o.p; out.push(String(read(o))); write(o, "plain"); out.push(read(o));
+  var proto = { get p() { return "from the prototype"; } }, child = Object.create(proto); out.push(read(child));
+  Object.defineProperty(proto, "p", { get: function () { return "prototype changed"; }, configurable: true }); out.push(read(child));
+  Object.defineProperty(child, "p", { value: "own now", configurable: true }); out.push(read(child));
+  (function () { "use strict"; var g = { get p() { return 1; } }; try { g.p = 2; out.push("no error"); } catch (e) { out.push(e.constructor.name); } })();
+  var sloppy = { get p() { return 1; } }; write(sloppy, 2); out.push(read(sloppy));
+  return out.join();
+}));
+// Getters that are not plain functions, and getters called many levels deep.
+show("kinds", twice(function () {
+  var bound = Object.defineProperty({ tag: "object" }, "p", { get: function () { return this.tag; }.bind({ tag: "bound this" }) });
+  var native = Object.defineProperty({}, "p", { get: Math.random.bind(null) });
+  var arrow = Object.defineProperty({ tag: 1 }, "p", { get: () => typeof this });
+  var withDefault = Object.defineProperty({ n: 2 }, "p", { get: function (a = 5) { return this.n + a; } });
+  var generator = Object.defineProperty({}, "p", { get: function* () { yield 1; } });
+  function Deep(n) { this.n = n; }
+  Object.defineProperty(Deep.prototype, "p", { get: function () { return this.n ? new Deep(this.n - 1).p + 1 : 0; } });
+  var out = [read(bound), typeof read(native), read(arrow), read(withDefault), typeof read(generator).next, new Deep(300).p];
+  var proxy = new Proxy({ get p() { return this === proxy; } }, {}); out.push(read(proxy));
+  var arrayLike = Object.defineProperty([1, 2], "p", { get: function () { return this.length; } }); out.push(read(arrayLike));
+  function overflow() { return Object.defineProperty({}, "p", { get: function () { return this.p; } }).p; }
+  try { overflow(); } catch (e) { out.push(e.constructor.name); }
+  return out.join();
+}));
+// instanceof with the default method and with others.
+show("instanceof", twice(function () {
+  function A() {} function B() {} B.prototype = Object.create(A.prototype);
+  class C {} class D extends C {}
+  var custom = { [Symbol.hasInstance]: function (v) { return v === 1; } };
+  class Even { static [Symbol.hasInstance](v) { return typeof v === "number" && v % 2 === 0; } }
+  var boundA = A.bind(null), arrow = () => {}, noPrototype = function () {}; noPrototype.prototype = 5;
+  var values = [new A(), new B(), new D(), [], {}, null, undefined, 1, 2, "s", function () {}, Object.create(null), Object.create(A.prototype)];
+  var out = values.map(function (v) { return [v instanceof A, v instanceof B, v instanceof C, v instanceof Object, v instanceof Function, v instanceof Array, v instanceof custom, v instanceof Even, v instanceof boundA].map(Number).join(""); });
+  [arrow, noPrototype, {}, 5, null].forEach(function (target) { try { out.push({} instanceof target); } catch (e) { out.push(e.constructor.name); } });
+  A.prototype = { replaced: true }; out.push(values[0] instanceof A, Object.create(A.prototype) instanceof A);
+  try { Object.defineProperty(Function.prototype, Symbol.hasInstance, { value: function () { return true; } }); out.push("redefined"); } catch (e) { out.push(e.constructor.name); }
+  Object.defineProperty(A, Symbol.hasInstance, { value: function (v) { return v === "own method"; }, configurable: true });
+  out.push({} instanceof A, "own method" instanceof A, Function.prototype[Symbol.hasInstance].call(B, new B()), Function.prototype[Symbol.hasInstance].call({}, {}));
+  delete A[Symbol.hasInstance]; out.push(values[0] instanceof A, Object.create(A.prototype) instanceof A);
+  return out.join();
+}));
+all.join("\n")"#;
+    let expected = r#"where: 1,11,L:11,11,1,static K,static M,6,21,L:11,41,10,6,true,false,_p get own;get K;get K;get K;get own;set own 3;set K 20;set K 40;set own 5;get own;get K;get K;get K;get own|1,11,L:11,11,1,static K,static M,6,21,L:11,41,10,6,true,false,_p get own;get K;get K;get K;get own;set own 3;set K 20;set K 40;set own 5;get own;get K;get K;get K;get own|1,11,L:11,11,1,static K,static M,6,21,L:11,41,10,6,true,false,_p get own;get K;get K;get K;get own;set own 3;set K 20;set K 40;set own 5;get own;get K;get K;get K;get own
+inside: true,0,7,6,19,object,undefined,9,from the getter,7,object:1:1+object:8:1,from the setter 9,kept,by eval,4,10,function|true,0,7,6,19,object,undefined,9,from the getter,7,object:1:1+object:8:1,from the setter 9,kept,by eval,4,10,function|true,0,7,6,19,object,undefined,9,from the getter,7,object:1:1+object:8:1,from the setter 9,kept,by eval,4,10,function
+changes: first getter,second getter,now data,written,undefined,undefined,undefined,through the setter,undefined,plain,from the prototype,prototype changed,own now,TypeError,1|first getter,second getter,now data,written,undefined,undefined,undefined,through the setter,undefined,plain,from the prototype,prototype changed,own now,TypeError,1|first getter,second getter,now data,written,undefined,undefined,undefined,through the setter,undefined,plain,from the prototype,prototype changed,own now,TypeError,1
+kinds: bound this,number,object,7,function,300,true,2,RangeError|bound this,number,object,7,function,300,true,2,RangeError|bound this,number,object,7,function,300,true,2,RangeError
+instanceof: 100100001,110100001,001100000,000101000,000100000,000000000,000000000,000000100,000000010,000000000,000110000,000000000,100100001,TypeError,TypeError,TypeError,TypeError,TypeError,false,true,TypeError,false,true,true,false,false,true|100100001,110100001,001100000,000101000,000100000,000000000,000000000,000000100,000000010,000000000,000110000,000000000,100100001,TypeError,TypeError,TypeError,TypeError,TypeError,false,true,TypeError,false,true,true,false,false,true|100100001,110100001,001100000,000101000,000100000,000000000,000000000,000000100,000000010,000000000,000110000,000000000,100100001,TypeError,TypeError,TypeError,TypeError,TypeError,false,true,TypeError,false,true,true,false,false,true"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
