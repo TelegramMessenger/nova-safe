@@ -674,6 +674,23 @@ pub(crate) fn to_int32<'a>(
     Ok(to_int32_number(agent, number))
 }
 
+/// truncate(ℝ(number)) for a finite Number, modulo 2^64: an integer whose low
+/// 8, 16 and 32 bits are what ToInt8 to ToUint32 return.
+///
+/// A conversion to i64 alone stops at its largest and smallest values, so
+/// every Number from 2^63 up gave the same bits (`1e21 | 0` was -1).
+#[inline]
+pub(crate) fn truncate_modulo_2_64(number: f64) -> i64 {
+    let int = number.trunc();
+    if int.abs() < 9_223_372_036_854_775_808.0 {
+        int as i64
+    } else {
+        // An integer of this size is a multiple of 2^11, and the remainder
+        // of two doubles is exact: its low 32 bits are those of the integer.
+        (int % 4_294_967_296.0) as i64
+    }
+}
+
 /// ### [7.1.6 ToInt32 ( argument )](https://tc39.es/ecma262/#sec-toint32)
 ///
 /// Implements steps 2 to 5 of the abstract operation, callable only with Numbers.
@@ -691,7 +708,7 @@ pub(crate) fn to_int32_number(agent: &Agent, number: Number) -> i32 {
     // 3. Let int be truncate(ℝ(number)).
     // 4. Let int32bit be int modulo 2^32.
     // 5. If int32bit ≥ 2^31, return 𝔽(int32bit - 2^32); otherwise return 𝔽(int32bit).
-    number.into_f64_(agent).trunc() as i64 as i32
+    truncate_modulo_2_64(number.into_f64_(agent)) as i32
 }
 
 /// ### [7.1.7 ToUint32 ( argument )](https://tc39.es/ecma262/#sec-touint32)
@@ -730,7 +747,7 @@ pub(crate) fn to_uint32_number(agent: &Agent, number: Number) -> u32 {
     // 3. Let int be truncate(ℝ(number)).
     // 4. Let int32bit be int modulo 2^32.
     // 5. Return 𝔽(int32bit).
-    number.into_f64_(agent).trunc() as i64 as u32
+    truncate_modulo_2_64(number.into_f64_(agent)) as u32
 }
 
 /// ### [7.1.8 ToInt16 ( argument )](https://tc39.es/ecma262/#sec-toint16)
@@ -766,7 +783,7 @@ pub(crate) fn to_int16_number(agent: &Agent, number: Number) -> i16 {
     // 3. Let int be truncate(ℝ(number)).
     // 4. Let int16bit be int modulo 2^16.
     // 5. If int16bit ≥ 2^15, return 𝔽(int16bit - 2^16); otherwise return 𝔽(int16bit).
-    number.into_f64_(agent).trunc() as i64 as i16
+    truncate_modulo_2_64(number.into_f64_(agent)) as i16
 }
 
 /// ### [7.1.9 ToUint16 ( argument )](https://tc39.es/ecma262/#sec-touint16)
@@ -802,7 +819,7 @@ pub(crate) fn to_uint16_number(agent: &Agent, number: Number) -> u16 {
     // 3. Let int be truncate(ℝ(number)).
     // 4. Let int16bit be int modulo 2^16.
     // Return 𝔽(int16bit).
-    number.into_f64_(agent).trunc() as i64 as u16
+    truncate_modulo_2_64(number.into_f64_(agent)) as u16
 }
 
 /// ### [7.1.10 ToInt8 ( argument )](https://tc39.es/ecma262/#sec-toint8)
@@ -838,7 +855,7 @@ pub(crate) fn to_int8_number(agent: &Agent, number: Number) -> i8 {
     // 3. Let int be truncate(ℝ(number)).
     // 4. Let int8bit be int modulo 2^8.
     // 5. If int8bit ≥ 2^7, return 𝔽(int8bit - 2^8); otherwise return 𝔽(int8bit).
-    number.into_f64_(agent).trunc() as i64 as i8
+    truncate_modulo_2_64(number.into_f64_(agent)) as i8
 }
 
 /// ### [7.1.11 ToUint8 ( argument )](https://tc39.es/ecma262/#sec-touint8)
@@ -874,7 +891,7 @@ pub(crate) fn to_uint8_number(agent: &Agent, number: Number) -> u8 {
     // 3. Let int be truncate(ℝ(number)).
     // 4. Let int8bit be int modulo 2^8.
     // 5. Return 𝔽(int8bit).
-    number.into_f64_(agent).trunc() as i64 as u8
+    truncate_modulo_2_64(number.into_f64_(agent)) as u8
 }
 
 /// ### [7.1.12 ToUint8Clamp ( argument )](https://tc39.es/ecma262/#sec-touint8clamp)
