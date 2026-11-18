@@ -35,24 +35,25 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.7x |
-| call | 14 | 10.4x | 2.7x |
+| call | 14 | 10.4x | 2.6x |
 | math | 4 | 9.7x | 2.4x |
-| prop | 13 | 7.1x | 2.2x |
 | string | 26 | 10.6x | 2.2x |
 | array | 14 | 5.8x | 2.1x |
-| map, set | 4 | 4.6x | 2.1x |
 | app | 8 | 6.1x | 2.1x |
-| regexp | 4 | 2.4x | 1.6x |
+| prop | 13 | 7.1x | 2.0x |
+| map, set | 4 | 4.6x | 2.0x |
+| regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
-| gc | 3 of 5 | 3.6x | 1.1x |
+| gc | 3 of 5 | 3.6x | 1.2x |
 | json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.1x |
+| all | 108 | 7.6x | 2.0x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 3.9x, and the worst is now prepending
-(37x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.7x). 27 of the
-108 cases are above 3x (eleven of them within a twentieth of it) and 43 at or under 2x, 14 of them at or under
-QuickJS's time. Over all cases it is 2.05x (2.12x before the round of patterns, Array iteration and array
-literals). One case
+(38x, area 7); after it come generators (5.9x), then calls that bind an arguments object (4.7x to 5.0x between
+runs). 22 of the 108 cases are above 3x (six of them within a twentieth of it) and 43 at or under 2x, 13 of
+them at or under QuickJS's time. Over all cases it is 2.03x: 2.12x before the round of patterns, Array
+iteration and array literals, 2.05x after it, and the round of `for`-`in` and of the caches of names took it
+here. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -374,6 +375,14 @@ Left there: binding through the iterator instructions is the general way for eac
 parameter allocates its Array, and the arguments object is made in full at every call and kept in an
 Environment Record (4.7x).
 
+Where a call's time is now, in a closure called 300,000 times (`call/closure`, 3.3x): 53% in the loop of
+instructions, 20% entering the function and 12% leaving it, 15% reading and writing the two variables it
+closes over. The four stacks exchanged with the frame at each end, which looks like the cost, are a
+quarter of entering and leaving (8% of the case), so one stack with a base for each call would win less
+than its one more addition at every local costs. The rest of entering and leaving has no one place: the
+execution context pushed and popped, the frame's fields, the tables taken and let go of, the scoped
+executable. Not taken apart yet; per-line samples of the two functions are what that needs.
+
 ### 4. Properties
 
 `o.x` was 8-23x: the access built a Reference record and went through the general `[[Get]]` to reach the property
@@ -437,6 +446,22 @@ a built-in, and that looked F.prototype up key by key. Both lookups go through t
 their name, and the inherited method of the running realm is done without the call: 4.4x to 4.0x. What is
 left of that case is the call of `Array.isArray`. Functions, Arrays and other objects with
 a backing object do not take the short way for their named properties yet.
+
+Those lookups, "prototype" at every `new` run in place, and the ones a walk over an Array makes (area
+5a) each asked for the property cache of their name, and that was found in a table hashed by the name's
+text under SipHash: a tenth of `prop/destructuring`. The caches given last are remembered now with their
+keys (64, two places for a key by its identity), and found again by comparing the key; a collection, which
+moves keys and caches, empties that memory. `instanceof` went from 4.0x to 3.6x, `new` of a class from
+2.3x to 2.1x.
+
+`for`-`in` put every key it met in a set and looked every key up there first, hashing each name twice
+under SipHash, to learn nothing in nearly every loop: the keys of one object are all different, and none
+was met before the first object's. The set is asked now only for an enumerable property of an object
+that is not the first, which most prototypes have none of, and the keys wait in a list until it is; and
+the steps are taken in the interpreter where no object on the way is a Proxy (the step that runs nothing
+was there, unused, and lost a key where it had to give up). `prop/for-in-and-keys` went from 2.1x to
+1.1x. What is left of it is one lookup by key for each property, to see that it is still there and
+enumerable, and the read of the value by a computed key in the body.
 
 An object pattern with no default value and no computed key (`var { x, y, meta: { id } } = point`) was run
 by instructions of its own, an interpreter inside the instruction: every property looked up by its key,
@@ -518,10 +543,14 @@ The walk was taken wherever the Array's method was the original one, whatever "n
 %ArrayIteratorPrototype% had become; it is taken now only while that is the original too (see the
 defects), which is looked at as each walk begins: two keys compared.
 
-Left for Arrays: the two lookups by name find their cache by hashing the name, every time (a tenth of
-`prop/destructuring`); the start of a walk still leaves the interpreter; the step of `for`-`of` is not
-among the instructions the loop runs without a call; and an array pattern is still run by instructions of
-its own.
+The two lookups by name hashed the name every time, the start of a walk left the interpreter to make
+them, and the step of `for`-`of` was reached through the instructions that may run a script. The caches
+of names are found by the key now (area 4), the start asks where it is, and the step is among the
+instructions the loop runs itself: `for`-`of` over an Array is 1.0x (1.3x), `prop/destructuring` 1.3x
+(1.5x), a call with spread arguments 1.3x (1.5x), a Map iterated with a pattern 1.7x (1.9x).
+
+Left for Arrays: an array pattern is still run by instructions of its own, an interpreter inside the
+instruction that reads them through the heap (a tenth of `prop/destructuring`).
 
 Left: a generator makes its result object in its own bytecode at every `yield`, the loop still calls `next`
 through the built-in, and the generator's `Vm` and execution context are moved in and out of the generator at
