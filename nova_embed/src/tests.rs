@@ -7461,3 +7461,186 @@ computed names 1500 4 66024"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A function that the interpreter runs in place of its call has a value
+/// stack of its own and shares the other three with the code that called
+/// it: the exception handlers, the iterators of the loops and patterns
+/// that are running, and the References that wait for a value. An error
+/// goes to the nearest handler of the running code and then of its
+/// callers, through `finally`, at every depth and until the stack is full;
+/// a function returns and throws out of its loops, and its caller's loops
+/// go on, each iterator closed once; assignments, method calls and
+/// accessors wait across calls that make their own; and all of it together
+/// two hundred times, down a ladder of two hundred calls, and around a
+/// generator. What is expected is what Node prints for the same script.
+#[test]
+fn functions_run_in_place_share_the_stacks_of_their_callers() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(shared_stacks)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn shared_stacks() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function say() { out.push(Array.prototype.join.call(arguments, ' ')); }
+function attempt(name, f) { try { say(name, f()); } catch (e) { say(name, 'threw', e && e.constructor ? e.constructor.name + (e.message ? ':' + e.message : '') : e); } }
+function fail(what) { throw new RangeError(what); }
+function id(v) { return v; }
+var log = [];
+function closing(values, name) {
+  return { [Symbol.iterator]() { var i = 0; return {
+    next() { return i < values.length ? { done: false, value: values[i++] } : { done: true }; },
+    return() { log.push('close ' + name); return {}; },
+  }; } };
+}
+
+// Handlers: an error goes to the nearest handler of the code that runs, then of its callers.
+(function () {
+  function inner(n) { if (n === 0) fail('bottom'); return inner(n - 1) + 1; }
+  attempt('no handler below', function () { try { return inner(5); } catch (e) { return 'caught ' + e.message; } });
+  function catches(n) { try { if (n === 0) fail('zero'); return catches(n - 1) + 1; } catch (e) { if (n % 3) throw e; return 100; } }
+  attempt('handler at every third', function () { return [catches(0), catches(1), catches(2), catches(3), catches(7), catches(30)].join(); });
+  function own() { try { fail('own'); } catch (e) { return 'own ' + e.message; } }
+  function outer() { try { return own() + '/' + own(); } catch (e) { return 'outer got it'; } }
+  attempt('handled where thrown', outer);
+  function finallyOnly() { try { fail('through finally'); } finally { log.push('finally ran'); } }
+  attempt('finally passes it on', function () { try { finallyOnly(); } catch (e) { return e.message + ' ' + log.splice(0).join(); } });
+  function rethrows() { try { fail('first'); } catch (e) { fail('second from ' + e.message); } }
+  attempt('rethrown', function () { try { rethrows(); } catch (e) { return e.message; } });
+  function nestedHandlers() { try { try { try { fail('deep'); } finally { log.push('f1'); } } catch (e) { log.push('c2 ' + e.message); fail('again'); } finally { log.push('f2'); } } catch (e) { log.push('c3 ' + e.message); } return log.splice(0).join(); }
+  attempt('nested in one function', nestedHandlers);
+  function leavesHandlers(k) { try { try { if (k === 1) return 'returned'; if (k === 2) fail('thrown'); } finally { log.push('inner finally'); } } finally { log.push('outer finally'); } return 'fell through'; }
+  attempt('left with handlers pushed', function () { var r = []; for (var k = 0; k < 3; k++) { try { r.push(leavesHandlers(k)); } catch (e) { r.push('caught ' + e.message); } } return r.join() + ' | ' + log.splice(0).join(); });
+  attempt('after it, the caller handles its own', function () { try { leavesHandlers(1); fail('mine'); } catch (e) { return e.message + ' ' + log.splice(0).length; } });
+  function native() { return null.property; }
+  attempt('native error in a callee', function () { try { return native(); } catch (e) { return e.constructor.name; } });
+  function badDefault(a = fail('default')) { return a; }
+  attempt('error binding parameters', function () { try { return badDefault(); } catch (e) { return e.message; } });
+  function tooDeep() { return tooDeep() + 1; }
+  attempt('too deep', function () { try { return tooDeep(); } catch (e) { return e.constructor.name; } });
+  attempt('and again, with handlers on the way', function () { function deep(n) { try { return deep(n + 1); } catch (e) { if (n % 50 === 0) log.push(n); throw e; } } try { deep(1); } catch (e) { return e.constructor.name + ' ' + (log.splice(0).length > 2); } });
+  attempt('still sound', function () { return [inner.length, catches(4), outer()].join(); });
+})();
+
+// Iterators: a function's loops are its own; its caller's go on where they were.
+(function () {
+  function sum(list) { var s = 0; for (var v of list) s += v; return s; }
+  function firstOver(list, limit) { for (var v of list) { if (v > limit) return v; } return -1; }
+  function throwsInLoop(list) { for (var v of list) { if (v === 2) fail('in loop'); } }
+  attempt('loop in callee, loop in caller', function () { var r = []; for (var v of closing([1, 2, 3], 'outer')) r.push(v + sum(closing([10, 20], 'inner'))); return r.join() + ' | ' + log.splice(0).join(); });
+  attempt('callee returns from its loop', function () { var r = []; for (var v of closing([1, 2], 'outer')) r.push(firstOver(closing([5, 6, 7], 'inner' + v), 5)); return r.join() + ' | ' + log.splice(0).join(); });
+  attempt('callee throws from its loop', function () { var r = []; for (var v of closing([1, 2, 3], 'outer')) { try { throwsInLoop(closing([1, 2, 3], 'inner' + v)); } catch (e) { r.push(e.message + v); } } return r.join() + ' | ' + log.splice(0).join(); });
+  attempt('callee throws, caller does not catch in the loop', function () { try { for (var v of closing([1, 2, 3], 'outer')) throwsInLoop(closing([1, 2, 3], 'inner')); } catch (e) { return e.message + ' | ' + log.splice(0).join(); } });
+  attempt('break after a call', function () { for (var v of closing([1, 2, 3], 'outer')) { if (sum([v, v]) === 4) break; } return v + ' | ' + log.splice(0).join(); });
+  function nestedLoops() { var r = []; outer: for (var a of closing([1, 2], 'a')) { for (var b of closing([1, 2], 'b' + a)) { if (id(b) === 2) continue outer; r.push(a * 10 + sum([b])); } } return r.join(); }
+  attempt('labelled continue past a callee', function () { return nestedLoops() + ' | ' + log.splice(0).join(); });
+  function withDefaults(a, b = sum([a, 1]), ...rest) { var s = a + b; for (var v of rest) s += v; return s; }
+  attempt('arguments bound from a list, inside loops', function () { var r = []; for (var v of closing([1, 2], 'outer')) { for (var w of [10, 20]) r.push(withDefaults(v), withDefaults(v, w), withDefaults(v, w, 100, 200)); } return r.join() + ' | ' + log.splice(0).join(); });
+  function pattern([a, b = id(a) + 1], { c = sum([a, b]) } = {}) { return [a, b, c].join('+'); }
+  attempt('patterns as parameters, inside a loop', function () { var r = []; for (var v of closing([1, 2], 'outer')) r.push(pattern(closing([v, undefined, 9], 'arg' + v)), pattern([v, 5], { c: 0 })); return r.join() + ' | ' + log.splice(0).join(); });
+  attempt('a pattern whose default throws', function () { try { var [a = fail('in default'), b] = closing([undefined, 2], 'pattern'); } catch (e) { return e.message + ' | ' + log.splice(0).join(); } });
+  attempt('a pattern closed after a call', function () { var [a = id('d'), b] = closing([undefined, 2, 3], 'pattern'); return a + b + ' | ' + log.splice(0).join(); });
+  attempt('for-in around calls', function () { var r = []; for (var k in { x: 1, y: 2 }) { for (var j in { p: 1 }) r.push(k + j + sum([1, 2])); } return r.join(); });
+  attempt('spread of a call inside a loop', function () { var r = []; for (var v of closing([1, 2], 'outer')) r.push(Math.max(...[v, sum([v, v])]), [...closing([v], 'spread')].length); return r.join() + ' | ' + log.splice(0).join(); });
+  function* numbers(n) { try { for (var i = 0; i < n; i++) yield sum([i, 1]); } finally { log.push('generator done'); } }
+  attempt('a generator that calls, looped over by one that calls', function () { var r = []; for (var v of numbers(5)) { if (firstOver([v], 2) > 0) break; r.push(v); } return r.join() + ' | ' + log.splice(0).join(); });
+})();
+
+// References: what is pushed for an assignment or a method call waits under the callee's own.
+(function () {
+  var o = { n: 1, list: [1, 2, 3], m: function (a, b) { return this.n + a + b; }, get acc() { return this.n * 2; }, set acc(v) { this.n = v; } };
+  function bump(target) { target.n += 1; target.list[0] += id(1); return target.n; }
+  function assignsDeep(target) { target.list[target.list.length - 1] = target.list[0] = bump(target) + id(target.n); return target.list.join(); }
+  attempt('assignment whose value is a call that assigns', function () { o.n = bump(o) + bump(o); return o.n + ' ' + o.list.join(); });
+  attempt('compound assignment across a call', function () { o.n = 1; o.n += bump(o); o.list[1] += bump(o) * 10; return o.n + ' ' + o.list.join(); });
+  attempt('method call whose arguments call methods', function () { o.n = 1; return o.m(o.m(1, 2), o.m(bump(o), id(3))); });
+  attempt('chained assignments through calls', function () { o.n = 1; o.list = [1, 2, 3]; return assignsDeep(o) + ' ' + o.n; });
+  attempt('an accessor around a call', function () { o.n = 1; o.acc += bump(o); return o.n + ' ' + o.acc; });
+  attempt('a callee throws while references wait', function () { o.n = 1; o.list = [1, 2, 3]; try { o.list[id(0)] = o.n += fail('value'); } catch (e) { o.list[1] = e.message; } o.list[2] += bump(o); return o.n + ' ' + o.list.join(); });
+  attempt('a method throws after its own references', function () { function f(t) { t.a = t.b = t.c = fail('inside'); } var t = {}; try { o.n = f(t); } catch (e) { o.n = e.message.length; } return o.n + ' ' + Object.keys(t).length; });
+  attempt('computed keys from calls', function () { var t = {}; t[id('a') + id('b')] = t[id('c')] = id(t).x = bump(o); return Object.keys(t).join() + ' ' + (t.ab === t.c); });
+  attempt('increments and deletes around calls', function () { var t = { v: 1, w: [5] }; t.v++; t.w[id(0)]++; ++t.w[sum0()]; delete t[id('v')]; function sum0() { return 0; } return JSON.stringify(t); });
+  attempt('new with arguments that assign', function () { function P(a, b) { this.a = a; this.b = b; } var t = {}; var p = new P(t.x = id(1), t.y = new P(id(2), t.x += 1)); return JSON.stringify([p, t]); });
+  attempt('super and this through calls', function () { class A { constructor() { this.v = 1; } inc(by) { this.v += by; return this; } } class B extends A { inc(by) { super.inc(id(by) * 2).v += id(1); return this; } } var b = new B(); return b.inc(1).inc(b.inc(1).v).v; });
+  attempt('optional chains and calls', function () { var t = { f: function () { return { g: bump }; } }; o.n = 1; return [t.f?.().g(o), t.none?.(fail('not run')), t.f().h?.(fail('not run'))].join(); });
+  attempt('tagged templates and calls', function () { function tag(s, a, b) { return s.raw.join('|') + a + b; } return tag`x${id(1)}y${bump(o)}z`.length; });
+})();
+
+// All of it together, many times, and at depth.
+(function () {
+  var o = { total: 0, add: function (v) { this.total += v; return this; } };
+  function work(n, depth) {
+    var s = 0;
+    try {
+      for (var v of closing([1, 2, 3], 'w')) {
+        o.total += depth ? work(v, depth - 1) : v;
+        if (v === n) { if (depth % 2) fail('odd'); break; }
+        s += o.add(v).total & 3;
+      }
+    } catch (e) { s += 1000; } finally { s += 1; }
+    return s;
+  }
+  var results = [];
+  for (var round = 0; round < 200; round++) results.push(work(round % 4, round % 5));
+  say('together', results.slice(0, 12).join(), results.reduce(function (a, b) { return a + b; }, 0), o.total, log.splice(0).length);
+  function ladder(n) { var t = { v: 0 }; try { for (var x of [n]) { t.v += n > 0 ? ladder(n - 1) : fail('rung'); } } catch (e) { t.v += 1; if (n % 7 === 6) throw e; } return t.v; }
+  attempt('a ladder of two hundred', function () { return ladder(200); });
+  var gen = (function* () { var t = { v: 0 }; try { for (var x of closing([1, 2, 3], 'g')) { t.v += yield work(x, 2); } } finally { log.push('gen finally ' + t.v); } })();
+  attempt('a generator between them', function () { var r = [gen.next().value, gen.next(10).value, gen.return('stop').value]; return r.join() + ' | ' + log.splice(0).filter(function (l) { return l[0] === 'g' || l === 'close g'; }).join(); });
+})();
+out.join("\n")"#;
+    let expected = r#"no handler below caught bottom
+handler at every third 100,101,102,103,107,130
+handled where thrown own own/own own
+finally passes it on through finally finally ran
+rethrown second from first
+nested in one function f1,c2 deep,f2,c3 again
+left with handlers pushed fell through,returned,caught thrown | inner finally,outer finally,inner finally,outer finally,inner finally,outer finally
+after it, the caller handles its own mine 2
+native error in a callee TypeError
+error binding parameters default
+too deep RangeError
+and again, with handlers on the way RangeError true
+still sound 1,104,own own/own own
+loop in callee, loop in caller 31,32,33 | 
+callee returns from its loop 6,6 | close inner1,close inner2
+callee throws from its loop in loop1,in loop2,in loop3 | close inner1,close inner2,close inner3
+callee throws, caller does not catch in the loop in loop | close inner,close outer
+break after a call 2 | close outer
+labelled continue past a callee 11,21 | close b1,close b2
+arguments bound from a list, inside loops 3,11,311,3,21,321,5,12,312,5,22,322 | 
+patterns as parameters, inside a loop 1+2+3,1+5+0,2+3+5,2+5+0 | close arg1,close arg2
+a pattern whose default throws in default | close pattern
+a pattern closed after a call d2 | close pattern
+for-in around calls xp3,yp3
+spread of a call inside a loop 2,1,4,1 | 
+a generator that calls, looped over by one that calls 1,2 | generator done
+assignment whose value is a call that assigns 5 3,2,3
+compound assignment across a call 4 5,42,3
+method call whose arguments call methods 13
+chained assignments through calls 4,2,4 2
+an accessor around a call 4 8
+a callee throws while references wait 2 2,value,5
+a method throws after its own references 6 0
+computed keys from calls x,c,ab true
+increments and deletes around calls {"w":[7]}
+new with arguments that assign [{"a":1,"b":{"a":2,"b":2}},{"x":2,"y":{"a":2,"b":2}}]
+super and this through calls 22
+optional chains and calls 2,,
+tagged templates and calls 7
+together 5,1001,4,1007,7,1,1003,5,7,1,3,1004 60780 181520 1850
+a ladder of two hundred 1
+a generator between them 1,4,stop | close g,gen finally 10"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
