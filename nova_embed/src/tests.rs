@@ -4458,3 +4458,311 @@ others: -1679818752 0 98 70 true 0 54 -0 0 1.5 -1.5 1.5 3.469446951953614e-18 0.
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The instructions that take an operand from where it is instead of from
+/// the stack: an operator with a constant on its right (of a value or of a
+/// local), `a[i]` with a local for its key, and a variable of an enclosing
+/// function or a constant pushed by one instruction. Every operator with
+/// operands of every type, the order of conversions and their effects, the
+/// values that leave the integers, the bases and keys an element read can
+/// have, References kept across compound assignments, what throws in the
+/// middle of an expression, closures, generators and loops; and the
+/// comparisons, the tests of loops and the operators on Numbers that are
+/// not integers, which convert nothing either, with loops long enough
+/// that the Numbers they make have to be collected. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn operands_taken_in_place_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(operands_taken_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn operands_taken_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+function show(v) { if (typeof v === "number") return Object.is(v, -0) ? "-0" : String(v); if (typeof v === "bigint") return v + "n"; if (typeof v === "string") return JSON.stringify(v); if (typeof v === "symbol") return "symbol"; if (typeof v === "function") return "function"; if (v === null) return "null"; if (typeof v === "object") { try { return Array.isArray(v) ? "[" + v.map(show).join(",") + "]" : "{" + Object.keys(v).join() + "}"; } catch (e) { return "object"; } } return String(v); }
+function t(name, f) { for (var round = 0; round < 2; round++) { var v; try { v = show(f()); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e); } print(name + round + ": " + v); } }
+var lefts = [0, 1, -1, 7, -7, 255, 1023, 2147483647, -2147483648, 4294967295, 9007199254740991, -9007199254740991, 0.5, -0.5, 1e21, -0, NaN, Infinity, -Infinity, "", "5", "abc", " 12 ", true, false, null, undefined, 10n, -3n, { valueOf: function () { return 6; } }, { toString: function () { return "9"; } }, [], [4], {}];
+t("resultWithConstant", function () {
+  var r = [];
+  for (var i = 0; i < lefts.length; i++) {
+    var x = lefts[i], row = [];
+    var ops = [function (o) { return o.v + 1; }, function (o) { return o.v - 1; }, function (o) { return o.v * 2; }, function (o) { return o.v / 2; }, function (o) { return o.v % 3; }, function (o) { return o.v << 1; }, function (o) { return o.v >> 1; }, function (o) { return o.v >>> 1; }, function (o) { return o.v | 8; }, function (o) { return o.v ^ 5; }, function (o) { return o.v & 1023; },
+      function (o) { return o.v + 0; }, function (o) { return o.v * 0; }, function (o) { return o.v * -1; }, function (o) { return o.v % -3; }, function (o) { return o.v % 0; }, function (o) { return o.v / 0; }, function (o) { return o.v << 33; }, function (o) { return o.v >>> 0; }, function (o) { return o.v + "s"; }, function (o) { return o.v + 0.5; }, function (o) { return o.v * 9007199254740991; }, function (o) { return o.v + 9007199254740991; }, function (o) { return o.v - -9007199254740991; }, function (o) { return o.v & -1; }, function (o) { return o.v | 0; }];
+    for (var k = 0; k < ops.length; k++) { try { row.push(show(ops[k]({ v: x }))); } catch (e) { row.push(e.constructor.name); } }
+    r.push(row.join(" "));
+  }
+  return r.join("|");
+});
+t("localWithConstant", function () {
+  var r = [];
+  for (var i = 0; i < lefts.length; i++) {
+    var row = [];
+    (function (x) { try { row.push(show(x + 1)); } catch (e) { row.push("E"); } try { row.push(show(x - 1)); } catch (e) { row.push("E"); } try { row.push(show(x * 3)); } catch (e) { row.push("E"); } try { row.push(show(x / 4)); } catch (e) { row.push("E"); } try { row.push(show(x % 7)); } catch (e) { row.push("E"); } try { row.push(show(x << 2)); } catch (e) { row.push("E"); } try { row.push(show(x >> 2)); } catch (e) { row.push("E"); } try { row.push(show(x >>> 2)); } catch (e) { row.push("E"); } try { row.push(show(x | 1)); } catch (e) { row.push("E"); } try { row.push(show(x ^ 1)); } catch (e) { row.push("E"); } try { row.push(show(x & 255)); } catch (e) { row.push("E"); } try { row.push(show(x * 0)); } catch (e) { row.push("E"); } try { row.push(show(x % 0)); } catch (e) { row.push("E"); } try { row.push(show(x + "")); } catch (e) { row.push("E"); } try { row.push(show(x - 0.25)); } catch (e) { row.push("E"); } })(lefts[i]);
+    r.push(row.join(" "));
+  }
+  return r.join("|");
+});
+t("twoLocalsThenConstant", function () {
+  function f(a, b) { return [a + (b & 255), a - (b * 2), a * (b + 1), a | (b << 3), a + b * 2 + 1, (a & 15) + (b & 15), a + (b % 5), a ^ (b >>> 1)].map(show).join(" "); }
+  return [f(1, 2), f(1000, 1023), f(-1, -1), f(0.5, 3), f("s", 4), f(2, "7"), f(3, 2.5), f(1, null), f(undefined, 1)].join("|");
+});
+t("constantOverflowAndZero", function () {
+  var big = 9007199254740991, r = [];
+  function add(x) { return x + 9007199254740991; } function sub(x) { return x - 9007199254740991; } function mul(x) { return x * 94906267; } function mulz(x) { return x * 0; } function rem(x) { return x % 4; } function shl(x) { return x << 31; }
+  r.push(add(1), add(big), add(-big), sub(-1), sub(-big), mul(94906267), mul(-94906267), mulz(-5), mulz(5), mulz(0), rem(-4), rem(-5), rem(5), rem(0), shl(1), shl(3), shl(-1));
+  return r.map(show).join(" ");
+});
+t("valueOfOrderAndEffects", function () {
+  var log = [];
+  var o = { valueOf: function () { log.push("v"); return 3; } };
+  function f(x) { return [x + 1, x * 2, x & 1, x - 1].join(); }
+  var s = { toString: function () { log.push("s"); return "7"; }, valueOf: undefined };
+  var d = new Date(0); var sym = Symbol("q"), r = [f(o), f(s)];
+  try { f(sym); } catch (e) { r.push(e.constructor.name); } try { (function (x) { return x + 1; })(1n); } catch (e) { r.push(e.constructor.name); } r.push((function (x) { return x * 2n; })(4n) + "n");
+  r.push(typeof (function (x) { return x + 1; })(d), (function (x) { return x - 1; })(d));
+  var thrower = { valueOf: function () { throw new RangeError("no"); } }; try { (function (x) { return x | 1; })(thrower); } catch (e) { r.push(e.constructor.name); }
+  return r.join("|") + "|" + log.join("");
+});
+t("compoundAndProperties", function () {
+  var o = { x: 5, y: "s", z: 1.5 }, a = [1, 2, 3], r = [];
+  o.x += 1; o.x *= 2; o.x -= 3; o.x <<= 2; o.x |= 1; o.x %= 7; o.y += 1; o.z *= 2; a[1] += 10; a[2] &= 2; a[0] -= 1;
+  var i = 1; a[i] += 5; i += 1; i *= 3; i <<= 1; var c = 7; c %= 4; c **= 2;
+  r.push(o.x, o.y, o.z, a, i, c);
+  var g = { get p() { r.push("get"); return 2; }, set p(v) { r.push("set" + v); } }; g.p += 1; g.p <<= 3;
+  return r.map(show).join(" ");
+});
+var outer = 10, counter = 0;
+t("closureOperands", function () {
+  var x = 4, y = "str", u, arr = [10, 20, 30], bump = function () { x = x + 1; return x; };
+  function inner() {
+    var r = [];
+    r.push(x + 1, x - 1, x * 2, x & 3, y + 1, y * 2, u + 1, outer + 1, x + x, x + bump(), bump() + x, x + (x = 9), x);
+    r.push(arr[0] + x, arr[x - 8], [x, 1, y, 2], Math.max(x, 1, 3), (function (p, q, s) { return p + q + s; })(x, 1, y));
+    r.push(x === 9, x === 10, y === "str", x !== 10, u === undefined, x < 11, x > 100);
+    return r.map(show).join(" ");
+  }
+  return inner() + "|" + inner();
+});
+t("closureTdzAndLate", function () {
+  var r = [];
+  function early() { return late + 1; } try { early(); } catch (e) { r.push(e.constructor.name); }
+  function pushed() { return [late, 1]; } try { pushed(); } catch (e) { r.push(e.constructor.name); }
+  let late = 5; r.push(early(), pushed().join());
+  function del() { return typeof gone === "undefined" ? "gone" : gone + 1; } r.push(del()); globalThis.gone = 2; r.push(del()); delete globalThis.gone; r.push(del());
+  try { (function () { return missingName + 1; })(); } catch (e) { r.push(e.constructor.name); }
+  return r.join(" ");
+});
+t("localIndexReads", function () {
+  var arr = [10, 20, , 40], ta = new Int16Array([5, -6, 7]), str = "héllo", obj = { 0: "zero", k: "kay", 1.5: "frac" }, r = [];
+  var keys = [0, 1, 2, 3, 4, -1, 1.5, "1", "k", "length", NaN, null, undefined, true, 4294967295, 4294967296, { toString: function () { return "1"; } }, [0], Symbol.iterator];
+  for (var j = 0; j < keys.length; j++) { var k = keys[j]; r.push([arr[k], ta[k], str[k], obj[k]].map(function (v) { return typeof v === "function" ? "fn" : show(v); }).join("/")); }
+  return r.join(" ");
+});
+t("localIndexBases", function () {
+  var r = [], i = 1, o = { items: [7, 8, 9], get list() { r.push("get"); return [1, 2, 3]; } }, holder = [[1, 2], [3, 4]];
+  function make() { r.push("make"); return ["a", "b", "c"]; }
+  var closureArr = [100, 200, 300];
+  function inner(n) { return closureArr[n] + closureArr[i]; }
+  r.push(o.items[i], o.list[i], make()[i], holder[i][i], holder[0][i], inner(2), "xyz"[i], [5, 6, 7][i], (i ? holder : null)[i].length, arguments.length ? arguments[i] : "none");
+  var px = new Proxy([1, 2, 3], { get: function (t, k) { r.push("trap:" + String(k)); return t[k]; } }); r.push(px[i]);
+  var getter = []; Object.defineProperty(getter, 1, { get: function () { r.push("elem"); return "g"; } }); r.push(getter[i]);
+  var proto = Object.create([9, 8, 7]); r.push(proto[i]); Array.prototype[5] = "inherited"; var holes = [1]; var five = 5; r.push(holes[five]); delete Array.prototype[5]; r.push(holes[five]);
+  try { var n = null; n[i]; } catch (e) { r.push(e.constructor.name); } try { var un; un[i]; } catch (e) { r.push(e.constructor.name); }
+  var frozen = Object.freeze([4, 5]); r.push(frozen[i]); var big = new Float64Array([1.5, 2.5]); r.push(big[i]); var u8 = new Uint8Array(2); u8[i] = 300; r.push(u8[i]);
+  return r.map(show).join(" ");
+});
+t("pushedConstants", function () {
+  function args() { return Array.prototype.slice.call(arguments).map(show).join(); }
+  var x = 3, o = { m: args }, r = [];
+  r.push(args(x, 1), args(1, x), args(1, 2, 3), args(x, "s", null, undefined, true, 1.5, -0), o.m(x, 7), args(x + 1, 2, x * 2), [x, 1, 2], [1, x], { a: x, b: 1 }.b, x + 1 + x, 1 + x + 1, (x, 5), x ? 1 : 2, args(args(x, 1), 2));
+  function noReturn(v) { args(v, 1); } function lastExpr(v) { v + 1; args(1); } r.push(noReturn(4), lastExpr(4));
+  var s = "t" + 1 + x + "u" + 2; r.push(s, `a${x}b${1}c`, typeof x + 1, -x + 1, !x + 1, void x + 1);
+  return r.map(show).join(" ");
+});
+print("eval: " + [eval("var e1 = [1, 2]; 5;"), eval("var e2 = 3; e2 + 1; if (false) { 9; }"), eval("var e3 = 4; f3(e3, 1); function f3(a, b) { return a + b; }"), eval("1; for (var e4 = 0; e4 < 2; e4++) { e4 + 1; }"), eval("var e5 = [7, 8], e6 = 1; e5[e6];"), eval("var e7 = 6; e7 & 3;"), eval("2; { }"), eval("var e8 = 1; switch (e8) { case 1: e8 + 1; }")].map(show).join(" "));
+})();
+(function () {
+var print = function (s) { all.push(s); };
+function show(v) { if (typeof v === "number") return Object.is(v, -0) ? "-0" : String(v); if (typeof v === "string") return JSON.stringify(v); if (typeof v === "function") return "function"; if (v === null) return "null"; if (Array.isArray(v)) return "[" + v.map(show).join(",") + "]"; if (typeof v === "object") return "{" + Object.keys(v).map(function (k) { return k + ":" + show(v[k]); }).join() + "}"; return String(v); }
+function t(name, f) { for (var round = 0; round < 2; round++) { var v; try { v = show(f()); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e); } print(name + round + ": " + v); } }
+t("referencesKept", function () {
+  var log = [], o = { p: [1, 2, 3], q: [7, 8, 9], n: 5, get g() { log.push("g"); return 3; }, set g(v) { log.push("s" + v); } }, i = 1, k = "n";
+  o.p[i] += 2; o.p[i]++; --o.q[i]; o.p[i] = o.p[i] + o.q[i]; o[k] += 1; o[k] <<= 2; o.g += 1; o.g *= 2; o.n -= 1; o.n %= 5; o.n **= 2;
+  var d = delete o.p[i], ty = typeof o.q[i], inn = i in o.p, fnv = (o.q)[i].toString(), swap = [o.p[0], o.q[0]] = [o.q[0], o.p[0]];
+  class C { #f = 6; static s = 2; bump() { this.#f += 1; this.#f <<= 1; C.s |= 4; return this.#f; } } class D extends C { m() { return super.bump() + 1; } }
+  var arr2 = [[1, 2], [3, 4]]; arr2[i][i] *= 10; arr2[0][i] -= 1; var str = "abc"; var ch = str[i] + 1;
+  return [o.p, o.q, o.n, d, ty, inn, fnv, swap, new D().m(), C.s, arr2, ch, log.join("")];
+});
+t("pushedInManyPlaces", function () {
+  var x = 2, a = [1, 2], o = { m: function () { return Array.prototype.slice.call(arguments); } }, k = "m";
+  function C(p, q) { this.v = [p, q]; } function tag(s, v, w) { return s.raw.join("-") + v + w; }
+  return [new C(x, 1).v, o[k](1, x, 2), o.m(...a, 1), o.m?.(x, 1), tag`a${x}b${1}c`, `${x}${1}${"s"}`, x ?? 1, null ?? 1, x || 1, 0 || 1, x && 1, x ? 1 : 2, [x, 1, , 2], { a: 1, [x]: 2, b: x }, [...a, 1, ...a], Math.max(1, x, 3), (function () { return arguments.length; })(1, 2, x), (x, 1), [1, 2, 3].indexOf(x, 1), "s".padStart(x + 1, 1), String(x) + 1 + 2, 1 + 2 + String(x), +x + 1, -x - 1, typeof x + 1, void 0 === undefined];
+});
+t("throwsMidExpression", function () {
+  var thrower = { valueOf: function () { throw new RangeError("v"); } }, r = [], i = 1, arr = [10, 20, 30];
+  for (var n = 0; n < 4; n++) {
+    var x = n === 2 ? thrower : n;
+    try { r.push([1, arr[i], x & 1023, 4]); } catch (e) { r.push(e.constructor.name); }
+    try { r.push(arr[i] + (x + 1) * 2 - arr[0]); } catch (e) { r.push(e.constructor.name); }
+    try { r.push(Math.max(arr[i], x * 2, 7)); } catch (e) { r.push(e.constructor.name); }
+    try { var un; r.push(arr[i] + un[i]); } catch (e) { r.push(e.constructor.name); }
+    r.push(arr[i] + arr[n % 3]);
+  }
+  return r;
+});
+var shared = 5, sharedArr = [3, 1, 2];
+t("closuresInCalls", function () {
+  var base = 10, list = [4, 5, 6], calls = 0;
+  function add(a, b) { calls++; return a + b; } function third(a, b, c) { return c; }
+  function inner(i) { return add(base, i) + add(i, base) + third(base, list, shared) + list[i] + sharedArr[i] + add(list[i], sharedArr[i]) + (base & 7) + (shared << 2) + base % 3; }
+  var r = []; for (var i = 0; i < 3; i++) r.push(inner(i)); base = "b"; r.push(inner(0)); base = 1.5; r.push(inner(1)); list = "xyz"; r.push(inner(2)); list = new Uint8Array([9, 8, 7]); base = 2; r.push(inner(2));
+  var fns = []; for (let j = 0; j < 3; j++) fns.push(function () { return j * 2 + base + list[j]; }); r.push(fns.map(function (f) { return f(); }));
+  return [r, calls];
+});
+t("generatorsAndAsync", function () {
+  function* gen(a, i) { var x = yield a[i] + 1; var y = yield (x & 255) * 2; yield [a[i], x - 1, y % 3, a[i + 1]]; return x + y; }
+  var g = gen([5, 6, 7], 1), out = [g.next().value, g.next(300).value, g.next(10).value, g.next().value, g.next().done];
+  var seen = []; async function af(a, i) { var x = await a[i]; seen.push(x + 1, a[i] * 2, (x | 0) - 1); return x; } af([1, 2], 1); af(["s"], 0);
+  function* counter(n) { for (var i = 0; i < n; i++) { var got = yield i * 2 + 1; if (got) i += got - 1; } }
+  var c = counter(6), steps = [c.next().value, c.next().value, c.next(2).value, c.next().value, c.next().done];
+  return [out, steps, seen.length];
+});
+t("loopsWithFusedBodies", function () {
+  var a = [], sum = 0, bits = 0, s = "", f = 1.5, big = 9007199254740000;
+  for (var i = 0; i < 40; i++) a.push(i * 3 % 7);
+  for (var j = 1; j < a.length; j++) { a[j] = (a[j - 1] + a[j]) & 1023; sum += a[j] * 2 + 1; bits ^= a[j] << (j % 5); s += a[j] % 10; f = f * 2 % 1000; big += 100; }
+  var k = 0, w = 0; while (k < 100) { w += k & 15; k += 3; } do { w -= k % 4; k -= 7; } while (k > 0);
+  var t8 = new Int8Array(8); for (var m = 0; m < 20; m++) { t8[m & 7] += m * 9; }
+  return [sum, bits, s, f, big, w, k, Array.prototype.slice.call(t8), a.slice(35)];
+});
+t("numberOperandsOfAnyKind", function () {
+  var nums = [0, -0, 1, -1, 7, 0.5, -0.5, 1.5, 2.5, -2.5, 255.9, 2147483647, 2147483648, -2147483649, 4294967295.5, 9007199254740991, 9007199254740992, 1e21, -1e21, 5e-324, 1.7976931348623157e308, NaN, Infinity, -Infinity, 123456789.125, 0.1 + 0.2];
+  var others = ["3", "", "x", true, null, undefined, { valueOf: function () { return 2.5; } }, [5], 3n];
+  var rows = [], sum = 0;
+  for (var i = 0; i < nums.length; i++) {
+    for (var j = 0; j < nums.length; j++) {
+      var a = nums[i], b = nums[j];
+      var bits = (a < b ? 1 : 0) | (a <= b ? 2 : 0) | (a > b ? 4 : 0) | (a >= b ? 8 : 0);
+      var v = [bits, a << b, a >> b, a >>> b, a | b, a ^ b, a & b];
+      for (var k = 0; k < v.length; k++) sum = (sum * 31 + (v[k] | 0)) | 0;
+      if ((i * 7 + j) % 23 === 0) rows.push(v.join("/"));
+    }
+  }
+  var mixed = [];
+  for (var m = 0; m < others.length; m++) {
+    var o = others[m], x = 2.5;
+    try { mixed.push([o < x, x <= o, o > x, x >= o, o | x, x & o, o << 1.5, x >>> o, o ^ 0.5].join("/")); } catch (e) { mixed.push(e.constructor.name); }
+  }
+  var f = 0.5, n = 0; while (f < 100.5) { f = f * 1.5 + 0.25; n++; } var g = 10.5; do { g -= 0.75; n++; } while (g >= 0.5);
+  for (var h = 0.25; h <= 3; h += 0.5) n += h > 1.5 ? 2 : 1;
+  return [sum, rows.join(" "), mixed.join(" "), n, f, g];
+});
+t("numberArithmeticOfAnyKind", function () {
+  var nums = [0, -0, 1, -1, 3, 7, 0.5, -0.5, 1.5, -2.5, 0.1, 0.2, 255.9, 2147483647, -2147483648, 4294967296, 9007199254740991, -9007199254740991, 9007199254740992, 1e21, -1e21, 5e-324, 1.7976931348623157e308, NaN, Infinity, -Infinity, 123456789.125, 1 / 3];
+  function hash(h, v) { var s = Object.is(v, -0) ? "-0" : String(v); for (var c = 0; c < s.length; c++) h = (h * 31 + s.charCodeAt(c)) | 0; return h; }
+  var h = 7, rows = [];
+  for (var i = 0; i < nums.length; i++) {
+    for (var j = 0; j < nums.length; j++) {
+      var a = nums[i], b = nums[j], v = [a + b, a - b, a * b, a / b, a % b, a + 1, a - 1, a * 2, a / 2, a % 3, a * 0.5, a + 0.1, b - 0.25, a / 0.1, a % 0.7, a * -1, a / 0, a * 1e308, a - 9007199254740991];
+      for (var k = 0; k < v.length; k++) h = hash(h, v[k]);
+      if ((i * 5 + j) % 37 === 0) rows.push(v.slice(0, 5).map(function (x) { return Object.is(x, -0) ? "-0" : String(x); }).join("/"));
+    }
+  }
+  return [h, rows.join(" ")];
+});
+t("numbersMadeInLoops", function () {
+  var acc = 0, x = 0.1, grid = new Float64Array(64), parts = [];
+  for (var i = 0; i < 300000; i++) { acc += i * 0.01 - x * 0.5 + (i % 7) / 3; x = x * 1.0000001 + 0.000001; grid[i & 63] = acc * 0.25 + i / 7; }
+  function straight(v) { v = v * 1.5 + 0.25; v = v / 3 - 0.125; v = v * v + 0.5; v = v % 9.75; v = v - 0.375; v = v * 2.5; v = v / 7; v = v + 1e-9; return v; }
+  var s = 0.5; for (var j = 0; j < 100000; j++) s = straight(s) % 100.5;
+  var kept = []; for (var k = 0; k < 2000; k++) kept.push(k * 1.1 + 0.3); var sum = 0; for (var m = 0; m < kept.length; m++) sum += kept[m] * 0.5;
+  parts.push(acc.toFixed(3), x.toFixed(6), grid[5].toFixed(3), s.toFixed(6), sum.toFixed(3), kept[1999]);
+  return parts;
+});
+t("numberTestsThatJump", function () {
+  var nums = [0, -0, 1, -1, 2, 0.5, -0.5, 1.5, 2.5, 3, 2147483648, 9007199254740991, 9007199254740992, 1e21, -1e21, 5e-324, NaN, Infinity, -Infinity, 0.1 + 0.2, 0.3];
+  var h = 3, locals = [];
+  for (var i = 0; i < nums.length; i++) {
+    for (var j = 0; j < nums.length; j++) {
+      var a = nums[i], b = nums[j], bits = 0;
+      if (a < b) bits |= 1; else bits |= 2; if (a <= b) bits |= 4; else bits |= 8; if (a > b) bits |= 16; else bits |= 32; if (a >= b) bits |= 64; else bits |= 128;
+      if (!(a < b)) bits |= 256; if (!(a >= b)) bits |= 512; bits |= (a < b || a > b) ? 1024 : 0; bits |= (a <= b && a >= b) ? 2048 : 0;
+      h = (h * 33 + bits) | 0;
+    }
+    var x = nums[i], row = 0;
+    if (x < 1.5) row |= 1; if (x <= 0) row |= 2; if (x > -0.5) row |= 4; if (x >= 2.5) row |= 8; if (x < NaN) row |= 16; if (x >= -Infinity) row |= 32; if (x < 2) row |= 64; if (x <= 9007199254740992) row |= 128; if (x > 0.30000000000000004) row |= 256; if (x < "1") row |= 512; if (x >= null) row |= 1024;
+    locals.push(row);
+  }
+  var loops = [], n, c, f;
+  var bounds = [2.5, 3, -0, NaN, 0.5, 4.000001, "3", null, undefined, { valueOf: function () { return 2.5; } }, 1e21, -1];
+  for (var k = 0; k < bounds.length; k++) {
+    n = bounds[k]; c = 0; for (var p = 0; p < n; p++) { if (++c > 9) break; } var up = c;
+    c = 0; for (var q = 0; q <= n; q++) { if (++c > 9) break; } var upEq = c;
+    c = 0; for (var r = 6; r > n; r--) { if (++c > 9) break; } var down = c;
+    c = 0; for (var s = 6; r >= n && s >= n; s--) { if (++c > 9) break; } loops.push([up, upEq, down, c].join(""));
+  }
+  c = 0; for (f = 0.5; f < 3; f += 0.5) c++; var w = 0; while (w < 2.75) { w += 0.75; c++; } var d = 5.5; do { d -= 1.25; c++; } while (d > 0.25);
+  for (var y = 0; y < 6.5; y += 2) c++; for (var z = 10; z >= 0.5; z -= 3.5) c++; var e = 0; for (var v = 0.1; v <= 1; v += 0.1) e++;
+  return [h, locals.join(), loops.join(), c, f, w, d, e];
+});
+})();
+all.join("\n")"#;
+    let expected = r#"resultWithConstant0: "1 -1 0 0 0 0 0 0 8 5 0 0 0 -0 0 NaN NaN 0 0 \"0s\" 0.5 0 9007199254740991 9007199254740991 0 0|2 0 2 0.5 1 2 0 0 9 4 1 1 0 -1 1 NaN Infinity 2 1 \"1s\" 1.5 9007199254740991 9007199254740992 9007199254740992 1 1|0 -2 -2 -0.5 -1 -2 -1 2147483647 -1 -6 1023 -1 -0 1 -1 NaN -Infinity -2 4294967295 \"-1s\" -0.5 -9007199254740991 9007199254740990 9007199254740990 -1 -1|8 6 14 3.5 1 14 3 3 15 2 7 7 0 -7 1 NaN Infinity 14 7 \"7s\" 7.5 63050394783186936 9007199254740998 9007199254740998 7 7|-6 -8 -14 -3.5 -1 -14 -4 2147483644 -7 -4 1017 -7 -0 7 -1 NaN -Infinity -14 4294967289 \"-7s\" -6.5 -63050394783186936 9007199254740984 9007199254740984 -7 -7|256 254 510 127.5 0 510 127 127 255 250 255 255 0 -255 0 NaN Infinity 510 255 \"255s\" 255.5 2296835809958952700 9007199254741246 9007199254741246 255 255|1024 1022 2046 511.5 0 2046 511 511 1023 1018 1023 1023 0 -1023 0 NaN Infinity 2046 1023 \"1023s\" 1023.5 9214364837600034000 9007199254742014 9007199254742014 1023 1023|2147483648 2147483646 4294967294 1073741823.5 1 -2 1073741823 1073741823 2147483647 2147483642 1023 2147483647 0 -2147483647 1 NaN Infinity -2 2147483647 \"2147483647s\" 2147483647.5 1.9342813104826865e+25 9007201402224638 9007201402224638 2147483647 2147483647|-2147483647 -2147483649 -4294967296 -1073741824 -2 0 -1073741824 1073741824 -2147483640 -2147483643 0 -2147483648 -0 2147483648 -2 NaN -Infinity 0 2147483648 \"-2147483648s\" -2147483647.5 -1.9342813113834065e+25 9007197107257343 9007197107257343 -2147483648 -2147483648|4294967296 4294967294 8589934590 2147483647.5 0 -2 -1 2147483647 -1 -6 1023 4294967295 0 -4294967295 0 NaN Infinity -2 4294967295 \"4294967295s\" 4294967295.5 3.868562621866093e+25 9007203549708286 9007203549708286 -1 -1|9007199254740992 9007199254740990 18014398509481982 4503599627370495.5 1 -2 -1 2147483647 -1 -6 1023 9007199254740991 0 -9007199254740991 1 NaN Infinity -2 4294967295 \"9007199254740991s\" 9007199254740992 8.112963841460666e+31 18014398509481982 18014398509481982 -1 -1|-9007199254740990 -9007199254740992 -18014398509481982 -4503599627370495.5 -1 2 0 0 9 4 1 -9007199254740991 -0 9007199254740991 -1 NaN -Infinity 2 1 \"-9007199254740991s\" -9007199254740990 -8.112963841460666e+31 0 0 1 1|1.5 -0.5 1 0.25 0.5 0 0 0 8 5 0 0.5 0 -0.5 0.5 NaN Infinity 0 0 \"0.5s\" 1 4503599627370495.5 9007199254740992 9007199254740992 0 0|0.5 -1.5 -1 -0.25 -0.5 0 0 0 8 5 0 -0.5 -0 0.5 -0.5 NaN -Infinity 0 0 \"-0.5s\" 0 -4503599627370495.5 9007199254740990 9007199254740990 0 0|1e+21 1e+21 2e+21 500000000000000000000 1 -1119879168 -279969792 1867513856 -559939576 -559939579 0 1e+21 0 -1e+21 1 NaN Infinity -1119879168 3735027712 \"1e+21s\" 1e+21 9.007199254740991e+36 1.0000090071992547e+21 1.0000090071992547e+21 -559939584 -559939584|1 -1 -0 -0 -0 0 0 0 8 5 0 0 -0 0 -0 NaN NaN 0 0 \"0s\" 0.5 -0 9007199254740991 9007199254740991 0 0|NaN NaN NaN NaN NaN 0 0 0 8 5 0 NaN NaN NaN NaN NaN NaN 0 0 \"NaNs\" NaN NaN NaN NaN 0 0|Infinity Infinity Infinity Infinity NaN 0 0 0 8 5 0 Infinity NaN -Infinity NaN NaN Infinity 0 0 \"Infinitys\" Infinity Infinity Infinity Infinity 0 0|-Infinity -Infinity -Infinity -Infinity NaN 0 0 0 8 5 0 -Infinity NaN Infinity NaN NaN -Infinity 0 0 \"-Infinitys\" -Infinity -Infinity -Infinity -Infinity 0 0|\"1\" -1 0 0 0 0 0 0 8 5 0 \"0\" 0 -0 0 NaN NaN 0 0 \"s\" \"0.5\" 0 \"9007199254740991\" 9007199254740991 0 0|\"51\" 4 10 2.5 2 10 2 2 13 0 5 \"50\" 0 -5 2 NaN Infinity 10 5 \"5s\" \"50.5\" 45035996273704950 \"59007199254740991\" 9007199254740996 5 5|\"abc1\" NaN NaN NaN NaN 0 0 0 8 5 0 \"abc0\" NaN NaN NaN NaN NaN 0 0 \"abcs\" \"abc0.5\" NaN \"abc9007199254740991\" NaN 0 0|\" 12 1\" 11 24 6 0 24 6 6 12 9 12 \" 12 0\" 0 -12 0 NaN Infinity 24 12 \" 12 s\" \" 12 0.5\" 108086391056891890 \" 12 9007199254740991\" 9007199254741004 12 12|2 0 2 0.5 1 2 0 0 9 4 1 1 0 -1 1 NaN Infinity 2 1 \"trues\" 1.5 9007199254740991 9007199254740992 9007199254740992 1 1|1 -1 0 0 0 0 0 0 8 5 0 0 0 -0 0 NaN NaN 0 0 \"falses\" 0.5 0 9007199254740991 9007199254740991 0 0|1 -1 0 0 0 0 0 0 8 5 0 0 0 -0 0 NaN NaN 0 0 \"nulls\" 0.5 0 9007199254740991 9007199254740991 0 0|NaN NaN NaN NaN NaN 0 0 0 8 5 0 NaN NaN NaN NaN NaN NaN 0 0 \"undefineds\" NaN NaN NaN NaN 0 0|TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError \"10s\" TypeError TypeError TypeError TypeError TypeError TypeError|TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError \"-3s\" TypeError TypeError TypeError TypeError TypeError TypeError|7 5 12 3 0 12 3 3 14 3 6 6 0 -6 0 NaN Infinity 12 6 \"6s\" 6.5 54043195528445944 9007199254740996 9007199254740996 6 6|\"91\" 8 18 4.5 0 18 4 4 9 12 9 \"90\" 0 -9 0 NaN Infinity 18 9 \"9s\" \"90.5\" 81064793292668910 \"99007199254740991\" 9007199254741000 9 9|\"1\" -1 0 0 0 0 0 0 8 5 0 \"0\" 0 -0 0 NaN NaN 0 0 \"s\" \"0.5\" 0 \"9007199254740991\" 9007199254740991 0 0|\"41\" 3 8 2 1 8 2 2 12 1 4 \"40\" 0 -4 1 NaN Infinity 8 4 \"4s\" \"40.5\" 36028797018963964 \"49007199254740991\" 9007199254740996 4 4|\"[object Object]1\" NaN NaN NaN NaN 0 0 0 8 5 0 \"[object Object]0\" NaN NaN NaN NaN NaN 0 0 \"[object Object]s\" \"[object Object]0.5\" NaN \"[object Object]9007199254740991\" NaN 0 0"
+resultWithConstant1: "1 -1 0 0 0 0 0 0 8 5 0 0 0 -0 0 NaN NaN 0 0 \"0s\" 0.5 0 9007199254740991 9007199254740991 0 0|2 0 2 0.5 1 2 0 0 9 4 1 1 0 -1 1 NaN Infinity 2 1 \"1s\" 1.5 9007199254740991 9007199254740992 9007199254740992 1 1|0 -2 -2 -0.5 -1 -2 -1 2147483647 -1 -6 1023 -1 -0 1 -1 NaN -Infinity -2 4294967295 \"-1s\" -0.5 -9007199254740991 9007199254740990 9007199254740990 -1 -1|8 6 14 3.5 1 14 3 3 15 2 7 7 0 -7 1 NaN Infinity 14 7 \"7s\" 7.5 63050394783186936 9007199254740998 9007199254740998 7 7|-6 -8 -14 -3.5 -1 -14 -4 2147483644 -7 -4 1017 -7 -0 7 -1 NaN -Infinity -14 4294967289 \"-7s\" -6.5 -63050394783186936 9007199254740984 9007199254740984 -7 -7|256 254 510 127.5 0 510 127 127 255 250 255 255 0 -255 0 NaN Infinity 510 255 \"255s\" 255.5 2296835809958952700 9007199254741246 9007199254741246 255 255|1024 1022 2046 511.5 0 2046 511 511 1023 1018 1023 1023 0 -1023 0 NaN Infinity 2046 1023 \"1023s\" 1023.5 9214364837600034000 9007199254742014 9007199254742014 1023 1023|2147483648 2147483646 4294967294 1073741823.5 1 -2 1073741823 1073741823 2147483647 2147483642 1023 2147483647 0 -2147483647 1 NaN Infinity -2 2147483647 \"2147483647s\" 2147483647.5 1.9342813104826865e+25 9007201402224638 9007201402224638 2147483647 2147483647|-2147483647 -2147483649 -4294967296 -1073741824 -2 0 -1073741824 1073741824 -2147483640 -2147483643 0 -2147483648 -0 2147483648 -2 NaN -Infinity 0 2147483648 \"-2147483648s\" -2147483647.5 -1.9342813113834065e+25 9007197107257343 9007197107257343 -2147483648 -2147483648|4294967296 4294967294 8589934590 2147483647.5 0 -2 -1 2147483647 -1 -6 1023 4294967295 0 -4294967295 0 NaN Infinity -2 4294967295 \"4294967295s\" 4294967295.5 3.868562621866093e+25 9007203549708286 9007203549708286 -1 -1|9007199254740992 9007199254740990 18014398509481982 4503599627370495.5 1 -2 -1 2147483647 -1 -6 1023 9007199254740991 0 -9007199254740991 1 NaN Infinity -2 4294967295 \"9007199254740991s\" 9007199254740992 8.112963841460666e+31 18014398509481982 18014398509481982 -1 -1|-9007199254740990 -9007199254740992 -18014398509481982 -4503599627370495.5 -1 2 0 0 9 4 1 -9007199254740991 -0 9007199254740991 -1 NaN -Infinity 2 1 \"-9007199254740991s\" -9007199254740990 -8.112963841460666e+31 0 0 1 1|1.5 -0.5 1 0.25 0.5 0 0 0 8 5 0 0.5 0 -0.5 0.5 NaN Infinity 0 0 \"0.5s\" 1 4503599627370495.5 9007199254740992 9007199254740992 0 0|0.5 -1.5 -1 -0.25 -0.5 0 0 0 8 5 0 -0.5 -0 0.5 -0.5 NaN -Infinity 0 0 \"-0.5s\" 0 -4503599627370495.5 9007199254740990 9007199254740990 0 0|1e+21 1e+21 2e+21 500000000000000000000 1 -1119879168 -279969792 1867513856 -559939576 -559939579 0 1e+21 0 -1e+21 1 NaN Infinity -1119879168 3735027712 \"1e+21s\" 1e+21 9.007199254740991e+36 1.0000090071992547e+21 1.0000090071992547e+21 -559939584 -559939584|1 -1 -0 -0 -0 0 0 0 8 5 0 0 -0 0 -0 NaN NaN 0 0 \"0s\" 0.5 -0 9007199254740991 9007199254740991 0 0|NaN NaN NaN NaN NaN 0 0 0 8 5 0 NaN NaN NaN NaN NaN NaN 0 0 \"NaNs\" NaN NaN NaN NaN 0 0|Infinity Infinity Infinity Infinity NaN 0 0 0 8 5 0 Infinity NaN -Infinity NaN NaN Infinity 0 0 \"Infinitys\" Infinity Infinity Infinity Infinity 0 0|-Infinity -Infinity -Infinity -Infinity NaN 0 0 0 8 5 0 -Infinity NaN Infinity NaN NaN -Infinity 0 0 \"-Infinitys\" -Infinity -Infinity -Infinity -Infinity 0 0|\"1\" -1 0 0 0 0 0 0 8 5 0 \"0\" 0 -0 0 NaN NaN 0 0 \"s\" \"0.5\" 0 \"9007199254740991\" 9007199254740991 0 0|\"51\" 4 10 2.5 2 10 2 2 13 0 5 \"50\" 0 -5 2 NaN Infinity 10 5 \"5s\" \"50.5\" 45035996273704950 \"59007199254740991\" 9007199254740996 5 5|\"abc1\" NaN NaN NaN NaN 0 0 0 8 5 0 \"abc0\" NaN NaN NaN NaN NaN 0 0 \"abcs\" \"abc0.5\" NaN \"abc9007199254740991\" NaN 0 0|\" 12 1\" 11 24 6 0 24 6 6 12 9 12 \" 12 0\" 0 -12 0 NaN Infinity 24 12 \" 12 s\" \" 12 0.5\" 108086391056891890 \" 12 9007199254740991\" 9007199254741004 12 12|2 0 2 0.5 1 2 0 0 9 4 1 1 0 -1 1 NaN Infinity 2 1 \"trues\" 1.5 9007199254740991 9007199254740992 9007199254740992 1 1|1 -1 0 0 0 0 0 0 8 5 0 0 0 -0 0 NaN NaN 0 0 \"falses\" 0.5 0 9007199254740991 9007199254740991 0 0|1 -1 0 0 0 0 0 0 8 5 0 0 0 -0 0 NaN NaN 0 0 \"nulls\" 0.5 0 9007199254740991 9007199254740991 0 0|NaN NaN NaN NaN NaN 0 0 0 8 5 0 NaN NaN NaN NaN NaN NaN 0 0 \"undefineds\" NaN NaN NaN NaN 0 0|TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError \"10s\" TypeError TypeError TypeError TypeError TypeError TypeError|TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError \"-3s\" TypeError TypeError TypeError TypeError TypeError TypeError|7 5 12 3 0 12 3 3 14 3 6 6 0 -6 0 NaN Infinity 12 6 \"6s\" 6.5 54043195528445944 9007199254740996 9007199254740996 6 6|\"91\" 8 18 4.5 0 18 4 4 9 12 9 \"90\" 0 -9 0 NaN Infinity 18 9 \"9s\" \"90.5\" 81064793292668910 \"99007199254740991\" 9007199254741000 9 9|\"1\" -1 0 0 0 0 0 0 8 5 0 \"0\" 0 -0 0 NaN NaN 0 0 \"s\" \"0.5\" 0 \"9007199254740991\" 9007199254740991 0 0|\"41\" 3 8 2 1 8 2 2 12 1 4 \"40\" 0 -4 1 NaN Infinity 8 4 \"4s\" \"40.5\" 36028797018963964 \"49007199254740991\" 9007199254740996 4 4|\"[object Object]1\" NaN NaN NaN NaN 0 0 0 8 5 0 \"[object Object]0\" NaN NaN NaN NaN NaN 0 0 \"[object Object]s\" \"[object Object]0.5\" NaN \"[object Object]9007199254740991\" NaN 0 0"
+localWithConstant0: "1 -1 0 0 0 0 0 0 1 1 0 0 NaN \"0\" -0.25|2 0 3 0.25 1 4 0 0 1 0 1 0 NaN \"1\" 0.75|0 -2 -3 -0.25 -1 -4 -1 1073741823 -1 -2 255 -0 NaN \"-1\" -1.25|8 6 21 1.75 0 28 1 1 7 6 7 0 NaN \"7\" 6.75|-6 -8 -21 -1.75 -0 -28 -2 1073741822 -7 -8 249 -0 NaN \"-7\" -7.25|256 254 765 63.75 3 1020 63 63 255 254 255 0 NaN \"255\" 254.75|1024 1022 3069 255.75 1 4092 255 255 1023 1022 255 0 NaN \"1023\" 1022.75|2147483648 2147483646 6442450941 536870911.75 1 -4 536870911 536870911 2147483647 2147483646 255 0 NaN \"2147483647\" 2147483646.75|-2147483647 -2147483649 -6442450944 -536870912 -2 0 -536870912 536870912 -2147483647 -2147483647 0 -0 NaN \"-2147483648\" -2147483648.25|4294967296 4294967294 12884901885 1073741823.75 3 -4 -1 1073741823 -1 -2 255 0 NaN \"4294967295\" 4294967294.75|9007199254740992 9007199254740990 27021597764222972 2251799813685247.8 3 -4 -1 1073741823 -1 -2 255 0 NaN \"9007199254740991\" 9007199254740991|-9007199254740990 -9007199254740992 -27021597764222972 -2251799813685247.8 -3 4 0 0 1 0 1 -0 NaN \"-9007199254740991\" -9007199254740991|1.5 -0.5 1.5 0.125 0.5 0 0 0 1 1 0 0 NaN \"0.5\" 0.25|0.5 -1.5 -1.5 -0.125 -0.5 0 0 0 1 1 0 -0 NaN \"-0.5\" -0.75|1e+21 1e+21 3e+21 250000000000000000000 6 2055208960 -139984896 933756928 -559939583 -559939583 0 0 NaN \"1e+21\" 1e+21|1 -1 -0 -0 -0 0 0 0 1 1 0 -0 NaN \"0\" -0.25|NaN NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"NaN\" NaN|Infinity Infinity Infinity Infinity NaN 0 0 0 1 1 0 NaN NaN \"Infinity\" Infinity|-Infinity -Infinity -Infinity -Infinity NaN 0 0 0 1 1 0 NaN NaN \"-Infinity\" -Infinity|\"1\" -1 0 0 0 0 0 0 1 1 0 0 NaN \"\" -0.25|\"51\" 4 15 1.25 5 20 1 1 5 4 5 0 NaN \"5\" 4.75|\"abc1\" NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"abc\" NaN|\" 12 1\" 11 36 3 5 48 3 3 13 13 12 0 NaN \" 12 \" 11.75|2 0 3 0.25 1 4 0 0 1 0 1 0 NaN \"true\" 0.75|1 -1 0 0 0 0 0 0 1 1 0 0 NaN \"false\" -0.25|1 -1 0 0 0 0 0 0 1 1 0 0 NaN \"null\" -0.25|NaN NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"undefined\" NaN|E E E E E E E E E E E E E \"10\" E|E E E E E E E E E E E E E \"-3\" E|7 5 18 1.5 6 24 1 1 7 7 6 0 NaN \"6\" 5.75|\"91\" 8 27 2.25 2 36 2 2 9 8 9 0 NaN \"9\" 8.75|\"1\" -1 0 0 0 0 0 0 1 1 0 0 NaN \"\" -0.25|\"41\" 3 12 1 4 16 1 1 5 5 4 0 NaN \"4\" 3.75|\"[object Object]1\" NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"[object Object]\" NaN"
+localWithConstant1: "1 -1 0 0 0 0 0 0 1 1 0 0 NaN \"0\" -0.25|2 0 3 0.25 1 4 0 0 1 0 1 0 NaN \"1\" 0.75|0 -2 -3 -0.25 -1 -4 -1 1073741823 -1 -2 255 -0 NaN \"-1\" -1.25|8 6 21 1.75 0 28 1 1 7 6 7 0 NaN \"7\" 6.75|-6 -8 -21 -1.75 -0 -28 -2 1073741822 -7 -8 249 -0 NaN \"-7\" -7.25|256 254 765 63.75 3 1020 63 63 255 254 255 0 NaN \"255\" 254.75|1024 1022 3069 255.75 1 4092 255 255 1023 1022 255 0 NaN \"1023\" 1022.75|2147483648 2147483646 6442450941 536870911.75 1 -4 536870911 536870911 2147483647 2147483646 255 0 NaN \"2147483647\" 2147483646.75|-2147483647 -2147483649 -6442450944 -536870912 -2 0 -536870912 536870912 -2147483647 -2147483647 0 -0 NaN \"-2147483648\" -2147483648.25|4294967296 4294967294 12884901885 1073741823.75 3 -4 -1 1073741823 -1 -2 255 0 NaN \"4294967295\" 4294967294.75|9007199254740992 9007199254740990 27021597764222972 2251799813685247.8 3 -4 -1 1073741823 -1 -2 255 0 NaN \"9007199254740991\" 9007199254740991|-9007199254740990 -9007199254740992 -27021597764222972 -2251799813685247.8 -3 4 0 0 1 0 1 -0 NaN \"-9007199254740991\" -9007199254740991|1.5 -0.5 1.5 0.125 0.5 0 0 0 1 1 0 0 NaN \"0.5\" 0.25|0.5 -1.5 -1.5 -0.125 -0.5 0 0 0 1 1 0 -0 NaN \"-0.5\" -0.75|1e+21 1e+21 3e+21 250000000000000000000 6 2055208960 -139984896 933756928 -559939583 -559939583 0 0 NaN \"1e+21\" 1e+21|1 -1 -0 -0 -0 0 0 0 1 1 0 -0 NaN \"0\" -0.25|NaN NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"NaN\" NaN|Infinity Infinity Infinity Infinity NaN 0 0 0 1 1 0 NaN NaN \"Infinity\" Infinity|-Infinity -Infinity -Infinity -Infinity NaN 0 0 0 1 1 0 NaN NaN \"-Infinity\" -Infinity|\"1\" -1 0 0 0 0 0 0 1 1 0 0 NaN \"\" -0.25|\"51\" 4 15 1.25 5 20 1 1 5 4 5 0 NaN \"5\" 4.75|\"abc1\" NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"abc\" NaN|\" 12 1\" 11 36 3 5 48 3 3 13 13 12 0 NaN \" 12 \" 11.75|2 0 3 0.25 1 4 0 0 1 0 1 0 NaN \"true\" 0.75|1 -1 0 0 0 0 0 0 1 1 0 0 NaN \"false\" -0.25|1 -1 0 0 0 0 0 0 1 1 0 0 NaN \"null\" -0.25|NaN NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"undefined\" NaN|E E E E E E E E E E E E E \"10\" E|E E E E E E E E E E E E E \"-3\" E|7 5 18 1.5 6 24 1 1 7 7 6 0 NaN \"6\" 5.75|\"91\" 8 27 2.25 2 36 2 2 9 8 9 0 NaN \"9\" 8.75|\"1\" -1 0 0 0 0 0 0 1 1 0 0 NaN \"\" -0.25|\"41\" 3 12 1 4 16 1 1 5 5 4 0 NaN \"4\" 3.75|\"[object Object]1\" NaN NaN NaN NaN 0 0 0 1 1 0 NaN NaN \"[object Object]\" NaN"
+twoLocalsThenConstant0: "3 -3 3 17 6 3 3 0|1255 -1046 1024000 8184 3047 23 1003 535|254 1 -0 -1 -2 30 -2 -2147483648|3.5 -5.5 2 24 7.5 3 3.5 1|\"s4\" NaN NaN 32 \"s81\" 4 \"s4\" 2|9 -12 142 58 17 9 4 1|5 -2 10.5 19 9 5 5.5 2|1 1 1 1 2 1 1 1|NaN NaN NaN 8 NaN 1 NaN 0"
+twoLocalsThenConstant1: "3 -3 3 17 6 3 3 0|1255 -1046 1024000 8184 3047 23 1003 535|254 1 -0 -1 -2 30 -2 -2147483648|3.5 -5.5 2 24 7.5 3 3.5 1|\"s4\" NaN NaN 32 \"s81\" 4 \"s4\" 2|9 -12 142 58 17 9 4 1|5 -2 10.5 19 9 5 5.5 2|1 1 1 1 2 1 1 1|NaN NaN NaN 8 NaN 1 NaN 0"
+constantOverflowAndZero0: "9007199254740992 18014398509481982 0 -9007199254740992 -18014398509481982 9007199515875288 -9007199515875288 -0 0 0 -0 -1 1 0 -2147483648 -2147483648 -2147483648"
+constantOverflowAndZero1: "9007199254740992 18014398509481982 0 -9007199254740992 -18014398509481982 9007199515875288 -9007199515875288 -0 0 0 -0 -1 1 0 -2147483648 -2147483648 -2147483648"
+valueOfOrderAndEffects0: "4,6,1,2|71,14,1,6|TypeError|TypeError|8n|string|-1|RangeError|vvvvssss"
+valueOfOrderAndEffects1: "4,6,1,2|71,14,1,6|TypeError|TypeError|8n|string|-1|RangeError|vvvvssss"
+compoundAndProperties0: "2 \"s1\" 3 [0,17,2] 12 9 \"get\" \"set3\" \"get\" \"set16\""
+compoundAndProperties1: "2 \"s1\" 3 [0,17,2] 12 9 \"get\" \"set3\" \"get\" \"set16\""
+closureOperands0: "5 3 8 0 \"str1\" NaN NaN 11 8 9 12 15 9 19 20 [9,1,\"str\",2] 9 \"10str\" true false true true true true false|10 8 18 1 \"str1\" NaN NaN 11 18 19 22 20 9 19 20 [9,1,\"str\",2] 9 \"10str\" true false true true true true false"
+closureOperands1: "5 3 8 0 \"str1\" NaN NaN 11 8 9 12 15 9 19 20 [9,1,\"str\",2] 9 \"10str\" true false true true true true false|10 8 18 1 \"str1\" NaN NaN 11 18 19 22 20 9 19 20 [9,1,\"str\",2] 9 \"10str\" true false true true true true false"
+closureTdzAndLate0: "ReferenceError ReferenceError 6 5,1 gone 3 gone ReferenceError"
+closureTdzAndLate1: "ReferenceError ReferenceError 6 5,1 gone 3 gone ReferenceError"
+localIndexReads0: "10/5/\"h\"/\"zero\" 20/-6/\"é\"/undefined undefined/7/\"l\"/undefined 40/undefined/\"l\"/undefined undefined/undefined/\"o\"/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/\"frac\" 20/-6/\"é\"/undefined undefined/undefined/undefined/\"kay\" 4/3/5/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined 20/-6/\"é\"/undefined 10/5/\"h\"/\"zero\" fn/fn/fn/undefined"
+localIndexReads1: "10/5/\"h\"/\"zero\" 20/-6/\"é\"/undefined undefined/7/\"l\"/undefined 40/undefined/\"l\"/undefined undefined/undefined/\"o\"/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/\"frac\" 20/-6/\"é\"/undefined undefined/undefined/undefined/\"kay\" 4/3/5/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined undefined/undefined/undefined/undefined 20/-6/\"é\"/undefined 10/5/\"h\"/\"zero\" fn/fn/fn/undefined"
+localIndexBases0: "\"get\" \"make\" 8 2 \"b\" 4 2 500 \"y\" 6 2 \"none\" \"trap:1\" 2 \"elem\" \"g\" 8 \"inherited\" undefined \"TypeError\" \"TypeError\" 5 2.5 44"
+localIndexBases1: "\"get\" \"make\" 8 2 \"b\" 4 2 500 \"y\" 6 2 \"none\" \"trap:1\" 2 \"elem\" \"g\" 8 \"inherited\" undefined \"TypeError\" \"TypeError\" 5 2.5 44"
+pushedConstants0: "\"3,1\" \"1,3\" \"1,2,3\" \"3,\\\"s\\\",null,undefined,true,1.5,-0\" \"3,7\" \"4,2,6\" [3,1,2] [1,3] 1 7 5 5 1 \"\\\"3,1\\\",2\" undefined undefined \"t13u2\" \"a3b1c\" \"number1\" -2 1 NaN"
+pushedConstants1: "\"3,1\" \"1,3\" \"1,2,3\" \"3,\\\"s\\\",null,undefined,true,1.5,-0\" \"3,7\" \"4,2,6\" [3,1,2] [1,3] 1 7 5 5 1 \"\\\"3,1\\\",2\" undefined undefined \"t13u2\" \"a3b1c\" \"number1\" -2 1 NaN"
+eval: 5 undefined 5 2 8 2 2 2
+referencesKept0: [[7,,3],[1,7,9],9,true,"number",false,"7",[7,1],15,6,[[1,1],[3,40]],"b1","gs4gs6"]
+referencesKept1: [[7,,3],[1,7,9],9,true,"number",false,"7",[7,1],15,6,[[1,1],[3,40]],"b1","gs4gs6"]
+pushedInManyPlaces0: [[2,1],[1,2,2],[1,2,1],[2,1],"a-b-c21","21s",2,1,2,1,1,1,[2,1,,2],{2:2,a:1,b:2},[1,2,1,1,2],3,3,1,1,"11s","212","32",3,-3,"number1",true]
+pushedInManyPlaces1: [[2,1],[1,2,2],[1,2,1],[2,1],"a-b-c21","21s",2,1,2,1,1,1,[2,1,,2],{2:2,a:1,b:2},[1,2,1,1,2],3,3,1,1,"11s","212","32",3,-3,"number1",true]
+throwsMidExpression0: [[1,20,0,4],12,20,"TypeError",30,[1,20,1,4],14,20,"TypeError",40,"RangeError","RangeError","RangeError","TypeError",50,[1,20,3,4],18,20,"TypeError",30]
+throwsMidExpression1: [[1,20,0,4],12,20,"TypeError",30,[1,20,1,4],14,20,"TypeError",40,"RangeError","RangeError","RangeError","TypeError",50,[1,20,3,4],18,20,"TypeError",30]
+closuresInCalls0: [[62,62,68,"b00b5437020NaN",44.5,"12z2z21201.5",55,[11,12,13]],21]
+closuresInCalls1: [[62,62,68,"b00b5437020NaN",44.5,"12z2z21201.5",55,[11,12,13]],21]
+generatorsAndAsync0: [[7,88,[6,299,1,7],310,true],[1,3,7,9,false],0]
+generatorsAndAsync1: [[7,88,[6,299,1,7],310,true],[1,3,7,9,false],0]
+loopsWithFusedBodies0: [4877,396,"391671140278225138933624904473501558461",832,9007199254743900,220,-3,[-40,-13,14,41,-112,-94,-76,-58],[105,108,114,116,121]]
+loopsWithFusedBodies1: [4877,396,"391671140278225138933624904473501558461",832,9007199254743900,220,-3,[-40,-13,14,41,-112,-94,-76,-58],[105,108,114,116,121]]
+numberOperandsOfAnyKind0: [1334600691,"10/0/0/0/0/0/0 12/0/0/0/0/0/0 3/0/0/0/0/0/0 12/1073741824/0/0/-1/-1/0 3/-2/-1/2147483647/-1/-2/1 3/-1/-1/4294967295/-1/-1/0 12/7/7/7/559939591/559939591/0 3/0/0/0/2147483647/2147483647/0 3/0/0/0/7/7/0 3/1/1/1/1/1/0 12/0/0/0/2147483647/2147483645/2 3/-2/-2/4294967294/-2/-2/0 3/255/255/255/255/255/0 3/-2147483648/0/0/-1/-2147483648/2147483647 12/0/-536870912/536870912/-2147483646/-2147483646/0 3/2147483647/2147483647/2147483647/2147483647/2147483647/0 3/-2097152/1023/1023/2147483647/2024026858/123456789 3/-1/-1/4294967295/-1/559939583/-559939584 12/-2147483648/-1/1/-1/-256/255 12/0/0/0/-1/-1/0 12/-559939584/-559939584/3735027712/-559939584/-559939584/0 3/559939584/559939584/559939584/-1587544064/-1587544064/0 3/0/0/0/0/0/0 0/0/0/0/0/0/0 0/0/0/0/-1/-1/0 12/0/0/0/1/1/0 3/0/0/0/0/0/0 10/0/0/0/0/0/0 3/123456789/123456789/123456789/123456789/123456789/0 12/0/0/0/-2/-2/0","false/true/true/false/3/2/6/0/3 true/false/false/true/2/0/0/2/0 false/false/false/false/2/0/0/2/0 true/false/false/true/3/0/2/1/1 true/false/false/true/2/0/0/2/0 false/false/false/false/2/0/0/2/0 false/true/false/true/2/2/4/0/2 false/true/true/false/7/0/10/0/5 TypeError",35,129.246337890625,0]
+numberOperandsOfAnyKind1: [1334600691,"10/0/0/0/0/0/0 12/0/0/0/0/0/0 3/0/0/0/0/0/0 12/1073741824/0/0/-1/-1/0 3/-2/-1/2147483647/-1/-2/1 3/-1/-1/4294967295/-1/-1/0 12/7/7/7/559939591/559939591/0 3/0/0/0/2147483647/2147483647/0 3/0/0/0/7/7/0 3/1/1/1/1/1/0 12/0/0/0/2147483647/2147483645/2 3/-2/-2/4294967294/-2/-2/0 3/255/255/255/255/255/0 3/-2147483648/0/0/-1/-2147483648/2147483647 12/0/-536870912/536870912/-2147483646/-2147483646/0 3/2147483647/2147483647/2147483647/2147483647/2147483647/0 3/-2097152/1023/1023/2147483647/2024026858/123456789 3/-1/-1/4294967295/-1/559939583/-559939584 12/-2147483648/-1/1/-1/-256/255 12/0/0/0/-1/-1/0 12/-559939584/-559939584/3735027712/-559939584/-559939584/0 3/559939584/559939584/559939584/-1587544064/-1587544064/0 3/0/0/0/0/0/0 0/0/0/0/0/0/0 0/0/0/0/-1/-1/0 12/0/0/0/1/1/0 3/0/0/0/0/0/0 10/0/0/0/0/0/0 3/123456789/123456789/123456789/123456789/123456789/0 12/0/0/0/-2/-2/0","false/true/true/false/3/2/6/0/3 true/false/false/true/2/0/0/2/0 false/false/false/false/2/0/0/2/0 true/false/false/true/3/0/2/1/1 true/false/false/true/2/0/0/2/0 false/false/false/false/2/0/0/2/0 false/true/false/true/2/2/4/0/2 false/true/true/false/7/0/10/0/5 TypeError",35,129.246337890625,0]
+numberArithmeticOfAnyKind0: [-1979055476,"0/0/0/NaN/NaN 1.3333333333333333/0.6666666666666667/0.3333333333333333/3/5.551115123125783e-17 1.7976931348623157e+308/-1.7976931348623157e+308/-1.7976931348623157e+308/-5.562684646268003e-309/-1 -9007199254740988/9007199254740994/-27021597764222972/-3.33066907387547e-16/3 262.9/-248.9/1791.3/0.027354435326299335/7 0/1/-0.25/-1/0 0.5/-1.5/-0.5/-0.5/-0.5 Infinity/-Infinity/Infinity/0/0.1 1e+21/-1e+21/200000000000000000000/2e-22/0.2 -2147483392.1/2147483903.9/-549541065523.2/-1.1916272342205048e-7/255.9 2147483644.5/2147483649.5/-5368709117.5/-858993458.8/2 -2147483645/-2147483651/-6442450944/-715827882.6666666/-2 -9007199131284202/-9007199378197780/-1.1119998989994157e+24/-72958314.5534524/-68327455.75 9007199254740992/9007199254740992/4.450147717014403e-308/Infinity/0 1.0000090071992547e+21/999990992800745300000/9.007199254740991e+36/111022.30246251567/2724340145697198 -1e+21/-1e+21/-200000000000000000000/-5e+21/-0.04876874217606031 0.5/-0.5/0/1e-323/5e-324 1.7976931348623157e+308/1.7976931348623157e+308/-0/-Infinity/NaN NaN/NaN/NaN/NaN/NaN 9007199378197782/-9007199131284203/1.1119998989994158e+24/1.3706456983286763e-8/123456789.125 2147483647.3333333/-2147483646.6666667/715827882.3333333/1.552204291748599e-10/0.3333333333333333"]
+numberArithmeticOfAnyKind1: [-1979055476,"0/0/0/NaN/NaN 1.3333333333333333/0.6666666666666667/0.3333333333333333/3/5.551115123125783e-17 1.7976931348623157e+308/-1.7976931348623157e+308/-1.7976931348623157e+308/-5.562684646268003e-309/-1 -9007199254740988/9007199254740994/-27021597764222972/-3.33066907387547e-16/3 262.9/-248.9/1791.3/0.027354435326299335/7 0/1/-0.25/-1/0 0.5/-1.5/-0.5/-0.5/-0.5 Infinity/-Infinity/Infinity/0/0.1 1e+21/-1e+21/200000000000000000000/2e-22/0.2 -2147483392.1/2147483903.9/-549541065523.2/-1.1916272342205048e-7/255.9 2147483644.5/2147483649.5/-5368709117.5/-858993458.8/2 -2147483645/-2147483651/-6442450944/-715827882.6666666/-2 -9007199131284202/-9007199378197780/-1.1119998989994157e+24/-72958314.5534524/-68327455.75 9007199254740992/9007199254740992/4.450147717014403e-308/Infinity/0 1.0000090071992547e+21/999990992800745300000/9.007199254740991e+36/111022.30246251567/2724340145697198 -1e+21/-1e+21/-200000000000000000000/-5e+21/-0.04876874217606031 0.5/-0.5/0/1e-323/5e-324 1.7976931348623157e+308/1.7976931348623157e+308/-0/-Infinity/NaN NaN/NaN/NaN/NaN/NaN 9007199378197782/-9007199131284203/1.1119998989994158e+24/1.3706456983286763e-8/123456789.125 2147483647.3333333/-2147483646.6666667/715827882.3333333/1.552204291748599e-10/0.3333333333333333"]
+numbersMadeInLoops0: ["450260545.113","0.407591","112588485.016","0.044776","1099750.000",2199.2000000000003]
+numbersMadeInLoops1: ["450260545.113","0.407591","112588485.016","0.044776","1099750.000",2199.2000000000003]
+numberTestsThatJump0: [1419684036,"1767,1767,1509,739,1444,2021,739,1508,1452,1452,1452,1452,1452,1324,739,1765,0,1324,739,1765,1765","3340,3434,0167,0000,1160,5520,3434,0167,0000,3340,101000,0078",21,3,3,-0.75,10]
+numberTestsThatJump1: [1419684036,"1767,1767,1509,739,1444,2021,739,1508,1452,1452,1452,1452,1452,1324,739,1765,0,1324,739,1765,1765","3340,3434,0167,0000,1160,5520,3434,0167,0000,3340,101000,0078",21,3,3,-0.75,10]"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

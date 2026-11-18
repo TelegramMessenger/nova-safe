@@ -664,8 +664,9 @@ impl Vm {
         }
         // A collection is looked for where one can have become due: when the
         // code starts, after an instruction that is not plain (the plain ones
-        // allocate nothing on the heap), and on every turn of a loop, where
-        // the poll above can have asked for one.
+        // allocate nothing on the heap but the Number an operator gives,
+        // and run only once between two of these places), and on every turn
+        // of a loop, where the poll above can have asked for one.
         if agent.check_gc() {
             self.trigger_gc(agent, gc.reborrow());
         }
@@ -1282,6 +1283,32 @@ impl Vm {
                 let value = vm.stack[instr.get_second_index()];
                 vm.stack.push(value);
             }
+            // An operator with a constant as its right operand: neither
+            // operand goes by the stack.
+            Instruction::ApplyBinaryOperatorWithConstant => {
+                let Some(left) = vm.result else {
+                    return Plain::No;
+                };
+                let right = code.fetch_constant(agent, instr.get_first_index(), gc);
+                let Some(value) = Instruction::fused_operator(instr.get_second_index())
+                    .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
+                else {
+                    return Plain::No;
+                };
+                vm.result = Some(value);
+            }
+            Instruction::ApplyBinaryOperatorToIndexWithConstant => {
+                let (slot, operator) =
+                    Instruction::fused_slot_and_operator(instr.get_first_index());
+                let left = vm.stack[slot];
+                let right = code.fetch_constant(agent, instr.get_second_index(), gc);
+                let Some(value) = Instruction::fused_operator(operator)
+                    .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
+                else {
+                    return Plain::No;
+                };
+                vm.result = Some(value);
+            }
             Instruction::StoreConstant => {
                 let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
                 vm.result = Some(constant.unbind());
@@ -1318,7 +1345,7 @@ impl Vm {
                     return Plain::Looped;
                 }
             }
-            // The test of most loops, on two integers: before the body with
+            // The test of most loops, on two Numbers: before the body with
             // the jump out where it fails, or after it with the jump back
             // where it holds.
             Instruction::JumpIfNotLessThan
@@ -1329,21 +1356,38 @@ impl Vm {
             | Instruction::JumpIfLessThanEquals
             | Instruction::JumpIfGreaterThan
             | Instruction::JumpIfGreaterThanEquals => {
-                let (Some(&Value::Integer(left)), Some(Value::Integer(right))) =
-                    (vm.stack.last(), vm.result)
-                else {
+                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
                     return Plain::No;
                 };
-                let (left, right) = (left.into_i64(), right.into_i64());
-                let jumps = match instr.kind {
-                    Instruction::JumpIfNotLessThan => left >= right,
-                    Instruction::JumpIfNotLessThanEquals => left > right,
-                    Instruction::JumpIfNotGreaterThan => left <= right,
-                    Instruction::JumpIfNotGreaterThanEquals => left < right,
-                    Instruction::JumpIfLessThan => left < right,
-                    Instruction::JumpIfLessThanEquals => left <= right,
-                    Instruction::JumpIfGreaterThan => left > right,
-                    _ => left >= right,
+                let jumps = if let (Value::Integer(left), Value::Integer(right)) = (left, right) {
+                    let (left, right) = (left.into_i64(), right.into_i64());
+                    match instr.kind {
+                        Instruction::JumpIfNotLessThan => left >= right,
+                        Instruction::JumpIfNotLessThanEquals => left > right,
+                        Instruction::JumpIfNotGreaterThan => left <= right,
+                        Instruction::JumpIfNotGreaterThanEquals => left < right,
+                        Instruction::JumpIfLessThan => left < right,
+                        Instruction::JumpIfLessThanEquals => left <= right,
+                        Instruction::JumpIfGreaterThan => left > right,
+                        _ => left >= right,
+                    }
+                } else {
+                    let (comparison, negated) = match instr.kind {
+                        Instruction::JumpIfNotLessThan => (Instruction::LessThan, true),
+                        Instruction::JumpIfNotLessThanEquals => (Instruction::LessThanEquals, true),
+                        Instruction::JumpIfNotGreaterThan => (Instruction::GreaterThan, true),
+                        Instruction::JumpIfNotGreaterThanEquals => {
+                            (Instruction::GreaterThanEquals, true)
+                        }
+                        Instruction::JumpIfLessThan => (Instruction::LessThan, false),
+                        Instruction::JumpIfLessThanEquals => (Instruction::LessThanEquals, false),
+                        Instruction::JumpIfGreaterThan => (Instruction::GreaterThan, false),
+                        _ => (Instruction::GreaterThanEquals, false),
+                    };
+                    let Some(holds) = Self::numbers_compare(agent, comparison, left, right) else {
+                        return Plain::No;
+                    };
+                    holds != negated
                 };
                 vm.stack.pop();
                 vm.result = None;
@@ -1395,7 +1439,19 @@ impl Vm {
                             _ => left >= right,
                         }
                     }
-                    _ => return Plain::No,
+                    (comparison, left, right) => {
+                        let comparison = match comparison {
+                            Instruction::JumpIfNotLessThan => Instruction::LessThan,
+                            Instruction::JumpIfNotLessThanEquals => Instruction::LessThanEquals,
+                            Instruction::JumpIfNotGreaterThan => Instruction::GreaterThan,
+                            _ => Instruction::GreaterThanEquals,
+                        };
+                        let Some(holds) = Self::numbers_compare(agent, comparison, left, right)
+                        else {
+                            return Plain::No;
+                        };
+                        !holds
+                    }
                 };
                 vm.result = None;
                 if jumps {
@@ -1407,7 +1463,8 @@ impl Vm {
                 }
             }
             // The test at the end of a loop, after `i++` or `i--` where the
-            // instruction makes that too: all of it on integers, or none.
+            // instruction makes that too: all of it here, or none. The step
+            // is made of an integer only; the test takes any two Numbers.
             Instruction::JumpIfIndexLessThanConstant
             | Instruction::JumpIfIndexLessThanIndex
             | Instruction::JumpIfIndexLessThanEqualsConstant
@@ -1434,22 +1491,50 @@ impl Vm {
                 } else {
                     vm.stack[instr.get_second_index()]
                 };
-                let (Value::Integer(left), Value::Integer(right)) = (vm.stack[slot], right) else {
-                    return Plain::No;
-                };
-                let (mut left, right) = (left.into_i64(), right.into_i64());
-                if step != 0 {
-                    left += step as i64;
-                    let Ok(stepped) = SmallInteger::try_from(left) else {
-                        return Plain::No;
-                    };
-                    vm.stack[slot] = Value::Integer(stepped);
-                }
-                let holds = match comparison {
-                    Instruction::LessThan => left < right,
-                    Instruction::LessThanEquals => left <= right,
-                    Instruction::GreaterThan => left > right,
-                    _ => left >= right,
+                let holds = match (vm.stack[slot], right) {
+                    (Value::Integer(left), Value::Integer(right)) => {
+                        let (mut left, right) = (left.into_i64(), right.into_i64());
+                        if step != 0 {
+                            left += step as i64;
+                            let Ok(stepped) = SmallInteger::try_from(left) else {
+                                return Plain::No;
+                            };
+                            vm.stack[slot] = Value::Integer(stepped);
+                        }
+                        match comparison {
+                            Instruction::LessThan => left < right,
+                            Instruction::LessThanEquals => left <= right,
+                            Instruction::GreaterThan => left > right,
+                            _ => left >= right,
+                        }
+                    }
+                    (left, right) => {
+                        // The counter after its step, where it has one.
+                        let stepped = match left {
+                            _ if step == 0 => None,
+                            Value::Integer(left) => {
+                                let Ok(stepped) =
+                                    SmallInteger::try_from(left.into_i64() + step as i64)
+                                else {
+                                    return Plain::No;
+                                };
+                                Some(Value::Integer(stepped))
+                            }
+                            _ => return Plain::No,
+                        };
+                        let Some(holds) = Self::numbers_compare(
+                            agent,
+                            comparison,
+                            stepped.unwrap_or(left),
+                            right,
+                        ) else {
+                            return Plain::No;
+                        };
+                        if let Some(stepped) = stepped {
+                            vm.stack[slot] = stepped;
+                        }
+                        holds
+                    }
                 };
                 vm.result = None;
                 if holds {
@@ -1579,6 +1664,16 @@ impl Vm {
                     return Plain::No;
                 };
                 vm.result = Some(value.unbind());
+            }
+            // The same variable, pushed: an operand or an argument.
+            Instruction::LoadBindingAtSite => {
+                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
+                let site = code.fetch_binding_site(agent, instr.get_second_index());
+                let Some(value) = binding_value_at_site(agent, site, name, gc) else {
+                    return Plain::No;
+                };
+                vm.result = None;
+                vm.stack.push(value.unbind());
             }
             Instruction::PutBindingAtSite | Instruction::PutGlobalAtSite => {
                 let Some(value) = vm.result else {
@@ -1829,6 +1924,31 @@ impl Vm {
                 vm.stack.pop();
                 vm.result = Some(value);
             }
+            // The same read with the base as the result and the key in a
+            // local: neither goes by the stack.
+            Instruction::GetValueWithIndexKey => {
+                let (Some(base), Value::Integer(index)) =
+                    (vm.result, vm.stack[instr.get_first_index()])
+                else {
+                    return Plain::No;
+                };
+                let index = index.into_i64();
+                let value = if let Value::Array(array) = base {
+                    let Some(&Some(value)) = usize::try_from(index)
+                        .ok()
+                        .and_then(|index| array.as_slice(agent).get(index))
+                    else {
+                        return Plain::No;
+                    };
+                    value.unbind()
+                } else {
+                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                        return Plain::No;
+                    };
+                    value
+                };
+                vm.result = Some(value);
+            }
             // `a[i] = v` for an element the Array has, as a plain value, or
             // for a TypedArray and a Number.
             Instruction::PutValue => {
@@ -1905,6 +2025,7 @@ impl Vm {
             | Instruction::ApplyAdditionBinaryOperator
             | Instruction::ApplySubtractionBinaryOperator
             | Instruction::ApplyMultiplicationBinaryOperator
+            | Instruction::ApplyDivisionBinaryOperator
             | Instruction::ApplyRemainderBinaryOperator
             | Instruction::ApplyShiftLeftBinaryOperator
             | Instruction::ApplyShiftRightBinaryOperator
@@ -1912,7 +2033,7 @@ impl Vm {
             | Instruction::ApplyBitwiseORBinaryOperator
             | Instruction::ApplyBitwiseXORBinaryOperator
             | Instruction::ApplyBitwiseAndBinaryOperator => {
-                return vm.operate_on_integers(instr.kind);
+                return vm.operate_on_integers(agent, instr.kind, gc);
             }
             _ => return Plain::No,
         }
@@ -2188,34 +2309,153 @@ impl Vm {
         Plain::Done
     }
 
-    /// A comparison or an arithmetic operator on two integers whose result is
-    /// a Boolean or an integer: nothing to convert and nothing to allocate.
+    /// A comparison or an arithmetic operator on two Numbers, the left one
+    /// on the stack and the right one the result: nothing to convert.
     #[inline(always)]
-    fn operate_on_integers(&mut self, kind: Instruction) -> Plain {
-        let (Some(&Value::Integer(left)), Some(Value::Integer(right))) =
-            (self.stack.last(), self.result)
-        else {
+    fn operate_on_integers(
+        &mut self,
+        agent: &mut Agent,
+        kind: Instruction,
+        gc: NoGcScope,
+    ) -> Plain {
+        let (Some(&left), Some(right)) = (self.stack.last(), self.result) else {
             return Plain::No;
         };
-        let (left, right) = (left.into_i64(), right.into_i64());
+        let Some(value) = Self::number_operation(agent, kind, left, right, gc) else {
+            return Plain::No;
+        };
+        self.finish_operation(value)
+    }
+
+    /// What a comparison or an arithmetic operator gives for two Numbers,
+    /// which no conversion that could run a script comes into: in place for
+    /// two integers whose result is a Boolean or an integer again.
+    #[inline(always)]
+    fn number_operation(
+        agent: &mut Agent,
+        kind: Instruction,
+        left: Value,
+        right: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        if let (Value::Integer(left), Value::Integer(right)) = (left, right)
+            && let Some(value) = Self::integer_operation(kind, left.into_i64(), right.into_i64())
+        {
+            return Some(value);
+        }
+        // Seen here, so that the `+` of two strings is not a call first.
+        if !(left.is_number() && right.is_number()) {
+            return None;
+        }
+        Self::float_operation(agent, kind, left, right, gc)
+    }
+
+    /// Whether `comparison` (LessThan or one like it) holds for two Numbers
+    /// of any kind, compared as doubles: it does not where one is NaN. None
+    /// where an operand is not a Number, and would be converted.
+    #[inline(always)]
+    fn numbers_compare(
+        agent: &Agent,
+        comparison: Instruction,
+        left: Value,
+        right: Value,
+    ) -> Option<bool> {
+        // Seen here, so that a comparison of two strings is not a call first.
+        if !(left.is_number() && right.is_number()) {
+            return None;
+        }
+        Self::doubles_compare(agent, comparison, left, right)
+    }
+
+    #[inline(never)]
+    fn doubles_compare(
+        agent: &Agent,
+        comparison: Instruction,
+        left: Value,
+        right: Value,
+    ) -> Option<bool> {
+        let (Ok(left), Ok(right)) = (Number::try_from(left), Number::try_from(right)) else {
+            return None;
+        };
+        let (left, right) = (left.into_f64_(agent), right.into_f64_(agent));
+        Some(match comparison {
+            Instruction::LessThan => left < right,
+            Instruction::LessThanEquals => left <= right,
+            Instruction::GreaterThan => left > right,
+            _ => left >= right,
+        })
+    }
+
+    /// The comparisons and the operators on two Numbers of any kind. A
+    /// comparison is of two doubles, where one that is NaN compares as
+    /// false; an operator is what the Number type defines for it. A result
+    /// that is a double too wide for a Value is a Number of the heap: the
+    /// one thing a plain instruction allocates, and no collection is due
+    /// before the loop looks for one again.
+    #[inline(never)]
+    fn float_operation(
+        agent: &mut Agent,
+        kind: Instruction,
+        left: Value,
+        right: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let (Ok(left), Ok(right)) = (Number::try_from(left), Number::try_from(right)) else {
+            return None;
+        };
+        let (left, right) = (left.bind(gc), right.bind(gc));
+        let value: Value = match kind {
+            Instruction::LessThan
+            | Instruction::LessThanEquals
+            | Instruction::GreaterThan
+            | Instruction::GreaterThanEquals => {
+                let (left, right) = (left.into_f64_(agent), right.into_f64_(agent));
+                let holds = match kind {
+                    Instruction::LessThan => left < right,
+                    Instruction::LessThanEquals => left <= right,
+                    Instruction::GreaterThan => left > right,
+                    _ => left >= right,
+                };
+                holds.into()
+            }
+            Instruction::ApplyAdditionBinaryOperator => Number::add(agent, left, right).into(),
+            Instruction::ApplySubtractionBinaryOperator
+            | Instruction::ApplyMultiplicationBinaryOperator
+            | Instruction::ApplyDivisionBinaryOperator
+            | Instruction::ApplyRemainderBinaryOperator
+            | Instruction::ApplyShiftLeftBinaryOperator
+            | Instruction::ApplyShiftRightBinaryOperator
+            | Instruction::ApplyShiftRightZeroFillBinaryOperator
+            | Instruction::ApplyBitwiseORBinaryOperator
+            | Instruction::ApplyBitwiseXORBinaryOperator
+            | Instruction::ApplyBitwiseAndBinaryOperator => {
+                number_binary_operator(agent, kind, left, right, gc)
+                    .ok()?
+                    .into()
+            }
+            _ => return None,
+        };
+        Some(value.unbind())
+    }
+
+    /// What a comparison or an arithmetic operator gives for two integers,
+    /// where that is a Boolean or an integer again.
+    #[inline(always)]
+    fn integer_operation(kind: Instruction, left: i64, right: i64) -> Option<Value<'static>> {
         // ToInt32 and ToUint32 of an integer are its low 32 bits.
         let (left32, right32) = (left as i32, right as i32);
         let integer = match kind {
-            Instruction::LessThan => return self.finish_operation((left < right).into()),
-            Instruction::LessThanEquals => return self.finish_operation((left <= right).into()),
-            Instruction::GreaterThan => return self.finish_operation((left > right).into()),
-            Instruction::GreaterThanEquals => {
-                return self.finish_operation((left >= right).into());
-            }
+            Instruction::LessThan => return Some((left < right).into()),
+            Instruction::LessThanEquals => return Some((left <= right).into()),
+            Instruction::GreaterThan => return Some((left > right).into()),
+            Instruction::GreaterThanEquals => return Some((left >= right).into()),
             Instruction::ApplyAdditionBinaryOperator => left + right,
             Instruction::ApplySubtractionBinaryOperator => left - right,
             Instruction::ApplyMultiplicationBinaryOperator => {
-                let Some(product) = left.checked_mul(right) else {
-                    return Plain::No;
-                };
+                let product = left.checked_mul(right)?;
                 // A zero product of a negative factor is -0: not an integer.
                 if product == 0 && (left < 0 || right < 0) {
-                    return Plain::No;
+                    return None;
                 }
                 product
             }
@@ -2223,7 +2463,7 @@ impl Vm {
                 // A zero remainder of a negative dividend is -0, and the
                 // remainder of a division by zero is NaN.
                 if left < 0 || right <= 0 {
-                    return Plain::No;
+                    return None;
                 }
                 left % right
             }
@@ -2239,12 +2479,9 @@ impl Vm {
             Instruction::ApplyBitwiseORBinaryOperator => i64::from(left32 | right32),
             Instruction::ApplyBitwiseXORBinaryOperator => i64::from(left32 ^ right32),
             Instruction::ApplyBitwiseAndBinaryOperator => i64::from(left32 & right32),
-            _ => return Plain::No,
+            _ => return None,
         };
-        let Ok(integer) = SmallInteger::try_from(integer) else {
-            return Plain::No;
-        };
-        self.finish_operation(Value::Integer(integer))
+        SmallInteger::try_from(integer).ok().map(Value::Integer)
     }
 
     /// Replaces the two operands of a binary operator with its result.
@@ -2378,7 +2615,11 @@ impl Vm {
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
             | Instruction::GetValueWithExpressionKey
-            | Instruction::PutValueWithExpressionKey => {
+            | Instruction::GetValueWithIndexKey
+            | Instruction::PutValueWithExpressionKey
+            | Instruction::LoadBindingAtSite
+            | Instruction::ApplyBinaryOperatorWithConstant
+            | Instruction::ApplyBinaryOperatorToIndexWithConstant => {
                 execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
             Instruction::PutPropertyWithCache
@@ -2537,7 +2778,11 @@ impl Vm {
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
             | Instruction::GetValueWithExpressionKey
+            | Instruction::GetValueWithIndexKey
             | Instruction::PutValueWithExpressionKey
+            | Instruction::LoadBindingAtSite
+            | Instruction::ApplyBinaryOperatorWithConstant
+            | Instruction::ApplyBinaryOperatorToIndexWithConstant
             | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }

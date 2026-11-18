@@ -2191,6 +2191,53 @@ pub(super) fn execute_fused_instruction<'gc>(
             vm.result = Some(value);
             execute_put_value(agent, vm, executable, instr, false, gc)
         }
+        Instruction::GetValueWithIndexKey => {
+            // Load, GetValueFromIndex
+            let key = vm.stack[instr.get_first_index()];
+            vm.execute_load();
+            vm.result = Some(key);
+            // EvaluatePropertyAccessWithExpressionKey, GetValue
+            execute_evaluate_property_access_with_expression_key(agent, vm, gc.nogc());
+            execute_get_value(agent, vm, executable, instr, false, false, gc)
+        }
+        Instruction::LoadBindingAtSite => {
+            // GetBindingAtSite, Load
+            execute_get_binding_at_site(agent, vm, executable, instr, false, gc)?;
+            vm.execute_load();
+            Ok(())
+        }
+        Instruction::ApplyBinaryOperatorWithConstant
+        | Instruction::ApplyBinaryOperatorToIndexWithConstant => {
+            let (left, constant, operator) =
+                if instr.kind == Instruction::ApplyBinaryOperatorWithConstant {
+                    // Load
+                    (
+                        vm.result.take().unwrap(),
+                        instr.get_first_index(),
+                        instr.get_second_index(),
+                    )
+                } else {
+                    // LoadFromIndex
+                    let (slot, operator) =
+                        Instruction::fused_slot_and_operator(instr.get_first_index());
+                    (vm.stack[slot], instr.get_second_index(), operator)
+                };
+            vm.stack.push(left);
+            // StoreConstant
+            vm.result = Some(
+                executable
+                    .fetch_constant(agent, constant, gc.nogc())
+                    .unbind(),
+            );
+            // The operator
+            match Instruction::fused_operator(operator) {
+                Some(Instruction::ApplyAdditionBinaryOperator) => {
+                    execute_apply_addition_binary_operator(agent, vm, gc)
+                }
+                Some(kind) => execute_apply_binary_operator(agent, vm, kind, gc),
+                None => unreachable!("a fused instruction without its operator"),
+            }
+        }
         Instruction::IncrementIndex | Instruction::DecrementIndex => {
             let slot = instr.get_first_index();
             // GetValueFromIndex, ToNumeric
