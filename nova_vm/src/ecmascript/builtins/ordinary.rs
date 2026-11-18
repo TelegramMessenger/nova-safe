@@ -51,6 +51,7 @@ use crate::ecmascript::{WeakMapRecord, WeakRefHeapData, WeakSetHeapData};
 
 /// ## [10.1 Ordinary Object Internal Methods and Internal Slots](https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots)
 impl<'a> InternalMethods<'a> for OrdinaryObject<'a> {
+    #[inline]
     fn get_own_property_at_offset<'gc>(
         self,
         agent: &Agent,
@@ -1310,20 +1311,7 @@ pub(crate) fn ordinary_set_own_data_at_offset(
     offset: PropertyOffset,
     value: Value,
 ) -> bool {
-    let offset = offset.get_property_offset();
-    let data = object.get_elements_storage(agent);
-    if !matches!(data.values.get(offset as usize), Some(Some(_))) {
-        return false;
-    }
-    if data
-        .descriptors
-        .and_then(|descriptors| descriptors.get(&(offset as u32)))
-        .is_some_and(|descriptor| descriptor.is_writable() != Some(true))
-    {
-        return false;
-    }
-    object.get_elements_values_mut(agent)[offset as usize] = Some(value.unbind());
-    true
+    object.set_writable_value_at(agent, offset.get_property_offset() as usize, value.unbind())
 }
 
 pub(crate) fn ordinary_set_at_offset<'a>(
