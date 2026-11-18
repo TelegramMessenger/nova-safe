@@ -35,30 +35,31 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.8x |
-| call | 14 | 10.4x | 2.3x |
+| call | 14 | 10.4x | 2.2x |
 | math | 4 | 9.7x | 2.2x |
 | string | 26 | 10.6x | 1.5x |
 | prop | 13 | 7.1x | 1.9x |
 | map, set | 4 | 4.6x | 1.7x |
-| app | 8 | 6.1x | 1.9x |
-| array | 14 | 5.8x | 1.6x |
+| app | 8 | 6.1x | 1.7x |
+| array | 14 | 5.8x | 1.7x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
-| gc | 3 of 5 | 3.6x | 1.2x |
+| gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.9x |
 | all | 108 | 7.6x | 1.7x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst is now a generator (4.1x), then typed `Float64Array`
-arithmetic (4.0x), then short strings made and dropped (3.3x). 7 of the 108 cases are above 3x and 66 at
-or under 2x, 15 of them at or under QuickJS's time. Over all cases it is 1.71x: 2.12x before the round of
-patterns, Array iteration and
+was the worst after it (38x, area 7). The worst are now a generator and typed `Float64Array` arithmetic
+(4.1x both), then the properties of one object read and written in a loop (3.1x). 6 of the 108 cases are
+above 3x and 68 at or under 2x, 15 of them at or under QuickJS's time. Over all cases it is 1.68x: 2.12x
+before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
 stepping a generator without a result object took it to 1.88x. The arguments object in a stack slot halved
 one case of the 108 and left the mean where it was, the string hash that follows from the hashes of
-what is concatenated took it to 1.78x, and more built-in functions run in place of a call took it here.
+what is concatenated took it to 1.78x, more built-in functions run in place of a call to 1.71x, and
+chains of `+` compiled as one concatenation took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -801,6 +802,23 @@ Left in a step of such a loop: the record of the new text allocated and, where t
 dropped again after the table found the old one (an eighth each for the table and the record), and the
 collector's sweep of the records (an eighth).
 
+`"row-" + i + "-" + (i & 15)` made a String at every `+`: three for one that is wanted, each hashed,
+looked up in the table, allocated and collected (`gc/string-garbage`, 3.3x: 210 ns for the expression
+against 63). A chain of additions is now compiled as one concatenation from its first operand that is a
+String whatever is evaluated (a string or template literal): what stands before that operand is added up
+as it is written, each operand after it is made the String it is there (ToPrimitive, then ToString) by an
+instruction of its own before the next operand is evaluated, as the operators make it, and one
+instruction puts the Strings together. Up to 64 bytes they are put together on the native stack and the
+table asked, so the text goes to the heap only where it has no such String yet. A String among them that
+is being built (areas above) is not copied: what stands before it and after it is put together and then
+put before it and appended to it, as the operators did, so a loop that builds a text with such a chain
+still adds to the text. Template literals are compiled the same way, with ToString for each
+substitution.
+
+Short strings made and dropped went from 3.3x to 1.5x, the canvas command buffer (`"rgb(" + r + ",10," +
+b + ")"`) from 2.4x to 1.7x, rows of HTML from 2.1x to 1.5x, template literals from 1.6x to 1.4x; the
+application cases from 1.9x to 1.7x, all cases from 1.71x to 1.68x.
+
 ### 8. Other string work
 
 `slice`/`substring`/`startsWith` and `charCodeAt` were 4-6x. A profile of a tokenizer showed about a sixth of its
@@ -1002,7 +1020,9 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   script as its test.
 - A template literal evaluated all of its substitutions and then converted them to Strings, where each is
   to be converted before the next is evaluated: a `toString` that the next expression can observe ran
-  late. Found while reading how concatenation is compiled; not fixed in this round.
+  late, and one that throws did not keep the later substitutions from being evaluated. So here and in the
+  build this started from. Found while reading how concatenation is compiled; fixed with the chains of
+  `+`, which convert each operand in its turn, and tested with them.
 
 - `loop/switch` read 4% slower after the round of the text of a Number (5.5 to 5.75 ms, in seven runs of
   each binary in turn), which touched nothing it runs: where the loop of instructions lands in the binary
