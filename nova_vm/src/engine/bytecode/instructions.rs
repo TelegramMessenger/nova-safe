@@ -750,6 +750,12 @@ impl Instruction {
         )
     }
 
+    /// How many bytes the instruction takes in the code: itself and its
+    /// arguments.
+    pub(super) const fn length(self) -> usize {
+        1 + self.argument_count() as usize * 2
+    }
+
     #[inline(always)]
     pub const fn argument_count(self) -> u8 {
         match self {
@@ -1275,6 +1281,22 @@ impl Instr {
             kind,
             args: InstructionArgs([u16::from_ne_bytes([a, b]), u16::from_ne_bytes([c, d])]),
         })
+    }
+
+    /// The instruction that `window` starts with: its byte and the four
+    /// bytes after it, whichever of those are its arguments. The same
+    /// [`Instr`] as [`Instr::consume_instruction`] reads there, where the
+    /// code has that many bytes left.
+    #[inline(always)]
+    pub(super) fn in_window(window: &[u8; 5]) -> Instr {
+        let [byte, a, b, c, d] = *window;
+        let Some(kind) = Instruction::from_u8(byte) else {
+            panic_invalid_instruction()
+        };
+        Instr {
+            kind,
+            args: InstructionArgs([u16::from_ne_bytes([a, b]), u16::from_ne_bytes([c, d])]),
+        }
     }
 
     #[cold]

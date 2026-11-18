@@ -717,16 +717,31 @@ impl Vm {
             // every instruction that fetches a constant, a name or a cache.
             let mut code = executable.get(agent);
             let mut collections = agent.heap.collections;
+            // The code as the loop reads an instruction from it with one
+            // look at how much is left: an instruction and the four bytes
+            // after it. None of it when the instructions are printed, so
+            // that every one of them goes the other way, where the last
+            // instructions of the code and its end go.
+            let windows: &[u8] = if print_internals { &[] } else { &instructions };
             let change = loop {
-                let Some(instr) = Instr::consume_instruction(&instructions, &mut ip) else {
-                    break Change::End;
+                let instr = if let Some(window) =
+                    windows.get(ip..).and_then(|rest| rest.first_chunk::<5>())
+                {
+                    Instr::in_window(window)
+                } else {
+                    let mut next = ip;
+                    let Some(instr) = Instr::consume_instruction(&instructions, &mut next) else {
+                        break Change::End;
+                    };
+                    if print_internals {
+                        Self::print_executing(instr.kind);
+                    }
+                    instr
                 };
-                if print_internals {
-                    Self::print_executing(instr.kind);
-                }
                 // Most of what runs is plain: it goes straight to the next
                 // instruction, with no result to look at and nothing to
-                // release.
+                // release. Every instruction leaves `ip` after itself
+                // there, or where it jumps.
                 match Self::execute_plain_instruction(
                     agent,
                     self,
@@ -1292,31 +1307,111 @@ impl Vm {
         instr: Instr,
         gc: NoGcScope,
     ) -> Plain {
+        // `ip` is at the instruction, and every arm moves it past the
+        // instruction first, whatever it then makes of it: by a length that
+        // is a constant of the arm. Found from a table by the byte that was
+        // read, the place of the next instruction waited for that byte and
+        // for the table. The instructions of one arm are of one length.
+        macro_rules! step {
+            ($kind:ident $(, $same:ident)*) => {{
+                const LENGTH: usize = Instruction::$kind.length();
+                $(const _: () = assert!(Instruction::$same.length() == LENGTH);)*
+                *ip += LENGTH;
+            }};
+        }
+        // The instructions of one family (the comparisons that jump, the
+        // operators) have an arm each, in which the kind is a constant: one
+        // arm for all of them found out by the kind again what the
+        // instruction was.
+        macro_rules! compare_and_jump {
+            ($kind:ident) => {{
+                step!($kind);
+                return Self::compare_and_jump(agent, vm, ip, instr, Instruction::$kind);
+            }};
+        }
+        macro_rules! compare_local_and_jump {
+            ($kind:ident) => {{
+                step!($kind);
+                return Self::compare_local_and_jump(
+                    agent,
+                    vm,
+                    ip,
+                    instructions,
+                    code,
+                    instr,
+                    Instruction::$kind,
+                    gc,
+                );
+            }};
+        }
+        macro_rules! step_local_compare_and_jump {
+            ($kind:ident) => {{
+                step!($kind);
+                return Self::step_local_compare_and_jump(
+                    agent,
+                    vm,
+                    ip,
+                    instructions,
+                    code,
+                    instr,
+                    Instruction::$kind,
+                    gc,
+                );
+            }};
+        }
+        macro_rules! operate_on_integers {
+            ($kind:ident) => {{
+                step!($kind);
+                return vm.operate_on_integers(agent, Instruction::$kind, gc);
+            }};
+        }
         match instr.kind {
-            Instruction::Load => vm.execute_load(),
-            Instruction::Return => return Plain::Return,
-            Instruction::LoadCopy => vm.execute_load_copy(),
-            Instruction::PutValueToIndex => vm.execute_load_to_index(instr.get_first_index()),
-            Instruction::Store => vm.execute_store(),
-            Instruction::GetValueFromIndex => vm.execute_store_from_index(instr.get_first_index()),
+            Instruction::Load => {
+                step!(Load);
+                vm.execute_load()
+            }
+            Instruction::Return => {
+                step!(Return);
+                return Plain::Return;
+            }
+            Instruction::LoadCopy => {
+                step!(LoadCopy);
+                vm.execute_load_copy()
+            }
+            Instruction::PutValueToIndex => {
+                step!(PutValueToIndex);
+                vm.execute_load_to_index(instr.get_first_index())
+            }
+            Instruction::Store => {
+                step!(Store);
+                vm.execute_store()
+            }
+            Instruction::GetValueFromIndex => {
+                step!(GetValueFromIndex);
+                vm.execute_store_from_index(instr.get_first_index())
+            }
             Instruction::LoadFromIndex => {
+                step!(LoadFromIndex);
                 vm.execute_store_from_index(instr.get_first_index());
                 vm.execute_load();
             }
             // A local and a constant, two locals: the operands of most
             // binary expressions, and the arguments of many calls.
             Instruction::LoadFromIndexStoreConstant => {
+                step!(LoadFromIndexStoreConstant);
                 let value = vm.stack[instr.get_first_index()];
                 vm.stack.push(value);
                 let constant = code.fetch_constant(agent, instr.get_second_index(), gc);
                 vm.result = Some(constant.unbind());
             }
             Instruction::LoadFromIndexGetFromIndex => {
+                step!(LoadFromIndexGetFromIndex);
                 let value = vm.stack[instr.get_first_index()];
                 vm.stack.push(value);
                 vm.result = Some(vm.stack[instr.get_second_index()]);
             }
             Instruction::LoadFromIndexLoadFromIndex => {
+                step!(LoadFromIndexLoadFromIndex);
                 let value = vm.stack[instr.get_first_index()];
                 vm.stack.push(value);
                 let value = vm.stack[instr.get_second_index()];
@@ -1326,6 +1421,7 @@ impl Vm {
             // operand goes by the stack, and the result goes where the
             // instruction says.
             Instruction::ApplyBinaryOperatorWithConstant => {
+                step!(ApplyBinaryOperatorWithConstant);
                 let Some(left) = vm.result else {
                     return Plain::No;
                 };
@@ -1345,6 +1441,7 @@ impl Vm {
                 }
             }
             Instruction::ApplyBinaryOperatorToIndexWithConstant => {
+                step!(ApplyBinaryOperatorToIndexWithConstant);
                 let operation = instr.get_first_index();
                 let (slot, operator) = Instruction::fused_slot_and_operator(operation);
                 let left = vm.stack[slot];
@@ -1364,6 +1461,7 @@ impl Vm {
             // An operator on the top of the stack and the result, whose
             // value replaces the top of the stack or goes to a local.
             Instruction::ApplyBinaryOperatorAndMove => {
+                step!(ApplyBinaryOperatorAndMove);
                 let operation = instr.get_first_index();
                 let (slot, operator) = Instruction::fused_slot_and_operator(operation);
                 let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
@@ -1385,21 +1483,34 @@ impl Vm {
                 }
             }
             Instruction::StoreConstant => {
+                step!(StoreConstant);
                 let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
                 vm.result = Some(constant.unbind());
             }
             Instruction::LoadConstant => {
+                step!(LoadConstant);
                 let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
                 vm.stack.push(constant.unbind());
             }
-            Instruction::PopStack => vm.execute_pop_stack(),
-            Instruction::PushReference => vm.execute_push_reference(agent),
-            Instruction::PopReference => vm.execute_pop_reference(),
+            Instruction::PopStack => {
+                step!(PopStack);
+                vm.execute_pop_stack()
+            }
+            Instruction::PushReference => {
+                step!(PushReference);
+                vm.execute_push_reference(agent)
+            }
+            Instruction::PopReference => {
+                step!(PopReference);
+                vm.execute_pop_reference()
+            }
             Instruction::PushReferenceAndLoad => {
+                step!(PushReferenceAndLoad);
                 vm.execute_push_reference(agent);
                 vm.execute_load();
             }
             Instruction::Jump => {
+                step!(Jump);
                 let from = *ip;
                 execute_jump(agent, ip, instr);
                 if *ip < from {
@@ -1407,6 +1518,7 @@ impl Vm {
                 }
             }
             Instruction::JumpIfNot => {
+                step!(JumpIfNot);
                 let from = *ip;
                 execute_jump_if_not(agent, vm, ip, instr);
                 if *ip < from {
@@ -1414,6 +1526,7 @@ impl Vm {
                 }
             }
             Instruction::JumpIfTrue => {
+                step!(JumpIfTrue);
                 let from = *ip;
                 execute_jump_if_true(agent, vm, ip, instr);
                 if *ip < from {
@@ -1423,205 +1536,108 @@ impl Vm {
             // The test of most loops, on two Numbers: before the body with
             // the jump out where it fails, or after it with the jump back
             // where it holds.
-            Instruction::JumpIfNotLessThan
-            | Instruction::JumpIfNotLessThanEquals
-            | Instruction::JumpIfNotGreaterThan
-            | Instruction::JumpIfNotGreaterThanEquals
-            | Instruction::JumpIfLessThan
-            | Instruction::JumpIfLessThanEquals
-            | Instruction::JumpIfGreaterThan
-            | Instruction::JumpIfGreaterThanEquals => {
-                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
-                    return Plain::No;
-                };
-                let jumps = if let (Value::Integer(left), Value::Integer(right)) = (left, right) {
-                    let (left, right) = (left.into_i64(), right.into_i64());
-                    match instr.kind {
-                        Instruction::JumpIfNotLessThan => left >= right,
-                        Instruction::JumpIfNotLessThanEquals => left > right,
-                        Instruction::JumpIfNotGreaterThan => left <= right,
-                        Instruction::JumpIfNotGreaterThanEquals => left < right,
-                        Instruction::JumpIfLessThan => left < right,
-                        Instruction::JumpIfLessThanEquals => left <= right,
-                        Instruction::JumpIfGreaterThan => left > right,
-                        _ => left >= right,
-                    }
-                } else {
-                    let (comparison, negated) = match instr.kind {
-                        Instruction::JumpIfNotLessThan => (Instruction::LessThan, true),
-                        Instruction::JumpIfNotLessThanEquals => (Instruction::LessThanEquals, true),
-                        Instruction::JumpIfNotGreaterThan => (Instruction::GreaterThan, true),
-                        Instruction::JumpIfNotGreaterThanEquals => {
-                            (Instruction::GreaterThanEquals, true)
-                        }
-                        Instruction::JumpIfLessThan => (Instruction::LessThan, false),
-                        Instruction::JumpIfLessThanEquals => (Instruction::LessThanEquals, false),
-                        Instruction::JumpIfGreaterThan => (Instruction::GreaterThan, false),
-                        _ => (Instruction::GreaterThanEquals, false),
-                    };
-                    let Some(holds) = Self::numbers_compare(agent, comparison, left, right) else {
-                        return Plain::No;
-                    };
-                    holds != negated
-                };
-                vm.stack.pop();
-                vm.result = None;
-                if jumps {
-                    let from = *ip;
-                    *ip = instr.get_jump_slot();
-                    if *ip < from {
-                        return Plain::Looped;
-                    }
-                }
+            Instruction::JumpIfNotLessThan => compare_and_jump!(JumpIfNotLessThan),
+            Instruction::JumpIfNotLessThanEquals => compare_and_jump!(JumpIfNotLessThanEquals),
+            Instruction::JumpIfNotGreaterThan => compare_and_jump!(JumpIfNotGreaterThan),
+            Instruction::JumpIfNotGreaterThanEquals => {
+                compare_and_jump!(JumpIfNotGreaterThanEquals)
             }
+            Instruction::JumpIfLessThan => compare_and_jump!(JumpIfLessThan),
+            Instruction::JumpIfLessThanEquals => compare_and_jump!(JumpIfLessThanEquals),
+            Instruction::JumpIfGreaterThan => compare_and_jump!(JumpIfGreaterThan),
+            Instruction::JumpIfGreaterThanEquals => compare_and_jump!(JumpIfGreaterThanEquals),
             // The same tests on a local and a constant, or on two locals,
             // which are read where they are.
-            Instruction::JumpIfIndexNotLessThanConstant
-            | Instruction::JumpIfIndexNotLessThanIndex
-            | Instruction::JumpIfIndexNotLessThanEqualsConstant
-            | Instruction::JumpIfIndexNotLessThanEqualsIndex
-            | Instruction::JumpIfIndexNotGreaterThanConstant
-            | Instruction::JumpIfIndexNotGreaterThanIndex
-            | Instruction::JumpIfIndexNotGreaterThanEqualsConstant
-            | Instruction::JumpIfIndexNotGreaterThanEqualsIndex
-            | Instruction::JumpIfIndexNotStrictlyEqualConstant
-            | Instruction::JumpIfIndexNotStrictlyEqualIndex
-            | Instruction::JumpIfIndexStrictlyEqualConstant
-            | Instruction::JumpIfIndexStrictlyEqualIndex => {
-                let Some((comparison, constant)) = instr.kind.compared_local() else {
-                    return Plain::No;
-                };
-                let left = vm.stack[instr.get_first_index()];
-                let right = if constant {
-                    code.fetch_constant(agent, instr.get_second_index(), gc)
-                        .unbind()
-                } else {
-                    vm.stack[instr.get_second_index()]
-                };
-                let jumps = match (comparison, left, right) {
-                    (Instruction::JumpIfNotStrictlyEqual, left, right) => {
-                        !Self::strictly_equal(agent, left, right)
-                    }
-                    (Instruction::JumpIfStrictlyEqual, left, right) => {
-                        Self::strictly_equal(agent, left, right)
-                    }
-                    (comparison, Value::Integer(left), Value::Integer(right)) => {
-                        let (left, right) = (left.into_i64(), right.into_i64());
-                        !match comparison {
-                            Instruction::JumpIfNotLessThan => left < right,
-                            Instruction::JumpIfNotLessThanEquals => left <= right,
-                            Instruction::JumpIfNotGreaterThan => left > right,
-                            _ => left >= right,
-                        }
-                    }
-                    (comparison, left, right) => {
-                        let comparison = match comparison {
-                            Instruction::JumpIfNotLessThan => Instruction::LessThan,
-                            Instruction::JumpIfNotLessThanEquals => Instruction::LessThanEquals,
-                            Instruction::JumpIfNotGreaterThan => Instruction::GreaterThan,
-                            _ => Instruction::GreaterThanEquals,
-                        };
-                        let Some(holds) = Self::numbers_compare(agent, comparison, left, right)
-                        else {
-                            return Plain::No;
-                        };
-                        !holds
-                    }
-                };
-                vm.result = None;
-                if jumps {
-                    let from = *ip;
-                    *ip = Instr::wide_jump_target(instructions, from);
-                    if *ip < from {
-                        return Plain::Looped;
-                    }
-                }
+            Instruction::JumpIfIndexNotLessThanConstant => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanConstant)
+            }
+            Instruction::JumpIfIndexNotLessThanIndex => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanIndex)
+            }
+            Instruction::JumpIfIndexNotLessThanEqualsConstant => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexNotLessThanEqualsIndex => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanEqualsIndex)
+            }
+            Instruction::JumpIfIndexNotGreaterThanConstant => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanConstant)
+            }
+            Instruction::JumpIfIndexNotGreaterThanIndex => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanIndex)
+            }
+            Instruction::JumpIfIndexNotGreaterThanEqualsConstant => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexNotGreaterThanEqualsIndex => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanEqualsIndex)
+            }
+            Instruction::JumpIfIndexNotStrictlyEqualConstant => {
+                compare_local_and_jump!(JumpIfIndexNotStrictlyEqualConstant)
+            }
+            Instruction::JumpIfIndexNotStrictlyEqualIndex => {
+                compare_local_and_jump!(JumpIfIndexNotStrictlyEqualIndex)
+            }
+            Instruction::JumpIfIndexStrictlyEqualConstant => {
+                compare_local_and_jump!(JumpIfIndexStrictlyEqualConstant)
+            }
+            Instruction::JumpIfIndexStrictlyEqualIndex => {
+                compare_local_and_jump!(JumpIfIndexStrictlyEqualIndex)
             }
             // The test at the end of a loop, after `i++` or `i--` where the
             // instruction makes that too: all of it here, or none. The step
             // is made of an integer only; the test takes any two Numbers.
-            Instruction::JumpIfIndexLessThanConstant
-            | Instruction::JumpIfIndexLessThanIndex
-            | Instruction::JumpIfIndexLessThanEqualsConstant
-            | Instruction::JumpIfIndexLessThanEqualsIndex
-            | Instruction::JumpIfIndexGreaterThanConstant
-            | Instruction::JumpIfIndexGreaterThanIndex
-            | Instruction::JumpIfIndexGreaterThanEqualsConstant
-            | Instruction::JumpIfIndexGreaterThanEqualsIndex
-            | Instruction::IncrementIndexJumpIfLessThanConstant
-            | Instruction::IncrementIndexJumpIfLessThanIndex
-            | Instruction::IncrementIndexJumpIfLessThanEqualsConstant
-            | Instruction::IncrementIndexJumpIfLessThanEqualsIndex
-            | Instruction::DecrementIndexJumpIfGreaterThanConstant
-            | Instruction::DecrementIndexJumpIfGreaterThanIndex
-            | Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant
-            | Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex => {
-                let Some((step, comparison, constant)) = instr.kind.loop_test() else {
-                    return Plain::No;
-                };
-                let slot = instr.get_first_index();
-                let right = if constant {
-                    code.fetch_constant(agent, instr.get_second_index(), gc)
-                        .unbind()
-                } else {
-                    vm.stack[instr.get_second_index()]
-                };
-                let holds = match (vm.stack[slot], right) {
-                    (Value::Integer(left), Value::Integer(right)) => {
-                        let (mut left, right) = (left.into_i64(), right.into_i64());
-                        if step != 0 {
-                            left += step as i64;
-                            let Ok(stepped) = SmallInteger::try_from(left) else {
-                                return Plain::No;
-                            };
-                            vm.stack[slot] = Value::Integer(stepped);
-                        }
-                        match comparison {
-                            Instruction::LessThan => left < right,
-                            Instruction::LessThanEquals => left <= right,
-                            Instruction::GreaterThan => left > right,
-                            _ => left >= right,
-                        }
-                    }
-                    (left, right) => {
-                        // The counter after its step, where it has one.
-                        let stepped = match left {
-                            _ if step == 0 => None,
-                            Value::Integer(left) => {
-                                let Ok(stepped) =
-                                    SmallInteger::try_from(left.into_i64() + step as i64)
-                                else {
-                                    return Plain::No;
-                                };
-                                Some(Value::Integer(stepped))
-                            }
-                            _ => return Plain::No,
-                        };
-                        let Some(holds) = Self::numbers_compare(
-                            agent,
-                            comparison,
-                            stepped.unwrap_or(left),
-                            right,
-                        ) else {
-                            return Plain::No;
-                        };
-                        if let Some(stepped) = stepped {
-                            vm.stack[slot] = stepped;
-                        }
-                        holds
-                    }
-                };
-                vm.result = None;
-                if holds {
-                    let from = *ip;
-                    *ip = Instr::wide_jump_target(instructions, from);
-                    if *ip < from {
-                        return Plain::Looped;
-                    }
-                }
+            Instruction::JumpIfIndexLessThanConstant => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanConstant)
+            }
+            Instruction::JumpIfIndexLessThanIndex => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanIndex)
+            }
+            Instruction::JumpIfIndexLessThanEqualsConstant => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexLessThanEqualsIndex => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanEqualsIndex)
+            }
+            Instruction::JumpIfIndexGreaterThanConstant => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanConstant)
+            }
+            Instruction::JumpIfIndexGreaterThanIndex => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanIndex)
+            }
+            Instruction::JumpIfIndexGreaterThanEqualsConstant => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexGreaterThanEqualsIndex => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanEqualsIndex)
+            }
+            Instruction::IncrementIndexJumpIfLessThanConstant => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanConstant)
+            }
+            Instruction::IncrementIndexJumpIfLessThanIndex => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanIndex)
+            }
+            Instruction::IncrementIndexJumpIfLessThanEqualsConstant => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanEqualsConstant)
+            }
+            Instruction::IncrementIndexJumpIfLessThanEqualsIndex => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanEqualsIndex)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanConstant => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanConstant)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanIndex => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanIndex)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanEqualsConstant)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanEqualsIndex)
             }
             // `i++` and `i--` of an integer in a stack slot.
             Instruction::IncrementIndex | Instruction::DecrementIndex => {
+                step!(IncrementIndex, DecrementIndex);
                 let slot = instr.get_first_index();
                 let Value::Integer(value) = vm.stack[slot] else {
                     return Plain::No;
@@ -1638,18 +1654,21 @@ impl Vm {
             }
             // `this` of a call that keeps it in its execution context.
             Instruction::ResolveThisBinding => {
+                step!(ResolveThisBinding);
                 let Some(this) = agent.running_call_this_value() else {
                     return Plain::No;
                 };
                 vm.result = Some(this);
             }
             Instruction::IsStrictlyEqual => {
+                step!(IsStrictlyEqual);
                 let left = vm.stack.pop().unwrap();
                 let right = vm.result.unwrap();
                 vm.result = Some(Self::strictly_equal(agent, left, right).into());
             }
             // `x === 3`: the constant is compared where it is.
             Instruction::IsStrictlyEqualConstant => {
+                step!(IsStrictlyEqualConstant);
                 let left = vm.result.unwrap();
                 let right = code.fetch_constant(agent, instr.get_first_index(), gc);
                 vm.result = Some(Self::strictly_equal(agent, left, right).into());
@@ -1657,6 +1676,7 @@ impl Vm {
             // Two values of one type are loosely equal where they are
             // strictly equal: nothing is converted.
             Instruction::IsLooselyEqual => {
+                step!(IsLooselyEqual);
                 let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
                     return Plain::No;
                 };
@@ -1671,6 +1691,12 @@ impl Vm {
             | Instruction::JumpIfStrictlyEqual
             | Instruction::JumpIfNotLooselyEqual
             | Instruction::JumpIfLooselyEqual => {
+                step!(
+                    JumpIfNotStrictlyEqual,
+                    JumpIfStrictlyEqual,
+                    JumpIfNotLooselyEqual,
+                    JumpIfLooselyEqual
+                );
                 let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
                     return Plain::No;
                 };
@@ -1698,41 +1724,76 @@ impl Vm {
             }
             // The tests of a `switch` on literals: its cases only follow it.
             Instruction::JumpToCase => {
+                step!(JumpToCase);
                 let value = vm.stack[instr.get_first_index()];
                 if let Some(target) = code.switch_target(agent, instr.get_second_index(), value) {
                     *ip = target;
                 }
             }
-            Instruction::UpdateEmpty => vm.execute_update_empty(),
-            Instruction::LoadReplace => vm.execute_load_replace(),
-            Instruction::Empty => vm.execute_empty(),
-            Instruction::StoreCopy => vm.execute_store_copy(),
-            Instruction::IsNullOrUndefined => vm.execute_is_null_or_undefined(),
-            Instruction::IsNull => vm.execute_is_null(),
-            Instruction::IsUndefined => vm.execute_is_undefined(),
-            Instruction::LogicalNot => execute_logical_not(agent, vm),
+            Instruction::UpdateEmpty => {
+                step!(UpdateEmpty);
+                vm.execute_update_empty()
+            }
+            Instruction::LoadReplace => {
+                step!(LoadReplace);
+                vm.execute_load_replace()
+            }
+            Instruction::Empty => {
+                step!(Empty);
+                vm.execute_empty()
+            }
+            Instruction::StoreCopy => {
+                step!(StoreCopy);
+                vm.execute_store_copy()
+            }
+            Instruction::IsNullOrUndefined => {
+                step!(IsNullOrUndefined);
+                vm.execute_is_null_or_undefined()
+            }
+            Instruction::IsNull => {
+                step!(IsNull);
+                vm.execute_is_null()
+            }
+            Instruction::IsUndefined => {
+                step!(IsUndefined);
+                vm.execute_is_undefined()
+            }
+            Instruction::LogicalNot => {
+                step!(LogicalNot);
+                execute_logical_not(agent, vm)
+            }
             Instruction::PushExceptionJumpTarget => {
+                step!(PushExceptionJumpTarget);
                 execute_push_exception_jump_target(agent, vm, instr, gc)
             }
-            Instruction::PopExceptionJumpTarget => vm.execute_pop_exception_jump_target(),
+            Instruction::PopExceptionJumpTarget => {
+                step!(PopExceptionJumpTarget);
+                vm.execute_pop_exception_jump_target()
+            }
             Instruction::CreateImmutableBinding => {
+                step!(CreateImmutableBinding);
                 execute_create_immutable_binding(agent, executable.clone(), instr, gc)
             }
             Instruction::CreateMutableBinding => {
+                step!(CreateMutableBinding);
                 execute_create_mutable_binding(agent, executable.clone(), instr, gc)
             }
             Instruction::InitializeReferencedBinding => {
+                step!(InitializeReferencedBinding);
                 execute_initialize_referenced_binding(agent, vm, gc)
             }
             Instruction::EvaluatePropertyAccessWithIdentifierKey => {
+                step!(EvaluatePropertyAccessWithIdentifierKey);
                 Self::property_reference_with_identifier_key(agent, vm, code, instr, gc)
             }
             Instruction::EvaluatePropertyAccessWithExpressionKey => {
+                step!(EvaluatePropertyAccessWithExpressionKey);
                 execute_evaluate_property_access_with_expression_key(agent, vm, gc)
             }
             // A variable of an enclosing function, where it was found the
             // last time.
             Instruction::GetBindingAtSite | Instruction::GetGlobalAtSite => {
+                step!(GetBindingAtSite, GetGlobalAtSite);
                 let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
                 let site = code.fetch_binding_site(agent, instr.get_second_index());
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
@@ -1742,6 +1803,7 @@ impl Vm {
             }
             // The same variable, pushed: an operand or an argument.
             Instruction::LoadBindingAtSite => {
+                step!(LoadBindingAtSite);
                 let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
                 let site = code.fetch_binding_site(agent, instr.get_second_index());
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
@@ -1751,6 +1813,7 @@ impl Vm {
                 vm.stack.push(value.unbind());
             }
             Instruction::PutBindingAtSite | Instruction::PutGlobalAtSite => {
+                step!(PutBindingAtSite, PutGlobalAtSite);
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
@@ -1764,6 +1827,7 @@ impl Vm {
             // A name of the global scope that is about to be assigned to:
             // its Reference, made where the name was found the last time.
             Instruction::ResolveGlobalAtSite => {
+                step!(ResolveGlobalAtSite);
                 let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
                 let site = code.fetch_binding_site(agent, instr.get_second_index());
                 let strict = agent.is_evaluating_strict_code();
@@ -1776,6 +1840,7 @@ impl Vm {
             // The assignment through that Reference, at the place in the
             // global scope it is to.
             Instruction::PutValueAtSite => {
+                step!(PutValueAtSite);
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
@@ -1794,6 +1859,7 @@ impl Vm {
             }
             // The parameters of a call, from its arguments.
             Instruction::BindArguments => {
+                step!(BindArguments);
                 let first = instr.get_first_index();
                 let count = instr.get_second_index();
                 if let Some(VmIteratorRecord::SliceIterator(arguments)) = vm.iterator_stack.last() {
@@ -1808,6 +1874,7 @@ impl Vm {
             // A call of a built-in function that only computes a value from
             // arguments like these: computed here, with no call made.
             Instruction::EvaluateCall | Instruction::PopReferenceAndEvaluateCall => {
+                step!(EvaluateCall, PopReferenceAndEvaluateCall);
                 let count = instr.get_first_index();
                 let Some(first) = vm.stack.len().checked_sub(count) else {
                     return Plain::No;
@@ -1850,6 +1917,7 @@ impl Vm {
             // `o.p` where the property cache knows the shape of `o`, and the
             // length of an Array.
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
+                step!(GetPropertyWithCache, GetPropertyWithCacheKeepReference);
                 let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
                     return Plain::No;
                 };
@@ -1863,6 +1931,7 @@ impl Vm {
             // The function of a method call, pushed with its Reference
             // before the arguments.
             Instruction::LoadPropertyWithCachePushReference => {
+                step!(LoadPropertyWithCachePushReference);
                 let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
                     return Plain::No;
                 };
@@ -1874,6 +1943,10 @@ impl Vm {
             // cache.
             Instruction::GetIndexPropertyWithCache
             | Instruction::GetIndexPropertyWithCacheKeepReference => {
+                step!(
+                    GetIndexPropertyWithCache,
+                    GetIndexPropertyWithCacheKeepReference
+                );
                 let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
                 let Some(value) = Self::cached_property_value_of(agent, base, code, instr, gc)
                 else {
@@ -1891,6 +1964,10 @@ impl Vm {
             // property by the cache.
             Instruction::GetThisPropertyWithCache
             | Instruction::GetThisPropertyWithCacheKeepReference => {
+                step!(
+                    GetThisPropertyWithCache,
+                    GetThisPropertyWithCacheKeepReference
+                );
                 let Some(this) = agent.running_call_this_value() else {
                     return Plain::No;
                 };
@@ -1910,6 +1987,7 @@ impl Vm {
             // knows its shape and `p` is a writable data property of its
             // own.
             Instruction::PutPropertyWithCache => {
+                step!(PutPropertyWithCache);
                 let (Some(value), Some(&Value::Object(object))) = (vm.result, vm.stack.last())
                 else {
                     return Plain::No;
@@ -1936,6 +2014,7 @@ impl Vm {
             // `o.p = v` where the property cache knows the shape of `o` and
             // `p` is a writable data property of its own.
             Instruction::PutValueWithCache => {
+                step!(PutValueWithCache);
                 let (Some(value), Some(reference)) = (vm.result, vm.reference.as_ref()) else {
                     return Plain::No;
                 };
@@ -1958,6 +2037,7 @@ impl Vm {
             // `a[i]` of an Array that has an element there, or of a
             // TypedArray within its length.
             Instruction::GetValue | Instruction::GetValueKeepReference => {
+                step!(GetValue, GetValueKeepReference);
                 let Some((base, index)) = vm
                     .reference
                     .as_ref()
@@ -1987,6 +2067,7 @@ impl Vm {
             // The same read with the base and the key where the expression
             // left them: no Reference is made of them first.
             Instruction::GetValueWithExpressionKey => {
+                step!(GetValueWithExpressionKey);
                 let (Some(&base), Some(Value::Integer(index))) = (vm.stack.last(), vm.result)
                 else {
                     return Plain::No;
@@ -2012,6 +2093,7 @@ impl Vm {
             // The same read with the base as the result and the key in a
             // local: neither goes by the stack.
             Instruction::GetValueWithIndexKey => {
+                step!(GetValueWithIndexKey);
                 let (Some(base), Value::Integer(index)) =
                     (vm.result, vm.stack[instr.get_first_index()])
                 else {
@@ -2037,6 +2119,7 @@ impl Vm {
             // `a[i] = v` for an element the Array has, as a plain value, or
             // for a TypedArray and a Number.
             Instruction::PutValue => {
+                step!(PutValue);
                 let (Some(value), Some((base, index))) = (
                     vm.result,
                     vm.reference
@@ -2066,6 +2149,7 @@ impl Vm {
             }
             // The same assignment with the object and the key on the stack.
             Instruction::PutValueWithExpressionKey => {
+                step!(PutValueWithExpressionKey);
                 let (Some(value), [.., base, Value::Integer(index)]) =
                     (vm.result, vm.stack.as_slice())
                 else {
@@ -2094,6 +2178,7 @@ impl Vm {
             // A Number is its own numeric value: the counter of nearly every
             // loop.
             Instruction::ToNumeric => {
+                step!(ToNumeric);
                 if !matches!(
                     vm.result,
                     Some(Value::Integer(_) | Value::SmallF64(_) | Value::Number(_))
@@ -2101,26 +2186,253 @@ impl Vm {
                     return Plain::No;
                 }
             }
-            Instruction::Increment => return vm.step_integer(1),
-            Instruction::Decrement => return vm.step_integer(-1),
-            Instruction::LessThan
-            | Instruction::LessThanEquals
-            | Instruction::GreaterThan
-            | Instruction::GreaterThanEquals
-            | Instruction::ApplyAdditionBinaryOperator
-            | Instruction::ApplySubtractionBinaryOperator
-            | Instruction::ApplyMultiplicationBinaryOperator
-            | Instruction::ApplyDivisionBinaryOperator
-            | Instruction::ApplyRemainderBinaryOperator
-            | Instruction::ApplyShiftLeftBinaryOperator
-            | Instruction::ApplyShiftRightBinaryOperator
-            | Instruction::ApplyShiftRightZeroFillBinaryOperator
-            | Instruction::ApplyBitwiseORBinaryOperator
-            | Instruction::ApplyBitwiseXORBinaryOperator
-            | Instruction::ApplyBitwiseAndBinaryOperator => {
-                return vm.operate_on_integers(agent, instr.kind, gc);
+            Instruction::Increment => {
+                step!(Increment);
+                return vm.step_integer(1);
             }
-            _ => return Plain::No,
+            Instruction::Decrement => {
+                step!(Decrement);
+                return vm.step_integer(-1);
+            }
+            Instruction::LessThan => operate_on_integers!(LessThan),
+            Instruction::LessThanEquals => operate_on_integers!(LessThanEquals),
+            Instruction::GreaterThan => operate_on_integers!(GreaterThan),
+            Instruction::GreaterThanEquals => operate_on_integers!(GreaterThanEquals),
+            Instruction::ApplyAdditionBinaryOperator => {
+                operate_on_integers!(ApplyAdditionBinaryOperator)
+            }
+            Instruction::ApplySubtractionBinaryOperator => {
+                operate_on_integers!(ApplySubtractionBinaryOperator)
+            }
+            Instruction::ApplyMultiplicationBinaryOperator => {
+                operate_on_integers!(ApplyMultiplicationBinaryOperator)
+            }
+            Instruction::ApplyDivisionBinaryOperator => {
+                operate_on_integers!(ApplyDivisionBinaryOperator)
+            }
+            Instruction::ApplyRemainderBinaryOperator => {
+                operate_on_integers!(ApplyRemainderBinaryOperator)
+            }
+            Instruction::ApplyShiftLeftBinaryOperator => {
+                operate_on_integers!(ApplyShiftLeftBinaryOperator)
+            }
+            Instruction::ApplyShiftRightBinaryOperator => {
+                operate_on_integers!(ApplyShiftRightBinaryOperator)
+            }
+            Instruction::ApplyShiftRightZeroFillBinaryOperator => {
+                operate_on_integers!(ApplyShiftRightZeroFillBinaryOperator)
+            }
+            Instruction::ApplyBitwiseORBinaryOperator => {
+                operate_on_integers!(ApplyBitwiseORBinaryOperator)
+            }
+            Instruction::ApplyBitwiseXORBinaryOperator => {
+                operate_on_integers!(ApplyBitwiseXORBinaryOperator)
+            }
+            Instruction::ApplyBitwiseAndBinaryOperator => {
+                operate_on_integers!(ApplyBitwiseAndBinaryOperator)
+            }
+            _ => {
+                // An instruction that is not plain.
+                *ip += instr.kind.length();
+                return Plain::No;
+            }
+        }
+        Plain::Done
+    }
+
+    /// One of the instructions that compare the value on the stack with the
+    /// result and jump: `kind`, which each of their arms gives as the
+    /// constant it is, so that what the kind decides is decided when this
+    /// is compiled into the arm.
+    #[inline(always)]
+    fn compare_and_jump(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        instr: Instr,
+        kind: Instruction,
+    ) -> Plain {
+        let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+            return Plain::No;
+        };
+        let jumps = if let (Value::Integer(left), Value::Integer(right)) = (left, right) {
+            let (left, right) = (left.into_i64(), right.into_i64());
+            match kind {
+                Instruction::JumpIfNotLessThan => left >= right,
+                Instruction::JumpIfNotLessThanEquals => left > right,
+                Instruction::JumpIfNotGreaterThan => left <= right,
+                Instruction::JumpIfNotGreaterThanEquals => left < right,
+                Instruction::JumpIfLessThan => left < right,
+                Instruction::JumpIfLessThanEquals => left <= right,
+                Instruction::JumpIfGreaterThan => left > right,
+                _ => left >= right,
+            }
+        } else {
+            let (comparison, negated) = match kind {
+                Instruction::JumpIfNotLessThan => (Instruction::LessThan, true),
+                Instruction::JumpIfNotLessThanEquals => (Instruction::LessThanEquals, true),
+                Instruction::JumpIfNotGreaterThan => (Instruction::GreaterThan, true),
+                Instruction::JumpIfNotGreaterThanEquals => (Instruction::GreaterThanEquals, true),
+                Instruction::JumpIfLessThan => (Instruction::LessThan, false),
+                Instruction::JumpIfLessThanEquals => (Instruction::LessThanEquals, false),
+                Instruction::JumpIfGreaterThan => (Instruction::GreaterThan, false),
+                _ => (Instruction::GreaterThanEquals, false),
+            };
+            let Some(holds) = Self::numbers_compare(agent, comparison, left, right) else {
+                return Plain::No;
+            };
+            holds != negated
+        };
+        vm.stack.pop();
+        vm.result = None;
+        if jumps {
+            let from = *ip;
+            *ip = instr.get_jump_slot();
+            if *ip < from {
+                return Plain::Looped;
+            }
+        }
+        Plain::Done
+    }
+
+    /// One of the instructions that compare a local with a constant or with
+    /// another local and jump: `kind`, a constant of the arm as in
+    /// [`Vm::compare_and_jump`].
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn compare_local_and_jump(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        instructions: &[u8],
+        code: Executable,
+        instr: Instr,
+        kind: Instruction,
+        gc: NoGcScope,
+    ) -> Plain {
+        let Some((comparison, constant)) = kind.compared_local() else {
+            return Plain::No;
+        };
+        let left = vm.stack[instr.get_first_index()];
+        let right = if constant {
+            code.fetch_constant(agent, instr.get_second_index(), gc)
+                .unbind()
+        } else {
+            vm.stack[instr.get_second_index()]
+        };
+        let jumps = match (comparison, left, right) {
+            (Instruction::JumpIfNotStrictlyEqual, left, right) => {
+                !Self::strictly_equal(agent, left, right)
+            }
+            (Instruction::JumpIfStrictlyEqual, left, right) => {
+                Self::strictly_equal(agent, left, right)
+            }
+            (comparison, Value::Integer(left), Value::Integer(right)) => {
+                let (left, right) = (left.into_i64(), right.into_i64());
+                !match comparison {
+                    Instruction::JumpIfNotLessThan => left < right,
+                    Instruction::JumpIfNotLessThanEquals => left <= right,
+                    Instruction::JumpIfNotGreaterThan => left > right,
+                    _ => left >= right,
+                }
+            }
+            (comparison, left, right) => {
+                let comparison = match comparison {
+                    Instruction::JumpIfNotLessThan => Instruction::LessThan,
+                    Instruction::JumpIfNotLessThanEquals => Instruction::LessThanEquals,
+                    Instruction::JumpIfNotGreaterThan => Instruction::GreaterThan,
+                    _ => Instruction::GreaterThanEquals,
+                };
+                let Some(holds) = Self::numbers_compare(agent, comparison, left, right) else {
+                    return Plain::No;
+                };
+                !holds
+            }
+        };
+        vm.result = None;
+        if jumps {
+            let from = *ip;
+            *ip = Instr::wide_jump_target(instructions, from);
+            if *ip < from {
+                return Plain::Looped;
+            }
+        }
+        Plain::Done
+    }
+
+    /// One of the instructions that end a loop: a step of a local where
+    /// `kind` has one, its comparison and the jump back. `kind` is a
+    /// constant of the arm as in [`Vm::compare_and_jump`].
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn step_local_compare_and_jump(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        instructions: &[u8],
+        code: Executable,
+        instr: Instr,
+        kind: Instruction,
+        gc: NoGcScope,
+    ) -> Plain {
+        let Some((step, comparison, constant)) = kind.loop_test() else {
+            return Plain::No;
+        };
+        let slot = instr.get_first_index();
+        let right = if constant {
+            code.fetch_constant(agent, instr.get_second_index(), gc)
+                .unbind()
+        } else {
+            vm.stack[instr.get_second_index()]
+        };
+        let holds = match (vm.stack[slot], right) {
+            (Value::Integer(left), Value::Integer(right)) => {
+                let (mut left, right) = (left.into_i64(), right.into_i64());
+                if step != 0 {
+                    left += step as i64;
+                    let Ok(stepped) = SmallInteger::try_from(left) else {
+                        return Plain::No;
+                    };
+                    vm.stack[slot] = Value::Integer(stepped);
+                }
+                match comparison {
+                    Instruction::LessThan => left < right,
+                    Instruction::LessThanEquals => left <= right,
+                    Instruction::GreaterThan => left > right,
+                    _ => left >= right,
+                }
+            }
+            (left, right) => {
+                // The counter after its step, where it has one.
+                let stepped = match left {
+                    _ if step == 0 => None,
+                    Value::Integer(left) => {
+                        let Ok(stepped) = SmallInteger::try_from(left.into_i64() + step as i64)
+                        else {
+                            return Plain::No;
+                        };
+                        Some(Value::Integer(stepped))
+                    }
+                    _ => return Plain::No,
+                };
+                let Some(holds) =
+                    Self::numbers_compare(agent, comparison, stepped.unwrap_or(left), right)
+                else {
+                    return Plain::No;
+                };
+                if let Some(stepped) = stepped {
+                    vm.stack[slot] = stepped;
+                }
+                holds
+            }
+        };
+        vm.result = None;
+        if holds {
+            let from = *ip;
+            *ip = Instr::wide_jump_target(instructions, from);
+            if *ip < from {
+                return Plain::Looped;
+            }
         }
         Plain::Done
     }

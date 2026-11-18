@@ -5214,3 +5214,136 @@ many and long1: 21000,-1906719097,6000,-79641430,19500,-1921322380,6000,-7964143
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The instructions that the loop of the interpreter runs itself, each in
+/// an arm of its own that moves past the instruction by a constant, and the
+/// small Numbers they read: integers through each of their seven bytes and
+/// both signs, doubles that are kept in a value and those that are not,
+/// every test of a loop with a constant and with a local, upwards and
+/// downwards, each comparison and operator on what it takes in place and on
+/// what it leaves to the general way, and code that ends within the bytes
+/// an instruction is read with. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn stepped_instructions_and_small_numbers_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(stepped_instructions_and_small_numbers)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn stepped_instructions_and_small_numbers() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+function show(name, v) { print(name + ": " + v); }
+// Small integers through every byte of their seven, and their signs.
+var ints = [0, 1, -1, 127, 128, 255, 256, -128, -129, 65535, 65536, -65536, 16777215, 16777216, -16777217,
+  4294967295, 4294967296, -4294967296, 1099511627775, 1099511627776, 281474976710655, 281474976710656,
+  -281474976710657, 9007199254740991, -9007199254740991, 9007199254740990, -9007199254740990];
+show("ints", ints.map(function (n) { var m = n; m = m + 0; return [m, m + 1, m - 1, -m, m | 0, m >>> 0, m % 7, m < 0, m === n].join("/"); }).join(" "));
+show("int edge add", [9007199254740991 + 1, 9007199254740991 + 2, -9007199254740991 - 1, -9007199254740991 - 2].join());
+function sums() { var s = 0; for (var i = -5; i < 6; i++) s += i * 1099511627776; return s; }
+show("sum over bytes", sums());
+function counts() { var n = 0; for (var i = 9007199254740985; i < 9007199254740991; i++) n++; return n; }
+show("count near max", counts());
+function countsDown() { var n = 0; for (var i = -9007199254740985; i > -9007199254740991; i--) n++; return n; }
+show("count near min", countsDown());
+// Small doubles (those with a low byte of zero) and others.
+var floats = [0.5, -0.5, 1.5, 2.25, -1024.125, 1e21, 1e300, -1e300, 5e-324, 1.7976931348623157e308, 0.1, -0.1, 1 / 3, NaN, Infinity, -Infinity, -0];
+show("floats", floats.map(function (x) { var y = x; y = y * 1; return [y, y + 0.5, y * 2, y < 0, y === x, Object.is(y, x), 1 / y].join("/"); }).join(" "));
+// Every test of a loop, with a constant and with a local, upwards and downwards.
+function loops(a, b) {
+  var out = [], i, n;
+  n = 0; for (i = a; i < b; i++) n++; out.push(n);
+  n = 0; for (i = a; i <= b; i++) n++; out.push(n);
+  n = 0; for (i = b; i > a; i--) n++; out.push(n);
+  n = 0; for (i = b; i >= a; i--) n++; out.push(n);
+  n = 0; for (i = 0; i < 7; i++) n++; out.push(n);
+  n = 0; for (i = 0; i <= 7; i++) n++; out.push(n);
+  n = 0; for (i = 7; i > 0; i--) n++; out.push(n);
+  n = 0; for (i = 7; i >= 0; i--) n++; out.push(n);
+  n = 0; i = a; while (i < b) { i++; n++; } out.push(n);
+  n = 0; i = a; while (i <= b) { i++; n++; } out.push(n);
+  n = 0; i = b; while (i > a) { i--; n++; } out.push(n);
+  n = 0; i = b; while (i >= a) { i--; n++; } out.push(n);
+  n = 0; i = 0; while (i < 5) { i++; n++; } out.push(n);
+  n = 0; i = 0; while (i <= 5) { i++; n++; } out.push(n);
+  n = 0; i = 5; while (i > 0) { i--; n++; } out.push(n);
+  n = 0; i = 5; while (i >= 0) { i--; n++; } out.push(n);
+  n = 0; i = a; do { i++; n++; } while (i < b); out.push(n);
+  n = 0; i = a; do { i++; n++; } while (i <= b); out.push(n);
+  n = 0; i = b; do { i--; n++; } while (i > a); out.push(n);
+  n = 0; i = b; do { i--; n++; } while (i >= a); out.push(n);
+  n = 0; i = 0; do { i++; n++; } while (i !== 4); out.push(n);
+  n = 0; i = 0; do { i++; n++; } while (i != 4); out.push(n);
+  n = 0; i = 0; while (i === 0) { i++; n++; } out.push(n);
+  n = 0; i = 0; while (i == 0) { i++; n++; } out.push(n);
+  n = 0; i = a; while (i !== b) { i++; n++; } out.push(n);
+  n = 0; i = a; while (i === a) { i++; n++; } out.push(n);
+  return out.join();
+}
+show("loops 2 9", loops(2, 9));
+show("loops -3 3", loops(-3, 3));
+show("loops 0.5 4.5", loops(0.5, 4.5));
+show("loops 1 1", loops(1, 1));
+// The same with operands that are not integers, or not Numbers.
+function tests(x, y) {
+  var out = [];
+  if (x < y) out.push("lt"); if (x <= y) out.push("le"); if (x > y) out.push("gt"); if (x >= y) out.push("ge");
+  if (x === y) out.push("seq"); if (x !== y) out.push("sne"); if (x == y) out.push("eq"); if (x != y) out.push("ne");
+  if (!(x < y)) out.push("nlt"); if (!(x <= y)) out.push("nle"); if (!(x > y)) out.push("ngt"); if (!(x >= y)) out.push("nge");
+  if (x < 3) out.push("lt3"); if (x <= 3) out.push("le3"); if (x > 3) out.push("gt3"); if (x >= 3) out.push("ge3");
+  if (x === 3) out.push("seq3"); if (x !== 3) out.push("sne3"); if (x == 3) out.push("eq3"); if (x != 3) out.push("ne3");
+  return out.join("|");
+}
+var operands = [3, 4, 2.5, 3.0000001, NaN, "3", "abc", null, undefined, true, -0, 1e300, { valueOf: function () { return 3; } }];
+operands.forEach(function (x, i) { show("tests " + i, operands.map(function (y) { return tests(x, y); }).join(" ; ")); });
+// Each operator, on integers, on doubles, and on what is converted.
+function operators(x, y) {
+  return [x + y, x - y, x * y, x / y, x % y, x << y, x >> y, x >>> y, x | y, x ^ y, x & y, x < y, x <= y, x > y, x >= y].join("/");
+}
+show("operators", [[7, 3], [-7, 3], [7, -3], [7.5, 2], [1e15, 1e15], [9007199254740991, 1], [2147483647, 1], [-2147483648, -1], [1, 31], [1, 32], [5, 0], [0, -1], ["7", 3], [7, "3"], [null, 1], [undefined, 1], [true, true]].map(function (p) { return operators(p[0], p[1]); }).join(" "));
+// Code that ends within a few bytes of an instruction, and code with none.
+show("short code", [eval("1"), eval(""), eval("1;2"), eval("var q = 5; q"), (function () {})(), (function () { return; })(), (function (a) { return a; })(4), eval("if (0) 1"), eval("do {} while (0)"), eval("for (var z = 0; z < 2; z++) z")].join());
+show("switch", [0, 1, 2, 3, "1", 2.5].map(function (v) { switch (v) { case 0: return "a"; case 1: return "b"; case 2: return "c"; default: return "d"; } }).join(""));
+})();
+all.join("\n")"#;
+    let expected = r#"ints: 0/1/-1/0/0/0/0/false/true 1/2/0/-1/1/1/1/false/true -1/0/-2/1/-1/4294967295/-1/true/true 127/128/126/-127/127/127/1/false/true 128/129/127/-128/128/128/2/false/true 255/256/254/-255/255/255/3/false/true 256/257/255/-256/256/256/4/false/true -128/-127/-129/128/-128/4294967168/-2/true/true -129/-128/-130/129/-129/4294967167/-3/true/true 65535/65536/65534/-65535/65535/65535/1/false/true 65536/65537/65535/-65536/65536/65536/2/false/true -65536/-65535/-65537/65536/-65536/4294901760/-2/true/true 16777215/16777216/16777214/-16777215/16777215/16777215/0/false/true 16777216/16777217/16777215/-16777216/16777216/16777216/1/false/true -16777217/-16777216/-16777218/16777217/-16777217/4278190079/-2/true/true 4294967295/4294967296/4294967294/-4294967295/-1/4294967295/3/false/true 4294967296/4294967297/4294967295/-4294967296/0/0/4/false/true -4294967296/-4294967295/-4294967297/4294967296/0/0/-4/true/true 1099511627775/1099511627776/1099511627774/-1099511627775/-1/4294967295/1/false/true 1099511627776/1099511627777/1099511627775/-1099511627776/0/0/2/false/true 281474976710655/281474976710656/281474976710654/-281474976710655/-1/4294967295/0/false/true 281474976710656/281474976710657/281474976710655/-281474976710656/0/0/1/false/true -281474976710657/-281474976710656/-281474976710658/281474976710657/-1/4294967295/-2/true/true 9007199254740991/9007199254740992/9007199254740990/-9007199254740991/-1/4294967295/3/false/true -9007199254740991/-9007199254740990/-9007199254740992/9007199254740991/1/1/-3/true/true 9007199254740990/9007199254740991/9007199254740989/-9007199254740990/-2/4294967294/2/false/true -9007199254740990/-9007199254740989/-9007199254740991/9007199254740990/2/2/-2/true/true
+int edge add: 9007199254740992,9007199254740992,-9007199254740992,-9007199254740992
+sum over bytes: 0
+count near max: 6
+count near min: 6
+floats: 0.5/1/1/false/true/true/2 -0.5/0/-1/true/true/true/-2 1.5/2/3/false/true/true/0.6666666666666666 2.25/2.75/4.5/false/true/true/0.4444444444444444 -1024.125/-1023.625/-2048.25/true/true/true/-0.0009764433052605883 1e+21/1e+21/2e+21/false/true/true/1e-21 1e+300/1e+300/2e+300/false/true/true/1e-300 -1e+300/-1e+300/-2e+300/true/true/true/-1e-300 5e-324/0.5/1e-323/false/true/true/Infinity 1.7976931348623157e+308/1.7976931348623157e+308/Infinity/false/true/true/5.562684646268003e-309 0.1/0.6/0.2/false/true/true/10 -0.1/0.4/-0.2/true/true/true/-10 0.3333333333333333/0.8333333333333333/0.6666666666666666/false/true/true/3 NaN/NaN/NaN/false/false/true/NaN Infinity/Infinity/Infinity/false/true/true/0 -Infinity/-Infinity/-Infinity/true/true/true/0 0/0.5/0/false/true/true/-Infinity
+loops 2 9: 7,8,7,8,7,8,7,8,7,8,7,8,5,6,5,6,7,8,7,8,4,4,1,1,7,1
+loops -3 3: 6,7,6,7,7,8,7,8,6,7,6,7,5,6,5,6,6,7,6,7,4,4,1,1,6,1
+loops 0.5 4.5: 4,5,4,5,7,8,7,8,4,5,4,5,5,6,5,6,4,5,4,5,4,4,1,1,4,1
+loops 1 1: 0,1,0,1,7,8,7,8,0,1,0,1,5,6,5,6,1,1,1,1,4,4,1,1,0,1
+tests 0: le|ge|seq|eq|nlt|ngt|le3|ge3|seq3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|seq3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|seq3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|seq3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|seq3|eq3 ; le|ge|sne|eq|nlt|ngt|le3|ge3|seq3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|seq3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|seq3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|seq3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|seq3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|seq3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|seq3|eq3 ; le|ge|sne|eq|nlt|ngt|le3|ge3|seq3|eq3
+tests 1: gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3
+tests 2: lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|lt3|le3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3
+tests 3: gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3
+tests 4: sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3
+tests 5: le|ge|sne|eq|nlt|ngt|le3|ge3|sne3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|sne3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|sne3|eq3 ; le|ge|seq|eq|nlt|ngt|le3|ge3|sne3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|sne3|eq3 ; le|ge|sne|eq|nlt|ngt|le3|ge3|sne3|eq3
+tests 6: sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3
+tests 7: lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|lt3|le3|sne3|ne3 ; sne|eq|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; le|ge|sne|ne|nlt|ngt|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3
+tests 8: sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|eq|nlt|nle|ngt|nge|sne3|ne3 ; seq|eq|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|sne3|ne3
+tests 9: lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|lt3|le3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3
+tests 10: lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; le|ge|sne|ne|nlt|ngt|lt3|le3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3 ; lt|le|sne|ne|ngt|nge|lt3|le3|sne3|ne3
+tests 11: gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; sne|ne|nlt|nle|ngt|nge|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3 ; le|ge|seq|eq|nlt|ngt|gt3|ge3|sne3|ne3 ; gt|ge|sne|ne|nlt|nle|gt3|ge3|sne3|ne3
+tests 12: le|ge|sne|eq|nlt|ngt|le3|ge3|sne3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|sne3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|sne3|eq3 ; le|ge|sne|eq|nlt|ngt|le3|ge3|sne3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; sne|ne|nlt|nle|ngt|nge|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; gt|ge|sne|ne|nlt|nle|le3|ge3|sne3|eq3 ; lt|le|sne|ne|ngt|nge|le3|ge3|sne3|eq3 ; le|ge|seq|eq|nlt|ngt|le3|ge3|sne3|eq3
+operators: 10/4/21/2.3333333333333335/1/56/0/0/7/4/3/false/false/true/true -4/-10/-21/-2.3333333333333335/-1/-56/-1/536870911/-5/-6/1/true/true/false/false 4/10/-21/-2.3333333333333335/1/-536870912/0/0/-1/-6/5/false/false/true/true 9.5/5.5/15/3.75/1.5/28/1/1/7/5/2/false/false/true/true 2000000000000000/0/1e+30/1/0/-1530494976/-1530494976/2764472320/-1530494976/0/-1530494976/false/true/false/true 9007199254740992/9007199254740990/9007199254740991/9007199254740991/0/-2/-1/2147483647/-1/-2/1/false/false/true/true 2147483648/2147483646/2147483647/2147483647/0/-2/1073741823/1073741823/2147483647/2147483646/1/false/false/true/true -2147483649/-2147483647/2147483648/2147483648/0/0/-1/1/-1/2147483647/-2147483648/true/true/false/false 32/-30/31/0.03225806451612903/1/-2147483648/0/0/31/30/1/true/true/false/false 33/-31/32/0.03125/1/1/1/1/33/33/0/true/true/false/false 5/5/0/Infinity/NaN/5/5/5/5/5/0/false/false/true/true -1/1/0/0/0/0/0/0/-1/-1/0/false/false/true/true 73/4/21/2.3333333333333335/1/56/0/0/7/4/3/false/false/true/true 73/4/21/2.3333333333333335/1/56/0/0/7/4/3/false/false/true/true 1/-1/0/0/0/0/0/0/1/1/0/true/true/false/false NaN/NaN/NaN/NaN/NaN/0/0/0/1/1/0/false/false/false/false 2/0/1/1/0/2/0/0/1/0/1/false/true/false/true
+short code: 1,,2,5,,,4,,,1
+switch: abcddd"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
