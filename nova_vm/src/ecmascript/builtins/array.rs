@@ -15,17 +15,18 @@ use std::collections::{TryReserveError, hash_map::Entry};
 
 use crate::{
     ecmascript::{
-        Agent, BUILTIN_STRING_MEMORY, Caches, Function, InternalMethods, InternalSlots, JsResult,
-        Object, OrdinaryObject, PropertyDescriptor, PropertyKey, ProtoIntrinsics, TryError,
-        TryGetResult, TryHasResult, TryResult, Value, call_function, create_array_from_list,
-        js_result_into_try, object_handle, ordinary_define_own_property, same_value, unwrap_try,
+        Agent, ArrayIteratorPrototype, BUILTIN_STRING_MEMORY, Caches, Function, InternalMethods,
+        InternalSlots, JsResult, Object, OrdinaryObject, PropertyDescriptor, PropertyKey,
+        ProtoIntrinsics, TryError, TryGetResult, TryHasResult, TryResult, Value, call_function,
+        create_array_from_list, js_result_into_try, object_handle, ordinary_define_own_property,
+        same_value, unwrap_try,
     },
     engine::{Bindable, GcScope, NoGcScope},
     heap::{
         ArenaAccessSoA, ArenaAccessSoAMut, BaseIndex, CompactionLists, CreateHeapData,
         ElementArrays, ElementDescriptor, ElementDescriptorMap, ElementStorageMut,
         ElementStorageRef, ElementsVector, Heap, HeapIndexHandle, HeapMarkAndSweep,
-        HeapSweepWeakReference, WorkQueues, arena_vec_access,
+        HeapSweepWeakReference, WellKnownSymbols, WorkQueues, arena_vec_access,
     },
 };
 
@@ -254,8 +255,11 @@ impl<'a> Array<'a> {
         self.get_elements(agent).is_trivial(agent)
     }
 
-    /// Returns the `value` as an Array if it is one `method` is
-    /// `%Array.prototype.values%`.
+    /// Returns the `value` as an Array if it is one, `method` is
+    /// `%Array.prototype.values%`, and the Array Iterator that makes is
+    /// stepped by the realm's original "next"
+    /// ([`ArrayIteratorPrototype::has_original_next`]): iterating the array
+    /// with `method` is then reading its elements in order.
     pub(crate) fn is_iterable_array(
         agent: &mut Agent,
         value: Value<'a>,
@@ -268,7 +272,8 @@ impl<'a> Array<'a> {
                         .current_realm_record()
                         .intrinsics()
                         .array_prototype_values()
-                        .into() =>
+                        .into()
+                    && ArrayIteratorPrototype::has_original_next(agent) =>
             {
                 Some(array)
             }
@@ -276,39 +281,38 @@ impl<'a> Array<'a> {
         }
     }
 
+    /// True if iterating this Array is, as far as anything can tell, reading
+    /// its elements in order: its %Symbol.iterator% method is found with
+    /// nothing run and is the realm's `%Array.prototype.values%`, and the
+    /// Array Iterator that would make is stepped by the realm's original
+    /// "next" ([`ArrayIteratorPrototype::has_original_next`]). The method is
+    /// looked for through the property cache of its key, by the shape of
+    /// the array.
+    pub(crate) fn is_iterated_by_values(self, agent: &mut Agent, gc: NoGcScope) -> bool {
+        let key = PropertyKey::Symbol(WellKnownSymbols::Iterator.into());
+        let cache = PropertyLookupCache::new(agent, key);
+        let TryResult::Continue(TryGetResult::Value(method)) =
+            self.try_get(agent, key, self.into(), Some(cache), gc)
+        else {
+            // Not found, or found only by running a getter or a Proxy's
+            // trap.
+            return false;
+        };
+        let values: Value = agent
+            .current_realm_record()
+            .intrinsics()
+            .array_prototype_values()
+            .into();
+        method == values && ArrayIteratorPrototype::has_original_next(agent)
+    }
+
     /// Returns true if it is trivially iterable, ie. it contains no element
     /// accessor descriptors and uses the Array intrinsic itrator method.
     #[cfg(any(feature = "set", feature = "weak-refs"))]
     pub(crate) fn is_trivially_iterable(self, agent: &mut Agent, gc: NoGcScope<'a, '_>) -> bool {
-        use crate::ecmascript::abstract_operations::try_get_object_method;
-        use crate::heap::WellKnownSymbols;
-        if !self.is_dense(agent) {
-            // Contains holes or getters, so cannot be iterated without looking
-            // into the prototype chain or calling getters.
-            false
-        } else {
-            let TryResult::Continue(Some(iterator_method)) = try_get_object_method(
-                agent,
-                self.into(),
-                PropertyKey::Symbol(WellKnownSymbols::Iterator.into()),
-                gc,
-            ) else {
-                // Can't get iterator method without calling a getter or Proxy
-                // method; or getting the method threw an error which we ignore
-                // here; or there is no iterator method, which will throw an
-                // error later.
-                return false;
-            };
-
-            // We got a proper iterator method; but is it the intrinsic Array
-            // values iterator method?
-            iterator_method
-                == agent
-                    .current_realm_record()
-                    .intrinsics()
-                    .array_prototype_values()
-                    .into()
-        }
+        // An array with holes or getters cannot be iterated without looking
+        // into the prototype chain or calling getters.
+        self.is_dense(agent) && self.is_iterated_by_values(agent, gc)
     }
 
     // This method creates a "shallow clone" of the elements of a simple array (no descriptors).
