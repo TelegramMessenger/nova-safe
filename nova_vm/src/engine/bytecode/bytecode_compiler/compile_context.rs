@@ -170,7 +170,21 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         &mut self,
         ast: FunctionAstRef<'script>,
     ) -> FunctionTemplate<'gc> {
-        let is_strict = self.runtime_strict || ast.ecmascript_code().has_use_strict_directive();
+        self.compile_nested_function_of(ast, false)
+    }
+
+    /// [`CompileContext::compile_nested_function`] for a function that is
+    /// or is not an element of a class. One that is, is strict whatever the
+    /// code that creates it is: all parts of a ClassDeclaration or a
+    /// ClassExpression are strict mode code.
+    pub(crate) fn compile_nested_function_of(
+        &mut self,
+        ast: FunctionAstRef<'script>,
+        class_element: bool,
+    ) -> FunctionTemplate<'gc> {
+        let is_strict = class_element
+            || self.runtime_strict
+            || ast.ecmascript_code().has_use_strict_directive();
         let is_lexical = matches!(
             ast,
             FunctionAstRef::Arrow(_) | FunctionAstRef::AsyncArrow(_)
@@ -190,7 +204,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             },
             gc,
         );
-        FunctionTemplate::from_ast(ast, Some(executable))
+        let mut template = FunctionTemplate::from_ast(ast, Some(executable));
+        template.has_use_strict_directive |= class_element;
+        template
     }
 
     /// Compile a function defined in this code into the record that the
@@ -200,7 +216,27 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         function: &'script ast::Function<'script>,
         identifier: Option<NamedEvaluationParameter>,
     ) -> FunctionExpression<'gc> {
-        let template = self.compile_nested_function(FunctionAstRef::from(function));
+        self.compile_function_expression_of(function, identifier, false)
+    }
+
+    /// [`CompileContext::compile_function_expression`] for a method, a
+    /// getter or a setter of a class, which is strict mode code.
+    pub(crate) fn compile_class_method(
+        &mut self,
+        function: &'script ast::Function<'script>,
+        identifier: Option<NamedEvaluationParameter>,
+    ) -> FunctionExpression<'gc> {
+        self.compile_function_expression_of(function, identifier, true)
+    }
+
+    fn compile_function_expression_of(
+        &mut self,
+        function: &'script ast::Function<'script>,
+        identifier: Option<NamedEvaluationParameter>,
+        class_element: bool,
+    ) -> FunctionExpression<'gc> {
+        let template =
+            self.compile_nested_function_of(FunctionAstRef::from(function), class_element);
         let binding_name = function
             .id
             .as_ref()
@@ -244,6 +280,12 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     /// Get the SourceCode being compiled.
     pub(crate) fn get_source_code(&self) -> SourceCode<'gc> {
         self.source_code
+    }
+
+    /// Whether the code being compiled is a Script's: its outermost scope
+    /// is then the global scope.
+    pub(crate) fn is_script(&self) -> bool {
+        self.source_code.is_script(self.get_agent())
     }
 
     /// Scope analysis of the program being compiled.
@@ -445,6 +487,20 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         } else {
             self.add_instruction_with_constant(Instruction::LoadConstant, Value::Undefined);
         }
+        let idx = self.executable.push_stack();
+        self.stack_variables.push((symbol, idx));
+        self.control_flow_stack
+            .push(ControlFlowStackEntry::StackValue);
+        StackVariable
+    }
+
+    /// A stack variable whose slot holds its value before the code starts: a
+    /// parameter that the call itself puts there
+    /// (Executable::stack_parameters). Nothing is compiled for it.
+    pub(super) fn push_filled_stack_variable(
+        &mut self,
+        symbol: oxc_semantic::SymbolId,
+    ) -> StackVariable {
         let idx = self.executable.push_stack();
         self.stack_variables.push((symbol, idx));
         self.control_flow_stack
@@ -1141,6 +1197,17 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.executable.set_call_environment(call_environment);
     }
 
+    /// Says that the function being compiled keeps its parameters in its
+    /// first `count` stack slots, filled by whoever starts its code.
+    pub(super) fn set_stack_parameters(&mut self, count: u16) {
+        self.executable.set_stack_parameters(count);
+    }
+
+    /// How many values the code compiled so far leaves on the stack here.
+    pub(super) fn stack_depth(&self) -> usize {
+        self.executable.stack_depth()
+    }
+
     /// Returns the environment a \[\[Call]] of the function needs (see
     /// function_declaration_instantiation::instantiation).
     pub(crate) fn compile_function_body(
@@ -1234,6 +1301,16 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.executable.add_instruction(instruction);
     }
 
+    /// Makes `jump` go to `target`, a place the code has already passed.
+    pub(super) fn set_jump_target(&mut self, jump: JumpIndex, target: JumpIndex) {
+        self.executable.set_jump_target(jump, target);
+    }
+
+    /// The case `case` of the switch table `table` starts here.
+    pub(super) fn set_switch_target_here(&mut self, table: usize, case: usize) {
+        self.executable.set_switch_target_here(table, case);
+    }
+
     pub(super) fn add_instruction_with_jump_slot(&mut self, instruction: Instruction) -> JumpIndex {
         self.executable.add_instruction_with_jump_slot(instruction)
     }
@@ -1276,6 +1353,20 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ) {
         self.executable
             .add_instruction_with_identifier(instruction, identifier);
+    }
+
+    pub(super) fn new_binding_site(&mut self) -> Option<IndexType> {
+        self.executable.new_binding_site()
+    }
+
+    pub(super) fn add_instruction_with_identifier_and_site(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        site: IndexType,
+    ) {
+        self.executable
+            .add_instruction_with_identifier_and_site(instruction, identifier, site);
     }
 
     pub(super) fn add_instruction_with_cache(
@@ -1592,6 +1683,21 @@ impl StackResultValue {
     /// Write a value into the StackResultValue stack slot.
     pub(crate) fn write(&self, ctx: &mut CompileContext) {
         ctx.add_instruction_with_immediate(Instruction::PutValueToIndex, self.stack_slot as usize);
+    }
+
+    /// Test the value in the stack slot against the `selectors` of a
+    /// `switch` statement's cases, in source order, by one instruction that
+    /// jumps to the first case it is strictly equal to. Returns the switch
+    /// table, whose cases say where they start with
+    /// [`CompileContext::set_switch_target_here`]; None, with nothing added,
+    /// if the executable has no room for it.
+    pub(crate) fn jump_to_case<'gc>(
+        &self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        selectors: &[Value<'gc>],
+    ) -> Option<usize> {
+        ctx.executable
+            .add_switch_table(self.stack_slot as usize, selectors)
     }
 
     /// UpdateEmpty an StackResultValue from the stack into the result register.

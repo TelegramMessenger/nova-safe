@@ -8,8 +8,9 @@ use std::borrow::Cow;
 use crate::{
     ecmascript::{
         Agent, BUILTIN_STRING_MEMORY, BuiltinFunctionHeapData, ExceptionType, ExecutionContext,
-        Function, FunctionInternalProperties, InternalSlots, JsResult, Object, OrdinaryObject,
-        PropertyKey, Realm, ScopedValuesIterator, String, Value, function_handle,
+        Function, FunctionInternalProperties, InternalSlots, JsResult, MathObject, Object,
+        OrdinaryObject, PropertyKey, Realm, ScopedValuesIterator, String, StringPrototype, Value,
+        function_handle,
     },
     engine::{Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData},
     heap::{
@@ -206,6 +207,41 @@ pub(crate) fn take_pooled_arguments_vec(
     vec
 }
 
+/// Roots `values` as the arguments list of a call that a `Vm` runs in place:
+/// the list is the last of the Agent's scoped collections, and stays until
+/// [`release_scoped_collections`] cuts them back below it when the call
+/// ends. What [`ArgumentsList::with_scoped`] does for a call that has a
+/// native frame to do it in.
+pub(crate) fn scope_arguments_of_call(
+    agent: &mut Agent,
+    values: Vec<Value<'static>>,
+) -> ScopedArgumentsList<'static> {
+    let collections = agent.stack_ref_collections.get_mut();
+    let index = u32::try_from(collections.len()).expect("Stack reference collections overflowed");
+    collections.push(HeapRootCollection::ArgumentsList(ScopedArgumentsData {
+        values,
+        start: 0,
+    }));
+    ScopedArgumentsList {
+        index,
+        value: PhantomData,
+    }
+}
+
+/// Cuts the Agent's scoped collections back to `depth`. The vector of an
+/// arguments list among those let go of ([`scope_arguments_of_call`]) is
+/// kept for the next call.
+#[inline]
+pub(crate) fn release_scoped_collections(agent: &mut Agent, depth: usize) {
+    while agent.stack_ref_collections.get_mut().len() > depth {
+        if let Some(HeapRootCollection::ArgumentsList(data)) =
+            agent.stack_ref_collections.get_mut().pop()
+        {
+            return_pooled_arguments_vec(agent, data.values);
+        }
+    }
+}
+
 pub(crate) fn return_pooled_arguments_vec(agent: &mut Agent, mut vec: Vec<Value<'static>>) {
     if vec.capacity() == 0
         || vec.capacity() > ARGUMENTS_POOL_MAX_CAPACITY
@@ -338,6 +374,72 @@ pub type ConstructorFn = for<'gc> fn(
     Option<Object>,
     GcScope<'gc, '_>,
 ) -> JsResult<'gc, Value<'gc>>;
+
+/// A built-in function whose result for arguments it takes as they are is
+/// computed from them alone, with no effect: the interpreter runs it in
+/// place for such arguments, with no call made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectBuiltin {
+    MathAbs,
+    MathCeil,
+    MathFloor,
+    MathMax,
+    MathMin,
+    MathRound,
+    MathSign,
+    MathSqrt,
+    MathTrunc,
+    MathSin,
+    MathCos,
+    MathPow,
+    StringCharCodeAt,
+}
+
+impl DirectBuiltin {
+    /// The function of `behaviour`, if it is one of these.
+    pub(crate) fn of(behaviour: Behaviour) -> Option<Self> {
+        match behaviour {
+            Behaviour::Regular(function) => MathObject::direct_builtin(function)
+                .or_else(|| StringPrototype::direct_builtin(function)),
+            Behaviour::Constructor(_) => None,
+        }
+    }
+
+    /// Whether the function computes from its this value: the others are
+    /// run without looking for it.
+    #[inline]
+    pub(crate) fn takes_this(self) -> bool {
+        matches!(self, Self::StringCharCodeAt)
+    }
+
+    /// What a call of the function with `this` (where the function takes
+    /// it) and `arguments` returns, where it needs nothing but them and
+    /// does nothing else; None where the call is to be made.
+    #[inline]
+    pub(crate) fn run<'gc>(
+        self,
+        agent: &mut Agent,
+        this: Option<Value<'gc>>,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        match self {
+            Self::StringCharCodeAt => {
+                let string = String::try_from(this?).ok()?;
+                let Some(&Value::Integer(position)) = arguments.first() else {
+                    return None;
+                };
+                Some(StringPrototype::char_code_at_of(
+                    agent,
+                    string,
+                    position.into_i64(),
+                    gc,
+                ))
+            }
+            _ => MathObject::run_direct(agent, self, arguments, gc),
+        }
+    }
+}
 
 /// Calling convention of a builtin function.
 #[allow(unpredictable_function_pointer_comparisons)]
@@ -805,6 +907,7 @@ pub fn create_builtin_function<'a>(
         .heap
         .create(BuiltinFunctionHeapData {
             behaviour,
+            direct: DirectBuiltin::of(behaviour),
             initial_name: Some(initial_name),
             // 10. Perform SetFunctionLength(func, length).
             length: args.length as u8,
@@ -850,6 +953,7 @@ impl HeapMarkAndSweep for BuiltinFunctionHeapData<'static> {
             realm,
             initial_name,
             behaviour: _,
+            direct: _,
         } = self;
         realm.mark_values(queues);
         initial_name.mark_values(queues);
@@ -863,6 +967,7 @@ impl HeapMarkAndSweep for BuiltinFunctionHeapData<'static> {
             realm,
             initial_name,
             behaviour: _,
+            direct: _,
         } = self;
         realm.sweep_values(compactions);
         initial_name.sweep_values(compactions);

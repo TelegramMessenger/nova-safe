@@ -5,8 +5,8 @@
 use crate::{
     ecmascript::{
         Agent, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinFunction, BuiltinFunctionHeapData,
-        BuiltinGetter, BuiltinIntrinsic, BuiltinIntrinsicConstructor, BuiltinSetter, Object,
-        OrdinaryObject, PropertyKey, Realm, String, Value,
+        BuiltinGetter, BuiltinIntrinsic, BuiltinIntrinsicConstructor, BuiltinSetter, DirectBuiltin,
+        Object, OrdinaryObject, PropertyKey, Realm, String, Value,
         builders::{
             CreatorProperties, CreatorPrototype, NoProperties, NoPrototype,
             create_intrinsic_backing_object,
@@ -492,6 +492,7 @@ impl
             realm: self.realm,
             initial_name: Some(self.name.0),
             behaviour: self.behaviour.0,
+            direct: DirectBuiltin::of(self.behaviour.0),
         };
 
         let slot = self
@@ -546,6 +547,7 @@ impl
             realm,
             initial_name: Some(name),
             behaviour,
+            direct: DirectBuiltin::of(behaviour),
         };
 
         let slot = agent
@@ -595,6 +597,7 @@ impl<T: Into<Object<'static>>>
             realm,
             initial_name: Some(name),
             behaviour,
+            direct: DirectBuiltin::of(behaviour),
         };
 
         let slot = agent

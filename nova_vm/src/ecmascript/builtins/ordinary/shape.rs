@@ -9,8 +9,8 @@ use crate::table::{HashTable, hash_table::Entry};
 
 use crate::{
     ecmascript::{
-        Agent, InternalMethods, Object, Primitive, PrivateField, PropertyKey, Realm, Symbol,
-        TryGetResult, Value,
+        Agent, InternalMethods, InternalSlots, Object, Primitive, PrivateField, PropertyKey, Realm,
+        Symbol, TryGetResult, Value,
     },
     engine::{Bindable, GcToken, NoGcScope},
     heap::{
@@ -257,6 +257,20 @@ impl<'a> ObjectShape<'a> {
             {
                 return base_shape;
             }
+            // The property lookup caches are kept right by the shapes of
+            // prototypes being intrinsic: a property added to or removed
+            // from one, or a change of its own prototype, drops what the
+            // caches found through it. So the first object made with this
+            // prototype makes the prototype's shape intrinsic, whichever
+            // way the object is made (Object.create comes here directly).
+            // While a Realm is being created nothing runs yet, and its
+            // intrinsic objects get their shapes from their builders.
+            if agent.has_execution_context() && !prototype.is_proxy() && !prototype.is_module() {
+                prototype
+                    .get_or_create_backing_object(agent)
+                    .make_intrinsic(agent)
+                    .expect("Should perform GC here");
+            }
             agent.heap.create(ObjectShapeRecord::create_root(prototype))
         } else {
             ObjectShape::NULL
@@ -278,6 +292,10 @@ impl<'a> ObjectShape<'a> {
     /// This is only correct to use on intrinsic Object Shapes.
     fn push_key(self, agent: &mut Agent, key: PropertyKey<'a>) -> Result<(), TryReserveError> {
         debug_assert_eq!(self.values_capacity(agent), self.len(agent).into());
+        if matches!(key, PropertyKey::Integer(_)) {
+            // What Array::appends_plainly goes by.
+            agent.heap.intrinsic_integer_keys = true;
+        }
         let ObjectShapeRecord {
             prototype: _,
             keys,
@@ -440,9 +458,9 @@ impl<'a> ObjectShape<'a> {
 
     /// Get an Object Shape with the given key index removed.
     ///
-    /// This method does not preserve the `extensible` bit of the ObjectShape
-    /// reference, as it should be impossible to remove properties from frozen
-    /// objects.
+    /// This preserves the `extensible` bit of the ObjectShape reference: an
+    /// object that is not extensible, unless it is sealed too, can still have
+    /// its properties removed, and stays as it is.
     ///
     /// > NOTE: This function will create a new Object Shape, or possibly
     /// > multiple ones, if an existing one cannot be found.
@@ -451,6 +469,12 @@ impl<'a> ObjectShape<'a> {
         agent: &mut Agent,
         index: u32,
     ) -> Result<Self, TryReserveError> {
+        let mut shape = self.shape_with_removal(agent, index)?;
+        shape.set_extensible(self.extensible());
+        Ok(shape)
+    }
+
+    fn shape_with_removal(self, agent: &mut Agent, index: u32) -> Result<Self, TryReserveError> {
         let len = self.len(agent);
         debug_assert!(index < len);
         let keys_cap = self.keys_capacity(agent);
@@ -550,9 +574,22 @@ impl<'a> ObjectShape<'a> {
     /// Get an Object Shape with the given private field keys added. Returns
     /// the Object Shape and the index at which they were added in.
     ///
+    /// This preserves the `extensible` bit of the ObjectShape reference:
+    /// private fields can be added onto frozen objects, which stay frozen.
+    ///
     /// > NOTE: This function will create a new Object Shape, or possibly
     /// > multiple ones, if an existing one cannot be found.
     pub(crate) fn add_private_fields(
+        self,
+        agent: &mut Agent,
+        private_fields: &[PrivateField<'a>],
+    ) -> Result<(Self, usize), TryReserveError> {
+        let (mut shape, insertion_index) = self.shape_with_private_fields(agent, private_fields)?;
+        shape.set_extensible(self.extensible());
+        Ok((shape, insertion_index))
+    }
+
+    fn shape_with_private_fields(
         self,
         agent: &mut Agent,
         private_fields: &[PrivateField<'a>],
@@ -731,12 +768,18 @@ impl<'a> ObjectShape<'a> {
             properties_count,
         )?;
         let cap = cap.make_intrinsic();
-        Ok(agent.heap.create(ObjectShapeRecord::create(
+        let mut shape = agent.heap.create(ObjectShapeRecord::create(
             prototype,
             index,
             cap,
             properties_count as usize,
-        )))
+        ));
+        // Whether the holder is extensible is said by its reference to the
+        // shape, not by the shape: the copy's reference must say the same,
+        // or a frozen object would take new properties again once it is a
+        // prototype.
+        shape.set_extensible(self.extensible());
+        Ok(shape)
     }
 
     /// Create basic shapes for a new Realm's intrinsics.

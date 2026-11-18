@@ -7,15 +7,17 @@ use std::marker::PhantomData;
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, Array, ArrayIteratorPrototype, AsyncFromSyncIteratorPrototype,
-        BUILTIN_STRING_MEMORY, ExceptionType, InternalMethods, IteratorRecord, JsError, JsResult,
-        Object, OrdinaryObject, Promise, PropertyKey, PropertyKeySet, ScopedArgumentsList,
-        TryError, TryGetResult, TryResult, Value, call_function, create_async_from_sync_iterator,
-        create_iter_result_object, get, get_iterator_from_method, get_method, get_object_method,
-        throw_not_callable, to_boolean, try_get,
+        Agent, ArgumentsList, Array, ArrayIterator, ArrayIteratorPrototype,
+        AsyncFromSyncIteratorPrototype, BUILTIN_STRING_MEMORY, CollectionIteratorKind,
+        ExceptionType, Function, InternalMethods, IteratorRecord, JsError, JsResult, Object,
+        OrdinaryObject, Promise, PropertyKey, PropertyKeySet, PropertyLookupCache,
+        ScopedArgumentsList, StringIteratorPrototype, TryError, TryGetResult, TryResult, Value,
+        call_function, create_async_from_sync_iterator, create_iter_result_object, get,
+        get_iterator_from_method, get_method, get_object_method, throw_not_callable, to_boolean,
+        try_get,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, ScopeToken, Scoped},
-    heap::{CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
+    heap::{ArenaAccessMut, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
 };
 
 /// Marker struct for working with the active iterator of the currently active,
@@ -96,7 +98,10 @@ impl<'a> ActiveIterator<'a> {
     ) -> JsResult<'gc, Option<Value<'gc>>> {
         match self.get(agent) {
             VmIteratorRecord::ArrayValues(_) => {
-                ArrayValuesIterator::new(self).throw(agent, received_value, gc)
+                // Its "throw" is looked for on the iterator, and called
+                // with it if there is one.
+                self.array_values_as_object(agent, gc.nogc());
+                GenericIterator::new(self).throw(agent, received_value, gc)
             }
             VmIteratorRecord::AsyncFromSyncGenericIterator(_) => Ok(Some(
                 AsyncFromSyncGenericIterator::new(self)
@@ -118,7 +123,13 @@ impl<'a> ActiveIterator<'a> {
     ) -> JsResult<'gc, Option<Value<'gc>>> {
         match self.get(agent) {
             VmIteratorRecord::ArrayValues(_) => {
-                ArrayValuesIterator::new(self).r#return(agent, received_value, gc)
+                if !array_iterator_record_requires_return_call(agent, gc.nogc()) {
+                    return Ok(None);
+                }
+                // An Array Iterator has a "return" method to call, with
+                // the iterator.
+                let iterator = self.array_values_as_object(agent, gc.nogc()).unbind();
+                GenericIterator::r#return(agent, iterator, received_value, gc)
             }
             VmIteratorRecord::AsyncFromSyncGenericIterator(_) => Ok(Some(
                 AsyncFromSyncGenericIterator::new(self)
@@ -131,6 +142,37 @@ impl<'a> ActiveIterator<'a> {
             }
             _ => unreachable!(),
         }
+    }
+
+    /// Puts the Array Iterator object that a [`VmIteratorRecord::ArrayValues`]
+    /// record stands for in the record's place, as the iterator of a
+    /// generic record whose next method is the original "next" (the record
+    /// was made while that was the next method an iteration read), and
+    /// returns it. An iteration that something must see as an object (its
+    /// "return" or "throw" method is to be called with it) goes on from
+    /// there as any other does.
+    fn array_values_as_object<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Object<'gc> {
+        let VmIteratorRecord::ArrayValues(record) = self.get(agent) else {
+            unreachable!()
+        };
+        let array = record.array.bind(gc);
+        let index = record.index;
+        let iterator =
+            ArrayIterator::from_object(agent, array.into(), CollectionIteratorKind::Value).bind(gc);
+        iterator.get_mut(agent).next_index = index.into();
+        let next_method = agent
+            .current_realm_record()
+            .intrinsics()
+            .array_iterator_prototype_next();
+        *self.get_mut(agent) = VmIteratorRecord::GenericIterator(IteratorRecord {
+            iterator: iterator.unbind().into(),
+            next_method: next_method.into(),
+        });
+        iterator.into()
     }
 
     pub(super) fn step_value<'gc>(
@@ -231,6 +273,26 @@ impl<'a> VmIteratorRecord<'a> {
         }
     }
 
+    /// GetIterator(obj, sync) where it runs nothing and makes no iterator:
+    /// `obj` is an Array that is iterated the way the realm set out with,
+    /// which is walked element by element. Nearly every Array is, and the
+    /// method is found by the shape of the array
+    /// ([`Array::is_iterated_by_values`]). None leaves it to
+    /// [`VmIteratorRecord::from_value`].
+    #[inline]
+    pub(super) fn of_array_walked<'gc>(
+        agent: &mut Agent,
+        obj: Value<'gc>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<VmIteratorRecord<'gc>> {
+        let Value::Array(array) = obj else {
+            return None;
+        };
+        array
+            .is_iterated_by_values(agent, gc)
+            .then(|| VmIteratorRecord::ArrayValues(ArrayValuesIteratorRecord::new(array)))
+    }
+
     /// ### [7.4.4 GetIterator ( obj, kind )](https://tc39.es/ecma262/#sec-getiterator)
     ///
     /// The abstract operation GetIterator takes arguments obj (an ECMAScript
@@ -244,6 +306,9 @@ impl<'a> VmIteratorRecord<'a> {
         mut gc: GcScope<'a, '_>,
     ) -> JsResult<'a, Self> {
         let value = obj.bind(gc.nogc());
+        if let Some(walk) = VmIteratorRecord::of_array_walked(agent, value, gc.nogc()) {
+            return Ok(walk.unbind());
+        }
         let scoped_value = value.scope(agent, gc.nogc());
         // a. Let method be ? GetMethod(obj, %Symbol.iterator%).
         let method = get_method(
@@ -261,25 +326,16 @@ impl<'a> VmIteratorRecord<'a> {
 
         let value = scoped_value.take(agent).bind(gc.nogc());
         // 4. Return ? GetIteratorFromMethod(obj, method).
-        match value {
-            // Optimisation: Check if we're using the Array values iterator on
-            // an Array.
-            Value::Array(array)
-                if method
-                    == agent
-                        .current_realm_record()
-                        .intrinsics()
-                        .array_prototype_values()
-                        .into() =>
-            {
-                Ok(VmIteratorRecord::ArrayValues(
-                    ArrayValuesIteratorRecord::new(array.unbind()),
-                ))
-            }
-            _ => Ok(
+        if let Some(array) = Array::is_iterable_array(agent, value, method) {
+            // The same walk, where a getter gave the method.
+            Ok(VmIteratorRecord::ArrayValues(
+                ArrayValuesIteratorRecord::new(array.unbind()),
+            ))
+        } else {
+            Ok(
                 get_iterator_from_method(agent, value.unbind(), method.unbind(), gc)?
                     .into_vm_iterator_record(),
-            ),
+            )
         }
     }
 
@@ -398,6 +454,9 @@ impl<'a> ObjectPropertiesIterator<'a> {
         agent: &mut Agent,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Option<Value<'gc>>> {
+        // This step asks whether a key was met before it looks for the
+        // property of the key, for every key.
+        self.note_pending_keys(agent);
         loop {
             // A Proxy can make the prototype chain a cycle.
             agent.poll_interrupt(gc.nogc()).unbind()?;
@@ -480,7 +539,23 @@ impl<'a> ObjectPropertiesIterator<'a> {
     fn set_object(&mut self, agent: &mut Agent, object: Object) {
         let iter = self.get_mut(agent);
         iter.object = object.unbind();
+        iter.inherited = true;
         iter.remaining_keys = None;
+    }
+
+    /// Moves the keys that wait for it into the set of the visited ones
+    /// ([`ObjectPropertiesIteratorRecord::pending_keys`]).
+    fn note_pending_keys(&mut self, agent: &mut Agent) {
+        let record = self.get_mut(agent);
+        if record.pending_keys.is_empty() {
+            return;
+        }
+        let pending_keys = core::mem::take(&mut record.pending_keys);
+        let mut visited_keys = core::mem::take(&mut record.visited_keys);
+        for key in pending_keys {
+            visited_keys.insert(agent, key);
+        }
+        self.get_mut(agent).visited_keys = visited_keys;
     }
 
     fn next_remaining_key<'gc>(
@@ -526,7 +601,17 @@ impl<'a> ObjectPropertiesIterator<'a> {
 #[derive(Debug)]
 pub(crate) struct ObjectPropertiesIteratorRecord<'a> {
     object: Object<'a>,
+    /// The keys of the properties met so far, on `object` and on the
+    /// objects before it: a key among them is not given again.
     visited_keys: PropertyKeySet<'a>,
+    /// Keys that belong in `visited_keys` and are not there yet: those met
+    /// by steps that run nothing, which ask about a key only where an
+    /// object after the first has an enumerable property of that key. Most
+    /// loops end without that, and with no key ever hashed.
+    pending_keys: Vec<PropertyKey<'a>>,
+    /// `object` is not the object the loop is over, but one of its
+    /// prototypes.
+    inherited: bool,
     remaining_keys: Option<Vec<PropertyKey<'a>>>,
 }
 
@@ -535,8 +620,23 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
         Self {
             object,
             visited_keys: Default::default(),
+            pending_keys: Vec::new(),
+            inherited: false,
             remaining_keys: Default::default(),
         }
+    }
+
+    /// Moves the pending keys into the set of the visited ones.
+    fn note_pending_keys(&mut self, agent: &Agent) {
+        for key in self.pending_keys.drain(..) {
+            self.visited_keys.insert(agent, key);
+        }
+    }
+
+    /// True if a property of `key` was met before.
+    fn was_visited(&mut self, agent: &Agent, key: PropertyKey) -> bool {
+        self.note_pending_keys(agent);
+        self.visited_keys.contains(agent, key)
     }
 
     fn object_is_visited(&self) -> bool {
@@ -551,26 +651,8 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
     fn set_object(&mut self, object: Object) {
         let iter = self;
         iter.object = object.unbind();
+        iter.inherited = true;
         iter.remaining_keys = None;
-    }
-
-    fn next_remaining_key<'gc>(
-        &mut self,
-        agent: &mut Agent,
-        gc: NoGcScope<'gc, '_>,
-    ) -> Option<(Object<'gc>, PropertyKey<'gc>)> {
-        loop {
-            let next_key = self.remaining_keys.as_mut().unwrap().pop()?;
-            if self.visited_keys.contains(agent, next_key) {
-                // Skip visited keys.
-                continue;
-            }
-            return Some((self.object.bind(gc), next_key.bind(gc)));
-        }
-    }
-
-    fn mark_key_visited(&mut self, agent: &mut Agent, key: PropertyKey) {
-        self.visited_keys.insert(agent, key);
     }
 
     /// ### [7.4.8 IteratorStepValue ( iteratorRecord )](https://tc39.es/ecma262/#sec-iteratorstepvalue)
@@ -579,7 +661,17 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
     /// function implements much the same intent. It does the IteratorNext
     /// step, followed by a completion check, and finally extracts the value
     /// if the iterator did not complete yet.
-    fn try_step_value<'gc>(
+    ///
+    /// The step, where nothing has to run for it. Where something has to (a
+    /// trap of a Proxy), nothing is lost: the key that the step stopped at
+    /// is still the next one for the step that runs it.
+    ///
+    /// Nothing runs for the property of a key here, so whether a property
+    /// of the key was met before may be asked after the property is found,
+    /// and only where the answer changes anything: where the property is
+    /// enumerable, on an object that is not the first. The keys of the
+    /// first object are all different, and none was met before them.
+    pub(super) fn try_step_value<'gc>(
         &mut self,
         agent: &mut Agent,
         gc: NoGcScope<'gc, '_>,
@@ -601,16 +693,23 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
                 }
                 self.set_remaining_keys(remaining_keys);
             }
-            while let Some((object, next_key)) = self.next_remaining_key(agent, gc) {
+            while let Some(next_key) = self.remaining_keys.as_ref().unwrap().last().copied() {
+                let next_key = next_key.bind(gc);
                 let desc = object.try_get_own_property(agent, next_key, None, gc)?;
-                if let Some(desc) = desc {
-                    self.mark_key_visited(agent, next_key);
-                    if desc.enumerable == Some(true) {
-                        return TryResult::Continue(Some(
-                            ObjectPropertiesIterator::convert_result(agent, next_key, gc),
-                        ));
+                self.remaining_keys.as_mut().unwrap().pop();
+                let Some(desc) = desc else {
+                    continue;
+                };
+                if desc.enumerable == Some(true) {
+                    if self.inherited && self.was_visited(agent, next_key) {
+                        continue;
                     }
+                    self.pending_keys.push(next_key.unbind());
+                    return TryResult::Continue(Some(ObjectPropertiesIterator::convert_result(
+                        agent, next_key, gc,
+                    )));
                 }
+                self.pending_keys.push(next_key.unbind());
             }
             let prototype = object.try_get_prototype_of(agent, gc)?;
             if let Some(prototype) = prototype {
@@ -656,62 +755,6 @@ impl<'a> ArrayValuesIterator<'a> {
         Ok(Some(element_value))
     }
 
-    fn throw<'gc>(
-        &mut self,
-        agent: &mut Agent,
-        _received_value: Value,
-        mut gc: GcScope<'gc, '_>,
-    ) -> JsResult<'gc, Option<Value<'gc>>> {
-        // 1. Let throw be ? GetMethod(iterator, "throw").
-        let throw = get_object_method(
-            agent,
-            agent
-                .current_realm_record()
-                .intrinsics()
-                .array_prototype()
-                .into(),
-            BUILTIN_STRING_MEMORY.throw.into(),
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
-        // 2. If throw is not undefined, then
-        if let Some(throw) = throw {
-            // i. Let innerResult be
-            //    ? Call(throw, iterator, « received.[[Value]] »).
-            todo!("Handle ArrayValuesIterator with throw method {throw:?}");
-        }
-        Ok(None)
-    }
-
-    fn r#return<'gc>(
-        &mut self,
-        agent: &mut Agent,
-        _received_value: Option<Value>,
-        mut gc: GcScope<'gc, '_>,
-    ) -> JsResult<'gc, Option<Value<'gc>>> {
-        // 1. Let return be ? GetMethod(iterator, "return").
-        let r#return = get_object_method(
-            agent,
-            agent
-                .current_realm_record()
-                .intrinsics()
-                .array_prototype()
-                .into(),
-            BUILTIN_STRING_MEMORY.r#return.into(),
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
-        // 2. If return is not undefined, then
-        if let Some(r#return) = r#return {
-            // i. Let innerResult be
-            //    ? Call(return, iterator, « received.[[Value]] »).
-            todo!("Handle ArrayValuesIterator with return method {return:?}");
-        }
-        Ok(None)
-    }
-
     fn prep_step<'gc>(
         &mut self,
         agent: &mut Agent,
@@ -753,53 +796,80 @@ impl<'a> ArrayValuesIteratorRecord<'a> {
         }
     }
 
-    fn prep_step<'gc>(
+    /// The step, where it is no more than reading a value: the walk is
+    /// over (None for the step), or the next element has a value, which is
+    /// then neither a hole nor an accessor. Where it is one of those this
+    /// returns None with nothing changed, and the step is left to
+    /// [`ArrayValuesIteratorRecord::try_next`] or \[\[Get]].
+    #[inline]
+    pub(super) fn plain_next<'gc>(
         &mut self,
-        agent: &mut Agent,
+        agent: &Agent,
         gc: NoGcScope<'gc, '_>,
-    ) -> Option<(Array<'gc>, u32)> {
+    ) -> Option<Option<Value<'gc>>> {
         let array = self.array.bind(gc);
         // iv. Let indexNumber be 𝔽(index).
         let index = self.index;
         // 1. Let len be ? LengthOfArrayLike(array).
-        let len = array.len(agent);
         // iii. If index ≥ len, return NormalCompletion(undefined).
-        if index >= len {
-            return None;
+        if index >= array.len(agent) {
+            return Some(None);
         }
+        let element_value = (*array.as_slice(agent).get(index as usize)?)?;
         // viii. Set index to index + 1.
         self.index += 1;
-        Some((array, index))
+        Some(Some(element_value))
     }
 
+    /// The step, where nothing has to run for it. Where something has to (a
+    /// getter, a Proxy's trap), nothing has changed: the element is still
+    /// the next one for the step that runs it.
     fn try_next<'gc>(
         &mut self,
         agent: &mut Agent,
         gc: NoGcScope<'gc, '_>,
     ) -> TryResult<'gc, Option<Value<'gc>>> {
         // b. Repeat,
-        let Some((array, index)) = self.prep_step(agent, gc) else {
-            // The iterator is exhausted.
-            return TryResult::Continue(None);
-        };
-        if let Some(element_value) = array.as_slice(agent)[index as usize] {
-            // Fast path: If the element at this index has a Value, then it is
-            // not an accessor nor a hole. Yield the result as-is.
-            return TryResult::Continue(Some(element_value.unbind()));
+        if let Some(step) = self.plain_next(agent, gc) {
+            return TryResult::Continue(step);
         }
+        let array = self.array.bind(gc);
+        let index = self.index;
         // 1. Let elementKey be ! ToString(indexNumber).
         // 2. Let elementValue be ? Get(array, elementKey).
-        let element_value = match try_get(agent, array.unbind(), index.into(), None, gc)? {
+        let element_value = match try_get(agent, array, index.into(), None, gc)? {
             TryGetResult::Unset => Value::Undefined,
             TryGetResult::Value(value) => value,
             TryGetResult::Get(_) | TryGetResult::Proxy(_) => {
                 return TryError::GcError.into();
             }
         };
+        // viii. Set index to index + 1.
+        self.index += 1;
         // a. Let result be elementValue.
         // vii. Perform ? GeneratorYield(CreateIterResultObject(result, false)).
         TryResult::Continue(Some(element_value))
     }
+}
+
+/// The value of `object`'s own plain data property `key`, where reading it
+/// is no more than that: an ordinary object with few properties that has
+/// `key` among its own, with a value there and not an accessor. None leaves
+/// the read to \[\[Get]].
+fn own_data_property<'a>(agent: &Agent, object: Object<'a>, key: PropertyKey) -> Option<Value<'a>> {
+    let Object::Object(object) = object else {
+        return None;
+    };
+    let keys = object.get_property_keys(agent);
+    if keys.len() > 8 {
+        return None;
+    }
+    let index = keys.iter().position(|k| *k == key)?;
+    object
+        .get_elements_values(agent)
+        .get(index)
+        .copied()
+        .flatten()
 }
 
 struct GenericIterator<'a> {
@@ -869,6 +939,17 @@ impl<'a> GenericIterator<'a> {
         {
             return ArrayIteratorPrototype::step(agent, array_iterator.unbind(), gc);
         }
+        // The same for a String Iterator and its original next.
+        if let Object::StringIterator(string_iterator) = iterator
+            && let Ok(next_method) = Function::try_from(next_method)
+            && StringIteratorPrototype::is_next(agent, next_method)
+        {
+            return Ok(StringIteratorPrototype::step(
+                agent,
+                string_iterator.unbind(),
+                gc.into_nogc(),
+            ));
+        }
 
         let result = call_function(
             agent,
@@ -883,6 +964,21 @@ impl<'a> GenericIterator<'a> {
             return Err(throw_iterator_returned_non_object(agent, gc.into_nogc()));
         };
         let result = result.unbind().bind(gc.nogc());
+        // The result object nearly every iterator returns is an ordinary one
+        // with "done" and "value" as plain properties of its own (the one
+        // CreateIteratorResultObject makes, or a literal): \[\[Get]] of
+        // those is the value in the slot.
+        if let Some(done) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.done.into()) {
+            if to_boolean(agent, done) {
+                // The value of a result that is done is not read.
+                return Ok(None);
+            }
+            if let Some(value) =
+                own_data_property(agent, result, BUILTIN_STRING_MEMORY.value.into())
+            {
+                return Ok(Some(value.unbind().bind(gc.into_nogc())));
+            }
+        }
         let scoped_result = result.scope(agent, gc.nogc());
         // 1. Return ToBoolean(? Get(iterResult, "done")).
         let done = get(
@@ -1078,17 +1174,23 @@ fn array_iterator_record_requires_return_call(agent: &mut Agent, gc: NoGcScope) 
         .intrinsics()
         .array_iterator_prototype();
     // IteratorClose calls GetMethod on the iterator: if a
-    // non-nullable value is found this way then things happen.
+    // non-nullable value is found this way then things happen. Every walk
+    // that ends early asks (a pattern with fewer elements than the array,
+    // a `break`): the property cache of the name remembers that the
+    // prototypes have none.
+    let key = PropertyKey::from(BUILTIN_STRING_MEMORY.r#return);
+    let cache = PropertyLookupCache::new(agent, key);
     match array_iterator_prototype.try_get(
         agent,
-        BUILTIN_STRING_MEMORY.r#return.into(),
+        key,
         array_iterator_prototype.into(),
-        None,
+        Some(cache),
         gc,
     ) {
         ControlFlow::Continue(TryGetResult::Unset) => false,
         ControlFlow::Continue(TryGetResult::Value(v)) => !v.is_undefined() && !v.is_null(),
-        ControlFlow::Break(TryError::Err(_)) => todo!(),
+        // A getter, a Proxy's trap or an error: \[\[Get]] of the method,
+        // with the iterator, is what tells.
         _ => true,
     }
 }
@@ -1119,10 +1221,15 @@ impl HeapMarkAndSweep for ObjectPropertiesIteratorRecord<'static> {
         let Self {
             object,
             visited_keys,
+            pending_keys,
+            inherited: _,
             remaining_keys,
         } = self;
         object.mark_values(queues);
         visited_keys.mark_values(queues);
+        for key in pending_keys.iter() {
+            key.mark_values(queues);
+        }
         if let Some(remaining_keys) = remaining_keys {
             for key in remaining_keys.iter() {
                 key.mark_values(queues);
@@ -1134,10 +1241,15 @@ impl HeapMarkAndSweep for ObjectPropertiesIteratorRecord<'static> {
         let Self {
             object,
             visited_keys,
+            pending_keys,
+            inherited: _,
             remaining_keys,
         } = self;
         object.sweep_values(compactions);
         visited_keys.sweep_values(compactions);
+        for key in pending_keys.iter_mut() {
+            key.sweep_values(compactions);
+        }
         if let Some(remaining_keys) = remaining_keys {
             for key in remaining_keys.iter_mut() {
                 key.sweep_values(compactions);

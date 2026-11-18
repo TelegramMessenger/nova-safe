@@ -7,24 +7,35 @@ mod execute_instructions;
 
 use execute_instructions::*;
 
+use std::rc::Rc;
+
 use wtf8::Wtf8Buf;
 
+#[cfg(feature = "array-buffer")]
+use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayPrototype};
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, Environment, ExceptionType, JsError,
-        JsResult, Number, Object, Primitive, Promise, Reference, String, Value, call_function,
-        get_method, is_callable, ordinary_has_instance, take_pooled_arguments_vec, to_boolean,
-        to_numeric, to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
-        try_get_object_method, try_result_into_option_js,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, BigInt, CachedSet,
+        ECMAScriptFunction, Environment, ExceptionType, Function, FunctionPrototype,
+        InternalMethods, InternalSlots, JsError, JsResult, Number, Object, OrdinaryObject,
+        Primitive, Promise, PropertyKey, Reference, RegularFn, SmallInteger, String, TryGetResult,
+        Value, binding_value_at_site, call_function, get_method, get_this_value, is_callable,
+        is_property_reference, is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache,
+        ordinary_call_bind_this, ordinary_has_instance,
+        prepare_for_call_without_function_environment, prepare_for_ordinary_call,
+        reference_is_at_global_site, release_scoped_collections, scope_arguments_of_call,
+        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
+        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
+        try_get_object_method_by_cache, try_resolve_binding_at_site, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
         bytecode::{
-            Executable, IndexType, Instruction, InstructionIter, instructions::Instr,
-            iterator::VmIteratorRecord,
+            CallEnvironment, CodeTables, Executable, IndexType, Instruction, InstructionIter,
+            TablesView, instructions::Instr, iterator::VmIteratorRecord,
         },
     },
-    heap::{CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
+    heap::{ArenaAccess, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
 };
 
 #[derive(Debug, Bindable)]
@@ -60,6 +71,50 @@ enum ContinuationKind {
     Await,
 }
 
+/// What [`Vm::execute_plain_instruction`] made of an instruction.
+enum Plain {
+    /// Executed.
+    Done,
+    /// Executed, and it jumped backwards: one turn of a loop.
+    Looped,
+    /// Not executed and nothing changed: the instruction is not a plain one,
+    /// or its operands are not what the short way takes.
+    No,
+    /// Not executed and nothing changed: a call of an ECMAScript function,
+    /// which the Vm may run itself.
+    Call,
+    /// Not executed and nothing changed: `new` of an ECMAScript function,
+    /// which the Vm may run itself.
+    Construct,
+    /// Not executed: a read or an assignment of a property that is an
+    /// accessor. Its getter or setter is on the stack (under the value
+    /// assigned, for a setter) and the object is the result: a call of
+    /// the function with the object as its this value, which the Vm may
+    /// run itself.
+    Accessor,
+    /// Not executed and nothing changed: the instruction that ends a
+    /// function.
+    Return,
+}
+
+/// What the code that a function is run in place for makes of what the
+/// function returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    /// The result of the call.
+    Value,
+    /// Nothing: the function is a setter, run in place of an assignment.
+    Discarded,
+    /// The result of `new`, where it is an object; where it is not, the
+    /// object that was made for the constructor, which waits on top of the
+    /// caller's stack.
+    Constructed,
+}
+
+/// The steps a backward jump or a call counts for in the interrupt countdown:
+/// the instructions on the way to it are not counted one by one.
+const STEPS_PER_TURN: u32 = 8;
+
 /// VM exception handler.
 #[derive(Debug)]
 enum ExceptionHandler<'a> {
@@ -92,35 +147,157 @@ pub(crate) struct Vm {
     exception_handler_stack: Vec<ExceptionHandler<'static>>,
     result: Option<Value<'static>>,
     reference: Option<Reference<'static>>,
+    /// How many functions this `Vm` is running in place of their calls, one
+    /// called by the other: the state of the code that made each call is in
+    /// a frame of [`VmFrames`], the last `depth` of those in use. See
+    /// [`Vm::enter_function`].
+    depth: usize,
+    /// How many of the exception handlers on their stack are not of the
+    /// code that is running, but of the code that called it in place, and
+    /// of what called that: an error that the running code throws goes to
+    /// the handlers above these, and with none there leaves the function.
+    handler_base: usize,
+}
+
+/// What a `Vm` puts aside of the code that calls a function it runs itself,
+/// and takes back when the function returns or throws: the caller's stacks,
+/// where it goes on, and its code.
+#[derive(Debug)]
+struct Frame {
+    ip: usize,
+    /// The caller's value stack while the frame is in use; an empty stack
+    /// for the next function at this depth while it is not. A function has
+    /// a value stack of its own because its instructions name the slots
+    /// of its variables from the bottom of it.
+    stack: Vec<Value<'static>>,
+    /// The other three stacks are the caller's and the function's at once:
+    /// the function pushes to them above what the caller left there, and
+    /// balances what it pushes or leaves it to be cut off here when it is
+    /// left. How long the Reference stack and the iterator stack were when
+    /// the function was entered, and the caller's own
+    /// [`Vm::handler_base`].
+    reference_base: usize,
+    iterator_base: usize,
+    handler_base: usize,
+    /// The caller's executable, which the collector keeps current here
+    /// while the frame is in use.
+    executable: Executable<'static>,
+    /// The caller's instructions and tables while the frame is in use: see
+    /// [`Running::tables`].
+    tables: Option<Rc<CodeTables>>,
+    /// What the caller makes of what the function that runs from this
+    /// frame returns.
+    completion: Completion,
+    /// What the Agent's scoped values and scoped collections are cut back
+    /// to after each of the caller's instructions.
+    stack_depth: usize,
+    collections_depth: usize,
+    /// The rooted handle of the caller's executable. It stays where it is
+    /// among the Agent's scoped values while the function runs (what the
+    /// function's instructions scope is above it), and is the caller's
+    /// again when the function is left.
+    scoped: Scoped<'static, Executable<'static>>,
+}
+
+/// The code that is running in a `Vm`, between two changes of it: the code
+/// the `Vm` was started with, or a function that a call of it, or of a
+/// function it called, runs in place of the call.
+struct Running<'s> {
+    executable: Scoped<'s, Executable<'static>>,
+    /// The executable itself, as it is when the code starts to run or goes
+    /// on after a call: what `executable` gives until a collection moves
+    /// it. The loop of instructions starts from it, and asks the rooted
+    /// handle only after a collection.
+    code: Executable<'static>,
+    /// The instructions of the executable with its constants, property
+    /// caches and binding sites, held with it so that the loop reads them
+    /// without the heap.
+    tables: Rc<CodeTables>,
+    /// What the Agent's scoped values and scoped collections are cut back
+    /// to after each instruction.
+    stack_depth: usize,
+    collections_depth: usize,
+}
+
+/// Why the loop of instructions stops with the `Vm` not done.
+enum Change {
+    /// A call of a function that the `Vm` runs itself.
+    Call(CalledInPlace, Instr),
+    /// The function that is run in place of a call returns.
+    Return,
+    /// The code has no more instructions.
+    End,
+    /// An error that the running code did not handle.
+    Throw(JsError<'static>),
+    /// A function run in place of a call returned with a termination
+    /// pending: every caller ends too.
+    Terminate,
+}
+
+/// A function that a call instruction calls and the `Vm` runs itself.
+#[derive(Clone, Copy)]
+struct CalledInPlace {
+    function: ECMAScriptFunction<'static>,
+    executable: Executable<'static>,
+    /// How many parameters the function keeps in its first stack slots,
+    /// where the call puts the arguments. None for a function that binds
+    /// its parameters with its own instructions (a default value, a rest
+    /// parameter, a pattern, an arguments object): the call leaves it the
+    /// list of arguments.
+    parameters: Option<usize>,
+    /// The environment that the call makes for the function.
+    environment: CallEnvironment,
+    /// See [`Frame::completion`].
+    completion: Completion,
 }
 
 #[derive(Debug)]
 pub(crate) struct SuspendedVm {
     ip: usize,
+    /// The stacks are kept as the vectors they were, with at most twice the
+    /// room they use (and room for a few values at least): cut to what they
+    /// hold, each `yield` of a generator and each `await` allocated them
+    /// anew and grew them again on the way back.
+    ///
     /// Note: Stack is empty only if the code contains no local variables
-    /// optimised into stack slots or temporarily stored Values. A heap clone is
-    /// probably often performed by the `stack.into_boxed_slice()` call.
-    stack: Box<[Value<'static>]>,
+    /// optimised into stack slots or temporarily stored Values.
+    stack: Vec<Value<'static>>,
     /// Note: Reference stack is non-empty only if the code awaits inside a call
-    /// expression. This means that usually no heap data clone is required.
-    reference_stack: Box<[Reference<'static>]>,
+    /// expression.
+    reference_stack: Vec<Reference<'static>>,
     /// Note: Iterator stack is non-empty only if the code awaits inside a
-    /// for-in or for-of loop. This means that often no heap data clone is
-    /// required.
-    iterator_stack: Box<[VmIteratorRecord<'static>]>,
+    /// for-in or for-of loop.
+    iterator_stack: Vec<VmIteratorRecord<'static>>,
     /// Note: Exception jump stack is non-empty only if the code awaits inside a
-    /// try block or an await for-of loop. This means that often no heap data
-    /// clone is required.
-    exception_jump_target_stack: Box<[ExceptionHandler<'static>]>,
+    /// try block or an await for-of loop.
+    exception_jump_target_stack: Vec<ExceptionHandler<'static>>,
+}
+
+/// Room a suspended stack keeps beyond what it holds: as much again, and
+/// never less than this many entries in all.
+const SUSPENDED_STACK_ROOM: usize = 8;
+
+/// Cuts a stack that is being suspended down to twice what it holds.
+fn fit_suspended_stack<T>(mut stack: Vec<T>) -> Vec<T> {
+    let room = (stack.len() * 2).max(SUSPENDED_STACK_ROOM);
+    if stack.is_empty() {
+        // Nothing to keep: no allocation either.
+        return Vec::new();
+    }
+    if stack.capacity() > room + SUSPENDED_STACK_ROOM {
+        stack.shrink_to(room);
+    }
+    stack
 }
 
 impl SuspendedVm {
     /// Bytes held by the suspended stacks, for the heap size estimate.
     pub(crate) fn heap_bytes(&self) -> usize {
-        core::mem::size_of_val(&*self.stack)
-            + core::mem::size_of_val(&*self.reference_stack)
-            + core::mem::size_of_val(&*self.iterator_stack)
-            + core::mem::size_of_val(&*self.exception_jump_target_stack)
+        self.stack.capacity() * core::mem::size_of::<Value<'static>>()
+            + self.reference_stack.capacity() * core::mem::size_of::<Reference<'static>>()
+            + self.iterator_stack.capacity() * core::mem::size_of::<VmIteratorRecord<'static>>()
+            + self.exception_jump_target_stack.capacity()
+                * core::mem::size_of::<ExceptionHandler<'static>>()
     }
 
     pub(crate) fn resume<'gc>(
@@ -183,9 +360,244 @@ impl SuspendedVm {
 }
 
 const VM_STACK_POOL_LEN: usize = 32;
+/// How many frames, with their stacks, stay with an Agent while none is in
+/// use.
+const SPARE_FRAMES: usize = 64;
 const VM_STACK_POOL_MAX_CAPACITY: usize = 1024;
 
-pub(crate) type PooledVmStacks = (Vec<Value<'static>>, Vec<VmIteratorRecord<'static>>);
+/// The value and iterator stacks of a `Vm` that has run its code, emptied
+/// and kept for the next call.
+pub(crate) struct PooledVmStacks {
+    stack: Vec<Value<'static>>,
+    iterator_stack: Vec<VmIteratorRecord<'static>>,
+}
+
+/// Emptied Reference and exception handler stacks of `Vm`s that have run
+/// their code. A `Vm` starts without either and takes one here when it
+/// first pushes to it: most calls push to neither, and one that does (a
+/// method that assigns to `this.x`, a function with a loop) would allocate
+/// the stack and free it again. Kept apart from [`PooledVmStacks`], which
+/// every call takes and gives back.
+#[derive(Default)]
+pub(crate) struct SpareVmStacks {
+    references: Vec<Vec<Reference<'static>>>,
+    handlers: Vec<Vec<ExceptionHandler<'static>>>,
+}
+
+/// A function that native code calls again and again: the callback of an
+/// Array method, called for every element; a comparator. \[\[Call]] of an
+/// ECMAScript function from native code makes a `Vm` for the call and
+/// lets go of it after, finds out each time what kind of function it is
+/// and how its code takes its arguments, and roots its executable; here
+/// that is done once, and each call is the execution context of the call
+/// (PrepareForOrdinaryCall and OrdinaryCallBindThis, as for any call), the
+/// arguments put where the function's parameters are, and the code run.
+///
+/// For a function that the interpreter could run in place of a call
+/// instruction with its arguments in its first stack slots: an ordinary
+/// function (not a generator, not async, not a class constructor) that is
+/// compiled, keeps its parameters on the stack, and needs no Function
+/// Environment Record. Any other is called the general way by whoever
+/// would have used this.
+pub(crate) struct RepeatedCall<'s> {
+    function: Scoped<'s, ECMAScriptFunction<'static>>,
+    executable: Scoped<'s, Executable<'static>>,
+    /// How many parameters the function keeps in its first stack slots.
+    parameters: usize,
+    /// The function's bindings need a Declarative Environment Record.
+    declarative_environment: bool,
+    /// The `Vm` of every call: empty between two of them.
+    vm: Vm,
+}
+
+impl<'s> RepeatedCall<'s> {
+    /// None where `function` is not one that this is for.
+    pub(crate) fn new(
+        agent: &mut Agent,
+        function: Function,
+        gc: NoGcScope<'_, 's>,
+    ) -> Option<Self> {
+        let Function::ECMAScriptFunction(function) = function else {
+            return None;
+        };
+        let data = function.get(agent);
+        let kind = data.ecmascript_function.kind;
+        if kind.is_generator()
+            || kind.is_async()
+            || data
+                .ecmascript_function
+                .constructor_status
+                .is_class_constructor()
+        {
+            return None;
+        }
+        let executable = data.compiled_bytecode?;
+        let code = executable.get(agent);
+        let parameters = usize::from(code.stack_parameters?);
+        let declarative_environment = match code.call_environment {
+            CallEnvironment::Function => return None,
+            environment => environment == CallEnvironment::Declarative,
+        };
+        let function = function.scope(agent, gc);
+        let executable = executable.scope(agent, gc);
+        Some(Self {
+            function,
+            executable,
+            parameters,
+            declarative_environment,
+            vm: Vm::new(agent),
+        })
+    }
+
+    /// Call(F, thisArgument, arguments).
+    pub(crate) fn call<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        this_argument: Value,
+        arguments: &[Value],
+        gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Value<'gc>> {
+        agent.check_call_depth(gc.nogc()).unbind()?;
+        // 2. Let calleeContext be PrepareForOrdinaryCall(F, undefined).
+        // 5. Perform OrdinaryCallBindThis(F, calleeContext, thisArgument).
+        prepare_for_call_without_function_environment(
+            agent,
+            self.function.get(agent),
+            this_argument,
+            self.declarative_environment,
+            gc.nogc(),
+        );
+        // The arguments go where the function keeps its parameters:
+        // undefined for those not given, and those beyond the parameters
+        // are dropped.
+        let vm = &mut self.vm;
+        vm.stack.extend((0..self.parameters).map(|index| {
+            arguments
+                .get(index)
+                .map_or(Value::Undefined, |argument| argument.unbind())
+        }));
+        // 6. Let result be Completion(OrdinaryCallEvaluateBody(F,
+        //    argumentsList)).
+        let result = vm.run(agent, self.executable.clone(), gc);
+        vm.reset();
+        // 7. Remove calleeContext from the execution context stack and
+        //    restore callerContext as the running execution context.
+        agent.remove_execution_context();
+        // 8. If result is a return completion, return result.[[Value]].
+        // 9. ReturnIfAbrupt(result).
+        result.into_js_result()
+    }
+
+    /// Gives the stacks of the `Vm` back for other code to run with.
+    pub(crate) fn finish(self, agent: &mut Agent) {
+        self.vm.recycle(agent);
+    }
+}
+
+/// The callback of a built-in that calls it again and again (once for every
+/// element, for every comparison): called through a [`RepeatedCall`] where
+/// it is a function that is for, and the general way where it is not.
+pub(crate) struct Callback<'s> {
+    function: Scoped<'s, Function<'static>>,
+    repeated: Option<RepeatedCall<'s>>,
+}
+
+impl<'s> Callback<'s> {
+    pub(crate) fn new(
+        agent: &mut Agent,
+        function: Scoped<'s, Function<'static>>,
+        gc: NoGcScope<'_, 's>,
+    ) -> Self {
+        let repeated = RepeatedCall::new(agent, function.get(agent), gc);
+        Self { function, repeated }
+    }
+
+    /// Call(callbackfn, thisArgument, arguments). The arguments are not
+    /// to be read after it.
+    #[inline]
+    pub(crate) fn call<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        this_argument: Value,
+        arguments: &mut [Value<'static>],
+        gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Value<'gc>> {
+        match &mut self.repeated {
+            Some(repeated) => repeated.call(agent, this_argument, arguments, gc),
+            None => call_function(
+                agent,
+                self.function.get(agent),
+                this_argument,
+                Some(ArgumentsList::from_mut_slice(arguments)),
+                gc,
+            ),
+        }
+    }
+
+    /// The built-in is done calling: the stacks of the `Vm` it called with
+    /// are given back. One that is dropped instead (the built-in threw)
+    /// lets go of them.
+    pub(crate) fn finish(self, agent: &mut Agent) {
+        if let Some(repeated) = self.repeated {
+            repeated.finish(agent);
+        }
+    }
+}
+
+/// The frames of every `Vm` of an Agent that runs functions in place of
+/// their calls: those of the `Vm` that is running are the last in use,
+/// under them those of the `Vm`s that wait for a call it is inside of. A
+/// `Vm` leaves none in use when it is done or suspended.
+///
+/// The frames after those in use are kept: each holds the emptied stack
+/// of the last function that ran at its depth, for the next one.
+#[derive(Default)]
+pub(crate) struct VmFrames {
+    frames: Vec<Frame>,
+    in_use: usize,
+}
+
+impl HeapMarkAndSweep for VmFrames {
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        for frame in &self.frames[..self.in_use] {
+            let Frame {
+                ip: _,
+                stack,
+                reference_base: _,
+                iterator_base: _,
+                handler_base: _,
+                executable,
+                tables: _,
+                completion: _,
+                stack_depth: _,
+                collections_depth: _,
+                scoped: _,
+            } = frame;
+            stack.as_slice().mark_values(queues);
+            executable.mark_values(queues);
+        }
+    }
+
+    fn sweep_values(&mut self, compactions: &CompactionLists) {
+        for frame in &mut self.frames[..self.in_use] {
+            let Frame {
+                ip: _,
+                stack,
+                reference_base: _,
+                iterator_base: _,
+                handler_base: _,
+                executable,
+                tables: _,
+                completion: _,
+                stack_depth: _,
+                collections_depth: _,
+                scoped: _,
+            } = frame;
+            stack.as_mut_slice().sweep_values(compactions);
+            executable.sweep_values(compactions);
+        }
+    }
+}
 
 impl Vm {
     const EMPTY: Self = Self {
@@ -196,13 +608,25 @@ impl Vm {
         exception_handler_stack: Vec::new(),
         result: None,
         reference: None,
+        depth: 0,
+        handler_base: 0,
     };
 
+    /// The value and iterator stacks for code that is about to run: emptied
+    /// ones that other code left, or new ones.
+    #[inline]
+    fn take_stacks(agent: &mut Agent) -> PooledVmStacks {
+        agent.vm_stack_pool.pop().unwrap_or_else(|| PooledVmStacks {
+            stack: Vec::with_capacity(32),
+            iterator_stack: Vec::new(),
+        })
+    }
+
     fn new(agent: &mut Agent) -> Self {
-        let (stack, iterator_stack) = agent
-            .vm_stack_pool
-            .pop()
-            .unwrap_or_else(|| (Vec::with_capacity(32), Vec::new()));
+        let PooledVmStacks {
+            stack,
+            iterator_stack,
+        } = Self::take_stacks(agent);
         Self {
             ip: 0,
             stack,
@@ -211,44 +635,109 @@ impl Vm {
             exception_handler_stack: Vec::new(),
             result: None,
             reference: None,
+            depth: 0,
+            handler_base: 0,
         }
     }
 
-    fn recycle(mut self, agent: &mut Agent) {
-        if self.stack.capacity() == 0
-            || self.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
-            || self.iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+    fn recycle(self, agent: &mut Agent) {
+        // Every part of the Vm goes somewhere: nothing is left to drop.
+        let Vm {
+            ip: _,
+            stack,
+            reference_stack,
+            iterator_stack,
+            exception_handler_stack,
+            result: _,
+            reference: _,
+            depth,
+            handler_base: _,
+        } = self;
+        debug_assert_eq!(depth, 0);
+        Self::recycle_stacks(
+            agent,
+            stack,
+            reference_stack,
+            iterator_stack,
+            exception_handler_stack,
+        );
+    }
+
+    /// Keeps the stacks of code that has run, emptied, for code that is
+    /// about to: the value and iterator stacks together, the other two
+    /// where they were ever pushed to.
+    #[inline(always)]
+    fn recycle_stacks(
+        agent: &mut Agent,
+        mut stack: Vec<Value<'static>>,
+        mut reference_stack: Vec<Reference<'static>>,
+        mut iterator_stack: Vec<VmIteratorRecord<'static>>,
+        mut exception_handler_stack: Vec<ExceptionHandler<'static>>,
+    ) {
+        if reference_stack.capacity() != 0
+            && reference_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
+            && agent.spare_vm_stacks.references.len() < VM_STACK_POOL_LEN
+        {
+            reference_stack.clear();
+            agent.spare_vm_stacks.references.push(reference_stack);
+        }
+        if exception_handler_stack.capacity() != 0
+            && exception_handler_stack.capacity() <= VM_STACK_POOL_MAX_CAPACITY
+            && agent.spare_vm_stacks.handlers.len() < VM_STACK_POOL_LEN
+        {
+            exception_handler_stack.clear();
+            agent.spare_vm_stacks.handlers.push(exception_handler_stack);
+        }
+        if stack.capacity() == 0
+            || stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
+            || iterator_stack.capacity() > VM_STACK_POOL_MAX_CAPACITY
             || agent.vm_stack_pool.len() >= VM_STACK_POOL_LEN
         {
             return;
         }
-        let mut stack = core::mem::take(&mut self.stack);
-        let mut iterator_stack = core::mem::take(&mut self.iterator_stack);
         stack.clear();
         iterator_stack.clear();
-        agent.vm_stack_pool.push((stack, iterator_stack));
+        agent.vm_stack_pool.push(PooledVmStacks {
+            stack,
+            iterator_stack,
+        });
     }
 
-    fn suspend(mut self) -> SuspendedVm {
+    fn suspend(self) -> SuspendedVm {
+        let Vm {
+            ip,
+            stack,
+            reference_stack,
+            iterator_stack,
+            exception_handler_stack,
+            result: _,
+            reference: _,
+            depth,
+            handler_base: _,
+        } = self;
+        // Only the code a `Vm` was started with yields or awaits: a function
+        // it runs in place of a call is neither a generator nor async.
+        debug_assert_eq!(depth, 0);
         SuspendedVm {
-            ip: self.ip,
-            stack: core::mem::take(&mut self.stack).into_boxed_slice(),
-            reference_stack: core::mem::take(&mut self.reference_stack).into_boxed_slice(),
-            iterator_stack: core::mem::take(&mut self.iterator_stack).into_boxed_slice(),
-            exception_jump_target_stack: core::mem::take(&mut self.exception_handler_stack)
-                .into_boxed_slice(),
+            ip,
+            stack: fit_suspended_stack(stack),
+            reference_stack: fit_suspended_stack(reference_stack),
+            iterator_stack: fit_suspended_stack(iterator_stack),
+            exception_jump_target_stack: fit_suspended_stack(exception_handler_stack),
         }
     }
 
     fn from_suspended(suspended: SuspendedVm) -> Self {
         Self {
             ip: suspended.ip,
-            stack: suspended.stack.into_vec(),
-            reference_stack: suspended.reference_stack.into_vec(),
-            iterator_stack: suspended.iterator_stack.into_vec(),
-            exception_handler_stack: suspended.exception_jump_target_stack.into_vec(),
+            stack: suspended.stack,
+            reference_stack: suspended.reference_stack,
+            iterator_stack: suspended.iterator_stack,
+            exception_handler_stack: suspended.exception_jump_target_stack,
             result: None,
             reference: None,
+            depth: 0,
+            handler_base: 0,
         }
     }
 
@@ -260,6 +749,33 @@ impl Vm {
         gc: GcScope<'gc, '_>,
     ) -> ExecutionResult<'gc> {
         let mut vm = Vm::new(agent);
+
+        let stack_parameters = executable.stack_parameters(agent);
+        let (arguments, direct) = match (arguments, stack_parameters) {
+            (Some(arguments), Some(count)) => (None, Some((arguments, count))),
+            (arguments, _) => (arguments, None),
+        };
+        if let Some((arguments, count)) = direct {
+            // The code keeps its parameters in its first stack slots and
+            // reads its arguments nowhere else: they go there, undefined for
+            // those not given, and those beyond the parameters are dropped.
+            // The caller's copies are not kept up to date through a
+            // collection from here on, so none is left to be read.
+            let mut given = arguments.iter_mut();
+            for _ in 0..count {
+                let value = given.next().map_or(Value::Undefined, |argument| {
+                    core::mem::replace(argument, Value::Undefined)
+                });
+                vm.stack.push(value);
+            }
+            for argument in given {
+                *argument = Value::Undefined;
+            }
+            if agent.options.print_internals {
+                vm.print_internals(agent, executable.clone(), gc.nogc());
+            }
+            return vm.inner_execute(agent, executable, gc);
+        }
 
         if let Some(arguments) = arguments {
             ArgumentsList::from_mut_slice(arguments).with_scoped(
@@ -342,6 +858,21 @@ impl Vm {
         result
     }
 
+    /// Leaves the `Vm` as a new one is, with its stacks emptied: what the
+    /// code that ran left on them (the values of its variables; an
+    /// iterator or a handler it was thrown out of) is no one's.
+    fn reset(&mut self) {
+        debug_assert_eq!(self.depth, 0);
+        debug_assert_eq!(self.handler_base, 0);
+        self.ip = 0;
+        self.result = None;
+        self.reference = None;
+        self.stack.clear();
+        self.reference_stack.clear();
+        self.iterator_stack.clear();
+        self.exception_handler_stack.clear();
+    }
+
     fn run<'gc>(
         &mut self,
         agent: &mut Agent,
@@ -352,38 +883,650 @@ impl Vm {
             return ExecutionResult::Throw(agent.throw_stack_overflow(gc.into_nogc()));
         }
         let stack_depth = agent.stack_refs.borrow().len();
-        let instructions = executable.get_instructions(agent);
-        while let Some(instr) = Instr::consume_instruction(&instructions, &mut self.ip) {
-            agent.limits.countdown -= 1;
-            if agent.limits.countdown == 0
-                && let Err(err) = agent.poll_interrupt_now(gc.nogc())
-            {
-                return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
+        // What an instruction scoped it cannot use after it either: a loop of
+        // object destructurings in one call would otherwise keep a key set
+        // per iteration until the function returns, and run out of memory.
+        let collections_depth = agent.stack_ref_collections.borrow().len();
+        let print_internals = agent.options.print_internals;
+        // The host is asked whether to interrupt, and the heap limit checked,
+        // every so many calls and turns of loops: a script cannot run long
+        // without either.
+        if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+            return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
+        }
+        // A collection is looked for where one can have become due: when the
+        // code starts, after an instruction that is not plain (the plain ones
+        // allocate nothing on the heap but the Number an operator gives,
+        // and run only once between two of these places), and on every turn
+        // of a loop, where the poll above can have asked for one.
+        if agent.check_gc() {
+            self.trigger_gc(agent, gc.reborrow());
+        }
+        // The code this Vm was started with. A function that one of its
+        // calls runs in place of the call has its own executable, and so
+        // has every function called from there: `running` is the code that
+        // runs now. It changes only between two runs of the loop of
+        // instructions below, which keeps what it reads of it in registers.
+        let base_executable = executable;
+        let mut running = Running {
+            executable: base_executable.clone(),
+            code: base_executable.get(agent),
+            tables: base_executable.get_tables(agent),
+            stack_depth,
+            collections_depth,
+        };
+        loop {
+            // The executable is looked up through its rooted handle after
+            // every collection, which is all that moves it, not by every
+            // instruction that fetches a constant, a name or a cache; and
+            // not here, where the code that starts or goes on comes with
+            // it.
+            let Running {
+                executable,
+                mut code,
+                tables: code_tables,
+                stack_depth,
+                collections_depth,
+            } = running;
+            // The instruction pointer is a local across the plain
+            // instructions, which only jumps move: read and written in the
+            // Vm between every two of them, it was the longest step of going
+            // from one to the next. It is in the Vm, where everything else
+            // looks for it, around every instruction that is not plain and
+            // whenever the loop is left.
+            let mut ip = self.ip;
+            let mut collections = agent.heap.collections;
+            // The code as the loop reads an instruction from it with one
+            // look at how much is left: an instruction and the four bytes
+            // after it. None of it when the instructions are printed, so
+            // that every one of them goes the other way, where the last
+            // instructions of the code and its end go.
+            let instructions = code_tables.instructions();
+            let windows: &[u8] = if print_internals { &[] } else { instructions };
+            // The tables as three slices, which stay what they are while
+            // this code runs: a collection rewrites their entries in place.
+            let tables = code_tables.view();
+            let change = loop {
+                let instr = if let Some(window) =
+                    windows.get(ip..).and_then(|rest| rest.first_chunk::<5>())
+                {
+                    Instr::in_window(window)
+                } else {
+                    let mut next = ip;
+                    let Some(instr) = Instr::consume_instruction(instructions, &mut next) else {
+                        break Change::End;
+                    };
+                    if print_internals {
+                        Self::print_executing(instr.kind);
+                    }
+                    instr
+                };
+                // Most of what runs is plain: it goes straight to the next
+                // instruction, with no result to look at and nothing to
+                // release. Every instruction leaves `ip` after itself
+                // there, or where it jumps.
+                match Self::execute_plain_instruction(
+                    agent,
+                    self,
+                    &mut ip,
+                    instructions,
+                    &executable,
+                    code,
+                    tables,
+                    instr,
+                    gc.nogc(),
+                ) {
+                    Plain::Done => continue,
+                    Plain::Looped => {
+                        self.ip = ip;
+                        if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                            // No handler of the running code sees this one.
+                            break Change::Throw(err.unbind());
+                        }
+                        if agent.check_gc() {
+                            self.trigger_gc(agent, gc.reborrow());
+                            code = executable.get(agent);
+                            collections = agent.heap.collections;
+                        }
+                        continue;
+                    }
+                    // A call of a function that this Vm runs itself.
+                    Plain::Call => {
+                        if let Some(callee) = self.function_called_in_place(agent, instr) {
+                            break Change::Call(callee, instr);
+                        }
+                    }
+                    // `new` of a function that this Vm runs itself.
+                    Plain::Construct => {
+                        if let Some((callee, call)) =
+                            self.constructor_called_in_place(agent, instr, gc.nogc())
+                        {
+                            break Change::Call(callee, call);
+                        }
+                    }
+                    // The getter or setter of the property that the
+                    // instruction reads or assigns, called in place of it.
+                    Plain::Accessor => {
+                        let setter = instr.kind == Instruction::PutPropertyWithCache;
+                        if let Some((callee, call)) = self.accessor_called_in_place(agent, setter) {
+                            break Change::Call(callee, call);
+                        }
+                    }
+                    // The end of every call, taken here where nothing is
+                    // out of the ordinary: a termination that is pending
+                    // goes the general way below.
+                    Plain::Return => {
+                        if agent.termination().is_none() {
+                            self.ip = ip;
+                            if print_internals {
+                                Self::print_exiting();
+                            }
+                            if self.depth == 0 {
+                                let result = self.result.unwrap_or(Value::Undefined);
+                                return ExecutionResult::Return(result.bind(gc.into_nogc()));
+                            }
+                            break Change::Return;
+                        }
+                    }
+                    Plain::No => {}
+                }
+                self.ip = ip;
+                let result = Self::execute_instruction(
+                    agent,
+                    self,
+                    executable.clone(),
+                    instr,
+                    gc.reborrow(),
+                );
+                match result {
+                    Ok(ContinuationKind::Normal) => {}
+                    // The end of every call.
+                    Ok(ContinuationKind::Return) if agent.termination().is_none() => {
+                        if print_internals {
+                            Self::print_exiting();
+                        }
+                        if self.depth == 0 {
+                            let result = self.result.unwrap_or(Value::Undefined);
+                            return ExecutionResult::Return(result.bind(gc.into_nogc()));
+                        }
+                        break Change::Return;
+                    }
+                    Err(err) => {
+                        if !self.handle_error(agent, err) {
+                            break Change::Throw(err.unbind());
+                        }
+                    }
+                    Ok(kind) => {
+                        if self.depth != 0 {
+                            // Only the code a Vm is started with yields or
+                            // awaits: a function run in place of its call
+                            // returned with a termination pending.
+                            break Change::Terminate;
+                        }
+                        if let Some(r) =
+                            self.handle_execute_instruction_abnormal_result(agent, Ok(kind))
+                        {
+                            return r.unbind().bind(gc.into_nogc());
+                        }
+                    }
+                }
+                // A jump, or the handler of what was thrown.
+                let turned = self.ip < ip;
+                ip = self.ip;
+                agent.stack_refs.get_mut().truncate(stack_depth);
+                agent
+                    .stack_ref_collections
+                    .get_mut()
+                    .truncate(collections_depth);
+                if turned {
+                    // One turn of a loop whose jump back was not a plain
+                    // one (a test at its end, on operands that are not
+                    // integers): the host is asked here too.
+                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                        break Change::Throw(err.unbind());
+                    }
+                }
+                if agent.check_gc() {
+                    self.trigger_gc(agent, gc.reborrow());
+                }
+                if agent.heap.collections != collections {
+                    // The instruction ran a collection, or one was due.
+                    code = executable.get(agent);
+                    collections = agent.heap.collections;
+                }
+            };
+            // The running code changes: to a function called in place of
+            // its call, or back to the code that made such a call, where
+            // the function returns or throws.
+            let mut thrown = None;
+            running = Running {
+                executable,
+                code,
+                tables: code_tables,
+                stack_depth,
+                collections_depth,
+            };
+            match change {
+                Change::Call(callee, instr) => {
+                    running = self.enter_function(agent, instr, callee, ip, running, gc.nogc());
+                    if print_internals {
+                        self.print_internals(agent, running.executable.clone(), gc.nogc());
+                    }
+                    // As for the code a Vm is started with: the host is
+                    // asked, and a collection that is due is run.
+                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                        thrown = Some(err.unbind());
+                    } else if agent.check_gc() {
+                        self.trigger_gc(agent, gc.reborrow());
+                        running.code = running.executable.get(agent);
+                    }
+                }
+                Change::End if self.depth == 0 => {
+                    self.ip = ip;
+                    break;
+                }
+                Change::Return | Change::End => {
+                    // The value of the function is the result of the call
+                    // instruction: undefined at the end of its code, or
+                    // where it returned none.
+                    if self.result.is_none() || matches!(change, Change::End) {
+                        self.result = Some(Value::Undefined);
+                    }
+                    running = self.leave_function(agent, running);
+                }
+                Change::Throw(error) => thrown = Some(error),
+                Change::Terminate => {
+                    while self.depth != 0 {
+                        running = self.leave_function(agent, running);
+                    }
+                    return ExecutionResult::Throw(JsError::new(Value::Undefined));
+                }
             }
-            if agent.check_gc() {
-                self.trigger_gc(agent, gc.reborrow());
-            }
-            if agent.options.print_internals {
-                Self::print_executing(instr.kind);
-            }
-            let result =
-                Self::execute_instruction(agent, self, executable.clone(), instr, gc.reborrow());
-            match result {
-                Ok(ContinuationKind::Normal) => {}
-                _ => {
-                    if let Some(r) = self.handle_execute_instruction_abnormal_result(agent, result)
-                    {
-                        return r.unbind().bind(gc.into_nogc());
+            if let Some(error) = thrown {
+                // What the running code did not handle goes to the nearest
+                // handler of the code that called it in place; with none,
+                // the Vm ends with the error.
+                loop {
+                    if self.depth == 0 {
+                        if print_internals {
+                            Self::print_exiting_with_error();
+                        }
+                        return ExecutionResult::Throw(error.bind(gc.into_nogc()));
+                    }
+                    running = self.leave_function(agent, running);
+                    if self.handle_error(agent, error) {
+                        break;
                     }
                 }
             }
-            agent.stack_refs.get_mut().truncate(stack_depth);
         }
 
         if agent.termination().is_some() {
             return ExecutionResult::Throw(agent.termination_error(gc.into_nogc()));
         }
         ExecutionResult::Return(Value::Undefined)
+    }
+
+    /// The function that a call instruction is about to call, if this `Vm`
+    /// runs it itself: an ordinary function (not a generator, not async, not
+    /// a class constructor) that has been compiled, called with a number
+    /// of arguments that the instruction states, where one more call is
+    /// not one too many.
+    // Part of the loop of instructions, for every call there, whoever
+    // else asks: as a function of its own it was a twentieth of a call.
+    #[inline(always)]
+    fn function_called_in_place(&self, agent: &Agent, instr: Instr) -> Option<CalledInPlace> {
+        let count = instr.get_first_index();
+        if count == IndexType::MAX as usize {
+            return None;
+        }
+        let callee = self.stack.len().checked_sub(count + 1)?;
+        let Value::ECMAScriptFunction(function) = self.stack[callee] else {
+            return None;
+        };
+        let data = function.get(agent);
+        let kind = data.ecmascript_function.kind;
+        if kind.is_generator()
+            || kind.is_async()
+            || data
+                .ecmascript_function
+                .constructor_status
+                .is_class_constructor()
+        {
+            return None;
+        }
+        let executable = data.compiled_bytecode?;
+        if agent.call_depth_exceeded() {
+            return None;
+        }
+        let code = executable.get(agent);
+        Some(CalledInPlace {
+            function,
+            executable,
+            parameters: code.stack_parameters.map(usize::from),
+            environment: code.call_environment,
+            completion: Completion::Value,
+        })
+    }
+
+    /// The call that `new F(…)` comes to, if this `Vm` runs the constructor
+    /// itself: \[\[Construct]] of a function that is not a derived class
+    /// constructor, with itself as the new target, up to the function's
+    /// code. The object that OrdinaryCreateFromConstructor makes is the
+    /// this value of the call, and waits on the caller's stack, under the
+    /// function and its arguments, for the constructor to return
+    /// ([`Completion::Constructed`]).
+    ///
+    /// Not for a constructor whose code needs a Function Environment
+    /// Record (it reads new.target or super, an arrow function in it uses
+    /// its this, or it has a direct eval): \[\[Construct]] gives that
+    /// record the new target. And not where the function's "prototype" is
+    /// not an object found without running anything: the object's
+    /// prototype is then the realm's, which the general way knows. Nothing
+    /// has changed where this returns None.
+    // Not part of the loop of instructions: few instructions end here.
+    #[inline(never)]
+    fn constructor_called_in_place(
+        &mut self,
+        agent: &mut Agent,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<(CalledInPlace, Instr)> {
+        let count = instr.get_first_index();
+        let at = self.stack.len().checked_sub(count + 1)?;
+        let Value::ECMAScriptFunction(function) = self.stack[at] else {
+            return None;
+        };
+        let data = function.get(agent);
+        let status = data.ecmascript_function.constructor_status;
+        if !status.is_constructor() || status.is_derived_class() {
+            return None;
+        }
+        let executable = data.compiled_bytecode?;
+        if agent.call_depth_exceeded() {
+            return None;
+        }
+        let code = executable.get(agent);
+        if code.call_environment == CallEnvironment::Function {
+            return None;
+        }
+        let parameters = code.stack_parameters.map(usize::from);
+        let environment = code.call_environment;
+        // 3. a. Let thisArgument be ? OrdinaryCreateFromConstructor(newTarget,
+        //       "%Object.prototype%").
+        let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
+        let cache = crate::ecmascript::PropertyLookupCache::new(agent, key);
+        let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
+            crate::ecmascript::try_get(agent, function, key, Some(cache), gc)
+        else {
+            return None;
+        };
+        let prototype = Object::try_from(prototype).ok()?;
+        let object: Value = crate::ecmascript::ordinary_object_create_with_intrinsics(
+            agent,
+            crate::ecmascript::ProtoIntrinsics::Object,
+            Some(prototype),
+            gc,
+        )
+        .into();
+        self.stack.insert(at, object.unbind());
+        self.result = None;
+        // 6. a. Perform OrdinaryCallBindThis(F, calleeContext, thisArgument):
+        // the this value of the call is the base of its Reference.
+        self.reference = Some(Reference::new_property_reference(object, key, false).unbind());
+        Some((
+            CalledInPlace {
+                function,
+                executable,
+                parameters,
+                environment,
+                completion: Completion::Constructed,
+            },
+            Instr::new_with_arg(Instruction::EvaluateCall, count as u16),
+        ))
+    }
+
+    /// The call that [`Plain::Accessor`] stands for, if this `Vm` runs the
+    /// getter or setter itself: a call of no arguments, or of the value
+    /// assigned, whose this value is the object, as that of a method call
+    /// is the object of its Reference. What a getter returns is the result
+    /// of the read; what a setter returns is dropped.
+    ///
+    /// Where the `Vm` does not run the function after all, everything is
+    /// put back as the instruction found it, for the general way.
+    // Not part of the loop of instructions: few instructions end here.
+    #[inline(never)]
+    fn accessor_called_in_place(
+        &mut self,
+        agent: &Agent,
+        setter: bool,
+    ) -> Option<(CalledInPlace, Instr)> {
+        let call = Instr::new_with_arg(Instruction::EvaluateCall, u16::from(setter));
+        if let Some(mut callee) = self.function_called_in_place(agent, call)
+            && let Some(object) = self.result.take()
+        {
+            if setter {
+                callee.completion = Completion::Discarded;
+            }
+            // Only the base of this Reference is asked for.
+            self.reference = Some(Reference::new_property_reference(
+                object,
+                BUILTIN_STRING_MEMORY.length.to_property_key(),
+                false,
+            ));
+            return Some((callee, call));
+        }
+        if setter {
+            let value = self.stack.pop();
+            self.stack.pop();
+            self.stack.extend(self.result.take());
+            self.result = value;
+        } else {
+            self.stack.pop();
+        }
+        None
+    }
+
+    /// Starts the call of `callee`, which the call instruction `instr`
+    /// makes, in this `Vm`: what \[\[Call]] does up to the function's code.
+    /// The calling code, which goes on at `ip`, is put aside with its
+    /// stacks; the function's code finds them empty but for its parameters.
+    /// Returns the function's code as the code to run.
+    fn enter_function<'s>(
+        &mut self,
+        agent: &mut Agent,
+        instr: Instr,
+        callee: CalledInPlace,
+        ip: usize,
+        caller: Running,
+        gc: NoGcScope<'_, 's>,
+    ) -> Running<'s> {
+        // The caller's rooted handle waits in the frame: the scoped value
+        // it names is below everything the function scopes.
+        let code = caller.code;
+        let scoped = Scoped::from_root_repr(caller.executable.into_root_repr());
+        if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
+            agent.vm_frames.frames.push(Frame {
+                ip: 0,
+                stack: Vec::with_capacity(32),
+                reference_base: 0,
+                iterator_base: 0,
+                handler_base: 0,
+                executable: code,
+                tables: None,
+                completion: Completion::Value,
+                stack_depth: 0,
+                collections_depth: 0,
+                scoped: scoped.clone(),
+            });
+        }
+        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        // The function's value stack is the Vm's, and the caller's waits in
+        // the frame. Exchanged before anything here writes to one of them:
+        // a stack is exchanged several words at a time, and reading a word
+        // that was written just before, together with its neighbour, waits
+        // for the write to be done.
+        core::mem::swap(&mut self.stack, &mut frame.stack);
+        // EvaluateCall: the this value of the call, from its Reference.
+        let reference = if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+            self.reference = None;
+            self.reference_stack.pop()
+        } else {
+            self.reference.take()
+        };
+        // The other stacks go on where the caller left them.
+        frame.reference_base = self.reference_stack.len();
+        frame.iterator_base = self.iterator_stack.len();
+        frame.handler_base = self.handler_base;
+        self.handler_base = self.exception_handler_stack.len();
+        let first = frame.stack.len() - instr.get_first_index();
+        let arguments = &frame.stack[first..];
+        let list = if let Some(parameters) = callee.parameters {
+            // The arguments go where the function keeps its parameters:
+            // undefined for those not given, and those beyond the
+            // parameters are dropped.
+            self.stack.extend(
+                (0..parameters)
+                    .map(|index| arguments.get(index).copied().unwrap_or(Value::Undefined)),
+            );
+            None
+        } else if arguments.is_empty() {
+            Some(Vec::new())
+        } else {
+            // The function binds its parameters itself, from the list of
+            // its arguments: a vector kept from an earlier call.
+            let mut list = agent.arguments_pool.pop().unwrap_or_default();
+            list.extend_from_slice(arguments);
+            Some(list)
+        };
+        frame.stack.truncate(first - 1);
+        frame.ip = ip;
+        frame.executable = code;
+        frame.tables = Some(caller.tables);
+        frame.completion = callee.completion;
+        frame.stack_depth = caller.stack_depth;
+        frame.collections_depth = caller.collections_depth;
+        frame.scoped = scoped;
+        agent.vm_frames.in_use += 1;
+        self.depth += 1;
+        self.ip = 0;
+        let this_value = match reference {
+            Some(reference) if is_property_reference(&reference) => {
+                get_this_value(&reference).bind(gc)
+            }
+            Some(reference) => reference
+                .base_env()
+                .with_base_object(agent)
+                .map_or(Value::Undefined, |object| object.into())
+                .bind(gc),
+            None => Value::Undefined,
+        };
+        // PrepareForOrdinaryCall and OrdinaryCallBindThis.
+        if callee.environment == CallEnvironment::Function {
+            let context = prepare_for_ordinary_call(agent, callee.function, None, gc);
+            let Some(Environment::Function(environment)) = context
+                .ecmascript_code
+                .as_ref()
+                .map(|code| code.lexical_environment)
+            else {
+                unreachable!("PrepareForOrdinaryCall made no Function Environment Record")
+            };
+            ordinary_call_bind_this(agent, callee.function, environment, this_value, gc);
+        } else {
+            prepare_for_call_without_function_environment(
+                agent,
+                callee.function,
+                this_value,
+                callee.environment == CallEnvironment::Declarative,
+                gc,
+            );
+        }
+        if let Some(list) = list {
+            // The list is rooted until the function is left, under what
+            // the function's own instructions scope: they find it on the
+            // iterator stack, as the code of a `Vm` of its own does.
+            let list = scope_arguments_of_call(agent, list);
+            self.iterator_stack
+                .push(VmIteratorRecord::SliceIterator(list));
+        }
+        // The function's instructions and tables, held while it runs.
+        let tables = callee.executable.get_tables(agent);
+        let executable = callee.executable.scope(agent, gc);
+        Running {
+            executable,
+            code: callee.executable,
+            tables,
+            stack_depth: agent.stack_refs.get_mut().len(),
+            collections_depth: agent.stack_ref_collections.get_mut().len(),
+        }
+    }
+
+    /// Ends the function this `Vm` runs in place of a call, which returned
+    /// or threw: its execution context is removed, and its stacks, emptied,
+    /// stay in the frame for the next function, while those of the calling
+    /// code are the `Vm`'s again. Returns the calling code as the code to
+    /// run; `callee` is the function's code.
+    fn leave_function<'s>(&mut self, agent: &mut Agent, callee: Running) -> Running<'s> {
+        agent.remove_execution_context();
+        self.depth -= 1;
+        agent.vm_frames.in_use -= 1;
+        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        // The function's instructions and tables are let go of.
+        drop(callee);
+        // The caller's value stack is the Vm's again, and the function's is
+        // emptied where it waits for the next one: after the exchange, as
+        // in [`Vm::enter_function`]. What the function left on the other
+        // stacks (it returned out of a loop, or threw) is cut off.
+        core::mem::swap(&mut self.stack, &mut frame.stack);
+        frame.stack.clear();
+        self.reference_stack.truncate(frame.reference_base);
+        self.iterator_stack.truncate(frame.iterator_base);
+        self.exception_handler_stack.truncate(self.handler_base);
+        self.handler_base = frame.handler_base;
+        match frame.completion {
+            Completion::Value => {}
+            Completion::Discarded => self.result = None,
+            Completion::Constructed => {
+                // 10. If result is a return completion, then
+                //   a. If result.[[Value]] is an Object, return it.
+                //   b. If kind is base, return thisArgument.
+                let object = self.stack.pop();
+                if !self.result.is_some_and(|value| value.is_object()) {
+                    self.result = object;
+                }
+            }
+        }
+        if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
+            // A stack that grew large is not kept for the next function.
+            frame.stack = Vec::new();
+        }
+        self.ip = frame.ip;
+        self.reference = None;
+        let tables = frame
+            .tables
+            .take()
+            .expect("the frame of the calling code is in use");
+        let (stack_depth, collections_depth) = (frame.stack_depth, frame.collections_depth);
+        // The caller's executable, which the collector kept current in the
+        // frame, and its rooted handle: the scoped value that names was
+        // below what the function scoped, and is there still.
+        let code = frame.executable;
+        let executable = frame.scoped.clone();
+        if agent.vm_frames.in_use == 0 {
+            // No frame is in use: the Agent keeps a few of them, and none
+            // of a deep recursion.
+            agent.vm_frames.frames.truncate(SPARE_FRAMES);
+        }
+        agent.stack_refs.get_mut().truncate(stack_depth);
+        debug_assert_eq!(executable.get(agent), code);
+        release_scoped_collections(agent, collections_depth);
+        Running {
+            executable,
+            code,
+            tables,
+            stack_depth,
+            collections_depth,
+        }
     }
 
     /// ## Panics
@@ -490,7 +1633,11 @@ impl Vm {
         if agent.termination().is_some() {
             return false;
         }
-        if let Some(handler) = self.exception_handler_stack.pop() {
+        // A handler of the code that is running: those under
+        // `handler_base` are its callers'.
+        if self.exception_handler_stack.len() > self.handler_base
+            && let Some(handler) = self.exception_handler_stack.pop()
+        {
             match handler {
                 ExceptionHandler::CatchBlock {
                     ip,
@@ -519,6 +1666,1672 @@ impl Vm {
         }
     }
 
+    /// The instructions that cannot fail, run a script or scope a value,
+    /// and, of the comparisons and the arithmetic, those of two integers.
+    /// The loop of `run` goes from these straight to the next instruction.
+    // Inlined into the loop of `run` in optimised builds, like
+    // `execute_instruction`.
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    #[allow(clippy::too_many_arguments)]
+    fn execute_plain_instruction(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        instructions: &[u8],
+        executable: &Scoped<Executable>,
+        code: Executable,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Plain {
+        // `ip` is at the instruction, and every arm moves it past the
+        // instruction first, whatever it then makes of it: by a length that
+        // is a constant of the arm. Found from a table by the byte that was
+        // read, the place of the next instruction waited for that byte and
+        // for the table. The instructions of one arm are of one length.
+        macro_rules! step {
+            ($kind:ident $(, $same:ident)*) => {{
+                const LENGTH: usize = Instruction::$kind.length();
+                $(const _: () = assert!(Instruction::$same.length() == LENGTH);)*
+                *ip += LENGTH;
+            }};
+        }
+        // The instructions of one family (the comparisons that jump, the
+        // operators) have an arm each, in which the kind is a constant: one
+        // arm for all of them found out by the kind again what the
+        // instruction was.
+        macro_rules! compare_and_jump {
+            ($kind:ident) => {{
+                step!($kind);
+                return Self::compare_and_jump(agent, vm, ip, instr, Instruction::$kind);
+            }};
+        }
+        macro_rules! compare_local_and_jump {
+            ($kind:ident) => {{
+                step!($kind);
+                return Self::compare_local_and_jump(
+                    agent,
+                    vm,
+                    ip,
+                    instructions,
+                    tables,
+                    instr,
+                    Instruction::$kind,
+                    gc,
+                );
+            }};
+        }
+        macro_rules! step_local_compare_and_jump {
+            ($kind:ident) => {{
+                step!($kind);
+                return Self::step_local_compare_and_jump(
+                    agent,
+                    vm,
+                    ip,
+                    instructions,
+                    tables,
+                    instr,
+                    Instruction::$kind,
+                    gc,
+                );
+            }};
+        }
+        macro_rules! operate_on_integers {
+            ($kind:ident) => {{
+                step!($kind);
+                return vm.operate_on_integers(agent, Instruction::$kind, gc);
+            }};
+        }
+        match instr.kind {
+            Instruction::Load => {
+                step!(Load);
+                vm.execute_load()
+            }
+            Instruction::Return => {
+                step!(Return);
+                return Plain::Return;
+            }
+            Instruction::LoadCopy => {
+                step!(LoadCopy);
+                vm.execute_load_copy()
+            }
+            Instruction::PutValueToIndex => {
+                step!(PutValueToIndex);
+                vm.execute_load_to_index(instr.get_first_index())
+            }
+            Instruction::Store => {
+                step!(Store);
+                vm.execute_store()
+            }
+            Instruction::GetValueFromIndex => {
+                step!(GetValueFromIndex);
+                vm.execute_store_from_index(instr.get_first_index())
+            }
+            Instruction::LoadFromIndex => {
+                step!(LoadFromIndex);
+                vm.execute_store_from_index(instr.get_first_index());
+                vm.execute_load();
+            }
+            // A local and a constant, two locals: the operands of most
+            // binary expressions, and the arguments of many calls.
+            Instruction::LoadFromIndexStoreConstant => {
+                step!(LoadFromIndexStoreConstant);
+                let value = vm.stack[instr.get_first_index()];
+                vm.stack.push(value);
+                let constant = tables.constant(instr.get_second_index(), gc);
+                vm.result = Some(constant.unbind());
+            }
+            Instruction::LoadFromIndexGetFromIndex => {
+                step!(LoadFromIndexGetFromIndex);
+                let value = vm.stack[instr.get_first_index()];
+                vm.stack.push(value);
+                vm.result = Some(vm.stack[instr.get_second_index()]);
+            }
+            Instruction::LoadFromIndexLoadFromIndex => {
+                step!(LoadFromIndexLoadFromIndex);
+                let value = vm.stack[instr.get_first_index()];
+                vm.stack.push(value);
+                let value = vm.stack[instr.get_second_index()];
+                vm.stack.push(value);
+            }
+            // An operator with a constant as its right operand: neither
+            // operand goes by the stack, and the result goes where the
+            // instruction says.
+            Instruction::ApplyBinaryOperatorWithConstant => {
+                step!(ApplyBinaryOperatorWithConstant);
+                let Some(left) = vm.result else {
+                    return Plain::No;
+                };
+                let right = tables.constant(instr.get_first_index(), gc);
+                let operation = instr.get_second_index();
+                let (_, operator) = Instruction::fused_slot_and_operator(operation);
+                let Some(value) = Instruction::fused_operator(operator)
+                    .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
+                else {
+                    return Plain::No;
+                };
+                if Instruction::fused_pushes(operation) {
+                    vm.result = None;
+                    vm.stack.push(value);
+                } else {
+                    vm.result = Some(value);
+                }
+            }
+            Instruction::ApplyBinaryOperatorToIndexWithConstant => {
+                step!(ApplyBinaryOperatorToIndexWithConstant);
+                let operation = instr.get_first_index();
+                let (slot, operator) = Instruction::fused_slot_and_operator(operation);
+                let left = vm.stack[slot];
+                let right = tables.constant(instr.get_second_index(), gc);
+                let Some(value) = Instruction::fused_operator(operator)
+                    .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
+                else {
+                    return Plain::No;
+                };
+                if Instruction::fused_pushes(operation) {
+                    vm.result = None;
+                    vm.stack.push(value);
+                } else {
+                    vm.result = Some(value);
+                }
+            }
+            // An operator on the top of the stack and the result, whose
+            // value replaces the top of the stack or goes to a local.
+            Instruction::ApplyBinaryOperatorAndMove => {
+                step!(ApplyBinaryOperatorAndMove);
+                let operation = instr.get_first_index();
+                let (slot, operator) = Instruction::fused_slot_and_operator(operation);
+                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+                    return Plain::No;
+                };
+                let Some(value) = Instruction::fused_operator(operator)
+                    .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
+                else {
+                    return Plain::No;
+                };
+                vm.result = None;
+                if Instruction::fused_pushes(operation) {
+                    if let Some(top) = vm.stack.last_mut() {
+                        *top = value;
+                    }
+                } else {
+                    vm.stack.pop();
+                    vm.stack[slot] = value;
+                }
+            }
+            Instruction::StoreConstant => {
+                step!(StoreConstant);
+                let constant = tables.constant(instr.get_first_index(), gc);
+                vm.result = Some(constant.unbind());
+            }
+            Instruction::LoadConstant => {
+                step!(LoadConstant);
+                let constant = tables.constant(instr.get_first_index(), gc);
+                vm.stack.push(constant.unbind());
+            }
+            Instruction::PopStack => {
+                step!(PopStack);
+                vm.execute_pop_stack()
+            }
+            // The step of `for`-`of` over an Array that is walked element
+            // by element, where the element is a value or the walk is over.
+            Instruction::IteratorStepValue => {
+                step!(IteratorStepValue);
+                let Some(VmIteratorRecord::ArrayValues(walk)) = vm.iterator_stack.last_mut() else {
+                    return Plain::No;
+                };
+                let Some(step) = walk.plain_next(agent, gc) else {
+                    return Plain::No;
+                };
+                vm.result = step.unbind();
+                if step.is_none() {
+                    // Iterator finished: jump to escape the iterator loop.
+                    *ip = instr.get_jump_slot();
+                }
+            }
+            Instruction::PushReference => {
+                step!(PushReference);
+                vm.execute_push_reference(agent)
+            }
+            Instruction::PopReference => {
+                step!(PopReference);
+                vm.execute_pop_reference()
+            }
+            Instruction::PushReferenceAndLoad => {
+                step!(PushReferenceAndLoad);
+                vm.execute_push_reference(agent);
+                vm.execute_load();
+            }
+            Instruction::Jump => {
+                step!(Jump);
+                let from = *ip;
+                execute_jump(agent, ip, instr);
+                if *ip < from {
+                    return Plain::Looped;
+                }
+            }
+            Instruction::JumpIfNot => {
+                step!(JumpIfNot);
+                let from = *ip;
+                execute_jump_if_not(agent, vm, ip, instr);
+                if *ip < from {
+                    return Plain::Looped;
+                }
+            }
+            Instruction::JumpIfTrue => {
+                step!(JumpIfTrue);
+                let from = *ip;
+                execute_jump_if_true(agent, vm, ip, instr);
+                if *ip < from {
+                    return Plain::Looped;
+                }
+            }
+            // The test of most loops, on two Numbers: before the body with
+            // the jump out where it fails, or after it with the jump back
+            // where it holds.
+            Instruction::JumpIfNotLessThan => compare_and_jump!(JumpIfNotLessThan),
+            Instruction::JumpIfNotLessThanEquals => compare_and_jump!(JumpIfNotLessThanEquals),
+            Instruction::JumpIfNotGreaterThan => compare_and_jump!(JumpIfNotGreaterThan),
+            Instruction::JumpIfNotGreaterThanEquals => {
+                compare_and_jump!(JumpIfNotGreaterThanEquals)
+            }
+            Instruction::JumpIfLessThan => compare_and_jump!(JumpIfLessThan),
+            Instruction::JumpIfLessThanEquals => compare_and_jump!(JumpIfLessThanEquals),
+            Instruction::JumpIfGreaterThan => compare_and_jump!(JumpIfGreaterThan),
+            Instruction::JumpIfGreaterThanEquals => compare_and_jump!(JumpIfGreaterThanEquals),
+            // The same tests on a local and a constant, or on two locals,
+            // which are read where they are.
+            Instruction::JumpIfIndexNotLessThanConstant => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanConstant)
+            }
+            Instruction::JumpIfIndexNotLessThanIndex => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanIndex)
+            }
+            Instruction::JumpIfIndexNotLessThanEqualsConstant => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexNotLessThanEqualsIndex => {
+                compare_local_and_jump!(JumpIfIndexNotLessThanEqualsIndex)
+            }
+            Instruction::JumpIfIndexNotGreaterThanConstant => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanConstant)
+            }
+            Instruction::JumpIfIndexNotGreaterThanIndex => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanIndex)
+            }
+            Instruction::JumpIfIndexNotGreaterThanEqualsConstant => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexNotGreaterThanEqualsIndex => {
+                compare_local_and_jump!(JumpIfIndexNotGreaterThanEqualsIndex)
+            }
+            Instruction::JumpIfIndexNotStrictlyEqualConstant => {
+                compare_local_and_jump!(JumpIfIndexNotStrictlyEqualConstant)
+            }
+            Instruction::JumpIfIndexNotStrictlyEqualIndex => {
+                compare_local_and_jump!(JumpIfIndexNotStrictlyEqualIndex)
+            }
+            Instruction::JumpIfIndexStrictlyEqualConstant => {
+                compare_local_and_jump!(JumpIfIndexStrictlyEqualConstant)
+            }
+            Instruction::JumpIfIndexStrictlyEqualIndex => {
+                compare_local_and_jump!(JumpIfIndexStrictlyEqualIndex)
+            }
+            // The test at the end of a loop, after `i++` or `i--` where the
+            // instruction makes that too: all of it here, or none. The step
+            // is made of an integer only; the test takes any two Numbers.
+            Instruction::JumpIfIndexLessThanConstant => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanConstant)
+            }
+            Instruction::JumpIfIndexLessThanIndex => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanIndex)
+            }
+            Instruction::JumpIfIndexLessThanEqualsConstant => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexLessThanEqualsIndex => {
+                step_local_compare_and_jump!(JumpIfIndexLessThanEqualsIndex)
+            }
+            Instruction::JumpIfIndexGreaterThanConstant => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanConstant)
+            }
+            Instruction::JumpIfIndexGreaterThanIndex => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanIndex)
+            }
+            Instruction::JumpIfIndexGreaterThanEqualsConstant => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanEqualsConstant)
+            }
+            Instruction::JumpIfIndexGreaterThanEqualsIndex => {
+                step_local_compare_and_jump!(JumpIfIndexGreaterThanEqualsIndex)
+            }
+            Instruction::IncrementIndexJumpIfLessThanConstant => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanConstant)
+            }
+            Instruction::IncrementIndexJumpIfLessThanIndex => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanIndex)
+            }
+            Instruction::IncrementIndexJumpIfLessThanEqualsConstant => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanEqualsConstant)
+            }
+            Instruction::IncrementIndexJumpIfLessThanEqualsIndex => {
+                step_local_compare_and_jump!(IncrementIndexJumpIfLessThanEqualsIndex)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanConstant => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanConstant)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanIndex => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanIndex)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanEqualsConstant)
+            }
+            Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex => {
+                step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanEqualsIndex)
+            }
+            // `i++` and `i--` of an integer in a stack slot.
+            Instruction::IncrementIndex | Instruction::DecrementIndex => {
+                step!(IncrementIndex, DecrementIndex);
+                let slot = instr.get_first_index();
+                let Value::Integer(value) = vm.stack[slot] else {
+                    return Plain::No;
+                };
+                let step = if instr.kind == Instruction::IncrementIndex {
+                    1
+                } else {
+                    -1
+                };
+                let Ok(value) = SmallInteger::try_from(value.into_i64() + step) else {
+                    return Plain::No;
+                };
+                vm.stack[slot] = Value::Integer(value);
+            }
+            // `this` of a call that keeps it in its execution context.
+            Instruction::ResolveThisBinding => {
+                step!(ResolveThisBinding);
+                let Some(this) = agent.running_call_this_value() else {
+                    return Plain::No;
+                };
+                vm.result = Some(this);
+            }
+            Instruction::IsStrictlyEqual => {
+                step!(IsStrictlyEqual);
+                let left = vm.stack.pop().unwrap();
+                let right = vm.result.unwrap();
+                vm.result = Some(Self::strictly_equal(agent, left, right).into());
+            }
+            // `x === 3`: the constant is compared where it is.
+            Instruction::IsStrictlyEqualConstant => {
+                step!(IsStrictlyEqualConstant);
+                let left = vm.result.unwrap();
+                let right = tables.constant(instr.get_first_index(), gc);
+                vm.result = Some(Self::strictly_equal(agent, left, right).into());
+            }
+            // Two values of one type are loosely equal where they are
+            // strictly equal: nothing is converted.
+            Instruction::IsLooselyEqual => {
+                step!(IsLooselyEqual);
+                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+                    return Plain::No;
+                };
+                if !is_same_type(left, right) {
+                    return Plain::No;
+                }
+                vm.stack.pop();
+                vm.result = Some(Self::strictly_equal(agent, left, right).into());
+            }
+            // The test of an `if` on an equality, and the jump on it.
+            Instruction::JumpIfNotStrictlyEqual
+            | Instruction::JumpIfStrictlyEqual
+            | Instruction::JumpIfNotLooselyEqual
+            | Instruction::JumpIfLooselyEqual => {
+                step!(
+                    JumpIfNotStrictlyEqual,
+                    JumpIfStrictlyEqual,
+                    JumpIfNotLooselyEqual,
+                    JumpIfLooselyEqual
+                );
+                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+                    return Plain::No;
+                };
+                let strict = matches!(
+                    instr.kind,
+                    Instruction::JumpIfNotStrictlyEqual | Instruction::JumpIfStrictlyEqual
+                );
+                if !strict && !is_same_type(left, right) {
+                    return Plain::No;
+                }
+                let equal = Self::strictly_equal(agent, left, right);
+                let jumps_if_equal = matches!(
+                    instr.kind,
+                    Instruction::JumpIfStrictlyEqual | Instruction::JumpIfLooselyEqual
+                );
+                vm.stack.pop();
+                vm.result = None;
+                if equal == jumps_if_equal {
+                    let from = *ip;
+                    *ip = instr.get_jump_slot();
+                    if *ip < from {
+                        return Plain::Looped;
+                    }
+                }
+            }
+            // The tests of a `switch` on literals: its cases only follow it.
+            Instruction::JumpToCase => {
+                step!(JumpToCase);
+                let value = vm.stack[instr.get_first_index()];
+                if let Some(target) = code.switch_target(agent, instr.get_second_index(), value) {
+                    *ip = target;
+                }
+            }
+            Instruction::UpdateEmpty => {
+                step!(UpdateEmpty);
+                vm.execute_update_empty()
+            }
+            Instruction::LoadReplace => {
+                step!(LoadReplace);
+                vm.execute_load_replace()
+            }
+            Instruction::Empty => {
+                step!(Empty);
+                vm.execute_empty()
+            }
+            Instruction::StoreCopy => {
+                step!(StoreCopy);
+                vm.execute_store_copy()
+            }
+            Instruction::IsNullOrUndefined => {
+                step!(IsNullOrUndefined);
+                vm.execute_is_null_or_undefined()
+            }
+            Instruction::IsNull => {
+                step!(IsNull);
+                vm.execute_is_null()
+            }
+            Instruction::IsUndefined => {
+                step!(IsUndefined);
+                vm.execute_is_undefined()
+            }
+            Instruction::LogicalNot => {
+                step!(LogicalNot);
+                execute_logical_not(agent, vm)
+            }
+            Instruction::PushExceptionJumpTarget => {
+                step!(PushExceptionJumpTarget);
+                execute_push_exception_jump_target(agent, vm, instr, gc)
+            }
+            Instruction::PopExceptionJumpTarget => {
+                step!(PopExceptionJumpTarget);
+                vm.execute_pop_exception_jump_target()
+            }
+            Instruction::CreateImmutableBinding => {
+                step!(CreateImmutableBinding);
+                execute_create_immutable_binding(agent, executable.clone(), instr, gc)
+            }
+            Instruction::CreateMutableBinding => {
+                step!(CreateMutableBinding);
+                execute_create_mutable_binding(agent, executable.clone(), instr, gc)
+            }
+            Instruction::InitializeReferencedBinding => {
+                step!(InitializeReferencedBinding);
+                execute_initialize_referenced_binding(agent, vm, gc)
+            }
+            Instruction::EvaluatePropertyAccessWithIdentifierKey => {
+                step!(EvaluatePropertyAccessWithIdentifierKey);
+                Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc)
+            }
+            Instruction::EvaluatePropertyAccessWithExpressionKey => {
+                step!(EvaluatePropertyAccessWithExpressionKey);
+                execute_evaluate_property_access_with_expression_key(agent, vm, gc)
+            }
+            // A variable of an enclosing function, where it was found the
+            // last time.
+            Instruction::GetBindingAtSite | Instruction::GetGlobalAtSite => {
+                step!(GetBindingAtSite, GetGlobalAtSite);
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
+                let Some(value) = binding_value_at_site(agent, site, name, gc) else {
+                    return Plain::No;
+                };
+                vm.result = Some(value.unbind());
+            }
+            // The same variable, pushed: an operand or an argument.
+            Instruction::LoadBindingAtSite => {
+                step!(LoadBindingAtSite);
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
+                let Some(value) = binding_value_at_site(agent, site, name, gc) else {
+                    return Plain::No;
+                };
+                vm.result = None;
+                vm.stack.push(value.unbind());
+            }
+            Instruction::PutBindingAtSite | Instruction::PutGlobalAtSite => {
+                step!(PutBindingAtSite, PutGlobalAtSite);
+                let Some(value) = vm.result else {
+                    return Plain::No;
+                };
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
+                if !set_binding_value_at_site(agent, site, name, value, gc) {
+                    return Plain::No;
+                }
+                vm.result = None;
+            }
+            // A name of the global scope that is about to be assigned to:
+            // its Reference, made where the name was found the last time.
+            Instruction::ResolveGlobalAtSite => {
+                step!(ResolveGlobalAtSite);
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
+                let strict = agent.is_evaluating_strict_code();
+                let Some(reference) = try_resolve_binding_at_site(agent, site, name, strict, gc)
+                else {
+                    return Plain::No;
+                };
+                vm.reference = Some(reference.unbind());
+            }
+            // The assignment through that Reference, at the place in the
+            // global scope it is to.
+            Instruction::PutValueAtSite => {
+                step!(PutValueAtSite);
+                let Some(value) = vm.result else {
+                    return Plain::No;
+                };
+                let site = tables.binding_site(instr.get_second_index());
+                if !vm.reference.as_ref().is_some_and(|reference| {
+                    reference_is_at_global_site(agent, site, reference, gc)
+                }) {
+                    return Plain::No;
+                }
+                let name = tables.identifier(instr.get_first_index(), gc);
+                if !set_binding_value_at_site(agent, site, name, value, gc) {
+                    return Plain::No;
+                }
+                vm.result = None;
+                vm.reference = None;
+            }
+            // The parameters of a call, from its arguments.
+            Instruction::BindArguments => {
+                step!(BindArguments);
+                let first = instr.get_first_index();
+                let count = instr.get_second_index();
+                if let Some(VmIteratorRecord::SliceIterator(arguments)) = vm.iterator_stack.last() {
+                    for slot in first..first + count {
+                        let Some(value) = arguments.unshift(agent, gc) else {
+                            break;
+                        };
+                        vm.stack[slot] = value.unbind();
+                    }
+                }
+            }
+            // A call of a built-in function that only computes a value from
+            // arguments like these: computed here, with no call made.
+            Instruction::EvaluateCall | Instruction::PopReferenceAndEvaluateCall => {
+                step!(EvaluateCall, PopReferenceAndEvaluateCall);
+                let count = instr.get_first_index();
+                let Some(first) = vm.stack.len().checked_sub(count) else {
+                    return Plain::No;
+                };
+                if count == IndexType::MAX as usize || first == 0 {
+                    return Plain::No;
+                }
+                let function = match vm.stack[first - 1] {
+                    Value::BuiltinFunction(function) => function,
+                    Value::ECMAScriptFunction(_) => return Plain::Call,
+                    _ => return Plain::No,
+                };
+                let Some(direct) = function.get(agent).direct else {
+                    return Plain::No;
+                };
+                // The this value of the call, for the functions that take
+                // it: the base of the Reference the call is made through.
+                let this = if !direct.takes_this() {
+                    None
+                } else if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+                    vm.reference_stack
+                        .last()
+                        .and_then(Reference::named_property_base)
+                } else {
+                    vm.reference
+                        .as_ref()
+                        .and_then(Reference::named_property_base)
+                };
+                let Some(result) = direct.run(agent, this, &vm.stack[first..], gc) else {
+                    return Plain::No;
+                };
+                let result = result.unbind();
+                vm.stack.truncate(first - 1);
+                if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+                    vm.reference_stack.pop();
+                }
+                vm.reference = None;
+                vm.result = Some(result);
+            }
+            // `o.p` where the property cache knows the shape of `o`, and the
+            // length of an Array.
+            Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
+                step!(GetPropertyWithCache, GetPropertyWithCacheKeepReference);
+                let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
+                    if instr.kind == Instruction::GetPropertyWithCache
+                        && let Some(base) = vm.result
+                        && Self::getter_for_call(agent, vm, base, tables, instr, gc)
+                    {
+                        return Plain::Accessor;
+                    }
+                    return Plain::No;
+                };
+                if instr.kind == Instruction::GetPropertyWithCacheKeepReference {
+                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                } else {
+                    vm.reference = None;
+                }
+                vm.result = Some(value);
+            }
+            // The function of a method call, pushed with its Reference
+            // before the arguments.
+            Instruction::LoadPropertyWithCachePushReference => {
+                step!(LoadPropertyWithCachePushReference);
+                let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
+                    return Plain::No;
+                };
+                Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                vm.execute_push_reference(agent);
+                vm.stack.push(value);
+            }
+            // `p.x` of a local: the stack slot, and its property by the
+            // cache.
+            Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference => {
+                step!(
+                    GetIndexPropertyWithCache,
+                    GetIndexPropertyWithCacheKeepReference
+                );
+                let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
+                let Some(value) = Self::cached_property_value_of(agent, base, tables, instr, gc)
+                else {
+                    if instr.kind == Instruction::GetIndexPropertyWithCache
+                        && Self::getter_for_call(agent, vm, base, tables, instr, gc)
+                    {
+                        return Plain::Accessor;
+                    }
+                    return Plain::No;
+                };
+                if instr.kind == Instruction::GetIndexPropertyWithCacheKeepReference {
+                    vm.result = Some(base);
+                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                } else {
+                    vm.reference = None;
+                }
+                vm.result = Some(value);
+            }
+            // `this.p`: the this value that the call keeps, and its
+            // property by the cache.
+            Instruction::GetThisPropertyWithCache
+            | Instruction::GetThisPropertyWithCacheKeepReference => {
+                step!(
+                    GetThisPropertyWithCache,
+                    GetThisPropertyWithCacheKeepReference
+                );
+                let Some(this) = agent.running_call_this_value() else {
+                    return Plain::No;
+                };
+                let Some(value) = Self::cached_property_value_of(agent, this, tables, instr, gc)
+                else {
+                    if instr.kind == Instruction::GetThisPropertyWithCache
+                        && Self::getter_for_call(agent, vm, this, tables, instr, gc)
+                    {
+                        return Plain::Accessor;
+                    }
+                    return Plain::No;
+                };
+                if instr.kind == Instruction::GetThisPropertyWithCacheKeepReference {
+                    vm.result = Some(this);
+                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                } else {
+                    vm.reference = None;
+                }
+                vm.result = Some(value);
+            }
+            // `new F(…)` of an ECMAScript function, which the Vm may run
+            // itself.
+            Instruction::EvaluateNew => {
+                step!(EvaluateNew);
+                let count = instr.get_first_index();
+                if count != IndexType::MAX as usize
+                    && let Some(at) = vm.stack.len().checked_sub(count + 1)
+                    && matches!(vm.stack[at], Value::ECMAScriptFunction(_))
+                {
+                    return Plain::Construct;
+                }
+                return Plain::No;
+            }
+            // `o.p = v` with `o` on the stack, where the property cache
+            // knows its shape and `p` is a writable data property of its
+            // own.
+            Instruction::PutPropertyWithCache => {
+                step!(PutPropertyWithCache);
+                let (Some(value), Some(&Value::Object(object))) = (vm.result, vm.stack.last())
+                else {
+                    return Plain::No;
+                };
+                let cache = tables.cache(instr.get_second_index(), gc);
+                match object.set_value_by_cache(agent, cache, value) {
+                    CachedSet::Done => {}
+                    CachedSet::Absent => {
+                        // Neither the object nor any it inherits from has
+                        // the property: it is added, as most properties of
+                        // an object are.
+                        let key = tables.property_key(instr.get_first_index(), gc);
+                        if !ordinary_add_own_data_by_cache(agent, object, key, value, cache, gc) {
+                            return Plain::No;
+                        }
+                    }
+                    CachedSet::Unknown => {
+                        if let Some(setter) = object.setter_by_cache(agent, cache, gc) {
+                            // The setter and the value are the function and
+                            // the argument of a call, and the object its
+                            // this value.
+                            vm.stack.pop();
+                            vm.stack.push(Value::ECMAScriptFunction(setter.unbind()));
+                            vm.stack.push(value);
+                            vm.result = Some(Value::Object(object));
+                            return Plain::Accessor;
+                        }
+                        return Plain::No;
+                    }
+                }
+                vm.stack.pop();
+                vm.result = None;
+            }
+            // `o.p = v` where the property cache knows the shape of `o` and
+            // `p` is a writable data property of its own.
+            Instruction::PutValueWithCache => {
+                step!(PutValueWithCache);
+                let (Some(value), Some(reference)) = (vm.result, vm.reference.as_ref()) else {
+                    return Plain::No;
+                };
+                let Some(Value::Object(object)) = reference.named_property_base() else {
+                    return Plain::No;
+                };
+                let cache = tables.cache(instr.get_first_index(), gc);
+                if object.set_value_by_cache(agent, cache, value) != CachedSet::Done {
+                    return Plain::No;
+                }
+                vm.result = None;
+                vm.reference = None;
+            }
+            // `a[i]` of an Array that has an element there, or of a
+            // TypedArray within its length.
+            Instruction::GetValue | Instruction::GetValueKeepReference => {
+                step!(GetValue, GetValueKeepReference);
+                let Some((base, index)) = vm
+                    .reference
+                    .as_ref()
+                    .and_then(Reference::element_base_and_index)
+                else {
+                    return Plain::No;
+                };
+                let value = if let Value::Array(array) = base {
+                    let Some(&Some(value)) = usize::try_from(index)
+                        .ok()
+                        .and_then(|index| array.as_slice(agent).get(index))
+                    else {
+                        return Plain::No;
+                    };
+                    value.unbind()
+                } else {
+                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                        return Plain::No;
+                    };
+                    value
+                };
+                if instr.kind == Instruction::GetValue {
+                    vm.reference = None;
+                }
+                vm.result = Some(value);
+            }
+            // The same read with the base and the key where the expression
+            // left them: no Reference is made of them first.
+            Instruction::GetValueWithExpressionKey => {
+                step!(GetValueWithExpressionKey);
+                let (Some(&base), Some(Value::Integer(index))) = (vm.stack.last(), vm.result)
+                else {
+                    return Plain::No;
+                };
+                let index = index.into_i64();
+                let value = if let Value::Array(array) = base {
+                    let Some(&Some(value)) = usize::try_from(index)
+                        .ok()
+                        .and_then(|index| array.as_slice(agent).get(index))
+                    else {
+                        return Plain::No;
+                    };
+                    value.unbind()
+                } else {
+                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                        return Plain::No;
+                    };
+                    value
+                };
+                vm.stack.pop();
+                vm.result = Some(value);
+            }
+            // The same read with the base as the result and the key in a
+            // local: neither goes by the stack.
+            Instruction::GetValueWithIndexKey => {
+                step!(GetValueWithIndexKey);
+                let (Some(base), Value::Integer(index)) =
+                    (vm.result, vm.stack[instr.get_first_index()])
+                else {
+                    return Plain::No;
+                };
+                let index = index.into_i64();
+                let value = if let Value::Array(array) = base {
+                    let Some(&Some(value)) = usize::try_from(index)
+                        .ok()
+                        .and_then(|index| array.as_slice(agent).get(index))
+                    else {
+                        return Plain::No;
+                    };
+                    value.unbind()
+                } else {
+                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                        return Plain::No;
+                    };
+                    value
+                };
+                vm.result = Some(value);
+            }
+            // `a[i] = v` for an element the Array has, as a plain value, or
+            // for a TypedArray and a Number.
+            Instruction::PutValue => {
+                step!(PutValue);
+                let (Some(value), Some((base, index))) = (
+                    vm.result,
+                    vm.reference
+                        .as_ref()
+                        .and_then(Reference::element_base_and_index),
+                ) else {
+                    return Plain::No;
+                };
+                if let Value::Array(array) = base {
+                    let Ok(index) = u32::try_from(index) else {
+                        return Plain::No;
+                    };
+                    let storage = array.get_storage(agent);
+                    if !matches!(storage.values.get(index as usize), Some(Some(_)))
+                        || storage
+                            .descriptors
+                            .is_some_and(|descriptors| descriptors.contains_key(&index))
+                    {
+                        return Plain::No;
+                    }
+                    array.as_mut_slice(agent)[index as usize] = Some(value);
+                } else if !Self::set_typed_array_element(agent, base, index, value) {
+                    return Plain::No;
+                }
+                vm.result = None;
+                vm.reference = None;
+            }
+            // The same assignment with the object and the key on the stack.
+            Instruction::PutValueWithExpressionKey => {
+                step!(PutValueWithExpressionKey);
+                let (Some(value), [.., base, Value::Integer(index)]) =
+                    (vm.result, vm.stack.as_slice())
+                else {
+                    return Plain::No;
+                };
+                let (base, index) = (*base, index.into_i64());
+                if let Value::Array(array) = base {
+                    let Ok(index) = u32::try_from(index) else {
+                        return Plain::No;
+                    };
+                    let storage = array.get_storage(agent);
+                    if !matches!(storage.values.get(index as usize), Some(Some(_)))
+                        || storage
+                            .descriptors
+                            .is_some_and(|descriptors| descriptors.contains_key(&index))
+                    {
+                        return Plain::No;
+                    }
+                    array.as_mut_slice(agent)[index as usize] = Some(value);
+                } else if !Self::set_typed_array_element(agent, base, index, value) {
+                    return Plain::No;
+                }
+                vm.stack.truncate(vm.stack.len() - 2);
+                vm.result = None;
+            }
+            // A Number is its own numeric value: the counter of nearly every
+            // loop.
+            Instruction::ToNumeric => {
+                step!(ToNumeric);
+                if !matches!(
+                    vm.result,
+                    Some(Value::Integer(_) | Value::SmallF64(_) | Value::Number(_))
+                ) {
+                    return Plain::No;
+                }
+            }
+            Instruction::Increment => {
+                step!(Increment);
+                return vm.step_integer(1);
+            }
+            Instruction::Decrement => {
+                step!(Decrement);
+                return vm.step_integer(-1);
+            }
+            Instruction::LessThan => operate_on_integers!(LessThan),
+            Instruction::LessThanEquals => operate_on_integers!(LessThanEquals),
+            Instruction::GreaterThan => operate_on_integers!(GreaterThan),
+            Instruction::GreaterThanEquals => operate_on_integers!(GreaterThanEquals),
+            Instruction::ApplyAdditionBinaryOperator => {
+                operate_on_integers!(ApplyAdditionBinaryOperator)
+            }
+            Instruction::ApplySubtractionBinaryOperator => {
+                operate_on_integers!(ApplySubtractionBinaryOperator)
+            }
+            Instruction::ApplyMultiplicationBinaryOperator => {
+                operate_on_integers!(ApplyMultiplicationBinaryOperator)
+            }
+            Instruction::ApplyDivisionBinaryOperator => {
+                operate_on_integers!(ApplyDivisionBinaryOperator)
+            }
+            Instruction::ApplyRemainderBinaryOperator => {
+                operate_on_integers!(ApplyRemainderBinaryOperator)
+            }
+            Instruction::ApplyShiftLeftBinaryOperator => {
+                operate_on_integers!(ApplyShiftLeftBinaryOperator)
+            }
+            Instruction::ApplyShiftRightBinaryOperator => {
+                operate_on_integers!(ApplyShiftRightBinaryOperator)
+            }
+            Instruction::ApplyShiftRightZeroFillBinaryOperator => {
+                operate_on_integers!(ApplyShiftRightZeroFillBinaryOperator)
+            }
+            Instruction::ApplyBitwiseORBinaryOperator => {
+                operate_on_integers!(ApplyBitwiseORBinaryOperator)
+            }
+            Instruction::ApplyBitwiseXORBinaryOperator => {
+                operate_on_integers!(ApplyBitwiseXORBinaryOperator)
+            }
+            Instruction::ApplyBitwiseAndBinaryOperator => {
+                operate_on_integers!(ApplyBitwiseAndBinaryOperator)
+            }
+            _ => {
+                // An instruction that is not plain.
+                *ip += instr.kind.length();
+                return Plain::No;
+            }
+        }
+        Plain::Done
+    }
+
+    /// One of the instructions that compare the value on the stack with the
+    /// result and jump: `kind`, which each of their arms gives as the
+    /// constant it is, so that what the kind decides is decided when this
+    /// is compiled into the arm.
+    #[inline(always)]
+    fn compare_and_jump(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        instr: Instr,
+        kind: Instruction,
+    ) -> Plain {
+        let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+            return Plain::No;
+        };
+        let jumps = if let (Value::Integer(left), Value::Integer(right)) = (left, right) {
+            let (left, right) = (left.into_i64(), right.into_i64());
+            match kind {
+                Instruction::JumpIfNotLessThan => left >= right,
+                Instruction::JumpIfNotLessThanEquals => left > right,
+                Instruction::JumpIfNotGreaterThan => left <= right,
+                Instruction::JumpIfNotGreaterThanEquals => left < right,
+                Instruction::JumpIfLessThan => left < right,
+                Instruction::JumpIfLessThanEquals => left <= right,
+                Instruction::JumpIfGreaterThan => left > right,
+                _ => left >= right,
+            }
+        } else {
+            let (comparison, negated) = match kind {
+                Instruction::JumpIfNotLessThan => (Instruction::LessThan, true),
+                Instruction::JumpIfNotLessThanEquals => (Instruction::LessThanEquals, true),
+                Instruction::JumpIfNotGreaterThan => (Instruction::GreaterThan, true),
+                Instruction::JumpIfNotGreaterThanEquals => (Instruction::GreaterThanEquals, true),
+                Instruction::JumpIfLessThan => (Instruction::LessThan, false),
+                Instruction::JumpIfLessThanEquals => (Instruction::LessThanEquals, false),
+                Instruction::JumpIfGreaterThan => (Instruction::GreaterThan, false),
+                _ => (Instruction::GreaterThanEquals, false),
+            };
+            let Some(holds) = Self::numbers_compare(agent, comparison, left, right) else {
+                return Plain::No;
+            };
+            holds != negated
+        };
+        vm.stack.pop();
+        vm.result = None;
+        if jumps {
+            let from = *ip;
+            *ip = instr.get_jump_slot();
+            if *ip < from {
+                return Plain::Looped;
+            }
+        }
+        Plain::Done
+    }
+
+    /// One of the instructions that compare a local with a constant or with
+    /// another local and jump: `kind`, a constant of the arm as in
+    /// [`Vm::compare_and_jump`].
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn compare_local_and_jump(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        instructions: &[u8],
+        tables: TablesView,
+        instr: Instr,
+        kind: Instruction,
+        gc: NoGcScope,
+    ) -> Plain {
+        let Some((comparison, constant)) = kind.compared_local() else {
+            return Plain::No;
+        };
+        let left = vm.stack[instr.get_first_index()];
+        let right = if constant {
+            tables.constant(instr.get_second_index(), gc).unbind()
+        } else {
+            vm.stack[instr.get_second_index()]
+        };
+        let jumps = match (comparison, left, right) {
+            (Instruction::JumpIfNotStrictlyEqual, left, right) => {
+                !Self::strictly_equal(agent, left, right)
+            }
+            (Instruction::JumpIfStrictlyEqual, left, right) => {
+                Self::strictly_equal(agent, left, right)
+            }
+            (comparison, Value::Integer(left), Value::Integer(right)) => {
+                let (left, right) = (left.into_i64(), right.into_i64());
+                !match comparison {
+                    Instruction::JumpIfNotLessThan => left < right,
+                    Instruction::JumpIfNotLessThanEquals => left <= right,
+                    Instruction::JumpIfNotGreaterThan => left > right,
+                    _ => left >= right,
+                }
+            }
+            (comparison, left, right) => {
+                let comparison = match comparison {
+                    Instruction::JumpIfNotLessThan => Instruction::LessThan,
+                    Instruction::JumpIfNotLessThanEquals => Instruction::LessThanEquals,
+                    Instruction::JumpIfNotGreaterThan => Instruction::GreaterThan,
+                    _ => Instruction::GreaterThanEquals,
+                };
+                let Some(holds) = Self::numbers_compare(agent, comparison, left, right) else {
+                    return Plain::No;
+                };
+                !holds
+            }
+        };
+        vm.result = None;
+        if jumps {
+            let from = *ip;
+            *ip = Instr::wide_jump_target(instructions, from);
+            if *ip < from {
+                return Plain::Looped;
+            }
+        }
+        Plain::Done
+    }
+
+    /// One of the instructions that end a loop: a step of a local where
+    /// `kind` has one, its comparison and the jump back. `kind` is a
+    /// constant of the arm as in [`Vm::compare_and_jump`].
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn step_local_compare_and_jump(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        instructions: &[u8],
+        tables: TablesView,
+        instr: Instr,
+        kind: Instruction,
+        gc: NoGcScope,
+    ) -> Plain {
+        let Some((step, comparison, constant)) = kind.loop_test() else {
+            return Plain::No;
+        };
+        let slot = instr.get_first_index();
+        let right = if constant {
+            tables.constant(instr.get_second_index(), gc).unbind()
+        } else {
+            vm.stack[instr.get_second_index()]
+        };
+        let holds = match (vm.stack[slot], right) {
+            (Value::Integer(left), Value::Integer(right)) => {
+                let (mut left, right) = (left.into_i64(), right.into_i64());
+                if step != 0 {
+                    left += step as i64;
+                    let Ok(stepped) = SmallInteger::try_from(left) else {
+                        return Plain::No;
+                    };
+                    vm.stack[slot] = Value::Integer(stepped);
+                }
+                match comparison {
+                    Instruction::LessThan => left < right,
+                    Instruction::LessThanEquals => left <= right,
+                    Instruction::GreaterThan => left > right,
+                    _ => left >= right,
+                }
+            }
+            (left, right) => {
+                // The counter after its step, where it has one.
+                let stepped = match left {
+                    _ if step == 0 => None,
+                    Value::Integer(left) => {
+                        let Ok(stepped) = SmallInteger::try_from(left.into_i64() + step as i64)
+                        else {
+                            return Plain::No;
+                        };
+                        Some(Value::Integer(stepped))
+                    }
+                    _ => return Plain::No,
+                };
+                let Some(holds) =
+                    Self::numbers_compare(agent, comparison, stepped.unwrap_or(left), right)
+                else {
+                    return Plain::No;
+                };
+                if let Some(stepped) = stepped {
+                    vm.stack[slot] = stepped;
+                }
+                holds
+            }
+        };
+        vm.result = None;
+        if holds {
+            let from = *ip;
+            *ip = Instr::wide_jump_target(instructions, from);
+            if *ip < from {
+                return Plain::Looped;
+            }
+        }
+        Plain::Done
+    }
+
+    /// IsStrictlyEqual(x, y), with two integers compared in place.
+    #[inline(always)]
+    fn strictly_equal(agent: &Agent, x: Value, y: Value) -> bool {
+        if let (Value::Integer(x), Value::Integer(y)) = (x, y) {
+            return x.into_i64() == y.into_i64();
+        }
+        is_strictly_equal(agent, x, y)
+    }
+
+    /// EvaluatePropertyAccessWithIdentifierKey, with the key fetched from the
+    /// executable the loop has at hand.
+    #[inline(always)]
+    fn property_reference_with_identifier_key(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) {
+        let property_key = tables.property_key(instr.get_first_index(), gc);
+        let base_value = vm.result.take().unwrap().bind(gc);
+        let strict = agent.is_evaluating_strict_code();
+        vm.reference =
+            Some(Reference::new_property_reference(base_value, property_key, strict).unbind());
+    }
+
+    /// Where `base.name` is an accessor whose getter this `Vm` may run
+    /// itself (the cache of the instruction knows the shape of `base`, and
+    /// the getter is an ECMAScript function): leaves the getter on the
+    /// stack and `base` as the result, for [`Plain::Accessor`], and returns
+    /// true.
+    #[inline(always)]
+    fn getter_for_call(
+        agent: &Agent,
+        vm: &mut Vm,
+        base: Value,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> bool {
+        let Value::Object(object) = base else {
+            return false;
+        };
+        let cache = tables.cache(instr.get_second_index(), gc);
+        let Some(getter) = object.getter_by_cache(agent, cache, gc) else {
+            return false;
+        };
+        vm.stack.push(Value::ECMAScriptFunction(getter.unbind()));
+        vm.result = Some(base.unbind());
+        true
+    }
+
+    /// The value of `o.p` for the object in the result register, when it is
+    /// read without a call: a property the cache places for the shape of an
+    /// ordinary object (its own or of a prototype, or known to be absent),
+    /// or the length of an Array.
+    #[inline(always)]
+    fn cached_property_value(
+        agent: &mut Agent,
+        vm: &Vm,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        Self::cached_property_value_of(agent, vm.result?, tables, instr, gc)
+    }
+
+    /// GetPropertyWithCache or GetPropertyWithCacheKeepReference of the
+    /// value in the result register, where the cache places the property:
+    /// what the plain instruction does. Returns whether it did.
+    pub(super) fn get_property_by_cache(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        executable: &Scoped<Executable>,
+        instr: Instr,
+        keep_reference: bool,
+        gc: NoGcScope,
+    ) -> bool {
+        let tables = executable.get_tables(agent);
+        let tables = tables.view();
+        let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
+            return false;
+        };
+        if keep_reference {
+            Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+        } else {
+            vm.reference = None;
+        }
+        vm.result = Some(value);
+        true
+    }
+
+    /// The value of a property of a primitive value that is found on
+    /// `prototype`, the prototype object of its kind in the running realm,
+    /// or further up: by the cache, under the shape of `prototype`, where
+    /// \[\[Get]] of that object left it.
+    #[inline]
+    fn cached_prototype_property_value(
+        agent: &mut Agent,
+        prototype: OrdinaryObject<'static>,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let cache = tables.cache(instr.get_second_index(), gc);
+        let shape = prototype.object_shape(agent);
+        let (offset, holder) = cache.find_cached_property_offset(agent, shape)?;
+        if offset.is_unset() {
+            return Some(Value::Undefined);
+        }
+        let found = match holder {
+            Some(holder) => holder.get_own_property_at_offset(agent, offset, gc),
+            None => prototype.get_own_property_at_offset(agent, offset, gc),
+        };
+        match found {
+            TryGetResult::Value(value) => Some(value.unbind()),
+            _ => None,
+        }
+    }
+
+    /// The same for `base`, wherever the instruction has it from.
+    #[inline(always)]
+    fn cached_property_value_of(
+        agent: &mut Agent,
+        base: Value,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        match base {
+            Value::Object(object) => {
+                let cache = tables.cache(instr.get_second_index(), gc);
+                object.value_by_cache(agent, cache, gc).unbind()
+            }
+            Value::Array(array) => {
+                let key = tables.property_key(instr.get_first_index(), gc);
+                if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
+                    return Some(array.len(agent).into());
+                }
+                if key.into_u32().is_some() {
+                    return None;
+                }
+                // A named property (`a.push`): what \[\[Get]] of an Array
+                // finds in the cache, under the shape of the Array's own
+                // properties or the one of all Arrays that have none.
+                let object = Object::from(array);
+                let cache = tables.cache(instr.get_second_index(), gc);
+                let shape = object.object_shape(agent);
+                let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
+                if offset.is_unset() {
+                    return Some(Value::Undefined);
+                }
+                match prototype
+                    .unwrap_or(object)
+                    .get_own_property_at_offset(agent, offset, gc)
+                {
+                    TryGetResult::Value(value) => Some(value.unbind()),
+                    _ => None,
+                }
+            }
+            // A String value: its length, or what \[\[Get]] of the
+            // %String.prototype% of the running realm finds in the cache
+            // (`s.charCodeAt`), which is where a name that is not `length`
+            // is looked for.
+            Value::String(_) | Value::SmallString(_) => {
+                let key = tables.property_key(instr.get_first_index(), gc);
+                if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
+                    let string = String::try_from(base).ok()?;
+                    let length = i64::try_from(string.utf16_len_(agent)).ok()?;
+                    return SmallInteger::try_from(length).ok().map(Value::Integer);
+                }
+                if key.into_u32().is_some() {
+                    return None;
+                }
+                let prototype = agent
+                    .current_realm_record()
+                    .intrinsics()
+                    .string_prototype_backing_object();
+                Self::cached_prototype_property_value(agent, prototype, tables, instr, gc)
+            }
+            // A Number value has no properties of its own: what \[\[Get]]
+            // of %Number.prototype% finds in the cache (`n.toFixed`).
+            Value::Integer(_) | Value::SmallF64(_) | Value::Number(_) => {
+                let prototype = agent
+                    .current_realm_record()
+                    .intrinsics()
+                    .number_prototype_backing_object();
+                Self::cached_prototype_property_value(agent, prototype, tables, instr, gc)
+            }
+            #[cfg(feature = "array-buffer")]
+            value => Self::typed_array_length(agent, value, tables, instr, gc),
+            #[cfg(not(feature = "array-buffer"))]
+            _ => None,
+        }
+    }
+
+    /// `a[i]` of a TypedArray, for an index within its length: the element,
+    /// read from the buffer. Outside the length the general way gives
+    /// undefined.
+    #[cfg(feature = "array-buffer")]
+    #[inline]
+    fn typed_array_element(
+        agent: &mut Agent,
+        base: Value,
+        index: i64,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let array = AnyTypedArray::try_from(base).ok()?;
+        let element = array.typed_array_get_element(agent, index, gc)?;
+        Some(Value::from(element).unbind())
+    }
+
+    #[cfg(not(feature = "array-buffer"))]
+    #[inline]
+    fn typed_array_element(
+        _: &mut Agent,
+        _: Value,
+        _: i64,
+        _: NoGcScope,
+    ) -> Option<Value<'static>> {
+        None
+    }
+
+    /// `a[i] = v` of a TypedArray and a value that needs no conversion (a
+    /// Number, or a BigInt where the elements are BigInts): written to the
+    /// buffer, or dropped outside the length, as TypedArraySetElement has
+    /// it.
+    #[cfg(feature = "array-buffer")]
+    #[inline]
+    fn set_typed_array_element(agent: &mut Agent, base: Value, index: i64, value: Value) -> bool {
+        AnyTypedArray::try_from(base)
+            .is_ok_and(|array| array.set_element_unconverted(agent, index, value))
+    }
+
+    #[cfg(not(feature = "array-buffer"))]
+    #[inline]
+    fn set_typed_array_element(_: &mut Agent, _: Value, _: i64, _: Value) -> bool {
+        false
+    }
+
+    /// `a.length` of a TypedArray, where the property cache finds for its
+    /// shape the accessor of %TypedArray%.prototype: what the accessor
+    /// returns, without the call.
+    #[cfg(feature = "array-buffer")]
+    fn typed_array_length(
+        agent: &mut Agent,
+        value: Value,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let array = AnyTypedArray::try_from(value).ok()?;
+        let key = tables.property_key(instr.get_first_index(), gc);
+        if key != PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
+            return None;
+        }
+        let cache = tables.cache(instr.get_second_index(), gc);
+        let shape = array.object_shape(agent);
+        let (offset, Some(prototype)) = cache.find_cached_property_offset(agent, shape)? else {
+            return None;
+        };
+        if offset.is_unset() {
+            return None;
+        }
+        let TryGetResult::Get(getter) = prototype.get_own_property_at_offset(agent, offset, gc)
+        else {
+            return None;
+        };
+        TypedArrayPrototype::is_length_getter(agent, getter).then(|| array.length_value(agent))
+    }
+
+    /// `++` or `--` of an integer that stays one.
+    #[inline(always)]
+    fn step_integer(&mut self, step: i64) -> Plain {
+        let Some(Value::Integer(value)) = self.result else {
+            return Plain::No;
+        };
+        let Ok(value) = SmallInteger::try_from(value.into_i64() + step) else {
+            return Plain::No;
+        };
+        self.result = Some(Value::Integer(value));
+        Plain::Done
+    }
+
+    /// A comparison or an arithmetic operator on two Numbers, the left one
+    /// on the stack and the right one the result: nothing to convert.
+    #[inline(always)]
+    fn operate_on_integers(
+        &mut self,
+        agent: &mut Agent,
+        kind: Instruction,
+        gc: NoGcScope,
+    ) -> Plain {
+        let (Some(&left), Some(right)) = (self.stack.last(), self.result) else {
+            return Plain::No;
+        };
+        let Some(value) = Self::number_operation(agent, kind, left, right, gc) else {
+            return Plain::No;
+        };
+        self.finish_operation(value)
+    }
+
+    /// What a comparison or an arithmetic operator gives for two Numbers,
+    /// which no conversion that could run a script comes into: in place for
+    /// two integers whose result is a Boolean or an integer again.
+    #[inline(always)]
+    fn number_operation(
+        agent: &mut Agent,
+        kind: Instruction,
+        left: Value,
+        right: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        if let (Value::Integer(left), Value::Integer(right)) = (left, right)
+            && let Some(value) = Self::integer_operation(kind, left.into_i64(), right.into_i64())
+        {
+            return Some(value);
+        }
+        // Seen here, so that the `+` of two strings is not a call first.
+        if !(left.is_number() && right.is_number()) {
+            return None;
+        }
+        Self::float_operation(agent, kind, left, right, gc)
+    }
+
+    /// Whether `comparison` (LessThan or one like it) holds for two Numbers
+    /// of any kind, compared as doubles: it does not where one is NaN. None
+    /// where an operand is not a Number, and would be converted.
+    #[inline(always)]
+    fn numbers_compare(
+        agent: &Agent,
+        comparison: Instruction,
+        left: Value,
+        right: Value,
+    ) -> Option<bool> {
+        // Seen here, so that a comparison of two strings is not a call first.
+        if !(left.is_number() && right.is_number()) {
+            return None;
+        }
+        Self::doubles_compare(agent, comparison, left, right)
+    }
+
+    #[inline(never)]
+    fn doubles_compare(
+        agent: &Agent,
+        comparison: Instruction,
+        left: Value,
+        right: Value,
+    ) -> Option<bool> {
+        let (Ok(left), Ok(right)) = (Number::try_from(left), Number::try_from(right)) else {
+            return None;
+        };
+        let (left, right) = (left.into_f64_(agent), right.into_f64_(agent));
+        Some(match comparison {
+            Instruction::LessThan => left < right,
+            Instruction::LessThanEquals => left <= right,
+            Instruction::GreaterThan => left > right,
+            _ => left >= right,
+        })
+    }
+
+    /// The comparisons and the operators on two Numbers of any kind. A
+    /// comparison is of two doubles, where one that is NaN compares as
+    /// false; an operator is what the Number type defines for it. A result
+    /// that is a double too wide for a Value is a Number of the heap: the
+    /// one thing a plain instruction allocates, and no collection is due
+    /// before the loop looks for one again.
+    #[inline(never)]
+    fn float_operation(
+        agent: &mut Agent,
+        kind: Instruction,
+        left: Value,
+        right: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let (Ok(left), Ok(right)) = (Number::try_from(left), Number::try_from(right)) else {
+            return None;
+        };
+        let (left, right) = (left.bind(gc), right.bind(gc));
+        let value: Value = match kind {
+            Instruction::LessThan
+            | Instruction::LessThanEquals
+            | Instruction::GreaterThan
+            | Instruction::GreaterThanEquals => {
+                let (left, right) = (left.into_f64_(agent), right.into_f64_(agent));
+                let holds = match kind {
+                    Instruction::LessThan => left < right,
+                    Instruction::LessThanEquals => left <= right,
+                    Instruction::GreaterThan => left > right,
+                    _ => left >= right,
+                };
+                holds.into()
+            }
+            Instruction::ApplyAdditionBinaryOperator => Number::add(agent, left, right).into(),
+            Instruction::ApplySubtractionBinaryOperator
+            | Instruction::ApplyMultiplicationBinaryOperator
+            | Instruction::ApplyDivisionBinaryOperator
+            | Instruction::ApplyRemainderBinaryOperator
+            | Instruction::ApplyShiftLeftBinaryOperator
+            | Instruction::ApplyShiftRightBinaryOperator
+            | Instruction::ApplyShiftRightZeroFillBinaryOperator
+            | Instruction::ApplyBitwiseORBinaryOperator
+            | Instruction::ApplyBitwiseXORBinaryOperator
+            | Instruction::ApplyBitwiseAndBinaryOperator => {
+                number_binary_operator(agent, kind, left, right, gc)
+                    .ok()?
+                    .into()
+            }
+            _ => return None,
+        };
+        Some(value.unbind())
+    }
+
+    /// What a comparison or an arithmetic operator gives for two integers,
+    /// where that is a Boolean or an integer again.
+    #[inline(always)]
+    fn integer_operation(kind: Instruction, left: i64, right: i64) -> Option<Value<'static>> {
+        // ToInt32 and ToUint32 of an integer are its low 32 bits.
+        let (left32, right32) = (left as i32, right as i32);
+        let integer = match kind {
+            Instruction::LessThan => return Some((left < right).into()),
+            Instruction::LessThanEquals => return Some((left <= right).into()),
+            Instruction::GreaterThan => return Some((left > right).into()),
+            Instruction::GreaterThanEquals => return Some((left >= right).into()),
+            Instruction::ApplyAdditionBinaryOperator => left + right,
+            Instruction::ApplySubtractionBinaryOperator => left - right,
+            Instruction::ApplyMultiplicationBinaryOperator => {
+                let product = left.checked_mul(right)?;
+                // A zero product of a negative factor is -0: not an integer.
+                if product == 0 && (left < 0 || right < 0) {
+                    return None;
+                }
+                product
+            }
+            Instruction::ApplyRemainderBinaryOperator => {
+                // A zero remainder of a negative dividend is -0, and the
+                // remainder of a division by zero is NaN.
+                if left < 0 || right <= 0 {
+                    return None;
+                }
+                left % right
+            }
+            Instruction::ApplyShiftLeftBinaryOperator => {
+                i64::from(left32.wrapping_shl(right32 as u32))
+            }
+            Instruction::ApplyShiftRightBinaryOperator => {
+                i64::from(left32.wrapping_shr(right32 as u32))
+            }
+            Instruction::ApplyShiftRightZeroFillBinaryOperator => {
+                i64::from((left32 as u32).wrapping_shr(right32 as u32))
+            }
+            Instruction::ApplyBitwiseORBinaryOperator => i64::from(left32 | right32),
+            Instruction::ApplyBitwiseXORBinaryOperator => i64::from(left32 ^ right32),
+            Instruction::ApplyBitwiseAndBinaryOperator => i64::from(left32 & right32),
+            _ => return None,
+        };
+        SmallInteger::try_from(integer).ok().map(Value::Integer)
+    }
+
+    /// Replaces the two operands of a binary operator with its result.
+    #[inline(always)]
+    fn finish_operation(&mut self, result: Value<'static>) -> Plain {
+        self.stack.pop();
+        self.result = Some(result);
+        Plain::Done
+    }
+
+    // Inlined into the loop of `run` in optimised builds, where it saves a
+    // call for every instruction; unoptimised, the merged frame would take
+    // many times the stack for every JavaScript call.
+    #[cfg_attr(not(debug_assertions), inline(always))]
     fn execute_instruction<'a>(
         agent: &mut Agent,
         vm: &mut Vm,
@@ -528,31 +3341,50 @@ impl Vm {
     ) -> JsResult<'a, ContinuationKind> {
         // Hot instructions; apply #[inline(always)] to the execute methods.
         match instr.kind {
-            Instruction::Load => {
-                vm.execute_load();
+            Instruction::Load
+            | Instruction::LoadCopy
+            | Instruction::PutValueToIndex
+            | Instruction::Store
+            | Instruction::GetValueFromIndex
+            | Instruction::LoadFromIndex
+            | Instruction::StoreConstant
+            | Instruction::LoadConstant
+            | Instruction::PopStack
+            | Instruction::PushReference
+            | Instruction::PopReference
+            | Instruction::PushReferenceAndLoad
+            | Instruction::LoadFromIndexStoreConstant
+            | Instruction::LoadFromIndexGetFromIndex
+            | Instruction::LoadFromIndexLoadFromIndex
+            | Instruction::Jump
+            | Instruction::JumpIfNot
+            | Instruction::JumpIfTrue
+            | Instruction::IsStrictlyEqual
+            | Instruction::JumpToCase
+            | Instruction::CreateImmutableBinding
+            | Instruction::CreateMutableBinding
+            | Instruction::InitializeReferencedBinding
+            | Instruction::EvaluatePropertyAccessWithIdentifierKey
+            | Instruction::EvaluatePropertyAccessWithExpressionKey => {
+                unreachable!("plain instruction not handled before execute_instruction")
             }
-            Instruction::LoadCopy => {
-                vm.execute_load_copy();
-            }
-            Instruction::PutValueToIndex => {
-                vm.execute_load_to_index(instr.get_first_index());
-            }
-            Instruction::Store => {
-                vm.execute_store();
-            }
-            Instruction::GetValueFromIndex => {
-                vm.execute_store_from_index(instr.get_first_index());
-            }
-            Instruction::StoreConstant => {
-                execute_store_constant(agent, vm, executable, instr, gc.into_nogc());
-            }
-            Instruction::PopStack => {
-                vm.execute_pop_stack();
-            }
-            Instruction::Jump => execute_jump(agent, vm, instr),
-            Instruction::JumpIfNot => execute_jump_if_not(agent, vm, instr),
             Instruction::ResolveBinding => {
                 execute_resolve_binding(agent, vm, executable, instr, gc)?;
+            }
+            Instruction::ResolveBindingAtSite => {
+                execute_resolve_binding_at_site(agent, vm, executable, instr, gc)?;
+            }
+            Instruction::GetBindingAtSite => {
+                execute_get_binding_at_site(agent, vm, executable, instr, false, gc)?;
+            }
+            Instruction::PutBindingAtSite => {
+                execute_put_binding_at_site(agent, vm, executable, instr, false, gc)?;
+            }
+            Instruction::ResolveGlobalAtSite
+            | Instruction::GetGlobalAtSite
+            | Instruction::PutGlobalAtSite
+            | Instruction::PutValueAtSite => {
+                execute_global_name_the_long_way(agent, vm, executable, instr, gc)?;
             }
             Instruction::GetValue
             | Instruction::GetValueWithCache
@@ -574,34 +3406,72 @@ impl Vm {
                 execute_put_value(agent, vm, executable, instr, cache, gc)?
             }
             Instruction::ToNumeric => execute_to_numeric(agent, vm, gc)?,
-            Instruction::CreateImmutableBinding => {
-                execute_create_immutable_binding(agent, executable, instr, gc.into_nogc())
+            // What the fused instructions stand for, where their operands
+            // are not two integers, or not an integer.
+            Instruction::JumpIfNotLessThan
+            | Instruction::JumpIfNotLessThanEquals
+            | Instruction::JumpIfNotGreaterThan
+            | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::JumpIfLessThan
+            | Instruction::JumpIfLessThanEquals
+            | Instruction::JumpIfGreaterThan
+            | Instruction::JumpIfGreaterThanEquals
+            | Instruction::JumpIfNotStrictlyEqual
+            | Instruction::JumpIfStrictlyEqual
+            | Instruction::JumpIfNotLooselyEqual
+            | Instruction::JumpIfLooselyEqual
+            | Instruction::JumpIfIndexNotLessThanConstant
+            | Instruction::JumpIfIndexNotLessThanIndex
+            | Instruction::JumpIfIndexNotLessThanEqualsConstant
+            | Instruction::JumpIfIndexNotLessThanEqualsIndex
+            | Instruction::JumpIfIndexNotGreaterThanConstant
+            | Instruction::JumpIfIndexNotGreaterThanIndex
+            | Instruction::JumpIfIndexNotGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexNotGreaterThanEqualsIndex
+            | Instruction::JumpIfIndexNotStrictlyEqualConstant
+            | Instruction::JumpIfIndexNotStrictlyEqualIndex
+            | Instruction::JumpIfIndexStrictlyEqualConstant
+            | Instruction::JumpIfIndexStrictlyEqualIndex
+            | Instruction::JumpIfIndexLessThanConstant
+            | Instruction::JumpIfIndexLessThanIndex
+            | Instruction::JumpIfIndexLessThanEqualsConstant
+            | Instruction::JumpIfIndexLessThanEqualsIndex
+            | Instruction::JumpIfIndexGreaterThanConstant
+            | Instruction::JumpIfIndexGreaterThanIndex
+            | Instruction::JumpIfIndexGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexGreaterThanEqualsIndex
+            | Instruction::IncrementIndexJumpIfLessThanConstant
+            | Instruction::IncrementIndexJumpIfLessThanIndex
+            | Instruction::IncrementIndexJumpIfLessThanEqualsConstant
+            | Instruction::IncrementIndexJumpIfLessThanEqualsIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex
+            | Instruction::IncrementIndex
+            | Instruction::DecrementIndex
+            | Instruction::GetValueWithExpressionKey
+            | Instruction::GetValueWithIndexKey
+            | Instruction::PutValueWithExpressionKey
+            | Instruction::LoadBindingAtSite
+            | Instruction::ApplyBinaryOperatorWithConstant
+            | Instruction::ApplyBinaryOperatorToIndexWithConstant
+            | Instruction::ApplyBinaryOperatorAndMove
+            | Instruction::LoadPropertyWithCachePushReference => {
+                execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
-            Instruction::CreateMutableBinding => {
-                execute_create_mutable_binding(agent, executable, instr, gc.into_nogc())
-            }
-            Instruction::InitializeReferencedBinding => {
-                execute_initialize_referenced_binding(agent, vm, gc.into_nogc())
-            }
-            Instruction::PushReference => vm.execute_push_reference(),
-            Instruction::PopReference => vm.execute_pop_reference(),
-            Instruction::EvaluatePropertyAccessWithIdentifierKey => {
-                execute_evaluate_property_access_with_identifier_key(
-                    agent,
-                    vm,
-                    executable,
-                    instr,
-                    gc.into_nogc(),
-                )
-            }
-            Instruction::EvaluatePropertyAccessWithExpressionKey => {
-                execute_evaluate_property_access_with_expression_key(agent, vm, gc.into_nogc())
-            }
-            Instruction::LoadFromIndex => {
-                vm.execute_store_from_index(instr.get_first_index());
-                vm.execute_load();
+            Instruction::PutPropertyWithCache
+            | Instruction::GetThisPropertyWithCache
+            | Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference => {
+                // Kept out of this function, whose frame every native call
+                // of a function is on top of.
+                execute_fused_property_instruction(agent, vm, executable, instr, gc)?;
             }
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
+                let keep_reference =
+                    matches!(instr.kind, Instruction::GetPropertyWithCacheKeepReference);
                 execute_evaluate_property_access_with_identifier_key(
                     agent,
                     vm,
@@ -609,8 +3479,6 @@ impl Vm {
                     instr,
                     gc.nogc(),
                 );
-                let keep_reference =
-                    matches!(instr.kind, Instruction::GetPropertyWithCacheKeepReference);
                 let get_value = Instr::new_with_arg(
                     if keep_reference {
                         Instruction::GetValueWithCacheKeepReference
@@ -621,10 +3489,31 @@ impl Vm {
                 );
                 execute_get_value(agent, vm, executable, get_value, true, keep_reference, gc)?
             }
-            Instruction::PushReferenceAndLoad => {
-                vm.execute_push_reference();
-                vm.execute_load();
+            // What every loop and expression is made of: one call from here,
+            // not two.
+            Instruction::LessThan => execute_less_than(agent, vm, gc)?,
+            Instruction::LessThanEquals => execute_less_than_equals(agent, vm, gc)?,
+            Instruction::GreaterThan => execute_greater_than(agent, vm, gc)?,
+            Instruction::GreaterThanEquals => execute_greater_than_equals(agent, vm, gc)?,
+            Instruction::Increment => execute_increment(agent, vm, gc.into_nogc()),
+            Instruction::Decrement => execute_decrement(agent, vm, gc.into_nogc()),
+            Instruction::ApplyAdditionBinaryOperator => {
+                execute_apply_addition_binary_operator(agent, vm, gc)?
             }
+            Instruction::ApplySubtractionBinaryOperator
+            | Instruction::ApplyMultiplicationBinaryOperator
+            | Instruction::ApplyDivisionBinaryOperator
+            | Instruction::ApplyRemainderBinaryOperator
+            | Instruction::ApplyShiftLeftBinaryOperator
+            | Instruction::ApplyShiftRightBinaryOperator
+            | Instruction::ApplyShiftRightZeroFillBinaryOperator
+            | Instruction::ApplyBitwiseORBinaryOperator
+            | Instruction::ApplyBitwiseXORBinaryOperator
+            | Instruction::ApplyBitwiseAndBinaryOperator => {
+                execute_apply_binary_operator(agent, vm, instr.kind, gc)?
+            }
+            Instruction::EvaluateCall => execute_evaluate_call(agent, vm, instr, gc)?,
+            Instruction::Return => return Ok(ContinuationKind::Return),
             _ => return Self::execute_cold_instruction(agent, vm, executable, instr, gc),
         }
 
@@ -650,6 +3539,13 @@ impl Vm {
             | Instruction::Jump
             | Instruction::JumpIfNot
             | Instruction::ResolveBinding
+            | Instruction::ResolveBindingAtSite
+            | Instruction::GetBindingAtSite
+            | Instruction::PutBindingAtSite
+            | Instruction::ResolveGlobalAtSite
+            | Instruction::GetGlobalAtSite
+            | Instruction::PutGlobalAtSite
+            | Instruction::PutValueAtSite
             | Instruction::GetValue
             | Instruction::GetValueWithCache
             | Instruction::GetValueKeepReference
@@ -667,7 +3563,67 @@ impl Vm {
             | Instruction::LoadFromIndex
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference
-            | Instruction::PushReferenceAndLoad => {
+            | Instruction::GetThisPropertyWithCache
+            | Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference
+            | Instruction::PutPropertyWithCache
+            | Instruction::PushReferenceAndLoad
+            | Instruction::LoadFromIndexStoreConstant
+            | Instruction::LoadFromIndexGetFromIndex
+            | Instruction::LoadFromIndexLoadFromIndex
+            | Instruction::JumpIfNotLessThan
+            | Instruction::JumpIfNotLessThanEquals
+            | Instruction::JumpIfNotGreaterThan
+            | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::JumpIfLessThan
+            | Instruction::JumpIfLessThanEquals
+            | Instruction::JumpIfGreaterThan
+            | Instruction::JumpIfGreaterThanEquals
+            | Instruction::JumpIfNotStrictlyEqual
+            | Instruction::JumpIfStrictlyEqual
+            | Instruction::JumpIfNotLooselyEqual
+            | Instruction::JumpIfLooselyEqual
+            | Instruction::JumpIfIndexNotLessThanConstant
+            | Instruction::JumpIfIndexNotLessThanIndex
+            | Instruction::JumpIfIndexNotLessThanEqualsConstant
+            | Instruction::JumpIfIndexNotLessThanEqualsIndex
+            | Instruction::JumpIfIndexNotGreaterThanConstant
+            | Instruction::JumpIfIndexNotGreaterThanIndex
+            | Instruction::JumpIfIndexNotGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexNotGreaterThanEqualsIndex
+            | Instruction::JumpIfIndexNotStrictlyEqualConstant
+            | Instruction::JumpIfIndexNotStrictlyEqualIndex
+            | Instruction::JumpIfIndexStrictlyEqualConstant
+            | Instruction::JumpIfIndexStrictlyEqualIndex
+            | Instruction::JumpIfIndexLessThanConstant
+            | Instruction::JumpIfIndexLessThanIndex
+            | Instruction::JumpIfIndexLessThanEqualsConstant
+            | Instruction::JumpIfIndexLessThanEqualsIndex
+            | Instruction::JumpIfIndexGreaterThanConstant
+            | Instruction::JumpIfIndexGreaterThanIndex
+            | Instruction::JumpIfIndexGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexGreaterThanEqualsIndex
+            | Instruction::IncrementIndexJumpIfLessThanConstant
+            | Instruction::IncrementIndexJumpIfLessThanIndex
+            | Instruction::IncrementIndexJumpIfLessThanEqualsConstant
+            | Instruction::IncrementIndexJumpIfLessThanEqualsIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex
+            | Instruction::JumpToCase
+            | Instruction::IncrementIndex
+            | Instruction::DecrementIndex
+            | Instruction::GetValueWithExpressionKey
+            | Instruction::GetValueWithIndexKey
+            | Instruction::PutValueWithExpressionKey
+            | Instruction::LoadBindingAtSite
+            | Instruction::ApplyBinaryOperatorWithConstant
+            | Instruction::ApplyBinaryOperatorToIndexWithConstant
+            | Instruction::ApplyBinaryOperatorAndMove
+            | Instruction::LoadPropertyWithCachePushReference
+            | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }
             Instruction::Return => return Ok(ContinuationKind::Return),
@@ -687,7 +3643,11 @@ impl Vm {
             Instruction::IsUndefined => vm.execute_is_undefined(),
             Instruction::IsObject => vm.execute_is_object(),
             Instruction::IsConstructor => execute_is_constructor(agent, vm),
-            Instruction::JumpIfTrue => execute_jump_if_true(agent, vm, instr),
+            Instruction::JumpIfTrue => {
+                let mut ip = vm.ip;
+                execute_jump_if_true(agent, vm, &mut ip, instr);
+                vm.ip = ip;
+            }
             Instruction::LoadReplace => vm.execute_load_replace(),
             Instruction::LoadConstant => {
                 execute_load_constant(agent, vm, executable, instr, gc.into_nogc())
@@ -720,6 +3680,9 @@ impl Vm {
                 execute_apply_binary_operator(agent, vm, instr.kind, gc)?
             }
             Instruction::ArrayCreate => execute_array_create(agent, vm, instr, gc.into_nogc())?,
+            Instruction::ArrayFromStack => {
+                execute_array_from_stack(agent, vm, instr, gc.into_nogc())?
+            }
             Instruction::ArrayPush => execute_array_push(agent, vm, gc)?,
             Instruction::ArrayElision => execute_array_elision(agent, vm, gc)?,
             Instruction::BitwiseNot => execute_bitwise_not(agent, vm, gc.into_nogc())?,
@@ -821,6 +3784,17 @@ impl Vm {
                 execute_resolve_this_binding(agent, vm, gc.into_nogc())?
             }
             Instruction::StoreCopy => vm.execute_store_copy(),
+            #[cfg(feature = "regexp")]
+            Instruction::InstantiateRegExpLiteral => {
+                let Some(Value::RegExp(literal)) = vm.result else {
+                    unreachable!("a RegExp literal's instruction without its RegExp")
+                };
+                let gc = gc.into_nogc();
+                let regexp = crate::ecmascript::reg_exp_instantiate_literal(agent, literal, gc);
+                vm.result = Some(regexp.unbind().into());
+            }
+            #[cfg(not(feature = "regexp"))]
+            Instruction::InstantiateRegExpLiteral => unreachable!(),
             Instruction::StringConcat => execute_string_concat(agent, vm, instr, gc)?,
             Instruction::Throw => vm.execute_throw(gc.into_nogc())?,
             Instruction::ThrowError => execute_throw_error(agent, vm, instr, gc.into_nogc())?,
@@ -1052,8 +4026,28 @@ impl Vm {
     }
 
     #[inline(always)]
-    fn execute_push_reference(&mut self) {
+    fn execute_push_reference(&mut self, agent: &mut Agent) {
+        if self.reference_stack.capacity() == 0
+            && let Some(spare) = agent.spare_vm_stacks.references.pop()
+        {
+            self.reference_stack = spare;
+        }
         self.reference_stack.push(self.reference.take().unwrap());
+    }
+
+    /// The exception handler stack to push to: a spare one for the first
+    /// handler of this `Vm`.
+    #[inline(always)]
+    pub(super) fn exception_handlers(
+        &mut self,
+        agent: &mut Agent,
+    ) -> &mut Vec<ExceptionHandler<'static>> {
+        if self.exception_handler_stack.capacity() == 0
+            && let Some(spare) = agent.spare_vm_stacks.handlers.pop()
+        {
+            self.exception_handler_stack = spare;
+        }
+        &mut self.exception_handler_stack
     }
 
     #[inline(always)]
@@ -1506,12 +4500,13 @@ pub(crate) fn instanceof_operator<'a, 'b>(
         return Err(agent.throw_exception(ExceptionType::TypeError, error_message, gc.into_nogc()));
     };
     // 2. Let instOfHandler be ? GetMethod(target, @@hasInstance).
-    let inst_of_handler = if let Some(handler) = try_result_into_option_js(try_get_object_method(
-        agent,
-        target,
-        WellKnownSymbols::HasInstance.into(),
-        gc.nogc(),
-    )) {
+    let inst_of_handler = if let Some(handler) =
+        try_result_into_option_js(try_get_object_method_by_cache(
+            agent,
+            target,
+            WellKnownSymbols::HasInstance.into(),
+            gc.nogc(),
+        )) {
         handler.unbind()?.bind(gc.nogc())
     } else {
         let scoped_value = value.scope(agent, gc.nogc());
@@ -1530,6 +4525,23 @@ pub(crate) fn instanceof_operator<'a, 'b>(
     };
     // 3. If instOfHandler is not undefined, then
     if let Some(inst_of_handler) = inst_of_handler {
+        // The method that every function inherits,
+        // Function.prototype[%Symbol.hasInstance%], is OrdinaryHasInstance
+        // of its this value, and gives a Boolean: taken here without the
+        // call of a built-in function around it. Only for the method of
+        // the running realm: the call of another realm's makes that realm
+        // the running one, which what OrdinaryHasInstance reads of an
+        // object without properties of its own depends on.
+        if let Function::BuiltinFunction(handler) = inst_of_handler
+            && matches!(
+                handler.get(agent).behaviour,
+                Behaviour::Regular(found)
+                    if core::ptr::fn_addr_eq(found, FunctionPrototype::has_instance as RegularFn)
+            )
+            && handler.get(agent).realm == agent.current_realm(gc.nogc())
+        {
+            return ordinary_has_instance(agent, target.unbind(), value.unbind(), gc);
+        }
         // a. Return ToBoolean(? Call(instOfHandler, target, « V »)).
         let result = call_function(
             agent,
@@ -1578,7 +4590,9 @@ fn with_vm_gc<'a, 'b, R: 'a>(
     agent.vm_stack.push(core::mem::replace(vm, Vm::EMPTY));
     let result = work(agent, gc);
     assert_eq!(agent.vm_stack.len(), depth + 1, "VM Stack was misused");
-    *vm = agent.vm_stack.pop().unwrap();
+    // What is replaced is the empty Vm put there above, which nothing could
+    // reach in between: it holds nothing to free.
+    core::mem::forget(core::mem::replace(vm, agent.vm_stack.pop().unwrap()));
     result
 }
 
@@ -1622,6 +4636,8 @@ impl HeapMarkAndSweep for Vm {
             exception_handler_stack: exception_jump_target_stack,
             result,
             reference,
+            depth: _,
+            handler_base: _,
         } = self;
         stack.as_slice().mark_values(queues);
         reference_stack.as_slice().mark_values(queues);
@@ -1640,6 +4656,8 @@ impl HeapMarkAndSweep for Vm {
             exception_handler_stack: exception_jump_target_stack,
             result,
             reference,
+            depth: _,
+            handler_base: _,
         } = self;
         stack.as_mut_slice().sweep_values(compactions);
         reference_stack.as_mut_slice().sweep_values(compactions);
@@ -1661,10 +4679,10 @@ impl HeapMarkAndSweep for SuspendedVm {
             iterator_stack,
             exception_jump_target_stack,
         } = self;
-        stack.mark_values(queues);
-        reference_stack.mark_values(queues);
-        iterator_stack.mark_values(queues);
-        exception_jump_target_stack.mark_values(queues);
+        stack.as_slice().mark_values(queues);
+        reference_stack.as_slice().mark_values(queues);
+        iterator_stack.as_slice().mark_values(queues);
+        exception_jump_target_stack.as_slice().mark_values(queues);
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
@@ -1675,10 +4693,12 @@ impl HeapMarkAndSweep for SuspendedVm {
             iterator_stack,
             exception_jump_target_stack,
         } = self;
-        stack.sweep_values(compactions);
-        reference_stack.sweep_values(compactions);
-        iterator_stack.sweep_values(compactions);
-        exception_jump_target_stack.sweep_values(compactions);
+        stack.as_mut_slice().sweep_values(compactions);
+        reference_stack.as_mut_slice().sweep_values(compactions);
+        iterator_stack.as_mut_slice().sweep_values(compactions);
+        exception_jump_target_stack
+            .as_mut_slice()
+            .sweep_values(compactions);
     }
 }
 

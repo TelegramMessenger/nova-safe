@@ -42,8 +42,9 @@ use std::ops::ControlFlow;
 
 use crate::{
     ecmascript::{
-        Agent, InternalMethods, JsResult, Object, PropertyLookupCache, Proxy, Reference, SetResult,
-        String, TryError, TryHasResult, TryResult, Value, js_result_into_try,
+        Agent, InternalMethods, JsResult, Object, OrdinaryObject, PropertyLookupCache,
+        PropertyOffset, Proxy, Reference, SetResult, String, TryError, TryHasResult, TryResult,
+        Value, js_result_into_try, ordinary_set_own_data_at_offset,
     },
     engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable},
     heap::{CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
@@ -778,6 +779,453 @@ impl<'a> From<TryHasResult<'a>> for TryResult<'a, TryHasBindingContinue<'a>> {
 impl<'a> From<TryHasBindingContinue<'a>> for TryResult<'a, TryHasBindingContinue<'a>> {
     fn from(value: TryHasBindingContinue<'a>) -> Self {
         Self::Continue(value)
+    }
+}
+
+/// Where a name was found from one place in the code: so many Environment
+/// Records out from the running one, at such a place among the bindings
+/// there.
+///
+/// This is remembered only for a name whose scope chain cannot change
+/// between two runs of that place in the code (the compiler says so where
+/// no `with` and no direct `eval` is in scope): the records on the way are
+/// then declarative ones made by the same code in the same order every time,
+/// so where the name was found once is where it is found again. The
+/// remembered place is still checked when it is used, by the kinds of the
+/// records on the way and by the name at the place; when the check fails the
+/// name is resolved the long way.
+///
+/// A name found in the global scope (which the compiler allows where the
+/// chain is fixed all the way out, in a Script) is remembered there without
+/// the records on the way: among the lexical declarations of the global
+/// scope, or among the properties of the global object. The second holds
+/// only while no lexical declaration has been added, since one of the same
+/// name would come first; and the name is checked at the place as elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BindingSite {
+    outwards: u16,
+    /// For a property of the global object: how many lexical declarations
+    /// the global scope had when the name was not among them.
+    lexical: u16,
+    slot: u32,
+}
+
+impl BindingSite {
+    /// Nothing is remembered yet.
+    pub(crate) const UNKNOWN: Self = Self {
+        outwards: u16::MAX,
+        lexical: 0,
+        slot: 0,
+    };
+
+    /// The name was found where no place can be remembered (a module
+    /// record, or past one): it is resolved the long way every time.
+    pub(crate) const ELSEWHERE: Self = Self {
+        outwards: u16::MAX - 1,
+        lexical: 0,
+        slot: 0,
+    };
+
+    /// `slot` is among the lexical declarations of the global scope.
+    const GLOBAL_LEXICAL: u16 = u16::MAX - 2;
+
+    /// `slot` is among the properties of the global object.
+    const GLOBAL_OBJECT: u16 = u16::MAX - 3;
+
+    /// The name is in the global scope, at no place that can be remembered
+    /// (an accessor of the global object, a property it inherits).
+    const GLOBAL_SOMEWHERE: u16 = u16::MAX - 4;
+
+    const FARTHEST: u16 = u16::MAX - 5;
+
+    /// The Environment Record this many records out from the running one,
+    /// if all on the way are declarative.
+    // Part of each of the few functions that read or write at a site: as a
+    // function of its own it was a call on every read of a variable of an
+    // enclosing function, and its result was taken apart again.
+    #[inline(always)]
+    fn record<'a>(self, agent: &Agent, gc: NoGcScope<'a, '_>) -> Option<Environment<'a>> {
+        if self.outwards > Self::FARTHEST {
+            return None;
+        }
+        let environments = &agent.heap.environments;
+        let mut env = agent.current_lexical_environment(gc);
+        for _ in 0..self.outwards {
+            env = environments.declarative_record(env)?.outer_env()?.bind(gc);
+        }
+        Some(env)
+    }
+
+    /// Whether the name was found in the global scope.
+    #[inline]
+    pub(crate) fn is_global(self) -> bool {
+        self.outwards > Self::FARTHEST && self.outwards < Self::ELSEWHERE.outwards
+    }
+}
+
+impl Environments {
+    /// The bindings of a Declarative or a Function Environment Record.
+    #[inline]
+    fn declarative_record(&self, env: Environment) -> Option<&DeclarativeEnvironmentRecord> {
+        match env {
+            Environment::Declarative(e) => Some(self.get_declarative_environment(e)),
+            Environment::Function(e) => Some(self.get_declarative_environment(
+                self.get_function_environment(e).declarative_environment(),
+            )),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn declarative_record_mut(
+        &mut self,
+        env: Environment,
+    ) -> Option<&mut DeclarativeEnvironmentRecord> {
+        match env {
+            Environment::Declarative(e) => Some(self.get_declarative_environment_mut(e)),
+            Environment::Function(e) => {
+                let e = self.get_function_environment(e).declarative_environment();
+                Some(self.get_declarative_environment_mut(e))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The lexical declarations of the running realm's global scope.
+#[inline]
+fn global_lexical_record<'a>(agent: &Agent, gc: NoGcScope<'a, '_>) -> DeclarativeEnvironment<'a> {
+    agent
+        .heap
+        .environments
+        .get_global_environment(agent.current_global_env(gc))
+        .declarative_record()
+        .bind(gc)
+}
+
+/// The global object, if `site` remembers `name` among its properties and
+/// the name is still there, with no lexical declaration added to the global
+/// scope since: the property is then what the name means.
+#[inline]
+fn global_object_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String,
+    gc: NoGcScope<'a, '_>,
+) -> Option<OrdinaryObject<'a>> {
+    let environments = &agent.heap.environments;
+    let global = environments.get_global_environment(agent.current_global_env(gc));
+    let lexical = environments.get_declarative_environment(global.declarative_record());
+    if lexical.binding_count() != usize::from(site.lexical) {
+        return None;
+    }
+    let Object::Object(object) = global.object_record().get_binding_object(agent) else {
+        return None;
+    };
+    let keys = object.get_property_keys(agent);
+    (keys.get(site.slot as usize) == Some(&name.to_property_key())).then_some(object.bind(gc))
+}
+
+/// The value of `name` where `site` remembers it in the global scope, if it
+/// is still found there as a value (a lexical declaration that is
+/// initialized, a data property of the global object).
+fn global_value_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String,
+    gc: NoGcScope<'a, '_>,
+) -> Option<Value<'a>> {
+    match site.outwards {
+        BindingSite::GLOBAL_LEXICAL => agent
+            .heap
+            .environments
+            .get_declarative_environment(global_lexical_record(agent, gc))
+            .binding_at(site.slot, name)?
+            .value
+            .bind(gc),
+        BindingSite::GLOBAL_OBJECT => {
+            let object = global_object_at_site(agent, site, name, gc)?;
+            // An empty slot is an accessor.
+            object
+                .get_elements_values(agent)
+                .get(site.slot as usize)
+                .copied()
+                .flatten()
+        }
+        _ => None,
+    }
+}
+
+/// Sets `name` where `site` remembers it in the global scope, if it is
+/// still found there as something an assignment simply writes: a lexical
+/// declaration that is mutable and initialized, a writable data property of
+/// the global object.
+fn set_global_value_at_site(
+    agent: &mut Agent,
+    site: BindingSite,
+    name: String,
+    value: Value,
+    gc: NoGcScope,
+) -> bool {
+    match site.outwards {
+        BindingSite::GLOBAL_LEXICAL => {
+            let record = global_lexical_record(agent, gc).unbind();
+            let Some(binding) = agent
+                .heap
+                .environments
+                .get_declarative_environment_mut(record)
+                .binding_at_mut(site.slot, name)
+            else {
+                return false;
+            };
+            if !binding.mutable || binding.value.is_none() {
+                return false;
+            }
+            binding.value = Some(value.unbind());
+            true
+        }
+        BindingSite::GLOBAL_OBJECT => {
+            let Some(object) = global_object_at_site(agent, site, name, gc) else {
+                return false;
+            };
+            let Some(offset) = PropertyOffset::new(site.slot) else {
+                return false;
+            };
+            ordinary_set_own_data_at_offset(agent, object.unbind(), offset, value)
+        }
+        _ => false,
+    }
+}
+
+/// The value of `name` where `site` remembers it, if the name is still found
+/// there and is initialized.
+#[inline]
+pub(crate) fn binding_value_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String,
+    gc: NoGcScope<'a, '_>,
+) -> Option<Value<'a>> {
+    let Some(env) = site.record(agent, gc) else {
+        return global_value_at_site(agent, site, name, gc);
+    };
+    agent
+        .heap
+        .environments
+        .declarative_record(env)?
+        .binding_at(site.slot, name)?
+        .value
+        .bind(gc)
+}
+
+/// Sets `name` where `site` remembers it to `value`, if the name is still
+/// found there, mutable and initialized; false leaves it to PutValue.
+#[inline]
+pub(crate) fn set_binding_value_at_site(
+    agent: &mut Agent,
+    site: BindingSite,
+    name: String,
+    value: Value,
+    gc: NoGcScope,
+) -> bool {
+    let Some(env) = site.record(agent, gc) else {
+        return set_global_value_at_site(agent, site, name, value, gc);
+    };
+    let Some(binding) = agent
+        .heap
+        .environments
+        .declarative_record_mut(env.unbind())
+        .and_then(|record| record.binding_at_mut(site.slot, name))
+    else {
+        return false;
+    };
+    if !binding.mutable || binding.value.is_none() {
+        return false;
+    }
+    binding.value = Some(value.unbind());
+    true
+}
+
+/// Whether `reference` is to a name of the running realm's global scope and
+/// `site` remembers a place there: what the reference would read or write is
+/// then what is at the place, as long as the place still holds the name.
+#[inline]
+pub(crate) fn reference_is_at_global_site(
+    agent: &Agent,
+    site: BindingSite,
+    reference: &Reference,
+    gc: NoGcScope,
+) -> bool {
+    site.is_global()
+        && matches!(
+            reference,
+            Reference::Variable(_) | Reference::VariableStrict(_)
+        )
+        && reference.base_env() == Environment::Global(agent.current_global_env(gc))
+}
+
+/// The Reference to `name` where `site` remembers it, if the name is still
+/// found there.
+#[inline]
+pub(crate) fn try_resolve_binding_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String<'a>,
+    strict: bool,
+    gc: NoGcScope<'a, '_>,
+) -> Option<Reference<'a>> {
+    let Some(env) = site.record(agent, gc) else {
+        return try_resolve_global_at_site(agent, site, name, strict, gc);
+    };
+    agent
+        .heap
+        .environments
+        .declarative_record(env)?
+        .binding_at(site.slot, name)?;
+    Some(Reference::new_variable_reference(env, name, None, strict))
+}
+
+/// The Reference to `name` in the running realm's global scope, where the
+/// name is known to have been resolved to.
+pub(crate) fn global_scope_reference<'a>(
+    agent: &Agent,
+    name: String<'a>,
+    strict: bool,
+    gc: NoGcScope<'a, '_>,
+) -> Reference<'a> {
+    let env = Environment::Global(agent.current_global_env(gc));
+    Reference::new_variable_reference(env, name, None, strict)
+}
+
+/// The Reference to `name` in the global scope, if `site` remembers it
+/// there and it is still there.
+fn try_resolve_global_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String<'a>,
+    strict: bool,
+    gc: NoGcScope<'a, '_>,
+) -> Option<Reference<'a>> {
+    match site.outwards {
+        BindingSite::GLOBAL_LEXICAL => {
+            agent
+                .heap
+                .environments
+                .get_declarative_environment(global_lexical_record(agent, gc))
+                .binding_at(site.slot, name)?;
+        }
+        BindingSite::GLOBAL_OBJECT => {
+            global_object_at_site(agent, site, name, gc)?;
+        }
+        _ => return None,
+    }
+    Some(global_scope_reference(agent, name, strict, gc))
+}
+
+/// What to remember of where `reference` found its name
+/// ([`BindingSite`]). `to_root` says that the scope chain is fixed all the
+/// way out to the global scope of a Script, so that a place there may be
+/// remembered too.
+pub(crate) fn binding_site_of(
+    agent: &Agent,
+    reference: &Reference,
+    to_root: bool,
+    gc: NoGcScope,
+) -> BindingSite {
+    let (Reference::Variable(_) | Reference::VariableStrict(_)) = reference else {
+        // A name that is nowhere may yet come to be in the global scope.
+        return if to_root {
+            BindingSite::UNKNOWN
+        } else {
+            BindingSite::ELSEWHERE
+        };
+    };
+    let base = reference.base_env();
+    let name = reference.referenced_name_string();
+    if let Environment::Global(global) = base {
+        return if to_root {
+            global_binding_site(agent, global, name, gc)
+        } else {
+            BindingSite::ELSEWHERE
+        };
+    }
+    let environments = &agent.heap.environments;
+    let mut env = agent.current_lexical_environment(gc);
+    let mut outwards = 0u16;
+    loop {
+        let Some(record) = environments.declarative_record(env) else {
+            return BindingSite::ELSEWHERE;
+        };
+        if env == base.bind(gc) {
+            return match record.binding_slot(name) {
+                Some(slot) => BindingSite {
+                    outwards,
+                    lexical: 0,
+                    slot,
+                },
+                None => BindingSite::ELSEWHERE,
+            };
+        }
+        let Some(outer) = record.outer_env() else {
+            return BindingSite::ELSEWHERE;
+        };
+        if outwards == BindingSite::FARTHEST {
+            return BindingSite::ELSEWHERE;
+        }
+        outwards += 1;
+        env = outer.bind(gc);
+    }
+}
+
+/// Where `name` is in the global scope `global`, as a place to remember:
+/// among its lexical declarations, or as a data property of the global
+/// object when that is an ordinary one.
+fn global_binding_site(
+    agent: &Agent,
+    global: GlobalEnvironment,
+    name: String,
+    gc: NoGcScope,
+) -> BindingSite {
+    if global != agent.current_global_env(gc) {
+        return BindingSite::ELSEWHERE;
+    }
+    let environments = &agent.heap.environments;
+    let global = environments.get_global_environment(global);
+    let lexical = environments.get_declarative_environment(global.declarative_record());
+    if let Some(slot) = lexical.binding_slot(name) {
+        return BindingSite {
+            outwards: BindingSite::GLOBAL_LEXICAL,
+            lexical: 0,
+            slot,
+        };
+    }
+    // In the global scope, where no place holds it as a value: a property
+    // that the global object inherits, an accessor, a global object that is
+    // not an ordinary one.
+    let somewhere = BindingSite {
+        outwards: BindingSite::GLOBAL_SOMEWHERE,
+        lexical: 0,
+        slot: 0,
+    };
+    let Ok(lexical) = u16::try_from(lexical.binding_count()) else {
+        return somewhere;
+    };
+    let Object::Object(object) = global.object_record().get_binding_object(agent) else {
+        return somewhere;
+    };
+    let key = name.to_property_key();
+    let keys = object.get_property_keys(agent);
+    let Some(slot) = keys.iter().position(|k| *k == key) else {
+        return somewhere;
+    };
+    let is_value = matches!(object.get_elements_values(agent).get(slot), Some(Some(_)));
+    match u32::try_from(slot) {
+        Ok(slot) if is_value && PropertyOffset::new(slot).is_some() => BindingSite {
+            outwards: BindingSite::GLOBAL_OBJECT,
+            lexical,
+            slot,
+        },
+        _ => somewhere,
     }
 }
 

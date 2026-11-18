@@ -6,7 +6,7 @@ use oxc_span::Span;
 
 use crate::{
     ecmascript::{
-        Behaviour, ECMAScriptFunctionObjectHeapData, Environment, OrdinaryObject,
+        Behaviour, DirectBuiltin, ECMAScriptFunctionObjectHeapData, Environment, OrdinaryObject,
         PrivateEnvironment, Realm, SourceCode, String, Value,
     },
     engine::Executable,
@@ -48,6 +48,8 @@ pub(crate) struct BuiltinFunctionHeapData<'a> {
     /// 20.2.3.5 (`Function.prototype.toString()`).
     pub(crate) initial_name: Option<String<'a>>,
     pub(crate) behaviour: Behaviour,
+    /// The function, if it is one the interpreter may run in place.
+    pub(crate) direct: Option<DirectBuiltin>,
 }
 
 impl BuiltinFunctionHeapData<'_> {
@@ -57,6 +59,7 @@ impl BuiltinFunctionHeapData<'_> {
         realm: Realm::_DEF,
         initial_name: None,
         behaviour: Behaviour::Regular(|_, _, _, _| Ok(Value::Undefined)),
+        direct: None,
     };
 }
 

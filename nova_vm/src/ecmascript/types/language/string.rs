@@ -7,6 +7,7 @@ mod data;
 pub(crate) mod search;
 
 use crate::width::usize_from_i64;
+pub use data::TextJoinOverLimit;
 pub(crate) use data::*;
 
 pub use small_string::SmallString;
@@ -282,6 +283,44 @@ impl<'a> String<'a> {
             String(Wtf8Buf),
         }
         let strings = strings.as_ref();
+        // More text appended to a string that a concatenation made, the step
+        // of every loop that builds text: the result shares the left string's
+        // text and continues its hash, and copies and hashes only what is
+        // added.
+        if let [String::String(left), right] = strings
+            && !right.is_empty_string()
+            && left.get(agent).is_being_built()
+        {
+            // Only looked at when a trail surrogate could follow, so that the
+            // left string's text is not joined to learn how it ends.
+            let joins_surrogate_pair = right.as_wtf8_(agent).initial_trail_surrogate().is_some()
+                && left.get(agent).as_wtf8().final_lead_surrogate().is_some();
+            if !joins_surrogate_pair {
+                return agent
+                    .heap
+                    .alloc_appended(left.unbind(), right.unbind())
+                    .bind(gc);
+            }
+        }
+        // Two strings that make a short one, as most concatenations do: the
+        // text is put together here and the heap asked for it, which copies
+        // it only where it has no such string yet.
+        if let [left, right] = strings {
+            let (left, right) = (left.as_wtf8_(agent), right.as_wtf8_(agent));
+            let len = left.len() + right.len();
+            if (8..=SHORT_CONCATENATION).contains(&len)
+                && !(right.initial_trail_surrogate().is_some()
+                    && left.final_lead_surrogate().is_some())
+            {
+                let mut text = [0u8; SHORT_CONCATENATION];
+                text[..left.len()].copy_from_slice(left.as_bytes());
+                text[left.len()..len].copy_from_slice(right.as_bytes());
+                return agent
+                    .heap
+                    .alloc_wtf8(Wtf8Str::from_wtf8_bytes(&text[..len]))
+                    .bind(gc);
+            }
+        }
         let mut status = if strings.len() > 1 {
             let len = strings.iter().fold(0usize, |a, s| a + s.len_(agent));
             if len > 7 {
@@ -356,6 +395,9 @@ impl<'a> String<'a> {
             Status::ExistingString(idx) => String::String(idx.bind(gc)),
             Status::SmallString { data, len } => {
                 SmallString::from_wtf8(Wtf8Str::from_wtf8_bytes(&data[..len])).into()
+            }
+            Status::String(string) if string.len() >= LONG_CONCATENATION => {
+                agent.heap.alloc_concatenation(string).bind(gc)
             }
             Status::String(string) => agent.heap.create(string).bind(gc),
         }
@@ -611,10 +653,20 @@ impl<'a> String<'a> {
         self.len_(agent)
     }
 
+    #[inline]
     pub(crate) fn len_(self, agent: &impl StringHeapAccess) -> usize {
         match self {
             String::String(s) => s.get(agent).len(),
             String::SmallString(s) => s.len(),
+        }
+    }
+
+    /// Whether appending to the string continues a text that is being built
+    /// ([`StringRecord::appended`]).
+    pub(crate) fn is_being_built_(self, agent: &impl StringHeapAccess) -> bool {
+        match self {
+            String::String(s) => s.get(agent).is_being_built(),
+            String::SmallString(_) => false,
         }
     }
 
@@ -756,6 +808,7 @@ impl<'a> String<'a> {
         self.as_wtf8_(agent)
     }
 
+    #[inline]
     pub(crate) fn as_wtf8_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> Wtf8Str<'r> {
         match self {
             String::String(s) => s.get(agent).as_wtf8(),
@@ -949,7 +1002,7 @@ impl<'gc> String<'gc> {
         let index = BaseIndex::last(strings);
         let s = HeapString(index);
         string_lookup_table.insert_unique(hash, s, |s| {
-            string_hasher.hash_one(strings[s.get_index()].as_wtf8())
+            strings[s.get_index()].table_hash(string_hasher)
         });
         s
     }
@@ -963,11 +1016,11 @@ impl<'gc> String<'gc> {
     ) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);
         let message = Wtf8Str::from_str(message);
-        let hash = string_hasher.hash_one(message);
+        let hash = string_hasher.hash_text(message.as_bytes());
         string_lookup_table
             .find(hash, |s| {
-                let heap_str = strings[s.get_index()].as_wtf8();
-                heap_str == message
+                let record = &strings[s.get_index()];
+                record.len() == message.len() && record.as_wtf8() == message
             })
             .map(|&s| s.into())
             .ok_or(hash)
@@ -1029,17 +1082,25 @@ impl Scoped<'_, String<'static>> {
     }
 }
 
+/// Bytes from which a concatenation is taken for a text that may be appended
+/// to again ([`Heap::alloc_concatenation`]); shorter strings are cheap to
+/// copy and hash whole.
+const LONG_CONCATENATION: usize = 256;
+
+/// The longest text that a concatenation of two strings puts together
+/// before it asks the heap for the string.
+const SHORT_CONCATENATION: usize = 64;
+
 impl<'a> CreateHeapData<(StringRecord, u64), String<'a>> for Heap {
     fn create(&mut self, (data, hash): (StringRecord, u64)) -> String<'a> {
         self.alloc_counter += core::mem::size_of::<StringRecord>();
-        self.data_bytes_since_gc += data.len();
+        self.data_bytes_since_gc += data.allocated_bytes();
         self.strings.push(data);
         let index = BaseIndex::last(&self.strings);
         let s = HeapString(index);
         self.alloc_counter += core::mem::size_of::<HeapString>();
         self.string_lookup_table.insert_unique(hash, s, |s| {
-            let s = self.strings[s.get_index()].as_wtf8();
-            self.string_hasher.hash_one(s)
+            self.strings[s.get_index()].table_hash(&self.string_hasher)
         });
         String::String(s)
     }

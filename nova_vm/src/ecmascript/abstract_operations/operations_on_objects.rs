@@ -46,6 +46,19 @@ pub(crate) fn get<'a, 'b>(
     gc: GcScope<'a, '_>,
 ) -> JsResult<'a, Value<'a>> {
     let p = p.bind(gc.nogc());
+    // Where the property is a data property, or there is none, nothing
+    // runs to find that out and nothing is scoped for it: \[\[Get]] proper
+    // is for a getter and for a Proxy, which the first look leaves alone.
+    match o.try_get(agent, p, o.into(), None, gc.nogc()) {
+        ControlFlow::Continue(TryGetResult::Value(value)) => {
+            return Ok(value.unbind().bind(gc.into_nogc()));
+        }
+        ControlFlow::Continue(TryGetResult::Unset) => return Ok(Value::Undefined),
+        ControlFlow::Break(TryError::Err(err)) => {
+            return Err(err.unbind().bind(gc.into_nogc()));
+        }
+        _ => {}
+    }
     // 1. Return ? O.[[Get]](P, O).
     o.internal_get(agent, p.unbind(), o.into(), gc)
 }
@@ -367,6 +380,23 @@ pub(crate) fn create_data_property_or_throw<'a, 'gc>(
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let property_key = property_key.bind(gc.nogc());
+    // Where the property is created with no script run for it, which is on
+    // every object but a Proxy and its like, nothing is scoped for it.
+    match try_create_data_property(agent, object, property_key, value, None, gc.nogc()) {
+        ControlFlow::Continue(true) => return Ok(()),
+        ControlFlow::Continue(false) => {
+            return Err(agent.throw_exception(
+                ExceptionType::TypeError,
+                format!(
+                    "Could not create property '{}'.",
+                    property_key.as_display(agent)
+                ),
+                gc.into_nogc(),
+            ));
+        }
+        ControlFlow::Break(TryError::Err(err)) => return Err(err.unbind()),
+        ControlFlow::Break(TryError::GcError) => {}
+    }
     let scoped_property_key = property_key.scope(agent, gc.nogc());
     let success = create_data_property(agent, object, property_key.unbind(), value, gc.reborrow())
         .unbind()?;
@@ -501,6 +531,21 @@ pub(crate) fn try_get_object_method<'a>(
 ) -> TryResult<'a, Option<Function<'a>>> {
     // 1. Let func be ? GetV(V, P).
     let func = try_get_result_into_value(o.try_get(agent, p, o.into(), None, gc))?;
+    js_result_into_try(get_method_internal(agent, func, gc))
+}
+
+/// [`try_get_object_method`] for a name that the same objects are asked
+/// for again and again (the method of an operator): the property is looked
+/// for through the property cache of the name, by the shape of `o`.
+pub(crate) fn try_get_object_method_by_cache<'a>(
+    agent: &mut Agent,
+    o: Object,
+    p: PropertyKey,
+    gc: NoGcScope<'a, '_>,
+) -> TryResult<'a, Option<Function<'a>>> {
+    let cache = PropertyLookupCache::new(agent, p);
+    // 1. Let func be ? GetV(V, P).
+    let func = try_get_result_into_value(o.try_get(agent, p, o.into(), Some(cache), gc))?;
     js_result_into_try(get_method_internal(agent, func, gc))
 }
 
@@ -1383,11 +1428,15 @@ pub(crate) fn ordinary_has_instance<'a, 'b>(
         return Ok(false);
     };
     // 4. Let P be ? Get(C, "prototype").
+    // Through the property cache of the name, by the shape of C: the same
+    // constructors are asked again and again.
+    let prototype_cache =
+        PropertyLookupCache::new(agent, BUILTIN_STRING_MEMORY.prototype.to_property_key());
     let p = if let Some(p) = try_result_into_js(try_get_result_into_value(try_get(
         agent,
         c,
         BUILTIN_STRING_MEMORY.prototype.into(),
-        None,
+        Some(prototype_cache),
         gc.nogc(),
     )))
     .unbind()?

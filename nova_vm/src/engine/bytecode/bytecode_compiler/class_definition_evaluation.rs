@@ -601,16 +601,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
         // 29. Set F.[[Fields]] to instanceFields.
         if has_instance_private_fields_or_methods || !instance_fields.is_empty() {
             let source_code = ctx.get_source_code();
-            let constructor_runtime_strict = if let Some(constructor) = constructor {
-                ctx.is_runtime_strict()
-                    || constructor
-                        .value
-                        .body
-                        .as_ref()
-                        .is_some_and(|body| body.has_use_strict_directive())
-            } else {
-                true
-            };
+            // Class code is always strict.
+            let constructor_runtime_strict = true;
             let (scoping, nodes) = (ctx.scoping(), ctx.nodes());
             let (agent, gc) = ctx.get_agent_and_gc();
             let mut constructor_ctx = CompileContext::new(agent, source_code, scoping, nodes, gc);
@@ -686,7 +678,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                     is_strict: true,
                     ast: FunctionAstRef::ClassConstructor(&constructor.value),
                 };
-                constructor_ctx.compile_function_body(constructor_data);
+                // What the body needs of its call, as for a constructor
+                // without fields: the initializers before it read `this`
+                // as the body does.
+                let call_environment = constructor_ctx.compile_function_body(constructor_data);
+                constructor_ctx.set_call_environment(call_environment);
                 let executable = constructor_ctx.finish();
                 ctx.set_function_expression_bytecode(constructor_index, executable);
             } else {
@@ -694,8 +690,10 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                 ctx.add_class_initializer_bytecode(executable, has_constructor_parent);
             }
         } else if let Some(constructor) = constructor {
-            let template =
-                ctx.compile_nested_function(FunctionAstRef::ClassConstructor(&constructor.value));
+            let template = ctx.compile_nested_function_of(
+                FunctionAstRef::ClassConstructor(&constructor.value),
+                true,
+            );
             ctx.set_function_expression_bytecode(
                 constructor_index,
                 template
@@ -896,10 +894,15 @@ fn define_constructor_method(
     ctx.add_instruction_with_function_expression_and_immediate(
         Instruction::ClassDefineConstructor,
         FunctionExpression {
-            template: FunctionTemplate::from_ast(
-                FunctionAstRef::ClassConstructor(&class_element.value),
-                None,
-            ),
+            template: {
+                let mut template = FunctionTemplate::from_ast(
+                    FunctionAstRef::ClassConstructor(&class_element.value),
+                    None,
+                );
+                // Class code is always strict.
+                template.has_use_strict_directive = true;
+                template
+            },
             identifier: None,
             binding_name: None,
             is_expression: false,
@@ -954,8 +957,8 @@ fn define_method<'s>(
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
     // Note: method name is always found in the result register.
-    let function_expression = ctx
-        .compile_function_expression(&class_element.value, Some(NamedEvaluationParameter::Result));
+    let function_expression =
+        ctx.compile_class_method(&class_element.value, Some(NamedEvaluationParameter::Result));
     ctx.add_instruction_with_function_expression_and_immediate(
         instruction,
         function_expression,
@@ -1032,7 +1035,7 @@ fn define_private_method<'s>(
 
     // 9. Return the Record { [[Key]]: propKey, [[Closure]]: closure }.
     let function_expression =
-        ctx.compile_function_expression(&method.value, Some(NamedEvaluationParameter::Result));
+        ctx.compile_class_method(&method.value, Some(NamedEvaluationParameter::Result));
     ctx.add_instruction_with_function_expression_and_immediate(
         Instruction::ClassDefinePrivateMethod,
         function_expression,

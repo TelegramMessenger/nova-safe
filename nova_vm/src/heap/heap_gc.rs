@@ -30,6 +30,7 @@ const GC_ALLOC_BYTES_PER_LIVE_ITEM: usize = 16;
 #[cfg_attr(feature = "probes", allow(unsafe_code))]
 pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static>>], gc: GcScope) {
     ndt::gc_start!(|| ());
+    agent.heap.collections += 1;
 
     let mut bits = HeapBits::new(&agent.heap);
     bits.strings
@@ -132,6 +133,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             strings,
             string_lookup_table: _,
             string_hasher: _,
+            text_join_budget: _,
             shape_key_hasher: _,
             symbols,
             #[cfg(feature = "array-buffer")]
@@ -170,6 +172,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             weak_sets,
             alloc_counter: _,
             data_bytes_since_gc: _,
+            collections: _,
+            intrinsic_integer_keys: _,
         } = &agent.heap;
         let Environments {
             declarative: declarative_environments,
@@ -888,6 +892,7 @@ fn sweep(
         strings,
         string_lookup_table,
         string_hasher: _,
+        text_join_budget: _,
         shape_key_hasher: _,
         symbols,
         #[cfg(feature = "array-buffer")]
@@ -928,6 +933,8 @@ fn sweep(
         data_bytes_since_gc: _,
         free_globals: _,
         gc_alloc_limit,
+        collections: _,
+        intrinsic_integer_keys: _,
     } = &mut agent.heap;
     // Reset the allocation counter.
     *alloc_counter = 0;

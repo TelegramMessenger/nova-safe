@@ -29,7 +29,7 @@ use crate::{
 };
 
 use super::{IndexType, JumpIndex};
-use crate::engine::CallEnvironment;
+use crate::engine::{CallEnvironment, CodeTables, SwitchTable};
 
 /// The ThrowError immediate of an executable that stands in for code using
 /// syntax the compiler does not support. Running it panics, as compiling that
@@ -73,6 +73,12 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// Caches being built
     caches: Vec<PropertyLookupCache<'gc>>,
     cache_indexes: AHashMap<PropertyLookupCache<'gc>, usize>,
+    /// How many BindingSites the instructions use: one for each place in the
+    /// code that names a variable whose scope chain is fixed.
+    binding_sites: usize,
+    /// Switch tables being built: for each, the constant of every selector
+    /// and where the statements of its case start, once that is known.
+    switch_tables: Vec<Vec<(IndexType, u32)>>,
     /// Constants being built
     constants: Vec<Value<'gc>>,
     constant_indexes: AHashMap<ConstantKey<'gc>, usize>,
@@ -91,6 +97,7 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// after each super call of the constructor.
     instance_initializer: Option<Executable<'gc>>,
     call_environment: CallEnvironment,
+    stack_parameters: Option<u16>,
     /// Set when an index did not fit its bytecode operand: the executable
     /// is finished as one that throws this SyntaxError.
     too_many: Option<&'static str>,
@@ -108,6 +115,8 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             recent_len: 0,
             caches: Vec::new(),
             cache_indexes: AHashMap::default(),
+            binding_sites: 0,
+            switch_tables: Vec::new(),
             constants: Vec::new(),
             constant_indexes: AHashMap::default(),
             wide_constants: Vec::new(),
@@ -118,6 +127,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             class_initializer_bytecodes: Vec::new(),
             instance_initializer: None,
             call_environment: CallEnvironment::Function,
+            stack_parameters: None,
             too_many: None,
         }
     }
@@ -212,6 +222,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.recent_len = 0;
         self.caches.clear();
         self.cache_indexes.clear();
+        self.switch_tables.clear();
         self.constants.clear();
         self.constant_indexes.clear();
         self.wide_constants.clear();
@@ -222,6 +233,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.class_initializer_bytecodes.clear();
         self.instance_initializer = None;
         self.call_environment = CallEnvironment::Function;
+        self.stack_parameters = None;
         self.too_many = None;
         let message = self.create_string(message);
         self.add_instruction_with_constant(Instruction::StoreConstant, message);
@@ -256,10 +268,19 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 self.function_expressions[index].template.executable = Some(stub);
             }
         }
+        let switch_tables = core::mem::take(&mut self.switch_tables)
+            .into_iter()
+            .map(|cases| SwitchTable::new(cases, &self.constants))
+            .collect();
+        let instructions: std::sync::Arc<[u8]> = self.instructions.into();
         self.agent.heap.create(ExecutableHeapData {
-            instructions: self.instructions.into(),
-            caches: self.caches.unbind().into_boxed_slice(),
-            constants: self.constants.unbind().into_boxed_slice(),
+            tables: CodeTables::new(
+                instructions.clone(),
+                self.constants.unbind(),
+                self.caches.unbind(),
+                self.binding_sites,
+            ),
+            instructions,
             wide_constants: self.wide_constants.unbind().into_boxed_slice(),
             shapes: self.shapes.unbind().into_boxed_slice(),
             function_expressions: self.function_expressions.unbind().into_boxed_slice(),
@@ -271,6 +292,8 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 .collect(),
             instance_initializer: self.instance_initializer.unbind(),
             call_environment: self.call_environment,
+            stack_parameters: self.stack_parameters,
+            switch_tables,
             _gc: PhantomData,
         })
     }
@@ -288,25 +311,137 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     self.instructions[start] = Instruction::LoadFromIndex.as_u8();
                     return;
                 }
+                if let Some(start) =
+                    self.recent_instruction(0, Instruction::LoadFromIndexGetFromIndex)
+                {
+                    self.instructions[start] = Instruction::LoadFromIndexLoadFromIndex.as_u8();
+                    return;
+                }
                 if let Some(start) = self.recent_instruction(0, Instruction::PushReference) {
+                    // The function of a method call with its Reference:
+                    // found, kept and pushed by one instruction.
+                    if let Some(property) =
+                        self.recent_instruction(1, Instruction::GetPropertyWithCacheKeepReference)
+                    {
+                        self.instructions[property] =
+                            Instruction::LoadPropertyWithCachePushReference.as_u8();
+                        self.drop_recent_instructions(start, 1);
+                        return;
+                    }
                     self.instructions[start] = Instruction::PushReferenceAndLoad.as_u8();
+                    return;
+                }
+                // The value of an operator, pushed by the operator itself.
+                if let Some(description) = self.recent_fused_operation() {
+                    let operation = self.operand(description);
+                    self.set_operand(description, operation | Instruction::FUSED_PUSHES);
+                    return;
+                }
+                if let Some((start, operator)) = self.recent_operator() {
+                    self.drop_recent_instructions(start, 1);
+                    self.push_instruction(Instruction::ApplyBinaryOperatorAndMove);
+                    self.add_index(
+                        Instruction::fused_slot_with_operator(0, operator)
+                            | Instruction::FUSED_PUSHES,
+                    );
+                    return;
+                }
+                // A variable of an enclosing function, pushed.
+                if let Some(start) = self.recent_instruction(0, Instruction::GetBindingAtSite) {
+                    self.instructions[start] = Instruction::LoadBindingAtSite.as_u8();
+                    return;
+                }
+                // A constant pushed right after another push: there is no
+                // result before the two instructions and none after them,
+                // as with the one that pushes the constant itself.
+                if let Some(start) = self.recent_instruction(0, Instruction::StoreConstant)
+                    && self.recent_leaves_no_result(1)
+                {
+                    self.instructions[start] = Instruction::LoadConstant.as_u8();
                     return;
                 }
             }
             Instruction::IsStrictlyEqual => {
                 if let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant) {
                     let operand = self.operand_bytes(constant);
-                    if let Some(load) = self.recent_instruction(1, Instruction::Load) {
-                        self.drop_recent_instructions(load, 2);
+                    if self.unpush_recent(1) {
                         self.push_instruction(Instruction::IsStrictlyEqualConstant);
                         self.instructions.extend_from_slice(&operand);
                         return;
                     }
-                    if let Some(load) = self.recent_instruction(1, Instruction::LoadFromIndex) {
-                        self.instructions[load] = Instruction::GetValueFromIndex.as_u8();
-                        self.drop_recent_instructions(constant, 1);
-                        self.push_instruction(Instruction::IsStrictlyEqualConstant);
+                }
+                // The same local and constant, already made one instruction.
+                if let Some(fused) =
+                    self.recent_instruction(0, Instruction::LoadFromIndexStoreConstant)
+                {
+                    let slot = self.operand_bytes(fused);
+                    let constant = [self.instructions[fused + 3], self.instructions[fused + 4]];
+                    self.drop_recent_instructions(fused, 1);
+                    self.push_instruction(Instruction::GetValueFromIndex);
+                    self.instructions.extend_from_slice(&slot);
+                    self.push_instruction(Instruction::IsStrictlyEqualConstant);
+                    self.instructions.extend_from_slice(&constant);
+                    return;
+                }
+            }
+            // `a[i]` read for its value, as one instruction.
+            Instruction::GetValue => {
+                if let Some(start) =
+                    self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithExpressionKey)
+                {
+                    // The key a local: the base stays the result, and the
+                    // instruction takes the key from its slot.
+                    if let Some(key) = self.recent_instruction(1, Instruction::GetValueFromIndex) {
+                        let slot = self.operand_bytes(key);
+                        if self.unpush_recent(2) {
+                            self.push_instruction(Instruction::GetValueWithIndexKey);
+                            self.instructions.extend_from_slice(&slot);
+                            return;
+                        }
+                    }
+                    self.instructions[start] = Instruction::GetValueWithExpressionKey.as_u8();
+                    return;
+                }
+            }
+            // An operator whose right operand is a constant: with its left
+            // operand as the result, or taken from a local.
+            operator if operator.fused_operator_number().is_some() => {
+                let number = operator.fused_operator_number().unwrap_or_default();
+                if let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant) {
+                    let operand = self.operand_bytes(constant);
+                    if self.unpush_recent(1) {
+                        self.push_instruction(Instruction::ApplyBinaryOperatorWithConstant);
                         self.instructions.extend_from_slice(&operand);
+                        self.add_index(Instruction::fused_slot_with_operator(0, number));
+                        return;
+                    }
+                    // Two locals pushed before the constant: the second of
+                    // them is the left operand.
+                    if let Some(locals) =
+                        self.recent_instruction(1, Instruction::LoadFromIndexLoadFromIndex)
+                    {
+                        let first = self.operand_bytes(locals);
+                        let second = [self.instructions[locals + 3], self.instructions[locals + 4]];
+                        if usize::from(u16::from_ne_bytes(second)) < Instruction::FUSED_SLOTS {
+                            self.drop_recent_instructions(locals, 2);
+                            self.push_instruction(Instruction::LoadFromIndex);
+                            self.instructions.extend_from_slice(&first);
+                            self.push_operator_on_local(number, second, operand);
+                            return;
+                        }
+                    }
+                }
+                if let Some(operands) =
+                    self.recent_instruction(0, Instruction::LoadFromIndexStoreConstant)
+                {
+                    let slot = self.operand_bytes(operands);
+                    let constant = [
+                        self.instructions[operands + 3],
+                        self.instructions[operands + 4],
+                    ];
+                    if usize::from(u16::from_ne_bytes(slot)) < Instruction::FUSED_SLOTS {
+                        self.drop_recent_instructions(operands, 1);
+                        self.push_operator_on_local(number, slot, constant);
                         return;
                     }
                 }
@@ -345,6 +480,165 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         [self.instructions[start + 1], self.instructions[start + 2]]
     }
 
+    /// The 16-bit operand at `at`.
+    fn operand(&self, at: usize) -> usize {
+        usize::from(u16::from_ne_bytes([
+            self.instructions[at],
+            self.instructions[at + 1],
+        ]))
+    }
+
+    /// Replaces the 16-bit operand at `at`, with a value that fits one.
+    fn set_operand(&mut self, at: usize, value: usize) {
+        let bytes = (value as u16).to_ne_bytes();
+        self.instructions[at] = bytes[0];
+        self.instructions[at + 1] = bytes[1];
+    }
+
+    /// Whether the `nth` most recent instruction is known to leave no
+    /// result: one that moves the result away (a push of it, a store in a
+    /// local), or the push of a constant after such a one, which does not
+    /// touch it.
+    fn recent_leaves_no_result(&self, nth: usize) -> bool {
+        let mut nth = nth;
+        while self
+            .recent_instruction(nth, Instruction::LoadConstant)
+            .is_some()
+        {
+            nth += 1;
+        }
+        if [
+            Instruction::Load,
+            Instruction::LoadFromIndex,
+            Instruction::LoadBindingAtSite,
+            Instruction::PushReferenceAndLoad,
+            Instruction::LoadPropertyWithCachePushReference,
+            Instruction::PutValueToIndex,
+            Instruction::ApplyBinaryOperatorAndMove,
+        ]
+        .into_iter()
+        .any(|moving| self.recent_instruction(nth, moving).is_some())
+        {
+            return true;
+        }
+        [
+            (Instruction::ApplyBinaryOperatorToIndexWithConstant, 1),
+            (Instruction::ApplyBinaryOperatorWithConstant, 3),
+        ]
+        .into_iter()
+        .any(|(fused, description)| {
+            self.recent_instruction(nth, fused)
+                .is_some_and(|start| Instruction::fused_pushes(self.operand(start + description)))
+        })
+    }
+
+    /// Where the most recent instruction, an operator fused with a constant
+    /// that leaves its value as the result, keeps the description of its
+    /// operation.
+    fn recent_fused_operation(&self) -> Option<usize> {
+        let description = if let Some(start) =
+            self.recent_instruction(0, Instruction::ApplyBinaryOperatorToIndexWithConstant)
+        {
+            start + 1
+        } else {
+            self.recent_instruction(0, Instruction::ApplyBinaryOperatorWithConstant)? + 3
+        };
+        (!Instruction::fused_pushes(self.operand(description))).then_some(description)
+    }
+
+    /// The start of the most recent instruction and the number the fused
+    /// instructions have for it, if it is an arithmetic or bitwise operator
+    /// on its own.
+    fn recent_operator(&self) -> Option<(usize, usize)> {
+        if self.recent_len == 0 {
+            return None;
+        }
+        let start = self.recent[0];
+        let kind = Instruction::try_from(*self.instructions.get(start)?).ok()?;
+        let operator = kind.fused_operator_number()?;
+        self.recent_instruction(0, kind)
+            .map(|start| (start, operator))
+    }
+
+    /// Where the `nth` most recent instruction pushes the value that is or
+    /// was the result, has it leave the value as the result instead, and
+    /// removes the instructions after it: a Load is removed with them, an
+    /// instruction that ends in one becomes the one that does not. False,
+    /// with nothing changed, where it is no such instruction.
+    fn unpush_recent(&mut self, nth: usize) -> bool {
+        debug_assert!(nth >= 1);
+        if let Some(load) = self.recent_instruction(nth, Instruction::Load) {
+            self.drop_recent_instructions(load, nth + 1);
+            return true;
+        }
+        for (pushing, keeping) in [
+            (Instruction::LoadFromIndex, Instruction::GetValueFromIndex),
+            (
+                Instruction::LoadBindingAtSite,
+                Instruction::GetBindingAtSite,
+            ),
+            (
+                Instruction::PushReferenceAndLoad,
+                Instruction::PushReference,
+            ),
+        ] {
+            if let Some(start) = self.recent_instruction(nth, pushing) {
+                self.instructions[start] = keeping.as_u8();
+                self.drop_recent_instructions(self.recent[nth - 1], nth);
+                return true;
+            }
+        }
+        // An operator that pushes its value: with a constant, it is told
+        // not to; on its own, it is the operator again.
+        for (fused, description) in [
+            (Instruction::ApplyBinaryOperatorToIndexWithConstant, 1),
+            (Instruction::ApplyBinaryOperatorWithConstant, 3),
+        ] {
+            if let Some(start) = self.recent_instruction(nth, fused) {
+                let operation = self.operand(start + description);
+                if !Instruction::fused_pushes(operation) {
+                    return false;
+                }
+                self.set_operand(start + description, operation & !Instruction::FUSED_PUSHES);
+                self.drop_recent_instructions(self.recent[nth - 1], nth);
+                return true;
+            }
+        }
+        if let Some(start) = self.recent_instruction(nth, Instruction::ApplyBinaryOperatorAndMove) {
+            let operation = self.operand(start + 1);
+            let (_, operator) = Instruction::fused_slot_and_operator(operation);
+            let Some(operator) = Instruction::fused_operator(operator) else {
+                return false;
+            };
+            if !Instruction::fused_pushes(operation) {
+                return false;
+            }
+            self.drop_recent_instructions(start, nth + 1);
+            self.push_instruction(operator);
+            return true;
+        }
+        // The function of a method call, pushed with its Reference: found
+        // and kept by one instruction, its Reference pushed by another.
+        if let Some(start) =
+            self.recent_instruction(nth, Instruction::LoadPropertyWithCachePushReference)
+        {
+            self.instructions[start] = Instruction::GetPropertyWithCacheKeepReference.as_u8();
+            self.drop_recent_instructions(self.recent[nth - 1], nth);
+            self.push_instruction(Instruction::PushReference);
+            return true;
+        }
+        false
+    }
+
+    /// ApplyBinaryOperatorToIndexWithConstant: the stack slot with the number
+    /// of the operator above its bits, then the constant.
+    fn push_operator_on_local(&mut self, operator: usize, slot: [u8; 2], constant: [u8; 2]) {
+        let slot = usize::from(u16::from_ne_bytes(slot));
+        self.push_instruction(Instruction::ApplyBinaryOperatorToIndexWithConstant);
+        self.add_index(Instruction::fused_slot_with_operator(slot, operator));
+        self.instructions.extend_from_slice(&constant);
+    }
+
     /// Removes the `count` most recent instructions, which start at `start`.
     fn drop_recent_instructions(&mut self, start: usize, count: usize) {
         debug_assert!(count <= self.recent_len && self.recent[count - 1] == start);
@@ -375,6 +669,172 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             }
             _ => instruction,
         };
+        // An equality and the jump on it, as one instruction.
+        let instruction = match instruction {
+            Instruction::JumpIfNot | Instruction::JumpIfTrue => {
+                let (strict, loose) = if instruction == Instruction::JumpIfNot {
+                    (
+                        Instruction::JumpIfNotStrictlyEqual,
+                        Instruction::JumpIfNotLooselyEqual,
+                    )
+                } else {
+                    (
+                        Instruction::JumpIfStrictlyEqual,
+                        Instruction::JumpIfLooselyEqual,
+                    )
+                };
+                if let Some(equal) = self.recent_instruction(0, Instruction::IsStrictlyEqual) {
+                    self.drop_recent_instructions(equal, 1);
+                    strict
+                } else if let Some(equal) = self.recent_instruction(0, Instruction::IsLooselyEqual)
+                {
+                    self.drop_recent_instructions(equal, 1);
+                    loose
+                } else if let Some(equal) =
+                    self.recent_instruction(0, Instruction::IsStrictlyEqualConstant)
+                    && let Some(local) = self.recent_instruction(1, Instruction::GetValueFromIndex)
+                {
+                    // A local and a constant: both operands by one
+                    // instruction, the test by another.
+                    let slot = self.operand_bytes(local);
+                    let constant = self.operand_bytes(equal);
+                    self.drop_recent_instructions(local, 2);
+                    self.push_instruction(Instruction::LoadFromIndexStoreConstant);
+                    self.instructions.extend_from_slice(&slot);
+                    self.instructions.extend_from_slice(&constant);
+                    strict
+                } else {
+                    instruction
+                }
+            }
+            _ => instruction,
+        };
+        // The test of a loop or an `if`, a comparison and the jump on it,
+        // as one instruction.
+        let instruction = if instruction == Instruction::JumpIfNot {
+            let fused = [
+                (Instruction::LessThan, Instruction::JumpIfNotLessThan),
+                (
+                    Instruction::LessThanEquals,
+                    Instruction::JumpIfNotLessThanEquals,
+                ),
+                (Instruction::GreaterThan, Instruction::JumpIfNotGreaterThan),
+                (
+                    Instruction::GreaterThanEquals,
+                    Instruction::JumpIfNotGreaterThanEquals,
+                ),
+            ]
+            .into_iter()
+            .find_map(|(comparison, fused)| {
+                self.recent_instruction(0, comparison)
+                    .map(|start| (start, fused))
+            });
+            match fused {
+                Some((start, fused)) => {
+                    self.drop_recent_instructions(start, 1);
+                    fused
+                }
+                None => instruction,
+            }
+        } else {
+            instruction
+        };
+        // The test at the end of a loop: a local compared with a constant or
+        // another local, the jump back where that holds, and the `i++` or
+        // `i--` just before them if it is of the same local.
+        if instruction == Instruction::JumpIfTrue {
+            let test = [
+                Instruction::LessThan,
+                Instruction::LessThanEquals,
+                Instruction::GreaterThan,
+                Instruction::GreaterThanEquals,
+            ]
+            .into_iter()
+            .find_map(|comparison| {
+                self.recent_instruction(0, comparison)?;
+                [
+                    (Instruction::LoadFromIndexStoreConstant, true),
+                    (Instruction::LoadFromIndexGetFromIndex, false),
+                ]
+                .into_iter()
+                .find_map(|(operands, constant)| {
+                    let start = self.recent_instruction(1, operands)?;
+                    Some((comparison, constant, start))
+                })
+            });
+            if let Some((comparison, constant, start)) = test {
+                let first = self.operand_bytes(start);
+                let second = [self.instructions[start + 3], self.instructions[start + 4]];
+                self.drop_recent_instructions(start, 2);
+                let step = [
+                    (Instruction::IncrementIndex, 1),
+                    (Instruction::DecrementIndex, -1),
+                ]
+                .into_iter()
+                .find_map(|(update, step)| {
+                    let start = self.recent_instruction(0, update)?;
+                    let fused = comparison.as_loop_test(step, constant)?;
+                    (self.operand_bytes(start) == first).then_some((start, fused))
+                });
+                let fused = match step {
+                    Some((update, fused)) => {
+                        self.drop_recent_instructions(update, 1);
+                        Some(fused)
+                    }
+                    None => comparison.as_loop_test(0, constant),
+                };
+                if let Some(fused) = fused {
+                    self.push_instruction(fused);
+                    self.instructions.extend_from_slice(&first);
+                    self.instructions.extend_from_slice(&second);
+                    return self.add_jump_index();
+                }
+            }
+            // Any other operands: the comparison and the jump on it.
+            let fused = [
+                (Instruction::LessThan, Instruction::JumpIfLessThan),
+                (
+                    Instruction::LessThanEquals,
+                    Instruction::JumpIfLessThanEquals,
+                ),
+                (Instruction::GreaterThan, Instruction::JumpIfGreaterThan),
+                (
+                    Instruction::GreaterThanEquals,
+                    Instruction::JumpIfGreaterThanEquals,
+                ),
+            ]
+            .into_iter()
+            .find_map(|(comparison, fused)| {
+                self.recent_instruction(0, comparison)
+                    .map(|start| (start, fused))
+            });
+            if let Some((start, fused)) = fused {
+                self.drop_recent_instructions(start, 1);
+                self.push_instruction(fused);
+                return self.add_jump_index();
+            }
+        }
+        // A local compared with a constant or with another local, and the
+        // jump: both operands by the instruction that jumps.
+        let operands = [
+            (Instruction::LoadFromIndexStoreConstant, true),
+            (Instruction::LoadFromIndexGetFromIndex, false),
+        ]
+        .into_iter()
+        .find_map(|(operands, constant)| {
+            let fused = instruction.with_compared_local(constant)?;
+            let start = self.recent_instruction(0, operands)?;
+            Some((start, fused))
+        });
+        if let Some((start, fused)) = operands {
+            let first = self.operand_bytes(start);
+            let second = [self.instructions[start + 3], self.instructions[start + 4]];
+            self.drop_recent_instructions(start, 1);
+            self.push_instruction(fused);
+            self.instructions.extend_from_slice(&first);
+            self.instructions.extend_from_slice(&second);
+            return self.add_jump_index();
+        }
         self.push_instruction(instruction);
         self.add_jump_index()
     }
@@ -396,6 +856,45 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         JumpIndex {
             index: self.instructions.len(),
         }
+    }
+
+    /// A switch table for the `selectors` of a `switch` statement's cases,
+    /// in source order, and the JumpToCase instruction that tests the value
+    /// in the stack slot `slot` by it. Returns the table: each case sets
+    /// where it starts with [`Self::set_switch_target_here`]. None, and no
+    /// instruction, if the executable has no room for the table.
+    pub(super) fn add_switch_table(
+        &mut self,
+        slot: usize,
+        selectors: &[Value<'gc>],
+    ) -> Option<usize> {
+        let table = self.switch_tables.len();
+        if IndexType::try_from(table).is_err()
+            || IndexType::try_from(slot).is_err()
+            || self.constants.len() + selectors.len() >= WIDE_CONSTANTS_FROM
+        {
+            return None;
+        }
+        let cases = selectors
+            .iter()
+            .map(|selector| (self.add_constant(*selector) as IndexType, 0))
+            .collect();
+        self.switch_tables.push(cases);
+        self.add_instruction_with_immediate_and_immediate(Instruction::JumpToCase, slot, table);
+        Some(table)
+    }
+
+    /// The case `case` of the switch table `table` starts here.
+    pub(super) fn set_switch_target_here(&mut self, table: usize, case: usize) {
+        // A jump target: nothing before it is fused with what follows, and
+        // a Jump just before it stays.
+        self.forget_recent_instructions();
+        self.current_instruction_pointer_is_unreachable = false;
+        let Ok(target) = u32::try_from(self.instructions.len()) else {
+            self.too_many.get_or_insert(TOO_MANY_VALUES);
+            return;
+        };
+        self.switch_tables[table][case].1 = target;
     }
 
     pub(super) fn add_cache(&mut self, cache: PropertyLookupCache<'gc>) -> usize {
@@ -462,6 +961,27 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             self.add_index(immediate);
             return;
         }
+        // An operator whose value goes to a local, as one instruction.
+        if instruction == Instruction::PutValueToIndex
+            && immediate < Instruction::FUSED_SLOTS
+            && let Some((start, operator)) = self.recent_operator()
+        {
+            self.drop_recent_instructions(start, 1);
+            self.push_instruction(Instruction::ApplyBinaryOperatorAndMove);
+            self.add_index(Instruction::fused_slot_with_operator(immediate, operator));
+            return;
+        }
+        // Two locals in a row, as one instruction.
+        if instruction == Instruction::GetValueFromIndex
+            && let Some(load) = self.recent_instruction(0, Instruction::LoadFromIndex)
+        {
+            let slot = self.operand_bytes(load);
+            self.drop_recent_instructions(load, 1);
+            self.push_instruction(Instruction::LoadFromIndexGetFromIndex);
+            self.instructions.extend_from_slice(&slot);
+            self.add_index(immediate);
+            return;
+        }
         self.push_instruction(instruction);
         self.add_index(immediate);
     }
@@ -498,6 +1018,18 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             self.add_double_index(index);
             return;
         }
+        // A local and then a constant, as one instruction.
+        if instruction == Instruction::StoreConstant
+            && let Some(load) = self.recent_instruction(0, Instruction::LoadFromIndex)
+        {
+            let slot = self.operand_bytes(load);
+            self.drop_recent_instructions(load, 1);
+            self.push_instruction(Instruction::LoadFromIndexStoreConstant);
+            self.instructions.extend_from_slice(&slot);
+            let constant = self.add_constant(constant);
+            self.add_index_of(constant, TOO_MANY_NAMES);
+            return;
+        }
         self.push_instruction(instruction);
         let constant = self.add_constant(constant);
         self.add_index_of(constant, TOO_MANY_NAMES);
@@ -529,19 +1061,58 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             }
             _ => None,
         };
+        // The stack slot of a local whose property is read, for the
+        // instruction that reads both: it goes after the cache.
+        let mut slot = None;
         if let Some(fused) = fused
             && let Some(access) =
                 self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithIdentifierKey)
         {
             let identifier = self.operand_bytes(access);
-            self.drop_recent_instructions(access, 1);
-            self.push_instruction(fused);
+            let of_local = if fused == Instruction::GetPropertyWithCache {
+                Instruction::GetIndexPropertyWithCache
+            } else {
+                Instruction::GetIndexPropertyWithCacheKeepReference
+            };
+            if let Some(this) = self.recent_instruction(1, Instruction::ResolveThisBinding) {
+                // `this.x`: the this value is fetched by the same
+                // instruction.
+                self.drop_recent_instructions(this, 2);
+                self.push_instruction(if fused == Instruction::GetPropertyWithCache {
+                    Instruction::GetThisPropertyWithCache
+                } else {
+                    Instruction::GetThisPropertyWithCacheKeepReference
+                });
+            } else if let Some(local) = self.recent_instruction(1, Instruction::GetValueFromIndex) {
+                // `p.x`: the local is read by the same instruction.
+                slot = Some(self.operand_bytes(local));
+                self.drop_recent_instructions(local, 2);
+                self.push_instruction(of_local);
+            } else if let Some(locals) =
+                self.recent_instruction(1, Instruction::LoadFromIndexGetFromIndex)
+            {
+                // The same after another local was pushed, which stays a
+                // push.
+                let pushed = self.operand_bytes(locals);
+                slot = Some([self.instructions[locals + 3], self.instructions[locals + 4]]);
+                self.drop_recent_instructions(locals, 2);
+                self.push_instruction(Instruction::LoadFromIndex);
+                self.instructions.extend_from_slice(&pushed);
+                self.push_instruction(of_local);
+            } else {
+                self.drop_recent_instructions(access, 1);
+                self.push_instruction(fused);
+            }
             self.instructions.extend_from_slice(&identifier);
         } else {
             self.push_instruction(instruction);
         }
         let cache = self.add_cache(cache);
         self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
+        if let Some(slot) = slot {
+            self.instructions.extend_from_slice(&slot);
+            self.instructions.extend_from_slice(&[0, 0]);
+        }
     }
 
     pub(super) fn add_instruction_with_identifier_and_cache(
@@ -557,6 +1128,38 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.add_index_of(identifier, TOO_MANY_NAMES);
         let cache = self.add_cache(cache);
         self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
+    }
+
+    /// A new BindingSite of the executable, while an instruction can still
+    /// number one.
+    pub(super) fn new_binding_site(&mut self) -> Option<IndexType> {
+        let site = IndexType::try_from(self.binding_sites).ok()?;
+        self.binding_sites += 1;
+        Some(site)
+    }
+
+    /// One of the instructions that take a name and the BindingSite that
+    /// remembers where it was found.
+    pub(super) fn add_instruction_with_identifier_and_site(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        site: IndexType,
+    ) {
+        debug_assert!(matches!(
+            instruction,
+            Instruction::ResolveBindingAtSite
+                | Instruction::GetBindingAtSite
+                | Instruction::PutBindingAtSite
+                | Instruction::ResolveGlobalAtSite
+                | Instruction::GetGlobalAtSite
+                | Instruction::PutGlobalAtSite
+                | Instruction::PutValueAtSite
+        ));
+        self.push_instruction(instruction);
+        let identifier = self.add_identifier(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
+        self.instructions.extend_from_slice(&site.to_ne_bytes());
     }
 
     pub(super) fn add_instruction_with_identifier_and_constant(
@@ -733,6 +1336,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
 
     pub(super) fn set_call_environment(&mut self, call_environment: CallEnvironment) {
         self.call_environment = call_environment;
+    }
+
+    pub(super) fn set_stack_parameters(&mut self, count: u16) {
+        self.stack_parameters = Some(count);
     }
 
     pub(super) fn set_instance_initializer(&mut self, executable: Executable<'gc>) {

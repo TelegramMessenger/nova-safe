@@ -31,6 +31,7 @@ use crate::{
         Agent, BigInt, ExceptionType, JsResult, Number, Numeric, Value, to_big_int64_big_int,
         to_big_uint64_big_int, to_int8_number, to_int16_number, to_int32_number,
         to_uint8_clamp_number, to_uint8_number, to_uint16_number, to_uint32_number,
+        truncate_modulo_2_64,
     },
     engine::{NoGcScope, trivially_bindable},
     heap::ArenaAccess,
@@ -1361,7 +1362,7 @@ impl Viewable for u8 {
         if !value.is_finite() {
             return 0;
         }
-        value.trunc() as i64 as Self
+        truncate_modulo_2_64(value) as Self
     }
 
     #[inline(always)]
@@ -1583,7 +1584,7 @@ impl Viewable for i8 {
         if !value.is_finite() {
             return 0;
         }
-        value.trunc() as i64 as Self
+        truncate_modulo_2_64(value) as Self
     }
 
     #[inline(always)]
@@ -1694,7 +1695,7 @@ impl Viewable for u16 {
         if !value.is_finite() {
             return 0;
         }
-        value.trunc() as i64 as Self
+        truncate_modulo_2_64(value) as Self
     }
 
     #[inline(always)]
@@ -1805,7 +1806,7 @@ impl Viewable for i16 {
         if !value.is_finite() {
             return 0;
         }
-        value.trunc() as i64 as Self
+        truncate_modulo_2_64(value) as Self
     }
 
     #[inline(always)]
@@ -1916,7 +1917,7 @@ impl Viewable for u32 {
         if !value.is_finite() {
             return 0;
         }
-        value.trunc() as i64 as Self
+        truncate_modulo_2_64(value) as Self
     }
 
     #[inline(always)]
@@ -2027,7 +2028,7 @@ impl Viewable for i32 {
         if !value.is_finite() {
             return 0;
         }
-        value.trunc() as i64 as Self
+        truncate_modulo_2_64(value) as Self
     }
 
     #[inline(always)]

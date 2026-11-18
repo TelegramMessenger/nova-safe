@@ -69,6 +69,10 @@ const MAX_LIVE_BYTES_GC_ALLOCATION_INTERVAL: usize = 4 * 1024 * 1024;
 /// native code running between two checks.
 pub const DEFAULT_STACK_LIMIT: usize = 1024 * 1024;
 
+/// The message of the RangeError that refuses one allocation over the heap
+/// limit.
+const ALLOCATION_REFUSED: &str = "Out of memory: allocation over the heap limit";
+
 /// Largest length of a JavaScript string, in UTF-16 code units, the engine
 /// creates (QuickJS uses the same bound).
 pub const MAX_STRING_LENGTH: usize = (1 << 30) - 1;
@@ -83,6 +87,8 @@ pub(crate) struct Limits {
     pub(crate) countdown: u32,
     termination: Option<TerminationReason>,
     heap_limit: Option<usize>,
+    /// Whether an allocation the heap limit refuses terminates the script.
+    refusal_terminates: bool,
     /// Live bytes found by the last garbage collection: the embedder's count
     /// ([`HostHooks::allocated_bytes`](crate::ecmascript::HostHooks::allocated_bytes))
     /// when it keeps one, else the estimate.
@@ -103,6 +109,7 @@ impl Default for Limits {
             countdown: POLL_INTERVAL,
             termination: None,
             heap_limit: None,
+            refusal_terminates: false,
             live_bytes_after_gc: 0,
             counted_per_estimated: None,
             gc_threshold: GC_ALLOCATION_INTERVAL,
@@ -187,15 +194,53 @@ impl Agent {
     /// When the estimate of the bytes the heap holds ([`Agent::heap_size`])
     /// goes past the limit, the running script is terminated with
     /// [`TerminationReason::OutOfMemory`]. A single allocation that would go
-    /// past it is refused with a RangeError before anything is allocated.
+    /// past it is refused with a RangeError before anything is allocated (or
+    /// terminates the script too, see
+    /// [`Agent::set_heap_limit_refusal_terminates`]).
     pub fn set_heap_limit(&mut self, limit: Option<usize>) {
         self.limits.heap_limit = limit;
+        self.heap.text_join_budget.set_cap(limit);
         self.limits.update_gc_threshold(self.heap.gc_alloc_limit);
     }
 
     /// The heap limit set with [`Agent::set_heap_limit`].
     pub fn heap_limit(&self) -> Option<usize> {
         self.limits.heap_limit
+    }
+
+    /// Chooses what an allocation the heap limit has no room for does. By
+    /// default it is refused with a RangeError, which a script can catch and
+    /// so go on just under the limit. With `terminates` it ends the script
+    /// with [`TerminationReason::OutOfMemory`], as going over the limit does:
+    /// for an embedder whose contract is that a script out of memory stops.
+    /// The script then ends only for memory it really holds: an allocation
+    /// that garbage may still make room for is made, and the collection at
+    /// the next instruction decides.
+    pub fn set_heap_limit_refusal_terminates(&mut self, terminates: bool) {
+        self.limits.refusal_terminates = terminates;
+    }
+
+    /// Whether a refused allocation terminates the script
+    /// ([`Agent::set_heap_limit_refusal_terminates`]).
+    pub fn heap_limit_refusal_terminates(&self) -> bool {
+        self.limits.refusal_terminates
+    }
+
+    /// The error of an allocation that does not fit under the heap limit: the
+    /// RangeError `message`, or the termination when a refusal terminates
+    /// ([`Agent::set_heap_limit_refusal_terminates`]) and a heap limit is set.
+    #[must_use]
+    pub fn throw_out_of_memory<'a>(
+        &mut self,
+        message: &'static str,
+        gc: NoGcScope<'a, '_>,
+    ) -> JsError<'a> {
+        if self.limits.refusal_terminates && self.limits.heap_limit.is_some() {
+            self.terminate(TerminationReason::OutOfMemory);
+            self.termination_error(gc)
+        } else {
+            self.throw_exception_with_static_message(ExceptionType::RangeError, message, gc)
+        }
     }
 
     /// The bytes the heap limit counts: the embedder's count of the engine's
@@ -210,6 +255,7 @@ impl Agent {
             .live_bytes_after_gc
             .saturating_add(self.heap.alloc_counter)
             .saturating_add(self.heap.data_bytes_since_gc)
+            .saturating_add(self.heap.text_join_budget.joined())
             .saturating_add(self.root_stack_bytes())
     }
 
@@ -360,7 +406,11 @@ impl Agent {
                     .live_bytes_after_gc
                     .saturating_add(self.root_stack_bytes()),
             };
-            if (self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0)
+            // Text joined since the last collection counts as allocated
+            // since then: the collection lets go of the pieces it was
+            // joined from.
+            let joined = self.heap.text_join_budget.joined();
+            if (self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0 && joined == 0)
                 || uncollectable > limit
                 // A native loop that allocates never reaches the collection
                 // the next instruction would run.
@@ -401,11 +451,7 @@ impl Agent {
             ));
         }
         if self.allocation_over_heap_limit(bytes) {
-            return Err(self.throw_exception_with_static_message(
-                ExceptionType::RangeError,
-                "Out of memory: allocation over the heap limit",
-                gc,
-            ));
+            return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
         }
         Ok(())
     }
@@ -420,11 +466,24 @@ impl Agent {
         let Some(limit) = self.limits.heap_limit else {
             return false;
         };
-        if bytes == 0 || self.heap_size().saturating_add(bytes) <= limit {
+        let size = self.heap_size();
+        if bytes == 0 || size.saturating_add(bytes) <= limit {
             return false;
         }
         if self.limits.live_bytes_after_gc.saturating_add(bytes) > limit {
-            return true;
+            // What became garbage since the last collection is not known
+            // here. A refusal a script can catch may err on that; one that
+            // ends the script must not, so unless no collection could make
+            // room the allocation goes through, the next instruction
+            // collects, and the heap found over the limit then ends the
+            // script. The heap stays under twice the limit, as a native loop
+            // between two polls keeps it.
+            if !self.limits.refusal_terminates
+                || bytes > limit
+                || size.saturating_add(bytes) > limit.saturating_mul(2)
+            {
+                return true;
+            }
         }
         self.limits.gc_threshold = 0;
         false
@@ -439,11 +498,7 @@ impl Agent {
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, ()> {
         if self.allocation_over_heap_limit(bytes) {
-            return Err(self.throw_exception_with_static_message(
-                ExceptionType::RangeError,
-                "Out of memory: allocation over the heap limit",
-                gc,
-            ));
+            return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
         }
         Ok(())
     }
@@ -465,6 +520,26 @@ impl Agent {
         self.check_allocation(length, gc)
     }
 
+    /// [`Agent::check_string_length`] for a string whose storage is known to
+    /// take `bytes` of WTF-8: text outside ASCII takes up to three bytes for
+    /// a code unit, so the length alone would let a string of three times the
+    /// heap limit be built before the next poll finds the heap over it.
+    pub fn check_string_size<'a>(
+        &mut self,
+        length: usize,
+        bytes: usize,
+        gc: NoGcScope<'a, '_>,
+    ) -> JsResult<'a, ()> {
+        if length > MAX_STRING_LENGTH {
+            return Err(self.throw_exception_with_static_message(
+                ExceptionType::RangeError,
+                "Invalid string length",
+                gc,
+            ));
+        }
+        self.check_allocation(bytes.max(length), gc)
+    }
+
     /// Refuses the concatenation of two strings that would be too long (see
     /// [`Agent::check_string_length`]); the byte lengths bound the code unit
     /// count from above.
@@ -476,11 +551,26 @@ impl Agent {
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, ()> {
         let bytes = a.len_(self).saturating_add(b.len_(self));
-        if bytes > 4096 {
-            self.check_string_length(bytes, gc)
-        } else {
-            Ok(())
+        if bytes <= 4096 {
+            return Ok(());
         }
+        // Appending to a string that is being built allocates what is
+        // appended, not the whole text again: the text only has to fit the
+        // limit, which reading it is then held to.
+        if a.is_being_built_(self) {
+            if bytes > MAX_STRING_LENGTH {
+                return Err(self.throw_exception_with_static_message(
+                    ExceptionType::RangeError,
+                    "Invalid string length",
+                    gc,
+                ));
+            }
+            if self.limits.heap_limit.is_some_and(|limit| bytes > limit) {
+                return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
+            }
+            return self.check_allocation(b.len_(self), gc);
+        }
+        self.check_string_length(bytes, gc)
     }
 
     /// [`Agent::check_concat_length`] for a list of strings.
@@ -537,6 +627,7 @@ impl Agent {
     /// terminates the running script if it is over the heap limit.
     pub(crate) fn after_gc(&mut self) {
         self.heap.data_bytes_since_gc = 0;
+        self.heap.text_join_budget.settled();
         let estimated = self.heap.estimate_live_bytes();
         match self.host_hooks.allocated_bytes() {
             Some(counted) => {

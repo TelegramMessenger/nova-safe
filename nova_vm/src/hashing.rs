@@ -187,6 +187,102 @@ impl RandomState {
     pub(crate) fn hash_one(&self, value: impl Hash) -> u64 {
         self.0.hash_one(value)
     }
+
+    /// The hash of a string's bytes in the heap's string table. The bytes go
+    /// to the hasher in blocks of [`TEXT_BLOCK`], whatever made the string,
+    /// so that the state at a block boundary ([`TextHashState`]) continues
+    /// into the hash of any longer string that starts with those bytes.
+    #[inline]
+    pub(crate) fn hash_text(&self, bytes: &[u8]) -> u64 {
+        if bytes.len() < TEXT_BLOCK {
+            return finish_text(self.0.build_hasher(), bytes);
+        }
+        self.hash_text_keeping_state(bytes).0
+    }
+
+    /// [`RandomState::hash_text`] of `bytes`, and the state a text that
+    /// starts with them continues from.
+    pub(crate) fn hash_text_keeping_state(&self, bytes: &[u8]) -> (u64, TextHashState) {
+        let mut hasher = self.0.build_hasher();
+        let mut blocks = bytes.chunks_exact(TEXT_BLOCK);
+        for block in &mut blocks {
+            hasher.write(block);
+        }
+        let state = TextHashState {
+            blocks: hasher.clone(),
+            hashed: bytes.len() - blocks.remainder().len(),
+        };
+        (finish_text(hasher, blocks.remainder()), state)
+    }
+
+    /// [`RandomState::hash_text`] of a text with `added` after it, from the
+    /// text's `state` and its `tail`, the bytes after its hashed blocks
+    /// (fewer than [`TEXT_BLOCK`]); and the state of the longer text.
+    pub(crate) fn hash_text_appended(
+        state: &TextHashState,
+        tail: &[u8],
+        added: &[u8],
+    ) -> (u64, TextHashState) {
+        debug_assert!(tail.len() < TEXT_BLOCK);
+        let mut hasher = state.blocks.clone();
+        let mut hashed = state.hashed;
+        let mut block = [0u8; TEXT_BLOCK];
+        let mut filled = tail.len().min(TEXT_BLOCK - 1);
+        block[..filled].copy_from_slice(&tail[..filled]);
+        let take = (TEXT_BLOCK - filled).min(added.len());
+        block[filled..filled + take].copy_from_slice(&added[..take]);
+        filled += take;
+        let mut rest = &added[take..];
+        if filled == TEXT_BLOCK {
+            hasher.write(&block);
+            hashed += TEXT_BLOCK;
+            let mut blocks = rest.chunks_exact(TEXT_BLOCK);
+            for whole in &mut blocks {
+                hasher.write(whole);
+                hashed += TEXT_BLOCK;
+            }
+            rest = blocks.remainder();
+            filled = rest.len();
+            block[..filled].copy_from_slice(rest);
+        }
+        let state = TextHashState {
+            blocks: hasher.clone(),
+            hashed,
+        };
+        (finish_text(hasher, &block[..filled]), state)
+    }
+
+    /// [`RandomState::hash_text`] of a text from its `state` and its `tail`.
+    pub(crate) fn hash_text_from_state(state: &TextHashState, tail: &[u8]) -> u64 {
+        finish_text(state.blocks.clone(), tail)
+    }
+}
+
+/// Bytes a string hash takes at a time ([`RandomState::hash_text`]).
+pub(crate) const TEXT_BLOCK: usize = 64;
+
+/// A string hash after the whole blocks of a text's first `hashed` bytes:
+/// what a text that starts with those bytes continues from, so that
+/// appending to a long string hashes only what was appended.
+#[derive(Debug, Clone)]
+pub(crate) struct TextHashState {
+    blocks: DefaultHasher,
+    hashed: usize,
+}
+
+impl TextHashState {
+    /// How many of the text's first bytes are in the state.
+    pub(crate) fn hashed(&self) -> usize {
+        self.hashed
+    }
+}
+
+#[inline]
+fn finish_text(mut hasher: DefaultHasher, tail: &[u8]) -> u64 {
+    hasher.write(tail);
+    // As a string's Hash ends: no string's bytes are a prefix of another's.
+    hasher.write_u8(0xfe);
+    hasher.finish()
 }
 
 fn process_random_state() -> &'static std::hash::RandomState {

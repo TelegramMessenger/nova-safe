@@ -69,6 +69,28 @@ pub(crate) enum Place<'s, 'gc> {
     /// A variable in the environment. The variable data is stored in the
     /// declarative environment's hash map and accessed through a reference.
     Env { name: String<'gc> },
+    /// A variable in an environment that no `with` or direct `eval` can come
+    /// between it and this place in the code. Where it was found is
+    /// remembered (the BindingSite `site` of the executable), and it is read
+    /// and written there without a Reference.
+    Site { name: String<'gc>, site: IndexType },
+    /// A name of the global scope, in a Script, that no `with` or direct
+    /// `eval` can come between it and this place in the code: as a Site,
+    /// with the place remembered in the global scope (among its lexical
+    /// declarations, or among the properties of the global object).
+    /// `bound` says that the name is known to be bound where it is assigned
+    /// to: the Script itself declares it with `let`, `const` or `class`, or
+    /// the assignment has read it first.
+    GlobalSite {
+        name: String<'gc>,
+        site: IndexType,
+        bound: bool,
+    },
+    /// A GlobalSite that is being assigned to and may not be bound: its
+    /// Reference is in the reference register, resolved before the value is
+    /// evaluated as the specification has it, and the assignment is made at
+    /// the remembered place when that is what the Reference is to.
+    GlobalRef { name: String<'gc>, site: IndexType },
     /// A variable in the global environment. The variable data is stored in
     /// the global object's properties and accessed through a reference.
     Global { name: String<'gc> },
@@ -83,7 +105,12 @@ pub(crate) enum Place<'s, 'gc> {
 impl<'s, 'gc> Place<'s, 'gc> {
     fn identifier(&self) -> Option<String<'gc>> {
         match self {
-            Place::Stack { name, .. } | Place::Env { name } | Place::Global { name } => Some(*name),
+            Place::Stack { name, .. }
+            | Place::Env { name }
+            | Place::Site { name, .. }
+            | Place::GlobalSite { name, .. }
+            | Place::GlobalRef { name, .. }
+            | Place::Global { name } => Some(*name),
             Place::Member { name } => name.and_then(|n| {
                 match n {
                     PropertyKey::SmallString(s) => Some(String::SmallString(s)),
@@ -102,13 +129,86 @@ impl<'s, 'gc> Place<'s, 'gc> {
     fn has_reference(&self) -> bool {
         matches!(
             self,
-            Self::Env { .. } | Self::Global { .. } | Self::Member { .. }
+            Self::Env { .. } | Self::Global { .. } | Self::GlobalRef { .. } | Self::Member { .. }
         )
     }
 
-    fn initialise_referenced_binding_to_undefined(&self, ctx: &mut CompileContext) {
+    /// The place as the target of an assignment. `reads_first`: the
+    /// assignment reads the place before it evaluates the value (a compound
+    /// assignment, `++`), which throws for a name that is not bound; the
+    /// name is then bound where the value is assigned. Otherwise a name of
+    /// the global scope that may not be bound is resolved here: whether the
+    /// assignment throws, makes a property of the global object or sets a
+    /// declaration is decided by what is bound now, not by what the value's
+    /// evaluation leaves bound.
+    fn assignment_target(
+        self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        reads_first: bool,
+    ) -> Self {
         match self {
-            Place::Env { .. } | Place::Global { .. } | Place::Member { .. } => {
+            Place::GlobalSite {
+                name,
+                site,
+                bound: false,
+            } => {
+                if reads_first {
+                    Place::GlobalSite {
+                        name,
+                        site,
+                        bound: true,
+                    }
+                } else {
+                    Self::resolve_global_site(ctx, name, site);
+                    Place::GlobalRef { name, site }
+                }
+            }
+            place => place,
+        }
+    }
+
+    /// The Reference of a Site place into the reference register, for what
+    /// cannot be done without one.
+    fn resolve_site(ctx: &mut CompileContext<'_, '_, 'gc, '_>, name: String<'gc>, site: IndexType) {
+        ctx.add_instruction_with_identifier_and_site(
+            Instruction::ResolveBindingAtSite,
+            name.to_property_key(),
+            site,
+        );
+    }
+
+    /// The same for a GlobalSite place.
+    fn resolve_global_site(
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        name: String<'gc>,
+        site: IndexType,
+    ) {
+        ctx.add_instruction_with_identifier_and_site(
+            Instruction::ResolveGlobalAtSite,
+            name.to_property_key(),
+            site,
+        );
+    }
+
+    fn initialise_referenced_binding_to_undefined(
+        &self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+    ) {
+        match self {
+            Place::Site { name, site } => {
+                Self::resolve_site(ctx, *name, *site);
+                ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
+            Place::GlobalSite { name, site, .. } => {
+                Self::resolve_global_site(ctx, *name, *site);
+                ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
+            Place::Env { .. }
+            | Place::Global { .. }
+            | Place::GlobalRef { .. }
+            | Place::Member { .. } => {
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
@@ -124,9 +224,24 @@ impl<'s, 'gc> Place<'s, 'gc> {
         }
     }
 
-    fn initialise_referenced_binding(&self, ctx: &mut CompileContext, value: ValueOutput) {
+    fn initialise_referenced_binding(
+        &self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        value: ValueOutput,
+    ) {
         match self {
-            Place::Env { .. } | Place::Global { .. } | Place::Member { .. } => {
+            Place::Site { name, site } => {
+                Self::resolve_site(ctx, *name, *site);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
+            Place::GlobalSite { name, site, .. } => {
+                Self::resolve_global_site(ctx, *name, *site);
+                ctx.add_instruction(Instruction::InitializeReferencedBinding);
+            }
+            Place::Env { .. }
+            | Place::Global { .. }
+            | Place::GlobalRef { .. }
+            | Place::Member { .. } => {
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
             Place::Stack { stack_slot, .. } => {
@@ -174,7 +289,23 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCache, cache);
                 Ok(ValueOutput::Value)
             }
-            Place::Member { .. } | Place::Env { .. } => {
+            Place::Site { name, site } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetBindingAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(ValueOutput::Value)
+            }
+            Place::GlobalSite { name, site, .. } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetGlobalAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(ValueOutput::Value)
+            }
+            Place::Member { .. } | Place::Env { .. } | Place::GlobalRef { .. } => {
                 // Variable is stored in the environment or we don't know the
                 // property name at compile time. Caching doesn't help with these.
                 ctx.add_instruction(Instruction::GetValue);
@@ -221,7 +352,25 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCacheKeepReference, cache);
                 Ok(ValueOutput::Value)
             }
-            Self::Member { .. } | Self::Env { .. } => {
+            Self::Site { name, site } => {
+                // Like a stack variable, there is no reference to keep.
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetBindingAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(ValueOutput::Value)
+            }
+            Self::GlobalSite { name, site, .. } => {
+                // The same.
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::GetGlobalAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(ValueOutput::Value)
+            }
+            Self::Member { .. } | Self::Env { .. } | Self::GlobalRef { .. } => {
                 // Variable is stored in the environment or we don't know the
                 // property name at compile time. Caching doesn't help with these.
                 ctx.add_instruction(Instruction::GetValueKeepReference);
@@ -300,6 +449,50 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::PutValueWithCache, cache);
                 Ok(())
             }
+            Self::Site { name, site } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutBindingAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
+            Self::GlobalSite {
+                name,
+                site,
+                bound: true,
+            } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutGlobalAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
+            Self::GlobalSite {
+                name,
+                site,
+                bound: false,
+            } => {
+                // An assignment target is made a GlobalRef before its value
+                // is evaluated (Place::assignment_target).
+                debug_assert!(false, "assignment to a global name not resolved beforehand");
+                Self::resolve_global_site(ctx, *name, *site);
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutValueAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
+            Self::GlobalRef { name, site } => {
+                ctx.add_instruction_with_identifier_and_site(
+                    Instruction::PutValueAtSite,
+                    name.to_property_key(),
+                    *site,
+                );
+                Ok(())
+            }
             Self::Member { .. } | Self::Env { .. } => {
                 ctx.add_instruction(Instruction::PutValue);
                 Ok(())
@@ -329,7 +522,20 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, false);
                 Ok(false.into())
             }
-            Self::Global { .. } | Self::Member { .. } | Self::Env { .. } => {
+            Self::Site { name, site } => {
+                Self::resolve_site(ctx, name, site);
+                ctx.add_instruction(Instruction::Delete);
+                Ok(ValueOutput::Value)
+            }
+            Self::GlobalSite { name, site, .. } => {
+                Self::resolve_global_site(ctx, name, site);
+                ctx.add_instruction(Instruction::Delete);
+                Ok(ValueOutput::Value)
+            }
+            Self::Global { .. }
+            | Self::GlobalRef { .. }
+            | Self::Member { .. }
+            | Self::Env { .. } => {
                 ctx.add_instruction(Instruction::Delete);
                 // Can return `true` or `false`.
                 Ok(ValueOutput::Value)
@@ -519,6 +725,20 @@ impl<'s, 'gc> PlaceOrValue<'s, 'gc> {
         matches!(self, PlaceOrValue::Place(Place::Stack { .. }))
     }
 
+    /// Puts the Reference of a place that is used without one (a Site) into
+    /// the reference register, for an operator that takes a Reference.
+    fn reference_into_register(&self, ctx: &mut CompileContext<'_, '_, 'gc, '_>) {
+        match self {
+            PlaceOrValue::Place(Place::Site { name, site }) => {
+                Place::resolve_site(ctx, *name, *site);
+            }
+            PlaceOrValue::Place(Place::GlobalSite { name, site, .. }) => {
+                Place::resolve_global_site(ctx, *name, *site);
+            }
+            _ => {}
+        }
+    }
+
     /// Returns true if the expression has a Reference on the reference stack
     /// associated with it.
     #[inline]
@@ -585,6 +805,31 @@ impl<'a, 's, 'gc, 'scope, T: CompileEvaluation<'a, 's, 'gc, 'scope>>
         ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
     ) {
         self.compile(ctx);
+    }
+}
+
+/// Whether the scopes from a reference out to the scope of its declaration
+/// are free of `with` and of direct `eval`: the two that can put a binding
+/// between a reference and its declaration at run time.
+fn scope_chain_is_fixed(
+    ctx: &CompileContext,
+    reference: oxc_semantic::NodeId,
+    declaration_scope: oxc_semantic::ScopeId,
+) -> bool {
+    let scoping = ctx.scoping();
+    let mut scope = ctx.nodes().get_node(reference).scope_id();
+    loop {
+        let flags = scoping.scope_flags(scope);
+        if flags.contains_direct_eval() || flags.is_with() {
+            return false;
+        }
+        if scope == declaration_scope {
+            return true;
+        }
+        let Some(parent) = scoping.scope_parent_id(scope) else {
+            return false;
+        };
+        scope = parent;
     }
 }
 
@@ -839,8 +1084,18 @@ enum VariableKind {
     TemporalDeadZone,
     /// Stored in an environment.
     Local,
+    /// Stored in an environment, with no `with` and no direct `eval` in any
+    /// scope from the reference out to the declaration: the Environment
+    /// Records on the way are the same ones, made in the same order, every
+    /// time the reference runs.
+    LocalFixed,
     /// Found in the global scope.
     Global,
+    /// Found in the global scope of a Script, with no `with` and no direct
+    /// `eval` in any scope from the reference out to it. `declared`: by the
+    /// Script itself with `let`, `const` or `class`, so that it is always
+    /// bound.
+    GlobalFixed { declared: bool },
 }
 
 impl VariableKind {
@@ -871,6 +1126,38 @@ impl VariableKind {
                     name.to_property_key(),
                 );
                 Place::Env { name }
+            }
+            VariableKind::LocalFixed => {
+                let name = ctx.create_string(name);
+                if let Some(site) = ctx.new_binding_site() {
+                    Place::Site { name, site }
+                } else {
+                    // More sites than an instruction can number.
+                    ctx.add_instruction_with_identifier(
+                        Instruction::ResolveBinding,
+                        name.to_property_key(),
+                    );
+                    Place::Env { name }
+                }
+            }
+            VariableKind::GlobalFixed { declared } => {
+                let name = ctx.create_string(name);
+                if let Some(site) = ctx.new_binding_site() {
+                    Place::GlobalSite {
+                        name,
+                        site,
+                        bound: declared,
+                    }
+                } else {
+                    // More sites than an instruction can number.
+                    let cache = ctx.create_property_lookup_cache(name.to_property_key());
+                    ctx.add_instruction_with_identifier_and_cache(
+                        Instruction::ResolveBindingWithCache,
+                        name,
+                        cache,
+                    );
+                    Place::Global { name }
+                }
             }
             VariableKind::Global => {
                 let name = ctx.create_string(name);
@@ -928,7 +1215,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                         while decl_id < node {
                             node = nodes.parent_id(node);
                         }
-                        if decl_id == node {
+                        if decl_id == node
+                            && !is_bound_earlier_in_pattern(
+                                nodes,
+                                ref_id,
+                                decl_id,
+                                scoping.symbol_span(s),
+                            )
+                        {
                             // Self-referential declaration.
                             VariableKind::TemporalDeadZone
                         } else {
@@ -946,18 +1240,35 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                 } else {
                     let scope_id = scoping.symbol_scope_id(s);
                     let scope_flags = scoping.scope_flags(scope_id);
+                    let top = scope_flags.contains(ScopeFlags::Top);
                     // Functions declarations and variables defined at the top
                     // level scope end up in the globalThis; we want a property
                     // lookup cache for those.
-                    if scope_flags.contains(ScopeFlags::Top)
+                    let global_object = top
                         && (symbol_flags.contains(SymbolFlags::FunctionScopedVariable)
-                            | symbol_flags.contains(SymbolFlags::Function))
-                    {
+                            | symbol_flags.contains(SymbolFlags::Function));
+                    let fixed = scope_chain_is_fixed(ctx, reference.node_id(), scope_id);
+                    if top && fixed && ctx.is_script() {
+                        // The top level scope of a Script is the global
+                        // scope.
+                        VariableKind::GlobalFixed {
+                            declared: !global_object,
+                        }
+                    } else if global_object {
                         VariableKind::Global
+                    } else if fixed {
+                        VariableKind::LocalFixed
                     } else {
                         VariableKind::Local
                     }
                 }
+            } else if ctx.is_script()
+                && scope_chain_is_fixed(ctx, reference.node_id(), scoping.root_scope_id())
+            {
+                // No SymbolId means this must be a global name, or one that
+                // the code does not declare (`arguments`), which is then
+                // found where it is on the first run.
+                VariableKind::GlobalFixed { declared: false }
             } else {
                 // No SymbolId means this must be a global name.
                 VariableKind::Global
@@ -968,6 +1279,44 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
         };
         kind.compile(ctx, &self.name)
     }
+}
+
+/// Whether a reference inside the declaration of the name it refers to is
+/// evaluated after the name was bound. The bindings of a pattern are
+/// initialized one after another as its elements are reached, so the default
+/// of a later element reads an earlier one: `{ a, b = a }` and `[a, [b = a]]`
+/// do, while `{ b = a, a }`, `{ a = a }`, `{ [a]: a }` and `{ a } = a` are
+/// still read before `a` is initialized.
+///
+/// `binding` is where the name is bound. The lowest node that holds both
+/// it and the reference says which comes first: only in an object or array
+/// pattern, where they are in different elements, is that the order they
+/// are written in.
+fn is_bound_earlier_in_pattern(
+    nodes: &oxc_semantic::AstNodes,
+    ref_id: NodeId,
+    decl_id: NodeId,
+    binding: oxc_span::Span,
+) -> bool {
+    use oxc_span::GetSpan;
+    let reference = nodes.kind(ref_id).span();
+    let mut node = ref_id;
+    while node != decl_id {
+        let parent = nodes.parent_id(node);
+        if parent == node {
+            return false;
+        }
+        let kind = nodes.kind(parent);
+        let span = kind.span();
+        if span.start <= binding.start && binding.end <= span.end {
+            return matches!(
+                kind,
+                oxc_ast::AstKind::ObjectPattern(_) | oxc_ast::AstKind::ArrayPattern(_)
+            ) && binding.end <= reference.start;
+        }
+        node = parent;
+    }
+    false
 }
 
 /// Formal parameter lists also have a temporal dead-zone; when the list does
@@ -1118,11 +1467,17 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
             UnaryOperator::Typeof => {
                 // 1. Let val be ? Evaluation of UnaryExpression.
                 let val = self.argument.compile(ctx)?;
-                if val.is_stack_variable() {
+                if val.is_stack_variable()
+                    || matches!(val, PlaceOrValue::Place(Place::TemporalDeadZone { .. }))
+                {
                     // Stack variables would normally be references but as
                     // they have no Reference (and are known to be resolvable),
-                    // we call GetValue directly.
+                    // we call GetValue directly. One that is not initialized
+                    // yet throws there, as typeof of it must.
                     val.get_value(ctx)?;
+                } else {
+                    // typeof of a name that is not found is "undefined".
+                    val.reference_into_register(ctx);
                 }
                 // 3. Set val to ? GetValue(val).
                 ctx.add_instruction(Instruction::Typeof);
@@ -1541,6 +1896,43 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ArrayE
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
 
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
+        // An array of values and nothing else (no spread element, no hole):
+        // each value goes to the stack, as the arguments of a call do, and
+        // one instruction makes the Array of them. Nothing can tell that
+        // from an Array that is made first and given the values one by
+        // one: no code sees the Array before the last of them is there.
+        if !self.elements.is_empty()
+            && self.elements.len() <= usize::from(IndexType::MAX)
+            && self.elements.iter().all(|e| {
+                !matches!(
+                    e,
+                    ast::ArrayExpressionElement::SpreadElement(_)
+                        | ast::ArrayExpressionElement::Elision(_)
+                )
+            })
+        {
+            let mut values = Vec::with_capacity(self.elements.len());
+            let mut result = Ok(ValueOutput::Value);
+            for ele in &self.elements {
+                if let Err(e) = ele.compile_expression(ctx).and_then(|s| s.get_value(ctx)) {
+                    result = Err(e);
+                    break;
+                }
+                values.push(ctx.load_to_stack());
+            }
+            // The instruction pops the values; where an element always
+            // throws, whatever handles the error drops them.
+            for value in values.into_iter().rev() {
+                value.forget(ctx);
+            }
+            if result.is_ok() {
+                ctx.add_instruction_with_immediate(
+                    Instruction::ArrayFromStack,
+                    self.elements.len(),
+                );
+            }
+            return result;
+        }
         // The immediate is only a capacity hint: ArrayPush grows the array.
         let elements_min_count = self.elements.len().min(usize::from(IndexType::MAX));
         ctx.add_instruction_with_immediate(Instruction::ArrayCreate, elements_min_count);
@@ -2313,8 +2705,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::RegExp
 
         let pattern = self.regex.pattern.text.as_str();
         // 3. Return ! RegExpCreate(pattern, flags).
+        // The RegExp made here is the literal's, kept with the code: each
+        // evaluation returns a new one of its pattern and flags.
         let regexp = ctx.create_regexp(pattern, self.regex.flags);
         ctx.add_instruction_with_constant(Instruction::StoreConstant, regexp);
+        ctx.add_instruction(Instruction::InstantiateRegExpLiteral);
     }
 }
 
@@ -2946,6 +3341,25 @@ fn compile_update_expression<'s, 'gc>(
             | ast::SimpleAssignmentTarget::TSAsExpression(_)
             | ast::SimpleAssignmentTarget::TSTypeAssertion(_) => unreachable!(),
         };
+        // `i++` of a variable in a stack slot whose value nothing uses: one
+        // instruction for the four below.
+        if !keep_value
+            && let Place::Stack {
+                stack_slot,
+                mutable: true,
+                ..
+            } = lref
+        {
+            ctx.add_instruction_with_immediate(
+                match this.operator {
+                    oxc_syntax::operator::UpdateOperator::Increment => Instruction::IncrementIndex,
+                    oxc_syntax::operator::UpdateOperator::Decrement => Instruction::DecrementIndex,
+                },
+                stack_slot as usize,
+            );
+            return Ok(ValueOutput::Value);
+        }
+        let lref = lref.assignment_target(ctx, true);
         lref.get_value_keep_reference(ctx)?;
         ctx.add_instruction(Instruction::ToNumeric);
         let value_on_stack = if keep_value && !this.prefix {
@@ -3336,12 +3750,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Formal
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ObjectPattern<'s> {
     type Output = Result<(), ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        if !self.contains_expression() {
-            simple_object_pattern(self, ctx, ctx.lexical_binding_state);
-        } else {
-            complex_object_pattern(self, ctx, ctx.lexical_binding_state)?;
-        }
-        Ok(())
+        // Property by property, each read with the instruction that reads
+        // `o.p` anywhere: through the property cache of its place, and to
+        // a stack slot where the name is kept in one. The instructions of
+        // a pattern without expressions, which the loop of an array
+        // pattern still uses for an object pattern among its elements,
+        // look every property up by its key and bind it by its name.
+        complex_object_pattern(self, ctx, ctx.lexical_binding_state)
     }
 }
 
@@ -3901,6 +4316,46 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::BlockS
     }
 }
 
+/// Whether the test of a loop may be compiled in two places, before the loop
+/// and at its end: a comparison of names, literals, `this` and properties
+/// named after a dot, which makes nothing whose identity the two places
+/// would not share (a function, a class, a template object).
+fn test_is_compiled_twice(test: &ast::Expression) -> bool {
+    fn operand(expression: &ast::Expression, depth: u8) -> bool {
+        match expression {
+            ast::Expression::Identifier(_)
+            | ast::Expression::NumericLiteral(_)
+            | ast::Expression::StringLiteral(_)
+            | ast::Expression::BooleanLiteral(_)
+            | ast::Expression::NullLiteral(_)
+            | ast::Expression::ThisExpression(_) => true,
+            ast::Expression::StaticMemberExpression(member) => {
+                depth < 3 && !member.optional && operand(&member.object, depth + 1)
+            }
+            ast::Expression::UnaryExpression(unary) => {
+                unary.operator == UnaryOperator::UnaryNegation
+                    && matches!(unary.argument, ast::Expression::NumericLiteral(_))
+            }
+            _ => false,
+        }
+    }
+    let ast::Expression::BinaryExpression(comparison) = test else {
+        return false;
+    };
+    matches!(
+        comparison.operator,
+        BinaryOperator::LessThan
+            | BinaryOperator::LessEqualThan
+            | BinaryOperator::GreaterThan
+            | BinaryOperator::GreaterEqualThan
+            | BinaryOperator::StrictEquality
+            | BinaryOperator::StrictInequality
+            | BinaryOperator::Equality
+            | BinaryOperator::Inequality
+    ) && operand(&comparison.left, 0)
+        && operand(&comparison.right, 0)
+}
+
 impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast::ForStatement<'s> {
     type Output = StatementResult<'gc>;
 
@@ -3998,6 +4453,74 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast
         let v = ctx.push_stack_result_value(Some(Value::Undefined));
         // 3. Repeat,
         let l = ctx.enter_loop(label_set.cloned());
+        if ctx.discard_completion
+            && !create_per_iteration_env
+            && let Some(test) = &self.test
+            && test_is_compiled_twice(test)
+        {
+            // The loop with its test at the end: the test is compiled once
+            // more before the loop, for whether it is entered at all, and
+            // every turn after the first is the increment, the test and the
+            // jump back, with no jump forward to the test. The order of
+            // what runs is the same.
+            let entry_test = compile_jump_if(test, false, ctx);
+            let result = if let Err(err) = entry_test.as_ref() {
+                ControlFlow::Break((*err).into())
+            } else {
+                let body_start = ctx.get_jump_index_to_here();
+                // b. Let result be Completion(Evaluation of stmt).
+                let _ = self.body.compile(ctx);
+                // We cannot know that the loop completes abruptly even if
+                // the body says so. Continues and so forth can exit the loop.
+                ControlFlow::Continue(StatementContinue::Value)
+                    .map_continue(|value: StatementContinue| (value, body_start))
+            };
+            // c. If LoopContinues(result, labelSet) is false, return V.
+            // f. If increment is not empty, then
+            let continue_label = ctx.get_jump_index_to_here();
+            let mut leave = None;
+            let result = match result {
+                ControlFlow::Continue((value, body_start)) => {
+                    if let Some(update) = &self.update {
+                        // i. Let incRef be ? Evaluation of increment.
+                        // ii. Perform ? GetValue(incRef).
+                        let _ = compile_discarded_expression(update, ctx);
+                    }
+                    // a. If test is not empty, then: the next turn.
+                    if let Ok(again) = compile_jump_if(test, true, ctx) {
+                        for jump in again {
+                            ctx.set_jump_target(jump, body_start.clone());
+                        }
+                    }
+                    // iii. If ToBoolean(testValue) is false, return V.
+                    if !ctx.is_unreachable() {
+                        leave = Some(ctx.add_instruction_with_jump_slot(Instruction::Jump));
+                    }
+                    ControlFlow::Continue(value)
+                }
+                ControlFlow::Break(err) => ControlFlow::Break(err),
+            };
+            {
+                // ## Catch block
+                ctx.set_jump_target_here(l.on_abrupt_exit());
+                ctx.add_instruction(Instruction::UpdateEmpty);
+                ctx.add_instruction(Instruction::Throw);
+            }
+            if let Ok(end_jumps) = entry_test {
+                for end_jump in end_jumps {
+                    ctx.set_jump_target_here(end_jump);
+                }
+            }
+            if let Some(leave) = leave {
+                ctx.set_jump_target_here(leave);
+            }
+            l.exit(ctx, continue_label);
+            v.forget(ctx);
+            for block_prep in block_prep.into_iter().rev() {
+                block_prep.exit(ctx);
+            }
+            return result;
+        }
         let jump_over_continue = (!ctx.discard_completion
             || create_per_iteration_env
             || self.update.is_some())
@@ -4138,6 +4661,66 @@ fn create_per_iteration_environment<'gc>(
     }
 }
 
+/// Where the statements of a `switch` case are entered from: the jump of its
+/// own test, or a case of the switch table that tests them all.
+enum CaseStart {
+    Jump(JumpIndex),
+    Table(usize, usize),
+}
+
+/// The selectors of the cases of a `switch` statement, where they are all
+/// literals: Number, String, Boolean or null, or a Number literal with a
+/// minus sign.
+fn literal_case_selectors<'s, 'gc>(
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+    cases: &'s [ast::SwitchCase<'s>],
+) -> Option<Vec<Value<'gc>>> {
+    fn negated<'s>(test: &'s ast::Expression<'s>) -> Option<&'s ast::NumericLiteral<'s>> {
+        let ast::Expression::UnaryExpression(unary) = test else {
+            return None;
+        };
+        match &unary.argument {
+            ast::Expression::NumericLiteral(literal)
+                if unary.operator == UnaryOperator::UnaryNegation =>
+            {
+                Some(literal)
+            }
+            _ => None,
+        }
+    }
+    let tests = || cases.iter().filter_map(|case| case.test.as_ref());
+    if tests().next().is_none()
+        || !tests().all(|test| {
+            matches!(
+                test,
+                ast::Expression::NumericLiteral(_)
+                    | ast::Expression::StringLiteral(_)
+                    | ast::Expression::BooleanLiteral(_)
+                    | ast::Expression::NullLiteral(_)
+            ) || negated(test).is_some()
+        })
+    {
+        return None;
+    }
+    Some(
+        tests()
+            .map(|test| match test {
+                ast::Expression::NumericLiteral(literal) => ctx.create_number(literal.value).into(),
+                ast::Expression::StringLiteral(literal) => {
+                    let (agent, gc) = ctx.get_agent_and_gc();
+                    string_literal_to_wtf8(agent, literal, gc).into()
+                }
+                ast::Expression::BooleanLiteral(literal) => literal.value.into(),
+                ast::Expression::NullLiteral(_) => Value::Null,
+                _ => match negated(test) {
+                    Some(literal) => ctx.create_number(-literal.value).into(),
+                    None => unreachable!(),
+                },
+            })
+            .collect(),
+    )
+}
+
 impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
     for ast::SwitchStatement<'s>
 {
@@ -4172,6 +4755,12 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
             let mut default_case_index = None;
             let mut cases = Vec::with_capacity(self.cases.len());
             let mut end_unreachable = false;
+            // Selectors that are all literals: evaluating them does nothing
+            // and comparing them in order finds the first equal one, which
+            // one instruction does by a table.
+            let switch_table = literal_case_selectors(ctx, &self.cases)
+                .and_then(|selectors| switch_value.jump_to_case(ctx, &selectors));
+            let mut table_cases = 0;
             for case in &self.cases {
                 let Some(test) = &case.test else {
                     // Default case test does not care about the write order:
@@ -4183,6 +4772,11 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     cases.push((case, None));
                     continue;
                 };
+                if let Some(table) = switch_table {
+                    cases.push((case, Some(CaseStart::Table(table, table_cases))));
+                    table_cases += 1;
+                    continue;
+                }
                 // We have switchValue somewhere on the stack, and we want to
                 // compare it to the test value. IsStrictlyEqual consumes one
                 // value from the top of the stack and compares that to the
@@ -4205,7 +4799,7 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     // b. If found is true then [evaluate case]
                     let jump_to_case_evaluation =
                         ctx.add_instruction_with_jump_slot(Instruction::JumpIfTrue);
-                    cases.push((case, Some(jump_to_case_evaluation)));
+                    cases.push((case, Some(CaseStart::Jump(jump_to_case_evaluation))));
                 } else {
                     // If the evaluation or GetValue of a test expression fails
                     // unconditionally, any remaining test cases become
@@ -4237,14 +4831,19 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     // 11. Let defaultR be Completion(Evaluation of DefaultClause).
                     let previous_jump = cases[default_case_index as usize]
                         .1
-                        .replace(jump_to_default_case);
+                        .replace(CaseStart::Jump(jump_to_default_case));
                     debug_assert!(previous_jump.is_none());
                     None
                 } else {
                     // If nothing matched and default case doesn't exist then we
                     // need to set V to undefined here.
-                    ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
-                    v.write(ctx);
+                    if !ctx.discard_completion {
+                        ctx.add_instruction_with_constant(
+                            Instruction::StoreConstant,
+                            Value::Undefined,
+                        );
+                        v.write(ctx);
+                    }
                     Some(ctx.add_instruction_with_jump_slot(Instruction::Jump))
                 }
             };
@@ -4256,8 +4855,10 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
             // block. Hence, control flow never enters here normally.
 
             let mut prev_result = ControlFlow::Break(StatementBreak::Break);
-            'cases: for (case, jump_index) in cases.into_iter() {
-                let fallthrough_jump = if prev_result.is_break() {
+            'cases: for (case, case_start) in cases.into_iter() {
+                // A function body keeps no V: a case that is entered and one
+                // that is fallen into start at the same place.
+                let fallthrough_jump = if prev_result.is_break() || ctx.discard_completion {
                     // OPTIMISATION: if previous case ended with a break or an
                     // otherwise terminal instruction, we don't need a
                     // fallthrough jump at the beginning of the next case.
@@ -4266,17 +4867,22 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     Some(ctx.add_instruction_with_jump_slot(Instruction::Jump))
                 };
                 // Jump from IsStrictlyEqual comparison to here.
-                let Some(jump_index) = jump_index else {
+                let Some(case_start) = case_start else {
                     // This can only happen if the default case is unreachable
                     // due to some test always failing. In that case we do not
                     // need to generate code for it.
                     continue;
                 };
-                ctx.set_jump_target_here(jump_index.clone());
+                match case_start {
+                    CaseStart::Jump(jump_index) => ctx.set_jump_target_here(jump_index),
+                    CaseStart::Table(table, case) => ctx.set_switch_target_here(table, case),
+                }
 
-                // 1. Let V be undefined.
-                ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
-                v.write(ctx);
+                if !ctx.discard_completion {
+                    // 1. Let V be undefined.
+                    ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
+                    v.write(ctx);
+                }
 
                 if let Some(fallthrough_jump) = fallthrough_jump {
                     ctx.set_jump_target_here(fallthrough_jump);
@@ -4289,22 +4895,30 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope>
                     continue 'cases;
                 }
 
-                v.read(ctx);
-                let v_copy = ctx.load_to_stack();
+                let mut v_copy = if ctx.discard_completion {
+                    None
+                } else {
+                    v.read(ctx);
+                    Some(ctx.load_to_stack())
+                };
 
                 for ele in &case.consequent {
                     prev_result = ele.compile(ctx);
                     if prev_result.is_break() {
                         // Continue to next case if the rest of the current case
                         // becomes unreachable.
-                        v_copy.forget(ctx);
+                        if let Some(v_copy) = v_copy.take() {
+                            v_copy.forget(ctx);
+                        }
                         continue 'cases;
                     }
                 }
                 // ii. If R.[[Value]] is not empty, set V to R.[[Value]].
                 // iii. If R is an abrupt completion, return ? UpdateEmpty(R, V).
-                v_copy.update_empty(ctx);
-                v.write(ctx);
+                if let Some(v_copy) = v_copy.take() {
+                    v_copy.update_empty(ctx);
+                    v.write(ctx);
+                }
             }
 
             if let Some(jump_to_end) = jump_to_end {

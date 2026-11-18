@@ -27,6 +27,24 @@ pub(crate) struct Caches<'a> {
     property_lookup_cache_prototypes: Vec<PropertyLookupCacheRecordPrototypes<'a>>,
     // property_lookup_cache_stack: Vec<PropertyLookupCache<'a>>,
     current_cache_to_populate: Option<CacheToPopulate<'a>>,
+    /// The caches that [`PropertyLookupCache::new`] gave last, each with
+    /// its key, in one of the two places of the key's identity. Native code
+    /// asks for the cache of one name again and again (the method of an
+    /// operator, "prototype" at every `new`, an Array's iterator method),
+    /// and finds it here by the key itself, with no hash of the name's
+    /// text. Not a root, and emptied by every collection: a collection
+    /// moves keys and caches, and drops the caches nothing else holds.
+    recent: [Option<(PropertyKey<'a>, PropertyLookupCache<'a>)>; RECENT_CACHES],
+}
+
+/// How many caches [`Caches::recent`] has places for.
+const RECENT_CACHES: usize = 64;
+
+/// The first of the two places of `key` in [`Caches::recent`]; the other
+/// is the one beside it.
+#[inline]
+fn recent_place(key: PropertyKey) -> usize {
+    (key.identity_bits().wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 58) as usize
 }
 
 #[derive(Debug)]
@@ -45,6 +63,7 @@ impl<'a> Caches<'a> {
             property_lookup_cache_prototypes: Vec::with_capacity(capacity),
             // property_lookup_cache_stack: Vec::with_capacity(64),
             current_cache_to_populate: None,
+            recent: [None; RECENT_CACHES],
         }
     }
 
@@ -468,6 +487,16 @@ impl<'a> PropertyLookupCache<'a> {
 
     /// Get or create a property lookup cache entry for the given key.
     pub(crate) fn new(agent: &mut Agent, key: PropertyKey<'a>) -> PropertyLookupCache<'a> {
+        // One of the caches given last, found by the key itself.
+        let place = recent_place(key);
+        let recent = &agent.heap.caches.recent;
+        for place in [place, place ^ 1] {
+            if let Some((recent_key, cache)) = recent[place]
+                && recent_key == key
+            {
+                return cache;
+            }
+        }
         let hash = key.heap_hash(agent);
         let caches = &mut agent.heap.caches;
         let property_key_heap =
@@ -477,7 +506,7 @@ impl<'a> PropertyLookupCache<'a> {
             |(k, _)| *k == key,
             |(k, _)| k.heap_hash(&property_key_heap),
         );
-        match entry {
+        let cache = match entry {
             Entry::Occupied(e) => e.get().1.0,
             Entry::Vacant(e) => {
                 caches
@@ -490,37 +519,42 @@ impl<'a> PropertyLookupCache<'a> {
                 e.insert((key.unbind(), WeakReference(cache.unbind())));
                 cache
             }
-        }
+        };
+        // The one that was in the key's first place keeps the second.
+        caches.recent[place ^ 1] = caches.recent[place];
+        caches.recent[place] = Some((key.unbind(), cache.unbind()));
+        cache
     }
 
     /// Find a cached property offset (possibly in a prototype) in this
     /// property lookup cache for the given Object Shape.
+    #[inline]
     pub(crate) fn find_cached_property_offset(
         self,
         agent: &Agent,
         shape: ObjectShape<'a>,
     ) -> Option<(PropertyOffset, Option<Object<'a>>)> {
         let caches = &agent.heap.caches;
-        let record = &caches.property_lookup_caches[self.get_index()];
-        if let Some((i, offset)) = record.find(shape) {
+        // The records of one cache, each of a few shapes, one after another.
+        let mut cache = self;
+        loop {
+            let index = cache.get_index();
+            let record = &caches.property_lookup_caches[index];
+            let Some((i, offset)) = record.find(shape) else {
+                cache = record.next?;
+                continue;
+            };
             let prototype = if !offset.is_unset() && offset.is_prototype_property() {
-                let prototype = caches.property_lookup_cache_prototypes[self.get_index()]
-                    .prototypes[i as usize]
-                    .unwrap();
+                let prototype =
+                    caches.property_lookup_cache_prototypes[index].prototypes[i as usize].unwrap();
                 Some(prototype)
             } else {
                 debug_assert!(
-                    caches.property_lookup_cache_prototypes[self.get_index()].prototypes
-                        [i as usize]
-                        .is_none()
+                    caches.property_lookup_cache_prototypes[index].prototypes[i as usize].is_none()
                 );
                 None
             };
-            Some((offset, prototype))
-        } else if let Some(next) = record.next {
-            next.find_cached_property_offset(agent, shape)
-        } else {
-            None
+            return Some((offset, prototype));
         }
     }
 
@@ -920,6 +954,8 @@ impl HeapMarkAndSweep for Caches<'static> {
             property_lookup_cache_prototypes: _,
             // property_lookup_cache_stack,
             current_cache_to_populate: current_property_lookup_cache,
+            // Not a root: emptied when the heap is swept.
+            recent: _,
         } = self;
         // Note: we do not mark the caches in the lookup table; they're weakly
         // held.
@@ -939,7 +975,10 @@ impl HeapMarkAndSweep for Caches<'static> {
             property_lookup_cache_prototypes: _,
             // property_lookup_cache_stack,
             current_cache_to_populate: current_property_lookup_cache,
+            recent,
         } = self;
+        // Its keys and caches are of the heap before this collection.
+        *recent = [None; RECENT_CACHES];
         property_lookup_cache_lookup_table.retain(|(key, cache)| {
             let Some(new_cache) = cache.sweep_weak_reference(compactions) else {
                 return false;

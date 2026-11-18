@@ -135,6 +135,25 @@ impl BindingMap {
         self.position(name).is_some()
     }
 
+    /// The binding at `slot` if it is the one for `name`: a binding keeps its
+    /// place while none is deleted, so a place remembered for a name is
+    /// checked with one comparison.
+    #[inline]
+    fn at(&self, slot: u32, name: String) -> Option<&Binding> {
+        match self.entries.get(slot as usize) {
+            Some((key, binding)) if *key == name.unbind() => Some(binding),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn at_mut(&mut self, slot: u32, name: String) -> Option<&mut Binding> {
+        match self.entries.get_mut(slot as usize) {
+            Some((key, binding)) if *key == name.unbind() => Some(binding),
+            _ => None,
+        }
+    }
+
     #[inline]
     fn get(&self, name: String) -> Option<&Binding> {
         let position = self.position(name)?;
@@ -225,6 +244,30 @@ impl DeclarativeEnvironmentRecord {
 
     pub(super) fn outer_env(&self) -> OuterEnv<'static> {
         self.outer_env
+    }
+
+    /// How many bindings the record holds.
+    #[inline]
+    pub(super) fn binding_count(&self) -> usize {
+        self.bindings.entries.len()
+    }
+
+    /// The place of the binding for `name`, for [`Self::binding_at`].
+    pub(super) fn binding_slot(&self, name: String) -> Option<u32> {
+        self.bindings
+            .position(name)
+            .and_then(|slot| u32::try_from(slot).ok())
+    }
+
+    /// The binding at `slot` if it is the one for `name`.
+    #[inline]
+    pub(super) fn binding_at(&self, slot: u32, name: String) -> Option<&Binding> {
+        self.bindings.at(slot, name)
+    }
+
+    #[inline]
+    pub(super) fn binding_at_mut(&mut self, slot: u32, name: String) -> Option<&mut Binding> {
+        self.bindings.at_mut(slot, name)
     }
 }
 

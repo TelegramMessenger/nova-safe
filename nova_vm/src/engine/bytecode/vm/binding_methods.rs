@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-use super::with_vm_gc;
+use super::{verify_is_object, with_vm_gc};
 
 pub(super) fn execute_simple_array_binding<'a>(
     agent: &mut Agent,
@@ -43,12 +43,22 @@ pub(super) fn execute_simple_array_binding<'a>(
             | Instruction::BindingPatternBindToIndex
             | Instruction::BindingPatternGetValue
             | Instruction::BindingPatternSkip => {
-                let result = match vm.get_active_iterator() {
+                let plain = match vm.get_active_iterator_mut() {
                     VmIteratorRecord::SliceIterator(arguments) => {
-                        Ok(arguments.unshift(agent, gc.nogc()))
+                        Some(arguments.unshift(agent, gc.nogc()))
                     }
-                    VmIteratorRecord::EmptySliceIterator => Ok(None),
-                    _ => with_vm_gc(
+                    VmIteratorRecord::EmptySliceIterator => Some(None),
+                    // An Array walked element by element: where the next
+                    // element is a value, the step is no more than reading
+                    // it.
+                    VmIteratorRecord::ArrayValues(iterator) => {
+                        iterator.plain_next(agent, gc.nogc())
+                    }
+                    _ => None,
+                };
+                let result = match plain {
+                    Some(step) => Ok(step),
+                    None => with_vm_gc(
                         agent,
                         vm,
                         |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
@@ -197,24 +207,33 @@ pub(super) fn execute_simple_array_binding<'a>(
     // BindingPattern : ArrayBindingPattern
     // 3. If iteratorRecord.[[Done]] is false, return
     //    ? IteratorClose(iteratorRecord, result).
-    // NOTE: `result` here is always UNUSED. We use `undefined` as a stand-in
-    // since that way we don't need to implement a separate iterator_close.
     if !iterator_is_done {
         let iter = vm.get_active_iterator_mut();
         if iter.requires_return_call(agent, gc.nogc()) {
+            // 7.4.11 IteratorClose ( iteratorRecord, completion )
+            // 3. Let innerResult be Completion(GetMethod(iterator, "return")).
+            // 4. c. Set innerResult to Completion(Call(return, iterator)).
             let result = with_vm_gc(
                 agent,
                 vm,
-                |agent, gc| {
-                    ActiveIterator::new(agent, gc.nogc()).r#return(
-                        agent,
-                        Some(Value::Undefined),
-                        gc,
-                    )
-                },
-                gc,
-            )?;
-            vm.result = result.unbind();
+                |agent, gc| ActiveIterator::new(agent, gc.nogc()).r#return(agent, None, gc),
+                gc.reborrow(),
+            )
+            .unbind()
+            .bind(gc.nogc());
+            // The iterator has been closed, whatever came of it: the
+            // handler of an error thrown from here closes the active
+            // iterator, and must find none to call "return" of again.
+            *vm.get_active_iterator_mut() = VmIteratorRecord::EmptySliceIterator;
+            // 5. If completion is a throw completion, return ? completion.
+            // 6. If innerResult is a throw completion, return ? innerResult.
+            // 7. If innerResult.[[Value]] is not an Object, throw a TypeError
+            //    exception.
+            // What "return" gives back is no one's value beyond that: the
+            // pattern has none.
+            if let Some(result) = result.unbind()? {
+                verify_is_object(agent, result, gc.into_nogc())?;
+            }
         }
     }
 

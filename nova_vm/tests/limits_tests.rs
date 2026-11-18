@@ -179,6 +179,27 @@ fn interrupt_ends_loops_that_catch() {
     });
 }
 
+/// A `for` loop whose test is at its end jumps back by the instruction that
+/// makes the test: the host is asked on every turn whatever the operands
+/// are, also where they are not the integers that instruction is short for.
+#[test]
+fn interrupt_ends_loops_with_the_test_at_their_end() {
+    on_big_stack(|| {
+        assert_interrupted("function f() { for (var i = 0; i < 2; i++) { i = 0; } } f();");
+        assert_interrupted("function f() { for (var i = 0.5; i < 1e300; i += 0) {} } f();");
+        assert_interrupted("function f() { for (var i = '0'; i < '9'; i += '') {} } f();");
+        assert_interrupted(
+            "function f() { var o = { valueOf() { return 0; } }; for (var i = 5; i > o; i -= 0) {} } f();",
+        );
+        assert_interrupted("function f() { for (var i = 0.5; i !== 3; i++) {} } f();");
+        assert_interrupted(
+            "function f() { var n = 1e300; for (var i = 0.5; i <= n; i++) {} } f();",
+        );
+        assert_interrupted("function f() { for (var i = 2n; i >= 1n; i -= 0n) {} } f();");
+        assert_interrupted("function f(a, b) { do {} while (!(a < b)); } f(1.5, 0.5);");
+    });
+}
+
 #[test]
 fn interrupt_ends_promise_and_async_loops() {
     on_big_stack(|| {
@@ -441,6 +462,53 @@ fn huge_allocations_are_refused() {
         assert_eq!(
             engine.run("new RegExp('a|'.repeat(1 << 14)).test('a')", None),
             Outcome::Value("true".into())
+        );
+        engine.assert_usable();
+    });
+}
+
+/// With [`Agent::set_heap_limit_refusal_terminates`] no handler keeps a
+/// script going past an allocation the limit has no room for, and garbage
+/// alone never ends one.
+#[test]
+fn a_refused_allocation_can_terminate_instead_of_throwing() {
+    on_big_stack(|| {
+        for source in [
+            "try { new ArrayBuffer(2 ** 27); 'caught' } catch (e) { String(e) }",
+            "try { 'x'.repeat(2 ** 27); } finally { globalThis.ran = 1; }",
+            "const a = []; for (;;) { try { a.push(new ArrayBuffer(1 << 24)); } catch {} }",
+            "Promise.resolve().then(() => { try { new ArrayBuffer(2 ** 27); } catch {} globalThis.ran = 1; });",
+        ] {
+            let mut engine = Engine::new();
+            engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+            engine.agent.set_heap_limit_refusal_terminates(true);
+            assert_eq!(
+                engine.run(source, Some(Duration::from_secs(60))),
+                Outcome::Terminated(TerminationReason::OutOfMemory),
+                "{source}"
+            );
+            assert!(engine.agent.heap_size() < 128 * 1024 * 1024, "{source}");
+            engine.agent.set_heap_limit(None);
+            assert_eq!(
+                engine.run("typeof ran", None),
+                Outcome::Value("undefined".into())
+            );
+        }
+        let mut engine = Engine::new();
+        engine.agent.set_heap_limit(Some(64 * 1024 * 1024));
+        engine.agent.set_heap_limit_refusal_terminates(true);
+        assert_eq!(
+            engine.run(
+                "let n = 0; for (let i = 0; i < 20; i++) { let b = new ArrayBuffer(40 << 20); n += b.byteLength; b = null; } n",
+                None
+            ),
+            Outcome::Value((20u64 * (40 << 20)).to_string())
+        );
+        // Without a heap limit nothing is refused for it, so nothing ends.
+        engine.agent.set_heap_limit(None);
+        assert_eq!(
+            engine.run("new ArrayBuffer(2 ** 31 + 1)", None),
+            thrown("RangeError: Allocation too large")
         );
         engine.assert_usable();
     });

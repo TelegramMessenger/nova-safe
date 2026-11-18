@@ -179,11 +179,23 @@ pub(crate) struct Heap {
     pub(crate) strings: Vec<StringRecord>,
     pub(crate) string_lookup_table: HashTable<HeapString<'static>>,
     pub(crate) string_hasher: crate::hashing::RandomState,
+    /// Whether an object that has an intrinsic Object Shape (a prototype,
+    /// %Object.prototype% and %Array.prototype% among them) was ever given
+    /// a property under an integer key. While none was, an element added
+    /// to an Array past its length is not looked for on its prototypes.
+    pub(crate) intrinsic_integer_keys: bool,
+    /// What appended strings may join, and have joined since the strings
+    /// were last measured.
+    pub(crate) text_join_budget: std::sync::Arc<crate::ecmascript::JoinBudget>,
     /// Random keys under which Object Shape transition tables hash their
     /// property keys by identity.
     pub(crate) shape_key_hasher: crate::hashing::HandleState,
     /// Counts allocations for garbage collection triggering.
     pub(crate) alloc_counter: usize,
+    /// How many collections have run: what holds a handle that only a
+    /// collection moves (the instruction loop, its executable) looks the
+    /// handle up again when this has changed.
+    pub(crate) collections: u64,
     /// Bytes of string data, ArrayBuffer data and keyed collection entries
     /// allocated since the last garbage collection, for the heap limit. Not
     /// part of the garbage collector's pacing.
@@ -321,6 +333,8 @@ impl Heap {
             string_iterators: Vec::with_capacity(0),
             string_lookup_table: HashTable::with_capacity(0),
             string_hasher: crate::hashing::RandomState::new(),
+            intrinsic_integer_keys: false,
+            text_join_budget: Default::default(),
             shape_key_hasher: crate::hashing::HandleState::default(),
             symbols: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
@@ -358,6 +372,7 @@ impl Heap {
             #[cfg(feature = "weak-refs")]
             weak_sets: Vec::with_capacity(0),
             alloc_counter: 0,
+            collections: 0,
             data_bytes_since_gc: 0,
             gc_alloc_limit: crate::heap::heap_gc::MIN_GC_ALLOC_LIMIT,
         };
@@ -369,7 +384,7 @@ impl Heap {
         let string_hasher = &mut heap.string_hasher;
         let string_lookup_table = &mut heap.string_lookup_table;
         for builtin_string in BUILTIN_STRINGS_LIST.iter() {
-            let hash = string_hasher.hash_one(Wtf8Str::from_str(builtin_string));
+            let hash = string_hasher.hash_text(builtin_string.as_bytes());
             let data = StringRecord::from_static_str(builtin_string);
             String::insert_string_with_hash(
                 strings,
@@ -475,6 +490,73 @@ impl Heap {
         }
     }
 
+    /// The heap string with this text, which is too long for a SmallString:
+    /// the one there is, or a new one. A text that the heap has already is
+    /// not copied for the asking.
+    pub(crate) fn alloc_wtf8(&mut self, message: Wtf8Str<'_>) -> String<'static> {
+        match self.find_equal_wtf8(message) {
+            Ok(string) => string,
+            Err(hash) => {
+                let mut text = Wtf8Buf::with_capacity(message.len());
+                text.push_wtf8(message);
+                let data = StringRecord::from_wtf8_buf(text);
+                self.create((data, hash))
+            }
+        }
+    }
+
+    /// Allocates a long string that a concatenation made, as
+    /// [`Heap::alloc_wtf8_buf`] does, marked so that appending to it again
+    /// builds on it ([`Heap::alloc_appended`]).
+    pub(crate) fn alloc_concatenation(&mut self, message: Wtf8Buf) -> String<'static> {
+        let found = self.find_equal_wtf8(message.as_wtf8());
+        match found {
+            Ok(string) => string,
+            Err(hash) => {
+                let data = StringRecord::from_concatenation(message);
+                self.create((data, hash))
+            }
+        }
+    }
+
+    /// Allocates the heap string `left` with `right` appended, as
+    /// [`Heap::alloc_wtf8_buf`] would allocate their concatenation, without
+    /// copying or hashing `left` again when it was itself appended to
+    /// ([`StringRecord::appended`]).
+    ///
+    /// # Correctness
+    ///
+    /// As for [`Heap::alloc_wtf8_buf`]; `right` is not empty and does not
+    /// start with a trail surrogate that the last code point of `left` would
+    /// pair with.
+    pub(crate) fn alloc_appended(
+        &mut self,
+        left: HeapString<'static>,
+        right: String<'static>,
+    ) -> String<'static> {
+        // Read where it is: a copy of what is appended would be allocated
+        // at every step of a loop that builds a text.
+        let right = match &right {
+            String::SmallString(right) => right.as_bytes(),
+            String::String(right) => self.strings[right.get_index()].as_bytes(),
+        };
+        let (data, hash) = StringRecord::appended(
+            &self.strings[left.get_index()],
+            right,
+            &self.string_hasher,
+            &self.text_join_budget,
+        );
+        // A string of another length is not this one, without joining either.
+        let found = self.string_lookup_table.find(hash, |heap_string| {
+            let record = &self.strings[heap_string.get_index()];
+            record.len() == data.len() && record.as_wtf8() == data.as_wtf8()
+        });
+        if let Some(&found) = found {
+            return found.into();
+        }
+        self.create((data, hash))
+    }
+
     /// Allocate a static string onto the Agent heap
     ///
     /// This method will currently iterate through all heap strings to look for
@@ -507,11 +589,11 @@ impl Heap {
     /// Find existing heap String or return the strings hash.
     fn find_equal_wtf8(&self, message: Wtf8Str<'_>) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);
-        let hash = self.string_hasher.hash_one(message);
+        let hash = self.string_hasher.hash_text(message.as_bytes());
         self.string_lookup_table
             .find(hash, |heap_string| {
-                let heap_str = self.strings[heap_string.get_index()].as_wtf8();
-                heap_str == message
+                let record = &self.strings[heap_string.get_index()];
+                record.len() == message.len() && record.as_wtf8() == message
             })
             .map(|&heap_string| heap_string.into())
             .ok_or(hash)

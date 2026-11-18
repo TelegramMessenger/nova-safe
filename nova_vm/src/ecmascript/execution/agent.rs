@@ -21,7 +21,6 @@
 
 use crate::hashing::AHashMap;
 
-#[cfg(test)]
 use crate::ecmascript::GlobalEnvironment;
 #[cfg(feature = "shared-array-buffer")]
 use crate::ecmascript::SharedArrayBuffer;
@@ -42,7 +41,7 @@ use crate::{
     },
     engine::{
         Bindable, GcScope, Global, HeapRootCollection, HeapRootData, HeapRootRef, NoGcScope,
-        PooledVmStacks, Rootable, Vm,
+        PooledVmStacks, Rootable, SpareVmStacks, Vm, VmFrames,
     },
     heap::{
         ArenaAccess, CompactionLists, CreateHeapData, Heap, HeapIndexHandle, HeapMarkAndSweep,
@@ -765,6 +764,11 @@ impl GcAgent {
         self.agent.set_heap_limit(limit);
     }
 
+    /// See [`Agent::set_heap_limit_refusal_terminates`].
+    pub fn set_heap_limit_refusal_terminates(&mut self, terminates: bool) {
+        self.agent.set_heap_limit_refusal_terminates(terminates);
+    }
+
     /// See [`Agent::heap_size`].
     pub fn heap_size(&self) -> usize {
         self.agent.heap_size()
@@ -951,6 +955,12 @@ pub struct Agent {
     pub(crate) vm_stack: Vec<Vm>,
     /// Emptied value and iterator stacks of finished VMs, reused by new ones.
     pub(crate) vm_stack_pool: Vec<PooledVmStacks>,
+    /// Emptied Reference and exception handler stacks of finished VMs, taken
+    /// by one that pushes to either.
+    pub(crate) spare_vm_stacks: SpareVmStacks,
+    /// The frames of the calls that `Vm`s run in place: see
+    /// [`VmFrames`].
+    pub(crate) vm_frames: VmFrames,
     /// Emptied argument vectors, reused for call arguments.
     pub(crate) arguments_pool: Vec<Vec<Value<'static>>>,
     /// ### \[\[KeptAlive]]
@@ -990,6 +1000,8 @@ impl Agent {
             stack_ref_collections: RefCell::new(Vec::with_capacity(32)),
             vm_stack: Vec::with_capacity(16),
             vm_stack_pool: Vec::new(),
+            spare_vm_stacks: SpareVmStacks::default(),
+            vm_frames: VmFrames::default(),
             arguments_pool: Vec::new(),
             #[cfg(feature = "weak-refs")]
             kept_alive: false,
@@ -1168,7 +1180,7 @@ impl Agent {
     }
 
     /// Get current Realm's global environment.
-    #[cfg(test)]
+    #[inline]
     pub(crate) fn current_global_env<'a>(&self, gc: NoGcScope<'a, '_>) -> GlobalEnvironment<'a> {
         let realm = self.current_realm(gc);
         let Some(e) = realm.get(self).global_env else {
@@ -1193,6 +1205,13 @@ impl Agent {
             panic_corrupted_agent()
         };
         ctx.realm = realm.unbind();
+    }
+
+    /// Whether any execution context is on the stack: none is while a Realm
+    /// is being created.
+    #[inline]
+    pub(crate) fn has_execution_context(&self) -> bool {
+        !self.execution_context_stack.is_empty()
     }
 
     /// Internal method to get current Realm's identifier without binding.
@@ -1309,10 +1328,17 @@ impl Agent {
         strict
     }
 
-    pub(crate) fn check_call_depth<'gc>(&mut self, gc: NoGcScope<'gc, '_>) -> JsResult<'gc, ()> {
+    /// Whether a call made now is one too many: see
+    /// [`check_call_depth`](Self::check_call_depth).
+    #[inline]
+    pub(crate) fn call_depth_exceeded(&self) -> bool {
         // Experimental number that caused stack overflow on local machine;
         // the native stack guard (Agent::set_stack_limit) is the real bound.
-        if self.execution_context_stack.len() > 3500 || self.stack_exhausted() {
+        self.execution_context_stack.len() > 3500 || self.stack_exhausted()
+    }
+
+    pub(crate) fn check_call_depth<'gc>(&mut self, gc: NoGcScope<'gc, '_>) -> JsResult<'gc, ()> {
+        if self.call_depth_exceeded() {
             Err(self.throw_exception_with_static_message(
                 ExceptionType::RangeError,
                 "Maximum call stack size exceeded",
@@ -1341,8 +1367,45 @@ impl Agent {
         self.execution_context_stack.push(context);
     }
 
+    /// The this value that the running execution context keeps for a call
+    /// without a Function Environment Record, while the call's own
+    /// environment is the one that `this` is asked of (ResolveThisBinding's
+    /// first case).
+    #[inline]
+    pub(crate) fn running_call_this_value(&self) -> Option<Value<'static>> {
+        let code = self
+            .execution_context_stack
+            .last()?
+            .ecmascript_code
+            .as_ref()?;
+        let this_value = code.this_value?;
+        (this_value.variable_environment == code.variable_environment).then_some(this_value.value)
+    }
+
+    /// Replaces the this value that the running execution context keeps for
+    /// a call without a Function Environment Record.
+    pub(crate) fn set_running_call_this_value(&mut self, value: Value<'static>) {
+        if let Some(this_value) = self
+            .execution_context_stack
+            .last_mut()
+            .and_then(|context| context.ecmascript_code.as_mut())
+            .and_then(|code| code.this_value.as_mut())
+        {
+            this_value.value = value;
+        }
+    }
+
     pub(crate) fn pop_execution_context(&mut self) -> Option<ExecutionContext> {
         self.execution_context_stack.pop()
+    }
+
+    /// Removes the running execution context, which nothing is to be read
+    /// of: the context under it is the running one again.
+    #[inline]
+    pub(crate) fn remove_execution_context(&mut self) {
+        let depth = self.execution_context_stack.len();
+        self.execution_context_stack
+            .truncate(depth.saturating_sub(1));
     }
 
     pub(crate) fn current_source_code<'a>(&self, gc: NoGcScope<'a, '_>) -> SourceCode<'a> {
@@ -1721,6 +1784,8 @@ impl HeapMarkAndSweep for Agent {
             stack_ref_collections,
             vm_stack,
             vm_stack_pool: _,
+            spare_vm_stacks: _,
+            vm_frames,
             arguments_pool: _,
             options: _,
             symbol_id: _,
@@ -1747,6 +1812,7 @@ impl HeapMarkAndSweep for Agent {
             .iter()
             .for_each(|collection| collection.mark_values(queues));
         vm_stack.iter().for_each(|vm| vm.mark_values(queues));
+        vm_frames.mark_values(queues);
         global_symbol_registry.mark_values(queues);
         let mut last_filled_global_value = None;
         heap.globals
@@ -1779,6 +1845,8 @@ impl HeapMarkAndSweep for Agent {
             stack_ref_collections,
             vm_stack,
             vm_stack_pool: _,
+            spare_vm_stacks: _,
+            vm_frames,
             arguments_pool: _,
             options: _,
             symbol_id: _,
@@ -1807,6 +1875,7 @@ impl HeapMarkAndSweep for Agent {
         vm_stack
             .iter_mut()
             .for_each(|entry| entry.sweep_values(compactions));
+        vm_frames.sweep_values(compactions);
         global_symbol_registry.sweep_values(compactions);
     }
 }

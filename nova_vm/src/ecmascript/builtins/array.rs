@@ -15,17 +15,18 @@ use std::collections::{TryReserveError, hash_map::Entry};
 
 use crate::{
     ecmascript::{
-        Agent, BUILTIN_STRING_MEMORY, Caches, Function, InternalMethods, InternalSlots, JsResult,
-        Object, OrdinaryObject, PropertyDescriptor, PropertyKey, ProtoIntrinsics, TryError,
-        TryGetResult, TryHasResult, TryResult, Value, call_function, create_array_from_list,
-        js_result_into_try, object_handle, ordinary_define_own_property, same_value, unwrap_try,
+        Agent, ArrayIteratorPrototype, BUILTIN_STRING_MEMORY, Caches, Function, InternalMethods,
+        InternalSlots, JsResult, Object, OrdinaryObject, PropertyDescriptor, PropertyKey,
+        ProtoIntrinsics, TryError, TryGetResult, TryHasResult, TryResult, Value, call_function,
+        create_array_from_list, js_result_into_try, object_handle, ordinary_define_own_property,
+        same_value, unwrap_try,
     },
     engine::{Bindable, GcScope, NoGcScope},
     heap::{
         ArenaAccessSoA, ArenaAccessSoAMut, BaseIndex, CompactionLists, CreateHeapData,
         ElementArrays, ElementDescriptor, ElementDescriptorMap, ElementStorageMut,
         ElementStorageRef, ElementsVector, Heap, HeapIndexHandle, HeapMarkAndSweep,
-        HeapSweepWeakReference, WorkQueues, arena_vec_access,
+        HeapSweepWeakReference, WellKnownSymbols, WorkQueues, arena_vec_access,
     },
 };
 
@@ -187,6 +188,55 @@ impl<'a> Array<'a> {
 
     /// An array is dense if it contains no holes or getters.
     ///
+    /// Whether an element assigned at or past the Array's length is made
+    /// there and nothing else happens: `Set(A, index, value, true)` finds no
+    /// such property on the Array, asks its prototypes, and ends in
+    /// CreateDataProperty on the Array when none of them has one either.
+    ///
+    /// So: the Array has no element descriptors, can grow (it is extensible
+    /// and its length is writable), and inherits from the realm's
+    /// %Array.prototype% and that from %Object.prototype%, neither of which
+    /// has a property under an integer key (a setter or a read-only
+    /// property there would take the assignment). The keys of the two
+    /// prototypes are only looked through once some object with an
+    /// intrinsic shape, as both have, was given an integer key: the heap
+    /// notes that where such a key is added.
+    pub(crate) fn appends_plainly(self, agent: &Agent) -> bool {
+        if !self.is_trivial(agent)
+            || !self.length_writable(agent)
+            || !self.internal_extensible(agent)
+        {
+            return false;
+        }
+        let intrinsics = agent.current_realm_record().intrinsics();
+        let array_prototype = intrinsics.array_prototype();
+        if self.internal_prototype(agent) != Some(array_prototype.into()) {
+            return false;
+        }
+        // %Array.prototype% is an Array: its elements, and its other
+        // properties.
+        if array_prototype.len(agent) != 0 {
+            return false;
+        }
+        let array_prototype = intrinsics.array_prototype_backing_object();
+        let object_prototype = intrinsics.object_prototype();
+        if array_prototype.internal_prototype(agent) != Some(object_prototype.into())
+            || object_prototype.internal_prototype(agent).is_some()
+        {
+            return false;
+        }
+        if !agent.heap.intrinsic_integer_keys {
+            return true;
+        }
+        let no_integer_keys = |object: OrdinaryObject| {
+            object
+                .get_property_keys(agent)
+                .iter()
+                .all(|key| !matches!(key, PropertyKey::Integer(_)))
+        };
+        no_integer_keys(array_prototype) && no_integer_keys(object_prototype)
+    }
+
     /// A dense array's properties can be accessed without calling into
     /// JavaScript. This does not necessarily mean that all the slots in the
     /// array contain a Value; some may be None but those slots are setters
@@ -205,8 +255,11 @@ impl<'a> Array<'a> {
         self.get_elements(agent).is_trivial(agent)
     }
 
-    /// Returns the `value` as an Array if it is one `method` is
-    /// `%Array.prototype.values%`.
+    /// Returns the `value` as an Array if it is one, `method` is
+    /// `%Array.prototype.values%`, and the Array Iterator that makes is
+    /// stepped by the realm's original "next"
+    /// ([`ArrayIteratorPrototype::has_original_next`]): iterating the array
+    /// with `method` is then reading its elements in order.
     pub(crate) fn is_iterable_array(
         agent: &mut Agent,
         value: Value<'a>,
@@ -219,7 +272,8 @@ impl<'a> Array<'a> {
                         .current_realm_record()
                         .intrinsics()
                         .array_prototype_values()
-                        .into() =>
+                        .into()
+                    && ArrayIteratorPrototype::has_original_next(agent) =>
             {
                 Some(array)
             }
@@ -227,39 +281,38 @@ impl<'a> Array<'a> {
         }
     }
 
+    /// True if iterating this Array is, as far as anything can tell, reading
+    /// its elements in order: its %Symbol.iterator% method is found with
+    /// nothing run and is the realm's `%Array.prototype.values%`, and the
+    /// Array Iterator that would make is stepped by the realm's original
+    /// "next" ([`ArrayIteratorPrototype::has_original_next`]). The method is
+    /// looked for through the property cache of its key, by the shape of
+    /// the array.
+    pub(crate) fn is_iterated_by_values(self, agent: &mut Agent, gc: NoGcScope) -> bool {
+        let key = PropertyKey::Symbol(WellKnownSymbols::Iterator.into());
+        let cache = PropertyLookupCache::new(agent, key);
+        let TryResult::Continue(TryGetResult::Value(method)) =
+            self.try_get(agent, key, self.into(), Some(cache), gc)
+        else {
+            // Not found, or found only by running a getter or a Proxy's
+            // trap.
+            return false;
+        };
+        let values: Value = agent
+            .current_realm_record()
+            .intrinsics()
+            .array_prototype_values()
+            .into();
+        method == values && ArrayIteratorPrototype::has_original_next(agent)
+    }
+
     /// Returns true if it is trivially iterable, ie. it contains no element
     /// accessor descriptors and uses the Array intrinsic itrator method.
     #[cfg(any(feature = "set", feature = "weak-refs"))]
     pub(crate) fn is_trivially_iterable(self, agent: &mut Agent, gc: NoGcScope<'a, '_>) -> bool {
-        use crate::ecmascript::abstract_operations::try_get_object_method;
-        use crate::heap::WellKnownSymbols;
-        if !self.is_dense(agent) {
-            // Contains holes or getters, so cannot be iterated without looking
-            // into the prototype chain or calling getters.
-            false
-        } else {
-            let TryResult::Continue(Some(iterator_method)) = try_get_object_method(
-                agent,
-                self.into(),
-                PropertyKey::Symbol(WellKnownSymbols::Iterator.into()),
-                gc,
-            ) else {
-                // Can't get iterator method without calling a getter or Proxy
-                // method; or getting the method threw an error which we ignore
-                // here; or there is no iterator method, which will throw an
-                // error later.
-                return false;
-            };
-
-            // We got a proper iterator method; but is it the intrinsic Array
-            // values iterator method?
-            iterator_method
-                == agent
-                    .current_realm_record()
-                    .intrinsics()
-                    .array_prototype_values()
-                    .into()
-        }
+        // An array with holes or getters cannot be iterated without looking
+        // into the prototype chain or calling getters.
+        self.is_dense(agent) && self.is_iterated_by_values(agent, gc)
     }
 
     // This method creates a "shallow clone" of the elements of a simple array (no descriptors).
@@ -318,12 +371,10 @@ impl<'a> InternalSlots<'a> for Array<'a> {
     }
 
     fn internal_set_extensible(self, agent: &mut Agent, value: bool) {
-        let ArrayHeapDataMut {
-            elements: elems,
-            object_index: backing_object,
-        } = self.get_mut(agent);
-        elems.len_writable = value;
-        if let Some(object_index) = backing_object {
+        // Whether the Array takes new properties is a slot of its backing
+        // object. Its "length" stays as writable as it was: an Array that
+        // is not extensible can still be made shorter, and longer.
+        if let Some(object_index) = self.get_backing_object(agent) {
             object_index.internal_set_extensible(agent, value)
         } else if !value {
             self.create_backing_object(agent)
@@ -443,6 +494,12 @@ impl<'a> InternalMethods<'a> for Array<'a> {
             if index >= length {
                 // g. If index ≥ length and lengthDesc.[[Writable]] is false, return false.
                 if !length_writable {
+                    return TryResult::Continue(false);
+                }
+                // h. Let succeeded be ! OrdinaryDefineOwnProperty(A, P, Desc):
+                // there is no property at an index past the length, and
+                // 2. a. If extensible is false, return false.
+                if !self.internal_extensible(agent) {
                     return TryResult::Continue(false);
                 }
                 if let Err(err) = check_length_growth(agent, self, index.saturating_add(1), gc) {
@@ -926,7 +983,9 @@ fn ordinary_define_own_property_for_array(
         // Hole
 
         // a. If extensible is false, return false.
-        if !elements.writable() {
+        // Whether the Array is extensible, and not whether its "length" is
+        // writable: a hole under a read-only "length" can be filled.
+        if !array.internal_extensible(agent) {
             return false;
         }
 

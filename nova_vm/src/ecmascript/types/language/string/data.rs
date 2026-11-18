@@ -3,11 +3,20 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use core::{cell::OnceCell, hash::Hash, num::NonZeroUsize};
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use wtf8::{CodePoint, Wtf8Buf, Wtf8Str};
 
-use crate::heap::{CompactionLists, HeapMarkAndSweep, WorkQueues};
+use crate::{
+    hashing::{RandomState, TEXT_BLOCK, TextHashState},
+    heap::{CompactionLists, HeapMarkAndSweep, WorkQueues},
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct StringRecord {
@@ -24,12 +33,7 @@ impl PartialEq for StringRecord {
         {
             return true;
         }
-        match (&self.data, &other.data) {
-            (StringBuffer::Owned(a), StringBuffer::Owned(b)) => a == b,
-            (StringBuffer::Owned(a), StringBuffer::Static(b)) => a == b,
-            (StringBuffer::Static(a), StringBuffer::Owned(b)) => a == b,
-            (StringBuffer::Static(a), StringBuffer::Static(b)) => a == b,
-        }
+        self.len() == other.len() && self.as_wtf8() == other.as_wtf8()
     }
 }
 impl Eq for StringRecord {}
@@ -50,14 +54,211 @@ pub(crate) enum IndexMapping {
 pub(crate) enum StringBuffer {
     Owned(Wtf8Buf),
     Static(Wtf8Str<'static>),
+    /// A long string that a concatenation made, as one buffer. A script that
+    /// appends to it again is building text, and what it gets then is
+    /// [`StringBuffer::Appended`]; a concatenation that is used as it is pays
+    /// for neither pieces nor joining.
+    Concatenated(Wtf8Buf),
+    /// A concatenated string with more text appended: see [`AppendedText`].
+    Appended(Box<AppendedText>),
 }
 
 impl Hash for StringBuffer {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         match self {
-            StringBuffer::Owned(wtf8_buf) => wtf8_buf.hash(state),
+            StringBuffer::Owned(wtf8_buf) | StringBuffer::Concatenated(wtf8_buf) => {
+                wtf8_buf.hash(state)
+            }
             StringBuffer::Static(wtf8) => wtf8.hash(state),
+            StringBuffer::Appended(text) => text.joined().hash(state),
         }
+    }
+}
+
+/// The text of a string that was made by appending to another one, kept as
+/// the pieces it was appended from. A loop that builds a string by `s += x`
+/// makes a new string at every step; were each one a copy of the last, the
+/// loop would copy the whole text at every step. Here the new string shares
+/// the old one's pieces and adds its own, and its bytes are joined into one
+/// buffer the first time something reads them.
+///
+/// Each piece is at least twice as long as the one after it: appending
+/// takes the piece before into the new one while it is shorter than that, so
+/// a text has no more pieces than its length has bits (which also bounds how
+/// deep dropping them goes), and a byte is copied a logarithmic number of
+/// times.
+///
+/// The end of the text is not in a piece until it is long enough for one
+/// ([`LAST_BYTES`]): most steps of such a loop add a few bytes, which are
+/// then copied next to those of the steps before and allocate no piece.
+#[derive(Debug, Clone)]
+pub(crate) struct AppendedText {
+    /// The text but for its `last` bytes.
+    pieces: Arc<Piece>,
+    /// The end of the text: what was appended since the last piece was made.
+    last: [u8; LAST_BYTES],
+    last_len: u8,
+    /// Bytes of the whole text.
+    len: usize,
+    utf16_len: usize,
+    /// The string table's hash of the text, after its whole blocks.
+    hash_state: TextHashState,
+    /// Bytes of pieces that making this text allocated.
+    fresh_bytes: usize,
+    joined: OnceCell<Wtf8Buf>,
+    budget: Arc<JoinBudget>,
+}
+
+/// What the heap's appended strings may join. Joining a text allocates all of
+/// it where no allocation counter is at hand and nothing can be refused, and
+/// a script can hold many long appended strings for the price of their
+/// shared pieces; so the bytes joined since the strings were last measured
+/// are counted here, and past `cap` (the heap limit) a join does not
+/// happen: it unwinds with [`TextJoinOverLimit`], which ends the engine as
+/// out of memory. Up to the cap, the next poll or collection sees the count.
+#[derive(Debug, Default)]
+pub(crate) struct JoinBudget {
+    joined: AtomicUsize,
+    /// 0: no cap.
+    cap: AtomicUsize,
+}
+
+impl JoinBudget {
+    /// Bytes joined since [`JoinBudget::settled`].
+    pub(crate) fn joined(&self) -> usize {
+        self.joined.load(Ordering::Relaxed)
+    }
+
+    /// The strings were measured: joined texts are counted as what they are.
+    pub(crate) fn settled(&self) {
+        self.joined.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_cap(&self, cap: Option<usize>) {
+        self.cap.store(cap.unwrap_or(0), Ordering::Relaxed);
+    }
+}
+
+/// The payload a join past the heap limit unwinds with ([`JoinBudget`]): an
+/// embedder that catches unwinds reports it as out of memory. The Agent must
+/// not run again after it.
+#[derive(Debug)]
+pub struct TextJoinOverLimit;
+
+/// How many bytes of its end an appended text keeps out of its pieces
+/// ([`AppendedText::last`]).
+const LAST_BYTES: usize = 31;
+
+#[derive(Debug)]
+struct Piece {
+    bytes: Box<[u8]>,
+    before: Option<Arc<Piece>>,
+}
+
+impl Piece {
+    /// The pieces of a text that ends with `first` and then `second` after
+    /// `before`, and how many bytes that allocated. The pieces that the new
+    /// one takes in are found before anything is allocated, so that it is
+    /// allocated once, whatever it takes in.
+    fn appended(before: Option<&Arc<Piece>>, first: &[u8], second: &[u8]) -> (Arc<Piece>, usize) {
+        let mut len = first.len() + second.len();
+        let mut taken = 0usize;
+        let mut kept = before;
+        while let Some(previous) = kept
+            && previous.bytes.len() < len.saturating_mul(2)
+        {
+            len += previous.bytes.len();
+            taken += 1;
+            kept = previous.before.as_ref();
+        }
+        let mut bytes = Vec::with_capacity(len);
+        // The pieces are linked from the last one back, and few are taken
+        // in: each is walked to, the first of them first.
+        for nth in (0..taken).rev() {
+            let mut piece = before;
+            for _ in 0..nth {
+                piece = piece.and_then(|piece| piece.before.as_ref());
+            }
+            if let Some(piece) = piece {
+                bytes.extend_from_slice(&piece.bytes);
+            }
+        }
+        bytes.extend_from_slice(first);
+        bytes.extend_from_slice(second);
+        debug_assert_eq!(bytes.len(), len);
+        let piece = Arc::new(Piece {
+            bytes: bytes.into_boxed_slice(),
+            before: kept.cloned(),
+        });
+        // With the two counts that the piece is shared by.
+        let allocated = len + core::mem::size_of::<Piece>() + 2 * core::mem::size_of::<usize>();
+        (piece, allocated)
+    }
+}
+
+/// The UTF-16 code units of well-formed WTF-8: one for every code point, and
+/// one more for each that takes four bytes.
+fn utf16_len_of(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .map(|&byte| usize::from(byte & 0xC0 != 0x80) + usize::from(byte >= 0xF0))
+        .sum()
+}
+
+impl AppendedText {
+    /// The text as one buffer, joined on the first call.
+    fn joined(&self) -> Wtf8Str<'_> {
+        self.joined
+            .get_or_init(|| {
+                let joined = self.budget.joined.fetch_add(self.len, Ordering::Relaxed);
+                let cap = self.budget.cap.load(Ordering::Relaxed);
+                if cap != 0 && joined.saturating_add(self.len) > cap {
+                    // Without the panic hook: this is the heap limit at
+                    // work, not a fault to report.
+                    std::panic::resume_unwind(Box::new(TextJoinOverLimit));
+                }
+                let mut pieces = Vec::new();
+                let mut piece = Some(&self.pieces);
+                while let Some(current) = piece {
+                    pieces.push(&current.bytes);
+                    piece = current.before.as_ref();
+                }
+                let mut text = Wtf8Buf::with_capacity(self.len);
+                for bytes in pieces.into_iter().rev() {
+                    text.push_wtf8(Wtf8Str::from_wtf8_bytes(bytes));
+                }
+                text.push_wtf8(Wtf8Str::from_wtf8_bytes(self.last()));
+                text
+            })
+            .as_wtf8()
+    }
+
+    /// The end of the text that is in no piece.
+    fn last(&self) -> &[u8] {
+        &self.last[..usize::from(self.last_len)]
+    }
+
+    /// The bytes after the hashed blocks of the text: its last `count`,
+    /// fewer than [`TEXT_BLOCK`].
+    fn tail(&self) -> ([u8; TEXT_BLOCK], usize) {
+        let count = (self.len - self.hash_state.hashed()).min(TEXT_BLOCK - 1);
+        let mut tail = [0u8; TEXT_BLOCK];
+        let mut missing = count;
+        let last = self.last();
+        let take = missing.min(last.len());
+        tail[missing - take..missing].copy_from_slice(&last[last.len() - take..]);
+        missing -= take;
+        let mut piece = Some(&self.pieces);
+        while let Some(current) = piece
+            && missing > 0
+        {
+            let take = missing.min(current.bytes.len());
+            tail[missing - take..missing]
+                .copy_from_slice(&current.bytes[current.bytes.len() - take..]);
+            missing -= take;
+            piece = current.before.as_ref();
+        }
+        (tail, count)
     }
 }
 
@@ -76,11 +277,158 @@ impl StringRecord {
     /// The maximum UTF-8 length of a JS string.
     const MAX_UTF8_LENGTH: usize = Self::MAX_UTF16_LENGTH.saturating_mul(3);
 
+    /// The string's hash in the heap's string table.
+    pub(crate) fn table_hash(&self, hasher: &RandomState) -> u64 {
+        match &self.data {
+            StringBuffer::Appended(text) => {
+                let (tail, count) = text.tail();
+                RandomState::hash_text_from_state(&text.hash_state, &tail[..count])
+            }
+            _ => hasher.hash_text(self.as_bytes()),
+        }
+    }
+
+    /// Whether appending to the string continues a text that is being built
+    /// ([`StringRecord::appended`]): a concatenation made it.
+    pub(crate) fn is_being_built(&self) -> bool {
+        matches!(
+            self.data,
+            StringBuffer::Concatenated(_) | StringBuffer::Appended(_)
+        )
+    }
+
+    /// A long string that a concatenation made.
+    pub(crate) fn from_concatenation(text: Wtf8Buf) -> Self {
+        debug_assert!(text.len() > 7);
+        assert!(text.len() <= Self::MAX_UTF8_LENGTH, "String is too long.");
+        StringRecord {
+            data: StringBuffer::Concatenated(text),
+            mapping: OnceCell::new(),
+        }
+    }
+
+    /// `left` with `right` appended (no surrogate pair joined across the
+    /// two) and its hash in the string table. Nothing is joined: the new text
+    /// shares the pieces of `left`, or starts them with a copy of it.
+    pub(crate) fn appended(
+        left: &StringRecord,
+        right: &[u8],
+        hasher: &RandomState,
+        budget: &Arc<JoinBudget>,
+    ) -> (StringRecord, u64) {
+        let len = left.len() + right.len();
+        assert!(len <= Self::MAX_UTF8_LENGTH, "String is too long.");
+        // Counted from the bytes: the index table of a long text is larger
+        // than the text, and only reading by index needs it.
+        let left_utf16_len = match (&left.data, left.mapping.get()) {
+            (StringBuffer::Appended(text), _) => text.utf16_len,
+            (_, Some(_)) => left.utf16_len(),
+            _ => utf16_len_of(left.as_bytes()),
+        };
+        let utf16_len = left_utf16_len + utf16_len_of(right);
+        let mut last = [0u8; LAST_BYTES];
+        let mut last_len = 0;
+        let (pieces, hash, hash_state, fresh_bytes) = match &left.data {
+            StringBuffer::Appended(text) => {
+                let (tail, count) = text.tail();
+                let (hash, hash_state) =
+                    RandomState::hash_text_appended(&text.hash_state, &tail[..count], right);
+                let held = text.last();
+                if held.len() + right.len() <= LAST_BYTES {
+                    last_len = held.len() + right.len();
+                    last[..held.len()].copy_from_slice(held);
+                    last[held.len()..last_len].copy_from_slice(right);
+                    (text.pieces.clone(), hash, hash_state, 0)
+                } else {
+                    let (pieces, fresh_bytes) = Piece::appended(Some(&text.pieces), held, right);
+                    (pieces, hash, hash_state, fresh_bytes)
+                }
+            }
+            _ => {
+                let bytes = left.as_bytes();
+                let (_, left_state) = hasher.hash_text_keeping_state(bytes);
+                let (hash, hash_state) = RandomState::hash_text_appended(
+                    &left_state,
+                    &bytes[left_state.hashed()..],
+                    right,
+                );
+                let (first, first_bytes) = Piece::appended(None, bytes, &[]);
+                if right.len() <= LAST_BYTES {
+                    last_len = right.len();
+                    last[..last_len].copy_from_slice(right);
+                    (first, hash, hash_state, first_bytes)
+                } else {
+                    let (pieces, fresh_bytes) = Piece::appended(Some(&first), &[], right);
+                    (pieces, hash, hash_state, first_bytes + fresh_bytes)
+                }
+            }
+        };
+        let data = StringBuffer::Appended(Box::new(AppendedText {
+            pieces,
+            last,
+            // At most LAST_BYTES.
+            last_len: last_len as u8,
+            len,
+            utf16_len,
+            hash_state,
+            fresh_bytes,
+            joined: OnceCell::new(),
+            budget: budget.clone(),
+        }));
+        (
+            StringRecord {
+                data,
+                mapping: OnceCell::new(),
+            },
+            hash,
+        )
+    }
+
+    /// What making the record allocated: for an appended string its own
+    /// pieces, not the text it shares, so that a loop that appends is not
+    /// charged the whole text at every step.
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        match &self.data {
+            StringBuffer::Appended(text) => text.fresh_bytes + core::mem::size_of::<AppendedText>(),
+            _ => self.len(),
+        }
+    }
+
+    /// What a string that lives on counts for against the heap limit: all of
+    /// its text, also where an appended string shares it with others. The
+    /// pieces make appending fast, not free: every appended string can be
+    /// read, and reading joins its whole text, so the strings a script may
+    /// keep are those whose joined texts fit the limit together.
+    pub(crate) fn counted_bytes(&self) -> usize {
+        match &self.data {
+            StringBuffer::Appended(text) => {
+                let joined = if text.joined.get().is_some() {
+                    text.len
+                } else {
+                    0
+                };
+                text.len + joined + core::mem::size_of::<AppendedText>()
+            }
+            _ => self.len(),
+        }
+    }
+
+    /// Called by the collector for a string that lives on: an appended text
+    /// that was joined becomes that one buffer and lets go of its pieces.
+    fn settle(&mut self) {
+        if let StringBuffer::Appended(text) = &mut self.data
+            && let Some(joined) = text.joined.take()
+        {
+            self.data = StringBuffer::Concatenated(joined);
+        }
+    }
+
     /// Get the byte length of the string.
     pub(crate) fn len(&self) -> usize {
         match &self.data {
-            StringBuffer::Owned(buf) => buf.len(),
+            StringBuffer::Owned(buf) | StringBuffer::Concatenated(buf) => buf.len(),
             StringBuffer::Static(buf) => buf.len(),
+            StringBuffer::Appended(text) => text.len,
         }
     }
 
@@ -147,6 +495,11 @@ impl StringRecord {
 
     /// Get the WTF-16 length of the string.
     pub(crate) fn utf16_len(&self) -> usize {
+        // Known without joining the text, so that a loop can ask a string it
+        // is building for its length.
+        if let StringBuffer::Appended(text) = &self.data {
+            return text.utf16_len;
+        }
         match self.index_mapping() {
             IndexMapping::Ascii => self.len(),
             IndexMapping::NonAscii { mapping } => mapping.len(),
@@ -361,8 +714,9 @@ impl StringRecord {
 
     pub(crate) fn as_wtf8(&self) -> Wtf8Str<'_> {
         match &self.data {
-            StringBuffer::Owned(buf) => buf.as_wtf8(),
+            StringBuffer::Owned(buf) | StringBuffer::Concatenated(buf) => buf.as_wtf8(),
             StringBuffer::Static(buf) => *buf,
+            StringBuffer::Appended(text) => text.joined(),
         }
     }
 
@@ -416,5 +770,74 @@ impl HeapMarkAndSweep for StringRecord {
             data: _,
             mapping: _,
         } = self;
+        self.settle();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lengths of the pieces of an appended text, the last one first.
+    fn piece_lengths(record: &StringRecord) -> Vec<usize> {
+        let StringBuffer::Appended(text) = &record.data else {
+            panic!("not an appended text");
+        };
+        let mut lengths = Vec::new();
+        let mut piece = Some(&text.pieces);
+        while let Some(current) = piece {
+            lengths.push(current.bytes.len());
+            piece = current.before.as_ref();
+        }
+        lengths
+    }
+
+    fn appended_in_steps(sizes: impl Iterator<Item = usize>) {
+        let hasher = RandomState::new();
+        let budget = Arc::new(JoinBudget::default());
+        let mut expected = std::string::String::from("the start of the text");
+        let mut text = StringRecord::from_concatenation(Wtf8Buf::from_str(&expected));
+        for (step, size) in sizes.enumerate() {
+            let added: std::string::String = (0..size)
+                .map(|i| char::from(b'a' + ((step + i) % 26) as u8))
+                .collect();
+            let (next, hash) = StringRecord::appended(&text, added.as_bytes(), &hasher, &budget);
+            expected.push_str(&added);
+            assert_eq!(hash, hasher.hash_text(expected.as_bytes()), "step {step}");
+            assert_eq!(next.len(), expected.len());
+            assert_eq!(next.utf16_len(), expected.len());
+            let lengths = piece_lengths(&next);
+            assert!(lengths.len() <= usize::BITS as usize, "step {step}");
+            for pair in lengths.windows(2) {
+                assert!(pair[1] >= 2 * pair[0], "step {step}: {lengths:?}");
+            }
+            // The text before is what it was, whatever was appended to it.
+            if step % 97 == 0 {
+                assert_eq!(
+                    text.as_bytes(),
+                    &expected.as_bytes()[..expected.len() - size]
+                );
+                assert_eq!(next.as_bytes(), expected.as_bytes());
+            }
+            text = next;
+        }
+        assert_eq!(
+            text.table_hash(&hasher),
+            hasher.hash_text(expected.as_bytes())
+        );
+        assert_eq!(text.as_bytes(), expected.as_bytes());
+    }
+
+    #[test]
+    fn an_appended_text_has_few_pieces_whatever_is_appended() {
+        // One byte at a time, and sizes around what a text keeps of its end.
+        appended_in_steps(core::iter::repeat_n(1, 3000));
+        appended_in_steps((0..600).map(|step| LAST_BYTES - 2 + step % 5));
+        appended_in_steps((0..400).map(|step| [1, 70, 3, 31, 32, 200, 5][step % 7]));
+        // Each shorter than the one before: no piece takes in the next one
+        // by being merely longer than it.
+        appended_in_steps((1..=300).rev());
+        // And each longer.
+        appended_in_steps(1..=300);
     }
 }

@@ -9,15 +9,15 @@ use crate::{
         Frozen, InternalMethods, InternalSlots, IteratorRecord, JsResult, Object, OrdinaryObject,
         PropertyDescriptor, PropertyKey, ProtoIntrinsics, Realm, Sealed, String, TryResult, Value,
         builders::BuiltinFunctionBuilder, create_array_from_list, define_property_or_throw,
-        enumerable_own_keys, enumerable_own_properties, get, get_iterator, get_method,
-        group_by_property, has_own_property, if_abrupt_close_iterator, iterator_close_with_error,
-        iterator_step_value, ordinary_create_from_constructor,
-        ordinary_object_create_with_intrinsics, require_object_coercible, same_value, set,
-        set_integrity_level, test_integrity_level, throw_not_callable, to_object, to_property_key,
-        to_property_key_simple, try_create_data_property, try_result_into_js, unwrap_try,
+        enumerable_own_keys, enumerable_own_properties, get, get_iterator, group_by_property,
+        has_own_property, if_abrupt_close_iterator, iterator_close_with_error, iterator_step_value,
+        ordinary_create_from_constructor, ordinary_object_create_with_intrinsics,
+        require_object_coercible, same_value, set, set_integrity_level, test_integrity_level,
+        throw_not_callable, to_object, to_property_key, to_property_key_simple,
+        try_create_data_property, try_result_into_js, unwrap_try,
     },
     engine::{Bindable, GcScope, Scopable, ScopableCollection, Scoped},
-    heap::{IntrinsicConstructorIndexes, ObjectEntry, WellKnownSymbols},
+    heap::{IntrinsicConstructorIndexes, ObjectEntry},
 };
 
 pub(crate) struct ObjectConstructor;
@@ -579,41 +579,19 @@ impl ObjectConstructor {
         agent: &mut Agent,
         _: Value,
         arguments: ArgumentsList,
-        mut gc: GcScope<'gc, '_>,
+        gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
-        let mut iterable = arguments.get(0).bind(gc.nogc());
+        let iterable = arguments.get(0).bind(gc.nogc());
         // Fast path: Simple, dense array of N simple, dense arrays.
-        if matches!(iterable, Value::Array(_)) {
-            let scoped_iterable = iterable.scope(agent, gc.nogc());
-            let array_iterator = get_method(
-                agent,
-                agent
-                    .current_realm_record()
-                    .intrinsics()
-                    .array_prototype()
-                    .into(),
-                WellKnownSymbols::Iterator.into(),
-                gc.reborrow(),
-            )
-            .unbind()?
-            .bind(gc.nogc());
-            iterable = scoped_iterable.take(agent).bind(gc.nogc());
-            let Value::Array(entries_array) = iterable else {
-                unreachable!()
-            };
-            // SAFETY: If the iterator of the array is the intrinsic array
-            // values iterator and the array is simple and dense, then we know
-            // the behaviour of the iterator (access elements one by one) and
-            // we know that accessing the elements will not trigger calls into
-            // JavaScript. Hence, we can access the elements directly.
-            if array_iterator
-                == Some(
-                    agent
-                        .current_realm_record()
-                        .intrinsics()
-                        .array_prototype_values()
-                        .into(),
-                )
+        if let Value::Array(entries_array) = iterable {
+            // If iterating the array is reading its elements in order (the
+            // array's own iterator method, found with nothing run, is the
+            // intrinsic array values iterator, stepped by its original
+            // "next") and the array is simple and dense, then we know the
+            // behaviour of the iterator (access elements one by one) and
+            // we know that accessing the elements will not trigger calls
+            // into JavaScript. Hence, we can access the elements directly.
+            if entries_array.is_iterated_by_values(agent, gc.nogc())
                 && entries_array.is_simple(agent)
                 && entries_array.is_dense(agent)
             {

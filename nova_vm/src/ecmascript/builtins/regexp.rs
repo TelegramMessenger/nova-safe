@@ -375,8 +375,9 @@ impl<'a> InternalMethods<'a> for RegExp<'a> {
                 self.get_mut(agent).last_index = new_last_index;
                 // If we we set a value that is not a valid index or undefined,
                 // we need to create the backing object and set the actual
-                // value there.
-                if !new_last_index.is_valid() && value.is_undefined() {
+                // value there. (Undefined is what the slot stands for where
+                // it holds no index and there is no backing object.)
+                if !new_last_index.is_valid() && !value.is_undefined() {
                     unwrap_try(self.create_backing_object(agent).try_set(
                         agent,
                         property_key,

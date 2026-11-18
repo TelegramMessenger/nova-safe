@@ -711,6 +711,11 @@ pub(crate) fn is_strictly_equal<'a>(
 ) -> bool {
     let (x, y) = (x.into(), y.into());
 
+    // Two integers are Numbers that are equal where they are the same.
+    if let (Value::Integer(x), Value::Integer(y)) = (x, y) {
+        return x.into_i64() == y.into_i64();
+    }
+
     // 1. If Type(x) is not Type(y), return false.
     if !is_same_type(x, y) {
         return false;

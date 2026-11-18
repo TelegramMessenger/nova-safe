@@ -9,14 +9,15 @@ use crate::hashing::AHasher;
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, ArrayHeap, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinGetter,
-        BuiltinIntrinsicConstructor, ExceptionType, Function, IteratorRecord, JsResult, Map,
-        MapHeapData, MapPrototypeSet, Object, PropertyKey, ProtoIntrinsics, Realm, String,
-        TryError, TryGetResult, Value, builders::BuiltinFunctionBuilder, call_function,
-        canonicalize_keyed_collection_key, create_array_from_list, get, get_iterator, get_method,
-        group_by_collection, handle_try_get_result, if_abrupt_close_iterator, is_callable,
-        iterator_close_with_error, iterator_step_value, ordinary_create_from_constructor,
-        same_value, throw_not_callable, try_get,
+        Agent, ArgumentsList, ArrayHeap, ArrayIteratorPrototype, BUILTIN_STRING_MEMORY, Behaviour,
+        Builtin, BuiltinGetter, BuiltinIntrinsicConstructor, ExceptionType, Function,
+        IteratorRecord, JsResult, Map, MapHeapData, MapPrototypeSet, Object, PropertyKey,
+        ProtoIntrinsics, Realm, String, TryError, TryGetResult, Value,
+        builders::BuiltinFunctionBuilder, call_function, canonicalize_keyed_collection_key,
+        create_array_from_list, get, get_iterator, get_method, group_by_collection,
+        handle_try_get_result, if_abrupt_close_iterator, is_callable, iterator_close_with_error,
+        iterator_step_value, ordinary_create_from_constructor, same_value, throw_not_callable,
+        try_get,
     },
     engine::{Bindable, GcScope, Scopable},
     heap::{
@@ -291,6 +292,7 @@ pub(crate) fn add_entries_from_iterable_map_constructor<'a>(
                         .array_prototype_values()
                         .into(),
                 )
+                && ArrayIteratorPrototype::has_original_next(agent)
             {
                 let arr_iterable = scoped_iterable.get(agent).bind(gc.nogc());
                 let Heap {

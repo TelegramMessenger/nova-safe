@@ -10,6 +10,7 @@ use oxc_ast::{
 
 use super::CompileExpressionVariants;
 
+use crate::ecmascript::String;
 #[cfg(feature = "typescript")]
 use crate::engine::bytecode::bytecode_compiler::PlaceOrValue;
 use crate::engine::{
@@ -27,6 +28,73 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Assign
     }
 }
 
+/// `object[key] = value` with the object and the key kept on the stack:
+/// the order of evaluation is the one of the Reference way (the object, the
+/// key, the value, then the key made a property key as the assignment is
+/// made).
+fn compile_element_assignment<'s, 'gc>(
+    target: &'s ast::ComputedMemberExpression<'s>,
+    right: &'s ast::Expression<'s>,
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+) -> Result<ValueOutput<'gc>, ExpressionError> {
+    // 1. Let baseReference be ? Evaluation of MemberExpression.
+    // 2. Let baseValue be ? GetValue(baseReference).
+    target.object.compile(ctx)?.get_value(ctx)?;
+    ctx.add_instruction(Instruction::Load);
+    let object_on_stack = ctx.mark_stack_value();
+    // 3. Let propertyNameReference be ? Evaluation of Expression.
+    // 4. Let propertyNameValue be ? GetValue(propertyNameReference).
+    if let Err(err) = target
+        .expression
+        .compile(ctx)
+        .and_then(|r| r.get_value(ctx))
+    {
+        object_on_stack.forget(ctx);
+        return Err(err);
+    }
+    ctx.add_instruction(Instruction::Load);
+    let key_on_stack = ctx.mark_stack_value();
+    let rval = match right.compile(ctx).and_then(|r| r.get_value(ctx)) {
+        Ok(rval) => rval,
+        Err(err) => {
+            key_on_stack.forget(ctx);
+            object_on_stack.forget(ctx);
+            return Err(err);
+        }
+    };
+    key_on_stack.forget(ctx);
+    object_on_stack.forget(ctx);
+    ctx.add_instruction(Instruction::PutValueWithExpressionKey);
+    Ok(rval)
+}
+
+/// `object.name = value` with the object kept on the stack: the order of
+/// evaluation is the one of the Reference way (the object, the value, then
+/// the object made an Object as the assignment is made).
+fn compile_named_assignment<'s, 'gc>(
+    target: &'s ast::StaticMemberExpression<'s>,
+    name: String<'gc>,
+    right: &'s ast::Expression<'s>,
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+) -> Result<ValueOutput<'gc>, ExpressionError> {
+    // 1. Let baseReference be ? Evaluation of MemberExpression.
+    // 2. Let baseValue be ? GetValue(baseReference).
+    target.object.compile(ctx)?.get_value(ctx)?;
+    ctx.add_instruction(Instruction::Load);
+    let object_on_stack = ctx.mark_stack_value();
+    let rval = match right.compile(ctx).and_then(|r| r.get_value(ctx)) {
+        Ok(rval) => rval,
+        Err(err) => {
+            object_on_stack.forget(ctx);
+            return Err(err);
+        }
+    };
+    object_on_stack.forget(ctx);
+    let cache = ctx.create_property_lookup_cache(name.to_property_key());
+    ctx.add_instruction_with_identifier_and_cache(Instruction::PutPropertyWithCache, name, cache);
+    Ok(rval)
+}
+
 /// With `keep_value` false the value of a plain or compound assignment is not
 /// left in the result register: the caller discards it.
 pub(super) fn compile_assignment_expression<'s, 'gc>(
@@ -35,6 +103,32 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
     keep_value: bool,
 ) -> Result<ValueOutput<'gc>, ExpressionError> {
     {
+        // `a[i] = v` whose value nothing uses: the object and the key stay
+        // on the stack while the value is evaluated, and one instruction
+        // assigns, with no Reference to make, keep and take back.
+        if !keep_value
+            && this.operator.is_assign()
+            && let ast::AssignmentTarget::ComputedMemberExpression(target) = &this.left
+            && !target.optional
+            && !target.object.is_super()
+            && !target.expression.is_literal()
+            && ctx.optional_chains.is_none()
+        {
+            return compile_element_assignment(target, &this.right, ctx);
+        }
+        // `o.x = v` likewise, with only the object to keep.
+        if !keep_value
+            && this.operator.is_assign()
+            && let ast::AssignmentTarget::StaticMemberExpression(target) = &this.left
+            && !target.optional
+            && !target.object.is_super()
+            && ctx.optional_chains.is_none()
+        {
+            let name = ctx.create_string(target.property.name.as_str());
+            if ctx.property_name_fits(name.to_property_key()) {
+                return compile_named_assignment(target, name, &this.right, ctx);
+            }
+        }
         let mut do_named_evaluation = false;
         // 1. Let lref be ? Evaluation of LeftHandSideExpression.
         let lref = match &this.left {
@@ -107,6 +201,7 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
             | ast::AssignmentTarget::TSSatisfiesExpression(_) => unreachable!(),
             ast::AssignmentTarget::TSTypeAssertion(_) => unreachable!(),
         };
+        let lref = lref.assignment_target(ctx, !this.operator.is_assign());
 
         if this.operator.is_assign() {
             let push_reference = lref.has_reference() && !this.right.is_literal();
@@ -415,7 +510,8 @@ macro_rules! impl_assignment_target_variants {
                     &'s self,
                     ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
                 ) -> Result<Place<'s, 'gc>, ExpressionError> {
-                    compile_simple_target_variants!($ty, self, ctx)
+                    let place = compile_simple_target_variants!($ty, self, ctx)?;
+                    Ok(place.assignment_target(ctx, false))
                 }
 
                 fn compile_pattern_target<'a, 'gc, 'scope>(
@@ -482,7 +578,8 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
     type Output = Result<Place<'s, 'gc>, ExpressionError>;
 
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        compile_simple_target_variants!(SimpleAssignmentTarget, self, ctx)
+        let place = compile_simple_target_variants!(SimpleAssignmentTarget, self, ctx)?;
+        Ok(place.assignment_target(ctx, false))
     }
 }
 
@@ -956,7 +1053,7 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
             // result: binding / init
             // stack: []
         }
-        let place = self.binding.compile(ctx);
+        let place = self.binding.compile(ctx).assignment_target(ctx, false);
         // result: binding / init
         // stack: []
         // reference: &binding

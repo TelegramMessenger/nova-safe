@@ -7,31 +7,32 @@ use oxc_span::Span;
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, BigInt, BuiltinConstructorArgs,
-        ConstructorStatus, ECMAScriptFunction, Environment, ExceptionType, Function,
-        InternalMethods, InternalSlots, JsResult, Number, Numeric, Object,
+        Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, BigInt, BindingSite,
+        BuiltinConstructorArgs, ConstructorStatus, ECMAScriptFunction, Environment, ExceptionType,
+        Function, InternalMethods, InternalSlots, JsResult, Number, Numeric, Object,
         OrdinaryFunctionCreateParams, OrdinaryObject, Primitive, PrivateMethod, Promise,
         PropertyDescriptor, PropertyKey, PropertyKeySet, PropertyLookupCache, ProtoIntrinsics,
         Reference, ScriptOrModule, SetFunctionNamePrefix, SetResult, String, TryError,
-        TryGetValueContinue, TryHasResult, TryResult, Value, array_create, call, call_function,
-        call_proxy_set, construct, copy_data_properties, copy_data_properties_into_object,
-        create_builtin_constructor, create_data_property_or_throw,
-        create_unmapped_arguments_object, define_property_or_throw, evaluate_import_call,
-        get_this_environment, get_this_value, get_value, has_property,
-        initialize_derived_instance_elements, is_constructor, is_less_than, is_loosely_equal,
-        is_private_reference, is_property_reference, is_strictly_equal, is_super_reference,
-        is_unresolvable_reference, iterator_complete, iterator_value, make_constructor,
-        make_method, new_class_static_element_environment, new_declarative_environment,
-        new_private_environment, ordinary_function_create, ordinary_object_create_with_intrinsics,
-        perform_eval, private_element_find, put_value, resolve_binding, resolve_private_identifier,
-        resolve_this_binding, return_pooled_arguments_vec, set, set_function_name,
-        throw_no_proxy_private_names, throw_read_undefined_or_null_error, to_boolean, to_number,
-        to_number_primitive, to_numeric, to_numeric_primitive, to_object, to_property_key,
-        to_property_key_complex, to_property_key_primitive, to_property_key_simple, to_string,
-        to_string_primitive, try_copy_data_properties_into_object, try_create_data_property,
+        TryGetValueContinue, TryHasResult, TryResult, Value, array_create, binding_site_of, call,
+        call_function, call_proxy_set, construct, copy_data_properties,
+        copy_data_properties_into_object, create_builtin_constructor,
+        create_data_property_or_throw, create_unmapped_arguments_object, define_property_or_throw,
+        evaluate_import_call, get_this_environment, get_this_value, get_value,
+        global_scope_reference, has_property, initialize_derived_instance_elements, is_constructor,
+        is_less_than, is_loosely_equal, is_private_reference, is_property_reference,
+        is_strictly_equal, is_super_reference, is_unresolvable_reference, iterator_complete,
+        iterator_value, make_constructor, make_method, new_class_static_element_environment,
+        new_declarative_environment, new_private_environment, ordinary_function_create,
+        ordinary_object_create_with_intrinsics, perform_eval, private_element_find, put_value,
+        resolve_binding, resolve_private_identifier, resolve_this_binding,
+        return_pooled_arguments_vec, set, set_function_name, throw_no_proxy_private_names,
+        throw_read_undefined_or_null_error, to_boolean, to_number, to_number_primitive, to_numeric,
+        to_numeric_primitive, to_object, to_property_key, to_property_key_complex,
+        to_property_key_primitive, to_property_key_simple, to_string, to_string_primitive,
+        try_copy_data_properties_into_object, try_create_data_property,
         try_define_property_or_throw, try_get_value, try_has_property,
-        try_initialize_referenced_binding, try_put_value, try_resolve_binding, try_result_into_js,
-        try_result_into_option_js, unwrap_try,
+        try_initialize_referenced_binding, try_put_value, try_resolve_binding,
+        try_resolve_binding_at_site, try_result_into_js, try_result_into_option_js, unwrap_try,
     },
     engine::{
         ActiveIterator, Bindable, GcScope, NoGcScope, Scopable, ScopableCollection, Scoped,
@@ -81,6 +82,29 @@ pub(super) fn execute_array_create<'gc>(
 ) -> JsResult<'gc, ()> {
     let result = array_create(agent, 0, instr.get_first_index(), None, gc)?;
     vm.result = Some(result.unbind().into());
+    Ok(())
+}
+
+/// An Array of the values on top of the stack, in the order they were
+/// pushed in: what creating an empty Array and CreateDataPropertyOrThrow of
+/// each value in turn comes to, on an Array that nothing else has seen.
+pub(super) fn execute_array_from_stack<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    instr: Instr,
+    gc: NoGcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let count = instr.get_first_index();
+    let first = vm.stack.len() - count;
+    let array = array_create(agent, count, count, None, gc)?;
+    for (slot, element) in array.as_mut_slice(agent).iter_mut().zip(&vm.stack[first..]) {
+        *slot = Some(*element);
+    }
+    // The elements count for the heap's size as elements defined one by
+    // one do.
+    agent.heap.alloc_counter += count * core::mem::size_of::<Option<Value>>();
+    vm.stack.truncate(first);
+    vm.result = Some(array.unbind().into());
     Ok(())
 }
 
@@ -199,6 +223,149 @@ pub(super) fn execute_resolve_binding<'gc>(
 
     vm.reference = Some(reference.unbind());
     Ok(())
+}
+
+/// ResolveBinding where the scope chain is fixed: the name is looked for
+/// where it was found the last time (BindingSite), and only when it is not
+/// there resolved through the chain, which is then remembered.
+#[inline(always)]
+pub(super) fn execute_resolve_binding_at_site<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let identifier = executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
+    let site = executable.fetch_binding_site(agent, instr.get_second_index());
+    let strict = agent.is_evaluating_strict_code();
+    if let Some(reference) = try_resolve_binding_at_site(agent, site, identifier, strict, gc.nogc())
+    {
+        vm.reference = Some(reference.unbind());
+        return Ok(());
+    }
+    execute_resolve_binding_at_site_cold(agent, vm, executable, instr, site, false, gc)
+}
+
+/// What is left of the instructions for a name of the global scope when the
+/// name is not where it is remembered to be: the name is resolved through
+/// the chain, or the Reference already made of it is read or written, as
+/// GetValue and PutValue do it.
+///
+/// One function of its own, so that the instruction loop's frame, which
+/// every nested call repeats, holds none of this.
+#[inline(never)]
+pub(super) fn execute_global_name_the_long_way<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    match instr.kind {
+        Instruction::ResolveGlobalAtSite => {
+            let site = executable.fetch_binding_site(agent, instr.get_second_index());
+            execute_resolve_binding_at_site_cold(agent, vm, executable, instr, site, true, gc)
+        }
+        Instruction::GetGlobalAtSite => {
+            execute_get_binding_at_site(agent, vm, executable, instr, true, gc)
+        }
+        Instruction::PutGlobalAtSite => {
+            execute_put_binding_at_site(agent, vm, executable, instr, true, gc)
+        }
+        Instruction::PutValueAtSite => execute_put_value(agent, vm, executable, instr, false, gc),
+        _ => unreachable!(),
+    }
+}
+
+/// ResolveBinding the long way, remembering where the name was found.
+/// `to_root`: the scope chain is fixed out to the global scope of a Script,
+/// so a place there is remembered as well.
+#[inline(never)]
+fn execute_resolve_binding_at_site_cold<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    site: BindingSite,
+    to_root: bool,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    execute_resolve_binding(agent, vm, executable.clone(), instr, gc.reborrow()).unbind()?;
+    // A name once found outside the declarative records stays there. In the
+    // global scope it can move (a lexical declaration is added, a property
+    // of the global object is deleted and made again), so there it is looked
+    // for again whenever it is not where it was.
+    if (site == BindingSite::UNKNOWN || (to_root && site != BindingSite::ELSEWHERE))
+        && let Some(reference) = &vm.reference
+    {
+        let found = binding_site_of(agent, reference, to_root, gc.nogc());
+        if found != site {
+            executable.set_binding_site(agent, instr.get_second_index(), found);
+        }
+    }
+    Ok(())
+}
+
+/// GetBindingAtSite when the name was not where it is remembered to be, or
+/// is not to be read from there (uninitialized): it is resolved through the
+/// chain, which is remembered, and read as GetValue reads it.
+pub(super) fn execute_get_binding_at_site<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    to_root: bool,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let site = executable.fetch_binding_site(agent, instr.get_second_index());
+    execute_resolve_binding_at_site_cold(
+        agent,
+        vm,
+        executable.clone(),
+        instr,
+        site,
+        to_root,
+        gc.reborrow(),
+    )
+    .unbind()?;
+    execute_get_value(agent, vm, executable, instr, false, false, gc)
+}
+
+/// PutBindingAtSite when the name was not where it is remembered to be, or
+/// is not to be written there (immutable, uninitialized): it is resolved
+/// through the chain, which is remembered, and written as PutValue writes
+/// it.
+pub(super) fn execute_put_binding_at_site<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    to_root: bool,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let site = executable.fetch_binding_site(agent, instr.get_second_index());
+    if to_root && site.is_global() {
+        // The name is declared in the global scope, or was found there when
+        // this assignment read it: the Reference that was resolved then is
+        // to the global scope, and resolving the name again would ask the
+        // global object for it once more than the assignment does.
+        let name = executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
+        let strict = agent.is_evaluating_strict_code();
+        vm.reference = Some(global_scope_reference(agent, name, strict, gc.nogc()).unbind());
+    } else {
+        execute_resolve_binding_at_site_cold(
+            agent,
+            vm,
+            executable.clone(),
+            instr,
+            site,
+            to_root,
+            gc.reborrow(),
+        )
+        .unbind()?;
+    }
+    execute_put_value(agent, vm, executable, instr, false, gc)
 }
 
 pub(super) fn execute_resolve_binding_with_cache<'gc>(
@@ -340,6 +507,10 @@ pub(super) fn execute_to_numeric<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let arg0 = vm.result.unwrap().bind(gc.nogc());
+    // A Number is its own numeric value: the counter of nearly every loop.
+    if Number::try_from(arg0).is_ok() {
+        return Ok(());
+    }
     let result = if let Ok(arg0) = Primitive::try_from(arg0) {
         to_numeric_primitive(agent, arg0.unbind(), gc.into_nogc())
     } else {
@@ -386,6 +557,15 @@ pub(super) fn execute_apply_addition_binary_operator<'gc>(
         BigInt::add(agent, lnum, rnum)
             .check_size(agent, gc.into_nogc())?
             .into()
+    } else if let Some((lprim, rprim)) = string_and_primitive(lval, rval) {
+        // A String and a Number, or another primitive that ToString takes:
+        // nothing is converted that could run a script, and the Vm stays
+        // where it is.
+        let gc = gc.into_nogc();
+        let lstr = to_string_primitive(agent, lprim.bind(gc), gc)?;
+        let rstr = to_string_primitive(agent, rprim.bind(gc), gc)?;
+        agent.check_concat_length(lstr, rstr, gc)?;
+        String::concat(agent, [lstr, rstr], gc).into()
     } else {
         with_vm_gc(
             agent,
@@ -396,6 +576,23 @@ pub(super) fn execute_apply_addition_binary_operator<'gc>(
     };
     vm.result = Some(result.unbind());
     Ok(())
+}
+
+/// The operands of a `+` as primitives, where one is a String and the other
+/// a primitive that ToString converts: not a Symbol, which it throws for.
+fn string_and_primitive<'a>(
+    lval: Value<'a>,
+    rval: Value<'a>,
+) -> Option<(Primitive<'a>, Primitive<'a>)> {
+    let (Ok(lprim), Ok(rprim)) = (Primitive::try_from(lval), Primitive::try_from(rval)) else {
+        return None;
+    };
+    let is_string = |primitive: Primitive| {
+        matches!(primitive, Primitive::String(_) | Primitive::SmallString(_))
+    };
+    let is_symbol = |primitive: Primitive| matches!(primitive, Primitive::Symbol(_));
+    ((is_string(lprim) || is_string(rprim)) && !is_symbol(lprim) && !is_symbol(rprim))
+        .then_some((lprim, rprim))
 }
 
 pub(super) fn execute_apply_binary_operator<'gc>(
@@ -2014,36 +2211,398 @@ pub(super) fn execute_make_super_property_reference_with_identifier_key<'gc>(
     Ok(())
 }
 
+/// A comparison with the jump on it, or `++` or `--` of a stack slot, as
+/// the instructions it was fused from: the comparison or the conversion can
+/// run a script.
+///
+/// One function of its own, like the fallbacks for global names: the
+/// instruction loop's frame holds none of this.
+#[inline(never)]
+pub(super) fn execute_fused_instruction<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    match instr.kind {
+        Instruction::GetValueWithExpressionKey => {
+            // EvaluatePropertyAccessWithExpressionKey, GetValue
+            execute_evaluate_property_access_with_expression_key(agent, vm, gc.nogc());
+            execute_get_value(agent, vm, executable, instr, false, false, gc)
+        }
+        Instruction::PutValueWithExpressionKey => {
+            // The key goes where EvaluatePropertyAccessWithExpressionKey
+            // takes it from, the value back where PutValue does.
+            let value = vm.result.take().unwrap();
+            vm.result = vm.stack.pop();
+            execute_evaluate_property_access_with_expression_key(agent, vm, gc.nogc());
+            vm.result = Some(value);
+            execute_put_value(agent, vm, executable, instr, false, gc)
+        }
+        Instruction::GetValueWithIndexKey => {
+            // Load, GetValueFromIndex
+            let key = vm.stack[instr.get_first_index()];
+            vm.execute_load();
+            vm.result = Some(key);
+            // EvaluatePropertyAccessWithExpressionKey, GetValue
+            execute_evaluate_property_access_with_expression_key(agent, vm, gc.nogc());
+            execute_get_value(agent, vm, executable, instr, false, false, gc)
+        }
+        Instruction::LoadBindingAtSite => {
+            // GetBindingAtSite, Load
+            execute_get_binding_at_site(agent, vm, executable, instr, false, gc)?;
+            vm.execute_load();
+            Ok(())
+        }
+        Instruction::ApplyBinaryOperatorWithConstant
+        | Instruction::ApplyBinaryOperatorToIndexWithConstant
+        | Instruction::ApplyBinaryOperatorAndMove => {
+            let operation = if instr.kind == Instruction::ApplyBinaryOperatorWithConstant {
+                instr.get_second_index()
+            } else {
+                instr.get_first_index()
+            };
+            let (slot, operator) = Instruction::fused_slot_and_operator(operation);
+            if instr.kind != Instruction::ApplyBinaryOperatorAndMove {
+                let (left, constant) = if instr.kind == Instruction::ApplyBinaryOperatorWithConstant
+                {
+                    // Load
+                    (vm.result.take().unwrap(), instr.get_first_index())
+                } else {
+                    // LoadFromIndex
+                    (vm.stack[slot], instr.get_second_index())
+                };
+                vm.stack.push(left);
+                // StoreConstant
+                vm.result = Some(
+                    executable
+                        .fetch_constant(agent, constant, gc.nogc())
+                        .unbind(),
+                );
+            }
+            // The operator
+            match Instruction::fused_operator(operator) {
+                Some(Instruction::ApplyAdditionBinaryOperator) => {
+                    execute_apply_addition_binary_operator(agent, vm, gc)?
+                }
+                Some(kind) => execute_apply_binary_operator(agent, vm, kind, gc)?,
+                None => unreachable!("a fused instruction without its operator"),
+            }
+            if Instruction::fused_pushes(operation) {
+                // Load
+                vm.execute_load();
+            } else if instr.kind == Instruction::ApplyBinaryOperatorAndMove {
+                // PutValueToIndex
+                vm.stack[slot] = vm.result.take().unwrap();
+            }
+            Ok(())
+        }
+        Instruction::LoadPropertyWithCachePushReference => {
+            // GetPropertyWithCacheKeepReference:
+            // EvaluatePropertyAccessWithIdentifierKey,
+            // GetValueWithCacheKeepReference
+            execute_evaluate_property_access_with_identifier_key(
+                agent,
+                vm,
+                executable.clone(),
+                instr,
+                gc.nogc(),
+            );
+            let get_value = Instr::new_with_arg(
+                Instruction::GetValueWithCacheKeepReference,
+                instr.get_second_index() as u16,
+            );
+            execute_get_value(agent, vm, executable, get_value, true, true, gc)?;
+            // PushReference, Load
+            vm.execute_push_reference(agent);
+            vm.execute_load();
+            Ok(())
+        }
+        Instruction::IncrementIndex | Instruction::DecrementIndex => {
+            let slot = instr.get_first_index();
+            // GetValueFromIndex, ToNumeric
+            vm.result = Some(vm.stack[slot]);
+            execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+            // Increment or Decrement
+            if instr.kind == Instruction::IncrementIndex {
+                execute_increment(agent, vm, gc.into_nogc());
+            } else {
+                execute_decrement(agent, vm, gc.into_nogc());
+            }
+            // PutValueToIndex
+            vm.stack[slot] = vm.result.take().unwrap();
+            Ok(())
+        }
+        kind if kind.loop_test().is_some() => {
+            let Some((step, comparison, constant)) = kind.loop_test() else {
+                unreachable!()
+            };
+            let target = Instr::wide_jump_target(&executable.get_instructions(agent), vm.ip);
+            let slot = instr.get_first_index();
+            if step != 0 {
+                // IncrementIndex or DecrementIndex: GetValueFromIndex,
+                // ToNumeric, Increment or Decrement, PutValueToIndex
+                vm.result = Some(vm.stack[slot]);
+                execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+                if step > 0 {
+                    execute_increment(agent, vm, gc.nogc());
+                } else {
+                    execute_decrement(agent, vm, gc.nogc());
+                }
+                vm.stack[slot] = vm.result.take().unwrap();
+            }
+            // LoadFromIndexStoreConstant or LoadFromIndexGetFromIndex
+            let left = vm.stack[slot];
+            vm.stack.push(left);
+            vm.result = Some(if constant {
+                executable
+                    .fetch_constant(agent, instr.get_second_index(), gc.nogc())
+                    .unbind()
+            } else {
+                vm.stack[instr.get_second_index()]
+            });
+            // The comparison
+            match comparison {
+                Instruction::LessThan => execute_less_than(agent, vm, gc),
+                Instruction::LessThanEquals => execute_less_than_equals(agent, vm, gc),
+                Instruction::GreaterThan => execute_greater_than(agent, vm, gc),
+                _ => execute_greater_than_equals(agent, vm, gc),
+            }?;
+            // JumpIfTrue
+            let result = vm.result.take().unwrap();
+            let truthy = match result {
+                Value::Boolean(value) => value,
+                _ => to_boolean(agent, result),
+            };
+            if truthy {
+                vm.ip = target;
+            }
+            Ok(())
+        }
+        kind if kind.compared_local().is_some() => {
+            let Some((comparison, constant)) = kind.compared_local() else {
+                unreachable!()
+            };
+            let target = Instr::wide_jump_target(&executable.get_instructions(agent), vm.ip);
+            // LoadFromIndexStoreConstant or LoadFromIndexGetFromIndex
+            let left = vm.stack[instr.get_first_index()];
+            vm.stack.push(left);
+            vm.result = Some(if constant {
+                executable
+                    .fetch_constant(agent, instr.get_second_index(), gc.nogc())
+                    .unbind()
+            } else {
+                vm.stack[instr.get_second_index()]
+            });
+            // The comparison
+            match comparison {
+                Instruction::JumpIfNotLessThan => execute_less_than(agent, vm, gc),
+                Instruction::JumpIfNotLessThanEquals => execute_less_than_equals(agent, vm, gc),
+                Instruction::JumpIfNotGreaterThan => execute_greater_than(agent, vm, gc),
+                Instruction::JumpIfNotGreaterThanEquals => {
+                    execute_greater_than_equals(agent, vm, gc)
+                }
+                _ => {
+                    execute_is_strictly_equal(agent, vm, gc.into_nogc());
+                    Ok(())
+                }
+            }?;
+            // JumpIfNot, or JumpIfTrue
+            let result = vm.result.take().unwrap();
+            let truthy = match result {
+                Value::Boolean(value) => value,
+                _ => to_boolean(agent, result),
+            };
+            if truthy == (comparison == Instruction::JumpIfStrictlyEqual) {
+                vm.ip = target;
+            }
+            Ok(())
+        }
+        Instruction::JumpIfNotStrictlyEqual
+        | Instruction::JumpIfStrictlyEqual
+        | Instruction::JumpIfNotLooselyEqual
+        | Instruction::JumpIfLooselyEqual => {
+            // IsStrictlyEqual or IsLooselyEqual
+            if matches!(
+                instr.kind,
+                Instruction::JumpIfNotStrictlyEqual | Instruction::JumpIfStrictlyEqual
+            ) {
+                execute_is_strictly_equal(agent, vm, gc.nogc());
+            } else {
+                execute_is_loosely_equal(agent, vm, gc)?;
+            }
+            // JumpIfNot or JumpIfTrue
+            let mut ip = vm.ip;
+            if matches!(
+                instr.kind,
+                Instruction::JumpIfStrictlyEqual | Instruction::JumpIfLooselyEqual
+            ) {
+                execute_jump_if_true(agent, vm, &mut ip, instr);
+            } else {
+                execute_jump_if_not(agent, vm, &mut ip, instr);
+            }
+            vm.ip = ip;
+            Ok(())
+        }
+        _ => {
+            match instr.kind {
+                Instruction::JumpIfNotLessThan | Instruction::JumpIfLessThan => {
+                    execute_less_than(agent, vm, gc)
+                }
+                Instruction::JumpIfNotLessThanEquals | Instruction::JumpIfLessThanEquals => {
+                    execute_less_than_equals(agent, vm, gc)
+                }
+                Instruction::JumpIfNotGreaterThan | Instruction::JumpIfGreaterThan => {
+                    execute_greater_than(agent, vm, gc)
+                }
+                Instruction::JumpIfNotGreaterThanEquals | Instruction::JumpIfGreaterThanEquals => {
+                    execute_greater_than_equals(agent, vm, gc)
+                }
+                _ => unreachable!(),
+            }?;
+            // JumpIfNot, or JumpIfTrue
+            let mut ip = vm.ip;
+            if matches!(
+                instr.kind,
+                Instruction::JumpIfLessThan
+                    | Instruction::JumpIfLessThanEquals
+                    | Instruction::JumpIfGreaterThan
+                    | Instruction::JumpIfGreaterThanEquals
+            ) {
+                execute_jump_if_true(agent, vm, &mut ip, instr);
+            } else {
+                execute_jump_if_not(agent, vm, &mut ip, instr);
+            }
+            vm.ip = ip;
+            Ok(())
+        }
+    }
+}
+
+/// What the instructions that read `this.name` or assign `object.name` in
+/// one step stand for, where the plain way does not take them.
+#[inline(never)]
+pub(super) fn execute_fused_property_instruction<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    if instr.kind == Instruction::PutPropertyWithCache {
+        if let Some(&Value::Object(object)) = vm.stack.last() {
+            // The cache does not know the object's shape yet. What a read
+            // of the property finds is what the assignment goes by (the
+            // object's own property, one it inherits, or none anywhere),
+            // and the lookup of a read leaves that in the cache while
+            // calling nothing: the next assignment to an object of this
+            // shape is made by it, also the one that adds the property.
+            let cache = executable.fetch_cache(agent, instr.get_second_index(), gc.nogc());
+            let shape = object.object_shape(agent);
+            if cache.find_cached_property_offset(agent, shape).is_none() {
+                let key = executable.fetch_property_key(agent, instr.get_first_index(), gc.nogc());
+                let _ = object.try_get(agent, key, object.into(), Some(cache), gc.nogc());
+            }
+        }
+        // EvaluatePropertyAccessWithIdentifierKey of the object, with the
+        // value kept aside, then PutValueWithCache.
+        let value = vm.result.take().unwrap();
+        vm.result = vm.stack.pop();
+        execute_evaluate_property_access_with_identifier_key(
+            agent,
+            vm,
+            executable.clone(),
+            instr,
+            gc.nogc(),
+        );
+        vm.result = Some(value);
+        let put_value = Instr::new_with_arg(
+            Instruction::PutValueWithCache,
+            instr.get_second_index() as u16,
+        );
+        return execute_put_value(agent, vm, executable, put_value, true, gc);
+    }
+    let keep_reference = matches!(
+        instr.kind,
+        Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::GetIndexPropertyWithCacheKeepReference
+    );
+    if matches!(
+        instr.kind,
+        Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference
+    ) {
+        // GetValueFromIndex: the plain way found the property not to be
+        // one the cache places.
+        let slot = Instr::wide_third_index(&executable.get_instructions(agent), vm.ip);
+        vm.result = Some(vm.stack[slot]);
+    } else {
+        // ResolveThisBinding, where the call does not keep the this value
+        // itself; the property is still read by the cache where it can be.
+        execute_resolve_this_binding(agent, vm, gc.nogc()).unbind()?;
+        if Vm::get_property_by_cache(agent, vm, &executable, instr, keep_reference, gc.nogc()) {
+            return Ok(());
+        }
+    }
+    // EvaluatePropertyAccessWithIdentifierKey, GetValueWithCache
+    execute_evaluate_property_access_with_identifier_key(
+        agent,
+        vm,
+        executable.clone(),
+        instr,
+        gc.nogc(),
+    );
+    let get_value = Instr::new_with_arg(
+        if keep_reference {
+            Instruction::GetValueWithCacheKeepReference
+        } else {
+            Instruction::GetValueWithCache
+        },
+        instr.get_second_index() as u16,
+    );
+    execute_get_value(agent, vm, executable, get_value, true, keep_reference, gc)
+}
+
 #[inline(always)]
-pub(super) fn execute_jump(agent: &Agent, vm: &mut Vm, instr: Instr) {
-    let ip = instr.get_jump_slot();
+pub(super) fn execute_jump(agent: &Agent, ip: &mut usize, instr: Instr) {
+    let target = instr.get_jump_slot();
     if agent.options.print_internals {
-        eprintln!("Jumping to {ip}");
+        eprintln!("Jumping to {target}");
     }
-    vm.ip = ip;
+    *ip = target;
 }
 
 #[inline(always)]
-pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, instr: Instr) {
+pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, ip: &mut usize, instr: Instr) {
     let result = vm.result.take().unwrap();
-    let ip = instr.get_jump_slot();
-    if !to_boolean(agent, result) {
+    let target = instr.get_jump_slot();
+    // A comparison left a Boolean: no conversion to make.
+    let truthy = match result {
+        Value::Boolean(value) => value,
+        _ => to_boolean(agent, result),
+    };
+    if !truthy {
         if agent.options.print_internals {
-            eprintln!("Comparison failed, jumping to {ip}");
+            eprintln!("Comparison failed, jumping to {target}");
         }
-        vm.ip = ip;
+        *ip = target;
     }
 }
 
 #[inline(always)]
-pub(super) fn execute_jump_if_true(agent: &Agent, vm: &mut Vm, instr: Instr) {
+pub(super) fn execute_jump_if_true(agent: &Agent, vm: &mut Vm, ip: &mut usize, instr: Instr) {
     let result = vm.result.take().unwrap();
-    if to_boolean(agent, result) {
-        let ip = instr.get_jump_slot();
+    let truthy = match result {
+        Value::Boolean(value) => value,
+        _ => to_boolean(agent, result),
+    };
+    if truthy {
+        let target = instr.get_jump_slot();
         if agent.options.print_internals {
-            eprintln!("Comparison succeeded, jumping to {ip}");
+            eprintln!("Comparison succeeded, jumping to {target}");
         }
-        vm.ip = ip;
+        *ip = target;
     }
 }
 
@@ -2080,6 +2639,11 @@ pub(super) fn execute_less_than<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, lnum, rnum) == Some(true)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2098,6 +2662,11 @@ pub(super) fn execute_less_than_equals<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, rnum, lnum) == Some(false)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2116,6 +2685,11 @@ pub(super) fn execute_greater_than<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, rnum, lnum) == Some(true)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2134,6 +2708,11 @@ pub(super) fn execute_greater_than_equals<'gc>(
 ) -> JsResult<'gc, ()> {
     let lval = vm.stack.pop().unwrap();
     let rval = vm.result.take().unwrap();
+    // Two Numbers compare without conversions, so nothing can run or collect.
+    if let (Ok(lnum), Ok(rnum)) = (Number::try_from(lval), Number::try_from(rval)) {
+        vm.result = Some((Number::less_than(agent, lnum, rnum) == Some(false)).into());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2433,19 +3012,19 @@ pub(super) fn execute_throw_error<'gc>(
 }
 
 pub(super) fn execute_push_exception_jump_target(
-    agent: &Agent,
+    agent: &mut Agent,
     vm: &mut Vm,
     instr: Instr,
     gc: NoGcScope,
 ) {
-    vm.exception_handler_stack
-        .push(ExceptionHandler::CatchBlock {
-            // Note: jump slots are passed to us in 32 bits, this
-            // conversion is lossless.
-            ip: instr.get_jump_slot() as u32,
-            lexical_environment: agent.current_lexical_environment(gc).unbind(),
-            variable_environment: agent.current_variable_environment(gc).unbind(),
-        });
+    let handler = ExceptionHandler::CatchBlock {
+        // Note: jump slots are passed to us in 32 bits, this
+        // conversion is lossless.
+        ip: instr.get_jump_slot() as u32,
+        lexical_environment: agent.current_lexical_environment(gc).unbind(),
+        variable_environment: agent.current_variable_environment(gc).unbind(),
+    };
+    vm.exception_handlers(agent).push(handler);
 }
 
 pub(super) fn execute_instanceof_operator<'gc>(
@@ -2601,6 +3180,12 @@ pub(super) fn execute_get_iterator_sync<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let expr_value = vm.result.take().unwrap();
+    // An Array that is walked element by element: nothing runs to find
+    // that out, and the `Vm` stays where it is.
+    if let Some(walk) = VmIteratorRecord::of_array_walked(agent, expr_value, gc.nogc()) {
+        vm.iterator_stack.push(walk.unbind());
+        return Ok(());
+    }
     let result = with_vm_gc(
         agent,
         vm,
@@ -2633,12 +3218,30 @@ pub(super) fn execute_iterator_step_value<'gc>(
     instr: Instr,
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let result = with_vm_gc(
-        agent,
-        vm,
-        |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
-        gc,
-    )?;
+    // A step that runs nothing is taken here. Of an Array walked element
+    // by element: where the next element is a value, the step is no more
+    // than reading it. And of the properties `for`-`in` goes through,
+    // where no object among them is a Proxy.
+    let plain = match vm.get_active_iterator_mut() {
+        VmIteratorRecord::ArrayValues(iterator) => iterator.plain_next(agent, gc.nogc()).unbind(),
+        VmIteratorRecord::ObjectProperties(iterator) => {
+            match try_result_into_option_js(iterator.try_step_value(agent, gc.nogc())) {
+                Some(Ok(step)) => Some(step.unbind()),
+                Some(Err(err)) => return Err(err.unbind().bind(gc.into_nogc())),
+                None => None,
+            }
+        }
+        _ => None,
+    };
+    let result = match plain {
+        Some(step) => step.bind(gc.into_nogc()),
+        None => with_vm_gc(
+            agent,
+            vm,
+            |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
+            gc,
+        )?,
+    };
     vm.result = result.unbind();
     if result.is_none() {
         // Iterator finished: jump to escape the iterator loop.

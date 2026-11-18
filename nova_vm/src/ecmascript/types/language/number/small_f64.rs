@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use super::small_integer::seven_bytes_after_zero;
 use crate::ecmascript::{SmallInteger, number_value};
 
 /// ### [6.1.6.1 The Number Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-number-type)
@@ -108,9 +109,7 @@ impl From<SmallF64> for f64 {
     fn from(value: SmallF64) -> Self {
         let SmallF64 { data } = value;
 
-        let number = u64::from_ne_bytes([
-            0, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
-        ]);
+        let number = seven_bytes_after_zero(data);
 
         // The enum repr zero is the first byte
         if cfg!(target_endian = "little") {

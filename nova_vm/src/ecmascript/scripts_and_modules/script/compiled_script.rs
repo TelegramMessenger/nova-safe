@@ -49,7 +49,7 @@ use crate::{
 use small_string::SmallString;
 
 use super::{GlobalDeclarations, HostDefined, Script, ScriptRecord};
-use crate::engine::CallEnvironment;
+use crate::engine::{CallEnvironment, CodeTables, SwitchTable};
 
 /// Why a script could not be exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +196,13 @@ struct CompiledExecutable {
     class_initializer_bytecodes: Box<[(Option<u32>, bool)]>,
     instance_initializer: Option<u32>,
     call_environment: CallEnvironment,
+    stack_parameters: Option<u16>,
+    /// How many binding sites the instructions have; what each remembers
+    /// belongs to the Agent that runs them.
+    binding_sites: usize,
+    /// The switch tables refer to constants by index and to instructions:
+    /// they are the same in every Agent.
+    switch_tables: Arc<[SwitchTable]>,
 }
 
 #[derive(PartialEq)]
@@ -399,8 +406,7 @@ impl Exporter<'_> {
         self.in_progress.push(index);
         let ExecutableHeapData {
             instructions,
-            caches,
-            constants,
+            tables,
             wide_constants,
             shapes,
             function_expressions,
@@ -408,8 +414,13 @@ impl Exporter<'_> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment,
+            stack_parameters,
+            switch_tables,
             _gc: _,
         } = executable.get(self.agent).clone();
+        let caches: Vec<_> = tables.caches().collect();
+        let constants: Vec<_> = tables.constants().collect();
+        let binding_sites = tables.binding_sites();
 
         let mut compiled_function_expressions = Vec::with_capacity(function_expressions.len());
         for function in function_expressions.iter() {
@@ -483,6 +494,9 @@ impl Exporter<'_> {
             class_initializer_bytecodes: compiled_class_initializers.into_boxed_slice(),
             instance_initializer,
             call_environment,
+            stack_parameters,
+            binding_sites,
+            switch_tables,
         });
         self.executable_ids.insert(index, id);
         self.in_progress.pop();
@@ -736,7 +750,7 @@ fn import_strings<'a>(
         let strings = &heap.strings;
         let hasher = &heap.string_hasher;
         heap.string_lookup_table.reserve(texts.len(), |string| {
-            hasher.hash_one(strings[string.get_index()].as_wtf8())
+            strings[string.get_index()].table_hash(hasher)
         });
     }
     texts
@@ -863,12 +877,12 @@ impl<'a> Importer<'_, 'a, '_> {
     }
 
     fn executable(&mut self, compiled: &CompiledExecutable) -> Executable<'a> {
-        let caches = compiled
+        let caches: Vec<_> = compiled
             .caches
             .iter()
             .map(|id| self.caches[*id as usize].unbind())
             .collect();
-        let constants = compiled
+        let constants: Vec<_> = compiled
             .constants
             .iter()
             .map(|value| self.value(value).unbind())
@@ -917,8 +931,12 @@ impl<'a> Importer<'_, 'a, '_> {
             .map(|id| self.executables[id as usize].unbind());
         self.agent.heap.create(ExecutableHeapData {
             instructions: compiled.instructions.clone(),
-            caches,
-            constants,
+            tables: CodeTables::new(
+                compiled.instructions.clone(),
+                constants,
+                caches,
+                compiled.binding_sites,
+            ),
             wide_constants,
             shapes,
             function_expressions,
@@ -926,6 +944,8 @@ impl<'a> Importer<'_, 'a, '_> {
             class_initializer_bytecodes,
             instance_initializer,
             call_environment: compiled.call_environment,
+            stack_parameters: compiled.stack_parameters,
+            switch_tables: compiled.switch_tables.clone(),
             _gc: core::marker::PhantomData,
         })
     }

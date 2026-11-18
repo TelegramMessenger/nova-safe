@@ -52,13 +52,37 @@ use super::{
 /// > ECMAScript that predate ECMAScript 2015.
 ///
 /// Returns the environment a \[\[Call]] of the function needs. Nothing can
-/// observe the Function Environment Record of a strict function with no
-/// parameter expressions, no arguments object and no direct eval, that does
+/// observe the Function Environment Record of a function with no parameter
+/// expressions, no arguments object and no direct eval, that does
 /// not refer to `new.target` or `super`, and in which no nested arrow function
 /// refers to `this`, `new.target` or `super`: such a function's call keeps
 /// the this value in the execution context, and a Declarative Environment
 /// Record holds its bindings, or no record at all when every parameter, var
 /// and lexical declaration lives in a stack slot.
+/// The first stack slot of the parameters when every one of them is a plain
+/// name kept in a stack slot, in order and with no rest parameter: they are
+/// then bound from the arguments by one instruction.
+fn consecutive_parameter_slots<'s>(
+    ctx: &CompileContext<'_, 's, '_, '_>,
+    formals: &'s oxc_ast::ast::FormalParameters<'s>,
+    has_duplicates: bool,
+) -> Option<usize> {
+    if has_duplicates || formals.rest.is_some() {
+        return None;
+    }
+    let mut first_slot = None;
+    for (index, parameter) in formals.items.iter().enumerate() {
+        let oxc_ast::ast::BindingPattern::BindingIdentifier(identifier) = &parameter.pattern else {
+            return None;
+        };
+        let slot = ctx.get_variable_stack_index(identifier.symbol_id())? as usize;
+        if slot != *first_slot.get_or_insert(slot) + index {
+            return None;
+        }
+    }
+    first_slot
+}
+
 pub(crate) fn instantiation<'s>(
     ctx: &mut CompileContext<'_, 's, '_, '_>,
     stack_variables: &mut Vec<StackVariable>,
@@ -67,9 +91,10 @@ pub(crate) fn instantiation<'s>(
     is_lexical: bool,
 ) -> CallEnvironment {
     let environment_use = FunctionEnvironmentUse::of(func);
-    let mut this_free = strict
-        && !ctx.scope_contains_direct_eval(func.scope_id())
-        && !environment_use.this_environment;
+    // Strict or not: what a function that is not strict makes of its this
+    // argument (OrdinaryCallBindThis) is made when it is called.
+    let mut this_free =
+        !ctx.scope_contains_direct_eval(func.scope_id()) && !environment_use.this_environment;
     // 1. Let calleeContext be the running execution context.
     // 2. Let code be func.[[ECMAScriptCode]].
     let body = func.ecmascript_code();
@@ -79,7 +104,22 @@ pub(crate) fn instantiation<'s>(
 
     // 8. Let hasParameterExpressions be ContainsExpression of formals.
     let has_parameter_expressions = formals.contains_expression();
-    if has_parameter_expressions {
+    // The Environment Records that steps 20, 28 and 30 make for a function
+    // with parameter expressions keep three things apart from the
+    // parameters: what a direct eval declares, what a function made in the
+    // parameter list can see, and the vars of the body, which such a
+    // function must not see. Where there is no direct eval, no function is
+    // made in the parameter list and the body declares no var and no
+    // function, nothing can tell those records from the one the parameters
+    // are in: none is made, and the function is called as one without
+    // parameter expressions is.
+    let has_direct_eval = ctx.scope_contains_direct_eval(func.scope_id());
+    let separate_environments = has_parameter_expressions && {
+        let mut has_vars = false;
+        body.var_declared_names(&mut |_| has_vars = true);
+        has_direct_eval || has_vars || FunctionEnvironmentUse::makes_functions(formals)
+    };
+    if separate_environments {
         this_free = false;
     }
     let mut bindings_in_environment = false;
@@ -197,15 +237,47 @@ pub(crate) fn instantiation<'s>(
     //   d. Assert: The VariableEnvironment of calleeContext and calleeEnv are
     //      the same Environment Record.
     //   e. Set the LexicalEnvironment of calleeContext to env.
-    if !strict && has_parameter_expressions {
+    // NOTE: the record is there for a direct eval alone, as the one of step
+    // 30 is.
+    if !strict && has_parameter_expressions && has_direct_eval {
         // Note: these are not lexical scopes per-se, just something we "start
         // with". Thus, we do not use ctx.enter_lexical_scope().
         ctx.add_instruction(Instruction::EnterDeclarativeEnvironment);
     }
 
+    // The call puts the arguments in the parameters' stack slots itself
+    // (Executable::stack_parameters, Vm::execute) when that is all there is
+    // to binding them: every parameter a plain name kept in a stack slot,
+    // those the function's first slots, and the arguments read nowhere else
+    // (no arguments object, no rest parameter, no parameter expressions).
+    // Nothing is compiled for the parameters then, and no arguments iterator
+    // is there to pop.
+    let direct_parameters = !arguments_object_needed
+        && !has_parameter_expressions
+        && !has_duplicates
+        && formals.rest.is_none()
+        && env_parameters.is_empty()
+        && ctx.stack_depth() == 0
+        && stack_parameters.len() == formals.items.len()
+        && formals.items.iter().all(|parameter| {
+            matches!(
+                parameter.pattern,
+                oxc_ast::ast::BindingPattern::BindingIdentifier(_)
+            )
+        });
+    let direct_parameters = if direct_parameters {
+        u16::try_from(stack_parameters.len()).ok()
+    } else {
+        None
+    };
+
     // 21. For each String paramName of parameterNames, do
     for param_name in &stack_parameters {
-        stack_variables.push(ctx.push_stack_variable(*param_name, false));
+        stack_variables.push(if direct_parameters.is_some() {
+            ctx.push_filled_stack_variable(*param_name)
+        } else {
+            ctx.push_stack_variable(*param_name, false)
+        });
     }
     if !env_parameters.is_empty() {
         bindings_in_environment = true;
@@ -291,13 +363,21 @@ pub(crate) fn instantiation<'s>(
     // 26. Else,
     //   a. Perform ? IteratorBindingInitialization of formals with arguments
     //      iteratorRecord and env.
-    if formals.has_parameter() {
+    if let Some(count) = direct_parameters {
+        ctx.set_stack_parameters(count);
+    } else if formals.has_parameter() {
         if has_parameter_expressions {
             // Note: ignore errors here for safety.
             let lexical_binding_state = ctx.lexical_binding_state;
             ctx.lexical_binding_state = !has_duplicates;
             let _ = formals.compile(ctx);
             ctx.lexical_binding_state = lexical_binding_state;
+        } else if let Some(first_slot) = consecutive_parameter_slots(ctx, formals, has_duplicates) {
+            ctx.add_instruction_with_immediate_and_immediate(
+                Instruction::BindArguments,
+                first_slot,
+                formals.items.len(),
+            );
         } else {
             simple_array_pattern(
                 ctx,
@@ -308,11 +388,13 @@ pub(crate) fn instantiation<'s>(
             );
         }
     }
-    // Remove the arguments iterator from the iterator stack.
-    ctx.add_instruction(Instruction::IteratorPop);
+    if direct_parameters.is_none() {
+        // Remove the arguments iterator from the iterator stack.
+        ctx.add_instruction(Instruction::IteratorPop);
+    }
 
     // 27. If hasParameterExpressions is false, then
-    if !has_parameter_expressions {
+    if !separate_environments {
         // a. NOTE: Only a single Environment Record is needed for the
         //    parameters and top-level vars.
         // b. Let instantiatedVarNames be a copy of the List parameterBindings.
@@ -351,7 +433,12 @@ pub(crate) fn instantiation<'s>(
         // 31. Else,
         //   a. Let lexEnv be varEnv.
         // 32. Set the LexicalEnvironment of calleeContext to lexEnv.
-        if !strict {
+        // NOTE: the separate record is there for a direct eval, which looks
+        // in it for the lexical declarations its own vars would conflict
+        // with. Where no direct eval can run, nothing tells the two records
+        // apart and the lexical declarations go where a strict function's
+        // go.
+        if !strict && ctx.scope_contains_direct_eval(func.scope_id()) {
             // Note: these are not lexical scopes per-se, just something we
             // "start with". Thus, we do not use ctx.enter_lexical_scope().
             ctx.add_instruction(Instruction::EnterDeclarativeEnvironment);
@@ -416,10 +503,13 @@ pub(crate) fn instantiation<'s>(
         // 31. Else,
         //   a. Let lexEnv be varEnv.
         // 32. Set the LexicalEnvironment of calleeContext to lexEnv.
+        // NOTE: as in step 27, the separate record of step 30 is there for
+        // a direct eval; without one the lexical declarations go where a
+        // strict function's go.
         ctx.add_instruction_with_immediate_and_immediate(
             Instruction::InitializeVariableEnvironment,
             instantiated_var_names.len(),
-            strict.into(),
+            (strict || !has_direct_eval).into(),
         );
     }
 
