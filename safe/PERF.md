@@ -34,26 +34,27 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.8x |
+| typed | 4 | 10.6x | 2.7x |
 | call | 14 | 10.4x | 2.4x |
 | math | 4 | 9.7x | 2.4x |
-| string | 26 | 10.6x | 2.2x |
-| app | 8 | 6.1x | 2.1x |
+| string | 26 | 10.6x | 2.0x |
+| app | 8 | 6.1x | 2.0x |
 | prop | 13 | 7.1x | 2.0x |
 | map, set | 4 | 4.6x | 2.0x |
 | array | 14 | 5.8x | 1.7x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
-| gc | 3 of 5 | 3.6x | 1.1x |
-| json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.0x |
+| gc | 3 of 5 | 3.6x | 1.2x |
+| json | 2 | 1.0x | 0.9x |
+| all | 108 | 7.6x | 1.9x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 4.0x, and the worst is now prepending
-(38x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.7x). 20 of the
-108 cases are above 3x (four of them within a twentieth of it) and 49 at or under 2x, 14 of them at or
-under QuickJS's time. Over all cases it is 1.96x: 2.12x before the round of patterns, Array iteration and
+The worst case was 303x (appending to a string 100,000 times); that one is 2.6x, and the worst is now prepending
+(36x, area 7); after it come generators (5.8x), rows of HTML appended to a string (5.2x), then calls that
+bind an arguments object (4.6x). 15 of the 108 cases are above 3x and 53 at or under 2x, 14 of them at or
+under QuickJS's time. Over all cases it is 1.91x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
-after the round of entering and leaving a function, and the round of callbacks took it here. One case
+after the round of entering and leaving a function, 1.96x after the round of callbacks, and the round of
+what an appended text keeps of its end took it here. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -642,7 +643,25 @@ state of its hash, so appending continues from there. And an appended string is 
 before, and what was added) that are joined only when something reads the text; appending to it shares all of the
 pieces and adds one. The appended bytes are counted against the heap limit when they are added, a join is counted
 when it happens, and a join that would take the heap past the limit ends the script as any allocation there does.
-Appending is linear: 160,000 appends take 24 ms, and the long append cases are 2.5-4.2x (they were 170-300x).
+Appending is linear: 160,000 appends take 24 ms, and the long append cases were 2.5-4.2x then (from 170-300x).
+
+By line, a step of such a loop was then mostly allocation: a copy of what was appended, a piece for it with its
+bytes apart, a merged piece (and one more for each further piece it took in), and the record of the new text.
+Now the text keeps its last bytes itself, up to 31 of them, next to its pieces: a step that appends a few bytes
+copies them after those of the steps before and allocates the record alone, and a piece is made when they no
+longer fit. What a piece takes in is found before it is allocated, so it is allocated once; what is appended is
+read where it is. The six cases that append short strings are 21-36% faster (a character at a time 4.0x to
+2.6x, short strings 3.9x to 2.9x, numbers 3.2x to 2.5x, text outside ASCII 2.4x to 1.7x, `fromCharCode` 3.2x
+to 2.5x, escaping HTML a character at a time 2.3x to 1.7x); the group went from 2.2x to 2.0x.
+
+A piece is also at least twice as long as the one after it now. It only had to be longer: a text appended to
+with ever shorter strings had as many pieces as steps, and letting go of it went as deep. A text has no more
+pieces than its length has bits.
+
+Rows of HTML appended to one string (5.2x) read 8% faster in the suite and 9% slower by their best run. The
+bytes of a piece are counted as they are allocated now, where each piece a merge went through was counted
+before; the collector therefore runs less often, fewer runs have a collection in them, and the string table
+is larger between two collections, which every lookup of a new string pays for.
 
 Sampled over the eight application cases together, a short concatenation was the largest thing to be named:
 two fifths of the canvas command buffer, where each command makes `"rgb(" + r + ",10," + b + ")"`. A String
@@ -655,8 +674,13 @@ are made and dropped from 4.3x to 3.3x, rows of HTML joined from an array from 4
 cases from 2.5x to 2.3x.
 
 Left: every string made is still hashed for the table, a third of what a short concatenation costs now
-(SipHash, keyed so that a script cannot choose colliding strings). Prepending (`s = x + s`, 38x) still copies
-and hashes the whole string every time; it is rare.
+(SipHash, keyed so that a script cannot choose colliding strings), and looked up in it: an appended text is
+a string like any other, so each step still allocates its record and asks the table. Prepending (`s = x + s`,
+36x) still copies and hashes the whole string every time, 5 KB a step on average in the case measured; it is
+rare.
+A keyed multiply-fold hash would take a fraction of SipHash's time on long strings and was not tried: that a
+script cannot choose colliding strings is what SipHash is there for, and giving it up is not a question of
+speed alone.
 
 ### 8. Other string work
 
