@@ -503,6 +503,21 @@ pub(crate) fn try_get_object_method<'a>(
     js_result_into_try(get_method_internal(agent, func, gc))
 }
 
+/// [`try_get_object_method`] for a name that the same objects are asked
+/// for again and again (the method of an operator): the property is looked
+/// for through the property cache of the name, by the shape of `o`.
+pub(crate) fn try_get_object_method_by_cache<'a>(
+    agent: &mut Agent,
+    o: Object,
+    p: PropertyKey,
+    gc: NoGcScope<'a, '_>,
+) -> TryResult<'a, Option<Function<'a>>> {
+    let cache = PropertyLookupCache::new(agent, p);
+    // 1. Let func be ? GetV(V, P).
+    let func = try_get_result_into_value(o.try_get(agent, p, o.into(), Some(cache), gc))?;
+    js_result_into_try(get_method_internal(agent, func, gc))
+}
+
 /// ### [7.3.11 GetMethod ( V, P )](https://tc39.es/ecma262/#sec-getmethod)
 ///
 /// The abstract operation GetMethod takes arguments V (an ECMAScript language
@@ -1382,11 +1397,15 @@ pub(crate) fn ordinary_has_instance<'a, 'b>(
         return Ok(false);
     };
     // 4. Let P be ? Get(C, "prototype").
+    // Through the property cache of the name, by the shape of C: the same
+    // constructors are asked again and again.
+    let prototype_cache =
+        PropertyLookupCache::new(agent, BUILTIN_STRING_MEMORY.prototype.to_property_key());
     let p = if let Some(p) = try_result_into_js(try_get_result_into_value(try_get(
         agent,
         c,
         BUILTIN_STRING_MEMORY.prototype.into(),
-        None,
+        Some(prototype_cache),
         gc.nogc(),
     )))
     .unbind()?

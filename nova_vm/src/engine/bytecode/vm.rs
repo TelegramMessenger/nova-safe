@@ -15,17 +15,18 @@ use wtf8::Wtf8Buf;
 use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayPrototype};
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, CachedSet, ECMAScriptFunction,
-        Environment, ExceptionType, InternalMethods, InternalSlots, JsError, JsResult, Number,
-        Object, OrdinaryObject, Primitive, Promise, PropertyKey, Reference, SmallInteger, String,
-        TryGetResult, Value, binding_value_at_site, call_function, get_method, get_this_value,
-        is_callable, is_property_reference, is_same_type, is_strictly_equal,
-        ordinary_add_own_data_by_cache, ordinary_call_bind_this, ordinary_has_instance,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, BigInt, CachedSet,
+        ECMAScriptFunction, Environment, ExceptionType, Function, FunctionPrototype,
+        InternalMethods, InternalSlots, JsError, JsResult, Number, Object, OrdinaryObject,
+        Primitive, Promise, PropertyKey, Reference, RegularFn, SmallInteger, String, TryGetResult,
+        Value, binding_value_at_site, call_function, get_method, get_this_value, is_callable,
+        is_property_reference, is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache,
+        ordinary_call_bind_this, ordinary_has_instance,
         prepare_for_call_without_function_environment, prepare_for_ordinary_call,
         reference_is_at_global_site, release_scoped_collections, scope_arguments_of_call,
         set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
         to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
-        try_get_object_method, try_resolve_binding_at_site, try_result_into_option_js,
+        try_get_object_method_by_cache, try_resolve_binding_at_site, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -4190,12 +4191,13 @@ pub(crate) fn instanceof_operator<'a, 'b>(
         return Err(agent.throw_exception(ExceptionType::TypeError, error_message, gc.into_nogc()));
     };
     // 2. Let instOfHandler be ? GetMethod(target, @@hasInstance).
-    let inst_of_handler = if let Some(handler) = try_result_into_option_js(try_get_object_method(
-        agent,
-        target,
-        WellKnownSymbols::HasInstance.into(),
-        gc.nogc(),
-    )) {
+    let inst_of_handler = if let Some(handler) =
+        try_result_into_option_js(try_get_object_method_by_cache(
+            agent,
+            target,
+            WellKnownSymbols::HasInstance.into(),
+            gc.nogc(),
+        )) {
         handler.unbind()?.bind(gc.nogc())
     } else {
         let scoped_value = value.scope(agent, gc.nogc());
@@ -4214,6 +4216,23 @@ pub(crate) fn instanceof_operator<'a, 'b>(
     };
     // 3. If instOfHandler is not undefined, then
     if let Some(inst_of_handler) = inst_of_handler {
+        // The method that every function inherits,
+        // Function.prototype[%Symbol.hasInstance%], is OrdinaryHasInstance
+        // of its this value, and gives a Boolean: taken here without the
+        // call of a built-in function around it. Only for the method of
+        // the running realm: the call of another realm's makes that realm
+        // the running one, which what OrdinaryHasInstance reads of an
+        // object without properties of its own depends on.
+        if let Function::BuiltinFunction(handler) = inst_of_handler
+            && matches!(
+                handler.get(agent).behaviour,
+                Behaviour::Regular(found)
+                    if core::ptr::fn_addr_eq(found, FunctionPrototype::has_instance as RegularFn)
+            )
+            && handler.get(agent).realm == agent.current_realm(gc.nogc())
+        {
+            return ordinary_has_instance(agent, target.unbind(), value.unbind(), gc);
+        }
         // a. Return ToBoolean(? Call(instOfHandler, target, « V »)).
         let result = call_function(
             agent,
