@@ -34,23 +34,23 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 2.9x |
-| typed | 4 | 10.6x | 2.8x |
-| math | 4 | 9.7x | 2.5x |
-| prop | 13 | 7.1x | 2.5x |
-| array | 14 | 5.8x | 2.5x |
-| map, set | 4 | 4.6x | 2.2x |
+| typed | 4 | 10.6x | 2.7x |
+| call | 14 | 10.4x | 2.7x |
+| prop | 13 | 7.1x | 2.4x |
+| array | 14 | 5.8x | 2.4x |
+| math | 4 | 9.7x | 2.4x |
+| map, set | 4 | 4.6x | 2.3x |
 | string | 26 | 10.6x | 2.2x |
 | app | 8 | 6.1x | 2.1x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
 | gc | 3 of 5 | 3.6x | 1.2x |
 | json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.2x |
+| all | 108 | 7.6x | 2.1x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
 (38x, area 7); after it come generators (6.1x), then calls that bind an arguments object or go through an accessor
-(5x). 29 of the 108 cases are above 3x and 39 at or under 2x, 12 of them at or under QuickJS's time. One case
+(4.7x). 26 of the 108 cases are above 3x and 40 at or under 2x, 12 of them at or under QuickJS's time. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -341,9 +341,28 @@ into it and back, a rooted handle of the callee's executable; under them the dis
 shared by caller and callee, with the arguments left where they are, would take most of the frame away; it
 changes how every instruction finds a stack slot, and the three other stacks would have to be shared with
 it or still be swapped (an instruction that binds parameters looks at the top of the iterator stack, which
-would be the caller's). Functions with a rest parameter, defaults or an arguments object
-still bind the old way and are called the native way (5-6x), and generators are 6.6x. Next: those, and `new`
-of a plain constructor, in place. Reach: about 2.5x.
+would be the caller's). Generators are 6.1x. Next: `new` of a plain constructor, and the getter or setter of
+a property, in place. Reach: about 2.5x.
+
+Every ordinary function that has been compiled runs in place now, not only one that keeps its parameters in
+its first stack slots and needs no Function Environment Record. A function that binds its parameters with its
+own instructions (a default value, a rest parameter, a pattern, an arguments object) finds the list of its
+arguments on the iterator stack as it does in a `Vm` of its own: the list is a scoped collection of the
+Agent, made when the function is entered and let go of when it is left. A function that needs a Function
+Environment Record (an arrow function in it uses its `this`) gets the record as \[\[Call]] makes it. A
+function with a default and a rest parameter went from 4.4x to 3.7x, one that reads `arguments` from 5.2x to
+4.7x.
+
+And a function with a parameter expression made up to three Environment Records at every call that only a
+direct eval, a function made in the parameter list or a var of the body could tell from the one its
+parameters are in (steps 20, 28 and 30 of FunctionDeclarationInstantiation). With none of the three in the
+function, none of the records is made, and the function is called as one without parameter expressions is;
+the two that only a direct eval observes are made only where there is one. The same function went on to
+2.7x. Calls together are 2.73x (2.86x), all cases 2.14x (2.16x).
+
+Left there: binding through the iterator instructions is the general way for each parameter, a rest
+parameter allocates its Array, and the arguments object is made in full at every call and kept in an
+Environment Record (4.7x).
 
 ### 4. Properties
 
@@ -611,6 +630,16 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   (`array/sort-with-comparator` 12.6 to 13.6 ms, `array/join-numbers` 6.1 to 6.5 ms). Built side by side with
   and without the change to small Numbers, the first is 2.5% apart and the second within what two runs differ
   by, and both builds spend their time in the same functions. Taken for placement, as above.
+- The default of an element of a pattern could not read a name that an earlier element of the same pattern
+  bound: `function f({ p, q = p + 1 }) {}` and `let [a, b = a] = list` threw a ReferenceError wherever the
+  names are kept on the stack, which is in every function whose closures do not capture them. The compiler
+  takes a stack variable read inside its own declaration for uninitialized, and the declaration of a name in
+  a pattern is the whole pattern. Upstream; test262 has no test that fails for it. It is refused now only
+  where the read comes first (an earlier element, the element's own default, key or value, or what the
+  pattern is initialized from). Fixed.
+- One run of the widget sandbox's tests in hosted mode failed a test that bounds a widget by its layout
+  queries: the widget was stopped for 200 ms of continuous execution after 19 queries instead. The machine
+  was under a load of ninety at the time; three runs on a quiet machine passed. The limit is wall-clock time.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
 
