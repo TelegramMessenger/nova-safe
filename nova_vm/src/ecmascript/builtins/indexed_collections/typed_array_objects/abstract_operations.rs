@@ -338,35 +338,43 @@ pub(crate) trait TypedArrayAbstractOperations<'ta>: Copy + Sized {
     /// The abstract operation IsValidIntegerIndex takes arguments O (a TypedArray)
     /// and index (a Number) and returns a Boolean.
     fn is_valid_integer_index(self, agent: &Agent, index: i64) -> Option<usize> {
-        // 1. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is true, return false.
-        if self.is_detached(agent) {
-            return None;
-        }
         // 2. If index is not an integral Number, return false.
         // 3. If index is -0𝔽 or index < -0𝔽, return false.
         if index < 0 {
             return None;
         }
         let index = usize_from_i64(index);
+        // 1. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is true, return false.
         // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, unordered).
+        // The byte length the record has of a detached buffer says that it
+        // is: one reading of the buffer for both steps.
         let cached_buffer_byte_length: CachedBufferByteLength =
             self.get_cached_buffer_byte_length(agent, Ordering::Unordered);
-        // make_typed_array_with_buffer_witness_record_specialised(agent, o, Ordering::Unordered);
+        let buffer_byte_length = Option::<usize>::from(cached_buffer_byte_length)?;
         // 5. NOTE: Bounds checking is not a synchronizing operation when O's
         //    backing buffer is a growable SharedArrayBuffer.
         // 6. If IsTypedArrayOutOfBounds(taRecord) is true, return false.
-        if self.is_typed_array_out_of_bounds(agent, cached_buffer_byte_length) {
-            return None;
-        }
         // 7. Let length be TypedArrayLength(taRecord).
-        let length = self.typed_array_length(agent, cached_buffer_byte_length);
-        // 8. If ℝ(index) ≥ length, return false.
-        if index >= length {
-            None
+        // Both from one reading of the offset and the length of the view:
+        // this is asked at every element read or written.
+        let byte_offset = self.byte_offset(agent);
+        let element_size = self.typed_array_element_size();
+        let length = if let Some(array_length) = self.array_length(agent) {
+            // The end of a view of a fixed length is its start and its
+            // length: where that is in the buffer, the start is.
+            if byte_offset + array_length * element_size > buffer_byte_length {
+                return None;
+            }
+            array_length
         } else {
-            // 9. Return true.
-            Some(index)
-        }
+            if byte_offset > buffer_byte_length {
+                return None;
+            }
+            (buffer_byte_length - byte_offset) / element_size
+        };
+        // 8. If ℝ(index) ≥ length, return false.
+        // 9. Return true.
+        (index < length).then_some(index)
     }
 
     /// ### [10.4.5.17 TypedArrayGetElement ( O, index )](https://tc39.es/ecma262/#sec-typedarraygetelement)

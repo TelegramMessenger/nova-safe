@@ -3323,11 +3323,22 @@ impl Vm {
                 };
                 holds.into()
             }
-            Instruction::ApplyAdditionBinaryOperator => Number::add(agent, left, right).into(),
-            Instruction::ApplySubtractionBinaryOperator
+            // The four that are the arithmetic of doubles (Number::add and
+            // the others say so), on the doubles the Numbers are.
+            Instruction::ApplyAdditionBinaryOperator
+            | Instruction::ApplySubtractionBinaryOperator
             | Instruction::ApplyMultiplicationBinaryOperator
-            | Instruction::ApplyDivisionBinaryOperator
-            | Instruction::ApplyRemainderBinaryOperator
+            | Instruction::ApplyDivisionBinaryOperator => {
+                let (left, right) = (left.into_f64_(agent), right.into_f64_(agent));
+                let result = match kind {
+                    Instruction::ApplyAdditionBinaryOperator => left + right,
+                    Instruction::ApplySubtractionBinaryOperator => left - right,
+                    Instruction::ApplyMultiplicationBinaryOperator => left * right,
+                    _ => left / right,
+                };
+                Number::from_f64(agent, result, gc).into()
+            }
+            Instruction::ApplyRemainderBinaryOperator
             | Instruction::ApplyShiftLeftBinaryOperator
             | Instruction::ApplyShiftRightBinaryOperator
             | Instruction::ApplyShiftRightZeroFillBinaryOperator

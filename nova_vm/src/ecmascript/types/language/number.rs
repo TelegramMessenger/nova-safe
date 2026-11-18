@@ -60,6 +60,7 @@ impl<'a> Number<'a> {
     /// The number being allocated must not be representable
     /// as a SmallInteger or f32. All stack-allocated numbers must be
     /// inequal to any heap-allocated number.
+    #[inline]
     fn alloc_number<'gc>(heap: &mut Heap, number: f64) -> HeapNumber<'gc> {
         debug_assert!(
             SmallInteger::try_from(number).is_err() && SmallF64::try_from(number).is_err()
@@ -70,6 +71,7 @@ impl<'a> Number<'a> {
     }
 
     /// Create a new Number from an f64.
+    #[inline]
     pub fn from_f64(agent: &mut Agent, value: f64, gc: NoGcScope<'a, '_>) -> Self {
         if let Ok(value) = Number::try_from(value) {
             value
@@ -768,64 +770,10 @@ impl<'a> Number<'a> {
             }
             return Self::from_f64(agent, x as f64 * y as f64, gc);
         }
-        // 1. If x is NaN or y is NaN, return NaN.
-        if x.is_nan_(agent) || y.is_nan_(agent) {
-            return Self::nan();
-        }
-        // 2. If x is either +∞𝔽 or -∞𝔽, then
-        if x.is_pos_infinity_(agent) || x.is_neg_infinity_(agent) {
-            // a. If y is either +0𝔽 or -0𝔽, return NaN.
-            if y.is_pos_zero_(agent) || y.is_neg_zero_(agent) {
-                return Self::nan();
-            }
-            // b. If y > +0𝔽, return x.
-            if y.is_sign_positive_(agent) {
-                return x;
-            }
-            // c. Return -x.
-            return if x.is_pos_infinity_(agent) {
-                Self::neg_inf()
-            } else {
-                Self::pos_inf()
-            };
-        }
-        // 3. If y is either +∞𝔽 or -∞𝔽, then
-        if y.is_pos_infinity_(agent) || y.is_neg_infinity_(agent) {
-            // a. If x is either +0𝔽 or -0𝔽, return NaN.
-            if x.is_pos_zero_(agent) || x.is_neg_zero_(agent) {
-                return Self::nan();
-            }
-            // b. If x > +0𝔽, return y.
-            if x.is_sign_positive_(agent) {
-                return y;
-            }
-            // c. Return -y.
-            return if y.is_pos_infinity_(agent) {
-                Self::neg_inf()
-            } else {
-                Self::pos_inf()
-            };
-        }
-        // 4. If x is -0𝔽, then
-        if x.is_neg_zero_(agent) {
-            // a. If y is -0𝔽 or y < -0𝔽, return +0𝔽.
-            if y.is_neg_zero_(agent) || y.is_sign_negative_(agent) {
-                return Self::pos_zero();
-            }
-            // b. Else, return -0𝔽.
-            return Self::neg_zero();
-        }
-        // 5. If y is -0𝔽, then
-        if y.is_neg_zero_(agent) {
-            // a. If x < -0𝔽, return +0𝔽.
-            if x.is_sign_negative_(agent) {
-                return Self::pos_zero();
-            }
-            // b. Else, return -0𝔽.
-            return Self::neg_zero();
-        }
-        // 6. Return 𝔽(ℝ(x) × ℝ(y)).
-        Self::from_f64(agent, x.to_real(agent) * y.to_real(agent), gc)
+        // Steps 1 to 6 are IEEE 754 multiplication: a NaN operand, or an
+        // infinity times a zero, gives NaN; an infinity gives an infinity
+        // and a zero a zero, each with the sign of the product.
+        Self::from_f64(agent, x.into_f64_(agent) * y.into_f64_(agent), gc)
     }
 
     /// ### [6.1.6.1.5 Number::divide ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-number-divide)
@@ -836,83 +784,11 @@ impl<'a> Number<'a> {
     /// producing the quotient of x and y where x is the dividend and y is the
     /// divisor.
     pub fn divide(agent: &mut Agent, x: Self, y: Self, gc: NoGcScope<'a, '_>) -> Self {
-        // 1. If x is NaN or y is NaN, return NaN.
-        if x.is_nan_(agent) || y.is_nan_(agent) {
-            return Number::nan();
-        }
-        // 2. If x is either +∞𝔽 or -∞𝔽, then
-        if x.is_pos_infinity_(agent) || x.is_neg_infinity_(agent) {
-            // a. If y is either +∞𝔽 or -∞𝔽, return NaN.
-            if y.is_pos_infinity_(agent) || y.is_neg_infinity_(agent) {
-                return Number::nan();
-            }
-            // b. If y is +0𝔽 or y > +0𝔽, return x.
-            if y.is_pos_zero_(agent) || y.to_real(agent) > 0.0 {
-                return x;
-            }
-            // c. Return -x.
-            return if x.is_pos_infinity_(agent) {
-                Number::neg_inf()
-            } else {
-                Number::pos_inf()
-            };
-        }
-        // 3. If y is +∞𝔽, then
-        if y.is_pos_infinity_(agent) {
-            // a. If x is +0𝔽 or x > +0𝔽, return +0𝔽. Otherwise, return -0𝔽.
-            if x.is_pos_zero_(agent) || x.to_real(agent) > 0.0 {
-                return Number::pos_zero();
-            } else {
-                return Number::neg_zero();
-            }
-        }
-        // 4. If y is -∞𝔽, then
-        if y.is_neg_infinity_(agent) {
-            // a. If x is +0𝔽 or x > +0𝔽, return -0𝔽. Otherwise, return +0𝔽.
-            if x.is_pos_zero_(agent) || x.to_real(agent) > 0.0 {
-                return Number::neg_zero();
-            } else {
-                return Number::pos_zero();
-            }
-        }
-        // 5. If x is either +0𝔽 or -0𝔽, then
-        if x.is_pos_zero_(agent) || x.is_neg_zero_(agent) {
-            // a. If y is either +0𝔽 or -0𝔽, return NaN.
-            if y.is_pos_zero_(agent) || y.is_neg_zero_(agent) {
-                return Number::nan();
-            }
-            // b. If y > +0𝔽, return x.
-            if y.to_real(agent) > 0.0 {
-                return x;
-            }
-            // c. Return -x.
-            return if x.is_pos_zero_(agent) {
-                Number::neg_zero()
-            } else {
-                Number::pos_zero()
-            };
-        }
-        // 6. If y is +0𝔽, then
-        if y.is_pos_zero_(agent) {
-            // a. If x > +0𝔽, return +∞𝔽. Otherwise, return -∞𝔽.
-            return if x.to_real(agent) > 0.0 {
-                Number::pos_inf()
-            } else {
-                Number::neg_inf()
-            };
-        }
-        // 7. If y is -0𝔽, then
-        if y.is_neg_zero_(agent) {
-            // a. If x > +0𝔽, return -∞𝔽. Otherwise, return +∞𝔽.
-            return if x.to_real(agent) > 0.0 {
-                Number::neg_inf()
-            } else {
-                Number::pos_inf()
-            };
-        }
-        // 8. Return 𝔽(ℝ(x) / ℝ(y)).
-        let result = x.to_real(agent) / y.to_real(agent);
-        Number::from_f64(agent, result, gc)
+        // Steps 1 to 8 are IEEE 754 division: a NaN operand, two infinities
+        // or two zeros give NaN; an infinity divided or a division by a zero
+        // gives an infinity, and a zero divided or a division by an infinity
+        // a zero, each with the sign of the quotient.
+        Number::from_f64(agent, x.into_f64_(agent) / y.into_f64_(agent), gc)
     }
 
     /// ### [6.1.6.1.6 Number::remainder ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-number-remainder)
@@ -922,51 +798,13 @@ impl<'a> Number<'a> {
     /// implied division of its operands where n is the dividend and d is the
     /// divisor.
     pub fn remainder(agent: &mut Agent, n: Self, d: Self, gc: NoGcScope<'a, '_>) -> Self {
-        // 1. If n is NaN or d is NaN, return NaN.
-        if n.is_nan_(agent) || d.is_nan_(agent) {
-            return Self::nan();
-        }
-
-        // 2. If n is either +∞𝔽 or -∞𝔽, return NaN.
-        if n.is_pos_infinity_(agent) || n.is_neg_infinity_(agent) {
-            return Self::nan();
-        }
-
-        // 3. If d is either +∞𝔽 or -∞𝔽, return n.
-        if d.is_pos_infinity_(agent) || d.is_neg_infinity_(agent) {
-            return n;
-        }
-
-        // 4. If d is either +0𝔽 or -0𝔽, return NaN.
-        if d.is_pos_zero_(agent) || d.is_neg_zero_(agent) {
-            return Self::nan();
-        }
-
-        // 5. If n is either +0𝔽 or -0𝔽, return n.
-        if n.is_pos_zero_(agent) || n.is_neg_zero_(agent) {
-            return n;
-        }
-
-        // 6. Assert: n and d are finite and non-zero.
-        debug_assert!(n.is_finite_(agent) && n.is_nonzero_(agent));
-
-        let n = n.into_f64_(agent);
-        let d = d.into_f64_(agent);
-
-        // 7. Let quotient be ℝ(n) / ℝ(d).
-        // 8. Let q be truncate(quotient).
-        // 9. Let r be ℝ(n) - (ℝ(d) × q).
-        // In real numbers, which the remainder of two doubles is exact to:
-        // the quotient rounded to a double is not (`1e21 % 3` was 0).
-        let r = n % d;
-
-        // 10. If r = 0 and n < -0𝔽, return -0𝔽.
-        if r == 0.0 && n.is_sign_negative() {
-            return Self::neg_zero();
-        }
-
-        // 11. Return 𝔽(r).
-        Self::from_f64(agent, r, gc)
+        // Steps 1 to 11 are the remainder of two doubles as `%` takes it
+        // (C's fmod): exact, with the sign of the dividend, also where it is
+        // zero; NaN for a NaN operand, an infinite dividend or a zero
+        // divisor; the dividend itself for an infinite divisor. The
+        // quotient rounded to a double would not be exact (`1e21 % 3` was 0
+        // by it).
+        Self::from_f64(agent, n.into_f64_(agent) % d.into_f64_(agent), gc)
     }
 
     /// ### [6.1.6.1.7 Number::add ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-number-add)
@@ -1375,6 +1213,7 @@ impl TryFrom<usize> for Number<'static> {
 impl TryFrom<f64> for Number<'static> {
     type Error = ();
 
+    #[inline]
     fn try_from(value: f64) -> Result<Self, ()> {
         if value.is_finite()
             && value.trunc() == value
@@ -1662,5 +1501,134 @@ mod tests {
 
         assert_eq!(Number::greater_than(&mut agent, x, x), Some(false));
         agent.gc(gc);
+    }
+}
+
+#[cfg(test)]
+mod ieee_tests {
+    //! Number::multiply, Number::divide and Number::remainder are the
+    //! arithmetic of doubles. The specification writes them as steps, one
+    //! for each special value; these are those steps, and what `*`, `/` and
+    //! `%` give is the same for every pair of the values the steps name and
+    //! of ordinary ones.
+
+    fn is_zero(x: f64) -> bool {
+        x == 0.0
+    }
+
+    fn multiply_by_steps(x: f64, y: f64) -> f64 {
+        if x.is_nan() || y.is_nan() {
+            return f64::NAN;
+        }
+        if x.is_infinite() {
+            if is_zero(y) {
+                return f64::NAN;
+            }
+            return if y.is_sign_positive() { x } else { -x };
+        }
+        if y.is_infinite() {
+            if is_zero(x) {
+                return f64::NAN;
+            }
+            return if x.is_sign_positive() { y } else { -y };
+        }
+        if is_zero(x) && x.is_sign_negative() {
+            return if y.is_sign_negative() { 0.0 } else { -0.0 };
+        }
+        if is_zero(y) && y.is_sign_negative() {
+            return if x.is_sign_negative() { 0.0 } else { -0.0 };
+        }
+        x * y
+    }
+
+    fn divide_by_steps(x: f64, y: f64) -> f64 {
+        if x.is_nan() || y.is_nan() {
+            return f64::NAN;
+        }
+        if x.is_infinite() {
+            if y.is_infinite() {
+                return f64::NAN;
+            }
+            return if y.is_sign_positive() { x } else { -x };
+        }
+        if y.is_infinite() {
+            let positive = x.is_sign_positive() == y.is_sign_positive();
+            return if positive { 0.0 } else { -0.0 };
+        }
+        if is_zero(x) {
+            if is_zero(y) {
+                return f64::NAN;
+            }
+            return if y.is_sign_positive() { x } else { -x };
+        }
+        if is_zero(y) {
+            let positive = x.is_sign_positive() == y.is_sign_positive();
+            return if positive {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            };
+        }
+        x / y
+    }
+
+    fn remainder_by_steps(n: f64, d: f64) -> f64 {
+        if n.is_nan() || d.is_nan() {
+            return f64::NAN;
+        }
+        if n.is_infinite() {
+            return f64::NAN;
+        }
+        if d.is_infinite() {
+            return n;
+        }
+        if is_zero(d) {
+            return f64::NAN;
+        }
+        if is_zero(n) {
+            return n;
+        }
+        let r = n % d;
+        if r == 0.0 && n.is_sign_negative() {
+            return -0.0;
+        }
+        r
+    }
+
+    fn same(found: f64, expected: f64) -> bool {
+        (found.is_nan() && expected.is_nan()) || found.to_bits() == expected.to_bits()
+    }
+
+    #[test]
+    fn the_operators_of_doubles_are_the_steps_of_the_specification() {
+        let mut values = vec![
+            f64::NAN,
+            f64::INFINITY,
+            0.0,
+            1.0,
+            0.5,
+            3.0,
+            7.25,
+            1e21,
+            1e-7,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            5e-324,
+            9007199254740992.0,
+            9007199254740991.0,
+            4294967296.0,
+            0.1,
+            1.0000001,
+            123456.789,
+        ];
+        let negated: Vec<f64> = values.iter().map(|value| -value).collect();
+        values.extend(negated);
+        for &x in &values {
+            for &y in &values {
+                assert!(same(x * y, multiply_by_steps(x, y)), "{x:?} * {y:?}");
+                assert!(same(x / y, divide_by_steps(x, y)), "{x:?} / {y:?}");
+                assert!(same(x % y, remainder_by_steps(x, y)), "{x:?} % {y:?}");
+            }
+        }
     }
 }

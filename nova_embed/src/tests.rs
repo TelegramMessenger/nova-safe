@@ -9465,3 +9465,76 @@ template put before 4890 1199;1198;1197 2;1;0;"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The arithmetic of Numbers: `*`, `/`, `%`, `+` and `-` of every pair of the
+/// values the specification has a step for (NaN, the infinities, the zeros)
+/// and of ordinary ones, of integers whose result is and is not an integer,
+/// in loops, on a Float64Array, of other kinds of values, and as compound
+/// assignments. What is expected is what Node prints for the same script.
+#[test]
+fn the_arithmetic_of_numbers_is_that_of_doubles() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arithmetic_of_numbers)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arithmetic_of_numbers() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function S(v) { return Object.is(v, -0) ? "-0" : String(v); }
+var vals = [NaN, Infinity, -Infinity, 0, -0, 1, -1, 0.5, -0.5, 3, -3, 7.25, 1e21, -1e21, 1e-7, 1.7976931348623157e308, -1.7976931348623157e308, 5e-324, -5e-324, 2 ** 53, 2 ** 53 - 1, -(2 ** 53), 2 ** 31, 2 ** 31 - 1, -(2 ** 31), 2 ** 32, 0.1, 1.0000001, 123456.789, 4503599627370496, 94906267, 3037000500, -94906267];
+var ops = [function (a, b) { return a * b; }, function (a, b) { return a / b; }, function (a, b) { return a % b; }, function (a, b) { return a + b; }, function (a, b) { return a - b; }];
+var names = ["mul", "div", "rem", "add", "sub"];
+for (var o = 0; o < ops.length; o++) {
+  var out = "", sum = 0, kinds = 0;
+  for (var i = 0; i < vals.length; i++) for (var j = 0; j < vals.length; j++) {
+    var r = ops[o](vals[i], vals[j]); var s = S(r); out += s + ","; kinds += Number.isInteger(r) ? 1 : 0;
+  }
+  for (var k = 0; k < out.length; k++) sum = (sum * 31 + out.charCodeAt(k)) | 0;
+  P(names[o], out.length, sum, kinds, out.slice(0, 80));
+}
+// The same in the loop of instructions, with the operands in variables of every kind.
+var acc = "";
+for (var i = 0; i < vals.length; i++) { var a = vals[i], b = vals[(i * 7 + 3) % vals.length], c = vals[(i * 11 + 5) % vals.length]; acc += S(a * b + c) + "|" + S(a / b - c) + "|" + S(a % b * c) + "|" + S((a + b) / (c - a)) + "|" + S(a * a) + "|" + S(a / a) + "|" + S(a % a) + ";"; }
+var asum = 0; for (var k = 0; k < acc.length; k++) asum = (asum * 31 + acc.charCodeAt(k)) | 0; P("mixed", acc.length, asum, acc.slice(0, 100));
+// Integers whose product, quotient or remainder is and is not an integer.
+var ints = [0, 1, -1, 2, 3, 7, -7, 10, 255, 65535, 65536, 94906265, 94906266, 94906267, 2 ** 26, 2 ** 27, 2 ** 31 - 1, 2 ** 31, -(2 ** 31), 2 ** 52, 2 ** 53 - 1, -(2 ** 53 - 1), 3037000499, 3037000500, 9007199254740991];
+var io = "";
+for (var i = 0; i < ints.length; i++) for (var j = 0; j < ints.length; j++) { var x = ints[i], y = ints[j]; io += S(x * y) + "," + S(x / y) + "," + S(x % y) + "," + S(-x * y) + "," + S(x % -y) + "," + S(-x % y) + ";"; }
+var isum = 0; for (var k = 0; k < io.length; k++) isum = (isum * 31 + io.charCodeAt(k)) | 0; P("integers", io.length, isum, io.slice(0, 90));
+P("zeros", S(0 * -1), S(-0 * 0), S(-0 * -0), S(0 / -5), S(-0 / 5), S(5 % -5), S(-5 % 5), S(-0 % 5), S(0 % -5), S(-4 % 2), S(4 % -2), S(-4.5 % 1.5), S(1 / (0 * -1)), S(1 / (-4 % 2)), S(-1 * 0 + 0), S(0 * -3 * -2));
+P("precision", 0.1 * 3, 0.1 + 0.2, 1e21 % 3, 1e21 % 7, 2 ** 53 % 3, 5.5 % 2.5, -5.5 % 2.5, 1e308 * 10, -1e308 * 10, 1e-320 / 1e10, 5e-324 / 2, 5e-324 * 0.5, 1 / 3, 2 / 3, 10 / 3, 0.3 / 0.1, 0.7 * 3, 1.1 * 1.1, 9007199254740993 * 1, 94906267 * 94906267, 3037000500 * 3037000500, 2 ** 53 * 3 / 3);
+var x = 0.5; for (var i = 0; i < 2000; i++) x = x * 1.0000001 + 0.25 / (i + 1); P("loop", x, x.toFixed(6));
+var f = new Float64Array(64); for (var i = 0; i < f.length; i++) f[i] = i * 0.37 - 5; var e = 0; for (var r = 0; r < 20; r++) for (var i = 1; i < f.length; i++) { f[i] = f[i] * 0.99 + f[i - 1] * 0.01 / (r + 1); e += f[i] % 1.5; } P("typed", e, f[10], f[63]);
+P("other kinds", "3" * "4", "8" / 2, "7" % "4", true * 3, null * 5, undefined * 2, [5] * [6], 6 / [2], "a" * 1, 2n * 3n, 7n / 2n, 7n % 3n, -7n % 3n, (function () { try { return 1n * 1; } catch (e) { return e.constructor.name; } })(), (function () { try { return 1n / 0n; } catch (e) { return e.constructor.name; } })(), { valueOf: function () { return 4; } } * 2.5, 9 / { valueOf: function () { return 0; } });
+var m = 3; m *= 1.5; var d = 9; d /= 4; var q = 9.5; q %= 4; var mm = 2 ** 30; mm *= 2 ** 30; var dz = 1; dz /= 0; var rz = 1; rz %= 0; P("compound", m, d, q, mm, dz, rz);
+lines.join("\n")"##;
+    let expected = r##"mul 13302 -240020823 539 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+div 13838 -233543561 373 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+rem 7439 -369496155 574 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+add 13442 -433646109 651 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+sub 13434 -653074813 658 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+mixed 2344 553112274 NaN|NaN|NaN|NaN|NaN|NaN|NaN;-Infinity|-Infinity|NaN|NaN|Infinity|NaN|NaN;-Infinity|-Infinity|NaN|NaN
+integers 36650 -700732694 0,NaN,NaN,-0,NaN,NaN;0,0,0,-0,0,-0;-0,-0,0,0,0,-0;0,0,0,-0,0,-0;0,0,0,-0,0,-0;0,0,0,-0,0,-
+zeros -0 -0 0 -0 -0 0 -0 -0 0 -0 0 -0 -Infinity -Infinity 0 0
+precision 0.30000000000000004 0.30000000000000004 1 6 2 0.5 -0.5 Infinity -Infinity 0 0 0 0.3333333333333333 0.6666666666666666 3.3333333333333335 2.9999999999999996 2.0999999999999996 1.2100000000000002 9007199254740992 9007199515875288 9223372037000250000 9007199254740992
+loop 2.54505098768096 2.545051
+typed 553.8027320157125 -1.1136557966537022 15.514385931320911
+other kinds 12 4 3 3 0 NaN 30 3 NaN 6 3 1 -1 TypeError RangeError 10 Infinity
+compound 4.5 2.25 1.5 1152921504606847000 Infinity NaN"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
