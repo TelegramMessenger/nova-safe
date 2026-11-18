@@ -43,12 +43,22 @@ pub(super) fn execute_simple_array_binding<'a>(
             | Instruction::BindingPatternBindToIndex
             | Instruction::BindingPatternGetValue
             | Instruction::BindingPatternSkip => {
-                let result = match vm.get_active_iterator() {
+                let plain = match vm.get_active_iterator_mut() {
                     VmIteratorRecord::SliceIterator(arguments) => {
-                        Ok(arguments.unshift(agent, gc.nogc()))
+                        Some(arguments.unshift(agent, gc.nogc()))
                     }
-                    VmIteratorRecord::EmptySliceIterator => Ok(None),
-                    _ => with_vm_gc(
+                    VmIteratorRecord::EmptySliceIterator => Some(None),
+                    // An Array walked element by element: where the next
+                    // element is a value, the step is no more than reading
+                    // it.
+                    VmIteratorRecord::ArrayValues(iterator) => {
+                        iterator.plain_next(agent, gc.nogc())
+                    }
+                    _ => None,
+                };
+                let result = match plain {
+                    Some(step) => Ok(step),
+                    None => with_vm_gc(
                         agent,
                         vm,
                         |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),

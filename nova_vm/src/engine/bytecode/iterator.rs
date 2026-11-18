@@ -10,10 +10,11 @@ use crate::{
         Agent, ArgumentsList, Array, ArrayIterator, ArrayIteratorPrototype,
         AsyncFromSyncIteratorPrototype, BUILTIN_STRING_MEMORY, CollectionIteratorKind,
         ExceptionType, Function, InternalMethods, IteratorRecord, JsError, JsResult, Object,
-        OrdinaryObject, Promise, PropertyKey, PropertyKeySet, ScopedArgumentsList,
-        StringIteratorPrototype, TryError, TryGetResult, TryResult, Value, call_function,
-        create_async_from_sync_iterator, create_iter_result_object, get, get_iterator_from_method,
-        get_method, get_object_method, throw_not_callable, to_boolean, try_get,
+        OrdinaryObject, Promise, PropertyKey, PropertyKeySet, PropertyLookupCache,
+        ScopedArgumentsList, StringIteratorPrototype, TryError, TryGetResult, TryResult, Value,
+        call_function, create_async_from_sync_iterator, create_iter_result_object, get,
+        get_iterator_from_method, get_method, get_object_method, throw_not_callable, to_boolean,
+        try_get,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, ScopeToken, Scoped},
     heap::{ArenaAccessMut, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
@@ -285,6 +286,16 @@ impl<'a> VmIteratorRecord<'a> {
         mut gc: GcScope<'a, '_>,
     ) -> JsResult<'a, Self> {
         let value = obj.bind(gc.nogc());
+        // An Array that is iterated the way the realm set out with is
+        // walked element by element, with no iterator object: nearly every
+        // Array, and the method is found by the shape of the array.
+        if let Value::Array(array) = value
+            && array.is_iterated_by_values(agent, gc.nogc())
+        {
+            return Ok(VmIteratorRecord::ArrayValues(
+                ArrayValuesIteratorRecord::new(array.unbind()),
+            ));
+        }
         let scoped_value = value.scope(agent, gc.nogc());
         // a. Let method be ? GetMethod(obj, %Symbol.iterator%).
         let method = get_method(
@@ -303,8 +314,7 @@ impl<'a> VmIteratorRecord<'a> {
         let value = scoped_value.take(agent).bind(gc.nogc());
         // 4. Return ? GetIteratorFromMethod(obj, method).
         if let Some(array) = Array::is_iterable_array(agent, value, method) {
-            // Optimisation: if we're using the Array values iterator on
-            // an Array then we can use a special iterator case.
+            // The same walk, where a getter gave the method.
             Ok(VmIteratorRecord::ArrayValues(
                 ArrayValuesIteratorRecord::new(array.unbind()),
             ))
@@ -1108,12 +1118,17 @@ fn array_iterator_record_requires_return_call(agent: &mut Agent, gc: NoGcScope) 
         .intrinsics()
         .array_iterator_prototype();
     // IteratorClose calls GetMethod on the iterator: if a
-    // non-nullable value is found this way then things happen.
+    // non-nullable value is found this way then things happen. Every walk
+    // that ends early asks (a pattern with fewer elements than the array,
+    // a `break`): the property cache of the name remembers that the
+    // prototypes have none.
+    let key = PropertyKey::from(BUILTIN_STRING_MEMORY.r#return);
+    let cache = PropertyLookupCache::new(agent, key);
     match array_iterator_prototype.try_get(
         agent,
-        BUILTIN_STRING_MEMORY.r#return.into(),
+        key,
         array_iterator_prototype.into(),
-        None,
+        Some(cache),
         gc,
     ) {
         ControlFlow::Continue(TryGetResult::Unset) => false,
