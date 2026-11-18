@@ -426,9 +426,15 @@ impl<'gc> Executable<'gc> {
         }
 
         let is_concise = data.ast.is_concise_body();
+        // A class constructor too: \[\[Call]] of it throws whatever its body
+        // needs (ecmascript_function::call_environment), and `new` of one
+        // that is not derived may be run without a Function Environment
+        // Record where the body needs none.
         let plain_function = matches!(
             data.ast,
-            FunctionAstRef::Function(_) | FunctionAstRef::Arrow(_)
+            FunctionAstRef::Function(_)
+                | FunctionAstRef::Arrow(_)
+                | FunctionAstRef::ClassConstructor(_)
         );
 
         let call_environment = ctx.compile_function_body(data);

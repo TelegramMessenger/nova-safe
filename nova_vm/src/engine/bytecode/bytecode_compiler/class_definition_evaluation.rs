@@ -678,7 +678,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                     is_strict: true,
                     ast: FunctionAstRef::ClassConstructor(&constructor.value),
                 };
-                constructor_ctx.compile_function_body(constructor_data);
+                // What the body needs of its call, as for a constructor
+                // without fields: the initializers before it read `this`
+                // as the body does.
+                let call_environment = constructor_ctx.compile_function_body(constructor_data);
+                constructor_ctx.set_call_environment(call_environment);
                 let executable = constructor_ctx.finish();
                 ctx.set_function_expression_bytecode(constructor_index, executable);
             } else {
