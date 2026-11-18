@@ -46,6 +46,19 @@ pub(crate) fn get<'a, 'b>(
     gc: GcScope<'a, '_>,
 ) -> JsResult<'a, Value<'a>> {
     let p = p.bind(gc.nogc());
+    // Where the property is a data property, or there is none, nothing
+    // runs to find that out and nothing is scoped for it: \[\[Get]] proper
+    // is for a getter and for a Proxy, which the first look leaves alone.
+    match o.try_get(agent, p, o.into(), None, gc.nogc()) {
+        ControlFlow::Continue(TryGetResult::Value(value)) => {
+            return Ok(value.unbind().bind(gc.into_nogc()));
+        }
+        ControlFlow::Continue(TryGetResult::Unset) => return Ok(Value::Undefined),
+        ControlFlow::Break(TryError::Err(err)) => {
+            return Err(err.unbind().bind(gc.into_nogc()));
+        }
+        _ => {}
+    }
     // 1. Return ? O.[[Get]](P, O).
     o.internal_get(agent, p.unbind(), o.into(), gc)
 }
@@ -367,6 +380,23 @@ pub(crate) fn create_data_property_or_throw<'a, 'gc>(
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     let property_key = property_key.bind(gc.nogc());
+    // Where the property is created with no script run for it, which is on
+    // every object but a Proxy and its like, nothing is scoped for it.
+    match try_create_data_property(agent, object, property_key, value, None, gc.nogc()) {
+        ControlFlow::Continue(true) => return Ok(()),
+        ControlFlow::Continue(false) => {
+            return Err(agent.throw_exception(
+                ExceptionType::TypeError,
+                format!(
+                    "Could not create property '{}'.",
+                    property_key.as_display(agent)
+                ),
+                gc.into_nogc(),
+            ));
+        }
+        ControlFlow::Break(TryError::Err(err)) => return Err(err.unbind()),
+        ControlFlow::Break(TryError::GcError) => {}
+    }
     let scoped_property_key = property_key.scope(agent, gc.nogc());
     let success = create_data_property(agent, object, property_key.unbind(), value, gc.reborrow())
         .unbind()?;
