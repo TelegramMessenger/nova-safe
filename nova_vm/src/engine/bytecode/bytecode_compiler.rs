@@ -1896,6 +1896,43 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ArrayE
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
 
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
+        // An array of values and nothing else (no spread element, no hole):
+        // each value goes to the stack, as the arguments of a call do, and
+        // one instruction makes the Array of them. Nothing can tell that
+        // from an Array that is made first and given the values one by
+        // one: no code sees the Array before the last of them is there.
+        if !self.elements.is_empty()
+            && self.elements.len() <= usize::from(IndexType::MAX)
+            && self.elements.iter().all(|e| {
+                !matches!(
+                    e,
+                    ast::ArrayExpressionElement::SpreadElement(_)
+                        | ast::ArrayExpressionElement::Elision(_)
+                )
+            })
+        {
+            let mut values = Vec::with_capacity(self.elements.len());
+            let mut result = Ok(ValueOutput::Value);
+            for ele in &self.elements {
+                if let Err(e) = ele.compile_expression(ctx).and_then(|s| s.get_value(ctx)) {
+                    result = Err(e);
+                    break;
+                }
+                values.push(ctx.load_to_stack());
+            }
+            // The instruction pops the values; where an element always
+            // throws, whatever handles the error drops them.
+            for value in values.into_iter().rev() {
+                value.forget(ctx);
+            }
+            if result.is_ok() {
+                ctx.add_instruction_with_immediate(
+                    Instruction::ArrayFromStack,
+                    self.elements.len(),
+                );
+            }
+            return result;
+        }
         // The immediate is only a capacity hint: ArrayPush grows the array.
         let elements_min_count = self.elements.len().min(usize::from(IndexType::MAX));
         ctx.add_instruction_with_immediate(Instruction::ArrayCreate, elements_min_count);

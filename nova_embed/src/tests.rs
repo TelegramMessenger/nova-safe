@@ -6990,3 +6990,200 @@ at the end pattern 12 | long pattern 12undefined | rest 123 | skips 2i | nested 
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// An array literal of values, which one instruction makes of the values
+/// on the stack: what it holds and the order its elements are evaluated
+/// in; literals with holes and spread elements, which are made the other
+/// way; setters on the prototypes and a replaced `Array`, which a literal
+/// does not go through; an element that throws, inside calls, loops,
+/// `finally` and other literals, and the values of the code around it;
+/// literals across a yield; and literals of more values than the
+/// instruction counts. What is expected is what Node prints for the same
+/// script.
+#[test]
+fn array_literals_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(array_literals)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn array_literals() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+var mapOf = Array.prototype.map;
+function say() { out.push(mapOf.call(arguments, function (v) {
+  if (typeof v === 'function') return 'fn:' + v.name;
+  if (v && typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return '[obj]'; } }
+  return String(v);
+}).join(' ')); }
+function attempt(name, f) { try { say(name, f()); } catch (e) { say(name, 'threw', e && e.constructor ? e.constructor.name : e); } }
+var log = [];
+function note(v) { log.push(v); return v; }
+function fail(v) { log.push('fail ' + v); throw new RangeError(String(v)); }
+
+// What a literal holds, and in which order it was made.
+(function () {
+  var a = [note(1), note(2), note(3)];
+  say('order', log.join(), a.length, a);
+  var mixed = [1, 'two', 3.5, null, undefined, true, 10n === 10n, { k: 1 }, [9], function named() {}, () => 1, Symbol.iterator === Symbol.iterator, -0, NaN, /x/.source];
+  say('mixed', mixed.length, typeof mixed[9], mixed[9].name, typeof mixed[10], Object.is(mixed[12], -0), mixed.slice(0, 9));
+  var one = [7]; say('one', one.length, one[0], Object.keys(one).join(), 0 in one, 1 in one);
+  var nested = [[1, [2, [3, [4]]]], [], [[]]]; say('nested', nested, nested[0][1][1][1][0]);
+  var x = 5, y = 6; var locals = [x, y, x + y, x * y, x, x]; say('locals', locals);
+  var same = [x++, x++, x]; say('same variable', same, x);
+  var obj = { n: 1, get g() { return this.n++; } }; say('getter elements', [obj.g, obj.g, obj.g], obj.n);
+  var holes = [1, , 3, , ]; say('holes', holes.length, 1 in holes, 3 in holes, Object.keys(holes).join());
+  var spread = [0, ...[1, 2], 3, ...'ab', ...new Set([4])]; say('spread', spread);
+  var both = [...[], , 1]; say('both', both.length, 0 in both, both[1]);
+  say('empty', [].length, [[]].length, [[], []].length);
+  var desc = Object.getOwnPropertyDescriptor([5, 6], 1); say('descriptor', desc);
+  say('prototype', Object.getPrototypeOf([1]) === Array.prototype, Array.isArray([1, 2]), [1, 2] instanceof Array, [1, 2].constructor === Array);
+  var a1 = [1, 2], a2 = [1, 2]; say('fresh', a1 === a2, (function () { return [1]; })() === (function () { return [1]; })());
+  var made = []; for (var i = 0; i < 3; i++) made.push([i, i * 2]); made[0].push('grown'); say('each its own', made);
+  var frozen = Object.freeze([1, 2]); say('frozen literal', Object.isFrozen(frozen), frozen.length);
+  var arr = [1, 2, 3]; arr.length = 1; arr.push(9); arr[5] = 'far'; say('then changed', arr.length, 1 in arr, 4 in arr, arr[5]);
+})();
+
+// Setters and getters on Array.prototype are not what a literal goes through.
+(function () {
+  var hits = 0;
+  Object.defineProperty(Array.prototype, 0, { set: function () { hits++; }, get: function () { return 'proto'; }, configurable: true });
+  Object.defineProperty(Object.prototype, 1, { set: function () { hits++; }, configurable: true });
+  var lit = ['own', 'own too']; say('setters on the prototypes', hits, lit[0], lit[1], lit.hasOwnProperty(0), lit.hasOwnProperty(1));
+  delete Array.prototype[0]; delete Object.prototype[1];
+  var Saved = Array;
+  var called = 0;
+  Array = function () { called++; };
+  var still = [1, 2]; say('Array replaced', called, still.length, still instanceof Saved);
+  Array = Saved;
+  var push = Array.prototype.push; Array.prototype.push = function () { called++; return push.apply(this, arguments); };
+  var lit2 = [1, 2, 3]; say('push replaced', called, lit2.length);
+  Array.prototype.push = push;
+})();
+
+// An element that throws: what was made before it is dropped, and the code
+// around goes on with its own values.
+(function () {
+  log.length = 0;
+  attempt('throws', function () { return [note('a'), fail('b'), note('c')]; });
+  say('ran', log.join());
+  function around(a, b, c) { return a + '/' + b + '/' + c; }
+  var result;
+  try { result = around('x', [1, fail(2), 3], 'z'); } catch (e) { result = around('caught', e.message, [4, 5].length); }
+  say('inside a call', result);
+  var total = 0;
+  for (var i = 0; i < 2000; i++) {
+    try { total += [i, i % 7 === 0 ? fail(i) : 1, 2].length; } catch (e) { total += [e.message.length, 1].length; }
+  }
+  say('many throws', total);
+  var kept = 'kept';
+  var text = kept + (function () { try { return [1, [2, [3, fail(4)]]].length; } catch (e) { return [kept, e.message].join(':'); } })() + kept;
+  say('nested throw', text);
+  var order = [];
+  try { try { order.push([1, fail('inner')]); } finally { order.push(['finally', [1, 2].length]); } } catch (e) { order.push(['outer', e.message]); }
+  say('finally', order);
+  var seen = [];
+  try { for (var v of [1, 2, 3]) { seen.push([v, v === 2 ? fail(v) : v]); } } catch (e) { seen.push('stopped'); }
+  say('in for-of', seen);
+  var s = 0;
+  outer: for (var a = 0; a < 3; a++) { for (var b = 0; b < 3; b++) { try { s += [a, b, b === 1 ? fail(b) : 0].length; } catch (e) { continue outer; } } }
+  say('continue out', s);
+  attempt('reference error', function () { return [1, missingName, 3]; });
+  attempt('tdz', function () { var r = [1, later]; let later = 2; return r; });
+  attempt('deep', function () { return [[[[[fail('deep')]]]]]; });
+  var sw = (function (k) { switch (k) { case 1: try { return [k, fail(k)]; } catch (e) { return [k, 'case']; } default: return [k]; } });
+  say('switch', sw(1), sw(2));
+})();
+
+// Literals across a yield and an await.
+(function () {
+  function* gen() { var got = [yield 1, yield 2, yield 3]; return got; }
+  var it = gen(); it.next(); it.next('a'); it.next('b');
+  say('yields', it.next('c').value);
+  function* nested() { return [[yield 'p', 1], [2, yield 'q']]; }
+  var n = nested(); n.next(); n.next('P');
+  say('nested yields', n.next('Q').value);
+  function* stopped() { try { return [1, yield 2, 3]; } finally { say('generator closed', [4, 5]); } }
+  var st = stopped(); st.next(); say('return through a literal', st.return('early'));
+  var th = stopped(); th.next(); attempt('throw through a literal', function () { return th.throw(new EvalError('in')); });
+  var two = gen(), three = gen(); two.next(); three.next(); two.next('x'); three.next('y'); two.next('x2'); three.next('y2');
+  say('two at once', two.next('x3').value, three.next('y3').value);
+})();
+
+// Long literals: one instruction counts its values in sixteen bits.
+(function () {
+  function literal(n) { var parts = []; for (var i = 0; i < n; i++) parts.push(i % 10); return '[' + parts.join(',') + ']'; }
+  [3, 255, 256, 257, 1000, 65534, 65535, 65536, 70000].forEach(function (n) {
+    var made = (0, eval)(literal(n));
+    var sum = 0; for (var i = 0; i < made.length; i++) sum += made[i];
+    say('long', n, made.length, sum, made[n - 1]);
+  });
+  var calls = (0, eval)('[' + new Array(300).fill('note(1)').join(',') + ']');
+  say('long with calls', calls.length);
+  var deep = '1'; for (var d = 0; d < 200; d++) deep = '[' + deep + ', ' + d + ']';
+  var nest = (0, eval)(deep); var depth = 0; while (Array.isArray(nest)) { nest = nest[0]; depth++; }
+  say('deep nest', depth);
+})();
+out.join("\n")"#;
+    let expected = r#"order 1,2,3 3 [1,2,3]
+mixed 15 function named function true [1,"two",3.5,null,null,true,true,{"k":1},[9]]
+one 1 7 0 true false
+nested [[1,[2,[3,[4]]]],[],[[]]] 4
+locals [5,6,11,30,5,5]
+same variable [5,6,7] 7
+getter elements [1,2,3] 4
+holes 4 false false 0,2
+spread [0,1,2,3,"a","b",4]
+both 2 false 1
+empty 0 1 2
+descriptor {"value":6,"writable":true,"enumerable":true,"configurable":true}
+prototype true true true true
+fresh false false
+each its own [[0,0,"grown"],[1,2],[2,4]]
+frozen literal true 2
+then changed 6 true false far
+setters on the prototypes 0 own own too true true
+Array replaced 0 2 true
+push replaced 0 3
+throws threw RangeError
+ran a,fail b
+inside a call caught/2/2
+many throws 5714
+nested throw keptkept:4kept
+finally [["finally",2],["outer","inner"]]
+in for-of [[1,1],"stopped"]
+continue out 9
+reference error threw ReferenceError
+tdz threw ReferenceError
+deep threw RangeError
+switch [1,"case"] [2]
+yields ["a","b","c"]
+nested yields [["P",1],[2,"Q"]]
+generator closed [4,5]
+return through a literal {"value":"early","done":true}
+generator closed [4,5]
+throw through a literal threw EvalError
+two at once ["x","x2","x3"] ["y","y2","y3"]
+long 3 3 3 2
+long 255 255 1135 4
+long 256 256 1140 5
+long 257 257 1146 6
+long 1000 1000 4500 9
+long 65534 65534 294891 3
+long 65535 65535 294895 4
+long 65536 65536 294900 5
+long 70000 70000 315000 9
+long with calls 300
+deep nest 200"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
