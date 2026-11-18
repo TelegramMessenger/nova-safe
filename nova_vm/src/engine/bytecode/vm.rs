@@ -716,6 +716,7 @@ impl Vm {
                     agent,
                     self,
                     &mut ip,
+                    &instructions,
                     &executable,
                     code,
                     instr,
@@ -784,12 +785,21 @@ impl Vm {
                     }
                 }
                 // A jump, or the handler of what was thrown.
+                let turned = self.ip < ip;
                 ip = self.ip;
                 agent.stack_refs.get_mut().truncate(stack_depth);
                 agent
                     .stack_ref_collections
                     .get_mut()
                     .truncate(collections_depth);
+                if turned {
+                    // One turn of a loop whose jump back was not a plain
+                    // one (a test at its end, on operands that are not
+                    // integers): the host is asked here too.
+                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                        break Change::Throw(err.unbind());
+                    }
+                }
                 if agent.check_gc() {
                     self.trigger_gc(agent, gc.reborrow());
                 }
@@ -1232,10 +1242,12 @@ impl Vm {
     // Inlined into the loop of `run` in optimised builds, like
     // `execute_instruction`.
     #[cfg_attr(not(debug_assertions), inline(always))]
+    #[allow(clippy::too_many_arguments)]
     fn execute_plain_instruction(
         agent: &mut Agent,
         vm: &mut Vm,
         ip: &mut usize,
+        instructions: &[u8],
         executable: &Scoped<Executable>,
         code: Executable,
         instr: Instr,
@@ -1306,28 +1318,143 @@ impl Vm {
                     return Plain::Looped;
                 }
             }
-            // The test of most loops, on two integers.
+            // The test of most loops, on two integers: before the body with
+            // the jump out where it fails, or after it with the jump back
+            // where it holds.
             Instruction::JumpIfNotLessThan
             | Instruction::JumpIfNotLessThanEquals
             | Instruction::JumpIfNotGreaterThan
-            | Instruction::JumpIfNotGreaterThanEquals => {
+            | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::JumpIfLessThan
+            | Instruction::JumpIfLessThanEquals
+            | Instruction::JumpIfGreaterThan
+            | Instruction::JumpIfGreaterThanEquals => {
                 let (Some(&Value::Integer(left)), Some(Value::Integer(right))) =
                     (vm.stack.last(), vm.result)
                 else {
                     return Plain::No;
                 };
                 let (left, right) = (left.into_i64(), right.into_i64());
-                let holds = match instr.kind {
-                    Instruction::JumpIfNotLessThan => left < right,
-                    Instruction::JumpIfNotLessThanEquals => left <= right,
-                    Instruction::JumpIfNotGreaterThan => left > right,
+                let jumps = match instr.kind {
+                    Instruction::JumpIfNotLessThan => left >= right,
+                    Instruction::JumpIfNotLessThanEquals => left > right,
+                    Instruction::JumpIfNotGreaterThan => left <= right,
+                    Instruction::JumpIfNotGreaterThanEquals => left < right,
+                    Instruction::JumpIfLessThan => left < right,
+                    Instruction::JumpIfLessThanEquals => left <= right,
+                    Instruction::JumpIfGreaterThan => left > right,
                     _ => left >= right,
                 };
                 vm.stack.pop();
                 vm.result = None;
-                if !holds {
+                if jumps {
                     let from = *ip;
                     *ip = instr.get_jump_slot();
+                    if *ip < from {
+                        return Plain::Looped;
+                    }
+                }
+            }
+            // The same tests on a local and a constant, or on two locals,
+            // which are read where they are.
+            Instruction::JumpIfIndexNotLessThanConstant
+            | Instruction::JumpIfIndexNotLessThanIndex
+            | Instruction::JumpIfIndexNotLessThanEqualsConstant
+            | Instruction::JumpIfIndexNotLessThanEqualsIndex
+            | Instruction::JumpIfIndexNotGreaterThanConstant
+            | Instruction::JumpIfIndexNotGreaterThanIndex
+            | Instruction::JumpIfIndexNotGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexNotGreaterThanEqualsIndex
+            | Instruction::JumpIfIndexNotStrictlyEqualConstant
+            | Instruction::JumpIfIndexNotStrictlyEqualIndex
+            | Instruction::JumpIfIndexStrictlyEqualConstant
+            | Instruction::JumpIfIndexStrictlyEqualIndex => {
+                let Some((comparison, constant)) = instr.kind.compared_local() else {
+                    return Plain::No;
+                };
+                let left = vm.stack[instr.get_first_index()];
+                let right = if constant {
+                    code.fetch_constant(agent, instr.get_second_index(), gc)
+                        .unbind()
+                } else {
+                    vm.stack[instr.get_second_index()]
+                };
+                let jumps = match (comparison, left, right) {
+                    (Instruction::JumpIfNotStrictlyEqual, left, right) => {
+                        !Self::strictly_equal(agent, left, right)
+                    }
+                    (Instruction::JumpIfStrictlyEqual, left, right) => {
+                        Self::strictly_equal(agent, left, right)
+                    }
+                    (comparison, Value::Integer(left), Value::Integer(right)) => {
+                        let (left, right) = (left.into_i64(), right.into_i64());
+                        !match comparison {
+                            Instruction::JumpIfNotLessThan => left < right,
+                            Instruction::JumpIfNotLessThanEquals => left <= right,
+                            Instruction::JumpIfNotGreaterThan => left > right,
+                            _ => left >= right,
+                        }
+                    }
+                    _ => return Plain::No,
+                };
+                vm.result = None;
+                if jumps {
+                    let from = *ip;
+                    *ip = Instr::wide_jump_target(instructions, from);
+                    if *ip < from {
+                        return Plain::Looped;
+                    }
+                }
+            }
+            // The test at the end of a loop, after `i++` or `i--` where the
+            // instruction makes that too: all of it on integers, or none.
+            Instruction::JumpIfIndexLessThanConstant
+            | Instruction::JumpIfIndexLessThanIndex
+            | Instruction::JumpIfIndexLessThanEqualsConstant
+            | Instruction::JumpIfIndexLessThanEqualsIndex
+            | Instruction::JumpIfIndexGreaterThanConstant
+            | Instruction::JumpIfIndexGreaterThanIndex
+            | Instruction::JumpIfIndexGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexGreaterThanEqualsIndex
+            | Instruction::IncrementIndexJumpIfLessThanConstant
+            | Instruction::IncrementIndexJumpIfLessThanIndex
+            | Instruction::IncrementIndexJumpIfLessThanEqualsConstant
+            | Instruction::IncrementIndexJumpIfLessThanEqualsIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex => {
+                let Some((step, comparison, constant)) = instr.kind.loop_test() else {
+                    return Plain::No;
+                };
+                let slot = instr.get_first_index();
+                let right = if constant {
+                    code.fetch_constant(agent, instr.get_second_index(), gc)
+                        .unbind()
+                } else {
+                    vm.stack[instr.get_second_index()]
+                };
+                let (Value::Integer(left), Value::Integer(right)) = (vm.stack[slot], right) else {
+                    return Plain::No;
+                };
+                let (mut left, right) = (left.into_i64(), right.into_i64());
+                if step != 0 {
+                    left += step as i64;
+                    let Ok(stepped) = SmallInteger::try_from(left) else {
+                        return Plain::No;
+                    };
+                    vm.stack[slot] = Value::Integer(stepped);
+                }
+                let holds = match comparison {
+                    Instruction::LessThan => left < right,
+                    Instruction::LessThanEquals => left <= right,
+                    Instruction::GreaterThan => left > right,
+                    _ => left >= right,
+                };
+                vm.result = None;
+                if holds {
+                    let from = *ip;
+                    *ip = Instr::wide_jump_target(instructions, from);
                     if *ip < from {
                         return Plain::Looped;
                     }
@@ -1550,6 +1677,46 @@ impl Vm {
                 }
                 vm.result = Some(value);
             }
+            // `this.p`: the this value that the call keeps, and its
+            // property by the cache.
+            Instruction::GetThisPropertyWithCache
+            | Instruction::GetThisPropertyWithCacheKeepReference => {
+                let Some(this) = agent.running_call_this_value() else {
+                    return Plain::No;
+                };
+                let Some(value) = Self::cached_property_value_of(agent, this, code, instr, gc)
+                else {
+                    return Plain::No;
+                };
+                if instr.kind == Instruction::GetThisPropertyWithCacheKeepReference {
+                    vm.result = Some(this);
+                    Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+                } else {
+                    vm.reference = None;
+                }
+                vm.result = Some(value);
+            }
+            // `o.p = v` with `o` on the stack, where the property cache
+            // knows its shape and `p` is a writable data property of its
+            // own.
+            Instruction::PutPropertyWithCache => {
+                let (Some(value), Some(&Value::Object(object))) = (vm.result, vm.stack.last())
+                else {
+                    return Plain::No;
+                };
+                let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
+                let shape = object.object_shape(agent);
+                let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
+                    return Plain::No;
+                };
+                if offset.is_unset()
+                    || !ordinary_set_own_data_at_offset(agent, object, offset, value)
+                {
+                    return Plain::No;
+                }
+                vm.stack.pop();
+                vm.result = None;
+            }
             // `o.p = v` where the property cache knows the shape of `o` and
             // `p` is a writable data property of its own.
             Instruction::PutValueWithCache => {
@@ -1754,7 +1921,43 @@ impl Vm {
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
-        match vm.result? {
+        Self::cached_property_value_of(agent, vm.result?, code, instr, gc)
+    }
+
+    /// GetPropertyWithCache or GetPropertyWithCacheKeepReference of the
+    /// value in the result register, where the cache places the property:
+    /// what the plain instruction does. Returns whether it did.
+    pub(super) fn get_property_by_cache(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        executable: &Scoped<Executable>,
+        instr: Instr,
+        keep_reference: bool,
+        gc: NoGcScope,
+    ) -> bool {
+        let code = executable.get(agent);
+        let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
+            return false;
+        };
+        if keep_reference {
+            Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+        } else {
+            vm.reference = None;
+        }
+        vm.result = Some(value);
+        true
+    }
+
+    /// The same for `base`, wherever the instruction has it from.
+    #[inline(always)]
+    fn cached_property_value_of(
+        agent: &mut Agent,
+        base: Value,
+        code: Executable,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        match base {
             Value::Object(object) => {
                 let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
                 let shape = object.object_shape(agent);
@@ -2043,17 +2246,58 @@ impl Vm {
             | Instruction::JumpIfNotLessThanEquals
             | Instruction::JumpIfNotGreaterThan
             | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::JumpIfLessThan
+            | Instruction::JumpIfLessThanEquals
+            | Instruction::JumpIfGreaterThan
+            | Instruction::JumpIfGreaterThanEquals
             | Instruction::JumpIfNotStrictlyEqual
             | Instruction::JumpIfStrictlyEqual
             | Instruction::JumpIfNotLooselyEqual
             | Instruction::JumpIfLooselyEqual
+            | Instruction::JumpIfIndexNotLessThanConstant
+            | Instruction::JumpIfIndexNotLessThanIndex
+            | Instruction::JumpIfIndexNotLessThanEqualsConstant
+            | Instruction::JumpIfIndexNotLessThanEqualsIndex
+            | Instruction::JumpIfIndexNotGreaterThanConstant
+            | Instruction::JumpIfIndexNotGreaterThanIndex
+            | Instruction::JumpIfIndexNotGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexNotGreaterThanEqualsIndex
+            | Instruction::JumpIfIndexNotStrictlyEqualConstant
+            | Instruction::JumpIfIndexNotStrictlyEqualIndex
+            | Instruction::JumpIfIndexStrictlyEqualConstant
+            | Instruction::JumpIfIndexStrictlyEqualIndex
+            | Instruction::JumpIfIndexLessThanConstant
+            | Instruction::JumpIfIndexLessThanIndex
+            | Instruction::JumpIfIndexLessThanEqualsConstant
+            | Instruction::JumpIfIndexLessThanEqualsIndex
+            | Instruction::JumpIfIndexGreaterThanConstant
+            | Instruction::JumpIfIndexGreaterThanIndex
+            | Instruction::JumpIfIndexGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexGreaterThanEqualsIndex
+            | Instruction::IncrementIndexJumpIfLessThanConstant
+            | Instruction::IncrementIndexJumpIfLessThanIndex
+            | Instruction::IncrementIndexJumpIfLessThanEqualsConstant
+            | Instruction::IncrementIndexJumpIfLessThanEqualsIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
             | Instruction::GetValueWithExpressionKey
             | Instruction::PutValueWithExpressionKey => {
                 execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
+            Instruction::PutPropertyWithCache
+            | Instruction::GetThisPropertyWithCache
+            | Instruction::GetThisPropertyWithCacheKeepReference => {
+                // Kept out of this function, whose frame every native call
+                // of a function is on top of.
+                execute_fused_property_instruction(agent, vm, executable, instr, gc)?;
+            }
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
+                let keep_reference =
+                    matches!(instr.kind, Instruction::GetPropertyWithCacheKeepReference);
                 execute_evaluate_property_access_with_identifier_key(
                     agent,
                     vm,
@@ -2061,8 +2305,6 @@ impl Vm {
                     instr,
                     gc.nogc(),
                 );
-                let keep_reference =
-                    matches!(instr.kind, Instruction::GetPropertyWithCacheKeepReference);
                 let get_value = Instr::new_with_arg(
                     if keep_reference {
                         Instruction::GetValueWithCacheKeepReference
@@ -2147,6 +2389,9 @@ impl Vm {
             | Instruction::LoadFromIndex
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference
+            | Instruction::GetThisPropertyWithCache
+            | Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::PutPropertyWithCache
             | Instruction::PushReferenceAndLoad
             | Instruction::LoadFromIndexStoreConstant
             | Instruction::LoadFromIndexGetFromIndex
@@ -2155,10 +2400,42 @@ impl Vm {
             | Instruction::JumpIfNotLessThanEquals
             | Instruction::JumpIfNotGreaterThan
             | Instruction::JumpIfNotGreaterThanEquals
+            | Instruction::JumpIfLessThan
+            | Instruction::JumpIfLessThanEquals
+            | Instruction::JumpIfGreaterThan
+            | Instruction::JumpIfGreaterThanEquals
             | Instruction::JumpIfNotStrictlyEqual
             | Instruction::JumpIfStrictlyEqual
             | Instruction::JumpIfNotLooselyEqual
             | Instruction::JumpIfLooselyEqual
+            | Instruction::JumpIfIndexNotLessThanConstant
+            | Instruction::JumpIfIndexNotLessThanIndex
+            | Instruction::JumpIfIndexNotLessThanEqualsConstant
+            | Instruction::JumpIfIndexNotLessThanEqualsIndex
+            | Instruction::JumpIfIndexNotGreaterThanConstant
+            | Instruction::JumpIfIndexNotGreaterThanIndex
+            | Instruction::JumpIfIndexNotGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexNotGreaterThanEqualsIndex
+            | Instruction::JumpIfIndexNotStrictlyEqualConstant
+            | Instruction::JumpIfIndexNotStrictlyEqualIndex
+            | Instruction::JumpIfIndexStrictlyEqualConstant
+            | Instruction::JumpIfIndexStrictlyEqualIndex
+            | Instruction::JumpIfIndexLessThanConstant
+            | Instruction::JumpIfIndexLessThanIndex
+            | Instruction::JumpIfIndexLessThanEqualsConstant
+            | Instruction::JumpIfIndexLessThanEqualsIndex
+            | Instruction::JumpIfIndexGreaterThanConstant
+            | Instruction::JumpIfIndexGreaterThanIndex
+            | Instruction::JumpIfIndexGreaterThanEqualsConstant
+            | Instruction::JumpIfIndexGreaterThanEqualsIndex
+            | Instruction::IncrementIndexJumpIfLessThanConstant
+            | Instruction::IncrementIndexJumpIfLessThanIndex
+            | Instruction::IncrementIndexJumpIfLessThanEqualsConstant
+            | Instruction::IncrementIndexJumpIfLessThanEqualsIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanIndex
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant
+            | Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex
             | Instruction::JumpToCase
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex

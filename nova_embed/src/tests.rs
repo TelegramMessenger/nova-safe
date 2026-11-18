@@ -3444,3 +3444,318 @@ manyCallsOneLoop1=9000"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `object.name = value` assigned with the object on the stack, and
+/// `this.name` read by the instruction that fetches the this value, do what
+/// a Reference does: for every kind of base (objects of changing shapes,
+/// frozen and sealed ones, accessors, Proxies, arrays and other exotic
+/// objects, primitives, null and undefined), in the order the object, the
+/// value and the assignment are evaluated, and for every kind of `this`.
+#[test]
+fn named_assignment_and_this_properties_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(named_assignment_and_this)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn named_assignment_and_this() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = (e && e.constructor ? e.constructor.name : typeof e) + ":" + (e && e.message ? e.message.length : String(e)); }
+    out.push(label + round + "=" + String(r));
+  }
+}
+log("plainAssign", function () { var o = { a: 1 }; o.a = 2; o.b = 3; o.c = o.a + o.b; var p = {}; p.x = 1; p.y = 2; p.x = p.y; return JSON.stringify(o) + JSON.stringify(p) + Object.keys(o).join(""); });
+log("loopAssign", function () { var o = { x: 0, y: 2, z: 3 }; for (var i = 0; i < 50; i++) { o.x = o.x + o.y + (o.z & 1); } var q = { n: 0 }; for (var j = 0; j < 10; j++) { q.n = j; q["k" + j] = j; q.last = q.n * 2; } return o.x + "," + q.n + "," + q.last + "," + Object.keys(q).length; });
+log("order", function () {
+  var trail = "";
+  function obj(name) { trail += "o" + name; return holder; } function rhs(v) { trail += "r" + v; return v; }
+  var holder = { set s(v) { trail += "S" + v; }, get g() { trail += "G"; return holder; } };
+  obj(1).a = rhs(1); obj(2).s = rhs(2); holder.g.b = rhs(3); obj(4).g.c = obj(5).g.d = rhs(6);
+  return trail + "|" + [holder.a, holder.b, holder.c, holder.d].join();
+});
+log("nullBase", function () {
+  var trail = "", r = [];
+  function rhs() { trail += "R"; return 1; }
+  var n = null, u;
+  try { n.x = rhs(); } catch (e) { r.push(e.constructor.name); }
+  try { u.x = rhs(); } catch (e) { r.push(e.constructor.name); }
+  try { missing.x = rhs(); } catch (e) { r.push(e.constructor.name); }
+  function thrower() { throw new RangeError("rhs"); }
+  var o = { v: 1 }; try { o.v = thrower(); } catch (e) { r.push(e.constructor.name + o.v); }
+  try { n.x = thrower(); } catch (e) { r.push(e.constructor.name); }
+  return r.join() + "|" + trail;
+});
+log("primitiveBase", function () {
+  var r = [], s = "str", n = 5, b = true, sym = Symbol("q");
+  s.x = 1; n.y = 2; b.z = 3; sym.w = 4; r.push(s.x, n.y, b.z, sym.w);
+  function strict() { "use strict"; var t = "t"; try { t.x = 1; return "no"; } catch (e) { return e.constructor.name; } }
+  r.push(strict());
+  Object.defineProperty(Number.prototype, "viaSetter", { set: function (v) { r.push(typeof this + v); }, configurable: true });
+  n.viaSetter = 9; delete Number.prototype.viaSetter;
+  return r.map(String).join();
+});
+log("unwritable", function () {
+  var o = Object.freeze({ a: 1 }), p = Object.defineProperty({}, "ro", { value: 1, writable: false }), sealed = Object.seal({ s: 1 }), noext = Object.preventExtensions({ k: 1 });
+  o.a = 2; o.b = 3; p.ro = 5; sealed.s = 2; sealed.t = 3; noext.k = 2; noext.m = 3;
+  var child = Object.create(p); child.ro = 7;
+  var r = [o.a, o.b, p.ro, sealed.s, sealed.t, noext.k, noext.m, child.ro, Object.keys(child).length];
+  function strict() { "use strict"; var e1, e2, e3; try { o.a = 2; } catch (e) { e1 = e.constructor.name; } try { noext.m = 1; } catch (e) { e2 = e.constructor.name; } try { child.ro = 1; } catch (e) { e3 = e.constructor.name; } return [e1, e2, e3].join("/"); }
+  r.push(strict());
+  return r.map(String).join();
+});
+log("accessors", function () {
+  var trail = "";
+  var o = { _v: 1, get v() { trail += "g"; return this._v; }, set v(x) { trail += "s" + x; this._v = x * 2; }, get onlyGet() { return 7; } };
+  o.v = 5; o.v = o.v + 1; o.onlyGet = 9;
+  var child = Object.create(o); child.v = 3; child.own = 4;
+  var setterThrows = { set t(x) { throw new SyntaxError("set"); } }, caught = "";
+  try { setterThrows.t = 1; } catch (e) { caught = e.constructor.name; }
+  function strict() { "use strict"; try { o.onlyGet = 1; return "no"; } catch (e) { return e.constructor.name; } }
+  return [o._v, o.onlyGet, child._v, Object.keys(child).join(""), caught, strict()].join() + "|" + trail;
+});
+log("proxyAndExotic", function () {
+  var seen = [];
+  var p = new Proxy({}, { set: function (t, k, v, r) { seen.push(String(k) + v + (r === p)); t[k] = v; return true; }, defineProperty: function (t, k, d) { seen.push("def" + String(k)); return Reflect.defineProperty(t, k, d); } });
+  p.a = 1; p.b = p.a;
+  var refuses = new Proxy({}, { set: function () { return false; } }); refuses.x = 1;
+  var arr = [1, 2, 3, 4]; arr.length = 2; arr.extra = "e";
+  function f() {} f.prototype = { marker: 1 }; f.custom = 5;
+  var ta = new Uint8Array(2); ta.name = "n";
+  var d = new Date(0); d.tag = "t";
+  var m = new Map(); m.size = 9; var str = new String("ab"); str.length = 5; str.more = 1;
+  function strictRefuse() { "use strict"; try { refuses.x = 1; return "no"; } catch (e) { return e.constructor.name; } }
+  return [seen.join("/"), arr.join(""), arr.extra, new f().marker, f.custom, ta.name, d.tag, m.size, str.length, str.more, strictRefuse()].join();
+});
+log("globals", function () { globalThis.gA = 1; var g = globalThis; g.gB = gA + 1; this.gC = 3; return [gA, gB, typeof gC, delete globalThis.gA, delete g.gB, typeof gA].join(); });
+log("chained", function () { var a = { b: { c: {} } }, x = {}, y = {}; a.b.c.d = 1; a.b.e = a.b.c.d + 1; x.p = y.p = a.b.e; var z = (x.q = 5); var arr = [{}]; arr[0].v = 9; return [a.b.c.d, a.b.e, x.p, y.p, z, x.q, arr[0].v].join(); });
+log("shapes", function () {
+  function make(i) { var o = {}; if (i & 1) o.a = i; o.b = i * 2; if (i & 2) o.c = i; o.b = o.b + 1; return o; }
+  var r = []; for (var i = 0; i < 8; i++) { var o = make(i); o.z = i; delete o.b; o.b = "again"; r.push(Object.keys(o).join("") + o.b.length); }
+  var proto = { inherited: 1 }, c = Object.create(proto); c.inherited = 2; proto.later = 5; c.later = c.later + 1;
+  var dict = {}; for (var k = 0; k < 40; k++) { dict["p" + k] = k; } dict.p5 = "five"; dict.fresh = 1;
+  return r.join() + "|" + proto.inherited + c.inherited + proto.later + c.later + "|" + dict.p5 + dict.fresh + Object.keys(dict).length;
+});
+log("thisInMethods", function () {
+  var o = { v: 3, get: function () { return this.v; }, inc: function (by) { this.v = this.v + by; return this; }, twice: function () { return this.get() + this.get(); }, missing: function () { return typeof this.nope; } };
+  class C { constructor(v) { this.v = v; this.w = this.v * 2; } sum() { return this.v + this.w; } static make(v) { return new this(v); } get dbl() { return this.v * 2; } set dbl(x) { this.v = x / 2; } chain() { return this.sum() + this.dbl; } }
+  var c = C.make(4); c.dbl = 20;
+  return [o.get(), o.inc(2).inc(3).v, o.twice(), o.missing(), c.sum(), c.dbl, c.chain(), new C(1).sum()].join();
+});
+log("thisKinds", function () {
+  "use sloppy";
+  var r = [];
+  function sloppy() { return typeof this.Math + (this === globalThis); } function strict() { "use strict"; try { return this.x; } catch (e) { return e.constructor.name; } }
+  r.push(sloppy(), strict(), strict.call({ x: "sx" }), strict.call(7) === undefined, strict.call("abc"));
+  Number.prototype.probe = function () { "use strict"; return typeof this + this.toFixed(1); }; r.push((5).probe()); delete Number.prototype.probe;
+  String.prototype.len2 = function () { return this.length * 2; }; r.push("abc".len2()); delete String.prototype.len2;
+  var arrow = { v: 9, m: function () { var f = () => this.v + 1; var g = () => () => this.v + 2; return f() + g()(); } }; r.push(arrow.m());
+  var topArrow = () => typeof this; r.push(topArrow());
+  function Ctor() { this.a = 1; this.b = this.a + 1; } r.push(new Ctor().b);
+  class Base { constructor() { this.k = "base"; } who() { return this.k; } } class Derived extends Base { constructor(early) { if (early) { try { this.k; } catch (e) { r.push(e.constructor.name); } } super(); this.k = this.k + "+derived"; } who() { return super.who() + "!"; } }
+  r.push(new Derived(true).who(), new Derived(false).who());
+  function* gen() { yield this.v; this.v = this.v + 1; yield this.v; } var holder = { v: 1, gen: gen }; r.push([...holder.gen()].join(""), holder.v);
+  var getterObj = { get g() { return this.h; }, h: "hh", m: function () { return this.g; } }; r.push(getterObj.m());
+  var p = new Proxy({ real: 1 }, { get: function (t, k, rcv) { return k === "viaThis" ? function () { return this.real; } : Reflect.get(t, k, rcv); } }); r.push(p.viaThis());
+  return r.map(String).join();
+});
+log("thisCalls", function () {
+  var trail = "";
+  var o = { n: 0, a: function () { trail += "a"; return this.b(1) + this.c(); }, b: function (x) { trail += "b"; this.n = this.n + x; return this.n; }, c: function () { trail += "c"; return this.missing ? 1 : this.n; } };
+  var r = [o.a(), o.a()];
+  var detached = o.b; try { detached(1); r.push("sloppy" + typeof n); } catch (e) { r.push(e.constructor.name); }
+  var notFn = { m: function () { return this.nf(); }, nf: 5 }; try { notFn.m(); } catch (e) { r.push(e.constructor.name); }
+  var swapped = { m: function () { var v = this.f(); this.f = function () { return "second"; }; return v + this.f(); }, f: function () { return "first"; } }; r.push(swapped.m(), swapped.m());
+  return r.join() + "|" + trail;
+});
+out.join("\n")
+"#;
+    let expected = r#"plainAssign0={"a":2,"b":3,"c":5}{"x":2,"y":2}abc
+plainAssign1={"a":2,"b":3,"c":5}{"x":2,"y":2}abc
+loopAssign0=150,9,18,12
+loopAssign1=150,9,18,12
+order0=o1r1o2r2S2Gr3o4Go5Gr6|1,3,6,6
+order1=o1r1o2r2S2Gr3o4Go5Gr6|1,3,6,6
+nullBase0=TypeError,TypeError,ReferenceError,RangeError1,RangeError|RR
+nullBase1=TypeError,TypeError,ReferenceError,RangeError1,RangeError|RR
+primitiveBase0=undefined,undefined,undefined,undefined,TypeError,object9
+primitiveBase1=undefined,undefined,undefined,undefined,TypeError,object9
+unwritable0=1,undefined,1,2,undefined,2,undefined,1,0,TypeError/TypeError/TypeError
+unwritable1=1,undefined,1,2,undefined,2,undefined,1,0,TypeError/TypeError/TypeError
+accessors0=22,7,6,_vown,SyntaxError,TypeError|s5gs11s3
+accessors1=22,7,6,_vown,SyntaxError,TypeError|s5gs11s3
+proxyAndExotic0=a1true/b1true,12,e,1,5,n,t,0,2,1,TypeError
+proxyAndExotic1=a1true/b1true,12,e,1,5,n,t,0,2,1,TypeError
+globals0=1,2,number,true,true,undefined
+globals1=1,2,number,true,true,undefined
+chained0=1,2,2,2,5,5,9
+chained1=1,2,2,2,5,5,9
+shapes0=zb5,azb5,czb5,aczb5,zb5,azb5,czb5,aczb5|1256|five141
+shapes1=zb5,azb5,czb5,aczb5,zb5,azb5,czb5,aczb5|1256|five141
+thisInMethods0=3,8,16,undefined,18,20,38,3
+thisInMethods1=3,8,16,undefined,18,20,38,3
+thisKinds0=objecttrue,TypeError,sx,true,undefined,number5.0,6,21,object,2,ReferenceError,base+derived!,base+derived!,12,2,hh,1
+thisKinds1=objecttrue,TypeError,sx,true,undefined,number5.0,6,21,object,2,ReferenceError,base+derived!,base+derived!,12,2,hh,1
+thisCalls0=2,4,sloppynumber,TypeError,firstsecond,secondsecond|abcabcb
+thisCalls1=2,4,sloppynumber,TypeError,firstsecond,secondsecond|abcabcb"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A `for` loop with its test at the end, and the instructions that compare
+/// a local with a constant or another local and jump, with `++` or `--`
+/// before where that is the loop's increment, do what the test before the
+/// body and its separate instructions do: for counters and bounds that are
+/// not integers or change in the body, the largest integers, `continue`,
+/// `break` and `return`, bounds read from properties, and generators.
+#[test]
+fn loops_and_tests_on_locals_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(loops_and_tests_on_locals)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn loops_and_tests_on_locals() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = (e && e.constructor ? e.constructor.name : typeof e) + ":" + (e && e.message ? e.message.length : String(e)); }
+    out.push(label + round + "=" + String(r));
+  }
+}
+log("basic", function () { var s = ""; for (var i = 0; i < 5; i++) s += i; for (var j = 5; j > 0; j--) s += j; for (var k = 0; k <= 3; k++) s += k; for (var m = 3; m >= 0; m--) s += m; for (var z = 0; z < 0; z++) s += "never"; for (var y = 3; y > 3; y--) s += "never"; return s + "|" + [i, j, k, m, z, y].join(); });
+log("localBound", function () { var n = 4, s = ""; for (var i = 0; i < n; i++) { s += i; if (i === 1) n = 6; } var lo = 2; for (var j = 8; j >= lo; j--) { s += j; if (j === 5) lo = 4; } return s + "|" + i + j; });
+log("continueBreak", function () {
+  var s = "";
+  for (var i = 0; i < 10; i++) { if (i === 2) continue; if (i === 6) break; s += i; }
+  outer: for (var a = 0; a < 4; a++) { for (var b = 0; b < 4; b++) { if (b === 2) continue outer; if (a === 3) break outer; s += a + "" + b + ","; } }
+  for (var c = 0; c < 3; c++) { try { if (c === 1) continue; s += "t" + c; } finally { s += "f" + c; } }
+  function ret() { for (var q = 0; q < 5; q++) { if (q === 3) return "r" + q; } return "end"; }
+  return s + ret() + "|" + [i, a, b, c].join();
+});
+log("updates", function () {
+  var s = "", t = "";
+  for (var i = 0; i < 10; i += 3) s += i; for (var j = 0; j < 4; ++j) s += j; for (var k = 4; k > 0; --k) s += k; for (var m = 0, n = 5; m < n; m++, n--) s += m + "" + n;
+  function bump() { t += "u"; return 1; } for (var p = 0; p < 3; p += bump()) s += p; for (var q = 0; q < 3;) { s += q; q++; } for (var r = 1; r < 40; r *= 3) s += r;
+  var o = { c: 0 }; for (o.c = 0; o.c < 3; o.c++) s += o.c;
+  return s + "|" + t;
+});
+log("bodyChangesCounter", function () { var s = ""; for (var i = 0; i < 10; i++) { s += i; if (i === 2) i = 6; if (i === 8) i = "9"; } for (var j = 0; j < 5; j++) { if (j === 1) j += 1.5; s += "," + j; } return s + "|" + typeof i + i + "|" + j; });
+log("nonIntegers", function () {
+  var s = [];
+  var n = 0; for (var f = 0.5; f < 3; f++) n++; s.push(n, f);
+  n = 0; for (var g = 3; g > 0.5; g--) n++; s.push(n, g);
+  n = 0; for (var str = "0"; str < 3; str++) n++; s.push(n, typeof str + str);
+  n = 0; for (var st = "a"; st < "d" && n < 5; st += "b") n++; s.push(n, st);
+  n = 0; for (var big = 0n; big < 3n; big++) n++; s.push(n, typeof big);
+  n = 0; for (var u; u < 3; u++) n++; s.push(n, String(u));
+  n = 0; for (var nan = NaN; nan <= 5; nan++) n++; s.push(n);
+  n = 0; for (var nul = null; nul < 2; nul++) n++; s.push(n, nul);
+  n = 0; for (var bo = true; bo < 3; bo++) n++; s.push(n, bo);
+  n = 0; for (var inf = 0; inf < Infinity && n < 4; inf++) n++; s.push(n);
+  n = 0; for (var neg = -0; neg >= -2; neg--) n++; s.push(n, neg);
+  return s.join();
+});
+log("objectsInTest", function () {
+  var calls = "";
+  var a = { valueOf: function () { calls += "a"; return 0; } }, b = { valueOf: function () { calls += "b"; return 2; } };
+  var n = 0; for (var i = a; i < b; i++) n++;
+  var c = { valueOf: function () { calls += "c"; return 2; } }; for (var j = 3; j > c; j--) n++;
+  var bounds = { get hi() { calls += "g"; return 2; } }; for (var k = 0; k < bounds.hi; k++) n++;
+  var arr = [1, 2, 3]; for (var m = 0; m < arr.length; m++) { n++; if (m === 0) arr.push(4); }
+  try { for (var s = Symbol(); s < 1; s++) n++; } catch (e) { calls += e.constructor.name; }
+  try { for (var t = 0; t < 2n ** 70n && t < 2; t++) n++; } catch (e) { calls += e.constructor.name; }
+  return n + "," + typeof i + i + "," + j + "|" + calls;
+});
+log("largeIntegers", function () {
+  var s = [], n = 0;
+  for (var i = 9007199254740989; i < 9007199254740992; i++) n++; s.push(n, i);
+  n = 0; for (var j = 9007199254740990; j <= 9007199254740993 && n < 6; j++) n++; s.push(n, j);
+  n = 0; for (var k = -9007199254740990; k >= -9007199254740993 && n < 6; k--) n++; s.push(n, k);
+  n = 0; for (var m = 2147483646; m < 2147483650; m++) n++; s.push(n, m);
+  n = 0; for (var p = -2147483647; p > -2147483651; p--) n++; s.push(n, p);
+  return s.join();
+});
+log("equalityTests", function () { var s = ""; for (var i = 0; i !== 4; i++) s += i; for (var j = 3; j != 0; j--) s += j; var stop = 2; for (var k = 0; k === 0 || k < stop; k++) s += "k" + k; for (var m = "a"; m !== "aaaa"; m += "a") s += m.length; var u; for (var q = 0; u == null && q < 3; q++) { s += "q"; if (q === 1) u = 0; } return s; });
+log("thisAndProperties", function () {
+  var o = { count: 3, items: [7, 8, 9], run: function () { var s = ""; for (var i = 0; i < this.count; i++) s += this.items[i]; for (var j = this.count; j > 0; j--) { s += j; if (j === 2) this.count = 5; } return s + this.count; } };
+  var limits = { a: { n: 2 } }, r = ""; for (var k = 0; k <= limits.a.n; k++) r += k;
+  return o.run() + "|" + r;
+});
+log("letAndClosures", function () {
+  var fs = []; for (let i = 0; i < 3; i++) fs.push(function () { return i; });
+  var t = 0; for (let j = 0; j < 4; j++) t += j; for (const k = 0; t < 8; ) t++;
+  var caught = ""; try { for (let m = 0; m < 2; m++) { const c = m; c++; } } catch (e) { caught = e.constructor.name; }
+  var outerVar = 10; function usesOuter() { var s = 0; for (var i = 0; i < outerVar; i++) s += i; for (var j = outerVar; j > 7; j--) s += j; return s; }
+  return fs.map(function (f) { return f(); }).join("") + "," + t + "," + caught + "," + usesOuter();
+});
+log("generatorsAndTry", function () {
+  function* g(n) { for (var i = 0; i < n; i++) { var got = yield i; if (got) i += got; } return "done"; }
+  var it = g(6), r = [it.next().value, it.next().value, it.next(2).value, it.next().value, it.next().done];
+  var caught = ""; function thrower(n) { for (var i = 0; i < n; i++) { if (i === 2) throw new RangeError("at" + i); } }
+  try { thrower(5); } catch (e) { caught = e.message; }
+  var fin = ""; for (var k = 0; k < 3; k++) { try { if (k === 1) throw 1; fin += "b"; } catch (e) { fin += "c"; continue; } finally { fin += "f"; } fin += "e"; }
+  async function af() { var s = 0; for (var i = 0; i < 3; i++) s += await i; return s; } var settled = "p"; af().then(function (v) { settled = v; });
+  return r.join() + "|" + caught + "|" + fin;
+});
+log("nested", function () { var s = 0, t = ""; for (var i = 0; i < 4; i++) for (var j = i; j < 4; j++) for (var k = 0; k <= j; k++) s += k; for (var a = 0; a < 3; a++) { var b = a; while (b > 0) { b--; t += b; } do { t += "d"; } while (t.length < a); } return s + "|" + t; });
+log("whileForms", function () { var i = 0, s = ""; while (i < 5) { i++; if (i === 2) continue; if (i === 4) break; s += i; } var j = 5; while (j-- > 0) s += j; var k = 0; do { s += k; k++; } while (k < 3); var n = 3; while (n !== 0) n--; return s + n; });
+log("ifTests", function () { function cls(a, b) { var r = ""; if (a < b) r += "lt"; if (a <= b) r += "le"; if (a > b) r += "gt"; if (a >= b) r += "ge"; if (a === b) r += "eq"; if (a !== b) r += "ne"; if (a < 3) r += "<3"; if (a >= 3) r += ">=3"; if (a === 3) r += "=3"; if (a !== "3") r += "!s3"; return r; } var vals = [1, 3, 3.5, "3", NaN, null, undefined, -0, 0, 2n, "x", true, {}], out2 = []; for (var i = 0; i < vals.length; i++) for (var j = 0; j < vals.length; j += 3) { try { out2.push(cls(vals[i], vals[j])); } catch (e) { out2.push("T"); } } return out2.join(","); });
+out.join("\n")
+"#;
+    let expected = r#"basic0=012345432101233210|5,0,4,-1,0,3
+basic1=012345432101233210|5,0,4,-1,0,3
+localBound0=01234587654|63
+localBound1=01234587654|63
+continueBreak0=0134500,01,10,11,20,21,t0f0f1t2f2r3|6,3,0,3
+continueBreak1=0134500,01,10,11,20,21,t0f0f1t2f2r3|6,3,0,3
+updates0=03690123432105142301201213927012|uuu
+updates1=03690123432105142301201213927012|uuu
+bodyChangesCounter0=01278,0,2.5,3.5,4.5|number10|5.5
+bodyChangesCounter1=01278,0,2.5,3.5,4.5|number10|5.5
+nonIntegers0=3,3.5,3,0,3,number3,5,abbbbb,3,bigint,0,undefined,0,2,2,2,3,4,3,-3
+nonIntegers1=3,3.5,3,0,3,number3,5,abbbbb,3,bigint,0,undefined,0,2,2,2,3,4,3,-3
+objectsInTest0=11,number2,2|ababbccgggTypeError
+objectsInTest1=11,number2,2|ababbccgggTypeError
+largeIntegers0=3,9007199254740992,6,9007199254740992,6,-9007199254740992,4,2147483650,4,-2147483651
+largeIntegers1=3,9007199254740992,6,9007199254740992,6,-9007199254740992,4,2147483650,4,-2147483651
+equalityTests0=0123321k0k1123qq
+equalityTests1=0123321k0k1123qq
+thisAndProperties0=7893215|012
+thisAndProperties1=7893215|012
+letAndClosures0=012,8,TypeError,72
+letAndClosures1=012,8,TypeError,72
+generatorsAndTry0=0,1,4,5,true|at2|bfecfbfe
+generatorsAndTry1=0,1,4,5,true|at2|bfecfbfe
+nested0=35|d0d10d
+nested1=35|d0d10d
+whileForms0=13432100120
+whileForms1=13432100120
+ifTests0=legeeq<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,gtgene>=3=3!s3,legene>=3=3!s3,ne>=3=3!s3,gtgene>=3=3!s3,ne>=3=3!s3,gtgene>=3!s3,gtgene>=3!s3,ne>=3!s3,gtgene>=3!s3,ne>=3!s3,gtgene>=3,legeeq>=3,ne>=3,gtgene>=3,ltlene>=3,ne!s3,ne!s3,ne!s3,ne!s3,ne!s3,ltlene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,ne!s3,ne!s3,eq!s3,ne!s3,ne!s3,ltlene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,gtgene<3!s3,ltlene<3!s3,ne<3!s3,legeeq<3!s3,ne<3!s3,ne!s3,gtgene!s3,ne!s3,ne!s3,gtgene!s3,legene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,ne!s3,gtgene!s3,ne!s3,ne!s3,legeeq!s3
+ifTests1=legeeq<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,gtgene>=3=3!s3,legene>=3=3!s3,ne>=3=3!s3,gtgene>=3=3!s3,ne>=3=3!s3,gtgene>=3!s3,gtgene>=3!s3,ne>=3!s3,gtgene>=3!s3,ne>=3!s3,gtgene>=3,legeeq>=3,ne>=3,gtgene>=3,ltlene>=3,ne!s3,ne!s3,ne!s3,ne!s3,ne!s3,ltlene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,ne!s3,ne!s3,eq!s3,ne!s3,ne!s3,ltlene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,gtgene<3!s3,ltlene<3!s3,ne<3!s3,legeeq<3!s3,ne<3!s3,ne!s3,gtgene!s3,ne!s3,ne!s3,gtgene!s3,legene<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,ne!s3,gtgene!s3,ne!s3,ne!s3,legeeq!s3"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

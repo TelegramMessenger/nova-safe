@@ -1265,6 +1265,11 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.executable.add_instruction(instruction);
     }
 
+    /// Makes `jump` go to `target`, a place the code has already passed.
+    pub(super) fn set_jump_target(&mut self, jump: JumpIndex, target: JumpIndex) {
+        self.executable.set_jump_target(jump, target);
+    }
+
     /// The case `case` of the switch table `table` starts here.
     pub(super) fn set_switch_target_here(&mut self, table: usize, case: usize) {
         self.executable.set_switch_target_here(table, case);

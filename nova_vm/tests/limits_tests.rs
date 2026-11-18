@@ -179,6 +179,27 @@ fn interrupt_ends_loops_that_catch() {
     });
 }
 
+/// A `for` loop whose test is at its end jumps back by the instruction that
+/// makes the test: the host is asked on every turn whatever the operands
+/// are, also where they are not the integers that instruction is short for.
+#[test]
+fn interrupt_ends_loops_with_the_test_at_their_end() {
+    on_big_stack(|| {
+        assert_interrupted("function f() { for (var i = 0; i < 2; i++) { i = 0; } } f();");
+        assert_interrupted("function f() { for (var i = 0.5; i < 1e300; i += 0) {} } f();");
+        assert_interrupted("function f() { for (var i = '0'; i < '9'; i += '') {} } f();");
+        assert_interrupted(
+            "function f() { var o = { valueOf() { return 0; } }; for (var i = 5; i > o; i -= 0) {} } f();",
+        );
+        assert_interrupted("function f() { for (var i = 0.5; i !== 3; i++) {} } f();");
+        assert_interrupted(
+            "function f() { var n = 1e300; for (var i = 0.5; i <= n; i++) {} } f();",
+        );
+        assert_interrupted("function f() { for (var i = 2n; i >= 1n; i -= 0n) {} } f();");
+        assert_interrupted("function f(a, b) { do {} while (!(a < b)); } f(1.5, 0.5);");
+    });
+}
+
 #[test]
 fn interrupt_ends_promise_and_async_loops() {
     on_big_stack(|| {

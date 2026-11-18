@@ -492,6 +492,102 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         } else {
             instruction
         };
+        // The test at the end of a loop: a local compared with a constant or
+        // another local, the jump back where that holds, and the `i++` or
+        // `i--` just before them if it is of the same local.
+        if instruction == Instruction::JumpIfTrue {
+            let test = [
+                Instruction::LessThan,
+                Instruction::LessThanEquals,
+                Instruction::GreaterThan,
+                Instruction::GreaterThanEquals,
+            ]
+            .into_iter()
+            .find_map(|comparison| {
+                self.recent_instruction(0, comparison)?;
+                [
+                    (Instruction::LoadFromIndexStoreConstant, true),
+                    (Instruction::LoadFromIndexGetFromIndex, false),
+                ]
+                .into_iter()
+                .find_map(|(operands, constant)| {
+                    let start = self.recent_instruction(1, operands)?;
+                    Some((comparison, constant, start))
+                })
+            });
+            if let Some((comparison, constant, start)) = test {
+                let first = self.operand_bytes(start);
+                let second = [self.instructions[start + 3], self.instructions[start + 4]];
+                self.drop_recent_instructions(start, 2);
+                let step = [
+                    (Instruction::IncrementIndex, 1),
+                    (Instruction::DecrementIndex, -1),
+                ]
+                .into_iter()
+                .find_map(|(update, step)| {
+                    let start = self.recent_instruction(0, update)?;
+                    let fused = comparison.as_loop_test(step, constant)?;
+                    (self.operand_bytes(start) == first).then_some((start, fused))
+                });
+                let fused = match step {
+                    Some((update, fused)) => {
+                        self.drop_recent_instructions(update, 1);
+                        Some(fused)
+                    }
+                    None => comparison.as_loop_test(0, constant),
+                };
+                if let Some(fused) = fused {
+                    self.push_instruction(fused);
+                    self.instructions.extend_from_slice(&first);
+                    self.instructions.extend_from_slice(&second);
+                    return self.add_jump_index();
+                }
+            }
+            // Any other operands: the comparison and the jump on it.
+            let fused = [
+                (Instruction::LessThan, Instruction::JumpIfLessThan),
+                (
+                    Instruction::LessThanEquals,
+                    Instruction::JumpIfLessThanEquals,
+                ),
+                (Instruction::GreaterThan, Instruction::JumpIfGreaterThan),
+                (
+                    Instruction::GreaterThanEquals,
+                    Instruction::JumpIfGreaterThanEquals,
+                ),
+            ]
+            .into_iter()
+            .find_map(|(comparison, fused)| {
+                self.recent_instruction(0, comparison)
+                    .map(|start| (start, fused))
+            });
+            if let Some((start, fused)) = fused {
+                self.drop_recent_instructions(start, 1);
+                self.push_instruction(fused);
+                return self.add_jump_index();
+            }
+        }
+        // A local compared with a constant or with another local, and the
+        // jump: both operands by the instruction that jumps.
+        let operands = [
+            (Instruction::LoadFromIndexStoreConstant, true),
+            (Instruction::LoadFromIndexGetFromIndex, false),
+        ]
+        .into_iter()
+        .find_map(|(operands, constant)| {
+            let fused = instruction.with_compared_local(constant)?;
+            let start = self.recent_instruction(0, operands)?;
+            Some((start, fused))
+        });
+        if let Some((start, fused)) = operands {
+            let first = self.operand_bytes(start);
+            let second = [self.instructions[start + 3], self.instructions[start + 4]];
+            self.drop_recent_instructions(start, 1);
+            self.push_instruction(fused);
+            self.instructions.extend_from_slice(&first);
+            self.instructions.extend_from_slice(&second);
+            return self.add_jump_index();
+        }
         self.push_instruction(instruction);
         self.add_jump_index()
     }
@@ -713,8 +809,19 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithIdentifierKey)
         {
             let identifier = self.operand_bytes(access);
-            self.drop_recent_instructions(access, 1);
-            self.push_instruction(fused);
+            if let Some(this) = self.recent_instruction(1, Instruction::ResolveThisBinding) {
+                // `this.x`: the this value is fetched by the same
+                // instruction.
+                self.drop_recent_instructions(this, 2);
+                self.push_instruction(if fused == Instruction::GetPropertyWithCache {
+                    Instruction::GetThisPropertyWithCache
+                } else {
+                    Instruction::GetThisPropertyWithCacheKeepReference
+                });
+            } else {
+                self.drop_recent_instructions(access, 1);
+                self.push_instruction(fused);
+            }
             self.instructions.extend_from_slice(&identifier);
         } else {
             self.push_instruction(instruction);
