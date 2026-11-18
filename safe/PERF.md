@@ -36,21 +36,21 @@ below.
 |---|---|---|---|
 | call | 14 | 10.4x | 3.4x |
 | typed | 4 | 10.6x | 3.3x |
-| math | 4 | 9.7x | 3.2x |
+| math | 4 | 9.7x | 3.1x |
 | prop | 13 | 7.1x | 3.0x |
-| string | 26 | 10.6x | 2.9x |
-| app | 8 | 6.1x | 2.8x |
 | array | 14 | 5.8x | 2.8x |
-| map, set | 4 | 4.6x | 2.4x |
+| app | 8 | 6.1x | 2.6x |
+| string | 26 | 10.6x | 2.5x |
+| map, set | 4 | 4.6x | 2.3x |
 | loop | 11 | 11.1x | 2.2x |
-| regexp | 4 | 2.4x | 2.0x |
+| regexp | 4 | 2.4x | 1.9x |
 | gc | 3 of 5 | 3.6x | 1.5x |
 | json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.7x |
+| all | 108 | 7.6x | 2.6x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
 (38x, area 7); after it come generators (6.5x), then calls that bind an arguments object or go through an accessor
-(5-6x). 51 of the 108 cases are above 3x and 24 at or under 2x. One case ran Nova out of memory before
+(5-6x). 48 of the 108 cases are above 3x and 26 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -212,7 +212,8 @@ are Numbers: the same code the function runs after converting its argument, whic
 and so cannot collect, throw or call anything. Any other argument, and a function put in their place, takes
 the call. `Math.floor(Math.sqrt(i)) + Math.max(i & 7, 3)` went from 4.8x to 2.9x, rounding and clamping in a
 loop from 4.4x to 2.8x. What is left of those is reading `Math` and the function off it (areas 2 and 4).
-Next: the same for the trigonometric functions and `pow`, and for `charCodeAt` and its like on strings.
+`charCodeAt` of a String value at an integer is run in place the same way; a function that takes its this
+value has it from the Reference the call is made through. Next: the trigonometric functions and `pow`.
 
 A call of a function still went through half a dozen native frames between the caller's loop of instructions
 and the callee's, each saving and restoring its registers, with the caller's `Vm` moved aside for the collector
@@ -263,6 +264,10 @@ was evaluated, and took it back to assign. It keeps `o` on the value stack inste
 by the cache (`PutPropertyWithCache`); the general way makes the Reference when it is needed, from the same
 object, after the value, as before. And `this.x` is one instruction (`GetThisPropertyWithCache`) where the call
 keeps its this value itself, two otherwise. One shape went from 4.8x to 4.2x.
+
+An assignment by the cache looked the storage up twice, once with its descriptors (a hash lookup for whether
+the property is writable) and once to write: it is one look now, which asks for a descriptor only where the
+storage's arena has any. This changed little (2% on one shape).
 
 Left: a property read is the cache (up to four shapes compared), then the object's record, its shape's record
 for the capacity of the storage, a jump on that capacity to the arena of that size, and the slot: about eight
@@ -348,8 +353,17 @@ Left: prepending (`s = x + s`, 38x) still copies and hashes the whole string eve
 
 ### 8. Other string work
 
-`slice`/`substring`/`startsWith` and `charCodeAt` are 4-6x: mostly areas 1 and 2, plus interning each result.
-Searching and splitting are level or faster.
+`slice`/`substring`/`startsWith` and `charCodeAt` were 4-6x. A profile of a tokenizer showed about a sixth of its
+time in finding the method: a property of a String value went the general way every time (a Reference, the wrapper
+that a primitive is given, the search of %String.prototype%), the property cache never asked. Now `s.length` is
+read from the String, and any other name is looked up as \[\[Get]] of the %String.prototype% of the running
+realm leaves it in the cache, under that object's shape: its own property or one further up, or known absent;
+an accessor there, and a name the cache has not seen, take the general way. The same for a Number value and
+%Number.prototype% (`n.toFixed(2)`). `charCodeAt` in a loop went from 3.3x to 1.8x, slicing from 4.7x to 3.3x,
+case conversion and trimming from 1.7x to 1.3x, the tokenizer from 3.9x to 2.5x; the group from 2.9x to 2.5x.
+
+Left: the calls themselves, which are native ones (area 3), and interning each result. Searching and splitting
+are level or faster.
 
 ### 9. Garbage
 
