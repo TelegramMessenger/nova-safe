@@ -34,8 +34,8 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 3.0x |
-| typed | 4 | 10.6x | 2.7x |
+| call | 14 | 10.4x | 2.9x |
+| typed | 4 | 10.6x | 2.8x |
 | math | 4 | 9.7x | 2.5x |
 | prop | 13 | 7.1x | 2.5x |
 | array | 14 | 5.8x | 2.5x |
@@ -50,7 +50,7 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
 (38x, area 7); after it come generators (6.1x), then calls that bind an arguments object or go through an accessor
-(5x). 33 of the 108 cases are above 3x and 39 at or under 2x, 12 of them at or under QuickJS's time. One case
+(5x). 29 of the 108 cases are above 3x and 39 at or under 2x, 12 of them at or under QuickJS's time. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -328,6 +328,14 @@ depth instead of counting a reference up and down each time; neither moved the t
 bytecode is held with the tables of area 1 since, by one count that is not shared between threads, and the
 frame keeps nothing for the next call.)
 
+The exchange of the stacks was looked at by machine instruction after the rounds on area 1. Entering wrote
+the arguments to the function's stack and then exchanged the four stacks, and leaving emptied the four and
+then exchanged them; the exchange moves two words at a time, and a word written just before is then read
+with its neighbour, which waits for the write. Exchanged first and written to after, a plain call went from
+11.5 to 10.7 ms and the recursive Fibonacci from 5.4 to 4.9 ms. Entering and leaving are 230 and 110 machine
+instructions on the usual way, 43% of a plain call, with the samples spread evenly: no step stands out, and
+making both part of the loop of instructions instead of functions of their own was 5-12% slower on calls.
+
 Left: per call in place, the execution context (pushed and removed), the frame with the four stacks swapped
 into it and back, a rooted handle of the callee's executable; under them the dispatch of area 1. A stack
 shared by caller and callee, with the arguments left where they are, would take most of the frame away; it
@@ -377,10 +385,17 @@ This leans on the caches being told of every change to a prototype, and checking
 not (`Object.create`, under Defects): fixed in the same round, and tested for every way an object gets its
 prototype.
 
+A read where the cache knows the shape was three calls: the cache searched by one function, the property read
+by another through a third, which returned the slice of the storage for the caller to index; and what came
+back was made a result of several kinds, written to memory and taken apart again. About sixty machine
+instructions. It is one function now for the object's record, the search of the cache and the one slot, and
+the assignment is another. `o.x = o.x + o.y + (o.z & 1)` went from 3.3x to 3.1x, a method call from 3.1x to
+2.8x.
+
 Left: a property read is the cache (up to four shapes compared), then the object's record, its shape's record
 for the capacity of the storage, a jump on that capacity to the arena of that size, and the slot: about eight
-dependent loads where QuickJS has three. The loop of `o.x = o.x + o.y` is 4.2x with dispatch a third of it.
-Accessors are calls made the native way (`prop/getter-setter` 5.0x). Functions, Arrays and other objects with
+dependent loads where QuickJS has three. The loop of `o.x = o.x + o.y + (o.z & 1)` is 3.2x.
+Accessors are calls made the native way (`prop/getter-setter` 4.7x). Functions, Arrays and other objects with
 a backing object do not take the short way for their named properties yet.
 
 ### 5. Array and typed array elements
