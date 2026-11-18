@@ -954,13 +954,11 @@ impl<'a> Number<'a> {
         let d = d.into_f64_(agent);
 
         // 7. Let quotient be ℝ(n) / ℝ(d).
-        let quotient = n / d;
-
         // 8. Let q be truncate(quotient).
-        let q = quotient.trunc();
-
         // 9. Let r be ℝ(n) - (ℝ(d) × q).
-        let r = n - (d * q);
+        // In real numbers, which the remainder of two doubles is exact to:
+        // the quotient rounded to a double is not (`1e21 % 3` was 0).
+        let r = n % d;
 
         // 10. If r = 0 and n < -0𝔽, return -0𝔽.
         if r == 0.0 && n.is_sign_negative() {
