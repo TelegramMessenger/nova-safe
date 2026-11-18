@@ -34,23 +34,23 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 3.5x |
+| call | 14 | 10.4x | 3.4x |
 | typed | 4 | 10.6x | 3.3x |
 | math | 4 | 9.7x | 3.2x |
-| prop | 13 | 7.1x | 3.2x |
+| prop | 13 | 7.1x | 3.0x |
 | string | 26 | 10.6x | 2.9x |
 | app | 8 | 6.1x | 2.8x |
 | array | 14 | 5.8x | 2.8x |
-| loop | 11 | 11.1x | 2.5x |
 | map, set | 4 | 4.6x | 2.4x |
+| loop | 11 | 11.1x | 2.2x |
 | regexp | 4 | 2.4x | 2.0x |
 | gc | 3 of 5 | 3.6x | 1.5x |
 | json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.8x |
+| all | 108 | 7.6x | 2.7x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
 (38x, area 7); after it come generators (6.5x), then calls that bind an arguments object or go through an accessor
-(5-6x). 55 of the 108 cases are above 3x and 23 at or under 2x. One case ran Nova out of memory before
+(5-6x). 51 of the 108 cases are above 3x and 24 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -114,13 +114,35 @@ Tried and dropped: giving every plain instruction the length of its own to advan
 instruction is would not wait for the table of lengths. It made loops 13-32% slower; the table is not what the
 dispatch waits for.
 
+Counted over the cases that are written like application code, one instruction in five was the skeleton of a
+`for` loop: the jump back, the increment, the two operands of the test, the test with its jump out. A test of a
+local against a constant or another local, with the jump on it, is one instruction now (twelve of them, for the
+four orderings, `===` and `!==`, each with a constant or a local): these have three operands, a stack slot, a
+constant or slot and the jump target, in eight bytes where every other instruction has at most four, and their
+handlers read the target from the instruction stream; nothing changes in how the others are decoded. A `for`
+loop whose completion value nothing sees, with no binding made per turn, and whose test is a comparison of
+names, literals, `this` and properties named after a dot, has that test at its end, compiled a second time
+before the loop for whether it is entered: what runs, and in what order, is the same, and a turn no longer
+jumps forward to the test. There the increment, the test and the jump back are one instruction where the test
+is of the counter against a constant or a local (`IncrementIndexJumpIfLessThanConstant` and fifteen like it),
+which makes the skeleton of `for (var i = 0; i < n; i++)` one instruction a turn where it was four; with a
+bound read from a property (`i < a.length`) it is four where it was five. Only such tests are compiled twice:
+none makes a function, a class or a template object, whose identity two places would not share.
+
+The jump back of such a loop is the test itself, and the host is asked whether to interrupt on jumps back.
+Where the operands of the test are not integers the instruction takes the general way, which asked nothing:
+a loop over doubles or strings could not be interrupted. Any instruction that leaves the general way with
+the instruction pointer moved back now asks. Found by the checks of this change before it was committed.
+
+A loop that sums integers went from 2.4x to 1.9x, an empty one from 2.3x to 2.0x, a loop over a closure
+variable from 3.3x to 3.0x; the group from 2.5x to 2.2x.
+
 Left: about 1 ns an instruction, of which the dispatch is still about half (a quarter of the time of a loop of
 plain calls is the twenty machine instructions between two bytecode instructions: the bounds check, the argument
-count through a table, the jump table). Next: more of the same fusing (a binary operator with the store into a
-local after it; an operator with a constant operand), fewer
-instructions for the same code, by fusing the commonest pairs (compare and branch, increment a stack slot, load a
-constant and operate), which is where QuickJS's 8 instructions for the same iteration come from. Reach: about
-2-2.5x on plain loops.
+count through a table, the jump table). The counts of pairs say what to fuse next: a value pushed and then a
+constant operand and its operator (`x & 7`: three instructions), an operator and the store into a local after
+it, a local and its property (which needs the three operands the wide instructions now have), `while` loops
+with the test at the end. Reach: about 2x on plain loops.
 
 ### 2. Variables that are not locals of the running function
 
@@ -236,9 +258,17 @@ Done: where the property cache knows the shape of an ordinary object, `o.x` is r
 Anything else (an accessor, a property that is not writable, a shape the cache does not know yet, an object that is
 not ordinary) takes the general way. One shape is 5.9x, four shapes 4.2x.
 
-Left: accessors are calls (`prop/getter-setter` 8x), and a method call (`prop/prototype-chain-method` 7x) is a
-call. Functions, Arrays and other objects with a backing object do not take the short way for their named
-properties yet.
+`o.x = v` whose value nothing uses made a Reference of `o` and `x`, pushed it on the Reference stack while `v`
+was evaluated, and took it back to assign. It keeps `o` on the value stack instead, and one instruction assigns
+by the cache (`PutPropertyWithCache`); the general way makes the Reference when it is needed, from the same
+object, after the value, as before. And `this.x` is one instruction (`GetThisPropertyWithCache`) where the call
+keeps its this value itself, two otherwise. One shape went from 4.8x to 4.2x.
+
+Left: a property read is the cache (up to four shapes compared), then the object's record, its shape's record
+for the capacity of the storage, a jump on that capacity to the arena of that size, and the slot: about eight
+dependent loads where QuickJS has three. The loop of `o.x = o.x + o.y` is 4.2x with dispatch a third of it.
+Accessors are calls made the native way (`prop/getter-setter` 5.0x). Functions, Arrays and other objects with
+a backing object do not take the short way for their named properties yet.
 
 ### 5. Array and typed array elements
 
@@ -350,6 +380,9 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 - A `let` or `const` of one `case` read in another case that is entered first (`switch (2) { case 1: let x;
   case 2: x; }`) gives undefined where it must throw a ReferenceError: the variable is a stack slot and the
   compiler takes it for initialized. Upstream. Not fixed.
+- Two cases whose time is in native code (`gc/string-garbage`, which hashes every string it makes, and
+  `array/index-of-includes`) read 7-10% slower in the build of the loop changes than in the build just before
+  it, whose code for them is the same. Taken for the placement of code by the linker; not explained further.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
 
