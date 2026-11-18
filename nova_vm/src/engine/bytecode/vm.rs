@@ -990,13 +990,63 @@ impl Vm {
         caller: Running,
         gc: NoGcScope<'_, 's>,
     ) -> Running<'s> {
+        if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
+            let PooledVmStacks {
+                stack,
+                iterator_stack,
+            } = Self::take_stacks(agent);
+            agent.vm_frames.frames.push(Frame {
+                ip: 0,
+                stack,
+                reference_stack: Vec::new(),
+                iterator_stack,
+                exception_handler_stack: Vec::new(),
+                executable: code,
+                tables: None,
+                stack_depth: 0,
+                collections_depth: 0,
+                scope_base: 0,
+            });
+        }
+        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        // The function's stacks are the Vm's, and the caller's wait in the
+        // frame. Exchanged before anything here writes to one of them: the
+        // stacks are exchanged several words at a time, and reading a word
+        // that was written just before, together with its neighbour, waits
+        // for the write to be done.
+        core::mem::swap(&mut self.stack, &mut frame.stack);
+        core::mem::swap(&mut self.reference_stack, &mut frame.reference_stack);
+        core::mem::swap(&mut self.iterator_stack, &mut frame.iterator_stack);
+        core::mem::swap(
+            &mut self.exception_handler_stack,
+            &mut frame.exception_handler_stack,
+        );
         // EvaluateCall: the this value of the call, from its Reference.
         let reference = if instr.kind == Instruction::PopReferenceAndEvaluateCall {
             self.reference = None;
-            self.reference_stack.pop()
+            frame.reference_stack.pop()
         } else {
             self.reference.take()
         };
+        // The arguments go where the function keeps its parameters:
+        // undefined for those not given, and those beyond the parameters
+        // are dropped.
+        let first = frame.stack.len() - instr.get_first_index();
+        let arguments = &frame.stack[first..];
+        self.stack.extend(
+            (0..callee.parameters)
+                .map(|index| arguments.get(index).copied().unwrap_or(Value::Undefined)),
+        );
+        frame.stack.truncate(first - 1);
+        frame.ip = ip;
+        frame.executable = code;
+        frame.tables = Some(caller.tables);
+        frame.stack_depth = caller.stack_depth;
+        frame.collections_depth = caller.collections_depth;
+        frame.scope_base = caller.scope_base;
+        agent.vm_frames.in_use += 1;
+        self.depth += 1;
+        self.ip = 0;
         let this_value = match reference {
             Some(reference) if is_property_reference(&reference) => {
                 get_this_value(&reference).bind(gc)
@@ -1016,56 +1066,8 @@ impl Vm {
             callee.declarative_environment,
             gc,
         );
-        if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
-            let PooledVmStacks {
-                stack,
-                iterator_stack,
-            } = Self::take_stacks(agent);
-            agent.vm_frames.frames.push(Frame {
-                ip: 0,
-                stack,
-                reference_stack: Vec::new(),
-                iterator_stack,
-                exception_handler_stack: Vec::new(),
-                executable: code,
-                tables: None,
-                stack_depth: 0,
-                collections_depth: 0,
-                scope_base: 0,
-            });
-        }
         // The function's instructions and tables, held while it runs.
         let tables = callee.executable.get_tables(agent);
-        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
-        // The arguments go where the function keeps its parameters:
-        // undefined for those not given, and those beyond the parameters
-        // are dropped.
-        let first = self.stack.len() - instr.get_first_index();
-        let arguments = &self.stack[first..];
-        for index in 0..callee.parameters {
-            frame
-                .stack
-                .push(arguments.get(index).copied().unwrap_or(Value::Undefined));
-        }
-        self.stack.truncate(first - 1);
-        // The function's stacks are the Vm's, and the caller's wait in the
-        // frame.
-        core::mem::swap(&mut self.stack, &mut frame.stack);
-        core::mem::swap(&mut self.reference_stack, &mut frame.reference_stack);
-        core::mem::swap(&mut self.iterator_stack, &mut frame.iterator_stack);
-        core::mem::swap(
-            &mut self.exception_handler_stack,
-            &mut frame.exception_handler_stack,
-        );
-        frame.ip = ip;
-        frame.executable = code;
-        frame.tables = Some(caller.tables);
-        frame.stack_depth = caller.stack_depth;
-        frame.collections_depth = caller.collections_depth;
-        frame.scope_base = caller.scope_base;
-        agent.vm_frames.in_use += 1;
-        self.depth += 1;
-        self.ip = 0;
         let stack_refs = agent.stack_refs.get_mut();
         let scope_base = stack_refs.len();
         let executable = callee.executable.scope(agent, gc);
@@ -1097,10 +1099,9 @@ impl Vm {
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
         // The function's instructions and tables are let go of.
         drop(callee);
-        self.stack.clear();
-        self.reference_stack.clear();
-        self.iterator_stack.clear();
-        self.exception_handler_stack.clear();
+        // The caller's stacks are the Vm's again, and the function's are
+        // emptied where they wait for the next one: after the exchange, as
+        // in [`Vm::enter_function`].
         core::mem::swap(&mut self.stack, &mut frame.stack);
         core::mem::swap(&mut self.reference_stack, &mut frame.reference_stack);
         core::mem::swap(&mut self.iterator_stack, &mut frame.iterator_stack);
@@ -1108,6 +1109,10 @@ impl Vm {
             &mut self.exception_handler_stack,
             &mut frame.exception_handler_stack,
         );
+        frame.stack.clear();
+        frame.reference_stack.clear();
+        frame.iterator_stack.clear();
+        frame.exception_handler_stack.clear();
         if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
             // A stack that grew large is not kept for the next function.
             frame.stack = Vec::new();
