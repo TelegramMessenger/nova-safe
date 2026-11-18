@@ -2381,12 +2381,27 @@ pub(super) fn execute_fused_property_instruction<'gc>(
         );
         return execute_put_value(agent, vm, executable, put_value, true, gc);
     }
-    let keep_reference = instr.kind == Instruction::GetThisPropertyWithCacheKeepReference;
-    // ResolveThisBinding, where the call does not keep the this value
-    // itself; the property is still read by the cache where it can be.
-    execute_resolve_this_binding(agent, vm, gc.nogc()).unbind()?;
-    if Vm::get_property_by_cache(agent, vm, &executable, instr, keep_reference, gc.nogc()) {
-        return Ok(());
+    let keep_reference = matches!(
+        instr.kind,
+        Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::GetIndexPropertyWithCacheKeepReference
+    );
+    if matches!(
+        instr.kind,
+        Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference
+    ) {
+        // GetValueFromIndex: the plain way found the property not to be
+        // one the cache places.
+        let slot = Instr::wide_third_index(&executable.get_instructions(agent), vm.ip);
+        vm.result = Some(vm.stack[slot]);
+    } else {
+        // ResolveThisBinding, where the call does not keep the this value
+        // itself; the property is still read by the cache where it can be.
+        execute_resolve_this_binding(agent, vm, gc.nogc()).unbind()?;
+        if Vm::get_property_by_cache(agent, vm, &executable, instr, keep_reference, gc.nogc()) {
+            return Ok(());
+        }
     }
     // EvaluatePropertyAccessWithIdentifierKey, GetValueWithCache
     execute_evaluate_property_access_with_identifier_key(
