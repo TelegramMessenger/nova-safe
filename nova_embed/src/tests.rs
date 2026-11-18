@@ -6100,3 +6100,290 @@ many: 100,node number 29999,29998,499,0|100,node number 29999,29998,499,0|100,no
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// An object pattern, which the compiler turns into the reads of `o.p`,
+/// through their property caches, for every pattern and not only for one
+/// with a default value or a computed key: patterns that are plain,
+/// renamed and nested, with keys of every kind and a rest element; sources
+/// that are not objects; the order in which getters and the traps of a
+/// Proxy run, and what is bound when one throws; one pattern over objects
+/// of many shapes, and over one whose properties come, change and go;
+/// names bound in every way (var, let, const, parameters, a catch clause,
+/// loops, a closure, the top level); and patterns across a yield. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn object_patterns_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(object_patterns)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn object_patterns() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function say() { out.push(Array.prototype.map.call(arguments, function (v) {
+  if (typeof v === 'symbol') return v.toString();
+  if (typeof v === 'function') return 'fn:' + v.name;
+  if (v && typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return '[obj]'; } }
+  return String(v);
+}).join(' ')); }
+function attempt(name, f) { try { say(name, f()); } catch (e) { say(name, 'threw', e && e.constructor && e.constructor.name); } }
+
+// Plain, renamed, nested, missing.
+(function () {
+  var { x, y, meta: { id }, none } = { x: 1, y: 2, meta: { id: 3 } };
+  say('plain', x, y, id, none);
+  let { a: p, b: q } = { a: 'A', b: 'B' };
+  const { length } = 'four';
+  say('renamed', p, q, length);
+  var { 0: first, 1: second, length: len } = ['f', 's'];
+  say('array source', first, second, len);
+  var { 'quoted key': qk, 12: twelve, 1.5: frac, [`com${'puted'}`]: comp } = { 'quoted key': 'q', 12: 't', '1.5': 'fr', computed: 'c' };
+  say('keys', qk, twelve, frac, comp);
+  var sym = Symbol('s');
+  var { [sym]: bySymbol, [Symbol.iterator]: iter } = { [sym]: 'sym', [Symbol.iterator]: 5 };
+  say('symbols', bySymbol, iter);
+})();
+
+// Sources that are not objects.
+attempt('null', function () { var { a } = null; return a; });
+attempt('undefined', function () { var { a } = undefined; return a; });
+attempt('empty null', function () { var {} = null; return 'no'; });
+attempt('empty undefined', function () { let {} = void 0; return 'no'; });
+attempt('empty number', function () { var {} = 5; return 'ok'; });
+attempt('number', function () { var { toFixed, missing } = 5; return typeof toFixed + ' ' + missing; });
+attempt('string', function () { var { length, 0: c, at } = 'xyz'; return length + c + typeof at; });
+attempt('boolean', function () { const { valueOf } = true; return typeof valueOf; });
+attempt('symbol', function () { const { description } = Symbol('d'); return description; });
+attempt('bigint', function () { const { toString } = 10n; return typeof toString; });
+attempt('nested null', function () { var { a: { b } } = { a: null }; return b; });
+attempt('nested missing', function () { var { a: { b } } = {}; return b; });
+
+// The order of what runs, and what is bound when a getter throws.
+(function () {
+  var log = [];
+  var source = {
+    get b() { log.push('b'); return 2; },
+    get a() { log.push('a'); return 1; },
+    get c() { log.push('c'); return 3; },
+  };
+  var { a, c, b } = source;
+  say('order', log.join(), a, b, c);
+  var one, two;
+  try {
+    var { one, two } = { one: 'set', get two() { throw new RangeError('no'); } };
+  } catch (e) { say('getter threw', e.constructor.name, one, two); }
+  try {
+    let { u, v } = { u: 1, get v() { throw new EvalError('no'); } };
+    say('unreachable', u, v);
+  } catch (e) { say('let getter threw', e.constructor.name); }
+  try {
+    let { w } = { get w() { return w; } };
+    say('unreachable', w);
+  } catch (e) { say('tdz in getter', e.constructor.name); }
+})();
+
+// A Proxy sees every operation, in order.
+(function () {
+  var log = [];
+  var proxy = new Proxy({ a: 1, b: 2, c: 3, [Symbol.for('s')]: 4 }, {
+    get(t, k, r) { log.push('get ' + String(k)); return Reflect.get(t, k, r); },
+    has(t, k) { log.push('has ' + String(k)); return Reflect.has(t, k); },
+    ownKeys(t) { log.push('ownKeys'); return Reflect.ownKeys(t); },
+    getOwnPropertyDescriptor(t, k) { log.push('gopd ' + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); },
+  });
+  var { b, a } = proxy;
+  say('proxy', a, b, log.join());
+  log.length = 0;
+  var { a: A, ...rest } = proxy;
+  say('proxy rest', A, rest, Object.getOwnPropertySymbols(rest).length, log.join());
+})();
+
+// Rest, with every kind of key excluded.
+(function () {
+  var key = 'k';
+  var { a, 1: one, [key]: k, ...others } = { a: 1, 1: 'one', k: 'K', z: 26, 2: 'two', [Symbol.for('r')]: 'sym' };
+  say('rest', a, one, k, others, Object.getOwnPropertySymbols(others).length);
+  var { ...copy } = 'ab';
+  say('rest of string', copy);
+  var { ...none } = 7;
+  say('rest of number', none);
+  let { x, ...last } = { x: 1 };
+  say('empty rest', x, last);
+})();
+
+// The same pattern over objects of many shapes: what one remembers of a
+// shape must not serve another.
+(function () {
+  function Base() {}
+  Base.prototype.x = 'proto';
+  var withGetter = { get x() { return 'getter'; } };
+  var frozen = Object.freeze({ x: 'frozen' });
+  var sources = [
+    { x: 1 }, { y: 2, x: 3 }, { x: 4, z: 5 }, new Base(), Object.create(withGetter),
+    new Proxy({ x: 7 }, {}), 'str', 5, [8], { x: undefined }, {}, frozen, withGetter,
+    Object.create(null), (function () { var o = Object.create(null); o.x = 'bare'; return o; })(),
+    new Map(), function x() {}, { x: null }, { x: 0 }, { x: '' }, { x: NaN },
+  ];
+  var seen = [];
+  for (var round = 0; round < 3; round++) {
+    for (var i = 0; i < sources.length; i++) {
+      var { x } = sources[i];
+      seen.push(String(x));
+    }
+    Base.prototype.x = 'proto' + round;
+    sources[0].w = round;         // a new shape for the first
+    delete sources[1].x;          // and none for the second
+    sources[2] = { z: 1, x: 'moved' + round };
+  }
+  say('shapes', seen.join());
+  // One place, many shapes, in a loop that runs long enough to be cached.
+  var total = 0;
+  for (var j = 0; j < 3000; j++) {
+    var o = j % 3 === 0 ? { p: 1, q: 2 } : j % 3 === 1 ? { q: 2, p: 1 } : { p: 1 };
+    var { p, q } = o;
+    total += p + (q === undefined ? 100 : q);
+  }
+  say('many shapes', total);
+  // A property that appears, turns into an accessor, and goes.
+  var changing = { n: 1 };
+  var got = [];
+  for (var k = 0; k < 6; k++) {
+    var { n, late } = changing;
+    got.push(n + '/' + late);
+    if (k === 1) changing.late = 'here';
+    if (k === 2) Object.defineProperty(changing, 'n', { get: function () { return 'acc'; }, configurable: true });
+    if (k === 3) delete changing.n;
+    if (k === 4) Object.setPrototypeOf(changing, { n: 'inherited' });
+  }
+  say('changing', got.join());
+})();
+
+// Names bound in every way: var, let, const, parameters, catch, loops,
+// captured by a closure, at the top level.
+var { topVar, nested: { deep: topDeep } } = { topVar: 'tv', nested: { deep: 'td' } };
+let { topLet } = { topLet: 'tl' };
+const { topConst } = { topConst: 'tc' };
+say('top', topVar, topDeep, topLet, topConst, globalThis.topVar, globalThis.topLet);
+(function () {
+  function params({ a, b }, { c: { d } }, e) { return [a, b, d, e, arguments.length].join(); }
+  say('params', params({ a: 1, b: 2 }, { c: { d: 3 } }, 4));
+  var arrow = ({ a, b }) => a + b;
+  say('arrow', arrow({ a: 'x', b: 'y' }));
+  attempt('params null', function () { return params(null, {}); });
+  attempt('params missing', function () { return params({}, {}); });
+  function captured({ a, b }) { return function () { a += 1; return a + b; }; }
+  var inner = captured({ a: 1, b: 10 });
+  say('captured', inner(), inner());
+  try { throw { code: 7, info: { text: 'caught' } }; } catch ({ code, info: { text } }) { say('catch', code, text); }
+  var forOf = [];
+  for (var { id, tag } of [{ id: 1, tag: 'a' }, { id: 2 }, { tag: 'c', id: 3 }]) forOf.push(id + ':' + tag);
+  for (const { id, tag } of [{ id: 4, tag: 'd' }]) forOf.push(id + ':' + tag);
+  for (let { id: renamed } of [{ id: 5 }]) forOf.push(() => renamed);
+  say('for-of', forOf.slice(0, 4).join(), forOf[4]());
+  var closures = [];
+  for (let { v } of [{ v: 1 }, { v: 2 }, { v: 3 }]) closures.push(function () { return v; });
+  say('closures', closures.map(function (f) { return f(); }).join());
+  var entries = [];
+  for (const [key, { n }] of Object.entries({ p: { n: 1 }, q: { n: 2 } })) entries.push(key + n);
+  say('entries', entries.join());
+  var { a: again, a: twice } = { get a() { return Math.random() < 2 ? 'same' : ''; } };
+  say('same key twice', again, twice);
+  var o = {};
+  ({ a: o.x, b: o['y'], c: { d: o.z } } = { a: 1, b: 2, c: { d: 3 } });
+  say('assignment', o);
+  var s, t;
+  ({ s, t } = { s: 'S', t: 'T' });
+  say('assignment names', s, t);
+  var { fn = function () {}, plain } = { plain: function () {} };
+  say('function names', fn.name, plain.name);
+  var { withDefault = 'd', given = 'no', nul = 'no' } = { given: 'g', nul: null };
+  say('defaults', withDefault, given, nul);
+})();
+
+// Getters of a primitive's prototype, and methods read off a pattern.
+(function () {
+  Object.defineProperty(Number.prototype, 'twice', { get: function () { return this * 2; }, configurable: true });
+  var { twice } = 21;
+  say('prototype getter', twice);
+  delete Number.prototype.twice;
+  var { twice: gone } = 21;
+  say('after delete', gone);
+  var { max, min, PI } = Math;
+  say('math', max(1, 2), min(1, 2), PI > 3);
+  var { stringify, parse } = JSON;
+  say('json', stringify(parse('[1]')));
+  var { prototype: { slice }, isArray, from } = Array;
+  say('array', slice.call('abc', 1).join(''), isArray([]), typeof from);
+})();
+
+// Generators and async functions keep what a pattern bound across a yield.
+(function () {
+  function* gen({ a, b }) { var { c } = yield a; var { d } = yield b + c; return d; }
+  var g = gen({ a: 1, b: 2 });
+  say('generator', g.next().value, g.next({ c: 10 }).value, g.next({ d: 'done' }).value);
+})();
+out.join("\n")"#;
+    let expected = r#"plain 1 2 3 undefined
+renamed A B 4
+array source f s 2
+keys q t fr c
+symbols sym 5
+null threw TypeError
+undefined threw TypeError
+empty null threw TypeError
+empty undefined threw TypeError
+empty number ok
+number function undefined
+string 3xfunction
+boolean function
+symbol d
+bigint function
+nested null threw TypeError
+nested missing threw TypeError
+order a,c,b 1 2 3
+getter threw RangeError set undefined
+let getter threw EvalError
+tdz in getter ReferenceError
+proxy 1 2 get b,get a
+proxy rest 1 {"b":2,"c":3} 1 get a,ownKeys,gopd b,get b,gopd c,get c,gopd Symbol(s),get Symbol(s)
+rest 1 one K {"2":"two","z":26} 1
+rest of string {"0":"a","1":"b"}
+rest of number {}
+empty rest 1 {}
+shapes 1,3,4,proto,getter,7,undefined,undefined,undefined,undefined,undefined,frozen,getter,undefined,bare,undefined,undefined,null,0,,NaN,1,undefined,moved0,proto0,getter,7,undefined,undefined,undefined,undefined,undefined,frozen,getter,undefined,bare,undefined,undefined,null,0,,NaN,1,undefined,moved1,proto1,getter,7,undefined,undefined,undefined,undefined,undefined,frozen,getter,undefined,bare,undefined,undefined,null,0,,NaN
+many shapes 107000
+changing 1/undefined,1/undefined,1/here,acc/here,undefined/here,inherited/here
+top tv td tl tc tv undefined
+params 1,2,3,4,3
+arrow xy
+params null threw TypeError
+params missing threw TypeError
+captured 12 13
+catch 7 caught
+for-of 1:a,2:undefined,3:c,4:d 5
+closures 1,2,3
+entries p1,q2
+same key twice same same
+assignment {"x":1,"y":2,"z":3}
+assignment names S T
+function names fn plain
+defaults d g null
+prototype getter 42
+after delete undefined
+math 2 1 true
+json [1]
+array bc true function
+generator 1 12 done"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

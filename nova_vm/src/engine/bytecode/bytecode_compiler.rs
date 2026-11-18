@@ -3694,12 +3694,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Formal
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ObjectPattern<'s> {
     type Output = Result<(), ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        if !self.contains_expression() {
-            simple_object_pattern(self, ctx, ctx.lexical_binding_state);
-        } else {
-            complex_object_pattern(self, ctx, ctx.lexical_binding_state)?;
-        }
-        Ok(())
+        // Property by property, each read with the instruction that reads
+        // `o.p` anywhere: through the property cache of its place, and to
+        // a stack slot where the name is kept in one. The instructions of
+        // a pattern without expressions, which the loop of an array
+        // pattern still uses for an object pattern among its elements,
+        // look every property up by its key and bind it by its name.
+        complex_object_pattern(self, ctx, ctx.lexical_binding_state)
     }
 }
 
