@@ -132,8 +132,11 @@ pub(crate) fn create_template_object<'a>(
     //        [[Value]]: rawValue, [[Writable]]: false,
     //        [[Enumerable]]: true, [[Configurable]]: false }).
     define_read_only_elements(agent, raw_obj, raw_values);
-    // 13. Perform ! SetIntegrityLevel(rawObj, frozen).
+    // 13. Perform ! SetIntegrityLevel(rawObj, frozen): its elements are
+    // read-only already; it takes no new properties, and its "length" is
+    // read-only.
     unwrap_try(raw_obj.try_prevent_extensions(agent, gc));
+    raw_obj.set_length_readonly(agent);
     let prototype = template.internal_prototype(agent).unwrap();
     // 14. Perform ! DefinePropertyOrThrow(template,
     let template_backing_object = OrdinaryObject::create_object(
@@ -160,6 +163,7 @@ pub(crate) fn create_template_object<'a>(
     template.set_backing_object(agent, template_backing_object.unbind());
     // 15. Perform ! SetIntegrityLevel(template, frozen).
     unwrap_try(template.try_prevent_extensions(agent, gc));
+    template.set_length_readonly(agent);
     // 16. Append the Record { [[Site]]: templateLiteral, [[Array]]: template }
     //     to realm.[[TemplateMap]].
     // 17. Return template.

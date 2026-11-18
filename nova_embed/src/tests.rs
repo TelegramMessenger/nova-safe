@@ -7970,3 +7970,288 @@ words The Quick Brown Fox Jumps Over The Lazy Dog 8 quick"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `fill` writes a hole as it writes an element where assigning to the
+/// hole comes to making the element, and Get and CreateDataPropertyOrThrow
+/// in built-ins run no script where none is needed: fill over elements and
+/// holes with every kind of range; Arrays that cannot simply take an
+/// element (frozen, sealed, not extensible, a read-only element or
+/// "length", an accessor, a setter or a read-only property on a
+/// prototype, another prototype, a subclass, an array-like, a Proxy, a
+/// typed array); getters and a Proxy's traps run once by the built-ins
+/// that read through them, and what they throw; and where the result of a
+/// method is made (a species that gives a Proxy, a frozen Array, one that
+/// is not extensible; from and of into a constructor). What is expected
+/// is what Node prints for the same script.
+#[test]
+fn fill_and_the_properties_built_ins_read_and_make() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(fill_and_properties)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn fill_and_properties() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function say() { out.push(Array.prototype.join.call(arguments, ' ')); }
+function attempt(name, f) { try { say(name, f()); } catch (e) { say(name, 'threw', e && e.constructor ? e.constructor.name : e); } }
+function keysOf(a) { return Object.keys(a).join(); }
+
+// fill, over elements and over holes.
+(function () {
+  var a = new Array(5).fill(7);
+  say('new Array(n).fill', a.join(), a.length, keysOf(a), 0 in a, 4 in a);
+  say('ranges', new Array(6).fill('x', 2).join('|'), new Array(6).fill('x', 1, 3).join('|'), new Array(6).fill('x', -2).join('|'), new Array(6).fill('x', -4, -2).join('|'), new Array(3).fill('x', 5).join('|'), new Array(3).fill('x', 0, 99).join('|'), new Array(3).fill('x', 2, 1).join('|'));
+  say('range keys', keysOf(new Array(6).fill(1, 2, 4)), keysOf([1, , 3, , 5].fill(0, 1, 2)));
+  say('dense', [1, 2, 3].fill(0).join(), [1, 2, 3].fill(9, 1).join(), [].fill(1).length);
+  var o = { k: 1 }; var same = new Array(3).fill(o); say('one object', same[0] === same[2], same[1] === o);
+  var r = [1, , 3]; say('returns this', r.fill(0) === r, r.join());
+  say('mixed', [1, , 3, , ].fill('f').join(), [, , ].fill().join('|'), [, 'a'].fill(undefined)[1], 0 in [, 'a'].fill(undefined));
+  say('odd arguments', new Array(4).fill(1, '1', '3').join('|'), new Array(4).fill(1, 1.9, 3.1).join('|'), new Array(4).fill(1, NaN, undefined).join('|'), new Array(4).fill(1, null, -1).join('|'), new Array(3).fill(1, { valueOf: function () { return 1; } }).join('|'));
+  var big = new Array(70000).fill(3); say('big', big.length, big[0] + big[69999], big.reduce(function (s, v) { return s + v; }, 0));
+  var grown = new Array(3).fill(1); grown.push(2); grown[10] = 3; say('then grown', grown.length, keysOf(grown), grown.fill(0, 4, 6).join('|'));
+})();
+
+// Arrays that cannot simply take an element.
+(function () {
+  attempt('frozen', function () { return Object.freeze([1, 2]).fill(0).join(); });
+  attempt('frozen with holes', function () { return Object.freeze(new Array(2)).fill(0).join(); });
+  attempt('sealed dense', function () { return Object.seal([1, 2]).fill(0).join(); });
+  attempt('sealed with holes', function () { return Object.seal([1, , 3]).fill(0).join(); });
+  attempt('not extensible, dense', function () { return Object.preventExtensions([1, 2]).fill(0).join(); });
+  attempt('not extensible, holes', function () { return Object.preventExtensions([1, , 3]).fill(0).join(); });
+  attempt('read-only element', function () { var a = [1, 2, 3]; Object.defineProperty(a, 1, { writable: false }); return a.fill(0).join(); });
+  attempt('read-only element, partial', function () { var a = [1, 2, 3]; Object.defineProperty(a, 1, { writable: false }); try { a.fill(0); } catch (e) { return a.join() + ' ' + e.constructor.name; } });
+  attempt('length read-only', function () { var a = new Array(3); Object.defineProperty(a, 'length', { writable: false }); return a.fill(5).join() + ' ' + a.length; });
+  attempt('accessor element', function () { var log = [], a = [1, 2, 3]; Object.defineProperty(a, 1, { get: function () { return 'g'; }, set: function (v) { log.push('set ' + v); } }); return a.fill(0).join() + ' ' + log.join(); });
+  attempt('setter on Array.prototype', function () { var log = []; Object.defineProperty(Array.prototype, 1, { set: function (v) { log.push('proto set ' + v); }, get: function () { return 'pg'; }, configurable: true }); try { var a = new Array(3).fill(4); return a.join('|') + ' ' + keysOf(a) + ' ' + log.join(); } finally { delete Array.prototype[1]; } });
+  attempt('read-only on Object.prototype', function () { Object.defineProperty(Object.prototype, 2, { value: 'ro', writable: false, configurable: true }); try { return new Array(3).fill(4).join('|'); } finally { delete Object.prototype[2]; } });
+  attempt('value on Array.prototype', function () { Array.prototype[0] = 'pv'; try { var a = new Array(2).fill(4); return a.join('|') + ' ' + a.hasOwnProperty(0); } finally { delete Array.prototype[0]; } });
+  say('after the prototypes are clean', new Array(3).fill(1).join(), keysOf(new Array(3).fill(1)));
+  attempt('other prototype', function () { var log = [], a = new Array(2); Object.setPrototypeOf(a, { set 0(v) { log.push('set0 ' + v); }, fill: Array.prototype.fill }); a.fill(9); return keysOf(a) + ' ' + log.join(); });
+  attempt('null prototype', function () { var a = new Array(2); Object.setPrototypeOf(a, null); Array.prototype.fill.call(a, 9); return Array.prototype.join.call(a) + ' ' + Object.keys(a).join(); });
+  class Sub extends Array { }
+  attempt('subclass', function () { var s = new Sub(3).fill(2); return s.join() + ' ' + (s instanceof Sub); });
+  attempt('array-like', function () { return JSON.stringify(Array.prototype.fill.call({ length: 3, 1: 'kept' }, 0, 0, 1)); });
+  attempt('proxy', function () { var log = []; var p = new Proxy(new Array(2), { set: function (t, k, v, r) { log.push('set ' + String(k)); return Reflect.set(t, k, v, r); }, defineProperty: function (t, k, d) { log.push('define ' + String(k)); return Reflect.defineProperty(t, k, d); } }); p.fill(1); return log.join(); });
+  attempt('typed', function () { return new Uint8Array(4).fill(300, 1, 3).join() + ' ' + new Float32Array(2).fill(0.5).join(); });
+  attempt('fill on null', function () { return Array.prototype.fill.call(null, 1); });
+})();
+
+// Get and CreateDataProperty in built-ins: a getter and a trap run once, where they run.
+(function () {
+  var count = 0;
+  var source = { get a() { count++; return 1; }, b: 2 };
+  say('assign', JSON.stringify(Object.assign({}, source)), count);
+  count = 0; say('spread', JSON.stringify({ ...source }), count);
+  count = 0; say('entries', JSON.stringify(Object.entries(source)), count);
+  count = 0; say('stringify', JSON.stringify(source), count);
+  var like = { length: 3, get 0() { count++; return 'g0'; }, 1: 'v1' };
+  count = 0; say('join', Array.prototype.join.call(like, '|'), count);
+  count = 0; say('from', Array.from(like).join('|'), count);
+  count = 0; say('slice', Array.prototype.slice.call(like).join('|'), count);
+  count = 0; say('indexOf', Array.prototype.indexOf.call(like, 'v1'), Array.prototype.includes.call(like, undefined), count);
+  var proto = { get inherited() { count++; return 'pi'; }, plain: 'pp' };
+  var child = Object.create(proto); child.own = 'o';
+  count = 0; say('inherited getter', Reflect.get(child, 'inherited'), Reflect.get(child, 'plain'), Reflect.get(child, 'missing'), count);
+  count = 0; say('receiver', Reflect.get({ get x() { return this.tag; } }, 'x', { tag: 'the receiver' }), Object.getOwnPropertyDescriptor(Object.create(proto), 'plain'));
+  var traps = [];
+  var p = new Proxy({ a: 1, length: 2, 0: 'x', 1: 'y' }, { get: function (t, k, r) { traps.push('get ' + String(k)); return Reflect.get(t, k, r); }, has: function (t, k) { traps.push('has ' + String(k)); return k in t; } });
+  say('proxy join', Array.prototype.join.call(p), traps.join()); traps = [];
+  say('proxy from', Array.from(p).join(), traps.filter(function (t) { return t.indexOf('Symbol') < 0; }).join()); traps = [];
+  say('proxy assign', JSON.stringify(Object.assign({}, new Proxy({ k: 1 }, { get: function (t, k, r) { traps.push('get ' + String(k)); return Reflect.get(t, k, r); } }))), traps.join());
+  var thrower = { get boom() { throw new RangeError('getter'); } };
+  attempt('getter throws', function () { return Object.assign({}, thrower); });
+  attempt('getter throws in join', function () { return Array.prototype.join.call({ length: 1, get 0() { throw new EvalError('e'); } }); });
+  // Where the result of a method is made.
+  var defined = [];
+  class Traced extends Array { static get [Symbol.species]() { return function (n) { return new Proxy(new Array(n), { defineProperty: function (t, k, d) { defined.push(String(k)); return Reflect.defineProperty(t, k, d); } }); }; } }
+  var t = Traced.from([1, 2, 3]);
+  say('species proxy', t.map(function (v) { return v * 2; }).join(), defined.join()); defined = [];
+  say('species proxy filter', t.filter(function (v) { return v > 1; }).join(), defined.join());
+  class Frozen extends Array { static get [Symbol.species]() { return function (n) { return Object.freeze(new Array(n)); }; } }
+  attempt('species frozen', function () { return Frozen.from([1, 2]).map(function (v) { return v; }).join(); });
+  class Fixed extends Array { static get [Symbol.species]() { return function () { return Object.preventExtensions([]); }; } }
+  attempt('species not extensible', function () { return Fixed.from([1, 2]).filter(function () { return true; }).join(); });
+  attempt('fromEntries', function () { return JSON.stringify(Object.fromEntries([['a', 1], ['b', 2], ['a', 3]])); });
+  attempt('from into a constructor', function () { function C(n) { this.made = n; } var c = Array.from.call(C, [1, 2]); return JSON.stringify(c) + ' ' + c.length; });
+  attempt('from into a frozen thing', function () { function C() { return Object.freeze({}); } return Array.from.call(C, [1]); });
+  attempt('of into a constructor', function () { function C(n) { this.made = n; } return JSON.stringify(Array.of.call(C, 7, 8)); });
+  say('concat and flat', [1, [2, [3]]].flat(Infinity).join(), [1].concat([2], 3, [[4]]).length, Array.prototype.concat.call('s', ['t']).length);
+  say('map keeps holes', 1 in [1, , 3].map(function (v) { return v; }), [1, , 3].map(function (v) { return v; }).length, keysOf([, 'a'].filter(function () { return true; })));
+  say('getters in array methods', [1, 2].map(function (v) { return v; }).constructor === Array, Array.from({ length: 2, 0: 'a', 1: 'b' }, function (v, i) { return v + i; }).join());
+})();
+out.join("\n")"#;
+    let expected = r#"new Array(n).fill 7,7,7,7,7 5 0,1,2,3,4 true true
+ranges ||x|x|x|x |x|x||| ||||x|x ||x|x|| || x|x|x ||
+range keys 2,3 0,1,2,4
+dense 0,0,0 1,9,9 0
+one object true true
+returns this true 0,0,0
+mixed f,f,f,f |  true
+odd arguments |1|1| |1|1| 1|1|1|1 1|1|1| |1|1
+big 70000 6 210000
+then grown 11 0,1,2,3,10 1|1|1|2|0|0|||||3
+frozen threw TypeError
+frozen with holes threw TypeError
+sealed dense 0,0
+sealed with holes threw TypeError
+not extensible, dense 0,0
+not extensible, holes threw TypeError
+read-only element threw TypeError
+read-only element, partial 0,2,3 TypeError
+length read-only 5,5,5 3
+accessor element 0,g,0 set 0
+setter on Array.prototype 4|pg|4 0,2 proto set 4
+read-only on Object.prototype threw TypeError
+value on Array.prototype 4|4 true
+after the prototypes are clean 1,1,1 0,1,2
+other prototype 1 set0 9
+null prototype 9,9 0,1
+subclass 2,2,2 true
+array-like {"0":0,"1":"kept","length":3}
+proxy set 0,define 0,set 1,define 1
+typed 0,44,44,0 0.5,0.5
+fill on null threw TypeError
+assign {"a":1,"b":2} 1
+spread {"a":1,"b":2} 1
+entries [["a",1],["b",2]] 1
+stringify {"a":1,"b":2} 1
+join g0|v1| 1
+from g0|v1| 1
+slice g0|v1| 1
+indexOf 1 true 2
+inherited getter pi pp  1
+receiver the receiver 
+proxy join x,y get length,get 0,get 1
+proxy from x,y get length,get 0,get 1
+proxy assign {"k":1} get k
+getter throws threw RangeError
+getter throws in join threw EvalError
+species proxy 2,4,6 0,1,2
+species proxy filter 2,3 0,1
+species frozen threw TypeError
+species not extensible threw TypeError
+fromEntries {"a":3,"b":2}
+from into a constructor {"0":1,"1":2,"length":2} 2
+from into a frozen thing threw TypeError
+of into a constructor {"0":7,"1":8,"made":2,"length":2}
+concat and flat 1,2,3 4 2
+map keeps holes false 3 0
+getters in array methods true a0,b1"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Whether an Array takes new properties and whether its "length" is
+/// writable are two things: an Array that is not extensible (or sealed)
+/// still has a writable "length", can be made shorter and longer and
+/// popped, and takes no element in a hole or past its end; an Array whose
+/// "length" is read-only takes an element in a hole under it and a named
+/// property, and none past its end; and both together, and frozen. What
+/// is expected is what Node prints for the same script, but for isFrozen
+/// of an empty Array that is not extensible, which V8 answers true for
+/// with a writable "length" and the script leaves out.
+#[test]
+fn an_array_that_is_not_extensible_keeps_a_writable_length() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(array_extensibility)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn array_extensibility() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var r = [];
+function t(name, f) { try { r.push(name + ': ' + f()); } catch (e) { r.push(name + ': threw ' + e.constructor.name); } }
+function strict(f) { 'use strict'; return f(); }
+t('prevented: length descriptor', function () { var a = [1, 2, 3]; Object.preventExtensions(a); return JSON.stringify(Object.getOwnPropertyDescriptor(a, 'length')); });
+t('prevented: shorten', function () { var a = [1, 2, 3]; Object.preventExtensions(a); a.length = 1; return a.length + ' ' + a.join(); });
+t('prevented: write element', function () { var a = [1, 2, 3]; Object.preventExtensions(a); a[0] = 9; return a.join(); });
+t('prevented: write hole', function () { var a = [1, , 3]; Object.preventExtensions(a); a[1] = 9; return a.join() + ' ' + (1 in a); });
+t('prevented: append', function () { var a = [1]; Object.preventExtensions(a); a[1] = 2; return a.length + ' ' + a.join(); });
+t('prevented: push', function () { var a = [1]; Object.preventExtensions(a); return a.push(2); });
+t('prevented: grow by length', function () { var a = [1]; Object.preventExtensions(a); a.length = 5; return a.length; });
+t('prevented: pop', function () { var a = [1, 2]; Object.preventExtensions(a); return a.pop() + ' ' + a.length; });
+t('prevented: named', function () { var a = [1]; Object.preventExtensions(a); a.tag = 1; return a.tag + ' ' + Object.isExtensible(a); });
+t('prevented: define hole', function () { var a = [1, , 3]; Object.preventExtensions(a); return Reflect.defineProperty(a, 1, { value: 1 }); });
+t('prevented: sealed frozen', function () { var a = [1, 2]; Object.preventExtensions(a); return Object.isSealed(a) + ' ' + Object.isFrozen(a) + ' ' + Object.isSealed(Object.preventExtensions([])); });
+t('length read-only: descriptor', function () { var a = [1, , 3]; Object.defineProperty(a, 'length', { writable: false }); return JSON.stringify(Object.getOwnPropertyDescriptor(a, 'length')) + ' ' + Object.isExtensible(a); });
+t('length read-only: write hole', function () { var a = [1, , 3]; Object.defineProperty(a, 'length', { writable: false }); a[1] = 2; return a.join(); });
+t('length read-only: named', function () { var a = [1]; Object.defineProperty(a, 'length', { writable: false }); a.tag = 1; return a.tag; });
+t('length read-only: append', function () { var a = [1]; Object.defineProperty(a, 'length', { writable: false }); a[1] = 2; return a.length + ' ' + a.join(); });
+t('length read-only: strict append', function () { var a = [1]; Object.defineProperty(a, 'length', { writable: false }); return strict(function () { a[1] = 2; return 'no'; }); });
+t('length read-only: shorten', function () { var a = [1, 2]; Object.defineProperty(a, 'length', { writable: false }); a.length = 1; return a.length; });
+t('length read-only: pop', function () { var a = [1, 2]; Object.defineProperty(a, 'length', { writable: false }); return a.pop(); });
+t('length read-only: sealed frozen', function () { var a = [1, 2]; Object.defineProperty(a, 'length', { writable: false }); return Object.isSealed(a) + ' ' + Object.isFrozen(a) + ' ' + Object.isExtensible(a); });
+t('length read-only then prevented', function () { var a = [1, , 3]; Object.defineProperty(a, 'length', { writable: false }); Object.preventExtensions(a); a[1] = 2; return a.join() + ' ' + JSON.stringify(Object.getOwnPropertyDescriptor(a, 'length')); });
+t('sealed: descriptor', function () { var a = Object.seal([1, , 3]); a[0] = 7; a[1] = 8; a.length = 1; return a.join() + ' ' + a.length + ' ' + JSON.stringify(Object.getOwnPropertyDescriptor(a, 'length')); });
+t('frozen: descriptor', function () { var a = Object.freeze([1, , 3]); a[0] = 7; a[1] = 8; return a.join() + ' ' + JSON.stringify(Object.getOwnPropertyDescriptor(a, 'length')); });
+t('empty literal: hole fill', function () { var a = new Array(3); a[1] = 'x'; a[0] = 'y'; return a.join() + ' ' + Object.keys(a).join(); });
+var first = r.join('\n');
+r = [];
+var a = [1, , 3]; Object.defineProperty(a, 'length', { writable: false });
+a[1] = 2; r.push('hole ' + a[1]);
+a[0] = 9; r.push('element ' + a[0]);
+try { 'use strict'; (function () { 'use strict'; a[3] = 4; })(); r.push('beyond ok'); } catch (e) { r.push('beyond ' + e.constructor.name); }
+a[5] = 6; r.push('sloppy beyond ' + a.length + ' ' + a[5]);
+try { Object.defineProperty(a, 1, { value: 'd' }); r.push('define hole ' + a[1]); } catch (e) { r.push('define ' + e.constructor.name); }
+var b = new Array(3); Object.defineProperty(b, 'length', { writable: false });
+try { (function () { 'use strict'; b[0] = 1; })(); r.push('strict hole ' + b[0]); } catch (e) { r.push('strict hole ' + e.constructor.name); }
+try { r.push('push ' + b.push(1)); } catch (e) { r.push('push ' + e.constructor.name + ' ' + b.length); }
+try { Array.prototype.fill.call(b, 5); r.push('fill ' + b.join()); } catch (e) { r.push('fill ' + e.constructor.name + ' ' + b.join()); }
+try { r.push('reflect ' + Reflect.defineProperty(b, 2, { value: 1, writable: true, enumerable: true, configurable: true }) + ' ' + Reflect.set(b, 1, 'x') + ' ' + b.join()); } catch (e) { r.push('reflect ' + e.constructor.name); }
+var out = [first, r.join('\n')];
+out.join("\n")"#;
+    let expected = r#"prevented: length descriptor: {"value":3,"writable":true,"enumerable":false,"configurable":false}
+prevented: shorten: 1 1
+prevented: write element: 9,2,3
+prevented: write hole: 1,,3 false
+prevented: append: 1 1
+prevented: push: threw TypeError
+prevented: grow by length: 5
+prevented: pop: 2 1
+prevented: named: undefined false
+prevented: define hole: false
+prevented: sealed frozen: false false true
+length read-only: descriptor: {"value":3,"writable":false,"enumerable":false,"configurable":false} true
+length read-only: write hole: 1,2,3
+length read-only: named: 1
+length read-only: append: 1 1
+length read-only: strict append: no
+length read-only: shorten: 2
+length read-only: pop: threw TypeError
+length read-only: sealed frozen: false false true
+length read-only then prevented: 1,,3 {"value":3,"writable":false,"enumerable":false,"configurable":false}
+sealed: descriptor: 7,,3 3 {"value":3,"writable":true,"enumerable":false,"configurable":false}
+frozen: descriptor: 1,,3 {"value":3,"writable":false,"enumerable":false,"configurable":false}
+empty literal: hole fill: y,x, 0,1
+hole 2
+element 9
+beyond TypeError
+sloppy beyond 3 undefined
+define hole d
+strict hole 1
+push TypeError 3
+fill 5,5,5
+reflect true true 5,x,1"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
