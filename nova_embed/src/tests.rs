@@ -9008,3 +9008,304 @@ obj1,2trueundefinednull1.512the body of  423"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Built-in functions that the interpreter runs in place of a call (methods
+/// of String, `push` and `pop`, `Array.isArray`, Map and Set, `hasOwnProperty`,
+/// `call` of such a function, `String` and `Number` called, `toFixed`,
+/// `Math.random`, `Date.now`): every kind of this value and argument at the
+/// same call sites, the functions reached in other ways, replaced, and on
+/// objects that take the call the long way. What is expected is what Node
+/// prints for the same script.
+#[test]
+fn a_function_run_in_place_does_what_its_call_does() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(built_ins_run_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn built_ins_run_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+function J(v) { return typeof v === "string" ? JSON.stringify(v) : String(v); }
+
+var texts = ["", "a", "hello world", "0123456789abcdefghij", "привет мир", "a😀b😀c", "\uD83Dx\uDE00", "日本語のテキスト、長いもの。もっと長く"];
+var positions = [0, 1, 2, 5, 9, 10, 19, 20, 21, 100, -1, -2, -5, -20, -100];
+
+// slice and substring: one and two integers, in a loop so that the call is the same instruction each time.
+for (var t = 0; t < texts.length; t++) {
+  var s = texts[t], out = [];
+  for (var i = 0; i < positions.length; i++) {
+    var a = positions[i];
+    out.push(J(s.slice(a)), J(s.substring(a)));
+    for (var k = 0; k < positions.length; k += 3) { var b = positions[k]; out.push(J(s.slice(a, b)), J(s.substring(a, b))); }
+  }
+  P("slices", t, out.length, out.join("|").length, out.slice(0, 6).join(" "), out.slice(-3).join(" "));
+  var sum = 0; for (var i = 0; i < out.length; i++) for (var j = 0; j < out[i].length; j++) sum = (sum * 31 + out[i].charCodeAt(j)) | 0;
+  P("sum", t, sum);
+}
+// Other arguments at the same call site.
+var odd = [undefined, null, NaN, 1.5, -1.5, "2", "x", true, Infinity, -Infinity, 2 ** 31, -(2 ** 31), 2 ** 53, { valueOf: function () { return 3; } }, [4], 1e21, -0];
+var s = "0123456789";
+var r = [];
+for (var i = 0; i < odd.length; i++) { r.push(T(function () { return J(s.slice(odd[i])) + J(s.slice(1, odd[i])) + J(s.substring(odd[i])) + J(s.substring(1, odd[i])) + J(s.charAt(odd[i])) + s.charCodeAt(odd[i]); })); }
+P("odd", r.join(" "));
+P("none", J(s.slice()), J(s.substring()), J(s.charAt()), s.charCodeAt(), J(s.slice(undefined, 3)), J(s.substring(undefined, 3)), J(s.slice(2, undefined)), J(s.slice(1, 2, 3)));
+P("symbol", T(function () { return s.slice(Symbol()); }), T(function () { return s.substring(1, Symbol()); }), T(function () { return s.charAt(Symbol()); }), T(function () { return s.slice(1n); }));
+var order = []; var counted = { valueOf: function () { order.push("start"); return 1; } }, counted2 = { valueOf: function () { order.push("end"); return 4; } };
+P("order", s.slice(counted, counted2), s.substring(counted2, counted), order.join(","));
+
+// charAt
+var c = []; for (var t = 0; t < texts.length; t++) for (var i = 0; i < positions.length; i++) c.push(J(texts[t].charAt(positions[i])));
+P("charAt", c.join(""));
+
+// startsWith, endsWith, indexOf, includes
+var needles = ["", "a", "hello", "world", "мир", "😀", "\uDE00", "\uD83D", "9ab", "j", "ij", "长", "о"];
+var w = [];
+for (var t = 0; t < texts.length; t++) for (var n = 0; n < needles.length; n++) {
+  var s = texts[t], q = needles[n];
+  w.push((s.startsWith(q) ? 1 : 0) + (s.endsWith(q) ? 2 : 0) + (s.includes(q) ? 4 : 0), s.indexOf(q));
+  for (var i = 0; i < positions.length; i += 2) { var p = positions[i]; w.push((s.startsWith(q, p) ? 1 : 0) + (s.endsWith(q, p) ? 2 : 0) + (s.includes(q, p) ? 4 : 0), s.indexOf(q, p)); }
+}
+P("search", w.length, w.join("").length, w.slice(0, 40).join(","));
+var ws = 0; for (var i = 0; i < w.length; i++) ws = (ws * 33 + w[i] + 7) | 0; P("search sum", ws);
+var hay = "the quick brown fox";
+P("search odd", T(function () { return hay.startsWith(/the/); }), T(function () { return hay.endsWith(/fox/); }), T(function () { return hay.includes(/quick/); }), hay.indexOf(/quick/), hay.startsWith(), hay.includes(undefined), "undefined!".startsWith(), "null".includes(null), "a1b".indexOf(1), "truefalse".endsWith(false), hay.startsWith("quick", 4.7), hay.startsWith("quick", "4"), hay.endsWith("the", 3.9), hay.indexOf("o", NaN), hay.indexOf("o", Infinity), hay.includes("the", -Infinity), hay.startsWith({ toString: function () { return "the"; } }), hay.indexOf(["quick"]));
+var re = /x/; re[Symbol.match] = false; P("not a regexp", "a/x/b".includes(re), "/x/".startsWith(re));
+
+// Through other ways of calling, and on other this values.
+var sl = String.prototype.slice, f = "abcdef".slice;
+P("ways", sl.call("abcdef", 1, 3), f.call("uvwxyz", -2), "abcdef"["slice"](2), String.prototype.slice.call(12345, 1, 3), String.prototype.charAt.call(true, 1), T(function () { return sl.call(null, 1); }), T(function () { return sl(1); }), String.prototype.startsWith.call(["ab", "c"], "ab,"), new String("wrapped").slice(1, 4), Object("obj").substring(1), String.prototype.indexOf.call({ toString: function () { return "xyz"; } }, "z"), String.prototype.includes.call(404, 0), String.prototype.endsWith.call(404, 4, 1));
+P("apply bind", sl.apply("abcdef", [1, 3]), sl.bind("abcdef", 1)(4), Reflect.apply(sl, "abcdef", [2]), [1, 2, 3].map(String.prototype.charAt, "xyz").join(""), ["ab", "cd"].map(Function.prototype.call, String.prototype.slice).length);
+
+// A function put in the place of one.
+var kept = String.prototype.slice;
+String.prototype.slice = function () { return "replaced:" + this + ":" + arguments.length; };
+P("replaced", "abc".slice(1), "abc".slice(1, 2));
+String.prototype.slice = kept;
+P("restored", "abc".slice(1));
+var own = new String("own"); own.slice = function (a) { return "own" + a; }; P("own", own.slice(1), own.substring(1));
+Object.defineProperty(String.prototype, "charAt", { get: function () { return function () { return "getter"; }; }, configurable: true });
+P("getter", "abc".charAt(1)); delete String.prototype.charAt; P("deleted", T(function () { return "abc".charAt(1); }));
+
+// push and pop
+var a = []; var lens = [];
+for (var i = 0; i < 40; i++) lens.push(a.push(i * 2));
+P("push", lens.join(","), a.length, a[39], a.push(), a.push(1, 2, 3), a.length);
+var popped = []; while (a.length > 30) popped.push(a.pop()); P("pop", popped.join(","), a.length, [].pop(), a.pop.call([7]));
+var holes = [1, , 3]; holes.length = 5; P("holes", holes.pop(), holes.length, holes.pop(), holes.pop(), holes.pop(), holes.length, holes.push("x"), JSON.stringify(holes));
+Array.prototype[2] = "proto"; var h2 = [1, 2, , 4]; h2.length = 3; P("proto hole", h2.pop(), h2.length, h2.push("p"), h2[2]); delete Array.prototype[2];
+var frozen = Object.freeze([1, 2]); P("frozen", T(function () { return frozen.push(3); }), T(function () { return frozen.pop(); }), frozen.length);
+var sealed = Object.seal([1, 2]); P("sealed", T(function () { return sealed.push(3); }), T(function () { return sealed.pop(); }), sealed.length, JSON.stringify(sealed));
+var noext = Object.preventExtensions([1]); P("no extensions", T(function () { return noext.push(2); }), noext.pop(), noext.length);
+var fixed = [1, 2, 3]; Object.defineProperty(fixed, "length", { writable: false }); P("fixed length", T(function () { return fixed.push(4); }), T(function () { return fixed.pop(); }), fixed.length, JSON.stringify(fixed));
+var ro = [1, 2, 3]; Object.defineProperty(ro, 2, { writable: false, configurable: false }); P("read-only last", T(function () { return ro.pop(); }), ro.length, T(function () { return ro.push(4); }), ro.length);
+var acc = [1, 2]; Object.defineProperty(acc, 1, { get: function () { return "got"; }, configurable: true }); P("accessor last", acc.pop(), acc.length, acc.push(9), acc.length);
+var log = []; var noted3 = ""; Object.defineProperty(Array.prototype, 3, { set: function (v) { noted3 += "set " + v + ";"; }, get: function () { return "inherited"; }, configurable: true });
+var arr3 = [0, 1, 2]; var pushed3 = arr3.push("three"), len3 = arr3.length, got3 = arr3[3], own3 = Object.prototype.hasOwnProperty.call(arr3, 3); delete Array.prototype[3]; P("setter in prototype", pushed3, len3, got3, own3, noted3, arr3.length, arr3[3]);
+var noted = ""; Object.defineProperty(Object.prototype, 1, { set: function (v) { noted += "object set " + v + ";"; }, configurable: true });
+var arr4 = [0]; var pushed4 = arr4.push("one"), has4 = 1 in arr4, own4 = Object.prototype.hasOwnProperty.call(arr4, 1); delete Object.prototype[1]; P("setter in Object.prototype", pushed4, arr4.length, has4, own4, noted);
+class Sub extends Array {} var sub = new Sub(); P("subclass", sub.push(1), sub.push(2), sub.pop(), sub.length, sub instanceof Sub);
+var other = []; Object.setPrototypeOf(other, { push: Array.prototype.push, pop: Array.prototype.pop }); P("other prototype", other.push(5), other.pop(), other.length);
+var like = { length: 2, 0: "a", 1: "b" }; P("array-like", Array.prototype.push.call(like, "c"), like.length, like[2], Array.prototype.pop.call(like), like.length, T(function () { return Array.prototype.push.call(null, 1); }), Array.prototype.push.call("str".split(""), "!"));
+var typed = new Uint8Array(2); P("typed", T(function () { return Array.prototype.push.call(typed, 1); }), typed.length);
+var grown = []; for (var i = 0; i < 100000; i++) grown.push(i & 7); var total = 0; while (grown.length) total += grown.pop(); P("many", total, grown.length);
+var pushedSelf = []; pushedSelf.push(pushedSelf); P("self", pushedSelf[0] === pushedSelf, pushedSelf.pop() === pushedSelf, pushedSelf.length);
+var px = new Proxy([], { set: function (t, k, v) { log.push("proxy set " + String(k)); t[k] = v; return true; } }); P("proxy", px.push(1), px.length, log.slice(-2).join(";"));
+
+// Array.isArray
+var args = (function () { return arguments; })(1, 2); var live = new Proxy([], {}), notArr = new Proxy({}, {}), nested = new Proxy(new Proxy([], {}), {});
+var kinds = [[], [1], new Array(3), {}, null, undefined, "str", 1, live, notArr, nested, new Sub(), args, new Uint8Array(1), Array.prototype, { length: 0 }, Object.create(Array.prototype)];
+var ia = []; for (var i = 0; i < kinds.length; i++) ia.push(Array.isArray(kinds[i]) ? 1 : 0); P("isArray", ia.join(""), Array.isArray(), Array.isArray([], 1));
+P("isArray ways", Array.isArray.call(null, []), T(function () { var isa = Array.isArray; return isa([]); }), Array.isArray.call([], 1), [[], 1, live].map(Array.isArray).join(","));
+
+// Map and Set
+var m = new Map(), st = new Set(), ko = {}, ks = Symbol("k");
+var keys = [0, -0, NaN, 1, 1.5, "1", "", "a long key that is a heap string", ko, ks, null, undefined, true, 2 ** 53, 10n, [1]];
+for (var i = 0; i < keys.length; i++) { m.set(keys[i], "v" + i); st.add(keys[i]); }
+var looked = [0, -0, NaN, 0 / 0, 1, 1.0, 1.5, 3 / 2, "1", "", "a long key " + "that is a heap string", ko, {}, ks, Symbol("k"), null, undefined, true, false, 2 ** 53, 2 ** 53 + 1, 10n, 5n + 5n, [1], "missing"];
+var mg = []; for (var i = 0; i < looked.length; i++) mg.push(m.get(looked[i]) + ":" + (m.has(looked[i]) ? 1 : 0) + (st.has(looked[i]) ? 1 : 0));
+P("map", m.size, st.size, mg.join(" "), m.get(), m.has(), st.has());
+P("map ways", Map.prototype.get.call(m, 1), T(function () { return Map.prototype.get.call(st, 1); }), T(function () { return Set.prototype.has.call(m, 1); }), T(function () { return Map.prototype.has.call({}, 1); }), T(function () { var g = m.get; return g(1); }), new (class extends Map {})([[1, "sub"]]).get(1), T(function () { return new WeakMap().get.call(m, 1); }));
+m.delete(1); st.delete(1); P("deleted", m.get(1), m.has(1), st.has(1)); m.clear(); P("cleared", m.get(0), m.has(NaN));
+var mm = new Map(); for (var i = 0; i < 5000; i++) mm.set("key" + i, i); var ms = 0; for (var i = 0; i < 6000; i++) ms += (mm.get("key" + i) || 0) + (mm.has("key" + (i + 1)) ? 1 : 0); P("many keys", ms);
+
+// hasOwnProperty, directly and through call
+var o = { a: 1, 2: "two", [ks]: 3, "long property name here": 4 }; Object.defineProperty(o, "hidden", { value: 1, enumerable: false });
+var names = ["a", "b", 2, "2", 2.0, "02", ks, Symbol("k"), "long property " + "name here", "hidden", "toString", "__proto__", "", undefined, null, NaN, -0, 1.5, true, { toString: function () { return "a"; } }, ["a"]];
+var ho = []; for (var i = 0; i < names.length; i++) ho.push((o.hasOwnProperty(names[i]) ? 1 : 0) + (Object.prototype.hasOwnProperty.call(o, names[i]) ? 2 : 0));
+P("hasOwn", ho.join(""), o.hasOwnProperty(), Object.prototype.hasOwnProperty.call(o));
+var hop = Object.prototype.hasOwnProperty;
+P("hasOwn of", hop.call("str", 0), hop.call("str", 3), hop.call("str", "length"), hop.call([1, , 3], 1), hop.call([1, , 3], 2), hop.call([1], "length"), hop.call(function () {}, "prototype"), hop.call(12, "x"), hop.call(new Uint8Array(2), 1), hop.call(new Uint8Array(2), 2), hop.call(args, "length"), hop.call(args, 1), hop.call(args, 2), T(function () { return hop.call(null, "a"); }), T(function () { return hop.call(undefined, "a"); }), T(function () { return hop("a"); }));
+var trapped = new Proxy({ a: 1 }, { getOwnPropertyDescriptor: function (t, k) { log.push("gopd " + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); } });
+P("hasOwn proxy", trapped.hasOwnProperty("a"), hop.call(trapped, "b"), log.slice(-2).join(";"));
+var throwing = { toString: function () { throw new RangeError("key"); } }; P("hasOwn key throws", T(function () { return o.hasOwnProperty(throwing); }), T(function () { return hop.call(null, throwing); }));
+var nullProto = Object.create(null); nullProto.x = 1; P("no prototype", hop.call(nullProto, "x"), T(function () { return nullProto.hasOwnProperty("x"); }));
+var shadow = { hasOwnProperty: function () { return "shadowed"; } }; P("shadowed", shadow.hasOwnProperty("x"), hop.call(shadow, "hasOwnProperty"));
+
+// call of other functions the same way, and call itself in the place of one
+P("call", Math.max.call(null, 1, 5, 3), Math.floor.call(undefined, 2.7), Array.isArray.call(1, []), "abc".charCodeAt.call("xyz", 1), String.prototype.slice.call.call(String.prototype.slice, "abcdef", 2), Function.prototype.call.call(Math.abs, null, -4), T(function () { return Function.prototype.call.call(1); }), T(function () { var c = Function.prototype.call; return c(); }), Math.max.call(), [].push.call([1, 2], 3), Map.prototype.has.call(new Map([[1, 2]]), 1));
+function plain(x) { return this + ":" + x; } P("call plain", plain.call("t", 1), plain.call.call(plain, "u", 2), Math.abs.call.call(plain, "v", 3));
+var savedCall = Function.prototype.call; Function.prototype.call = function () { return "call replaced"; }; P("call replaced", Math.abs.call(null, -1)); delete Function.prototype.call; P("call deleted", T(function () { return Math.abs.call(null, -1); })); Function.prototype.call = savedCall; P("call back", Math.abs.call(null, -1));
+
+// Math.random and Date.now
+var lo = 1, hi = 0, same = 0, last = -1; for (var i = 0; i < 20000; i++) { var x = Math.random(); if (x < lo) lo = x; if (x > hi) hi = x; if (x === last) same++; last = x; }
+P("random", lo >= 0, hi < 1, lo < 0.01, hi > 0.99, same < 3, typeof Math.random(1, 2), Math.random.call(null) < 1);
+var t0 = Date.now(), t1 = Date.now.call(null), t2 = Date.now(1, 2); P("now", typeof t0, t0 > 1.7e12, t1 >= t0, t2 >= t1, Number.isInteger(t0), Math.abs(new Date().getTime() - t0) < 5000);
+
+// repeat and padding
+var reps = []; var units = ["", "a", "ab", "ж", "😀", "\uD83D", "\uDE00\uD83D", "x\uDE00"];
+for (var u = 0; u < units.length; u++) for (var n = 0; n < 6; n++) { var rr = units[u].repeat(n); reps.push(rr.length + ":" + (rr.length ? rr.charCodeAt(rr.length - 1).toString(16) : "") + ":" + [...rr].length); }
+P("repeat", reps.join(" "));
+P("repeat odd", T(function () { return "a".repeat(-1); }), T(function () { return "a".repeat(Infinity); }), "ab".repeat(2.9), "ab".repeat("2"), J("ab".repeat()), J("ab".repeat(NaN)), J("ab".repeat(null)), "ab".repeat(true), J("".repeat(1e9)), "abc".repeat(1500).length, "0123456789".repeat(410).length, "x".repeat(4096).length, "x".repeat(4097).length, String.prototype.repeat.call(12, 2), T(function () { return String.prototype.repeat.call(null, 2); }), J("ab".repeat({ valueOf: function () { return 2; } })), J("-".repeat(-0)));
+var pads = []; var fills = [undefined, " ", "0", "ab", "", "ж中", "😀", "😀x", "abcdefghij"];
+var lens = [0, 1, 3, 4, 5, 8, 11, -1, 20];
+for (var t = 0; t < 5; t++) for (var f = 0; f < fills.length; f++) for (var l = 0; l < lens.length; l++) {
+  var base = ["", "abc", "12345", "ж😀", "x\uD83D"][t];
+  pads.push(J(base.padStart(lens[l], fills[f])), J(base.padEnd(lens[l], fills[f])));
+}
+var ps = 0; for (var i = 0; i < pads.length; i++) for (var j = 0; j < pads[i].length; j++) ps = (ps * 31 + pads[i].charCodeAt(j)) | 0;
+P("pads", pads.length, ps, pads.slice(20, 28).join(" "), pads.slice(-4).join(" "));
+P("pad odd", J("a".padStart()), J("a".padStart(3)), J("a".padEnd(3, undefined)), J("a".padStart("3", 0)), J("a".padStart(3.9, "xy")), J("a".padEnd(3, null)), J("a".padStart(3, 12)), J("a".padEnd(NaN, "x")), J("a".padStart(-Infinity, "x")), "a".padStart(5000, "ab").length, "a".padEnd(1025, "0").length, "a".padStart(1024, "0").length, T(function () { return "a".padStart(3, Symbol()); }), String.prototype.padStart.call(7, 3, "0"), T(function () { return String.prototype.padEnd.call(undefined, 3); }), J("a".padStart(3, { toString: function () { return "T"; } })));
+var n8 = []; for (var i = 0; i < 2000; i += 37) n8.push(String(i).padStart(8, "0") + "-".repeat(i & 15) + String(i).padEnd(5, ".")); P("pad loop", n8.length, n8.join("").length, n8[3], n8[53]);
+
+// String() and Number() called, and toFixed
+var vals = [0, -0, 1, -1, 1.5, 1e21, 1e-7, 123456789012345680000, NaN, Infinity, -Infinity, 2 ** 53, 0.1 + 0.2, "", "str", " 12 ", "0x1f", "1e3", "abc", "12px", true, false, null, undefined, 10n, -5n, 2n ** 64n];
+var sv = [], nv = [];
+for (var i = 0; i < vals.length; i++) { sv.push(J(String(vals[i]))); nv.push(T(function () { return Number(vals[i]); })); }
+P("String()", sv.join(" ")); P("Number()", nv.join(" "));
+P("String odd", J(String()), String(Symbol("desc")), T(function () { return String(Symbol.iterator); }), String([1, [2, 3]]), String({}), String({ toString: function () { return "ts"; } }), String(function () {}).length > 5, T(function () { return String({ toString: function () { throw new RangeError("x"); } }); }), typeof String(1), typeof new String(1), String.call(null, 5), String(1, 2), new String("n").length, String(new String("w")), String(Object(1n)), String(-0), String([null]), String([undefined, 1]));
+P("Number odd", Number(), T(function () { return Number(Symbol()); }), Number([5]), Number({}), Number({ valueOf: function () { return 7; } }), Number(new Date(5)), typeof Number("1"), typeof new Number(1), Number.call(null, "8"), Number("8", 9), Number("-0") === 0 && 1 / Number("-0"), Number(""), Number("  "), Number("0b101"), Number("0o17"), Number("1_000"), Number("Infinity"), Number("-Infinity"), Number("+5"), Number("5."), Number(".5"), Number("5e"), Number(null), Number([]), Number([1, 2]), Number(false), Number(123n), T(function () { return Number(2n ** 70n); }), Number("  42\n"));
+var kS = String; String = function (v) { return "mine:" + v; }; P("String replaced", String(1)); String = kS; P("String back", String(1));
+var fx = []; var fnum = [0, -0, 1, 1.005, 1.5, 2.5, -1.5, 0.000001, 123.456, 1e21, 1e-10, NaN, Infinity, -Infinity, 0.1 + 0.2, 1234.5678, 5e-324, 1.7976931348623157e308, -0.0000001, 999.9999];
+for (var i = 0; i < fnum.length; i++) fx.push(fnum[i].toFixed(), fnum[i].toFixed(2), fnum[i].toFixed(0), fnum[i].toFixed(7));
+P("toFixed", fx.join(" "));
+P("toFixed odd", (1.5).toFixed(undefined), (1.5).toFixed(null), (1.25).toFixed("1"), (1.25).toFixed(1.9), T(function () { return (1).toFixed(-1); }), T(function () { return (1).toFixed(101); }), (1).toFixed(100).length, T(function () { return (1).toFixed(Infinity); }), (1).toFixed(NaN), T(function () { return Number.prototype.toFixed.call("1", 2); }), Number.prototype.toFixed.call(new Number(2.345), 2), T(function () { return Number.prototype.toFixed.call(null); }), (2 ** 31).toFixed(1), (-(2 ** 31)).toFixed(1), (255).toFixed(2).length, 1.45.toFixed(1), (8.345).toFixed(2), (0.5).toFixed(0), (1.5).toFixed(0), (2.5).toFixed(0), (-2.5).toFixed(0), T(function () { return (1).toFixed(Symbol()); }), (1e21).toFixed(2), (123).toFixed({ valueOf: function () { return 3; } }), T(function () { return (1n).toFixed(1); }));
+var nts = 0; for (var i = 0; i < 3000; i++) nts += String(i).length + (i * 0.37).toFixed(2).length + (i + "").length + Number(String(i * 3)) + Number((i * 0.5).toFixed(1)); P("number loop", nts);
+
+// Map.set and Set.add
+var m2 = new Map(), s2 = new Set();
+var chain = m2.set(1, "a").set(1, "b").set("1", "c").set(NaN, "n").set(-0, "z").set(0, "zero").set(ko, "o").set(undefined, "u").set();
+P("map set", chain === m2, m2.size, m2.get(1), m2.get("1"), m2.get(NaN), m2.get(0), m2.get(-0), m2.get(ko), m2.get(undefined), [...m2.keys()].map(String).join(","), Object.is([...m2.keys()][3], 0));
+var chain2 = s2.add(1).add(1).add("1").add(NaN).add(NaN).add(-0).add(0).add(ko).add().add(undefined);
+P("set add", chain2 === s2, s2.size, [...s2].map(String).join(","), Object.is([...s2][3], 0), s2.has(-0));
+P("set ways", T(function () { return Map.prototype.set.call(s2, 1, 2); }), T(function () { return Set.prototype.add.call(m2, 1); }), T(function () { return Map.prototype.set.call({}, 1, 2); }), Map.prototype.set.call(m2, "via call", 1) === m2, Set.prototype.add.call(s2, "via call") === s2, m2.has("via call"), s2.has("via call"), T(function () { var st = m2.set; return st(1, 2); }), new WeakMap().set(ko, 1).get(ko), T(function () { return new WeakSet().add(1); }));
+var big2 = new Map(), bigs = new Set(); for (var i = 0; i < 20000; i++) { big2.set(i % 7000, i); big2.set("s" + (i % 300), i); bigs.add(i % 5000); bigs.add("t" + (i & 255)); }
+var it = 0; big2.forEach(function (v, k) { it += typeof k === "number" ? v : 1; }); P("many sets", big2.size, bigs.size, it, big2.get(6999), big2.get("s299"), bigs.has(4999), bigs.has(5000));
+var order2 = new Map(); order2.set("b", 1); order2.set("a", 2); order2.delete("b"); order2.set("b", 3); order2.set("a", 4); P("order", [...order2].join(";"));
+var during = new Map([[1, 1]]); var seenKeys = []; for (var e of during) { seenKeys.push(e[0]); if (e[0] < 5) during.set(e[0] + 1, 0); } P("set while iterating", seenKeys.join(","));
+var sdur = new Set([1]); var seenVals = []; sdur.forEach(function (v) { seenVals.push(v); if (v < 5) sdur.add(v + 1); }); P("add while iterating", seenVals.join(","));
+class MyMap extends Map { set(k, v) { return super.set(k, v + "!"); } } var mym = new MyMap(); mym.set(1, "x"); P("subclass set", mym.get(1), new MyMap([[2, "y"]]).get(2));
+var kSet = Map.prototype.set; Map.prototype.set = function (k, v) { return kSet.call(this, k, "patched " + v); }; var pm = new Map(); pm.set(1, "v"); P("patched set", pm.get(1), new Map([[1, "ctor"]]).get(1)); Map.prototype.set = kSet; pm.set(2, "v"); P("unpatched", pm.get(2));
+lines.join("\n")"#;
+    let expected = r#"slices 0 180 539 "" "" "" "" "" "" "" "" ""
+sum 0 943987968
+slices 1 180 605 "a" "a" "" "" "a" "a" "a" "" ""
+sum 1 584186208
+slices 2 180 1290 "hello world" "hello world" "" "" "hello" "hello" "hello world" "hello " ""
+sum 2 688216877
+slices 3 180 1958 "0123456789abcdefghij" "0123456789abcdefghij" "" "" "01234" "01234" "0123456789abcdefghij" "0123456789abcde" ""
+sum 3 722135250
+slices 4 180 1215 "привет мир" "привет мир" "" "" "приве" "приве" "привет мир" "приве" ""
+sum 4 -674004096
+slices 5 180 1256 "a😀b😀c" "a😀b😀c" "" "" "a😀b\ud83d" "a😀b\ud83d" "a😀b😀c" "a\ud83d" ""
+sum 5 1993603517
+slices 6 180 1423 "\ud83dx\ude00" "\ud83dx\ude00" "" "" "\ud83dx\ude00" "\ud83dx\ude00" "\ud83dx\ude00" "" ""
+sum 6 -782697308
+slices 7 180 1899 "日本語のテキスト、長いもの。もっと長く" "日本語のテキスト、長いもの。もっと長く" "" "" "日本語のテ" "日本語のテ" "日本語のテキスト、長いもの。もっと長く" "日本語のテキスト、長いもの。" ""
+sum 7 1399142112
+odd "0123456789""123456789""0123456789""123456789""0"48 "0123456789""""0123456789""0""0"48 "0123456789""""0123456789""0""0"48 "123456789""""123456789""""1"49 "9""12345678""0123456789""0"""NaN "23456789""1""23456789""1""2"50 "0123456789""""0123456789""0""0"48 "123456789""""123456789""""1"49 """123456789""""123456789"""NaN "0123456789""""0123456789""0"""NaN """123456789""""123456789"""NaN "0123456789""""0123456789""0"""NaN """123456789""""123456789"""NaN "3456789""12""3456789""12""3"51 "456789""123""456789""123""4"52 """123456789""""123456789"""NaN "0123456789""""0123456789""0""0"48
+none "0123456789" "0123456789" "0" 48 "012" "012" "23456789" "1"
+symbol threw TypeError threw TypeError threw TypeError threw TypeError
+order 123 123 start,end,end,start
+charAt """""""""""""""""""""""""""""""a""""""""""""""""""""""""""""""h""e""l"" ""l""d""""""""""""""""""""0""1""2""5""9""a""j""""""""""""""""""п""р""и""т""р""""""""""""""""""""""a""\ud83d""\ude00""\ude00""""""""""""""""""""""""\ud83d""x""\ude00""""""""""""""""""""""""""日""本""語""キ""長""い"""""""""""""""""""
+search 1872 2681 7,0,7,0,7,0,7,0,7,0,7,0,7,0,7,0,7,0,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1
+search sum -1294898995
+search odd threw TypeError threw TypeError threw TypeError -1 false false true true 1 true true true true 12 -1 true true 4
+not a regexp true true
+ways bc yz cdef 23 r threw TypeError threw TypeError true rap bj 2 true true
+apply bind bc bcd cdef yz 2
+replaced replaced:abc:1 replaced:abc:2
+restored bc
+own own1 wn
+getter getter
+deleted threw TypeError
+push 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40 40 78 40 43 43
+pop 3,2,1,78,76,74,72,70,68,66,64,62,60 30  7
+holes  4  3  1 2 [1,"x"]
+proto hole proto 2 3 p
+frozen threw TypeError threw TypeError 2
+sealed threw TypeError threw TypeError 2 [1,2]
+no extensions threw TypeError 1 0
+fixed length threw TypeError threw TypeError 3 [1,2,null]
+read-only last threw TypeError 3 4 4
+accessor last got 1 2 2
+setter in prototype 4 4 inherited false set three; 4 
+setter in Object.prototype 2 2 true false object set one;
+subclass 1 2 2 1 true
+other prototype 1 5 0
+array-like 3 3 c c 2 threw TypeError 4
+typed threw TypeError 2
+many 350000 0
+self true true 0
+proxy 1 1 proxy set 0;proxy set length
+isArray 11100000101100100 false true
+isArray ways true true false true,false,true
+map 15 15 v1:11 v1:11 v2:11 v2:11 v3:11 v3:11 v4:11 v4:11 v5:11 v6:11 v7:11 v8:11 undefined:00 v9:11 undefined:00 v10:11 v11:11 v12:11 undefined:00 v13:11 v13:11 v14:11 v14:11 undefined:00 undefined:00 v11 true true
+map ways v3 threw TypeError threw TypeError threw TypeError threw TypeError sub threw TypeError
+deleted  false false
+cleared  false
+many keys 12502499
+hasOwn 303330303300000000033 false false
+hasOwn of true false true false true true true false true false true true false threw TypeError threw TypeError threw TypeError
+hasOwn proxy true false gopd a;gopd b
+hasOwn key throws threw RangeError threw RangeError
+no prototype true threw TypeError
+shadowed shadowed true
+call 5 2 true 121 cdef 4 threw TypeError threw TypeError -Infinity 3 true
+call plain t:1 u:2 v:3
+call replaced call replaced
+call deleted threw TypeError
+call back 1
+random true true true true true number true
+now number true true true true true
+repeat 0::0 0::0 0::0 0::0 0::0 0::0 0::0 1:61:1 2:61:2 3:61:3 4:61:4 5:61:5 0::0 2:62:2 4:62:4 6:62:6 8:62:8 10:62:10 0::0 1:436:1 2:436:2 3:436:3 4:436:4 5:436:5 0::0 2:de00:1 4:de00:2 6:de00:3 8:de00:4 10:de00:5 0::0 1:d83d:1 2:d83d:2 3:d83d:3 4:d83d:4 5:d83d:5 0::0 2:d83d:2 4:d83d:3 6:d83d:4 8:d83d:5 10:d83d:6 0::0 2:de00:2 4:de00:4 6:de00:6 8:de00:8 10:de00:10
+repeat odd threw RangeError threw RangeError abab abab "" "" "" ab "" 4500 4100 4096 4097 1212 threw TypeError "abab" ""
+pads 810 331502300 " " " " "   " "   " "    " "    " "     " "     " "x\ud83d" "x\ud83d" "abcdefghijabcdefghx\ud83d" "x\ud83dabcdefghijabcdefgh"
+pad odd "a" "  a" "a  " "00a" "xya" "anu" "12a" "a" "a" 5000 1025 1024 threw TypeError 007 threw TypeError "TTa"
+pad loop 55 1132 00000111---------------111.. 00001961---------1961.
+String() "0" "0" "1" "-1" "1.5" "1e+21" "1e-7" "123456789012345680000" "NaN" "Infinity" "-Infinity" "9007199254740992" "0.30000000000000004" "" "str" " 12 " "0x1f" "1e3" "abc" "12px" "true" "false" "null" "undefined" "10" "-5" "18446744073709551616"
+Number() 0 0 1 -1 1.5 1e+21 1e-7 123456789012345680000 NaN Infinity -Infinity 9007199254740992 0.30000000000000004 0 NaN 12 31 1000 NaN NaN 1 0 0 NaN 10 -5 18446744073709552000
+String odd "" Symbol(desc) Symbol(Symbol.iterator) 1,2,3 [object Object] ts true threw RangeError string object 5 1 1 w 1 0  ,1
+Number odd 0 threw TypeError 5 NaN 7 5 number object 8 8 -Infinity 0 0 5 15 NaN Infinity -Infinity 5 5 0.5 NaN 0 0 NaN 0 123 1.1805916207174113e+21 42
+mine:String replaced mine:mine:1
+String back 1
+toFixed 0 0.00 0 0.0000000 0 0.00 0 0.0000000 1 1.00 1 1.0000000 1 1.00 1 1.0050000 2 1.50 2 1.5000000 3 2.50 3 2.5000000 -2 -1.50 -2 -1.5000000 0 0.00 0 0.0000010 123 123.46 123 123.4560000 1e+21 1e+21 1e+21 1e+21 0 0.00 0 0.0000000 NaN NaN NaN NaN Infinity Infinity Infinity Infinity -Infinity -Infinity -Infinity -Infinity 0 0.30 0 0.3000000 1235 1234.57 1235 1234.5678000 0 0.00 0 0.0000000 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 -0 -0.00 -0 -0.0000001 1000 1000.00 1000 999.9999000
+toFixed odd 2 2 1.3 1.3 threw RangeError threw RangeError 102 threw RangeError 1 threw TypeError 2.35 threw TypeError 2147483648.0 -2147483648.0 6 1.4 8.35 1 2 3 -3 threw TypeError 1e+21 123.000 threw TypeError
+number loop 15784528
+map set true 6 b c n zero zero o  1,1,NaN,0,[object Object],undefined true
+set add true 6 1,1,NaN,0,[object Object],undefined true true
+set ways threw TypeError threw TypeError threw TypeError true true true true threw TypeError 1 threw TypeError
+many sets 7300 5256 115496800 13999 19799 true false
+order a,4;b,3
+set while iterating 1,2,3,4,5
+add while iterating 1,2,3,4,5
+subclass set x! y!
+patched set patched v patched ctor
+unpatched v"#;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

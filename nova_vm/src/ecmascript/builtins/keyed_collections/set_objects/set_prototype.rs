@@ -90,7 +90,19 @@ impl SetPrototype {
         // 1. Let S be the this value.
         // 2. Perform ? RequireInternalSlot(S, [[SetData]]).
         let s = require_set_data_internal_slot(agent, this_value, gc)?;
+        Self::add_of(agent, s, value);
+        // 6. Return S.
+        Ok(s.into())
+    }
 
+    /// Whether `function` is Set.prototype.add, which the interpreter may
+    /// run in place.
+    pub(crate) fn is_add(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(function, Self::add as crate::ecmascript::RegularFn)
+    }
+
+    /// Set.prototype.add of a Set.
+    pub(crate) fn add_of(agent: &mut Agent, s: Set, value: Value) {
         let Heap {
             bigints,
             numbers,
@@ -138,9 +150,6 @@ impl SetPrototype {
         }
         agent.heap.data_bytes_since_gc +=
             core::mem::size_of::<Option<crate::ecmascript::Value>>() + 8;
-        // i. Return S.
-        // 6. Return S.
-        Ok(s.into())
     }
 
     /// ### [24.2.4.2 Set.prototype.clear ( )](https://tc39.es/ecma262/#sec-set.prototype.clear)
@@ -365,7 +374,17 @@ impl SetPrototype {
         // 1. Let S be the this value.
         // 2. Perform ? RequireInternalSlot(S, [[SetData]]).
         let s = require_set_data_internal_slot(agent, this_value, gc)?;
+        Ok(Self::has_of(agent, s, value).into())
+    }
 
+    /// Whether `function` is Set.prototype.has, which the interpreter may
+    /// run in place: it only looks a value up.
+    pub(crate) fn is_has(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(function, Self::has as crate::ecmascript::RegularFn)
+    }
+
+    /// Set.prototype.has of a Set.
+    pub(crate) fn has_of(agent: &mut Agent, s: Set, value: Value) -> bool {
         let Heap {
             bigints,
             numbers,
@@ -393,15 +412,14 @@ impl SetPrototype {
         };
         // 4. For each element e of S.[[SetData]], do
         // a. If e is not EMPTY and SameValue(e, value) is true, return true.
-        let found = set_data
+        // 5. Return false.
+        set_data
             .find(value_hash, |hash_equal_index| {
                 let found_value = values[*hash_equal_index as usize].unwrap();
                 // Quick check: Equal values have the same value.
                 found_value == value || same_value(&primitive_heap, found_value, value)
             })
-            .is_some();
-        // 5. Return false.
-        Ok(found.into())
+            .is_some()
     }
 
     /// ### [24.2.4.14 get Set.prototype.size](https://tc39.es/ecma262/#sec-get-set.prototype.size)

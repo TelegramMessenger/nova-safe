@@ -49,6 +49,34 @@ impl Builtin for StringRaw {
 }
 impl StringConstructor {
     /// ### [22.1.1.1 String ( value )](https://tc39.es/ecma262/#sec-string-constructor-string-value)
+    /// Whether `function` is the String constructor, a call of which the
+    /// interpreter may run in place.
+    pub(crate) fn is_constructor(function: crate::ecmascript::ConstructorFn) -> bool {
+        core::ptr::fn_addr_eq(
+            function,
+            Self::constructor as crate::ecmascript::ConstructorFn,
+        )
+    }
+
+    /// `String(value)` of a primitive that is not a Symbol, or of nothing;
+    /// None otherwise.
+    pub(crate) fn call_directly<'gc>(
+        agent: &mut Agent,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        let Some(&value) = arguments.first() else {
+            return Some(String::EMPTY_STRING.into());
+        };
+        let primitive = crate::ecmascript::Primitive::try_from(value).ok()?;
+        if matches!(primitive, crate::ecmascript::Primitive::Symbol(_)) {
+            return None;
+        }
+        crate::ecmascript::to_string_primitive(agent, primitive, gc)
+            .ok()
+            .map(Value::from)
+    }
+
     fn constructor<'gc>(
         agent: &mut Agent,
         _this_value: Value,

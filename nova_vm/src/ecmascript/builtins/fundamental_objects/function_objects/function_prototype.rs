@@ -357,6 +357,13 @@ impl FunctionPrototype {
         Ok(f.unbind().into())
     }
 
+    /// Whether `function` is Function.prototype.call, which the interpreter
+    /// runs in place where the function called through it is one it runs
+    /// in place.
+    pub(crate) fn is_call(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(function, Self::call as crate::ecmascript::RegularFn)
+    }
+
     fn call<'gc>(
         agent: &mut Agent,
         this_value: Value,

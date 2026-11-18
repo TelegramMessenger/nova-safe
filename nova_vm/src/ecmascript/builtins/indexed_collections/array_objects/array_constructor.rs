@@ -474,6 +474,12 @@ impl ArrayConstructor {
         Ok(a.get(agent).into())
     }
 
+    /// Whether `function` is Array.isArray, which the interpreter may run in
+    /// place.
+    pub(crate) fn is_is_array(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(function, Self::is_array as crate::ecmascript::RegularFn)
+    }
+
     /// ### [23.1.2.2 Array.isArray ( arg )](https://tc39.es/ecma262/#sec-array.isarray)
     fn is_array<'gc>(
         agent: &mut Agent,

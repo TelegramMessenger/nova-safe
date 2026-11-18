@@ -200,16 +200,24 @@ impl DateConstructor {
         _arguments: ArgumentsList,
         _gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
+        Ok(Self::now_value())
+    }
+
+    /// Whether `function` is Date.now, which the interpreter may run in
+    /// place.
+    pub(crate) fn is_now(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(function, Self::now as crate::ecmascript::RegularFn)
+    }
+
+    /// What Date.now returns.
+    pub(crate) fn now_value<'gc>() -> Value<'gc> {
         let time_value = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_millis();
         assert_eq!(time_value as u64 as u128, time_value);
         let time_value = time_value as u64;
-        Ok(
-            Number::from(SmallInteger::try_from(time_value).expect("SystemTime is beyond range"))
-                .into(),
-        )
+        Number::from(SmallInteger::try_from(time_value).expect("SystemTime is beyond range")).into()
     }
 
     /// ### [21.4.3.2 Date.parse ( string )](https://tc39.es/ecma262/#sec-date.parse)

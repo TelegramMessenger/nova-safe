@@ -2078,6 +2078,67 @@ impl ArrayPrototype {
     /// > This method is intentionally generic; it does not require that
     /// > its this value be an Array. Therefore it can be transferred to
     /// > other kinds of objects for use as a method.
+    /// Which of the functions of %Array.prototype% the interpreter may run
+    /// in place.
+    pub(crate) fn direct_builtin(
+        function: crate::ecmascript::RegularFn,
+    ) -> Option<crate::ecmascript::DirectBuiltin> {
+        use crate::ecmascript::{DirectBuiltin, RegularFn};
+        if core::ptr::fn_addr_eq(function, Self::push as RegularFn) {
+            Some(DirectBuiltin::ArrayPush)
+        } else if core::ptr::fn_addr_eq(function, Self::pop as RegularFn) {
+            Some(DirectBuiltin::ArrayPop)
+        } else {
+            None
+        }
+    }
+
+    /// `push` of one value to, or `pop` of, an Array where that only adds or
+    /// takes its last element: what a call of the function returns, with
+    /// what it does done. None where the call is to be made, with nothing
+    /// done.
+    #[inline]
+    pub(crate) fn run_direct<'gc>(
+        agent: &mut Agent,
+        direct: crate::ecmascript::DirectBuiltin,
+        this: Value<'gc>,
+        arguments: &[Value<'gc>],
+        _: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        let Value::Array(array) = this else {
+            return None;
+        };
+        if direct == crate::ecmascript::DirectBuiltin::ArrayPush {
+            // As the function's own way for such an Array, for one item.
+            let &[item] = arguments else {
+                return None;
+            };
+            if !array.appends_plainly(agent) {
+                return None;
+            }
+            let length = array.len(agent).checked_add(1)?;
+            if length == u32::MAX || array.reserve(agent, 1).is_err() {
+                return None;
+            }
+            array.push(agent, item.unbind()).ok()?;
+            return Some(Value::from(length));
+        }
+        // As the function's own way for an Array without descriptors whose
+        // last element is a value.
+        let Heap {
+            arrays, elements, ..
+        } = &mut agent.heap;
+        let elems = array.get_elements_mut(arrays);
+        if !elems.is_trivial(elements) || !elems.len_writable || elems.len() == 0 {
+            return None;
+        }
+        let element = elements.get_values_mut(elems).last_mut()?;
+        let last_element = (*element)?;
+        *element = None;
+        elems.len -= 1;
+        Some(last_element)
+    }
+
     fn pop<'gc>(
         agent: &mut Agent,
         this_value: Value,

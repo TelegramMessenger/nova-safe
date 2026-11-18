@@ -5,12 +5,15 @@
 use core::{marker::PhantomData, ops::Deref};
 use std::borrow::Cow;
 
+#[cfg(feature = "set")]
+use crate::ecmascript::SetPrototype;
 use crate::{
     ecmascript::{
-        Agent, BUILTIN_STRING_MEMORY, BuiltinFunctionHeapData, ExceptionType, ExecutionContext,
-        Function, FunctionInternalProperties, InternalSlots, JsResult, MathObject, Object,
-        OrdinaryObject, PropertyKey, Realm, ScopedValuesIterator, String, StringPrototype, Value,
-        function_handle,
+        Agent, ArrayConstructor, ArrayPrototype, BUILTIN_STRING_MEMORY, BuiltinFunctionHeapData,
+        ExceptionType, ExecutionContext, Function, FunctionInternalProperties, FunctionPrototype,
+        InternalSlots, JsResult, MapPrototype, MathObject, NumberConstructor, NumberPrototype,
+        Object, ObjectPrototype, OrdinaryObject, PropertyKey, Realm, ScopedValuesIterator, String,
+        StringConstructor, StringPrototype, Value, function_handle,
     },
     engine::{Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData},
     heap::{
@@ -375,9 +378,11 @@ pub type ConstructorFn = for<'gc> fn(
     GcScope<'gc, '_>,
 ) -> JsResult<'gc, Value<'gc>>;
 
-/// A built-in function whose result for arguments it takes as they are is
-/// computed from them alone, with no effect: the interpreter runs it in
-/// place for such arguments, with no call made.
+/// A built-in function that, for a this value and arguments it takes as they
+/// are, runs no script, throws nothing and needs no collection: the
+/// interpreter runs it in place for those, with no call made. Most only
+/// compute a value; an Array's `push` and `pop` also do what the call would
+/// have done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectBuiltin {
     MathAbs,
@@ -392,7 +397,34 @@ pub(crate) enum DirectBuiltin {
     MathSin,
     MathCos,
     MathPow,
+    MathRandom,
+    DateNow,
+    /// `f.call(thisArg, ...)` of a function that is one of these.
+    FunctionCall,
+    ObjectHasOwnProperty,
+    /// `String(value)` and `Number(value)`, called and not constructed.
+    StringCall,
+    NumberCall,
+    NumberToFixed,
+    StringRepeat,
+    StringPadStart,
+    StringPadEnd,
     StringCharCodeAt,
+    StringCharAt,
+    StringSlice,
+    StringSubstring,
+    StringStartsWith,
+    StringEndsWith,
+    StringIndexOf,
+    StringIncludes,
+    ArrayPush,
+    ArrayPop,
+    ArrayIsArray,
+    MapGet,
+    MapHas,
+    MapSet,
+    SetHas,
+    SetAdd,
 }
 
 impl DirectBuiltin {
@@ -400,21 +432,90 @@ impl DirectBuiltin {
     pub(crate) fn of(behaviour: Behaviour) -> Option<Self> {
         match behaviour {
             Behaviour::Regular(function) => MathObject::direct_builtin(function)
-                .or_else(|| StringPrototype::direct_builtin(function)),
-            Behaviour::Constructor(_) => None,
+                .or_else(|| StringPrototype::direct_builtin(function))
+                .or_else(|| ArrayPrototype::direct_builtin(function))
+                .or_else(|| ArrayConstructor::is_is_array(function).then_some(Self::ArrayIsArray))
+                .or_else(|| MapPrototype::direct_builtin(function))
+                .or_else(|| Self::of_set(function))
+                .or_else(|| Self::of_date(function))
+                .or_else(|| FunctionPrototype::is_call(function).then_some(Self::FunctionCall))
+                .or_else(|| {
+                    ObjectPrototype::is_has_own_property(function)
+                        .then_some(Self::ObjectHasOwnProperty)
+                })
+                .or_else(|| NumberPrototype::is_to_fixed(function).then_some(Self::NumberToFixed)),
+            Behaviour::Constructor(function) => {
+                if StringConstructor::is_constructor(function) {
+                    Some(Self::StringCall)
+                } else if NumberConstructor::is_constructor(function) {
+                    Some(Self::NumberCall)
+                } else {
+                    None
+                }
+            }
         }
     }
 
-    /// Whether the function computes from its this value: the others are
-    /// run without looking for it.
+    #[cfg(feature = "set")]
+    fn of_set(function: RegularFn) -> Option<Self> {
+        if SetPrototype::is_has(function) {
+            Some(Self::SetHas)
+        } else if SetPrototype::is_add(function) {
+            Some(Self::SetAdd)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(feature = "set"))]
+    fn of_set(_: RegularFn) -> Option<Self> {
+        None
+    }
+
+    #[cfg(feature = "date")]
+    fn of_date(function: RegularFn) -> Option<Self> {
+        crate::ecmascript::DateConstructor::is_now(function).then_some(Self::DateNow)
+    }
+
+    #[cfg(not(feature = "date"))]
+    fn of_date(_: RegularFn) -> Option<Self> {
+        None
+    }
+
+    /// Whether the function takes its this value: the others are run
+    /// without looking for it.
     #[inline]
     pub(crate) fn takes_this(self) -> bool {
-        matches!(self, Self::StringCharCodeAt)
+        matches!(
+            self,
+            Self::StringCharCodeAt
+                | Self::StringCharAt
+                | Self::StringSlice
+                | Self::StringSubstring
+                | Self::StringStartsWith
+                | Self::StringEndsWith
+                | Self::StringIndexOf
+                | Self::StringIncludes
+                | Self::ArrayPush
+                | Self::ArrayPop
+                | Self::StringRepeat
+                | Self::StringPadStart
+                | Self::StringPadEnd
+                | Self::NumberToFixed
+                | Self::MapGet
+                | Self::MapHas
+                | Self::MapSet
+                | Self::SetHas
+                | Self::SetAdd
+                | Self::FunctionCall
+                | Self::ObjectHasOwnProperty
+        )
     }
 
     /// What a call of the function with `this` (where the function takes
-    /// it) and `arguments` returns, where it needs nothing but them and
-    /// does nothing else; None where the call is to be made.
+    /// it) and `arguments` returns, with what the call does done, where it
+    /// needs nothing but them; None where the call is to be made, with
+    /// nothing done.
     #[inline]
     pub(crate) fn run<'gc>(
         self,
@@ -423,21 +524,128 @@ impl DirectBuiltin {
         arguments: &[Value<'gc>],
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
+        if self != Self::FunctionCall {
+            return self.run_own(agent, this, arguments, gc);
+        }
+        // The function is the this value of `call`, and its this value the
+        // first argument.
+        let Value::BuiltinFunction(function) = this? else {
+            return None;
+        };
+        let called = function.get(agent).direct?;
+        if called == Self::FunctionCall {
+            return None;
+        }
+        let (this, arguments) = match arguments.split_first() {
+            Some((this, arguments)) => (*this, arguments),
+            None => (Value::Undefined, arguments),
+        };
+        called.run_own(agent, Some(this), arguments, gc)
+    }
+
+    /// [`DirectBuiltin::run`] of a function that is not
+    /// Function.prototype.call.
+    #[inline]
+    fn run_own<'gc>(
+        self,
+        agent: &mut Agent,
+        this: Option<Value<'gc>>,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
         match self {
-            Self::StringCharCodeAt => {
+            Self::StringCharCodeAt
+            | Self::StringCharAt
+            | Self::StringSlice
+            | Self::StringSubstring
+            | Self::StringStartsWith
+            | Self::StringEndsWith
+            | Self::StringIndexOf
+            | Self::StringIncludes
+            | Self::StringRepeat
+            | Self::StringPadStart
+            | Self::StringPadEnd => {
                 let string = String::try_from(this?).ok()?;
-                let Some(&Value::Integer(position)) = arguments.first() else {
+                StringPrototype::run_direct(agent, self, string, arguments, gc)
+            }
+            Self::StringCall => StringConstructor::call_directly(agent, arguments, gc),
+            Self::NumberCall => NumberConstructor::call_directly(agent, arguments, gc),
+            Self::NumberToFixed => NumberPrototype::to_fixed_directly(agent, this?, arguments, gc),
+            Self::MapSet => {
+                let Value::Map(map) = this? else {
                     return None;
                 };
-                Some(StringPrototype::char_code_at_of(
-                    agent,
-                    string,
-                    position.into_i64(),
-                    gc,
-                ))
+                let key = arguments.first().copied().unwrap_or(Value::Undefined);
+                let value = arguments.get(1).copied().unwrap_or(Value::Undefined);
+                MapPrototype::set_of(agent, map, key, value);
+                Some(map.into())
             }
+            Self::ArrayPush | Self::ArrayPop => {
+                ArrayPrototype::run_direct(agent, self, this?, arguments, gc)
+            }
+            // IsArray of anything but a Proxy, which may have been revoked.
+            Self::ArrayIsArray => match arguments.first() {
+                Some(Value::Array(_)) => Some(true.into()),
+                Some(Value::Proxy(_)) => None,
+                _ => Some(false.into()),
+            },
+            Self::MapGet | Self::MapHas => {
+                let Value::Map(map) = this? else {
+                    return None;
+                };
+                let key = arguments.first().copied().unwrap_or(Value::Undefined);
+                Some(if self == Self::MapGet {
+                    MapPrototype::get_of(agent, map, key, gc)
+                } else {
+                    MapPrototype::has_of(agent, map, key).into()
+                })
+            }
+            Self::SetHas | Self::SetAdd => Self::set_has_or_add(agent, self, this?, arguments),
+            Self::ObjectHasOwnProperty => {
+                ObjectPrototype::has_own_property_directly(agent, this?, arguments, gc)
+            }
+            Self::DateNow => Self::date_now(),
+            Self::FunctionCall => None,
             _ => MathObject::run_direct(agent, self, arguments, gc),
         }
+    }
+
+    #[cfg(feature = "set")]
+    fn set_has_or_add<'gc>(
+        agent: &mut Agent,
+        direct: Self,
+        this: Value<'gc>,
+        arguments: &[Value<'gc>],
+    ) -> Option<Value<'gc>> {
+        let Value::Set(set) = this else {
+            return None;
+        };
+        let value = arguments.first().copied().unwrap_or(Value::Undefined);
+        if direct == Self::SetAdd {
+            SetPrototype::add_of(agent, set, value);
+            return Some(set.into());
+        }
+        Some(SetPrototype::has_of(agent, set, value).into())
+    }
+
+    #[cfg(not(feature = "set"))]
+    fn set_has_or_add<'gc>(
+        _: &mut Agent,
+        _: Self,
+        _: Value<'gc>,
+        _: &[Value<'gc>],
+    ) -> Option<Value<'gc>> {
+        None
+    }
+
+    #[cfg(feature = "date")]
+    fn date_now<'gc>() -> Option<Value<'gc>> {
+        Some(crate::ecmascript::DateConstructor::now_value())
+    }
+
+    #[cfg(not(feature = "date"))]
+    fn date_now<'gc>() -> Option<Value<'gc>> {
+        None
     }
 }
 

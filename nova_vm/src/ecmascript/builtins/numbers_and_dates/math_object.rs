@@ -25,7 +25,8 @@ impl MathObject {
     /// Which of the functions of Math the interpreter may run in place:
     /// those that only compute a Number from Numbers.
     pub(crate) fn direct_builtin(function: RegularFn) -> Option<DirectBuiltin> {
-        let functions: [(RegularFn, DirectBuiltin); 12] = [
+        let functions: [(RegularFn, DirectBuiltin); 13] = [
+            (Self::random, DirectBuiltin::MathRandom),
             (Self::floor, DirectBuiltin::MathFloor),
             (Self::max, DirectBuiltin::MathMax),
             (Self::min, DirectBuiltin::MathMin),
@@ -57,6 +58,10 @@ impl MathObject {
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
         match direct {
+            DirectBuiltin::MathRandom => {
+                let number = agent.next_random_f64();
+                return Some(Value::from_f64(agent, number, gc));
+            }
             DirectBuiltin::MathMax => return Self::max_of_numbers(agent, arguments, gc),
             DirectBuiltin::MathMin => return Self::min_of_numbers(agent, arguments, gc),
             DirectBuiltin::MathPow => {
@@ -80,12 +85,7 @@ impl MathObject {
             DirectBuiltin::MathTrunc => Self::trunc_number(agent, n, gc),
             DirectBuiltin::MathSin => Self::sin_number(agent, n, gc),
             DirectBuiltin::MathCos => Self::cos_number(agent, n, gc),
-            DirectBuiltin::MathMax
-            | DirectBuiltin::MathMin
-            | DirectBuiltin::MathPow
-            | DirectBuiltin::StringCharCodeAt => {
-                return None;
-            }
+            _ => return None,
         })
     }
 }

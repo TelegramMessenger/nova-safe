@@ -30,6 +30,11 @@ use crate::{
 
 pub(crate) struct StringPrototype;
 
+/// The longest text that a function run in place of its call makes without
+/// asking whether it fits the heap limit, as a short concatenation does not
+/// ask: the poll after it holds the heap to the limit.
+const DIRECT_TEXT_BYTES: usize = 4096;
+
 struct StringPrototypeGetAt;
 impl Builtin for StringPrototypeGetAt {
     const NAME: String<'static> = BUILTIN_STRING_MEMORY.at;
@@ -461,15 +466,27 @@ impl StringPrototype {
                     .into_i64();
                 (s.get(agent).bind(gc.nogc()), position)
             };
+        let s = s.unbind();
+        let gc = gc.into_nogc();
+        Ok(Self::char_at_of(agent, s.bind(gc), position, gc))
+    }
+
+    /// String.prototype.charAt of a String and an integral position.
+    pub(crate) fn char_at_of<'gc>(
+        agent: &mut Agent,
+        s: String<'gc>,
+        position: i64,
+        _: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         // 4. Let size be the length of S.
         let size = s.utf16_len_(agent);
         // 5. If position < 0 or position ≥ size, return the empty String.
         if position < 0 || position >= i64::try_from(size).unwrap() {
-            Ok(String::EMPTY_STRING.into())
+            String::EMPTY_STRING.into()
         } else {
             // 6. Return the substring of S from position to position + 1.
             let ch = s.char_code_at_(agent, usize::try_from(position).unwrap());
-            Ok(SmallString::from_code_point(ch).into())
+            SmallString::from_code_point(ch).into()
         }
     }
 
@@ -528,12 +545,256 @@ impl StringPrototype {
     }
 
     /// Which of the functions of %String.prototype% the interpreter may run
-    /// in place: those that only compute from a String and integers.
+    /// in place: those that only compute from a String, Strings and
+    /// integers.
     pub(crate) fn direct_builtin(
         function: crate::ecmascript::RegularFn,
     ) -> Option<crate::ecmascript::DirectBuiltin> {
-        core::ptr::fn_addr_eq(function, Self::char_code_at as crate::ecmascript::RegularFn)
-            .then_some(crate::ecmascript::DirectBuiltin::StringCharCodeAt)
+        use crate::ecmascript::{DirectBuiltin, RegularFn};
+        let functions: [(RegularFn, DirectBuiltin); 11] = [
+            (Self::repeat, DirectBuiltin::StringRepeat),
+            (Self::pad_start, DirectBuiltin::StringPadStart),
+            (Self::pad_end, DirectBuiltin::StringPadEnd),
+            (Self::char_code_at, DirectBuiltin::StringCharCodeAt),
+            (Self::char_at, DirectBuiltin::StringCharAt),
+            (Self::slice, DirectBuiltin::StringSlice),
+            (Self::substring, DirectBuiltin::StringSubstring),
+            (Self::starts_with, DirectBuiltin::StringStartsWith),
+            (Self::ends_with, DirectBuiltin::StringEndsWith),
+            (Self::index_of, DirectBuiltin::StringIndexOf),
+            (Self::includes, DirectBuiltin::StringIncludes),
+        ];
+        functions
+            .into_iter()
+            .find(|(candidate, _)| core::ptr::fn_addr_eq(*candidate, function))
+            .map(|(_, direct)| direct)
+    }
+
+    /// The result of the function `direct` names for the String `s` and
+    /// `arguments`, where it takes them as they are (integers for
+    /// positions, a String to look for): what a call of the function returns
+    /// for them, with nothing else done. None for any other arguments.
+    #[inline]
+    pub(crate) fn run_direct<'gc>(
+        agent: &mut Agent,
+        direct: crate::ecmascript::DirectBuiltin,
+        s: String<'gc>,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        use crate::ecmascript::DirectBuiltin;
+        match direct {
+            DirectBuiltin::StringCharCodeAt | DirectBuiltin::StringCharAt => {
+                let Some(&Value::Integer(position)) = arguments.first() else {
+                    return None;
+                };
+                let position = position.into_i64();
+                Some(if direct == DirectBuiltin::StringCharAt {
+                    Self::char_at_of(agent, s, position, gc)
+                } else {
+                    Self::char_code_at_of(agent, s, position, gc)
+                })
+            }
+            DirectBuiltin::StringSlice | DirectBuiltin::StringSubstring => {
+                let Some(&Value::Integer(start)) = arguments.first() else {
+                    return None;
+                };
+                let end = match arguments.get(1) {
+                    None | Some(Value::Undefined) => None,
+                    Some(Value::Integer(end)) => Some(end.into_i64()),
+                    _ => return None,
+                };
+                let start = start.into_i64();
+                Some(if direct == DirectBuiltin::StringSlice {
+                    Self::slice_of(agent, s, start, end, gc).into()
+                } else {
+                    Self::substring_of(agent, s, start, end, gc).into()
+                })
+            }
+            // A short text made of copies of a String: a longer one is
+            // asked for where the call can refuse it.
+            DirectBuiltin::StringRepeat => {
+                let Some(&Value::Integer(count)) = arguments.first() else {
+                    return None;
+                };
+                let count = usize::try_from(count.into_i64()).ok()?;
+                if count == 0 || s.is_empty_string() {
+                    return Some(String::EMPTY_STRING.into());
+                }
+                if count == 1 {
+                    return Some(s.into());
+                }
+                if s.len_(agent).saturating_mul(count) > DIRECT_TEXT_BYTES {
+                    return None;
+                }
+                Some(Self::repeat_of(agent, s, count, gc).into())
+            }
+            DirectBuiltin::StringPadStart | DirectBuiltin::StringPadEnd => {
+                let Some(&Value::Integer(max_length)) = arguments.first() else {
+                    return None;
+                };
+                let fill_string = match arguments.get(1) {
+                    None | Some(Value::Undefined) => BUILTIN_STRING_MEMORY.r#__,
+                    Some(&fill_string) => String::try_from(fill_string).ok()?,
+                };
+                let max_length = max_length.into_i64();
+                if max_length > DIRECT_TEXT_BYTES as i64 / 4
+                    || fill_string.len_(agent) > DIRECT_TEXT_BYTES / 4
+                {
+                    return None;
+                }
+                let placement_start = direct == DirectBuiltin::StringPadStart;
+                // Refused at the heap limit: the call says so.
+                string_pad(agent, s, max_length, fill_string, placement_start, gc).ok()
+            }
+            DirectBuiltin::StringStartsWith
+            | DirectBuiltin::StringEndsWith
+            | DirectBuiltin::StringIndexOf
+            | DirectBuiltin::StringIncludes => {
+                let search = String::try_from(*arguments.first()?).ok()?;
+                let position = match arguments.get(1) {
+                    None | Some(Value::Undefined) => None,
+                    Some(Value::Integer(position)) => {
+                        Some(usize_from_i64(position.into_i64().max(0)))
+                    }
+                    _ => return None,
+                };
+                Some(match direct {
+                    DirectBuiltin::StringStartsWith => {
+                        Self::starts_with_at(agent, s, search, position.unwrap_or(0)).into()
+                    }
+                    DirectBuiltin::StringEndsWith => {
+                        Self::ends_with_at(agent, s, search, position.unwrap_or(usize::MAX)).into()
+                    }
+                    DirectBuiltin::StringIndexOf => {
+                        Self::index_of_from(agent, s, search, position.unwrap_or(0))
+                    }
+                    _ => Self::includes_from(agent, s, search, position.unwrap_or(0)).into(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// String.prototype.startsWith of two Strings and a start that is not
+    /// negative.
+    fn starts_with_at(agent: &Agent, s: String, search_str: String, start: usize) -> bool {
+        // 9. Let searchLength be the length of searchStr.
+        // 10. If searchLength = 0, return true.
+        if search_str.len_(agent) == 0 {
+            return true;
+        }
+        // 11. Let end be start + searchLength.
+        // 12. If end > len, return false.
+        // 13. Let substring be the substring of S from start to end.
+        // 14. If substring is searchStr, return true.
+        // 15. Return false.
+        s.has_substring_at_(agent, search_str, start)
+    }
+
+    /// String.prototype.endsWith of two Strings and an end position that is
+    /// not negative (`usize::MAX` for none).
+    fn ends_with_at(agent: &Agent, s: String, search_str: String, pos: usize) -> bool {
+        // 6. Let len be the length of S.
+        // 8. Let end be the result of clamping pos between 0 and len.
+        let end = pos.min(s.utf16_len_(agent));
+        // 9. Let searchLength be the length of searchStr.
+        let search_length = search_str.utf16_len_(agent);
+        // 10. If searchLength = 0, return true.
+        // 11. Let start be end - searchLength.
+        // 12. If start < 0, return false.
+        let Some(start) = end.checked_sub(search_length) else {
+            return false;
+        };
+        // 13. Let substring be the substring of S from start to end.
+        // 14. If substring is searchStr, return true.
+        // 15. Return false.
+        s.has_substring_at_(agent, search_str, start)
+    }
+
+    /// String.prototype.includes of two Strings and a position that is not
+    /// negative.
+    fn includes_from(agent: &Agent, s: String, search_str: String, pos: usize) -> bool {
+        // 8. Let len be the length of S.
+        // 9. Let start be the result of clamping pos between 0 and len.
+        let start = pos.min(s.utf16_len_(agent));
+        // 10. Let index be StringIndexOf(S, searchStr, start).
+        // 11. If index is not-found, return false.
+        // 12. Return true.
+        s.index_of_(agent, search_str, start).is_some()
+    }
+
+    /// String.prototype.indexOf of two Strings and a position that is not
+    /// negative.
+    fn index_of_from<'gc>(agent: &Agent, s: String, search_str: String, pos: usize) -> Value<'gc> {
+        // 6. Let len be the length of S.
+        // 7. Let start be the result of clamping pos between 0 and len.
+        let start = pos.min(s.utf16_len_(agent));
+        // 8. Let result be StringIndexOf(S, searchStr, start).
+        // 9. If result is not-found, return -1𝔽.
+        // 10. Return 𝔽(result).
+        if let Some(result) = s.index_of_(agent, search_str, start) {
+            Number::try_from(result).unwrap().into()
+        } else {
+            Number::from(-1).into()
+        }
+    }
+
+    /// String.prototype.slice of a String and integral positions.
+    fn slice_of<'gc>(
+        agent: &mut Agent,
+        s: String<'gc>,
+        start: i64,
+        end: Option<i64>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
+        // 3. Let len be the length of S.
+        let len = i64::try_from(s.utf16_len_(agent)).unwrap();
+        // 6. Else if intStart < 0, let from be max(len + intStart, 0).
+        // 7. Else, let from be min(intStart, len).
+        let from = if start < 0 {
+            len.saturating_add(start).max(0)
+        } else {
+            start.min(len)
+        };
+        // 8. If end is undefined, let intEnd be len.
+        // 10. Else if intEnd < 0, let to be max(len + intEnd, 0).
+        // 11. Else, let to be min(intEnd, len).
+        let to = match end {
+            None => len,
+            Some(end) if end < 0 => len.saturating_add(end).max(0),
+            Some(end) => end.min(len),
+        };
+        // 12. If from ≥ to, return the empty String.
+        // 13. Return the substring of S from from to to.
+        s.utf16_substring(agent, usize_from_i64(from), usize_from_i64(to), gc)
+    }
+
+    /// String.prototype.substring of a String and integral positions.
+    fn substring_of<'gc>(
+        agent: &mut Agent,
+        s: String<'gc>,
+        start: i64,
+        end: Option<i64>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
+        // Fast path: can we return `s` without computing the UTF-16 length?
+        // We can if int_start <= 0 and we know int_end must be >= len
+        // (i.e. it's either None or is greater than the UTF-8 length).
+        if start <= 0 && end.is_none_or(|end| end >= s.len_(agent) as i64) {
+            return s;
+        }
+        let len = s.utf16_len_(agent);
+        // 6. Let finalStart be the result of clamping intStart between 0 and len.
+        let final_start = usize_from_i64(start.max(0)).min(len);
+        // 7. Let finalEnd be the result of clamping intEnd between 0 and len.
+        let final_end = end.map_or(len, |end| usize_from_i64(end.max(0)).min(len));
+        // 8. Let from be min(finalStart, finalEnd)
+        let from = final_start.min(final_end);
+        // 9. Let to be max(finalStart, finalEnd).
+        let to = final_start.max(final_end);
+        // 10. Return the substring of S from from to to.
+        s.utf16_substring(agent, from, to, gc)
     }
 
     /// ### [22.1.3.4 String.prototype.codePointAt ( pos )](https://tc39.es/ecma262/#sec-string.prototype.codepointat)
@@ -779,21 +1040,7 @@ impl StringPrototype {
             )
         };
 
-        // 6. Let len be the length of S.
-        // 8. Let end be the result of clamping pos between 0 and len.
-        let end = pos.min(s.utf16_len_(agent));
-        // 9. Let searchLength be the length of searchStr.
-        let search_length = search_str.utf16_len_(agent);
-        // 10. If searchLength = 0, return true.
-        // 11. Let start be end - searchLength.
-        // 12. If start < 0, return false.
-        let Some(start) = end.checked_sub(search_length) else {
-            return Ok(false.into());
-        };
-        // 13. Let substring be the substring of S from start to end.
-        // 14. If substring is searchStr, return true.
-        // 15. Return false.
-        Ok(Value::from(s.has_substring_at_(agent, search_str, start)))
+        Ok(Value::from(Self::ends_with_at(agent, s, search_str, pos)))
     }
 
     /// ### [22.1.3.8 String.prototype.includes ( searchString \[ , position \] )](https://tc39.es/ecma262/#sec-string.prototype.includes)
@@ -885,13 +1132,7 @@ impl StringPrototype {
 
         let search_str = search_str.bind(gc.nogc());
 
-        // 8. Let len be the length of S.
-        // 9. Let start be the result of clamping pos between 0 and len.
-        let start = pos.min(s.utf16_len_(agent));
-        // 10. Let index be StringIndexOf(S, searchStr, start).
-        // 11. If index is not-found, return false.
-        // 12. Return true.
-        Ok(Value::from(s.index_of_(agent, search_str, start).is_some()))
+        Ok(Value::from(Self::includes_from(agent, s, search_str, pos)))
     }
 
     /// ### [22.1.3.9 String.prototype.indexOf ( searchString \[ , position \] )](https://tc39.es/ecma262/#sec-string.prototype.indexof)
@@ -961,17 +1202,7 @@ impl StringPrototype {
             )
         };
 
-        // 6. Let len be the length of S.
-        // 7. Let start be the result of clamping pos between 0 and len.
-        let start = pos.min(s.utf16_len_(agent));
-        // 8. Let result be StringIndexOf(S, searchStr, start).
-        // 9. If result is not-found, return -1𝔽.
-        // 10. Return 𝔽(result).
-        if let Some(result) = s.index_of_(agent, search_str, start) {
-            Ok(Number::try_from(result).unwrap().into())
-        } else {
-            Ok(Number::from(-1).into())
-        }
+        Ok(Self::index_of_from(agent, s, search_str, pos))
     }
 
     /// ### [22.1.3.10 String.prototype.isWellFormed ( )](https://tc39.es/ecma262/#sec-string.prototype.iswellformed)
@@ -1598,11 +1829,26 @@ impl StringPrototype {
             )
             .unbind()?;
         // 6. Return the String value that is made from n copies of S appended together.
-        Ok(Value::from_string(
-            agent,
-            s.to_string_lossy_(agent).repeat(usize_from_i64(n)),
-            gc.into_nogc(),
-        ))
+        let s = s.unbind();
+        let gc = gc.into_nogc();
+        Ok(Self::repeat_of(agent, s.bind(gc), usize_from_i64(n), gc).into())
+    }
+
+    /// `n` copies of a String appended together. A lone surrogate of the
+    /// String stays one, and a trail surrogate it starts with makes a pair
+    /// with a lead surrogate it ends with.
+    fn repeat_of<'gc>(
+        agent: &mut Agent,
+        s: String<'gc>,
+        n: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
+        let text = s.as_wtf8_(agent);
+        let mut buf = Wtf8Buf::with_capacity(text.len().saturating_mul(n));
+        for _ in 0..n {
+            buf.push_wtf8(text);
+        }
+        String::from_wtf8_buf(agent, buf, gc)
     }
 
     /// ### [22.1.3.19 String.prototype.replace ( searchValue, replaceValue )](https://tc39.es/ecma262/#sec-string.prototype.replace)
@@ -1836,6 +2082,19 @@ impl StringPrototype {
     ) -> JsResult<'gc, Value<'gc>> {
         let nogc = gc.nogc();
         let this_value = this_value.bind(nogc);
+        // A String and integral positions: nothing is converted.
+        if let (Ok(s), Value::Integer(start)) = (String::try_from(this_value), args.get(0)) {
+            let end = match args.get(1) {
+                Value::Undefined => Some(None),
+                Value::Integer(end) => Some(Some(end.into_i64())),
+                _ => None,
+            };
+            if let Some(end) = end {
+                let (s, start) = (s.unbind(), start.into_i64());
+                let gc = gc.into_nogc();
+                return Ok(Self::slice_of(agent, s.bind(gc), start, end, gc).into());
+            }
+        }
         let start = args.get(0).scope(agent, nogc);
         let end = args.get(1).scope(agent, nogc);
         // 1. Let O be ? RequireObjectCoercible(this value).
@@ -2185,17 +2444,7 @@ impl StringPrototype {
             )
         };
 
-        // 9. Let searchLength be the length of searchStr.
-        // 10. If searchLength = 0, return true.
-        if search_str.len_(agent) == 0 {
-            return Ok(true.into());
-        }
-        // 11. Let end be start + searchLength.
-        // 12. If end > len, return false.
-        // 13. Let substring be the substring of S from start to end.
-        // 14. If substring is searchStr, return true.
-        // 15. Return false.
-        Ok(s.has_substring_at_(agent, search_str, start).into())
+        Ok(Self::starts_with_at(agent, s, search_str, start).into())
     }
 
     /// ### [22.1.3.25 String.prototype.substring ( start, end )](https://tc39.es/ecma262/#sec-string.prototype.substring)
@@ -2258,36 +2507,10 @@ impl StringPrototype {
             Some(int_end)
         };
 
-        // Fast path: can we return `s` without computing the UTF-16 length?
-        // We can if int_start <= 0 and we know int_end must be >= len
-        // (i.e. it's either None or is greater than the UTF-8 length).
-        if int_start.into_i64() <= 0
-            && int_end
-                .map(|int_end| int_end.into_i64() >= s.len_(agent) as i64)
-                .unwrap_or(true)
-        {
-            return Ok(s.unbind().into());
-        }
-
-        let len = s.utf16_len_(agent);
-        // 6. Let finalStart be the result of clamping intStart between 0 and len.
-        let final_start = usize_from_i64(int_start.into_i64().max(0)).min(len);
-        // 7. Let finalEnd be the result of clamping intEnd between 0 and len.
-        let final_end = if let Some(int_end) = int_end {
-            usize_from_i64(int_end.into_i64().max(0)).min(len)
-        } else {
-            len
-        };
-
-        // 8. Let from be min(finalStart, finalEnd)
-        let from = final_start.min(final_end);
-        // 9. Let to be max(finalStart, finalEnd).
-        let to = final_start.max(final_end);
-
-        // 10. Return the substring of S from from to to.
         let s = s.unbind();
         let gc = gc.into_nogc();
-        Ok(s.utf16_substring(agent, from, to, gc).into())
+        let (start, end) = (int_start.into_i64(), int_end.map(|end| end.into_i64()));
+        Ok(Self::substring_of(agent, s.bind(gc), start, end, gc).into())
     }
 
     /// ### [22.1.3.26 String.prototype.toLocaleLowerCase ( \[ reserved1 \[ , reserved2 \] \] )](https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase)
