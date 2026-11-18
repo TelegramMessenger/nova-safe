@@ -5427,3 +5427,101 @@ switch: abcddd"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The constants, property caches and binding sites of a function while it
+/// runs, which the interpreter holds outside the heap: read after
+/// collections that move what the constants refer to (long strings,
+/// doubles, a BigInt, a RegExp, a template), at several depths of one
+/// function at once, from closures made at different times, across the
+/// yields of a generator, in code that `eval` and `Function` make and drop,
+/// and by a `switch` over string constants. What is expected is what Node
+/// prints for the same script.
+#[test]
+fn tables_of_running_code_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(tables_of_running_code)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn tables_of_running_code() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+var print = function (s) { all.push(s); };
+function show(name, v) { print(name + ": " + v); }
+// Garbage enough for several collections, made between uses of constants
+// that live in the heap: long strings, doubles, a BigInt, a RegExp, a template.
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) { keep.push({ a: "garbage number " + i, b: [i, i + 0.5, "x" + i] }); if (keep.length > 500) keep = []; } return keep.length; }
+function constants(rounds) {
+  var out = [];
+  for (var r = 0; r < rounds; r++) {
+    churn(20000);
+    out.push("a long string constant, longer than seven bytes".length, 1.2345678901234567e300 > 1e299, 123456789012345678901234567890n % 97n, /constant(\d+)/.exec("constant42")[1], `template ${r} with text`.length, "another long constant".charCodeAt(8), 0.1 + 0.2);
+  }
+  return out.join();
+}
+show("constants", constants(4));
+// The same function at several depths, each holding the same tables, with
+// collections between the levels.
+function deep(n, tag) {
+  if (n === 0) { churn(30000); return "bottom of the recursion " + tag; }
+  var before = "level " + n + " before the call, in a long enough string";
+  var below = deep(n - 1, tag);
+  churn(2000);
+  return below.length + before.length + ("after the call at level " + n).length;
+}
+show("deep", [deep(1, "a"), deep(6, "b"), deep(12, "c")].join());
+// Variables of enclosing functions, found again after collections and from
+// closures made at different times.
+function counters() {
+  var total = 0, label = "the label of the counters, a long string";
+  function add(n) { total += n; return label.length + total; }
+  function relabel(s) { label = s; }
+  return [add, relabel, function () { return [total, label].join("|"); }];
+}
+var c1 = counters(), c2 = counters();
+var seen = [];
+for (var i = 0; i < 5; i++) { seen.push(c1[0](i), c2[0](i * 10)); churn(8000); if (i === 2) c2[1]("renamed while running, also long"); }
+show("closures", seen.join() + " " + c1[2]() + " " + c2[2]());
+// A generator that yields between collections, and its constants after.
+function* generator() { var i = 0; while (true) { churn(6000); yield "yielded value number " + (i++) + " of the generator"; } }
+var g = generator(), g2 = generator();
+show("generator", [g.next().value, g2.next().value, g.next().value.length, g.next().value, g2.next().value].join(";"));
+// Code made by eval and by Function, run, dropped and made again.
+var evals = [];
+for (var k = 0; k < 6; k++) {
+  evals.push(eval("(function () { churn(4000); return 'made by eval, round ' + " + k + " + ', a long string'; })()").length);
+  evals.push(new Function("x", "churn(3000); return x + ' passed through a Function made at run time';")("round " + k).length);
+  evals.push(eval("var q" + k + " = 'a global made by eval ' + " + k + "; q" + k + ".length"));
+}
+show("eval", evals.join());
+// Property caches of a function that is running while its objects change shape.
+function shapes(n) {
+  var objects = [], total = 0;
+  for (var i = 0; i < n; i++) { var o = { first: i }; if (i % 3 === 0) o.second = i * 2; if (i % 5 === 0) o["key number " + (i % 7)] = i; objects.push(o); }
+  for (var j = 0; j < n; j++) { total += objects[j].first + (objects[j].second || 0); if (j % 4000 === 0) churn(5000); }
+  return total;
+}
+show("shapes", [shapes(10), shapes(20000)].join());
+// A switch over string constants and one over integers, after collections.
+function pick(v) { churn(1500); switch (v) { case "the first long case label": return 1; case "the second long case label": return 2; case 3: return 3; case 4: return 4; default: return 0; } }
+show("switch", ["the first long case label", "the second long case label", 3, 4, "other", 5].map(pick).join(""));
+all.join("\n")"#;
+    let expected = r#"constants: 47,true,52,42,20,108,0.30000000000000004,47,true,52,42,20,108,0.30000000000000004,47,true,52,42,20,108,0.30000000000000004,47,true,52,42,20,108,0.30000000000000004
+deep: 98,NaN,NaN
+closures: 40,40,41,50,43,70,46,92,50,132 10|the label of the counters, a long string 100|renamed while running, also long
+generator: yielded value number 0 of the generator;yielded value number 0 of the generator;39;yielded value number 2 of the generator;yielded value number 1 of the generator
+eval: 36,50,23,36,50,23,36,50,23,36,50,23,36,50,23,36,50,23
+shapes: 81,333316666
+switch: 123400"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

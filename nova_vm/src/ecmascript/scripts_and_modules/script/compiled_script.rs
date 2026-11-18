@@ -49,7 +49,7 @@ use crate::{
 use small_string::SmallString;
 
 use super::{GlobalDeclarations, HostDefined, Script, ScriptRecord};
-use crate::engine::{CallEnvironment, SwitchTable};
+use crate::engine::{CallEnvironment, CodeTables, SwitchTable};
 
 /// Why a script could not be exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,8 +406,7 @@ impl Exporter<'_> {
         self.in_progress.push(index);
         let ExecutableHeapData {
             instructions,
-            caches,
-            constants,
+            tables,
             wide_constants,
             shapes,
             function_expressions,
@@ -416,10 +415,12 @@ impl Exporter<'_> {
             instance_initializer,
             call_environment,
             stack_parameters,
-            binding_sites,
             switch_tables,
             _gc: _,
         } = executable.get(self.agent).clone();
+        let caches: Vec<_> = tables.caches().collect();
+        let constants: Vec<_> = tables.constants().collect();
+        let binding_sites = tables.binding_sites();
 
         let mut compiled_function_expressions = Vec::with_capacity(function_expressions.len());
         for function in function_expressions.iter() {
@@ -494,7 +495,7 @@ impl Exporter<'_> {
             instance_initializer,
             call_environment,
             stack_parameters,
-            binding_sites: binding_sites.len(),
+            binding_sites,
             switch_tables,
         });
         self.executable_ids.insert(index, id);
@@ -876,12 +877,12 @@ impl<'a> Importer<'_, 'a, '_> {
     }
 
     fn executable(&mut self, compiled: &CompiledExecutable) -> Executable<'a> {
-        let caches = compiled
+        let caches: Vec<_> = compiled
             .caches
             .iter()
             .map(|id| self.caches[*id as usize].unbind())
             .collect();
-        let constants = compiled
+        let constants: Vec<_> = compiled
             .constants
             .iter()
             .map(|value| self.value(value).unbind())
@@ -930,8 +931,12 @@ impl<'a> Importer<'_, 'a, '_> {
             .map(|id| self.executables[id as usize].unbind());
         self.agent.heap.create(ExecutableHeapData {
             instructions: compiled.instructions.clone(),
-            caches,
-            constants,
+            tables: CodeTables::new(
+                compiled.instructions.clone(),
+                constants,
+                caches,
+                compiled.binding_sites,
+            ),
             wide_constants,
             shapes,
             function_expressions,
@@ -940,8 +945,6 @@ impl<'a> Importer<'_, 'a, '_> {
             instance_initializer,
             call_environment: compiled.call_environment,
             stack_parameters: compiled.stack_parameters,
-            binding_sites: vec![crate::ecmascript::BindingSite::UNKNOWN; compiled.binding_sites]
-                .into_boxed_slice(),
             switch_tables: compiled.switch_tables.clone(),
             _gc: core::marker::PhantomData,
         })

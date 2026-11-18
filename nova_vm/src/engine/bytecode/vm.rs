@@ -7,7 +7,7 @@ mod execute_instructions;
 
 use execute_instructions::*;
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use wtf8::Wtf8Buf;
 
@@ -29,8 +29,8 @@ use crate::{
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
         bytecode::{
-            CallEnvironment, Executable, IndexType, Instruction, InstructionIter,
-            instructions::Instr, iterator::VmIteratorRecord,
+            CallEnvironment, CodeTables, Executable, IndexType, Instruction, InstructionIter,
+            TablesView, instructions::Instr, iterator::VmIteratorRecord,
         },
     },
     heap::{ArenaAccess, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
@@ -144,11 +144,9 @@ struct Frame {
     /// The caller's executable, which the collector keeps current here
     /// while the frame is in use.
     executable: Executable<'static>,
-    instructions: Option<Arc<[u8]>>,
-    /// While the frame is not in use, the code of the function that was
-    /// last run from it: the next call from this depth is most often of the
-    /// same function, and takes it back instead of sharing it anew.
-    callee_instructions: Option<Arc<[u8]>>,
+    /// The caller's instructions and tables while the frame is in use: see
+    /// [`Running::tables`].
+    tables: Option<Rc<CodeTables>>,
     /// What the Agent's scoped values and scoped collections are cut back
     /// to after each of the caller's instructions.
     stack_depth: usize,
@@ -164,7 +162,10 @@ struct Frame {
 /// function it called, runs in place of the call.
 struct Running<'s> {
     executable: Scoped<'s, Executable<'static>>,
-    instructions: Arc<[u8]>,
+    /// The instructions of the executable with its constants, property
+    /// caches and binding sites, held with it so that the loop reads them
+    /// without the heap.
+    tables: Rc<CodeTables>,
     /// What the Agent's scoped values and scoped collections are cut back
     /// to after each instruction.
     stack_depth: usize,
@@ -356,8 +357,7 @@ impl HeapMarkAndSweep for VmFrames {
                 iterator_stack,
                 exception_handler_stack,
                 executable,
-                instructions: _,
-                callee_instructions: _,
+                tables: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -371,11 +371,6 @@ impl HeapMarkAndSweep for VmFrames {
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
-        // Code that a frame keeps for a function it ran is not kept past a
-        // collection, which may have ended the function.
-        for frame in &mut self.frames {
-            frame.callee_instructions = None;
-        }
         for frame in &mut self.frames[..self.in_use] {
             let Frame {
                 ip: _,
@@ -384,8 +379,7 @@ impl HeapMarkAndSweep for VmFrames {
                 iterator_stack,
                 exception_handler_stack,
                 executable,
-                instructions: _,
-                callee_instructions: _,
+                tables: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -692,7 +686,7 @@ impl Vm {
         let base_executable = executable;
         let mut running = Running {
             executable: base_executable.clone(),
-            instructions: base_executable.get_instructions(agent),
+            tables: base_executable.get_tables(agent),
             stack_depth,
             collections_depth,
             scope_base: stack_depth,
@@ -700,7 +694,7 @@ impl Vm {
         loop {
             let Running {
                 executable,
-                instructions,
+                tables: code_tables,
                 stack_depth,
                 collections_depth,
                 scope_base,
@@ -722,7 +716,11 @@ impl Vm {
             // after it. None of it when the instructions are printed, so
             // that every one of them goes the other way, where the last
             // instructions of the code and its end go.
-            let windows: &[u8] = if print_internals { &[] } else { &instructions };
+            let instructions = code_tables.instructions();
+            let windows: &[u8] = if print_internals { &[] } else { instructions };
+            // The tables as three slices, which stay what they are while
+            // this code runs: a collection rewrites their entries in place.
+            let tables = code_tables.view();
             let change = loop {
                 let instr = if let Some(window) =
                     windows.get(ip..).and_then(|rest| rest.first_chunk::<5>())
@@ -730,7 +728,7 @@ impl Vm {
                     Instr::in_window(window)
                 } else {
                     let mut next = ip;
-                    let Some(instr) = Instr::consume_instruction(&instructions, &mut next) else {
+                    let Some(instr) = Instr::consume_instruction(instructions, &mut next) else {
                         break Change::End;
                     };
                     if print_internals {
@@ -746,9 +744,10 @@ impl Vm {
                     agent,
                     self,
                     &mut ip,
-                    &instructions,
+                    instructions,
                     &executable,
                     code,
+                    tables,
                     instr,
                     gc.nogc(),
                 ) {
@@ -861,7 +860,7 @@ impl Vm {
             let mut thrown = None;
             running = Running {
                 executable,
-                instructions,
+                tables: code_tables,
                 stack_depth,
                 collections_depth,
                 scope_base,
@@ -1029,20 +1028,14 @@ impl Vm {
                 iterator_stack,
                 exception_handler_stack: Vec::new(),
                 executable: code,
-                instructions: None,
-                callee_instructions: None,
+                tables: None,
                 stack_depth: 0,
                 collections_depth: 0,
                 scope_base: 0,
             });
         }
-        // The function's code as this frame last ran it, if it is the same
-        // code: the bytecode that both hold is one allocation then.
-        let instructions = agent.vm_frames.frames[agent.vm_frames.in_use]
-            .callee_instructions
-            .take()
-            .filter(|instructions| callee.executable.has_instructions(agent, instructions))
-            .unwrap_or_else(|| callee.executable.get_instructions(agent));
+        // The function's instructions and tables, held while it runs.
+        let tables = callee.executable.get_tables(agent);
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
         // The arguments go where the function keeps its parameters:
         // undefined for those not given, and those beyond the parameters
@@ -1066,7 +1059,7 @@ impl Vm {
         );
         frame.ip = ip;
         frame.executable = code;
-        frame.instructions = Some(caller.instructions);
+        frame.tables = Some(caller.tables);
         frame.stack_depth = caller.stack_depth;
         frame.collections_depth = caller.collections_depth;
         frame.scope_base = caller.scope_base;
@@ -1078,7 +1071,7 @@ impl Vm {
         let executable = callee.executable.scope(agent, gc);
         Running {
             executable,
-            instructions,
+            tables,
             stack_depth: agent.stack_refs.get_mut().len(),
             collections_depth: agent.stack_ref_collections.get_mut().len(),
             scope_base,
@@ -1090,7 +1083,7 @@ impl Vm {
     /// stay in the frame for the next function, while those of the calling
     /// code are the `Vm`'s again. Returns the calling code as the code to
     /// run; `base` is the executable the `Vm` was started with, `callee` the
-    /// function's code, which the frame keeps for the next call of it.
+    /// function's code.
     fn leave_function<'s>(
         &mut self,
         agent: &mut Agent,
@@ -1102,7 +1095,8 @@ impl Vm {
         self.depth -= 1;
         agent.vm_frames.in_use -= 1;
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
-        frame.callee_instructions = Some(callee.instructions);
+        // The function's instructions and tables are let go of.
+        drop(callee);
         self.stack.clear();
         self.reference_stack.clear();
         self.iterator_stack.clear();
@@ -1120,8 +1114,8 @@ impl Vm {
         }
         self.ip = frame.ip;
         self.reference = None;
-        let instructions = frame
-            .instructions
+        let tables = frame
+            .tables
             .take()
             .expect("the frame of the calling code is in use");
         let (stack_depth, collections_depth, scope_base) =
@@ -1150,7 +1144,7 @@ impl Vm {
             .truncate(collections_depth);
         Running {
             executable,
-            instructions,
+            tables,
             stack_depth,
             collections_depth,
             scope_base,
@@ -1304,6 +1298,7 @@ impl Vm {
         instructions: &[u8],
         executable: &Scoped<Executable>,
         code: Executable,
+        tables: TablesView,
         instr: Instr,
         gc: NoGcScope,
     ) -> Plain {
@@ -1337,7 +1332,7 @@ impl Vm {
                     vm,
                     ip,
                     instructions,
-                    code,
+                    tables,
                     instr,
                     Instruction::$kind,
                     gc,
@@ -1352,7 +1347,7 @@ impl Vm {
                     vm,
                     ip,
                     instructions,
-                    code,
+                    tables,
                     instr,
                     Instruction::$kind,
                     gc,
@@ -1401,7 +1396,7 @@ impl Vm {
                 step!(LoadFromIndexStoreConstant);
                 let value = vm.stack[instr.get_first_index()];
                 vm.stack.push(value);
-                let constant = code.fetch_constant(agent, instr.get_second_index(), gc);
+                let constant = tables.constant(instr.get_second_index(), gc);
                 vm.result = Some(constant.unbind());
             }
             Instruction::LoadFromIndexGetFromIndex => {
@@ -1425,7 +1420,7 @@ impl Vm {
                 let Some(left) = vm.result else {
                     return Plain::No;
                 };
-                let right = code.fetch_constant(agent, instr.get_first_index(), gc);
+                let right = tables.constant(instr.get_first_index(), gc);
                 let operation = instr.get_second_index();
                 let (_, operator) = Instruction::fused_slot_and_operator(operation);
                 let Some(value) = Instruction::fused_operator(operator)
@@ -1445,7 +1440,7 @@ impl Vm {
                 let operation = instr.get_first_index();
                 let (slot, operator) = Instruction::fused_slot_and_operator(operation);
                 let left = vm.stack[slot];
-                let right = code.fetch_constant(agent, instr.get_second_index(), gc);
+                let right = tables.constant(instr.get_second_index(), gc);
                 let Some(value) = Instruction::fused_operator(operator)
                     .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
                 else {
@@ -1484,12 +1479,12 @@ impl Vm {
             }
             Instruction::StoreConstant => {
                 step!(StoreConstant);
-                let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
+                let constant = tables.constant(instr.get_first_index(), gc);
                 vm.result = Some(constant.unbind());
             }
             Instruction::LoadConstant => {
                 step!(LoadConstant);
-                let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
+                let constant = tables.constant(instr.get_first_index(), gc);
                 vm.stack.push(constant.unbind());
             }
             Instruction::PopStack => {
@@ -1670,7 +1665,7 @@ impl Vm {
             Instruction::IsStrictlyEqualConstant => {
                 step!(IsStrictlyEqualConstant);
                 let left = vm.result.unwrap();
-                let right = code.fetch_constant(agent, instr.get_first_index(), gc);
+                let right = tables.constant(instr.get_first_index(), gc);
                 vm.result = Some(Self::strictly_equal(agent, left, right).into());
             }
             // Two values of one type are loosely equal where they are
@@ -1784,7 +1779,7 @@ impl Vm {
             }
             Instruction::EvaluatePropertyAccessWithIdentifierKey => {
                 step!(EvaluatePropertyAccessWithIdentifierKey);
-                Self::property_reference_with_identifier_key(agent, vm, code, instr, gc)
+                Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc)
             }
             Instruction::EvaluatePropertyAccessWithExpressionKey => {
                 step!(EvaluatePropertyAccessWithExpressionKey);
@@ -1794,8 +1789,8 @@ impl Vm {
             // last time.
             Instruction::GetBindingAtSite | Instruction::GetGlobalAtSite => {
                 step!(GetBindingAtSite, GetGlobalAtSite);
-                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
-                let site = code.fetch_binding_site(agent, instr.get_second_index());
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                     return Plain::No;
                 };
@@ -1804,8 +1799,8 @@ impl Vm {
             // The same variable, pushed: an operand or an argument.
             Instruction::LoadBindingAtSite => {
                 step!(LoadBindingAtSite);
-                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
-                let site = code.fetch_binding_site(agent, instr.get_second_index());
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                     return Plain::No;
                 };
@@ -1817,8 +1812,8 @@ impl Vm {
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
-                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
-                let site = code.fetch_binding_site(agent, instr.get_second_index());
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
                 if !set_binding_value_at_site(agent, site, name, value, gc) {
                     return Plain::No;
                 }
@@ -1828,8 +1823,8 @@ impl Vm {
             // its Reference, made where the name was found the last time.
             Instruction::ResolveGlobalAtSite => {
                 step!(ResolveGlobalAtSite);
-                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
-                let site = code.fetch_binding_site(agent, instr.get_second_index());
+                let name = tables.identifier(instr.get_first_index(), gc);
+                let site = tables.binding_site(instr.get_second_index());
                 let strict = agent.is_evaluating_strict_code();
                 let Some(reference) = try_resolve_binding_at_site(agent, site, name, strict, gc)
                 else {
@@ -1844,13 +1839,13 @@ impl Vm {
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
-                let site = code.fetch_binding_site(agent, instr.get_second_index());
+                let site = tables.binding_site(instr.get_second_index());
                 if !vm.reference.as_ref().is_some_and(|reference| {
                     reference_is_at_global_site(agent, site, reference, gc)
                 }) {
                     return Plain::No;
                 }
-                let name = code.fetch_identifier(agent, instr.get_first_index(), gc);
+                let name = tables.identifier(instr.get_first_index(), gc);
                 if !set_binding_value_at_site(agent, site, name, value, gc) {
                     return Plain::No;
                 }
@@ -1918,11 +1913,11 @@ impl Vm {
             // length of an Array.
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
                 step!(GetPropertyWithCache, GetPropertyWithCacheKeepReference);
-                let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
+                let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
                     return Plain::No;
                 };
                 if instr.kind == Instruction::GetPropertyWithCacheKeepReference {
-                    Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
                 } else {
                     vm.reference = None;
                 }
@@ -1932,10 +1927,10 @@ impl Vm {
             // before the arguments.
             Instruction::LoadPropertyWithCachePushReference => {
                 step!(LoadPropertyWithCachePushReference);
-                let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
+                let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
                     return Plain::No;
                 };
-                Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+                Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
                 vm.execute_push_reference(agent);
                 vm.stack.push(value);
             }
@@ -1948,13 +1943,13 @@ impl Vm {
                     GetIndexPropertyWithCacheKeepReference
                 );
                 let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
-                let Some(value) = Self::cached_property_value_of(agent, base, code, instr, gc)
+                let Some(value) = Self::cached_property_value_of(agent, base, tables, instr, gc)
                 else {
                     return Plain::No;
                 };
                 if instr.kind == Instruction::GetIndexPropertyWithCacheKeepReference {
                     vm.result = Some(base);
-                    Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
                 } else {
                     vm.reference = None;
                 }
@@ -1971,13 +1966,13 @@ impl Vm {
                 let Some(this) = agent.running_call_this_value() else {
                     return Plain::No;
                 };
-                let Some(value) = Self::cached_property_value_of(agent, this, code, instr, gc)
+                let Some(value) = Self::cached_property_value_of(agent, this, tables, instr, gc)
                 else {
                     return Plain::No;
                 };
                 if instr.kind == Instruction::GetThisPropertyWithCacheKeepReference {
                     vm.result = Some(this);
-                    Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
                 } else {
                     vm.reference = None;
                 }
@@ -1992,7 +1987,7 @@ impl Vm {
                 else {
                     return Plain::No;
                 };
-                let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
+                let cache = tables.cache(instr.get_second_index(), gc);
                 let shape = object.object_shape(agent);
                 let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
                     return Plain::No;
@@ -2001,7 +1996,7 @@ impl Vm {
                     // Neither the object nor any it inherits from has the
                     // property: it is added, as most properties of an
                     // object are.
-                    let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+                    let key = tables.property_key(instr.get_first_index(), gc);
                     if !ordinary_add_own_data_by_cache(agent, object, key, value, cache, gc) {
                         return Plain::No;
                     }
@@ -2021,7 +2016,7 @@ impl Vm {
                 let Some(Value::Object(object)) = reference.named_property_base() else {
                     return Plain::No;
                 };
-                let cache = code.fetch_cache(agent, instr.get_first_index(), gc);
+                let cache = tables.cache(instr.get_first_index(), gc);
                 let shape = object.object_shape(agent);
                 let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
                     return Plain::No;
@@ -2305,7 +2300,7 @@ impl Vm {
         vm: &mut Vm,
         ip: &mut usize,
         instructions: &[u8],
-        code: Executable,
+        tables: TablesView,
         instr: Instr,
         kind: Instruction,
         gc: NoGcScope,
@@ -2315,8 +2310,7 @@ impl Vm {
         };
         let left = vm.stack[instr.get_first_index()];
         let right = if constant {
-            code.fetch_constant(agent, instr.get_second_index(), gc)
-                .unbind()
+            tables.constant(instr.get_second_index(), gc).unbind()
         } else {
             vm.stack[instr.get_second_index()]
         };
@@ -2370,7 +2364,7 @@ impl Vm {
         vm: &mut Vm,
         ip: &mut usize,
         instructions: &[u8],
-        code: Executable,
+        tables: TablesView,
         instr: Instr,
         kind: Instruction,
         gc: NoGcScope,
@@ -2380,8 +2374,7 @@ impl Vm {
         };
         let slot = instr.get_first_index();
         let right = if constant {
-            code.fetch_constant(agent, instr.get_second_index(), gc)
-                .unbind()
+            tables.constant(instr.get_second_index(), gc).unbind()
         } else {
             vm.stack[instr.get_second_index()]
         };
@@ -2452,11 +2445,11 @@ impl Vm {
     fn property_reference_with_identifier_key(
         agent: &mut Agent,
         vm: &mut Vm,
-        code: Executable,
+        tables: TablesView,
         instr: Instr,
         gc: NoGcScope,
     ) {
-        let property_key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+        let property_key = tables.property_key(instr.get_first_index(), gc);
         let base_value = vm.result.take().unwrap().bind(gc);
         let strict = agent.is_evaluating_strict_code();
         vm.reference =
@@ -2471,11 +2464,11 @@ impl Vm {
     fn cached_property_value(
         agent: &mut Agent,
         vm: &Vm,
-        code: Executable,
+        tables: TablesView,
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
-        Self::cached_property_value_of(agent, vm.result?, code, instr, gc)
+        Self::cached_property_value_of(agent, vm.result?, tables, instr, gc)
     }
 
     /// GetPropertyWithCache or GetPropertyWithCacheKeepReference of the
@@ -2489,12 +2482,13 @@ impl Vm {
         keep_reference: bool,
         gc: NoGcScope,
     ) -> bool {
-        let code = executable.get(agent);
-        let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
+        let tables = executable.get_tables(agent);
+        let tables = tables.view();
+        let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
             return false;
         };
         if keep_reference {
-            Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+            Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
         } else {
             vm.reference = None;
         }
@@ -2510,11 +2504,11 @@ impl Vm {
     fn cached_prototype_property_value(
         agent: &mut Agent,
         prototype: OrdinaryObject<'static>,
-        code: Executable,
+        tables: TablesView,
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
-        let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
+        let cache = tables.cache(instr.get_second_index(), gc);
         let shape = prototype.object_shape(agent);
         let (offset, holder) = cache.find_cached_property_offset(agent, shape)?;
         if offset.is_unset() {
@@ -2535,13 +2529,13 @@ impl Vm {
     fn cached_property_value_of(
         agent: &mut Agent,
         base: Value,
-        code: Executable,
+        tables: TablesView,
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         match base {
             Value::Object(object) => {
-                let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
+                let cache = tables.cache(instr.get_second_index(), gc);
                 let shape = object.object_shape(agent);
                 let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
                 if offset.is_unset() {
@@ -2557,7 +2551,7 @@ impl Vm {
                 }
             }
             Value::Array(array) => {
-                let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+                let key = tables.property_key(instr.get_first_index(), gc);
                 if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
                     return Some(array.len(agent).into());
                 }
@@ -2568,7 +2562,7 @@ impl Vm {
                 // finds in the cache, under the shape of the Array's own
                 // properties or the one of all Arrays that have none.
                 let object = Object::from(array);
-                let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
+                let cache = tables.cache(instr.get_second_index(), gc);
                 let shape = object.object_shape(agent);
                 let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
                 if offset.is_unset() {
@@ -2587,7 +2581,7 @@ impl Vm {
             // (`s.charCodeAt`), which is where a name that is not `length`
             // is looked for.
             Value::String(_) | Value::SmallString(_) => {
-                let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+                let key = tables.property_key(instr.get_first_index(), gc);
                 if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
                     let string = String::try_from(base).ok()?;
                     let length = i64::try_from(string.utf16_len_(agent)).ok()?;
@@ -2600,7 +2594,7 @@ impl Vm {
                     .current_realm_record()
                     .intrinsics()
                     .string_prototype_backing_object();
-                Self::cached_prototype_property_value(agent, prototype, code, instr, gc)
+                Self::cached_prototype_property_value(agent, prototype, tables, instr, gc)
             }
             // A Number value has no properties of its own: what \[\[Get]]
             // of %Number.prototype% finds in the cache (`n.toFixed`).
@@ -2609,10 +2603,10 @@ impl Vm {
                     .current_realm_record()
                     .intrinsics()
                     .number_prototype_backing_object();
-                Self::cached_prototype_property_value(agent, prototype, code, instr, gc)
+                Self::cached_prototype_property_value(agent, prototype, tables, instr, gc)
             }
             #[cfg(feature = "array-buffer")]
-            value => Self::typed_array_length(agent, value, code, instr, gc),
+            value => Self::typed_array_length(agent, value, tables, instr, gc),
             #[cfg(not(feature = "array-buffer"))]
             _ => None,
         }
@@ -2669,16 +2663,16 @@ impl Vm {
     fn typed_array_length(
         agent: &mut Agent,
         value: Value,
-        code: Executable,
+        tables: TablesView,
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         let array = AnyTypedArray::try_from(value).ok()?;
-        let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+        let key = tables.property_key(instr.get_first_index(), gc);
         if key != PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
             return None;
         }
-        let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
+        let cache = tables.cache(instr.get_second_index(), gc);
         let shape = array.object_shape(agent);
         let (offset, Some(prototype)) = cache.find_cached_property_offset(agent, shape)? else {
             return None;
