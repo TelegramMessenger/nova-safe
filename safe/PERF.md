@@ -34,23 +34,23 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 3.3x |
-| typed | 4 | 10.6x | 3.3x |
-| math | 4 | 9.7x | 3.1x |
-| prop | 13 | 7.1x | 2.8x |
-| array | 14 | 5.8x | 2.7x |
-| app | 8 | 6.1x | 2.6x |
-| string | 26 | 10.6x | 2.6x |
-| map, set | 4 | 4.6x | 2.4x |
-| loop | 11 | 11.1x | 2.2x |
-| regexp | 4 | 2.4x | 2.0x |
+| call | 14 | 10.4x | 3.2x |
+| typed | 4 | 10.6x | 3.0x |
+| math | 4 | 9.7x | 2.8x |
+| prop | 13 | 7.1x | 2.7x |
+| array | 14 | 5.8x | 2.6x |
+| string | 26 | 10.6x | 2.5x |
+| app | 8 | 6.1x | 2.5x |
+| map, set | 4 | 4.6x | 2.3x |
+| loop | 11 | 11.1x | 1.9x |
+| regexp | 4 | 2.4x | 1.9x |
 | gc | 3 of 5 | 3.6x | 1.5x |
-| json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.6x |
+| json | 2 | 1.0x | 0.9x |
+| all | 108 | 7.6x | 2.5x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 4.0x, and the worst is now prepending
-(38x, area 7); after it come generators (6.5x), then calls that bind an arguments object or go through an accessor
-(5-6x). 46 of the 108 cases are above 3x and 27 at or under 2x. One case ran Nova out of memory before
+The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
+(38x, area 7); after it come generators (6.3x), then calls that bind an arguments object or go through an accessor
+(5-6x). 46 of the 108 cases are above 3x and 31 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -136,6 +136,31 @@ the instruction pointer moved back now asks. Found by the checks of this change 
 
 A loop that sums integers went from 2.4x to 1.9x, an empty one from 2.3x to 2.0x, a loop over a closure
 variable from 3.3x to 3.0x; the group from 2.5x to 2.2x.
+
+Counted over one run of every case (286 million instructions), one instruction in seven was `Load`, which
+only pushes the result so that the next instructions can make another. Four sequences around it take their
+operands from where they are instead:
+
+- an arithmetic or bitwise operator whose right operand is a constant, with the left one as the result
+  (`ApplyBinaryOperatorWithConstant`: `x & 255` was three instructions) or in a local
+  (`ApplyBinaryOperatorToIndexWithConstant`: `i - 1` was two). One instruction serves the eleven operators:
+  which one is an argument, in four bits beside the stack slot, so both are decoded like any other;
+- `a[i]` where the key is a local and the base is the result (`GetValueWithIndexKey`, three before);
+- a variable of an enclosing function pushed (`LoadBindingAtSite`, two before);
+- a constant pushed right after another push, which the instruction that pushes a constant does alone.
+
+Where the compiler wants the unpushed form later (a comparison with a constant, an operator), an instruction
+that ends in a push is made the one that does not. One turn of `a[i] = (a[i - 1] + a[i]) & 1023` on an array of
+the enclosing function is 16 instructions where it was 23: 3.8x to 3.1x. The run of every case is 241 million
+instructions now, 16% fewer, and `Load` is one in eleven. Reading and writing a grid went from
+2.7x to 2.1x, the RGBA loop over a typed array from 4.2x to 3.5x, a `switch` in a loop from 1.4x to 1.2x.
+
+What the step between two instructions costs was looked at again on that loop: 31 machine instructions, 40% of
+its samples, with the bytecode's address and length read from the stack twice each. Not changed in this round;
+fewer instructions a turn was the surer gain. What the same count says to fuse next: an operator and the
+store of its result in a local (`ApplyAdditionBinaryOperator` then `PutValueToIndex` is 3.6% of what runs),
+the push of what an operator with a constant made (2.9%), the function of a method call and its Reference
+(2.0%), the last argument and the call (2.4%).
 
 Left: about 1 ns an instruction, of which the dispatch is still about half (a quarter of the time of a loop of
 plain calls is the twenty machine instructions between two bytecode instructions: the bounds check, the argument
@@ -356,8 +381,17 @@ over three representations); they are now the IEEE operation those steps describ
 integers, and comparisons of two Numbers no longer park the `Vm` for a collection that cannot happen. Two integers
 whose result is an integer or a Boolean are now handled in the loop itself (area 1).
 
+Any two Numbers stay in the loop of plain instructions now, not only two integers: the arithmetic and bitwise
+operators (also with a constant, area 1), the comparisons, and the tests of loops with their jumps. An
+operator on doubles took the general way for every operand that was not an integer, and so did a loop whose
+bound or counter was one. The result of an operator may be a Number of the heap, which is the one thing a
+plain instruction allocates: no collection can be due before the loop looks for one again, at its next turn
+or at the next instruction that is not plain. A hash with a multiplication that leaves the safe integers
+went from 1.7x to 1.2x, a loop of float arithmetic from 3.7x to 3.1x, integers mixed with doubles from 2.4x to
+1.9x, float arithmetic over a Float64Array from 4.8x to 4.1x.
+
 Left: a double that does not fit the 56-bit inline form is allocated on the heap, so most float arithmetic
-allocates (`math/` 4.2x, `typed/float64-math` 5.2x). The fix is a value layout with inline doubles, which touches
+allocates (`math/` 2.8x, `typed/float64-math` 4.1x). The fix is a value layout with inline doubles, which touches
 every `match` on `Value`: large, and after the items above.
 
 ### 7. Building strings
@@ -423,6 +457,17 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   shape being intrinsic, which `new`, `setPrototypeOf` and `__proto__` in a literal saw to and the creation of
   an object by its prototype alone did not. Now the first shape made for a prototype makes the prototype's own
   shape intrinsic (`ObjectShape::get_shape_for_prototype`). Fixed.
+- ToInt32 and its like went through a 64-bit integer, which stops at its largest value: every Number from 2^63
+  up gave the same bits (`1e21 | 0` was -1, `new Int32Array([1e21])[0]` too), for the bitwise operators, the
+  elements of typed arrays and the setters of a DataView. Upstream; test262 has no test that fails for it.
+  Fixed (`truncate_modulo_2_64`).
+- `%` of two Numbers was computed from the quotient rounded to a double, and was wrong wherever that rounding
+  reaches a whole number: `1e21 % 3` was 0, and so were `5.5 % 1.1` (1.0999999999999996) and `10 % 0.1`
+  (0.09999999999999945). Upstream; test262 has no test that fails for it. It is the remainder of the two
+  doubles now, which is exact. Fixed.
+- A declaration with an initializer (`var x = 1;`, `let`, `const`, a class) takes the place of the completion
+  value before it: `eval("5; var x = 1;")` gives undefined where it must give 5, and after a class
+  declaration it gives the class. Only the value of a script or of `eval` sees it. Upstream. Not fixed.
 - Whether an object is extensible is a bit in its reference to its shape, and three places that replace the
   shape dropped it. An object that was frozen, sealed or made non-extensible took new properties again (and
   `Object.isFrozen` said false) once it became a prototype, by `new`, `setPrototypeOf`, `__proto__` or class
@@ -446,6 +491,9 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   rare path out of line changed nothing. It is the placement of the loop, as with the two cases above; over
   all cases the build is 1% faster than the one before the round. Not pursued: making the placement of
   `Vm::run` the same in every build (an alignment for functions) is the thing to try.
+- The same was seen in the round after: `string/index-of` went from 2.2 to 2.9 ms (0.5x to 0.7x) with not a
+  line of the search changed. `Searcher::find_from` has the same instructions in both builds, 0x6d8 bytes
+  apart. A case whose time is one small loop can move by a third on where the linker puts it.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
 
