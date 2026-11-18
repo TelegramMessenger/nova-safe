@@ -35,22 +35,22 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | call | 14 | 10.4x | 3.0x |
-| typed | 4 | 10.6x | 2.8x |
-| prop | 13 | 7.1x | 2.5x |
+| typed | 4 | 10.6x | 2.7x |
 | math | 4 | 9.7x | 2.5x |
+| prop | 13 | 7.1x | 2.5x |
 | array | 14 | 5.8x | 2.5x |
-| map, set | 4 | 4.6x | 2.3x |
+| map, set | 4 | 4.6x | 2.2x |
 | string | 26 | 10.6x | 2.2x |
-| app | 8 | 6.1x | 2.2x |
+| app | 8 | 6.1x | 2.1x |
 | regexp | 4 | 2.4x | 1.7x |
-| loop | 11 | 11.1x | 1.5x |
+| loop | 11 | 11.1x | 1.4x |
 | gc | 3 of 5 | 3.6x | 1.2x |
-| json | 2 | 1.0x | 0.9x |
+| json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 2.2x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(37x, area 7); after it come generators (6.1x), then calls that bind an arguments object or go through an accessor
-(5x). 35 of the 108 cases are above 3x and 38 at or under 2x, 11 of them at or under QuickJS's time. One case
+(38x, area 7); after it come generators (6.1x), then calls that bind an arguments object or go through an accessor
+(5x). 33 of the 108 cases are above 3x and 39 at or under 2x, 12 of them at or under QuickJS's time. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -194,12 +194,24 @@ index. Put together from the three pieces that seven bytes are loaded as, with s
 instructions on registers. An empty loop went from 2.3x to 1.0x, the loops together from 1.97x to 1.76x
 (before the changes to the step, which were measured on top of this).
 
+And what an instruction names. A constant, a name, a property cache or a binding site was read through the
+heap's table of executables: to the Executable by its index, with a look at the table's length, and from
+there to the constant, with another; a dozen machine instructions, and a turn of
+`o.x = o.x + o.y + (o.z & 1)` on a closure variable makes eighteen such reads in its thirteen instructions.
+The constants, the caches and the binding sites of an Executable are one allocation with its bytecode now,
+held by count: by the Executable in the heap and by every `Vm` while it runs the code, whose loop keeps them
+as three slices. The entries are cells, which the collector rewrites where they are, so the holders read what
+is current. A call run in place takes one reference for all of it, where it kept the callee's bytecode in
+the frame and compared it with the function's at every call (area 3). A loop over a closure variable went
+from 2.2x to 2.0x, a property read by a computed name from 2.8x to 2.5x, the loops from 1.46x to 1.40x,
+calls from 3.00x to 2.95x, all cases from 2.21x to 2.18x. Kept as a second reference beside the bytecode's,
+the tables had made calls up to 10% slower.
+
 Left: an integer is still read as three loads and written as four stores (its seven bytes do not make one
-machine word without the byte of the value's kind); a constant, a name, a cache or a binding site is found
-through the heap's table of executables each time, about a dozen machine instructions, and a turn of
-`o.x = o.x + o.y + (o.z & 1)` on a closure variable makes eighteen such fetches in its thirteen instructions;
-the step is 23 instructions of which seven are the jump through the table. The counts of pairs say what
-could still be fused, and the round before showed how little that gives now.
+machine word without the byte of the value's kind); the step is 23 instructions of which seven are the jump
+through the table; a property the cache places is read through two calls and a result that is taken apart
+again (area 4). The counts of pairs say what could still be fused, and the round before showed how little
+that gives now.
 
 ### 2. Variables that are not locals of the running function
 
@@ -311,8 +323,10 @@ Sampled again after the instructions around a call were fused (a call with a com
 instructions in the caller where it was seven): entering and leaving the function are 41% of a plain call,
 two functions of 682 and 220 machine instructions with the samples spread over them, and no one step stands
 out. The
-return no longer goes the general way, and a frame keeps the callee's bytecode for the next call from its
-depth instead of counting a reference up and down each time; neither moved the time by more than 1%.
+return no longer goes the general way, and a frame kept the callee's bytecode for the next call from its
+depth instead of counting a reference up and down each time; neither moved the time by more than 1%. (The
+bytecode is held with the tables of area 1 since, by one count that is not shared between threads, and the
+frame keeps nothing for the next call.)
 
 Left: per call in place, the execution context (pushed and removed), the frame with the four stacks swapped
 into it and back, a rooted handle of the callee's executable; under them the dispatch of area 1. A stack
