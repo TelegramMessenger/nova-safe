@@ -8859,3 +8859,152 @@ a name of the script is not it: false,object,0,q,2:object,true"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Texts built at their start, at their end and at both: what they are, what
+/// they equal, as keys of objects, Maps and Sets, built again, read between
+/// the steps, and with surrogates that meet where two are put together.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn a_text_built_at_either_end_is_what_it_was() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(texts_built_at_either_end)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn texts_built_at_either_end() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function P() { print(Array.prototype.join.call(arguments, " ")); }
+function sum(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+function show(label, s) { P(label + " " + s.length + " " + sum(s) + " " + JSON.stringify(s.slice(0, 12)) + " " + JSON.stringify(s.slice(-12))); }
+
+// Put before, a little at a time and a lot at a time.
+var s = "";
+for (var i = 0; i < 3000; i++) s = "ab" + s;
+show("ab", s);
+var t = "";
+for (var i = 0; i < 700; i++) t = String.fromCharCode(97 + i % 26) + t;
+show("letters", t);
+var u = "";
+for (var i = 0; i < 300; i++) u = "<row id=\"" + i + "\" class=\"" + (i & 1 ? "odd" : "even") + "\">" + u;
+show("rows", u);
+var v = "";
+for (var i = 0; i < 90; i++) v = "0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".slice(i % 9) + v;
+show("long", v);
+
+// At both ends in turn.
+var w = "";
+for (var i = 0; i < 2000; i++) { w = "<" + w + ">"; if (i % 7 === 0) w = w + i; if (i % 11 === 0) w = i + w; }
+show("both", w);
+var x = "middle of the text that is long enough to be a heap string, and then some more of it so that a concatenation marks it; ".repeat(4);
+for (var i = 0; i < 500; i++) { x = (i % 3 ? "ж" : "中😀") + x; x += (i % 5 ? "é" : "\u{1F600}z"); }
+show("non-ascii", x);
+P(x.codePointAt(0).toString(16), x.codePointAt(x.length - 2).toString(16), x.indexOf("middle"), x.lastIndexOf("it; "));
+
+// The same text however it was put together.
+var a = "", b = "", c = [];
+for (var i = 0; i < 1200; i++) { a = a + "xy"; b = "xy" + b; c.push("xy"); }
+var d = c.join(""), e = "xy".repeat(1200);
+P(a === b, b === d, d === e, a == e, a.length, Object.is(a, b));
+var o = {}; o[a] = 1; o[b] = (o[b] || 0) + 1; o[d] = (o[d] || 0) + 1; o[e] = (o[e] || 0) + 1;
+P(Object.keys(o).length, o[e]);
+var m = new Map(); m.set(a, "a"); m.set(b, "b"); m.set(e, "e");
+P(m.size, m.get(d));
+var st = new Set([a, b, d, e, a + "!", "!" + a]);
+P(st.size, st.has("xy".repeat(1200) + "!"), st.has("!" + "xy".repeat(1200)), st.has("xy".repeat(1199) + "!"));
+P(a < "!" + b, "!" + b < a, a + "!" > b, [b, a + "a", "a" + b, e].sort().map(function (s) { return s.length + s[0] + s[s.length - 1]; }).join(","));
+switch (b) { case e: P("switch found"); break; default: P("switch missed"); }
+
+// Built again: every step makes the string it made before.
+function build(n) { var r = ""; for (var i = 0; i < n; i++) r = (i % 10) + r; return r; }
+var first = build(1500), second = build(1500), third = build(1499);
+P(first === second, first === third, "0" + third === first, first.length, third.length, sum(first) === sum(second));
+function buildBoth(n) { var r = "core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core"; for (var i = 0; i < n; i++) { r = "(" + r; r = r + ")"; } return r; }
+P(buildBoth(400) === buildBoth(400), buildBoth(400) === "(" + buildBoth(399) + ")", buildBoth(400) === buildBoth(399) + "()", buildBoth(3).length);
+
+// Surrogates at the seam, in both directions.
+var lead = "\uD83D", trail = "\uDE00";
+var body = "the body of a text, long enough that a concatenation marks it for building on: ".repeat(5);
+var p1 = trail + body; p1 = lead + p1;
+P(p1.length, p1.codePointAt(0).toString(16), p1.charCodeAt(1).toString(16), p1.slice(0, 2) === "\u{1F600}", [...p1.slice(0, 3)].length);
+var p2 = body + lead; p2 = p2 + trail;
+P(p2.length, p2.codePointAt(p2.length - 2).toString(16), p2.slice(-2) === "\u{1F600}", [...p2.slice(-3)].length);
+var p3 = trail + body; p3 = "a" + lead + p3;
+P(p3.length, p3.codePointAt(1).toString(16), p3 === "a\u{1F600}" + body);
+var p4 = body; p4 = lead + p4; p4 = trail + p4; p4 = lead + p4;
+P(p4.length, p4.charCodeAt(0).toString(16), p4.codePointAt(0).toString(16), p4.charCodeAt(2).toString(16), encodeURIComponent(p4.slice(0, 2)));
+var p5 = body; for (var i = 0; i < 40; i++) p5 = (i % 2 ? lead : trail) + p5;
+P(p5.length, [...p5].length, p5.codePointAt(0).toString(16), p5.codePointAt(38).toString(16), p5.isWellFormed ? p5.isWellFormed() : "n/a");
+var p6 = body; for (var i = 0; i < 40; i++) p6 = p6 + (i % 2 ? trail : lead);
+P(p6.length, [...p6].length, p6 === body + "\u{1F600}".repeat(20));
+var lone = lead + body + trail; lone = "x" + lone + "y";
+P(lone.length, lone.charCodeAt(1).toString(16), lone.charCodeAt(lone.length - 2).toString(16), JSON.stringify(lone.slice(0, 3)), JSON.stringify(lone.slice(-3)));
+
+// Reading a text between the steps, and going on from what was read.
+var r = "";
+var seen = 0;
+for (var i = 0; i < 900; i++) {
+  r = "k" + (i % 7) + r;
+  if (i % 50 === 49) { seen += r.charCodeAt(i % r.length) + r.indexOf("k3") + (r[r.length - 1] === "0" ? 1 : 0); r += "|"; }
+}
+show("read", r);
+P(seen, r.split("|").length, r.toUpperCase().slice(0, 9), r.replace(/k/g, "").length);
+
+// Empty and short ones, and long ones joined to long ones.
+var q = "0123456789".repeat(40);
+P(("" + q) === q, (q + "") === q, ("" + q + "").length, ("a" + "").length, ("abcd" + "efgh"), ("abcdefg" + "h").length, "abc" + "defgh" === "abcdefgh");
+var big1 = "left side ".repeat(60), big2 = "right side ".repeat(70);
+var joined1 = big1 + big2, joined2 = big1 + big2, joined3 = "left side ".repeat(60) + "right side ".repeat(70);
+P(joined1 === joined2, joined2 === joined3, joined1.length, sum(joined1), joined1 === (big1 + "right side ") + "right side ".repeat(69));
+var keys = {}; keys[big1 + big2] = "found"; P(keys[joined3], (big2 + big1) in keys, joined1.startsWith(big1), joined1.endsWith(big2));
+var tpl = `${big1}${big2}`; P(tpl === joined1, `${"x"}${big1}` === "x" + big1, `${big1}${"x"}`.length);
+var arr = []; for (var i = 0; i < 50; i++) arr.push("key-number-" + i, "key-" + i + "-number", i + "-key-number");
+P(arr.indexOf("key-number-" + 49), arr.indexOf("key-" + 49 + "-number"), arr.indexOf(49 + "-key-number"), new Set(arr).size);
+
+// Numbers and other values put before a text.
+var n = body; n = 12 + n; n = 1.5 + n; n = null + n; n = undefined + n; n = true + n; n = [1, 2] + n; n = { toString: function () { return "obj"; } } + n;
+P(n.slice(0, 40), n.length);
+lines.join("\n")"#;
+    let expected = r#"ab 6000 -521240136 "abababababab" "abababababab"
+letters 700 2046571106 "xwvutsrqponm" "lkjihgfedcba"
+rows 7840 -439368594 "<row id=\"299" "lass=\"even\">"
+long 6120 9577152 "89abcdefghij" "OPQRSTUVWXYZ"
+both 5610 2107141787 "<<<<<<<<1991" ">>>>1995>>>>"
+non-ascii 2010 -690926822 "ж中😀жж中😀жж中" "zéééé😀zéééé"
+436 e9 834 1306
+true true true true 2400 true
+1 4
+1 e
+3 true true false
+false true true 2401ay,2400xy,2400xy,2401xa
+switch found
+true false false 1500 1499 true
+true true false 285
+397 1f600 de00 true 2
+397 1f600 true 2
+398 1f600 true
+398 d83d 1f600 d83d %F0%9F%98%80
+435 415 1f600 1f600 true
+435 415 true
+399 d83d de00 "x\ud83dt" " \ude00y"
+read 1818 -667287910 "k3k2k1k0k6k5" "||||||||||||"
+1033 19 K3K2K1K0K 918
+true true 400 1 abcdefgh 8 true
+true true 1370 734438240 true
+found false true true
+true true 601
+147 148 149 150
+obj1,2trueundefinednull1.512the body of  423"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

@@ -568,7 +568,32 @@ impl Agent {
             if self.limits.heap_limit.is_some_and(|limit| bytes > limit) {
                 return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
             }
-            return self.check_allocation(b.len_(self), gc);
+            // A few bytes more are let through as a short string is above:
+            // the poll after it holds the heap to the limit.
+            let added = b.len_(self);
+            if added <= 4096 {
+                return Ok(());
+            }
+            return self.check_allocation(added, gc);
+        }
+        // And what is put before one: the left string, which is not being
+        // built here, is what is allocated.
+        if b.is_being_built_(self) {
+            if bytes > MAX_STRING_LENGTH {
+                return Err(self.throw_exception_with_static_message(
+                    ExceptionType::RangeError,
+                    "Invalid string length",
+                    gc,
+                ));
+            }
+            if self.limits.heap_limit.is_some_and(|limit| bytes > limit) {
+                return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
+            }
+            let added = a.len_(self);
+            if added <= 4096 {
+                return Ok(());
+            }
+            return self.check_allocation(added, gc);
         }
         self.check_string_length(bytes, gc)
     }
