@@ -3759,3 +3759,117 @@ ifTests1=legeeq<3!s3,ltlene<3!s3,ne<3!s3,ltlene<3!s3,ne<3!s3,gtgene>=3=3!s3,lege
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The length of a String value, the methods a String or a Number value
+/// finds on the prototype object of its kind by the property cache, and
+/// `charCodeAt` computed in place of its call, are what the general lookup
+/// and the call give: for strings of every kind of code unit, positions of
+/// every kind, other this values, methods and accessors put on the
+/// prototypes and taken off again, and assignments that find a property
+/// that is not writable.
+#[test]
+fn properties_of_strings_and_numbers_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_of_strings_and_numbers)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_of_strings_and_numbers() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function log(label, f) {
+  for (var round = 0; round < 2; round++) {
+    var r;
+    try { r = f(); } catch (e) { r = (e && e.constructor ? e.constructor.name : typeof e) + ":" + (e && e.message ? e.message.length : String(e)); }
+    out.push(label + round + "=" + String(r));
+  }
+}
+var samples = ["", "a", "abcdefg", "abcdefgh", "a longer string of text", "ж", "жжжжжжжж", "中文字符串和更多的字", "😀", "a😀b😀c", "\ud83d", "x\ude00y\ud83d", "tab\tnew\nnul\0end", "a" + "b".repeat(40)];
+log("length", function () { var r = []; for (var i = 0; i < samples.length; i++) { var s = samples[i]; r.push(s.length); } var t = "ab" + "cd"; r.push(t.length, ("x" + 1).length, `t${t}`.length, String(12345).length, new String("abc").length, Object("zz").length); return r.join(); });
+log("lengthIsOwn", function () { var s = "abc", r = []; s.length = 9; r.push(s.length); r.push(Object.getOwnPropertyDescriptor(s, "length").writable, "length" in Object(s), s.hasOwnProperty("length")); function strict() { "use strict"; try { s.length = 1; return "no"; } catch (e) { return e.constructor.name; } } r.push(strict()); Object.defineProperty(String.prototype, "length2", { get: function () { return this.length * 2; }, configurable: true }); r.push(s.length2, "".length2); delete String.prototype.length2; r.push(s.length2); return r.join(); });
+log("charCodeAt", function () { var r = []; for (var i = 0; i < samples.length; i++) { var s = samples[i], row = []; for (var p = -1; p <= s.length && p < 9; p++) row.push(s.charCodeAt(p)); r.push(row.join(" ")); } return r.join("|"); });
+log("charCodeAtArguments", function () { var s = "abcdef"; return [s.charCodeAt(), s.charCodeAt(undefined), s.charCodeAt(null), s.charCodeAt("2"), s.charCodeAt(1.9), s.charCodeAt(-0.5), s.charCodeAt(NaN), s.charCodeAt(Infinity), s.charCodeAt(-Infinity), s.charCodeAt(true), s.charCodeAt({ valueOf: function () { return 3; } }), s.charCodeAt([4]), s.charCodeAt(1, 2, 3), s.charCodeAt(9007199254740991), s.charCodeAt(-9007199254740991), s.charCodeAt(2 ** 31), s.charCodeAt(-(2 ** 31))].join(); });
+log("charCodeAtThis", function () {
+  var r = [], f = String.prototype.charCodeAt, o = new String("xyz");
+  r.push(o.charCodeAt(1), f.call("q", 0), f.call(123, 1), f.call(true, 0), f.call({ toString: function () { return "T"; } }, 0), f.call([7, 8], 1), Reflect.apply(f, "ab", [1]));
+  try { f.call(null, 0); } catch (e) { r.push(e.constructor.name); } try { f.call(undefined, 0); } catch (e) { r.push(e.constructor.name); }
+  try { "a".charCodeAt(Symbol()); } catch (e) { r.push(e.constructor.name); } try { "a".charCodeAt(1n); } catch (e) { r.push(e.constructor.name); }
+  var bare = "abc".charCodeAt; try { r.push(bare(0)); } catch (e) { r.push(e.constructor.name); }
+  var holder = { s: "hold", m: String.prototype.charCodeAt, toString: function () { return "HH"; } }; r.push(holder.m(0), holder.s.charCodeAt(0));
+  return r.join();
+});
+log("directEqualsApplied", function () { var bad = 0, n = 0; for (var i = 0; i < samples.length; i++) { var s = samples[i]; for (var p = -2; p <= s.length + 1; p++) { n++; if (!Object.is(s.charCodeAt(p), Reflect.apply(String.prototype.charCodeAt, s, [p]))) bad++; } } return bad + "/" + n; });
+log("methodsByCache", function () { var r = []; for (var i = 0; i < samples.length; i += 3) { var s = samples[i]; r.push(s.toUpperCase().length, s.indexOf("b"), s.slice(1, 3), typeof s.charAt, s.concat("!").length, s.trim === String.prototype.trim, s.constructor === String, s.toString() === s, s.valueOf() === s, typeof s.hasOwnProperty, s.nope); } return r.join(); });
+log("patched", function () {
+  var r = [], s = "abc", original = String.prototype.charCodeAt, calls = 0;
+  String.prototype.charCodeAt = function (p) { calls++; return "patched" + p; };
+  r.push(s.charCodeAt(1)); String.prototype.charCodeAt = original; r.push(s.charCodeAt(1));
+  String.prototype.extra = function () { return this.length + "!"; }; r.push(s.extra(), "".extra()); String.prototype.extra = 5; r.push(s.extra); delete String.prototype.extra; r.push(s.extra);
+  Object.prototype.fromObject = "inherited"; r.push(s.fromObject); delete Object.prototype.fromObject; r.push(s.fromObject);
+  Object.defineProperty(String.prototype, "viaGetter", { get: function () { "use strict"; calls++; return typeof this + this; }, configurable: true }); r.push(s.viaGetter); delete String.prototype.viaGetter; r.push(s.viaGetter);
+  var desc = Object.getOwnPropertyDescriptor(String.prototype, "charCodeAt"); Object.defineProperty(String.prototype, "charCodeAt", { get: function () { calls++; return function () { return "fromGetter"; }; }, configurable: true }); r.push(s.charCodeAt(0)); Object.defineProperty(String.prototype, "charCodeAt", desc); r.push(s.charCodeAt(0));
+  return r.join() + "|" + calls;
+});
+log("tokenizer", function () {
+  var source = ""; for (var i = 0; i < 12; i++) source += "(" + i + " + 3) * 2 - " + (i & 7) + " / 4 + "; source += "1";
+  var tokens = [], at = 0;
+  while (at < source.length) { var c = source.charCodeAt(at); if (c === 32) { at++; continue; } if (c >= 48 && c <= 57) { var start = at; while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++; tokens.push(+source.slice(start, at)); } else { tokens.push(source[at]); at++; } }
+  var hash = 0; for (var k = 0; k < source.length; k++) hash = (hash * 31 + source.charCodeAt(k)) | 0;
+  return tokens.length + "," + tokens.slice(0, 9).join("") + "," + hash;
+});
+log("otherPrimitives", function () { var n = 5, b = true, sym = Symbol("d"), big = 7n, r = []; r.push(n.length, b.length, sym.description, typeof n.toFixed, n.toFixed(1), typeof b.valueOf, big.toString(), typeof sym.toString, n.charCodeAt, (12).constructor === Number); try { null.length; } catch (e) { r.push(e.constructor.name); } try { undefined.charCodeAt; } catch (e) { r.push(e.constructor.name); } return r.map(String).join(); });
+log("writesStillChecked", function () { var o = Object.freeze({ a: 1 }), p = {}; Object.defineProperty(p, "ro", { value: 1, writable: false, enumerable: true }); Object.defineProperty(p, "rw", { value: 1, writable: true, enumerable: false }); var q = { set s(v) { this._s = v + 1; }, plain: 0 }; for (var i = 0; i < 4; i++) { o.a = i + 5; p.ro = i + 5; p.rw = i + 5; q.s = i; q.plain = i; } var big = {}; for (var k = 0; k < 40; k++) big["k" + k] = k; Object.defineProperty(big, "k7", { writable: false }); for (var m = 0; m < 3; m++) { big.k7 = "x"; big.k8 = "y" + m; } return [o.a, p.ro, p.rw, q._s, q.plain, big.k7, big.k8, Object.keys(p).join("")].join(); });
+log("numberMethods", function () {
+  var vals = [0, -0, 1, -1, 255, 3.14159, -2.5, 1e21, 1e-7, 123456789.125, NaN, Infinity, -Infinity, 9007199254740991, 0.1 + 0.2], r = [];
+  for (var i = 0; i < vals.length; i++) { var n = vals[i]; r.push([n.toFixed(2), n.toString(), n.toString(16), n.toPrecision(3), n.valueOf() === n || n !== n, typeof n.toLocaleString, n.nope, n.constructor === Number, n.hasOwnProperty("x")].join(" ")); }
+  return r.join("|");
+});
+log("numberPatched", function () {
+  var r = [], n = 7.5, original = Number.prototype.toFixed, calls = 0;
+  Number.prototype.toFixed = function (d) { calls++; return "patched" + d; }; r.push(n.toFixed(1), (3).toFixed(0)); Number.prototype.toFixed = original; r.push(n.toFixed(1));
+  Number.prototype.twice = function () { "use strict"; return typeof this + this * 2; }; r.push(n.twice(), (4).twice()); delete Number.prototype.twice; r.push(typeof n.twice);
+  Object.defineProperty(Number.prototype, "half", { get: function () { calls++; return this / 2; }, configurable: true }); r.push(n.half, (9).half); delete Number.prototype.half; r.push(n.half);
+  Object.prototype.shared = "s"; r.push(n.shared, "str".shared, true.shared); delete Object.prototype.shared; r.push(n.shared, "str".shared);
+  n.own = 1; r.push(n.own); function strict() { "use strict"; try { n.own = 1; return "no"; } catch (e) { return e.constructor.name; } } r.push(strict());
+  return r.map(String).join() + "|" + calls;
+});
+out.join("\n")
+"#;
+    let expected = r#"length0=0,1,7,8,23,1,8,10,2,7,1,4,15,41,4,2,5,5,3,2
+length1=0,1,7,8,23,1,8,10,2,7,1,4,15,41,4,2,5,5,3,2
+lengthIsOwn0=3,false,true,true,TypeError,6,0,
+lengthIsOwn1=3,false,true,true,TypeError,6,0,
+charCodeAt0=NaN NaN|NaN 97 NaN|NaN 97 98 99 100 101 102 103 NaN|NaN 97 98 99 100 101 102 103 104 NaN|NaN 97 32 108 111 110 103 101 114 32|NaN 1078 NaN|NaN 1078 1078 1078 1078 1078 1078 1078 1078 NaN|NaN 20013 25991 23383 31526 20018 21644 26356 22810 30340|NaN 55357 56832 NaN|NaN 97 55357 56832 98 55357 56832 99 NaN|NaN 55357 NaN|NaN 120 56832 121 55357 NaN|NaN 116 97 98 9 110 101 119 10 110|NaN 97 98 98 98 98 98 98 98 98
+charCodeAt1=NaN NaN|NaN 97 NaN|NaN 97 98 99 100 101 102 103 NaN|NaN 97 98 99 100 101 102 103 104 NaN|NaN 97 32 108 111 110 103 101 114 32|NaN 1078 NaN|NaN 1078 1078 1078 1078 1078 1078 1078 1078 NaN|NaN 20013 25991 23383 31526 20018 21644 26356 22810 30340|NaN 55357 56832 NaN|NaN 97 55357 56832 98 55357 56832 99 NaN|NaN 55357 NaN|NaN 120 56832 121 55357 NaN|NaN 116 97 98 9 110 101 119 10 110|NaN 97 98 98 98 98 98 98 98 98
+charCodeAtArguments0=97,97,97,99,98,97,97,NaN,NaN,98,100,101,98,NaN,NaN,NaN,NaN
+charCodeAtArguments1=97,97,97,99,98,97,97,NaN,NaN,98,100,101,98,NaN,NaN,NaN,NaN
+charCodeAtThis0=121,113,50,116,84,44,98,TypeError,TypeError,TypeError,TypeError,TypeError,72,104
+charCodeAtThis1=121,113,50,116,84,44,98,TypeError,TypeError,TypeError,TypeError,TypeError,72,104
+directEqualsApplied0=0/184
+directEqualsApplied1=0/184
+methodsByCache0=0,-1,,function,1,true,true,true,true,function,,8,1,bc,function,9,true,true,true,true,function,,8,-1,жж,function,9,true,true,true,true,function,,7,3,😀,function,8,true,true,true,true,function,,15,2,ab,function,16,true,true,true,true,function,
+methodsByCache1=0,-1,,function,1,true,true,true,true,function,,8,1,bc,function,9,true,true,true,true,function,,8,-1,жж,function,9,true,true,true,true,function,,7,3,😀,function,8,true,true,true,true,function,,15,2,ab,function,16,true,true,true,true,function,
+patched0=patched1,98,3!,0!,5,,inherited,,stringabc,,fromGetter,97|3
+patched1=patched1,98,3!,0!,5,,inherited,,stringabc,,fromGetter,97|3
+tokenizer0=145,(0+3)*2-0,1911844389
+tokenizer1=145,(0+3)*2-0,1911844389
+otherPrimitives0=undefined,undefined,d,function,5.0,function,7,function,undefined,true,TypeError,TypeError
+otherPrimitives1=undefined,undefined,d,function,5.0,function,7,function,undefined,true,TypeError,TypeError
+writesStillChecked0=1,1,8,4,3,7,y2,ro
+writesStillChecked1=1,1,8,4,3,7,y2,ro
+numberMethods0=0.00 0 0 0.00 true function  true false|0.00 0 0 0.00 true function  true false|1.00 1 1 1.00 true function  true false|-1.00 -1 -1 -1.00 true function  true false|255.00 255 ff 255 true function  true false|3.14 3.14159 3.243f3e0370cdc 3.14 true function  true false|-2.50 -2.5 -2.8 -2.50 true function  true false|1e+21 1e+21 3635c9adc5dea00000 1.00e+21 true function  true false|0.00 1e-7 0.000001ad7f29abcaf48 1.00e-7 true function  true false|123456789.13 123456789.125 75bcd15.2 1.23e+8 true function  true false|NaN NaN NaN NaN true function  true false|Infinity Infinity Infinity Infinity true function  true false|-Infinity -Infinity -Infinity -Infinity true function  true false|9007199254740991.00 9007199254740991 1fffffffffffff 9.01e+15 true function  true false|0.30 0.30000000000000004 0.4cccccccccccd 0.300 true function  true false
+numberMethods1=0.00 0 0 0.00 true function  true false|0.00 0 0 0.00 true function  true false|1.00 1 1 1.00 true function  true false|-1.00 -1 -1 -1.00 true function  true false|255.00 255 ff 255 true function  true false|3.14 3.14159 3.243f3e0370cdc 3.14 true function  true false|-2.50 -2.5 -2.8 -2.50 true function  true false|1e+21 1e+21 3635c9adc5dea00000 1.00e+21 true function  true false|0.00 1e-7 0.000001ad7f29abcaf48 1.00e-7 true function  true false|123456789.13 123456789.125 75bcd15.2 1.23e+8 true function  true false|NaN NaN NaN NaN true function  true false|Infinity Infinity Infinity Infinity true function  true false|-Infinity -Infinity -Infinity -Infinity true function  true false|9007199254740991.00 9007199254740991 1fffffffffffff 9.01e+15 true function  true false|0.30 0.30000000000000004 0.4cccccccccccd 0.300 true function  true false
+numberPatched0=patched1,patched0,7.5,number15,number8,undefined,3.75,4.5,undefined,s,s,s,undefined,undefined,undefined,TypeError|4
+numberPatched1=patched1,patched0,7.5,number15,number8,undefined,3.75,4.5,undefined,s,s,s,undefined,undefined,undefined,TypeError|4"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

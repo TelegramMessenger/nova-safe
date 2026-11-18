@@ -17,9 +17,9 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, ECMAScriptFunction, Environment,
         ExceptionType, InternalMethods, InternalSlots, JsError, JsResult, Number, Object,
-        Primitive, Promise, PropertyKey, Reference, SmallInteger, String, TryGetResult, Value,
-        binding_value_at_site, call_function, get_method, get_this_value, is_callable,
-        is_property_reference, is_same_type, is_strictly_equal, ordinary_has_instance,
+        OrdinaryObject, Primitive, Promise, PropertyKey, Reference, SmallInteger, String,
+        TryGetResult, Value, binding_value_at_site, call_function, get_method, get_this_value,
+        is_callable, is_property_reference, is_same_type, is_strictly_equal, ordinary_has_instance,
         ordinary_set_own_data_at_offset, prepare_for_call_without_function_environment,
         reference_is_at_global_site, set_binding_value_at_site, take_pooled_arguments_vec,
         to_boolean, to_numeric, to_numeric_primitive, to_primitive, to_property_key,
@@ -1653,7 +1653,20 @@ impl Vm {
                 let Some(direct) = function.get(agent).direct else {
                     return Plain::No;
                 };
-                let Some(result) = direct.run(agent, &vm.stack[first..], gc) else {
+                // The this value of the call, for the functions that take
+                // it: the base of the Reference the call is made through.
+                let this = if !direct.takes_this() {
+                    None
+                } else if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+                    vm.reference_stack
+                        .last()
+                        .and_then(Reference::named_property_base)
+                } else {
+                    vm.reference
+                        .as_ref()
+                        .and_then(Reference::named_property_base)
+                };
+                let Some(result) = direct.run(agent, this, &vm.stack[first..], gc) else {
                     return Plain::No;
                 };
                 let result = result.unbind();
@@ -1948,6 +1961,34 @@ impl Vm {
         true
     }
 
+    /// The value of a property of a primitive value that is found on
+    /// `prototype`, the prototype object of its kind in the running realm,
+    /// or further up: by the cache, under the shape of `prototype`, where
+    /// \[\[Get]] of that object left it.
+    #[inline]
+    fn cached_prototype_property_value(
+        agent: &mut Agent,
+        prototype: OrdinaryObject<'static>,
+        code: Executable,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let cache = code.fetch_cache(agent, instr.get_second_index(), gc);
+        let shape = prototype.object_shape(agent);
+        let (offset, holder) = cache.find_cached_property_offset(agent, shape)?;
+        if offset.is_unset() {
+            return Some(Value::Undefined);
+        }
+        let found = match holder {
+            Some(holder) => holder.get_own_property_at_offset(agent, offset, gc),
+            None => prototype.get_own_property_at_offset(agent, offset, gc),
+        };
+        match found {
+            TryGetResult::Value(value) => Some(value.unbind()),
+            _ => None,
+        }
+    }
+
     /// The same for `base`, wherever the instruction has it from.
     #[inline(always)]
     fn cached_property_value_of(
@@ -1999,6 +2040,35 @@ impl Vm {
                     TryGetResult::Value(value) => Some(value.unbind()),
                     _ => None,
                 }
+            }
+            // A String value: its length, or what \[\[Get]] of the
+            // %String.prototype% of the running realm finds in the cache
+            // (`s.charCodeAt`), which is where a name that is not `length`
+            // is looked for.
+            Value::String(_) | Value::SmallString(_) => {
+                let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+                if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
+                    let string = String::try_from(base).ok()?;
+                    let length = i64::try_from(string.utf16_len_(agent)).ok()?;
+                    return SmallInteger::try_from(length).ok().map(Value::Integer);
+                }
+                if key.into_u32().is_some() {
+                    return None;
+                }
+                let prototype = agent
+                    .current_realm_record()
+                    .intrinsics()
+                    .string_prototype_backing_object();
+                Self::cached_prototype_property_value(agent, prototype, code, instr, gc)
+            }
+            // A Number value has no properties of its own: what \[\[Get]]
+            // of %Number.prototype% finds in the cache (`n.toFixed`).
+            Value::Integer(_) | Value::SmallF64(_) | Value::Number(_) => {
+                let prototype = agent
+                    .current_realm_record()
+                    .intrinsics()
+                    .number_prototype_backing_object();
+                Self::cached_prototype_property_value(agent, prototype, code, instr, gc)
             }
             #[cfg(feature = "array-buffer")]
             value => Self::typed_array_length(agent, value, code, instr, gc),

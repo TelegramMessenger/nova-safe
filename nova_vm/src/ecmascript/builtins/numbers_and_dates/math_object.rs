@@ -78,7 +78,9 @@ impl MathObject {
             DirectBuiltin::MathSign => Self::sign_number(agent, n, gc),
             DirectBuiltin::MathSqrt => Self::sqrt_number(agent, n, gc),
             DirectBuiltin::MathTrunc => Self::trunc_number(agent, n, gc),
-            DirectBuiltin::MathMax | DirectBuiltin::MathMin => return None,
+            DirectBuiltin::MathMax | DirectBuiltin::MathMin | DirectBuiltin::StringCharCodeAt => {
+                return None;
+            }
         })
     }
 }

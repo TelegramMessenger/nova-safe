@@ -502,17 +502,38 @@ impl StringPrototype {
                     .into_i64();
                 (s.get(agent).bind(gc.nogc()), position)
             };
+        let s = s.unbind();
+        let gc = gc.into_nogc();
+        Ok(Self::char_code_at_of(agent, s.bind(gc), position, gc))
+    }
+
+    /// String.prototype.charCodeAt of a String and an integral position.
+    pub(crate) fn char_code_at_of<'gc>(
+        agent: &mut Agent,
+        s: String<'gc>,
+        position: i64,
+        _: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         // 4. Let size be the length of S.
         let size = s.utf16_len_(agent);
         // 5. If position < 0 or position ≥ size, return NaN.
         if position < 0 || position >= i64::try_from(size).unwrap() {
-            Ok(Value::nan())
+            Value::nan()
         } else {
             // 6. Return the Number value for the numeric value of the code unit at index position
             // within the String S.
             let ch = s.char_code_at_(agent, usize::try_from(position).unwrap());
-            Ok(Value::from(ch.to_u32()))
+            Value::from(ch.to_u32())
         }
+    }
+
+    /// Which of the functions of %String.prototype% the interpreter may run
+    /// in place: those that only compute from a String and integers.
+    pub(crate) fn direct_builtin(
+        function: crate::ecmascript::RegularFn,
+    ) -> Option<crate::ecmascript::DirectBuiltin> {
+        core::ptr::fn_addr_eq(function, Self::char_code_at as crate::ecmascript::RegularFn)
+            .then_some(crate::ecmascript::DirectBuiltin::StringCharCodeAt)
     }
 
     /// ### [22.1.3.4 String.prototype.codePointAt ( pos )](https://tc39.es/ecma262/#sec-string.prototype.codepointat)
