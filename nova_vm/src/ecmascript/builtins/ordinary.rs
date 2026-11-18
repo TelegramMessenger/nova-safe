@@ -1314,6 +1314,44 @@ pub(crate) fn ordinary_set_own_data_at_offset(
     object.set_writable_value_at(agent, offset.get_property_offset() as usize, value.unbind())
 }
 
+/// ### [10.1.9.2 OrdinarySetWithOwnDescriptor ( O, P, V, Receiver, ownDesc )](https://tc39.es/ecma262/#sec-ordinarysetwithowndescriptor)
+/// The assignment `o.p = v` where the property cache knows that neither `o`
+/// nor any object it inherits from has `p`: CreateDataProperty(o, p, v) on
+/// an ordinary object that is extensible, as [`ordinary_set_at_offset`] does
+/// it for a property that is not set. False (the object is not extensible,
+/// or there is no room for the property) leaves everything to \[\[Set]].
+// Kept out of the loop that runs the instructions: growing an object is
+// much more than the instruction around it.
+#[inline(never)]
+pub(crate) fn ordinary_add_own_data_by_cache(
+    agent: &mut Agent,
+    object: OrdinaryObject,
+    key: PropertyKey,
+    value: Value,
+    cache: PropertyLookupCache,
+    gc: NoGcScope,
+) -> bool {
+    if !ordinary_is_extensible(agent, object) {
+        return false;
+    }
+    let (object, key, value) = (object.bind(gc), key.bind(gc), value.bind(gc));
+    // 2.e. i. Assert: Receiver does not currently have a property P.
+    // ii. Return ? CreateDataProperty(Receiver, P, V).
+    if object
+        .property_storage()
+        .push(agent, object.into(), key, Some(value), None, gc)
+        .is_err()
+    {
+        return false;
+    }
+    let shape = object.object_shape(agent);
+    if !shape.is_intrinsic(agent) {
+        // The property is where the cache will find it for the new shape.
+        cache.insert_lookup_offset_if_not_found(agent, shape, object.len(agent) - 1);
+    }
+    true
+}
+
 pub(crate) fn ordinary_set_at_offset<'a>(
     agent: &mut Agent,
     props: &SetAtOffsetProps,
