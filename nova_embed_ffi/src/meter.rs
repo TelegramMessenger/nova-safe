@@ -228,3 +228,139 @@ unsafe impl GlobalAlloc for Metered {
 
 #[global_allocator]
 static METERED: Metered = Metered;
+
+/// The allocator as safe code meets it: through boxes and vectors.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[repr(align(64))]
+    #[derive(Clone, PartialEq, Debug)]
+    struct Wide([u8; 64]);
+
+    #[repr(align(4096))]
+    struct Page([u8; 4096]);
+
+    fn address<T>(value: &T) -> usize {
+        core::ptr::from_ref(value) as usize
+    }
+
+    /// A block is aligned as its type asks and keeps its bytes when it
+    /// grows, shrinks or is asked for zeroed, at an alignment under the
+    /// header's, at the header's and over it.
+    #[test]
+    fn blocks_keep_their_alignment_and_their_bytes() {
+        for size in [1usize, 7, 15, 16, 17, 31, 4095, 4096, 4097, 70_000] {
+            let mut bytes: Vec<u8> = Vec::with_capacity(size);
+            bytes.extend((0..size).map(|at| (at % 251) as u8));
+            bytes.reserve_exact(size * 3 + 1);
+            assert!(bytes.capacity() >= size * 4 + 1);
+            assert!(
+                bytes
+                    .iter()
+                    .enumerate()
+                    .all(|(at, &byte)| byte == (at % 251) as u8),
+                "{size} bytes grown"
+            );
+            bytes.truncate(1);
+            bytes.shrink_to_fit();
+            assert_eq!(bytes, [0], "{size} bytes shrunk");
+
+            let words = vec![0u64; size];
+            assert_eq!(words.as_ptr() as usize % align_of::<u64>(), 0);
+            assert!(words.iter().all(|&word| word == 0), "{size} zeroed words");
+            let mut long = vec![u128::MAX; size];
+            assert_eq!(long.as_ptr() as usize % align_of::<u128>(), 0);
+            long.reserve_exact(size + 1);
+            assert_eq!(long.as_ptr() as usize % align_of::<u128>(), 0);
+            assert!(long.iter().all(|&word| word == u128::MAX));
+        }
+
+        let wide = Box::new(Wide([7; 64]));
+        assert_eq!(address(&*wide) % 64, 0);
+        assert_eq!(*wide, Wide([7; 64]));
+        let mut wides = vec![Wide([1; 64]); 3];
+        assert_eq!(wides.as_ptr() as usize % 64, 0);
+        wides.reserve_exact(100);
+        assert_eq!(wides.as_ptr() as usize % 64, 0);
+        assert!(wides.iter().all(|wide| *wide == Wide([1; 64])));
+        wides.truncate(1);
+        wides.shrink_to_fit();
+        assert_eq!(wides.as_ptr() as usize % 64, 0);
+        assert_eq!(wides, [Wide([1; 64])]);
+        let zeroed = vec![Wide([0; 64]); 9];
+        assert_eq!(zeroed.as_ptr() as usize % 64, 0);
+
+        let page = Box::new(Page([9; 4096]));
+        assert_eq!(address(&*page) % 4096, 0);
+        assert!(page.0.iter().all(|&byte| byte == 9));
+    }
+
+    /// An account holds exactly the bytes of the live blocks made while it
+    /// was entered, each with what is in front of it; a block stays on its
+    /// account when it grows elsewhere and leaves it when it is freed, on
+    /// whichever thread.
+    #[test]
+    fn an_account_is_its_live_blocks() {
+        let account = Account::new();
+        let before = account.bytes().expect("a counted account");
+        let entered = account.enter();
+        let mut bytes: Vec<u8> = Vec::with_capacity(1000);
+        let wide = Box::new(Wide([0; 64]));
+        drop(entered);
+        // The header in front of the bytes; a whole alignment in front of
+        // what is aligned to more than the header.
+        let wide_block = 64 + 64;
+        assert_eq!(account.bytes(), Some(before + 1000 + HEADER + wide_block));
+
+        let other = Account::new();
+        let elsewhere = other.enter();
+        bytes.reserve_exact(5000);
+        drop(elsewhere);
+        assert_eq!(
+            account.bytes(),
+            Some(before + bytes.capacity() + HEADER + wide_block)
+        );
+        assert_eq!(other.bytes(), Some(0));
+
+        std::thread::spawn(move || {
+            drop(bytes);
+            drop(wide);
+        })
+        .join()
+        .expect("the thread that frees");
+        assert_eq!(account.bytes(), Some(before));
+    }
+
+    /// Entering accounts nests, and leaving one is back in the one before.
+    #[test]
+    fn entered_accounts_nest() {
+        let (outer, inner) = (Account::new(), Account::new());
+        let (outer_before, inner_before) = (outer.bytes().unwrap(), inner.bytes().unwrap());
+        let in_outer = outer.enter();
+        let first = vec![1u8; 100];
+        let in_inner = inner.enter();
+        let second = vec![2u8; 200];
+        drop(in_inner);
+        let third = vec![3u8; 300];
+        drop(in_outer);
+        assert_eq!(outer.bytes(), Some(outer_before + 100 + 300 + 2 * HEADER));
+        assert_eq!(inner.bytes(), Some(inner_before + 200 + HEADER));
+        drop((first, second, third));
+        assert_eq!(outer.bytes(), Some(outer_before));
+        assert_eq!(inner.bytes(), Some(inner_before));
+    }
+
+    /// A size that leaves no room for the header is refused, not wrapped
+    /// around.
+    #[test]
+    fn a_size_with_no_room_for_the_header_is_refused() {
+        for size in [
+            isize::MAX as usize,
+            isize::MAX as usize - 1,
+            isize::MAX as usize - HEADER + 1,
+        ] {
+            assert!(Vec::<u8>::new().try_reserve_exact(size).is_err(), "{size}");
+        }
+    }
+}
