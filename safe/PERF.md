@@ -34,29 +34,29 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.8x |
+| typed | 4 | 10.6x | 2.7x |
 | call | 14 | 10.4x | 2.4x |
 | math | 4 | 9.7x | 2.4x |
-| app | 8 | 6.1x | 2.1x |
 | string | 26 | 10.6x | 2.0x |
 | prop | 13 | 7.1x | 2.0x |
 | map, set | 4 | 4.6x | 2.0x |
-| array | 14 | 5.8x | 1.8x |
-| regexp | 4 | 2.4x | 1.8x |
+| app | 8 | 6.1x | 1.9x |
+| array | 14 | 5.8x | 1.7x |
+| regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
 | gc | 3 of 5 | 3.6x | 1.2x |
-| json | 2 | 1.0x | 1.0x |
+| json | 2 | 1.0x | 0.9x |
 | all | 108 | 7.6x | 1.9x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 2.6x, and the worst is now prepending
 (37x, area 7); after it come generators (5.9x), calls that bind an arguments object (4.8x), then typed
-`Float64Array` arithmetic (3.9x). 13 of the 108 cases are above 3x and 53 at or under 2x, 13 of them at or
-under QuickJS's time. Over all cases it is 1.91x: 2.12x before the round of patterns, Array iteration and
+`Float64Array` arithmetic (3.8x). 13 of the 108 cases are above 3x and 53 at or under 2x, 14 of them at or
+under QuickJS's time. Over all cases it is 1.89x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
-after the round of entering and leaving a function, 1.96x after the round of callbacks, and the round of
-what an appended text keeps of its end took it to 1.91x.
+after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
+round of what an appended text keeps of its end, and the round of the text of a Number took it here.
 
-It is 1.91x on top of the Android line as well, by two things that cancel. That line counts what the
+Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
 of each block, a counter and a thread-local read): the cases that allocate most pay for it (a linked list
 built and dropped 17% slower, array literals 15%, serializing to JSON 9%, numbers joined 9%; 2% over all
@@ -642,6 +642,24 @@ Left: a double that does not fit the 56-bit inline form is allocated on the heap
 allocates (`math/` 2.8x, `typed/float64-math` 4.1x). The fix is a value layout with inline doubles, which touches
 every `match` on `Value`: large, and after the items above.
 
+The text of a Number was the other half of what a script that shows numbers does. Sampled, `String(i)`,
+`i + ""` and `(i * 0.37).toFixed(2)` had a sixth of their time in std's exact formatting of a float, and the
+rest of the conversion put its text together in the heap: an integer was formatted into a `String`, a double
+into three (what `{:e}` writes, its digits, the result), each then copied into a JavaScript string or thrown
+away for one of seven bytes. The text is written in the native stack now, and a String of up to seven bytes
+is made of it with nothing allocated. `toFixed` takes its digits from one integer where one holds them, for
+|x| under 2^53 and up to 20 fraction digits: x is m * 2^e with e <= 0 there, m * 10^f is under 2^120, and the
+integer nearest to x * 10^f (the larger on a tie, as the specification asks) is that product shifted down and
+rounded by what the shift drops; any other x goes the way it went. The same text goes into `JSON.stringify`
+and `join`, and into the keys that are integers. Both are held to what they replace over some hundred
+thousand Numbers of every kind (`number/text.rs`), and a script of three thousand gives what it gives in
+Node. Numbers joined went from 1.9x to 1.3x, the three conversions from 3.3x to 2.4x, a frame of an easing
+animation (which writes its values with `toFixed`) from 2.9x to 2.1x, template literals from 1.9x to 1.5x,
+`JSON.stringify` from 1.2x to 1.0x, serializing a list of operations from 1.4x to 1.2x.
+
+Left of it: a string of eight bytes or more is looked up in the string table (a tenth of the three
+conversions now), and std's shortest digits of a double are still what `{:e}` writes.
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
@@ -888,6 +906,10 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   take +0 over -0 without `f64::max` (which answers -0 on 32-bit ARM), and the copy of that fold which runs
   `Math.max` in place of a call kept the old line through the rebase. Found by comparing every commit before
   and after; the copy has the fix.
+
+- `loop/switch` read 4% slower after the round of the text of a Number (5.5 to 5.75 ms, in seven runs of
+  each binary in turn), which touched nothing it runs: where the loop of instructions lands in the binary
+  moved. It is 0.9x of QuickJS. Not followed up.
 
 ## Checking a change
 
