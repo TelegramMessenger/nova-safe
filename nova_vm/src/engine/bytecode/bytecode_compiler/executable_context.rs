@@ -317,19 +317,32 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     self.instructions[start] = Instruction::PushReferenceAndLoad.as_u8();
                     return;
                 }
+                // A variable of an enclosing function, pushed.
+                if let Some(start) = self.recent_instruction(0, Instruction::GetBindingAtSite) {
+                    self.instructions[start] = Instruction::LoadBindingAtSite.as_u8();
+                    return;
+                }
+                // A constant pushed right after another push: there is no
+                // result before the two instructions and none after them,
+                // as with the one that pushes the constant itself.
+                if let Some(start) = self.recent_instruction(0, Instruction::StoreConstant)
+                    && [
+                        Instruction::Load,
+                        Instruction::LoadFromIndex,
+                        Instruction::LoadBindingAtSite,
+                        Instruction::PushReferenceAndLoad,
+                    ]
+                    .into_iter()
+                    .any(|push| self.recent_instruction(1, push).is_some())
+                {
+                    self.instructions[start] = Instruction::LoadConstant.as_u8();
+                    return;
+                }
             }
             Instruction::IsStrictlyEqual => {
                 if let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant) {
                     let operand = self.operand_bytes(constant);
-                    if let Some(load) = self.recent_instruction(1, Instruction::Load) {
-                        self.drop_recent_instructions(load, 2);
-                        self.push_instruction(Instruction::IsStrictlyEqualConstant);
-                        self.instructions.extend_from_slice(&operand);
-                        return;
-                    }
-                    if let Some(load) = self.recent_instruction(1, Instruction::LoadFromIndex) {
-                        self.instructions[load] = Instruction::GetValueFromIndex.as_u8();
-                        self.drop_recent_instructions(constant, 1);
+                    if self.unpush_recent(1) {
                         self.push_instruction(Instruction::IsStrictlyEqualConstant);
                         self.instructions.extend_from_slice(&operand);
                         return;
@@ -354,8 +367,61 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 if let Some(start) =
                     self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithExpressionKey)
                 {
+                    // The key a local: the base stays the result, and the
+                    // instruction takes the key from its slot.
+                    if let Some(key) = self.recent_instruction(1, Instruction::GetValueFromIndex) {
+                        let slot = self.operand_bytes(key);
+                        if self.unpush_recent(2) {
+                            self.push_instruction(Instruction::GetValueWithIndexKey);
+                            self.instructions.extend_from_slice(&slot);
+                            return;
+                        }
+                    }
                     self.instructions[start] = Instruction::GetValueWithExpressionKey.as_u8();
                     return;
+                }
+            }
+            // An operator whose right operand is a constant: with its left
+            // operand as the result, or taken from a local.
+            operator if operator.fused_operator_number().is_some() => {
+                let number = operator.fused_operator_number().unwrap_or_default();
+                if let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant) {
+                    let operand = self.operand_bytes(constant);
+                    if self.unpush_recent(1) {
+                        self.push_instruction(Instruction::ApplyBinaryOperatorWithConstant);
+                        self.instructions.extend_from_slice(&operand);
+                        self.add_index(number);
+                        return;
+                    }
+                    // Two locals pushed before the constant: the second of
+                    // them is the left operand.
+                    if let Some(locals) =
+                        self.recent_instruction(1, Instruction::LoadFromIndexLoadFromIndex)
+                    {
+                        let first = self.operand_bytes(locals);
+                        let second = [self.instructions[locals + 3], self.instructions[locals + 4]];
+                        if usize::from(u16::from_ne_bytes(second)) < Instruction::FUSED_SLOTS {
+                            self.drop_recent_instructions(locals, 2);
+                            self.push_instruction(Instruction::LoadFromIndex);
+                            self.instructions.extend_from_slice(&first);
+                            self.push_operator_on_local(number, second, operand);
+                            return;
+                        }
+                    }
+                }
+                if let Some(operands) =
+                    self.recent_instruction(0, Instruction::LoadFromIndexStoreConstant)
+                {
+                    let slot = self.operand_bytes(operands);
+                    let constant = [
+                        self.instructions[operands + 3],
+                        self.instructions[operands + 4],
+                    ];
+                    if usize::from(u16::from_ne_bytes(slot)) < Instruction::FUSED_SLOTS {
+                        self.drop_recent_instructions(operands, 1);
+                        self.push_operator_on_local(number, slot, constant);
+                        return;
+                    }
                 }
             }
             Instruction::Return => {
@@ -390,6 +456,46 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
 
     fn operand_bytes(&self, start: usize) -> [u8; 2] {
         [self.instructions[start + 1], self.instructions[start + 2]]
+    }
+
+    /// Where the `nth` most recent instruction pushes the value that is or
+    /// was the result, has it leave the value as the result instead, and
+    /// removes the instructions after it: a Load is removed with them, an
+    /// instruction that ends in one becomes the one that does not. False,
+    /// with nothing changed, where it is no such instruction.
+    fn unpush_recent(&mut self, nth: usize) -> bool {
+        debug_assert!(nth >= 1);
+        if let Some(load) = self.recent_instruction(nth, Instruction::Load) {
+            self.drop_recent_instructions(load, nth + 1);
+            return true;
+        }
+        for (pushing, keeping) in [
+            (Instruction::LoadFromIndex, Instruction::GetValueFromIndex),
+            (
+                Instruction::LoadBindingAtSite,
+                Instruction::GetBindingAtSite,
+            ),
+            (
+                Instruction::PushReferenceAndLoad,
+                Instruction::PushReference,
+            ),
+        ] {
+            if let Some(start) = self.recent_instruction(nth, pushing) {
+                self.instructions[start] = keeping.as_u8();
+                self.drop_recent_instructions(self.recent[nth - 1], nth);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// ApplyBinaryOperatorToIndexWithConstant: the stack slot with the number
+    /// of the operator above its bits, then the constant.
+    fn push_operator_on_local(&mut self, operator: usize, slot: [u8; 2], constant: [u8; 2]) {
+        let slot = usize::from(u16::from_ne_bytes(slot));
+        self.push_instruction(Instruction::ApplyBinaryOperatorToIndexWithConstant);
+        self.add_index(Instruction::fused_slot_with_operator(slot, operator));
+        self.instructions.extend_from_slice(&constant);
     }
 
     /// Removes the `count` most recent instructions, which start at `start`.

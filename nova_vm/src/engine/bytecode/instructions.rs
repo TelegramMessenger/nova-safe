@@ -41,6 +41,16 @@ pub(crate) enum Instruction {
     LoadFromIndexGetFromIndex,
     /// LoadFromIndex twice: two locals as arguments of a call.
     LoadFromIndexLoadFromIndex,
+    /// Load, StoreConstant and an arithmetic or bitwise
+    /// Apply…BinaryOperator, as one instruction: `x & 255` or `x + 1`, with
+    /// the left operand as the result value. The arguments are the constant
+    /// and the number of the operator (its place among the fused operators).
+    ApplyBinaryOperatorWithConstant,
+    /// LoadFromIndexStoreConstant and such an operator, as one instruction:
+    /// `i - 1` or `n * 2` of a local. The first argument is the stack slot
+    /// in its low twelve bits and the number of the operator above them,
+    /// the second the constant.
+    ApplyBinaryOperatorToIndexWithConstant,
     /// Add the result value to the stack, without removing it as the result
     /// value.
     LoadCopy,
@@ -115,6 +125,10 @@ pub(crate) enum Instruction {
     /// instruction: `a[i]` read for its value, with no Reference when the
     /// base is an Array or a TypedArray and the key an integer.
     GetValueWithExpressionKey,
+    /// Load, GetValueFromIndex and GetValueWithExpressionKey, as one
+    /// instruction: `a[i]` read for its value where the key is a local, with
+    /// the base as the result value. The argument is the stack slot.
+    GetValueWithIndexKey,
     /// `a[i] = v` where the value of the assignment is not used: the object
     /// and the key are the two values on top of the stack, where they stayed
     /// while the value was evaluated into the result register. PutValue to
@@ -457,6 +471,9 @@ pub(crate) enum Instruction {
     /// `with` or direct `eval` can change: GetValue(ResolveBinding()) with no
     /// Reference when the name is where the BindingSite remembers it.
     GetBindingAtSite,
+    /// GetBindingAtSite followed by Load: the value of such a name, pushed
+    /// onto the stack.
+    LoadBindingAtSite,
     /// Set a name whose scope chain no `with` or direct `eval` can change to
     /// the value in the result register: PutValue(ResolveBinding(), value)
     /// with no Reference when the name is where the BindingSite remembers it.
@@ -768,6 +785,8 @@ impl Instruction {
             | Self::JumpIfNot
             | Self::JumpIfTrue
             | Self::LoadFromIndexStoreConstant
+            | Self::ApplyBinaryOperatorWithConstant
+            | Self::ApplyBinaryOperatorToIndexWithConstant
             | Self::LoadFromIndexGetFromIndex
             | Self::LoadFromIndexLoadFromIndex
             | Self::JumpIfNotLessThan
@@ -796,6 +815,7 @@ impl Instruction {
             | Self::ResolveBindingWithCache
             | Self::ResolveBindingAtSite
             | Self::GetBindingAtSite
+            | Self::LoadBindingAtSite
             | Self::PutBindingAtSite
             | Self::ResolveGlobalAtSite
             | Self::GetGlobalAtSite
@@ -839,6 +859,7 @@ impl Instruction {
             | Self::StoreConstant
             | Self::StringConcat
             | Self::ThrowError
+            | Self::GetValueWithIndexKey
             | Self::VerifyIsObject => 1,
             _ => 0,
         }
@@ -927,6 +948,7 @@ impl Instruction {
                 | Self::ResolveBindingWithCache
                 | Self::ResolveBindingAtSite
                 | Self::GetBindingAtSite
+                | Self::LoadBindingAtSite
                 | Self::PutBindingAtSite
                 | Self::ResolveGlobalAtSite
                 | Self::GetGlobalAtSite
@@ -1040,6 +1062,61 @@ impl Instruction {
             }
             _ => return None,
         })
+    }
+
+    /// The operator that a fused instruction has as an argument: the number
+    /// of an arithmetic or bitwise operator among them.
+    #[inline(always)]
+    pub(crate) const fn fused_operator(number: usize) -> Option<Self> {
+        Some(match number {
+            0 => Self::ApplyAdditionBinaryOperator,
+            1 => Self::ApplySubtractionBinaryOperator,
+            2 => Self::ApplyMultiplicationBinaryOperator,
+            3 => Self::ApplyDivisionBinaryOperator,
+            4 => Self::ApplyRemainderBinaryOperator,
+            5 => Self::ApplyShiftLeftBinaryOperator,
+            6 => Self::ApplyShiftRightBinaryOperator,
+            7 => Self::ApplyShiftRightZeroFillBinaryOperator,
+            8 => Self::ApplyBitwiseORBinaryOperator,
+            9 => Self::ApplyBitwiseXORBinaryOperator,
+            10 => Self::ApplyBitwiseAndBinaryOperator,
+            _ => return None,
+        })
+    }
+
+    /// The number that the fused instructions have for this operator.
+    pub(crate) const fn fused_operator_number(self) -> Option<usize> {
+        Some(match self {
+            Self::ApplyAdditionBinaryOperator => 0,
+            Self::ApplySubtractionBinaryOperator => 1,
+            Self::ApplyMultiplicationBinaryOperator => 2,
+            Self::ApplyDivisionBinaryOperator => 3,
+            Self::ApplyRemainderBinaryOperator => 4,
+            Self::ApplyShiftLeftBinaryOperator => 5,
+            Self::ApplyShiftRightBinaryOperator => 6,
+            Self::ApplyShiftRightZeroFillBinaryOperator => 7,
+            Self::ApplyBitwiseORBinaryOperator => 8,
+            Self::ApplyBitwiseXORBinaryOperator => 9,
+            Self::ApplyBitwiseAndBinaryOperator => 10,
+            _ => return None,
+        })
+    }
+
+    /// The stack slots that ApplyBinaryOperatorToIndexWithConstant can name:
+    /// its first argument has the number of the operator above them.
+    pub(crate) const FUSED_SLOTS: usize = 1 << 12;
+
+    /// The first argument of ApplyBinaryOperatorToIndexWithConstant for a
+    /// stack slot and the number of an operator.
+    pub(crate) const fn fused_slot_with_operator(slot: usize, operator: usize) -> usize {
+        debug_assert!(slot < Self::FUSED_SLOTS && operator < 16);
+        slot | operator << 12
+    }
+
+    /// The stack slot and the number of the operator in such an argument.
+    #[inline(always)]
+    pub(crate) const fn fused_slot_and_operator(argument: usize) -> (usize, usize) {
+        (argument & (Self::FUSED_SLOTS - 1), argument >> 12)
     }
 
     /// The instruction that makes the step `step` on a local, compares it by
@@ -1364,6 +1441,14 @@ impl Instr {
         }
     }
 
+    /// The operator that a fused instruction has as an argument.
+    fn print_operator(operator: usize) -> std::string::String {
+        match Instruction::fused_operator(operator) {
+            Some(kind) => format!("{kind:?}"),
+            None => format!("unknown operator {operator}"),
+        }
+    }
+
     fn print_single_arg(
         agent: &mut Agent,
         kind: Instruction,
@@ -1434,6 +1519,21 @@ impl Instr {
             Instruction::LoadFromIndexGetFromIndex | Instruction::LoadFromIndexLoadFromIndex => {
                 format!("{arg0}, {arg1}")
             }
+            Instruction::ApplyBinaryOperatorWithConstant => {
+                format!(
+                    "{}, {}",
+                    debug_print_constant(agent, exe.clone(), arg0 as usize, gc),
+                    Self::print_operator(arg1 as usize)
+                )
+            }
+            Instruction::ApplyBinaryOperatorToIndexWithConstant => {
+                let (slot, operator) = Instruction::fused_slot_and_operator(arg0 as usize);
+                format!(
+                    "{slot}, {}, {}",
+                    debug_print_constant(agent, exe.clone(), arg1 as usize, gc),
+                    Self::print_operator(operator)
+                )
+            }
             Instruction::BindingPatternBindNamed => {
                 format!(
                     "{{ {}: {} }}",
@@ -1485,6 +1585,7 @@ impl Instr {
             Instruction::ResolveBindingWithCache
             | Instruction::ResolveBindingAtSite
             | Instruction::GetBindingAtSite
+            | Instruction::LoadBindingAtSite
             | Instruction::PutBindingAtSite
             | Instruction::ResolveGlobalAtSite
             | Instruction::GetGlobalAtSite
@@ -1762,6 +1863,12 @@ impl Instruction {
         const RESOLVEBINDINGWITHCACHE: u8 = Instruction::ResolveBindingWithCache.as_u8();
         const RESOLVEBINDINGATSITE: u8 = Instruction::ResolveBindingAtSite.as_u8();
         const GETBINDINGATSITE: u8 = Instruction::GetBindingAtSite.as_u8();
+        const LOADBINDINGATSITE: u8 = Instruction::LoadBindingAtSite.as_u8();
+        const GETVALUEWITHINDEXKEY: u8 = Instruction::GetValueWithIndexKey.as_u8();
+        const APPLYBINARYOPERATORWITHCONSTANT: u8 =
+            Instruction::ApplyBinaryOperatorWithConstant.as_u8();
+        const APPLYBINARYOPERATORTOINDEXWITHCONSTANT: u8 =
+            Instruction::ApplyBinaryOperatorToIndexWithConstant.as_u8();
         const PUTBINDINGATSITE: u8 = Instruction::PutBindingAtSite.as_u8();
         const RESOLVEGLOBALATSITE: u8 = Instruction::ResolveGlobalAtSite.as_u8();
         const GETGLOBALATSITE: u8 = Instruction::GetGlobalAtSite.as_u8();
@@ -2039,6 +2146,12 @@ impl Instruction {
             RESOLVEBINDINGWITHCACHE => Some(Instruction::ResolveBindingWithCache),
             RESOLVEBINDINGATSITE => Some(Instruction::ResolveBindingAtSite),
             GETBINDINGATSITE => Some(Instruction::GetBindingAtSite),
+            LOADBINDINGATSITE => Some(Instruction::LoadBindingAtSite),
+            GETVALUEWITHINDEXKEY => Some(Instruction::GetValueWithIndexKey),
+            APPLYBINARYOPERATORWITHCONSTANT => Some(Instruction::ApplyBinaryOperatorWithConstant),
+            APPLYBINARYOPERATORTOINDEXWITHCONSTANT => {
+                Some(Instruction::ApplyBinaryOperatorToIndexWithConstant)
+            }
             PUTBINDINGATSITE => Some(Instruction::PutBindingAtSite),
             RESOLVEGLOBALATSITE => Some(Instruction::ResolveGlobalAtSite),
             GETGLOBALATSITE => Some(Instruction::GetGlobalAtSite),
