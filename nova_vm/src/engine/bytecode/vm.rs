@@ -3501,6 +3501,9 @@ impl Vm {
                 execute_apply_binary_operator(agent, vm, instr.kind, gc)?
             }
             Instruction::ArrayCreate => execute_array_create(agent, vm, instr, gc.into_nogc())?,
+            Instruction::ArrayFromStack => {
+                execute_array_from_stack(agent, vm, instr, gc.into_nogc())?
+            }
             Instruction::ArrayPush => execute_array_push(agent, vm, gc)?,
             Instruction::ArrayElision => execute_array_elision(agent, vm, gc)?,
             Instruction::BitwiseNot => execute_bitwise_not(agent, vm, gc.into_nogc())?,

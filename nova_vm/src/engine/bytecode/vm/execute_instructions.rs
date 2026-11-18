@@ -85,6 +85,26 @@ pub(super) fn execute_array_create<'gc>(
     Ok(())
 }
 
+/// An Array of the values on top of the stack, in the order they were
+/// pushed in: what creating an empty Array and CreateDataPropertyOrThrow of
+/// each value in turn comes to, on an Array that nothing else has seen.
+pub(super) fn execute_array_from_stack<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    instr: Instr,
+    gc: NoGcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let count = instr.get_first_index();
+    let first = vm.stack.len() - count;
+    let array = array_create(agent, count, count, None, gc)?;
+    for (slot, element) in array.as_mut_slice(agent).iter_mut().zip(&vm.stack[first..]) {
+        *slot = Some(*element);
+    }
+    vm.stack.truncate(first);
+    vm.result = Some(array.unbind().into());
+    Ok(())
+}
+
 pub(super) fn execute_array_push<'gc>(
     agent: &mut Agent,
     vm: &mut Vm,

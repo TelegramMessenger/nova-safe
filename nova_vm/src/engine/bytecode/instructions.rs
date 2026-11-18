@@ -325,6 +325,13 @@ pub(crate) enum Instruction {
     /// This instruction has one immediate argument that is the minimum
     /// number of elements to expect.
     ArrayCreate,
+    /// Store as the result value an Array of the values on top of the
+    /// stack, the deepest of them its first element, and pop them: an
+    /// array literal of values, with no spread element and no hole.
+    ///
+    /// This instruction has one immediate argument that is the number of
+    /// the values.
+    ArrayFromStack,
     /// Push a value into an array
     ArrayPush,
     /// Push a hole into an array
@@ -850,6 +857,7 @@ impl Instruction {
             | Self::DecrementIndex
             | Self::GetValueFromIndex
             | Self::ArrayCreate
+            | Self::ArrayFromStack
             | Self::BeginSimpleObjectBindingPattern
             | Self::BindingPatternBind
             | Self::BindingPatternBindRest
@@ -1759,6 +1767,7 @@ impl Instruction {
             Instruction::ApplyBitwiseAndBinaryOperator.as_u8();
         const DEBUG: u8 = Instruction::Debug.as_u8();
         const ARRAYCREATE: u8 = Instruction::ArrayCreate.as_u8();
+        const ARRAYFROMSTACK: u8 = Instruction::ArrayFromStack.as_u8();
         const ARRAYPUSH: u8 = Instruction::ArrayPush.as_u8();
         const ARRAYELISION: u8 = Instruction::ArrayElision.as_u8();
         const AWAIT: u8 = Instruction::Await.as_u8();
@@ -2031,6 +2040,7 @@ impl Instruction {
             APPLYBITWISEANDBINARYOPERATOR => Some(Instruction::ApplyBitwiseAndBinaryOperator),
             DEBUG => Some(Instruction::Debug),
             ARRAYCREATE => Some(Instruction::ArrayCreate),
+            ARRAYFROMSTACK => Some(Instruction::ArrayFromStack),
             ARRAYPUSH => Some(Instruction::ArrayPush),
             ARRAYELISION => Some(Instruction::ArrayElision),
             AWAIT => Some(Instruction::Await),
