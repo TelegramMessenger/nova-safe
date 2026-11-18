@@ -35,30 +35,30 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.8x |
-| call | 14 | 10.4x | 2.2x |
-| math | 4 | 9.7x | 2.4x |
-| string | 26 | 10.6x | 1.6x |
-| prop | 13 | 7.1x | 2.0x |
-| map, set | 4 | 4.6x | 2.0x |
+| call | 14 | 10.4x | 2.3x |
+| math | 4 | 9.7x | 2.2x |
+| string | 26 | 10.6x | 1.5x |
+| prop | 13 | 7.1x | 1.9x |
+| map, set | 4 | 4.6x | 1.7x |
 | app | 8 | 6.1x | 1.9x |
-| array | 14 | 5.8x | 1.7x |
+| array | 14 | 5.8x | 1.6x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
 | gc | 3 of 5 | 3.6x | 1.2x |
 | json | 2 | 1.0x | 0.9x |
-| all | 108 | 7.6x | 1.8x |
+| all | 108 | 7.6x | 1.7x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst is now a generator (4.1x), then typed `Float64Array`
-arithmetic (3.9x), then `instanceof` with `Array.isArray` (3.7x). 11 of the 108 cases are above 3x and 58 at
-or under 2x, 14 of them at or under QuickJS's time. Over all cases it is 1.78x: 2.12x before the round of
+arithmetic (4.0x), then short strings made and dropped (3.3x). 7 of the 108 cases are above 3x and 66 at
+or under 2x, 15 of them at or under QuickJS's time. Over all cases it is 1.71x: 2.12x before the round of
 patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
 stepping a generator without a result object took it to 1.88x. The arguments object in a stack slot halved
-one case of the 108 and left the mean where it was, and the string hash that follows from the hashes of
-what is concatenated took it here.
+one case of the 108 and left the mean where it was, the string hash that follows from the hashes of
+what is concatenated took it to 1.78x, and more built-in functions run in place of a call took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -308,6 +308,28 @@ value has it from the Reference the call is made through. So are `sin`, `cos` an
 `max` and `min` of any Numbers: those two first try the arguments as Numbers, by one function that the call
 and the instruction share, so that zeros and NaN come out the same either way. Trigonometry in a loop went
 from 3.85x to 3.53x.
+
+A call of any other built-in function still cost several times what the function did: by profile, a loop
+that takes two substrings of a String was a tenth in the substrings and most of the rest in getting to them
+(the arguments copied to a list, the `Vm` put aside for the collector, the execution context, the depth of
+calls counted, the arguments converted). Many functions, for the this value and arguments they are nearly
+always called with, run no script, throw nothing and need no collection, and for those the interpreter now
+does what the call would have done, in place: `slice`, `substring`, `charAt`, `startsWith`, `endsWith`,
+`indexOf`, `includes` of a String with integers and Strings; `repeat`, `padStart` and `padEnd` where the
+text is short; `push` of one value to an Array to which an element is simply appended, and `pop` of its
+last element; `Array.isArray` of anything but a Proxy; `get`, `has` and `set` of a Map, `has` and `add` of
+a Set; `hasOwnProperty` of an object that answers without running anything, for a key that is one as it
+is; `String(x)` and `Number(x)` of a primitive; `toFixed` of a Number; `Math.random` and `Date.now`; and
+`f.call(thisArg, ...)` where `f` is one of these. Each shares its code with the function, which runs it
+after converting what it was given; anything else (another kind of this value or argument, a function put
+in its place, the function reached some other way than by `o.f(...)`) takes the call.
+
+`push` and `pop` in a loop went from 2.9x to 1.8x, `startsWith` and `endsWith` from 2.8x to 1.8x,
+substrings from 2.9x to 1.9x (outside ASCII 3.2x to 2.4x), `Math.random` and `Date.now` from 3.1x to 2.2x,
+a Set from 2.1x to 1.5x, a Map from 2.1-2.4x to 1.6-2.0x, padding and `repeat` from 2.8x to 2.0x, an array
+of strings pushed and joined from 3.3x to 2.4x, Numbers to text from 2.4x to 1.9x, `instanceof` with
+`Array.isArray` from 3.7x to 3.0x, `hasOwnProperty.call` with `in` from 2.8x to 2.3x. All cases went from
+1.78x to 1.71x.
 
 A call of a function still went through half a dozen native frames between the caller's loop of instructions
 and the callee's, each saving and restoring its registers, with the caller's `Vm` moved aside for the collector
@@ -973,6 +995,14 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 - A function declared in a block and named `arguments` does not take the place of the arguments object
   after the block in sloppy code (Annex B.3.3), here or in the build this started from; Node does it.
   Found by the script written for the arguments object's stack slot. Not fixed.
+
+- `String.prototype.repeat` made each lone surrogate of the text U+FFFD, and did not make a pair of a
+  trail surrogate at the start with a lead surrogate at the end of the copy before; so here and in the
+  build this started from. Found by the script written for the functions run in place; fixed, with that
+  script as its test.
+- A template literal evaluated all of its substitutions and then converted them to Strings, where each is
+  to be converted before the next is evaluated: a `toString` that the next expression can observe ran
+  late. Found while reading how concatenation is compiled; not fixed in this round.
 
 - `loop/switch` read 4% slower after the round of the text of a Number (5.5 to 5.75 ms, in seven runs of
   each binary in turn), which touched nothing it runs: where the loop of instructions lands in the binary
