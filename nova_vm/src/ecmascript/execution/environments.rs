@@ -840,7 +840,10 @@ impl BindingSite {
 
     /// The Environment Record this many records out from the running one,
     /// if all on the way are declarative.
-    #[inline]
+    // Part of each of the few functions that read or write at a site: as a
+    // function of its own it was a call on every read of a variable of an
+    // enclosing function, and its result was taken apart again.
+    #[inline(always)]
     fn record<'a>(self, agent: &Agent, gc: NoGcScope<'a, '_>) -> Option<Environment<'a>> {
         if self.outwards > Self::FARTHEST {
             return None;
