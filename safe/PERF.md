@@ -49,7 +49,8 @@ below.
 | all | 108 | 7.6x | 2.1x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(38x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.8x). 26 of the 108 cases are above 3x and 40 at or under 2x, 12 of them at or under QuickJS's time. One case
+(35x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.9x). 25 of the
+108 cases are above 3x and 40 at or under 2x, 13 of them at or under QuickJS's time. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -359,6 +360,14 @@ function, none of the records is made, and the function is called as one without
 the two that only a direct eval observes are made only where there is one. The same function went on to
 2.7x. Calls together are 2.73x (2.86x), all cases 2.14x (2.16x).
 
+`new F(…)` took the native way for every function. Where F is not a derived class constructor and its
+code needs no Function Environment Record (no new.target, no super, no arrow function that uses its this),
+the constructor runs in place as a call does: the object is made from the function's "prototype", is the
+this value of the call, and waits on the caller's stack for the constructor to return, since what `new`
+gives is that object unless the constructor returns another. A class constructor had been compiled as
+always needing the record; its body says what it needs now. `new` of a class with two fields set went from
+3.1x to 2.3x. Derived classes, and `new` with spread arguments, take the native way.
+
 Left there: binding through the iterator instructions is the general way for each parameter, a rest
 parameter allocates its Array, and the arguments object is made in full at every call and kept in an
 Environment Record (4.7x).
@@ -647,6 +656,13 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   a pattern is the whole pattern. Upstream; test262 has no test that fails for it. It is refused now only
   where the read comes first (an earlier element, the element's own default, key or value, or what the
   pattern is initialized from). Fixed.
+- The constructor, the methods, the getters and the setters of a class took the mode of the code that
+  made them: in a script that is not strict (which a widget's is), an assignment to a name that is not
+  declared made a global, a write that fails was dropped, and `this` was the global object in a method
+  called without one. All of a class is strict mode code. Upstream; nine tests of test262 failed for it and
+  pass now. The functions that are elements of a class are strict now; what runs in the context of the code
+  around the class (static blocks, the initializers of static fields, computed keys, the heritage) is not.
+  Fixed for the functions.
 - An Array, and any object that has no properties of its own yet, is asked for its prototype through the
   running realm, not its own: `g.eval("[1]")` of another realm `g` has the caller's %Array.prototype% as
   its prototype, and `x instanceof g.Array` is true for it only because the call of g's
