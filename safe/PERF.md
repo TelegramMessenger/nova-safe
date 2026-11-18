@@ -36,12 +36,12 @@ below.
 |---|---|---|---|
 | call | 14 | 10.4x | 3.4x |
 | typed | 4 | 10.6x | 3.3x |
-| math | 4 | 9.7x | 3.1x |
+| math | 4 | 9.7x | 3.0x |
 | prop | 13 | 7.1x | 3.0x |
-| array | 14 | 5.8x | 2.8x |
+| array | 14 | 5.8x | 2.7x |
 | app | 8 | 6.1x | 2.6x |
 | string | 26 | 10.6x | 2.5x |
-| map, set | 4 | 4.6x | 2.3x |
+| map, set | 4 | 4.6x | 2.4x |
 | loop | 11 | 11.1x | 2.2x |
 | regexp | 4 | 2.4x | 1.9x |
 | gc | 3 of 5 | 3.6x | 1.5x |
@@ -50,7 +50,7 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
 (38x, area 7); after it come generators (6.5x), then calls that bind an arguments object or go through an accessor
-(5-6x). 48 of the 108 cases are above 3x and 26 at or under 2x. One case ran Nova out of memory before
+(5-6x). 47 of the 108 cases are above 3x and 26 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -213,7 +213,10 @@ and so cannot collect, throw or call anything. Any other argument, and a functio
 the call. `Math.floor(Math.sqrt(i)) + Math.max(i & 7, 3)` went from 4.8x to 2.9x, rounding and clamping in a
 loop from 4.4x to 2.8x. What is left of those is reading `Math` and the function off it (areas 2 and 4).
 `charCodeAt` of a String value at an integer is run in place the same way; a function that takes its this
-value has it from the Reference the call is made through. Next: the trigonometric functions and `pow`.
+value has it from the Reference the call is made through. So are `sin`, `cos` and `pow` of Numbers, and
+`max` and `min` of any Numbers: those two first try the arguments as Numbers, by one function that the call
+and the instruction share, so that zeros and NaN come out the same either way. Trigonometry in a loop went
+from 3.85x to 3.53x.
 
 A call of a function still went through half a dozen native frames between the caller's loop of instructions
 and the callee's, each saving and restoring its registers, with the caller's `Vm` moved aside for the collector
@@ -264,6 +267,10 @@ was evaluated, and took it back to assign. It keeps `o` on the value stack inste
 by the cache (`PutPropertyWithCache`); the general way makes the Reference when it is needed, from the same
 object, after the value, as before. And `this.x` is one instruction (`GetThisPropertyWithCache`) where the call
 keeps its this value itself, two otherwise. One shape went from 4.8x to 4.2x.
+
+A property of a local (`p.x`, `a.length`, the function of `p.m()`) was two instructions, the local and the
+read; it is one, with the stack slot as a third operand after the identifier and the cache. This is what
+most property reads in application code look like: the particle update went from 3.95x to 3.67x.
 
 An assignment by the cache looked the storage up twice, once with its descriptors (a hash lookup for whether
 the property is writable) and once to write: it is one look now, which asks for a descriptor only where the
