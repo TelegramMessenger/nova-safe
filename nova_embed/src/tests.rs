@@ -7724,3 +7724,249 @@ a generator between them 1,4,stop | close g,gen finally 10"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A built-in that calls a callback for every element (the methods of
+/// %Array.prototype%, the find methods, the comparator of sort,
+/// Array.from's mapper) calls it through one `Vm` kept for the whole
+/// loop where the callback is an ordinary function with its parameters on
+/// the stack, and reads an element that is a plain value directly. Every
+/// such method; every kind of callback (arrow, built-in, bound, a method
+/// with a this argument, a class constructor, a generator and an async
+/// function, one that reads `arguments`, one with defaults and a rest
+/// parameter, a closure, one that runs eval); the this value by the
+/// function's mode; the array changed under the method, holes, an
+/// inherited element, array-likes, a Proxy and its traps; callbacks that
+/// throw, call each other, recurse through the method and reenter it; and
+/// twenty thousand calls with collections between them. What is expected
+/// is what Node prints for the same script (with the recursion kept
+/// shallow: a call through a built-in takes native stack).
+#[test]
+fn callbacks_of_built_ins_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(callbacks_of_built_ins)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn callbacks_of_built_ins() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var SHALLOW = true;
+var out = [];
+function say() { out.push(Array.prototype.join.call(arguments, ' ')); }
+function attempt(name, f) { try { say(name, f()); } catch (e) { say(name, 'threw', e && e.constructor ? e.constructor.name : e); } }
+function show(v) { return typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v); }
+var data = [3, 1, 4, 1, 5, 9, 2, 6];
+
+// Every method that calls a callback, with a plain function.
+(function () {
+  var seen = [];
+  data.forEach(function (v, i, a) { seen.push(v + ':' + i + ':' + (a === data)); });
+  say('forEach', seen.join());
+  say('map', data.map(function (v, i) { return v * 10 + i; }).join());
+  say('filter', data.filter(function (v) { return v > 3; }).join());
+  say('some every', data.some(function (v) { return v === 9; }), data.some(function (v) { return v > 9; }), data.every(function (v) { return v > 0; }), data.every(function (v) { return v < 9; }));
+  say('find', data.find(function (v) { return v > 4; }), data.findIndex(function (v) { return v > 4; }), data.findLast(function (v) { return v < 3; }), data.findLastIndex(function (v) { return v < 3; }), data.find(function () { return false; }), data.findIndex(function () { return false; }));
+  say('reduce', data.reduce(function (a, v) { return a + v; }), data.reduce(function (a, v, i) { return a + v * i; }, 100), data.reduceRight(function (a, v) { return a + '' + v; }), data.reduceRight(function (a, v) { return a + v; }, 'x'));
+  say('sort', data.slice().sort(function (a, b) { return a - b; }).join(), data.slice().sort(function (a, b) { return b - a; }).join(), data.toSorted(function (a, b) { return a - b; }).join(), data.join());
+  say('flatMap', [1, 2, 3].flatMap(function (v) { return [v, v * 2]; }).join());
+  say('from', Array.from({ length: 4 }, function (_, i) { return i * i; }).join(), Array.from('abc', function (c, i) { return c + i; }).join());
+  say('chained', data.filter(function (v) { return v % 2; }).map(function (v) { return v * v; }).reduce(function (a, v) { return a + v; }, 0));
+  say('empty', [].map(function () { throw 1; }).length, [].every(function () { throw 1; }), [].some(function () { throw 1; }), [].reduce(function () { throw 1; }, 'init'));
+  attempt('reduce of none', function () { return [].reduce(function (a, v) { return a + v; }); });
+})();
+
+// Every kind of callback.
+(function () {
+  say('arrow', data.map((v) => v + 1).join(), data.filter(v => v & 1).join());
+  say('builtin', ['1', '2', '3'].map(Number).join(), [1.5, 2.5].map(Math.floor).join(), ['10', '10', '10'].map(parseInt).join(), [[1, 2], [3]].map(Array.isArray).join());
+  say('bound', data.map(function (v) { return this.k + v; }.bind({ k: 100 })).join());
+  var o = { k: 7, method: function (v) { return this.k * v; }, arrow: (v) => typeof this };
+  say('this argument', data.map(o.method, o).join(), data.map(o.method, { k: 2 }).slice(0, 3).join());
+  say('this defaults', [1].map(function () { return this === globalThis; })[0], [1].map(function () { 'use strict'; return this; })[0], [1].map(function () { return typeof this; }, 5)[0], [1].map(function () { 'use strict'; return typeof this; }, 5)[0], [1].map(function () { return this.valueOf() + 1; }, 5)[0], [1].map(o.arrow, 5)[0]);
+  say('this is null', [1].map(function () { return this === globalThis; }, null)[0], [1].map(function () { 'use strict'; return this; }, null)[0]);
+  class C { constructor() { this.made = true; } static twice(v) { return v * 2; } half(v) { return v / 2; } }
+  attempt('class constructor', function () { return [1].map(C); });
+  say('class methods', [2, 4].map(C.twice).join(), [2, 4].map(new C().half).join());
+  function* gen(v) { yield v; }
+  say('generator function', [1, 2].map(gen).map(function (g) { return g.next().value; }).join());
+  async function later(v) { return v; }
+  say('async function', [1].map(later)[0] instanceof Promise);
+  say('arguments', [5].map(function () { return arguments.length + ':' + Array.prototype.join.call(arguments, '|'); })[0]);
+  say('parameters', [5].map(function () { return 'none'; })[0], [5].map(function (a, b, c, d, e) { return [a, b, typeof c, d, e].join(); })[0]);
+  say('defaults and rest', [5].map(function (a, b = 'dflt', ...rest) { return a + b + rest.length; })[0], [5].map(function ({ length } = 'xx', ...[i]) { return length + ':' + i; })[0], [[1, 2]].map(function ([a, b], i) { return a + b + i; })[0]);
+  var count = 0, counter = function (v) { count += v; return count; };
+  say('closure', data.map(counter).join(), count);
+  say('new.target and name', [1].map(function named() { return new.target === undefined ? named.name : 'no'; })[0]);
+  attempt('not callable', function () { return data.map(5); });
+  attempt('not callable, empty', function () { return [].forEach(undefined); });
+  attempt('find not callable', function () { return data.find({}); });
+  attempt('sort not callable', function () { return data.slice().sort('no'); });
+  say('eval in a callback', [3].map(function (v) { var local = v * 2; return eval('local + 1'); })[0]);
+  say('with a direct this', [1, 2].map(function (v) { var self = this; return (function () { return self.k + v; })(); }, { k: 10 }).join());
+})();
+
+// The array changes under the method.
+(function () {
+  var a = [1, 2, 3, 4];
+  var seen = []; a.forEach(function (v, i, arr) { seen.push(v); if (i === 0) { arr.push(99); arr[2] = 'changed'; } });
+  say('grown and changed', seen.join(), a.join());
+  a = [1, 2, 3, 4]; seen = []; a.forEach(function (v, i, arr) { seen.push(v); if (i === 0) arr.length = 2; });
+  say('shortened', seen.join());
+  a = [1, 2, 3, 4]; seen = []; a.forEach(function (v, i, arr) { seen.push(v); if (i === 0) delete arr[2]; });
+  say('deleted', seen.join());
+  a = [1, 2, 3, 4]; seen = []; a.forEach(function (v, i, arr) { seen.push(v); if (i === 0) Object.defineProperty(arr, 2, { get: function () { return 'getter'; } }); });
+  say('made an accessor', seen.join());
+  a = [1, , 3, , 5]; seen = []; a.forEach(function (v, i) { seen.push(i + '=' + v); });
+  say('holes', seen.join(), a.map(function (v) { return v * 2; }).length, 1 in a.map(function (v) { return v; }), a.filter(function () { return true; }).length, a.reduce(function (s, v) { return s + v; }), a.find(function (v) { return v === undefined; }), a.findIndex(function (v) { return v === undefined; }), a.some(function (v) { return v === undefined; }), a.every(function (v) { return v !== undefined; }));
+  Array.prototype[1] = 'inherited';
+  seen = []; [1, , 3].forEach(function (v) { seen.push(v); });
+  say('a hole with an inherited element', seen.join(), [1, , 3].map(String).join());
+  delete Array.prototype[1];
+  a = [1, 2, 3]; seen = []; a.map(function (v, i, arr) { if (i === 0) Object.setPrototypeOf(arr, { forEach: 1 }); seen.push(v); return v; });
+  say('prototype replaced', seen.join(), Array.isArray(a), a.map === undefined);
+  var like = { length: 3, 0: 'a', 2: 'c' };
+  say('array-like', Array.prototype.map.call(like, function (v, i) { return v + i; }).join(), Array.prototype.filter.call('hey', function (c) { return c !== 'e'; }).join(''), Array.prototype.reduce.call(like, function (s, v) { return s + v; }));
+  (function () { say('arguments object', Array.prototype.map.call(arguments, function (v) { return v * 2; }).join()); })(1, 2, 3);
+  var log = [];
+  var p = new Proxy([10, 20], { has: function (t, k) { log.push('has ' + String(k)); return k in t; }, get: function (t, k, r) { if (typeof k === 'string' && k !== 'length' && k !== 'constructor') log.push('get ' + k); return Reflect.get(t, k, r); } });
+  say('proxy', Array.prototype.map.call(p, function (v) { return v + 1; }).join(), log.join());
+  var getterLength = { get length() { log.push('length'); return 2; }, 0: 'x', 1: 'y' }; log = [];
+  say('length once', Array.prototype.map.call(getterLength, function (v) { return v; }).join(), log.join());
+  a = [3, 1, 2]; attempt('sort that changes the array', function () { return a.sort(function (x, y) { a.push(0); return x - y; }).join() + ' ' + a.length; });
+  say('sort undefined and holes', [3, undefined, 1, , 2].sort(function (x, y) { return x - y; }).join('|'), [3, undefined, 1].sort(function () { return 0; }).join('|'));
+  var objects = [{ k: 2, n: 'a' }, { k: 1, n: 'b' }, { k: 2, n: 'c' }, { k: 1, n: 'd' }];
+  say('sort is stable', objects.sort(function (x, y) { return x.k - y.k; }).map(function (o) { return o.n; }).join(''));
+  var calls = 0; say('comparator results', [2, 1, 3].sort(function (x, y) { calls++; return { valueOf: function () { return x - y; } }; }).join(), [2, 1].sort(function () { return NaN; }).join(), [2, 1].sort(function () { return 'x'; }).join(), calls > 0);
+  say('typed array', new Uint8Array([3, 1, 2]).map(function (v) { return v * 2; }).join(), new Float64Array([3, 1, 2]).sort(function (x, y) { return y - x; }).join(), new Int16Array([1, 2, 3]).reduce(function (s, v) { return s + v; }));
+  var m = new Map([[1, 'a'], [2, 'b']]); seen = []; m.forEach(function (v, k) { seen.push(k + v); }); new Set([7, 8]).forEach(function (v) { seen.push(v); });
+  say('map and set', seen.join());
+})();
+
+// Callbacks that throw, call each other, and recurse.
+(function () {
+  var seen = [];
+  attempt('throws', function () { return data.map(function (v, i) { seen.push(i); if (i === 3) throw new RangeError('at 3'); return v; }); });
+  say('threw after', seen.join());
+  var cb = function (v) { if (v === 4) throw new EvalError('four'); return v * 2; };
+  attempt('thrown, then used again', function () { try { data.map(cb); } catch (e) { return e.constructor.name + ' ' + [1, 2].map(cb).join() + ' ' + [4].some(function () { return true; }); } });
+  attempt('throws in sort', function () { return [3, 2, 1].sort(function (a, b) { if (a === 1 || b === 1) throw new SyntaxError('one'); return a - b; }); });
+  attempt('throws in reduce', function () { return data.reduce(function (a, v) { if (v === 5) throw new TypeError('five'); return a + v; }); });
+  attempt('throws in find', function () { return data.findLast(function (v) { if (v === 9) throw new URIError('nine'); return false; }); });
+  var nested = [[1, 2], [3, 4], [5]];
+  say('nested', nested.map(function (row) { return row.map(function (v) { return v * 2; }).reduce(function (a, v) { return a + v; }, 0); }).join());
+  var same = function (v) { return Array.isArray(v) ? v.map(same).join('+') : v * 3; };
+  say('one callback at many depths', [1, [2, [3, [4, 5]]], 6].map(same).join());
+  function walk(node) { return node.children ? node.children.map(walk).reduce(function (a, b) { return a + b; }, node.v) : node.v; }
+  var tree = { v: 1, children: [{ v: 2, children: [{ v: 3 }, { v: 4, children: [{ v: 5 }] }] }, { v: 6 }] };
+  say('recursion through callbacks', walk(tree));
+  function deep(n) { return [n].map(function (v) { return v === 0 ? 0 : deep(v - 1) + 1; })[0]; }
+  say('deep', deep(typeof SHALLOW === 'undefined' ? 100 : 20));
+  if (typeof SHALLOW === 'undefined') attempt('too deep', function () { function forever(n) { return [n].map(forever)[0]; } try { forever(1); } catch (e) { return e.constructor.name; } });
+  say('after the overflow', data.map(function (v) { return v + 1; }).join(), deep(10));
+  var order = [];
+  [1, 2].forEach(function (a) { [10, 20].forEach(function (b) { try { [100].forEach(function (c) { order.push(a + b + c); if (a === 2 && b === 10) throw new Error('inner'); }); } catch (e) { order.push('caught'); } }); });
+  say('three levels with a throw', order.join());
+  var gen = (function* () { var total = 0; for (var i = 0; i < 3; i++) total += [i, i + 1].map(function (v) { return v * 2; }).reduce(function (a, b) { return a + b; }) + (yield total); return total; })();
+  say('inside a generator', gen.next().value, gen.next(1).value, gen.next(2).value, gen.next(3).value);
+  var calls = 0; var re = function (v) { calls++; return calls < 5 ? [v, v].map(re).length : 1; };
+  say('reentered', [1].map(re).join(), calls);
+  say('getter callback', [1, 2].map(function (v) { return this.total += v; }, { total: 10 }).join());
+  var handler = { handle: function (v) { return v + this.offset; }, offset: 5 };
+  say('method as callback loses this', [1].map(handler.handle)[0] !== 6, [1].map(handler.handle, handler)[0]);
+})();
+
+// Many calls, with collections between them, and what the callbacks keep.
+(function () {
+  var big = []; for (var i = 0; i < 20000; i++) big.push(i);
+  var kept = [];
+  var mapped = big.map(function (v) { var o = { v: v, text: 'item number ' + v }; if (v % 5000 === 0) kept.push(o); return o.text.length; });
+  say('many', mapped.length, mapped[0], mapped[19999], kept.map(function (o) { return o.text; }).join('|'));
+  var total = 0; for (var round = 0; round < 50; round++) { total += big.filter(function (v) { return v % 1000 === round; }).map(function (v) { return String(v).length; }).reduce(function (a, b) { return a + b; }, 0); }
+  say('rounds', total);
+  var strings = big.slice(0, 3000).map(function (v) { return 'k' + (v * 7919 % 3000); });
+  say('sort many', strings.sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }).slice(0, 4).join(), strings.sort(function (a, b) { return b.length - a.length || (a < b ? -1 : 1); })[0]);
+  var words = 'the quick brown fox jumps over the lazy dog'.split(' ');
+  say('words', words.map(function (w) { return w[0].toUpperCase() + w.slice(1); }).join(' '), words.filter(function (w, i, all) { return all.indexOf(w) === i; }).length, words.reduce(function (longest, w) { return w.length > longest.length ? w : longest; }, ''));
+})();
+out.join("\n")"#;
+    let expected = r#"forEach 3:0:true,1:1:true,4:2:true,1:3:true,5:4:true,9:5:true,2:6:true,6:7:true
+map 30,11,42,13,54,95,26,67
+filter 4,5,9,6
+some every true false true false
+find 5 4 2 6  -1
+reduce 31 231 62951413 x62951413
+sort 1,1,2,3,4,5,6,9 9,6,5,4,3,2,1,1 1,1,2,3,4,5,6,9 3,1,4,1,5,9,2,6
+flatMap 1,2,2,4,3,6
+from 0,1,4,9 a0,b1,c2
+chained 117
+empty 0 true false init
+reduce of none threw TypeError
+arrow 4,2,5,2,6,10,3,7 3,1,1,5,9
+builtin 1,2,3 1,2 10,NaN,2 true,true
+bound 103,101,104,101,105,109,102,106
+this argument 21,7,28,7,35,63,14,42 6,2,8
+this defaults true  object number 6 object
+this is null true 
+class constructor threw TypeError
+class methods 4,8 1,2
+generator function 1,2
+async function true
+arguments 3:5|0|5
+parameters none 5,0,object,,
+defaults and rest 6 undefined:0 3
+closure 3,4,8,9,14,23,25,31 31
+new.target and name named
+not callable threw TypeError
+not callable, empty threw TypeError
+find not callable threw TypeError
+sort not callable threw TypeError
+eval in a callback 7
+with a direct this 11,12
+grown and changed 1,2,changed,4 1,2,changed,4,99
+shortened 1,2
+deleted 1,2,4
+made an accessor 1,2,getter,4
+holes 0=1,2=3,4=5 5 false 3 9  1 false true
+a hole with an inherited element 1,inherited,3 1,inherited,3
+prototype replaced 1,2,3 true true
+array-like a0,,c2 hy ac
+arguments object 2,4,6
+proxy 11,21 has 0,get 0,has 1,get 1
+length once x,y length
+sort that changes the array 1,2,3,0,0,0 6
+sort undefined and holes 1|2|3|| 3|1|
+sort is stable bdac
+comparator results 1,2,3 2,1 2,1 true
+typed array 6,2,4 3,2,1 6
+map and set 1a,2b,7,8
+throws threw RangeError
+threw after 0,1,2,3
+thrown, then used again EvalError 2,4 true
+throws in sort threw SyntaxError
+throws in reduce threw TypeError
+throws in find threw URIError
+nested 6,14,10
+one callback at many depths 3,6+9+12+15,18
+recursion through callbacks 21
+deep 20
+after the overflow 4,2,5,2,6,10,3,7 10
+three levels with a throw 111,121,112,caught,122
+inside a generator 0 3 11 24
+reentered 2 9
+getter callback 11,13
+method as callback loses this true 6
+many 20000 13 17 item number 0|item number 5000|item number 10000|item number 15000
+rounds 4390
+sort many k0,k1,k10,k100 k1000
+words The Quick Brown Fox Jumps Over The Lazy Dog 8 quick"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
