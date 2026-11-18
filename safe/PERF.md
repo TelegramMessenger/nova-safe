@@ -34,14 +34,14 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.8x |
+| typed | 4 | 10.6x | 2.5x |
 | call | 14 | 10.4x | 2.2x |
-| math | 4 | 9.7x | 2.2x |
+| math | 4 | 9.7x | 2.0x |
 | string | 26 | 10.6x | 1.5x |
 | prop | 13 | 7.1x | 1.9x |
 | map, set | 4 | 4.6x | 1.7x |
 | app | 8 | 6.1x | 1.7x |
-| array | 14 | 5.8x | 1.7x |
+| array | 14 | 5.8x | 1.6x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
 | gc | 3 of 5 | 3.6x | 0.9x |
@@ -49,17 +49,18 @@ below.
 | all | 108 | 7.6x | 1.7x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst are now a generator and typed `Float64Array` arithmetic
-(4.1x both), then the properties of one object read and written in a loop (3.1x). 6 of the 108 cases are
-above 3x and 68 at or under 2x, 15 of them at or under QuickJS's time. Over all cases it is 1.68x: 2.12x
-before the round of patterns, Array iteration and
+was the worst after it (38x, area 7). The worst is now a generator (4.2x), then typed `Float64Array`
+arithmetic (3.3x), an object literal with a spread (3.2x) and the properties of one object read and
+written in a loop (3.2x). 5 of the 108 cases are above 3x and 69 at or under 2x, 13 of them at or under
+QuickJS's time. Over all cases it is 1.67x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
 stepping a generator without a result object took it to 1.88x. The arguments object in a stack slot halved
 one case of the 108 and left the mean where it was, the string hash that follows from the hashes of
 what is concatenated took it to 1.78x, more built-in functions run in place of a call to 1.71x, and
-chains of `+` compiled as one concatenation took it here.
+chains of `+` compiled as one concatenation to 1.68x, and the arithmetic of doubles done as that took
+it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -716,6 +717,29 @@ animation (which writes its values with `toFixed`) from 2.9x to 2.1x, template l
 
 Left of it: a string of eight bytes or more is looked up in the string table (a tenth of the three
 conversions now), and std's shortest digits of a double are still what `{:e}` writes.
+
+In a loop of float arithmetic (`x = x * 1.0000001 + 0.25 / (i + 1)`, 2.7x) two fifths of the time were
+not the arithmetic but getting to it: the operator found again by its kind in one function, then in a
+second, and `Number::multiply` and `Number::divide` as the specification writes them, a step for each
+special value (NaN, the infinities, the zeros), every step a question that read the operands again from
+the heap. Those steps are the arithmetic of doubles, and so are the steps of `Number::remainder` what `%`
+of two doubles gives: the three are now the operations themselves, as `Number::add` already was, and a
+test holds `*`, `/` and `%` to the steps for every pair of the special values and of ordinary ones. The
+four operators on two Numbers that are not both integers are computed where the instruction finds them,
+and a double becomes a Value without a call. The loop went to 1.9x, trigonometry in a loop from 2.6x to
+2.3x, rounding and clamping from 2.3x to 2.1x.
+
+Reading or writing an element of a TypedArray asked whether the index is valid by the specification's
+operations one after another: whether the buffer is detached, its length, whether the view is out of
+bounds, the length of the view, each reading the view and its buffer again (and one assertion reading
+the buffer a third time). It is one reading of the buffer and one of the view now. Arithmetic over a
+`Float64Array` went from 4.1x to 3.3x, pixels written to a `Uint8ClampedArray` from 2.8x to 2.6x; typed
+arrays from 2.8x to 2.5x, all cases from 1.68x to 1.67x.
+
+Left: a double that is not an integer and has more than 45 bits of mantissa is a Number of the heap, one
+allocated for the result of every operator, the intermediate ones too (a tenth of the loop, and the
+collector's sweep of them a twelfth). A Value has seven bytes for what it holds; doubles in a Value
+would take another layout of Value.
 
 ### 7. Building strings
 
