@@ -7358,3 +7358,106 @@ other targets x,y,a+b,c+d"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The property caches of the names that native code looks up again and
+/// again (an Array's iterator method, "return", "prototype",
+/// Symbol.hasInstance, what the methods of a RegExp read) are found by the
+/// key itself where they were asked for lately, and that memory is emptied
+/// by every collection: forty rounds of two hundred new names each, a
+/// collection's worth of garbage, and every such lookup; then the same
+/// lookups after what they find is redefined and put back; and names by
+/// the thousand as computed keys. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn caches_of_names_are_found_again_between_collections() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(caches_of_names)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn caches_of_names() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function say() { out.push(Array.prototype.join.call(arguments, ' ')); }
+// The names that native code looks up again and again (an Array's iterator
+// method, "return", "prototype", Symbol.hasInstance, what a RegExp's methods
+// read), between collections and while many other names are looked up.
+function Shape(n) { this.n = n; }
+Shape.prototype.twice = function () { return this.n * 2; };
+class Cls { constructor(n) { this.n = n; } get half() { return this.n / 2; } }
+function natives(round) {
+  var [a, b] = [round, round + 1, round + 2];
+  var total = a + b;
+  for (var v of [1, 2, 3]) { if (v === 2) break; total += v; }
+  total += [...[round, 1]].length + Math.max(...[1, round]);
+  var s = new Shape(round), c = new Cls(round);
+  total += s.twice() + c.half + (s instanceof Shape ? 1 : 0) + (c instanceof Cls ? 1 : 0) + (s instanceof Cls ? 100 : 0) + ([] instanceof Array ? 1 : 0);
+  total += /(\d+)-(\d+)/.exec('at 12-' + round)[2].length + 'a-b-c'.replace(/-/g, '+').length + ('x' + round).search(/\d/) + 'k=v;k2=v2'.split(/[=;]/).length + ('aXbXc'.match(/X/g) || []).length;
+  for (var k in { p: 1, q: 2 }) total += k.length;
+  return total;
+}
+var results = [];
+for (var round = 0; round < 40; round++) {
+  // Two hundred names no code has used yet, each read and written once.
+  var src = 'var o = {}, sum = 0;';
+  for (var i = 0; i < 200; i++) { var name = 'name_' + round + '_' + i; src += 'o.' + name + '=' + i + ';sum+=o.' + name + ';'; }
+  src += 'sum';
+  var sum = (0, eval)(src);
+  // Garbage enough for a collection.
+  var garbage = [];
+  for (var g = 0; g < 4000; g++) garbage.push({ text: 'garbage ' + g + ' of round ' + round, list: [g, round] });
+  results.push(sum + natives(round) + garbage.length);
+}
+say('rounds', results.length, results[0], results[1], results[39], results.reduce(function (a, b) { return a + b; }, 0));
+// What they find after the names are redefined: nothing remembered wrongly.
+var IterProto = Object.getPrototypeOf([][Symbol.iterator]());
+var before = natives(3);
+IterProto.return = function () { say('return called'); return {}; };
+var withReturn = natives(3);
+delete IterProto.return;
+Shape.prototype = { twice: function () { return -1; } };
+var afterPrototype = (new Shape(1)).twice() + ' ' + (new Shape(1) instanceof Shape);
+Object.defineProperty(Shape, Symbol.hasInstance, { value: function () { return 'yes'; } });
+say('redefined', before, withReturn, afterPrototype, ({}) instanceof Shape, natives(3) - before);
+var values = Array.prototype[Symbol.iterator];
+Array.prototype[Symbol.iterator] = function* () { yield 'mine'; };
+var [mine] = [1, 2];
+Array.prototype[Symbol.iterator] = values;
+var [theirs] = [1, 2];
+say('iterator replaced and put back', mine, theirs);
+var exec = RegExp.prototype.exec;
+RegExp.prototype.exec = function (s) { say('exec called'); return exec.call(this, s); };
+say('exec replaced', /b/.test('abc'), 'abc'.replace(/b/, 'X'));
+RegExp.prototype.exec = exec;
+say('exec put back', /b/.test('abc'), 'abc'.replace(/b/, 'X'));
+// Names by the thousand, as keys computed at run time, with collections between.
+var bag = {}, checks = 0;
+for (var n = 0; n < 6000; n++) {
+  var key = 'key number ' + (n % 1500);
+  bag[key] = (bag[key] || 0) + 1;
+  if (n % 500 === 0) { var [x, y] = [n, 1]; checks += x + y + (bag instanceof Object ? 1 : 0) + new Shape(n).n; }
+}
+say('computed names', Object.keys(bag).length, bag['key number 7'], checks);
+out.join("\n")"#;
+    let expected = r#"rounds 40 23923 23927.5 24137.5 961201
+return called
+return called
+redefined 38.5 38.5 -1 true true -7
+iterator replaced and put back mine 1
+exec called
+exec called
+exec replaced true aXc
+exec put back true aXc
+computed names 1500 4 66024"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
