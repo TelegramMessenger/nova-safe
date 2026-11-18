@@ -131,6 +131,18 @@ pub(crate) enum Instruction {
     /// EvaluatePropertyAccessWithIdentifierKey followed by
     /// GetValueWithCacheKeepReference.
     GetPropertyWithCacheKeepReference,
+    /// ResolveThisBinding followed by GetPropertyWithCache: `this.x`. The
+    /// immediates are the identifier and the cache.
+    GetThisPropertyWithCache,
+    /// ResolveThisBinding followed by GetPropertyWithCacheKeepReference:
+    /// the function of `this.m()`.
+    GetThisPropertyWithCacheKeepReference,
+    /// `object.name = value` with the object on the stack and the value as
+    /// the result, where the value of the assignment is not used: what
+    /// EvaluatePropertyAccessWithIdentifierKey of the object and
+    /// PutValueWithCache of the value do, with no Reference kept in
+    /// between. The immediates are the identifier and the cache.
+    PutPropertyWithCache,
     /// PushReference followed by Load.
     PushReferenceAndLoad,
 
@@ -179,6 +191,16 @@ pub(crate) enum Instruction {
     JumpIfNotGreaterThan,
     /// GreaterThanEquals followed by JumpIfNot.
     JumpIfNotGreaterThanEquals,
+    /// LessThan followed by JumpIfTrue, as one instruction: the test at
+    /// the end of a loop, and the jump back. The comparison leaves no
+    /// result.
+    JumpIfLessThan,
+    /// LessThanEquals followed by JumpIfTrue.
+    JumpIfLessThanEquals,
+    /// GreaterThan followed by JumpIfTrue.
+    JumpIfGreaterThan,
+    /// GreaterThanEquals followed by JumpIfTrue.
+    JumpIfGreaterThanEquals,
     /// IsStrictlyEqual followed by JumpIfNot, as one instruction: the test
     /// of `if (a === b)`.
     JumpIfNotStrictlyEqual,
@@ -188,6 +210,47 @@ pub(crate) enum Instruction {
     JumpIfNotLooselyEqual,
     /// IsLooselyEqual followed by JumpIfTrue: the test of `if (a != b)`.
     JumpIfLooselyEqual,
+    /// LoadFromIndexStoreConstant followed by JumpIfNotLessThan, as one
+    /// instruction: the test of `i < 10` on a local, and the jump on it.
+    /// This and the eleven after it take a stack slot, then a constant or a
+    /// second stack slot, then the jump target in four bytes more than
+    /// other instructions have: a local compared with a constant or with
+    /// another local by the comparison the name says, and the jump that
+    /// the instruction of that name without Index makes on it.
+    JumpIfIndexNotLessThanConstant,
+    JumpIfIndexNotLessThanIndex,
+    JumpIfIndexNotLessThanEqualsConstant,
+    JumpIfIndexNotLessThanEqualsIndex,
+    JumpIfIndexNotGreaterThanConstant,
+    JumpIfIndexNotGreaterThanIndex,
+    JumpIfIndexNotGreaterThanEqualsConstant,
+    JumpIfIndexNotGreaterThanEqualsIndex,
+    JumpIfIndexNotStrictlyEqualConstant,
+    JumpIfIndexNotStrictlyEqualIndex,
+    JumpIfIndexStrictlyEqualConstant,
+    JumpIfIndexStrictlyEqualIndex,
+    /// The test at the end of a loop: a local compared with a constant or
+    /// another local, and the jump back where the comparison holds. This
+    /// and the fifteen after it take a stack slot, a constant or a second
+    /// stack slot, and a jump target, like the twelve before; those named
+    /// IncrementIndex and DecrementIndex first do `++` or `--` on the first
+    /// stack slot, as IncrementIndex and DecrementIndex do.
+    JumpIfIndexLessThanConstant,
+    JumpIfIndexLessThanIndex,
+    JumpIfIndexLessThanEqualsConstant,
+    JumpIfIndexLessThanEqualsIndex,
+    JumpIfIndexGreaterThanConstant,
+    JumpIfIndexGreaterThanIndex,
+    JumpIfIndexGreaterThanEqualsConstant,
+    JumpIfIndexGreaterThanEqualsIndex,
+    IncrementIndexJumpIfLessThanConstant,
+    IncrementIndexJumpIfLessThanIndex,
+    IncrementIndexJumpIfLessThanEqualsConstant,
+    IncrementIndexJumpIfLessThanEqualsIndex,
+    DecrementIndexJumpIfGreaterThanConstant,
+    DecrementIndexJumpIfGreaterThanIndex,
+    DecrementIndexJumpIfGreaterThanEqualsConstant,
+    DecrementIndexJumpIfGreaterThanEqualsIndex,
     /// Load the result value, if present, to the top of the stack, replacing
     /// the previous top of the stack value.
     LoadReplace,
@@ -648,6 +711,35 @@ impl Instruction {
     #[inline(always)]
     pub const fn argument_count(self) -> u8 {
         match self {
+            // A stack slot, a constant or stack slot, and a jump target.
+            Self::JumpIfIndexNotLessThanConstant
+            | Self::JumpIfIndexNotLessThanIndex
+            | Self::JumpIfIndexNotLessThanEqualsConstant
+            | Self::JumpIfIndexNotLessThanEqualsIndex
+            | Self::JumpIfIndexNotGreaterThanConstant
+            | Self::JumpIfIndexNotGreaterThanIndex
+            | Self::JumpIfIndexNotGreaterThanEqualsConstant
+            | Self::JumpIfIndexNotGreaterThanEqualsIndex
+            | Self::JumpIfIndexNotStrictlyEqualConstant
+            | Self::JumpIfIndexNotStrictlyEqualIndex
+            | Self::JumpIfIndexStrictlyEqualConstant
+            | Self::JumpIfIndexStrictlyEqualIndex
+            | Self::JumpIfIndexLessThanConstant
+            | Self::JumpIfIndexLessThanIndex
+            | Self::JumpIfIndexLessThanEqualsConstant
+            | Self::JumpIfIndexLessThanEqualsIndex
+            | Self::JumpIfIndexGreaterThanConstant
+            | Self::JumpIfIndexGreaterThanIndex
+            | Self::JumpIfIndexGreaterThanEqualsConstant
+            | Self::JumpIfIndexGreaterThanEqualsIndex
+            | Self::IncrementIndexJumpIfLessThanConstant
+            | Self::IncrementIndexJumpIfLessThanIndex
+            | Self::IncrementIndexJumpIfLessThanEqualsConstant
+            | Self::IncrementIndexJumpIfLessThanEqualsIndex
+            | Self::DecrementIndexJumpIfGreaterThanConstant
+            | Self::DecrementIndexJumpIfGreaterThanIndex
+            | Self::DecrementIndexJumpIfGreaterThanEqualsConstant
+            | Self::DecrementIndexJumpIfGreaterThanEqualsIndex => 4,
             // Number of repetitions and lexical status
             Self::BeginSimpleArrayBindingPattern
             | Self::BindArguments
@@ -672,6 +764,10 @@ impl Instruction {
             | Self::JumpIfNotLessThanEquals
             | Self::JumpIfNotGreaterThan
             | Self::JumpIfNotGreaterThanEquals
+            | Self::JumpIfLessThan
+            | Self::JumpIfLessThanEquals
+            | Self::JumpIfGreaterThan
+            | Self::JumpIfGreaterThanEquals
             | Self::JumpIfNotStrictlyEqual
             | Self::JumpIfStrictlyEqual
             | Self::JumpIfNotLooselyEqual
@@ -684,6 +780,9 @@ impl Instruction {
             | Self::PushExceptionJumpTarget
             | Self::GetPropertyWithCache
             | Self::GetPropertyWithCacheKeepReference
+            | Self::GetThisPropertyWithCache
+            | Self::GetThisPropertyWithCacheKeepReference
+            | Self::PutPropertyWithCache
             | Self::ResolveBindingWithCache
             | Self::ResolveBindingAtSite
             | Self::GetBindingAtSite
@@ -747,6 +846,10 @@ impl Instruction {
                 | Self::JumpIfNotLessThanEquals
                 | Self::JumpIfNotGreaterThan
                 | Self::JumpIfNotGreaterThanEquals
+                | Self::JumpIfLessThan
+                | Self::JumpIfLessThanEquals
+                | Self::JumpIfGreaterThan
+                | Self::JumpIfGreaterThanEquals
                 | Self::JumpIfNotStrictlyEqual
                 | Self::JumpIfStrictlyEqual
                 | Self::JumpIfNotLooselyEqual
@@ -764,6 +867,9 @@ impl Instruction {
                 | Self::GetValueWithCacheKeepReference
                 | Self::GetPropertyWithCache
                 | Self::GetPropertyWithCacheKeepReference
+                | Self::GetThisPropertyWithCache
+                | Self::GetThisPropertyWithCacheKeepReference
+                | Self::PutPropertyWithCache
                 | Self::PutValueWithCache
                 | Self::ResolveBindingWithCache
         )
@@ -798,6 +904,9 @@ impl Instruction {
                 | Self::EvaluatePropertyAccessWithIdentifierKey
                 | Self::GetPropertyWithCache
                 | Self::GetPropertyWithCacheKeepReference
+                | Self::GetThisPropertyWithCache
+                | Self::GetThisPropertyWithCacheKeepReference
+                | Self::PutPropertyWithCache
                 | Self::MakePrivateReference
                 | Self::MakeSuperPropertyReferenceWithIdentifierKey
                 | Self::ResolveBinding
@@ -846,6 +955,10 @@ impl Instruction {
                 | Self::JumpIfNotLessThanEquals
                 | Self::JumpIfNotGreaterThan
                 | Self::JumpIfNotGreaterThanEquals
+                | Self::JumpIfLessThan
+                | Self::JumpIfLessThanEquals
+                | Self::JumpIfGreaterThan
+                | Self::JumpIfGreaterThanEquals
                 | Self::JumpIfNotStrictlyEqual
                 | Self::JumpIfStrictlyEqual
                 | Self::JumpIfNotLooselyEqual
@@ -857,6 +970,113 @@ impl Instruction {
 
     pub const fn as_u8(self) -> u8 {
         self as u8
+    }
+
+    /// For an instruction that compares a local with a constant or another
+    /// local and jumps: the instruction that makes the same comparison and
+    /// jump on the stack and the result, and whether the second operand is
+    /// a constant.
+    #[inline(always)]
+    pub(crate) const fn compared_local(self) -> Option<(Self, bool)> {
+        Some(match self {
+            Self::JumpIfIndexNotLessThanConstant => (Self::JumpIfNotLessThan, true),
+            Self::JumpIfIndexNotLessThanIndex => (Self::JumpIfNotLessThan, false),
+            Self::JumpIfIndexNotLessThanEqualsConstant => (Self::JumpIfNotLessThanEquals, true),
+            Self::JumpIfIndexNotLessThanEqualsIndex => (Self::JumpIfNotLessThanEquals, false),
+            Self::JumpIfIndexNotGreaterThanConstant => (Self::JumpIfNotGreaterThan, true),
+            Self::JumpIfIndexNotGreaterThanIndex => (Self::JumpIfNotGreaterThan, false),
+            Self::JumpIfIndexNotGreaterThanEqualsConstant => {
+                (Self::JumpIfNotGreaterThanEquals, true)
+            }
+            Self::JumpIfIndexNotGreaterThanEqualsIndex => (Self::JumpIfNotGreaterThanEquals, false),
+            Self::JumpIfIndexNotStrictlyEqualConstant => (Self::JumpIfNotStrictlyEqual, true),
+            Self::JumpIfIndexNotStrictlyEqualIndex => (Self::JumpIfNotStrictlyEqual, false),
+            Self::JumpIfIndexStrictlyEqualConstant => (Self::JumpIfStrictlyEqual, true),
+            Self::JumpIfIndexStrictlyEqualIndex => (Self::JumpIfStrictlyEqual, false),
+            _ => return None,
+        })
+    }
+
+    /// For an instruction that compares a local with a constant or another
+    /// local and jumps where the comparison holds: the step it first makes
+    /// on the local (1, -1, or 0 for none), the comparison, and whether
+    /// the second operand is a constant.
+    #[inline(always)]
+    pub(crate) const fn loop_test(self) -> Option<(i8, Self, bool)> {
+        Some(match self {
+            Self::JumpIfIndexLessThanConstant => (0, Self::LessThan, true),
+            Self::JumpIfIndexLessThanIndex => (0, Self::LessThan, false),
+            Self::JumpIfIndexLessThanEqualsConstant => (0, Self::LessThanEquals, true),
+            Self::JumpIfIndexLessThanEqualsIndex => (0, Self::LessThanEquals, false),
+            Self::JumpIfIndexGreaterThanConstant => (0, Self::GreaterThan, true),
+            Self::JumpIfIndexGreaterThanIndex => (0, Self::GreaterThan, false),
+            Self::JumpIfIndexGreaterThanEqualsConstant => (0, Self::GreaterThanEquals, true),
+            Self::JumpIfIndexGreaterThanEqualsIndex => (0, Self::GreaterThanEquals, false),
+            Self::IncrementIndexJumpIfLessThanConstant => (1, Self::LessThan, true),
+            Self::IncrementIndexJumpIfLessThanIndex => (1, Self::LessThan, false),
+            Self::IncrementIndexJumpIfLessThanEqualsConstant => (1, Self::LessThanEquals, true),
+            Self::IncrementIndexJumpIfLessThanEqualsIndex => (1, Self::LessThanEquals, false),
+            Self::DecrementIndexJumpIfGreaterThanConstant => (-1, Self::GreaterThan, true),
+            Self::DecrementIndexJumpIfGreaterThanIndex => (-1, Self::GreaterThan, false),
+            Self::DecrementIndexJumpIfGreaterThanEqualsConstant => {
+                (-1, Self::GreaterThanEquals, true)
+            }
+            Self::DecrementIndexJumpIfGreaterThanEqualsIndex => {
+                (-1, Self::GreaterThanEquals, false)
+            }
+            _ => return None,
+        })
+    }
+
+    /// The instruction that makes the step `step` on a local, compares it by
+    /// `self` (LessThan and its like) with a constant or another local, and
+    /// jumps where the comparison holds.
+    pub(crate) const fn as_loop_test(self, step: i8, constant: bool) -> Option<Self> {
+        Some(match (step, self, constant) {
+            (0, Self::LessThan, true) => Self::JumpIfIndexLessThanConstant,
+            (0, Self::LessThan, false) => Self::JumpIfIndexLessThanIndex,
+            (0, Self::LessThanEquals, true) => Self::JumpIfIndexLessThanEqualsConstant,
+            (0, Self::LessThanEquals, false) => Self::JumpIfIndexLessThanEqualsIndex,
+            (0, Self::GreaterThan, true) => Self::JumpIfIndexGreaterThanConstant,
+            (0, Self::GreaterThan, false) => Self::JumpIfIndexGreaterThanIndex,
+            (0, Self::GreaterThanEquals, true) => Self::JumpIfIndexGreaterThanEqualsConstant,
+            (0, Self::GreaterThanEquals, false) => Self::JumpIfIndexGreaterThanEqualsIndex,
+            (1, Self::LessThan, true) => Self::IncrementIndexJumpIfLessThanConstant,
+            (1, Self::LessThan, false) => Self::IncrementIndexJumpIfLessThanIndex,
+            (1, Self::LessThanEquals, true) => Self::IncrementIndexJumpIfLessThanEqualsConstant,
+            (1, Self::LessThanEquals, false) => Self::IncrementIndexJumpIfLessThanEqualsIndex,
+            (-1, Self::GreaterThan, true) => Self::DecrementIndexJumpIfGreaterThanConstant,
+            (-1, Self::GreaterThan, false) => Self::DecrementIndexJumpIfGreaterThanIndex,
+            (-1, Self::GreaterThanEquals, true) => {
+                Self::DecrementIndexJumpIfGreaterThanEqualsConstant
+            }
+            (-1, Self::GreaterThanEquals, false) => {
+                Self::DecrementIndexJumpIfGreaterThanEqualsIndex
+            }
+            _ => return None,
+        })
+    }
+
+    /// The instruction that makes the comparison and jump of `self` on a
+    /// local and a constant, or on two locals.
+    pub(crate) const fn with_compared_local(self, constant: bool) -> Option<Self> {
+        Some(match (self, constant) {
+            (Self::JumpIfNotLessThan, true) => Self::JumpIfIndexNotLessThanConstant,
+            (Self::JumpIfNotLessThan, false) => Self::JumpIfIndexNotLessThanIndex,
+            (Self::JumpIfNotLessThanEquals, true) => Self::JumpIfIndexNotLessThanEqualsConstant,
+            (Self::JumpIfNotLessThanEquals, false) => Self::JumpIfIndexNotLessThanEqualsIndex,
+            (Self::JumpIfNotGreaterThan, true) => Self::JumpIfIndexNotGreaterThanConstant,
+            (Self::JumpIfNotGreaterThan, false) => Self::JumpIfIndexNotGreaterThanIndex,
+            (Self::JumpIfNotGreaterThanEquals, true) => {
+                Self::JumpIfIndexNotGreaterThanEqualsConstant
+            }
+            (Self::JumpIfNotGreaterThanEquals, false) => Self::JumpIfIndexNotGreaterThanEqualsIndex,
+            (Self::JumpIfNotStrictlyEqual, true) => Self::JumpIfIndexNotStrictlyEqualConstant,
+            (Self::JumpIfNotStrictlyEqual, false) => Self::JumpIfIndexNotStrictlyEqualIndex,
+            (Self::JumpIfStrictlyEqual, true) => Self::JumpIfIndexStrictlyEqualConstant,
+            (Self::JumpIfStrictlyEqual, false) => Self::JumpIfIndexStrictlyEqualIndex,
+            _ => return None,
+        })
     }
 }
 
@@ -968,6 +1188,7 @@ impl Instr {
     pub(crate) fn get_first_arg(&self) -> IndexType {
         debug_assert!(
             self.kind.argument_count() == 1
+                || self.kind.argument_count() == 4
                 || (self.kind.argument_count() == 2 && !self.kind.has_double_arg())
         );
         self.args.single_arg()
@@ -980,9 +1201,25 @@ impl Instr {
 
     #[inline(always)]
     pub(crate) fn get_second_index(&self) -> usize {
-        debug_assert_eq!(self.kind.argument_count(), 2);
-        debug_assert!(!self.kind.has_double_arg());
+        debug_assert!(
+            self.kind.argument_count() == 4
+                || (self.kind.argument_count() == 2 && !self.kind.has_double_arg())
+        );
         self.args.two_args()[1] as usize
+    }
+
+    /// The jump target of an instruction with four arguments, which is its
+    /// last two: the four bytes before `ip`, where the next instruction is.
+    #[inline(always)]
+    pub(crate) fn wide_jump_target(instructions: &[u8], ip: usize) -> usize {
+        let Some(bytes) = ip
+            .checked_sub(4)
+            .and_then(|start| instructions.get(start..ip))
+            .and_then(|bytes| bytes.first_chunk::<4>())
+        else {
+            panic_invalid_instruction()
+        };
+        u32::from_ne_bytes(*bytes) as usize
     }
 
     pub(crate) fn get_first_bool(&self) -> bool {
@@ -1065,6 +1302,22 @@ impl Instr {
                         Self::print_two_args(agent, self.kind, arg0, arg1, exe, gc)
                     );
                 }
+            }
+            4 => {
+                let [arg0, arg1] = self.args.two_args();
+                let instructions = exe.get_instructions(agent);
+                let target = Self::wide_jump_target(&instructions, ip + 9);
+                let constant = matches!(self.kind.compared_local(), Some((_, true)))
+                    || matches!(self.kind.loop_test(), Some((_, _, true)));
+                let operand = if constant {
+                    debug_print_constant(agent, exe, arg1 as usize, gc)
+                } else {
+                    format!("{arg1}")
+                };
+                eprintln!(
+                    "  {}: {:?}({}, {}, {})",
+                    ip, self.kind, arg0, operand, target
+                );
             }
             _ => unreachable!(),
         }
@@ -1197,7 +1450,10 @@ impl Instr {
             | Instruction::PutGlobalAtSite
             | Instruction::PutValueAtSite
             | Instruction::GetPropertyWithCache
-            | Instruction::GetPropertyWithCacheKeepReference => {
+            | Instruction::GetPropertyWithCacheKeepReference
+            | Instruction::GetThisPropertyWithCache
+            | Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::PutPropertyWithCache => {
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
                 format!("{key}, {arg1}")
             }
@@ -1307,6 +1563,10 @@ impl Instruction {
         const GETPROPERTYWITHCACHE: u8 = Instruction::GetPropertyWithCache.as_u8();
         const GETPROPERTYWITHCACHEKEEPREFERENCE: u8 =
             Instruction::GetPropertyWithCacheKeepReference.as_u8();
+        const GETTHISPROPERTYWITHCACHE: u8 = Instruction::GetThisPropertyWithCache.as_u8();
+        const GETTHISPROPERTYWITHCACHEKEEPREFERENCE: u8 =
+            Instruction::GetThisPropertyWithCacheKeepReference.as_u8();
+        const PUTPROPERTYWITHCACHE: u8 = Instruction::PutPropertyWithCache.as_u8();
         const PUSHREFERENCEANDLOAD: u8 = Instruction::PushReferenceAndLoad.as_u8();
         const POPREFERENCEANDEVALUATECALL: u8 = Instruction::PopReferenceAndEvaluateCall.as_u8();
         const ISSTRICTLYEQUALCONSTANT: u8 = Instruction::IsStrictlyEqualConstant.as_u8();
@@ -1364,10 +1624,66 @@ impl Instruction {
         const JUMPIFNOTLESSTHANEQUALS: u8 = Instruction::JumpIfNotLessThanEquals.as_u8();
         const JUMPIFNOTGREATERTHAN: u8 = Instruction::JumpIfNotGreaterThan.as_u8();
         const JUMPIFNOTGREATERTHANEQUALS: u8 = Instruction::JumpIfNotGreaterThanEquals.as_u8();
+        const JUMPIFLESSTHAN: u8 = Instruction::JumpIfLessThan.as_u8();
+        const JUMPIFLESSTHANEQUALS: u8 = Instruction::JumpIfLessThanEquals.as_u8();
+        const JUMPIFGREATERTHAN: u8 = Instruction::JumpIfGreaterThan.as_u8();
+        const JUMPIFGREATERTHANEQUALS: u8 = Instruction::JumpIfGreaterThanEquals.as_u8();
         const JUMPIFNOTSTRICTLYEQUAL: u8 = Instruction::JumpIfNotStrictlyEqual.as_u8();
         const JUMPIFSTRICTLYEQUAL: u8 = Instruction::JumpIfStrictlyEqual.as_u8();
         const JUMPIFNOTLOOSELYEQUAL: u8 = Instruction::JumpIfNotLooselyEqual.as_u8();
         const JUMPIFLOOSELYEQUAL: u8 = Instruction::JumpIfLooselyEqual.as_u8();
+        const JUMPIFINDEXNOTLESSTHANCONSTANT: u8 =
+            Instruction::JumpIfIndexNotLessThanConstant.as_u8();
+        const JUMPIFINDEXNOTLESSTHANINDEX: u8 = Instruction::JumpIfIndexNotLessThanIndex.as_u8();
+        const JUMPIFINDEXNOTLESSTHANEQUALSCONSTANT: u8 =
+            Instruction::JumpIfIndexNotLessThanEqualsConstant.as_u8();
+        const JUMPIFINDEXNOTLESSTHANEQUALSINDEX: u8 =
+            Instruction::JumpIfIndexNotLessThanEqualsIndex.as_u8();
+        const JUMPIFINDEXNOTGREATERTHANCONSTANT: u8 =
+            Instruction::JumpIfIndexNotGreaterThanConstant.as_u8();
+        const JUMPIFINDEXNOTGREATERTHANINDEX: u8 =
+            Instruction::JumpIfIndexNotGreaterThanIndex.as_u8();
+        const JUMPIFINDEXNOTGREATERTHANEQUALSCONSTANT: u8 =
+            Instruction::JumpIfIndexNotGreaterThanEqualsConstant.as_u8();
+        const JUMPIFINDEXNOTGREATERTHANEQUALSINDEX: u8 =
+            Instruction::JumpIfIndexNotGreaterThanEqualsIndex.as_u8();
+        const JUMPIFINDEXNOTSTRICTLYEQUALCONSTANT: u8 =
+            Instruction::JumpIfIndexNotStrictlyEqualConstant.as_u8();
+        const JUMPIFINDEXNOTSTRICTLYEQUALINDEX: u8 =
+            Instruction::JumpIfIndexNotStrictlyEqualIndex.as_u8();
+        const JUMPIFINDEXSTRICTLYEQUALCONSTANT: u8 =
+            Instruction::JumpIfIndexStrictlyEqualConstant.as_u8();
+        const JUMPIFINDEXSTRICTLYEQUALINDEX: u8 =
+            Instruction::JumpIfIndexStrictlyEqualIndex.as_u8();
+        const JUMPIFINDEXLESSTHANCONSTANT: u8 = Instruction::JumpIfIndexLessThanConstant.as_u8();
+        const JUMPIFINDEXLESSTHANINDEX: u8 = Instruction::JumpIfIndexLessThanIndex.as_u8();
+        const JUMPIFINDEXLESSTHANEQUALSCONSTANT: u8 =
+            Instruction::JumpIfIndexLessThanEqualsConstant.as_u8();
+        const JUMPIFINDEXLESSTHANEQUALSINDEX: u8 =
+            Instruction::JumpIfIndexLessThanEqualsIndex.as_u8();
+        const JUMPIFINDEXGREATERTHANCONSTANT: u8 =
+            Instruction::JumpIfIndexGreaterThanConstant.as_u8();
+        const JUMPIFINDEXGREATERTHANINDEX: u8 = Instruction::JumpIfIndexGreaterThanIndex.as_u8();
+        const JUMPIFINDEXGREATERTHANEQUALSCONSTANT: u8 =
+            Instruction::JumpIfIndexGreaterThanEqualsConstant.as_u8();
+        const JUMPIFINDEXGREATERTHANEQUALSINDEX: u8 =
+            Instruction::JumpIfIndexGreaterThanEqualsIndex.as_u8();
+        const INCREMENTINDEXJUMPIFLESSTHANCONSTANT: u8 =
+            Instruction::IncrementIndexJumpIfLessThanConstant.as_u8();
+        const INCREMENTINDEXJUMPIFLESSTHANINDEX: u8 =
+            Instruction::IncrementIndexJumpIfLessThanIndex.as_u8();
+        const INCREMENTINDEXJUMPIFLESSTHANEQUALSCONSTANT: u8 =
+            Instruction::IncrementIndexJumpIfLessThanEqualsConstant.as_u8();
+        const INCREMENTINDEXJUMPIFLESSTHANEQUALSINDEX: u8 =
+            Instruction::IncrementIndexJumpIfLessThanEqualsIndex.as_u8();
+        const DECREMENTINDEXJUMPIFGREATERTHANCONSTANT: u8 =
+            Instruction::DecrementIndexJumpIfGreaterThanConstant.as_u8();
+        const DECREMENTINDEXJUMPIFGREATERTHANINDEX: u8 =
+            Instruction::DecrementIndexJumpIfGreaterThanIndex.as_u8();
+        const DECREMENTINDEXJUMPIFGREATERTHANEQUALSCONSTANT: u8 =
+            Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant.as_u8();
+        const DECREMENTINDEXJUMPIFGREATERTHANEQUALSINDEX: u8 =
+            Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex.as_u8();
         const INCREMENTINDEX: u8 = Instruction::IncrementIndex.as_u8();
         const DECREMENTINDEX: u8 = Instruction::DecrementIndex.as_u8();
         const JUMPTOCASE: u8 = Instruction::JumpToCase.as_u8();
@@ -1506,6 +1822,11 @@ impl Instruction {
             GETPROPERTYWITHCACHEKEEPREFERENCE => {
                 Some(Instruction::GetPropertyWithCacheKeepReference)
             }
+            GETTHISPROPERTYWITHCACHE => Some(Instruction::GetThisPropertyWithCache),
+            GETTHISPROPERTYWITHCACHEKEEPREFERENCE => {
+                Some(Instruction::GetThisPropertyWithCacheKeepReference)
+            }
+            PUTPROPERTYWITHCACHE => Some(Instruction::PutPropertyWithCache),
             PUSHREFERENCEANDLOAD => Some(Instruction::PushReferenceAndLoad),
             POPREFERENCEANDEVALUATECALL => Some(Instruction::PopReferenceAndEvaluateCall),
             ISSTRICTLYEQUALCONSTANT => Some(Instruction::IsStrictlyEqualConstant),
@@ -1566,10 +1887,76 @@ impl Instruction {
             JUMPIFNOTLESSTHANEQUALS => Some(Instruction::JumpIfNotLessThanEquals),
             JUMPIFNOTGREATERTHAN => Some(Instruction::JumpIfNotGreaterThan),
             JUMPIFNOTGREATERTHANEQUALS => Some(Instruction::JumpIfNotGreaterThanEquals),
+            JUMPIFLESSTHAN => Some(Instruction::JumpIfLessThan),
+            JUMPIFLESSTHANEQUALS => Some(Instruction::JumpIfLessThanEquals),
+            JUMPIFGREATERTHAN => Some(Instruction::JumpIfGreaterThan),
+            JUMPIFGREATERTHANEQUALS => Some(Instruction::JumpIfGreaterThanEquals),
             JUMPIFNOTSTRICTLYEQUAL => Some(Instruction::JumpIfNotStrictlyEqual),
             JUMPIFSTRICTLYEQUAL => Some(Instruction::JumpIfStrictlyEqual),
             JUMPIFNOTLOOSELYEQUAL => Some(Instruction::JumpIfNotLooselyEqual),
             JUMPIFLOOSELYEQUAL => Some(Instruction::JumpIfLooselyEqual),
+            JUMPIFINDEXNOTLESSTHANCONSTANT => Some(Instruction::JumpIfIndexNotLessThanConstant),
+            JUMPIFINDEXNOTLESSTHANINDEX => Some(Instruction::JumpIfIndexNotLessThanIndex),
+            JUMPIFINDEXNOTLESSTHANEQUALSCONSTANT => {
+                Some(Instruction::JumpIfIndexNotLessThanEqualsConstant)
+            }
+            JUMPIFINDEXNOTLESSTHANEQUALSINDEX => {
+                Some(Instruction::JumpIfIndexNotLessThanEqualsIndex)
+            }
+            JUMPIFINDEXNOTGREATERTHANCONSTANT => {
+                Some(Instruction::JumpIfIndexNotGreaterThanConstant)
+            }
+            JUMPIFINDEXNOTGREATERTHANINDEX => Some(Instruction::JumpIfIndexNotGreaterThanIndex),
+            JUMPIFINDEXNOTGREATERTHANEQUALSCONSTANT => {
+                Some(Instruction::JumpIfIndexNotGreaterThanEqualsConstant)
+            }
+            JUMPIFINDEXNOTGREATERTHANEQUALSINDEX => {
+                Some(Instruction::JumpIfIndexNotGreaterThanEqualsIndex)
+            }
+            JUMPIFINDEXNOTSTRICTLYEQUALCONSTANT => {
+                Some(Instruction::JumpIfIndexNotStrictlyEqualConstant)
+            }
+            JUMPIFINDEXNOTSTRICTLYEQUALINDEX => Some(Instruction::JumpIfIndexNotStrictlyEqualIndex),
+            JUMPIFINDEXSTRICTLYEQUALCONSTANT => Some(Instruction::JumpIfIndexStrictlyEqualConstant),
+            JUMPIFINDEXSTRICTLYEQUALINDEX => Some(Instruction::JumpIfIndexStrictlyEqualIndex),
+            JUMPIFINDEXLESSTHANCONSTANT => Some(Instruction::JumpIfIndexLessThanConstant),
+            JUMPIFINDEXLESSTHANINDEX => Some(Instruction::JumpIfIndexLessThanIndex),
+            JUMPIFINDEXLESSTHANEQUALSCONSTANT => {
+                Some(Instruction::JumpIfIndexLessThanEqualsConstant)
+            }
+            JUMPIFINDEXLESSTHANEQUALSINDEX => Some(Instruction::JumpIfIndexLessThanEqualsIndex),
+            JUMPIFINDEXGREATERTHANCONSTANT => Some(Instruction::JumpIfIndexGreaterThanConstant),
+            JUMPIFINDEXGREATERTHANINDEX => Some(Instruction::JumpIfIndexGreaterThanIndex),
+            JUMPIFINDEXGREATERTHANEQUALSCONSTANT => {
+                Some(Instruction::JumpIfIndexGreaterThanEqualsConstant)
+            }
+            JUMPIFINDEXGREATERTHANEQUALSINDEX => {
+                Some(Instruction::JumpIfIndexGreaterThanEqualsIndex)
+            }
+            INCREMENTINDEXJUMPIFLESSTHANCONSTANT => {
+                Some(Instruction::IncrementIndexJumpIfLessThanConstant)
+            }
+            INCREMENTINDEXJUMPIFLESSTHANINDEX => {
+                Some(Instruction::IncrementIndexJumpIfLessThanIndex)
+            }
+            INCREMENTINDEXJUMPIFLESSTHANEQUALSCONSTANT => {
+                Some(Instruction::IncrementIndexJumpIfLessThanEqualsConstant)
+            }
+            INCREMENTINDEXJUMPIFLESSTHANEQUALSINDEX => {
+                Some(Instruction::IncrementIndexJumpIfLessThanEqualsIndex)
+            }
+            DECREMENTINDEXJUMPIFGREATERTHANCONSTANT => {
+                Some(Instruction::DecrementIndexJumpIfGreaterThanConstant)
+            }
+            DECREMENTINDEXJUMPIFGREATERTHANINDEX => {
+                Some(Instruction::DecrementIndexJumpIfGreaterThanIndex)
+            }
+            DECREMENTINDEXJUMPIFGREATERTHANEQUALSCONSTANT => {
+                Some(Instruction::DecrementIndexJumpIfGreaterThanEqualsConstant)
+            }
+            DECREMENTINDEXJUMPIFGREATERTHANEQUALSINDEX => {
+                Some(Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex)
+            }
             INCREMENTINDEX => Some(Instruction::IncrementIndex),
             DECREMENTINDEX => Some(Instruction::DecrementIndex),
             JUMPTOCASE => Some(Instruction::JumpToCase),

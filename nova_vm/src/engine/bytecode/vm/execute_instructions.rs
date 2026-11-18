@@ -2206,6 +2206,91 @@ pub(super) fn execute_fused_instruction<'gc>(
             vm.stack[slot] = vm.result.take().unwrap();
             Ok(())
         }
+        kind if kind.loop_test().is_some() => {
+            let Some((step, comparison, constant)) = kind.loop_test() else {
+                unreachable!()
+            };
+            let target = Instr::wide_jump_target(&executable.get_instructions(agent), vm.ip);
+            let slot = instr.get_first_index();
+            if step != 0 {
+                // IncrementIndex or DecrementIndex: GetValueFromIndex,
+                // ToNumeric, Increment or Decrement, PutValueToIndex
+                vm.result = Some(vm.stack[slot]);
+                execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+                if step > 0 {
+                    execute_increment(agent, vm, gc.nogc());
+                } else {
+                    execute_decrement(agent, vm, gc.nogc());
+                }
+                vm.stack[slot] = vm.result.take().unwrap();
+            }
+            // LoadFromIndexStoreConstant or LoadFromIndexGetFromIndex
+            let left = vm.stack[slot];
+            vm.stack.push(left);
+            vm.result = Some(if constant {
+                executable
+                    .fetch_constant(agent, instr.get_second_index(), gc.nogc())
+                    .unbind()
+            } else {
+                vm.stack[instr.get_second_index()]
+            });
+            // The comparison
+            match comparison {
+                Instruction::LessThan => execute_less_than(agent, vm, gc),
+                Instruction::LessThanEquals => execute_less_than_equals(agent, vm, gc),
+                Instruction::GreaterThan => execute_greater_than(agent, vm, gc),
+                _ => execute_greater_than_equals(agent, vm, gc),
+            }?;
+            // JumpIfTrue
+            let result = vm.result.take().unwrap();
+            let truthy = match result {
+                Value::Boolean(value) => value,
+                _ => to_boolean(agent, result),
+            };
+            if truthy {
+                vm.ip = target;
+            }
+            Ok(())
+        }
+        kind if kind.compared_local().is_some() => {
+            let Some((comparison, constant)) = kind.compared_local() else {
+                unreachable!()
+            };
+            let target = Instr::wide_jump_target(&executable.get_instructions(agent), vm.ip);
+            // LoadFromIndexStoreConstant or LoadFromIndexGetFromIndex
+            let left = vm.stack[instr.get_first_index()];
+            vm.stack.push(left);
+            vm.result = Some(if constant {
+                executable
+                    .fetch_constant(agent, instr.get_second_index(), gc.nogc())
+                    .unbind()
+            } else {
+                vm.stack[instr.get_second_index()]
+            });
+            // The comparison
+            match comparison {
+                Instruction::JumpIfNotLessThan => execute_less_than(agent, vm, gc),
+                Instruction::JumpIfNotLessThanEquals => execute_less_than_equals(agent, vm, gc),
+                Instruction::JumpIfNotGreaterThan => execute_greater_than(agent, vm, gc),
+                Instruction::JumpIfNotGreaterThanEquals => {
+                    execute_greater_than_equals(agent, vm, gc)
+                }
+                _ => {
+                    execute_is_strictly_equal(agent, vm, gc.into_nogc());
+                    Ok(())
+                }
+            }?;
+            // JumpIfNot, or JumpIfTrue
+            let result = vm.result.take().unwrap();
+            let truthy = match result {
+                Value::Boolean(value) => value,
+                _ => to_boolean(agent, result),
+            };
+            if truthy == (comparison == Instruction::JumpIfStrictlyEqual) {
+                vm.ip = target;
+            }
+            Ok(())
+        }
         Instruction::JumpIfNotStrictlyEqual
         | Instruction::JumpIfStrictlyEqual
         | Instruction::JumpIfNotLooselyEqual
@@ -2234,21 +2319,92 @@ pub(super) fn execute_fused_instruction<'gc>(
         }
         _ => {
             match instr.kind {
-                Instruction::JumpIfNotLessThan => execute_less_than(agent, vm, gc),
-                Instruction::JumpIfNotLessThanEquals => execute_less_than_equals(agent, vm, gc),
-                Instruction::JumpIfNotGreaterThan => execute_greater_than(agent, vm, gc),
-                Instruction::JumpIfNotGreaterThanEquals => {
+                Instruction::JumpIfNotLessThan | Instruction::JumpIfLessThan => {
+                    execute_less_than(agent, vm, gc)
+                }
+                Instruction::JumpIfNotLessThanEquals | Instruction::JumpIfLessThanEquals => {
+                    execute_less_than_equals(agent, vm, gc)
+                }
+                Instruction::JumpIfNotGreaterThan | Instruction::JumpIfGreaterThan => {
+                    execute_greater_than(agent, vm, gc)
+                }
+                Instruction::JumpIfNotGreaterThanEquals | Instruction::JumpIfGreaterThanEquals => {
                     execute_greater_than_equals(agent, vm, gc)
                 }
                 _ => unreachable!(),
             }?;
-            // JumpIfNot
+            // JumpIfNot, or JumpIfTrue
             let mut ip = vm.ip;
-            execute_jump_if_not(agent, vm, &mut ip, instr);
+            if matches!(
+                instr.kind,
+                Instruction::JumpIfLessThan
+                    | Instruction::JumpIfLessThanEquals
+                    | Instruction::JumpIfGreaterThan
+                    | Instruction::JumpIfGreaterThanEquals
+            ) {
+                execute_jump_if_true(agent, vm, &mut ip, instr);
+            } else {
+                execute_jump_if_not(agent, vm, &mut ip, instr);
+            }
             vm.ip = ip;
             Ok(())
         }
     }
+}
+
+/// What the instructions that read `this.name` or assign `object.name` in
+/// one step stand for, where the plain way does not take them.
+#[inline(never)]
+pub(super) fn execute_fused_property_instruction<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    executable: Scoped<Executable>,
+    instr: Instr,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    if instr.kind == Instruction::PutPropertyWithCache {
+        // EvaluatePropertyAccessWithIdentifierKey of the object, with the
+        // value kept aside, then PutValueWithCache.
+        let value = vm.result.take().unwrap();
+        vm.result = vm.stack.pop();
+        execute_evaluate_property_access_with_identifier_key(
+            agent,
+            vm,
+            executable.clone(),
+            instr,
+            gc.nogc(),
+        );
+        vm.result = Some(value);
+        let put_value = Instr::new_with_arg(
+            Instruction::PutValueWithCache,
+            instr.get_second_index() as u16,
+        );
+        return execute_put_value(agent, vm, executable, put_value, true, gc);
+    }
+    let keep_reference = instr.kind == Instruction::GetThisPropertyWithCacheKeepReference;
+    // ResolveThisBinding, where the call does not keep the this value
+    // itself; the property is still read by the cache where it can be.
+    execute_resolve_this_binding(agent, vm, gc.nogc()).unbind()?;
+    if Vm::get_property_by_cache(agent, vm, &executable, instr, keep_reference, gc.nogc()) {
+        return Ok(());
+    }
+    // EvaluatePropertyAccessWithIdentifierKey, GetValueWithCache
+    execute_evaluate_property_access_with_identifier_key(
+        agent,
+        vm,
+        executable.clone(),
+        instr,
+        gc.nogc(),
+    );
+    let get_value = Instr::new_with_arg(
+        if keep_reference {
+            Instruction::GetValueWithCacheKeepReference
+        } else {
+            Instruction::GetValueWithCache
+        },
+        instr.get_second_index() as u16,
+    );
+    execute_get_value(agent, vm, executable, get_value, true, keep_reference, gc)
 }
 
 #[inline(always)]

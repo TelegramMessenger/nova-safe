@@ -4211,6 +4211,46 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::BlockS
     }
 }
 
+/// Whether the test of a loop may be compiled in two places, before the loop
+/// and at its end: a comparison of names, literals, `this` and properties
+/// named after a dot, which makes nothing whose identity the two places
+/// would not share (a function, a class, a template object).
+fn test_is_compiled_twice(test: &ast::Expression) -> bool {
+    fn operand(expression: &ast::Expression, depth: u8) -> bool {
+        match expression {
+            ast::Expression::Identifier(_)
+            | ast::Expression::NumericLiteral(_)
+            | ast::Expression::StringLiteral(_)
+            | ast::Expression::BooleanLiteral(_)
+            | ast::Expression::NullLiteral(_)
+            | ast::Expression::ThisExpression(_) => true,
+            ast::Expression::StaticMemberExpression(member) => {
+                depth < 3 && !member.optional && operand(&member.object, depth + 1)
+            }
+            ast::Expression::UnaryExpression(unary) => {
+                unary.operator == UnaryOperator::UnaryNegation
+                    && matches!(unary.argument, ast::Expression::NumericLiteral(_))
+            }
+            _ => false,
+        }
+    }
+    let ast::Expression::BinaryExpression(comparison) = test else {
+        return false;
+    };
+    matches!(
+        comparison.operator,
+        BinaryOperator::LessThan
+            | BinaryOperator::LessEqualThan
+            | BinaryOperator::GreaterThan
+            | BinaryOperator::GreaterEqualThan
+            | BinaryOperator::StrictEquality
+            | BinaryOperator::StrictInequality
+            | BinaryOperator::Equality
+            | BinaryOperator::Inequality
+    ) && operand(&comparison.left, 0)
+        && operand(&comparison.right, 0)
+}
+
 impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast::ForStatement<'s> {
     type Output = StatementResult<'gc>;
 
@@ -4308,6 +4348,74 @@ impl<'a, 's, 'gc, 'scope> CompileLabelledEvaluation<'a, 's, 'gc, 'scope> for ast
         let v = ctx.push_stack_result_value(Some(Value::Undefined));
         // 3. Repeat,
         let l = ctx.enter_loop(label_set.cloned());
+        if ctx.discard_completion
+            && !create_per_iteration_env
+            && let Some(test) = &self.test
+            && test_is_compiled_twice(test)
+        {
+            // The loop with its test at the end: the test is compiled once
+            // more before the loop, for whether it is entered at all, and
+            // every turn after the first is the increment, the test and the
+            // jump back, with no jump forward to the test. The order of
+            // what runs is the same.
+            let entry_test = compile_jump_if(test, false, ctx);
+            let result = if let Err(err) = entry_test.as_ref() {
+                ControlFlow::Break((*err).into())
+            } else {
+                let body_start = ctx.get_jump_index_to_here();
+                // b. Let result be Completion(Evaluation of stmt).
+                let _ = self.body.compile(ctx);
+                // We cannot know that the loop completes abruptly even if
+                // the body says so. Continues and so forth can exit the loop.
+                ControlFlow::Continue(StatementContinue::Value)
+                    .map_continue(|value: StatementContinue| (value, body_start))
+            };
+            // c. If LoopContinues(result, labelSet) is false, return V.
+            // f. If increment is not empty, then
+            let continue_label = ctx.get_jump_index_to_here();
+            let mut leave = None;
+            let result = match result {
+                ControlFlow::Continue((value, body_start)) => {
+                    if let Some(update) = &self.update {
+                        // i. Let incRef be ? Evaluation of increment.
+                        // ii. Perform ? GetValue(incRef).
+                        let _ = compile_discarded_expression(update, ctx);
+                    }
+                    // a. If test is not empty, then: the next turn.
+                    if let Ok(again) = compile_jump_if(test, true, ctx) {
+                        for jump in again {
+                            ctx.set_jump_target(jump, body_start.clone());
+                        }
+                    }
+                    // iii. If ToBoolean(testValue) is false, return V.
+                    if !ctx.is_unreachable() {
+                        leave = Some(ctx.add_instruction_with_jump_slot(Instruction::Jump));
+                    }
+                    ControlFlow::Continue(value)
+                }
+                ControlFlow::Break(err) => ControlFlow::Break(err),
+            };
+            {
+                // ## Catch block
+                ctx.set_jump_target_here(l.on_abrupt_exit());
+                ctx.add_instruction(Instruction::UpdateEmpty);
+                ctx.add_instruction(Instruction::Throw);
+            }
+            if let Ok(end_jumps) = entry_test {
+                for end_jump in end_jumps {
+                    ctx.set_jump_target_here(end_jump);
+                }
+            }
+            if let Some(leave) = leave {
+                ctx.set_jump_target_here(leave);
+            }
+            l.exit(ctx, continue_label);
+            v.forget(ctx);
+            for block_prep in block_prep.into_iter().rev() {
+                block_prep.exit(ctx);
+            }
+            return result;
+        }
         let jump_over_continue = (!ctx.discard_completion
             || create_per_iteration_env
             || self.update.is_some())
