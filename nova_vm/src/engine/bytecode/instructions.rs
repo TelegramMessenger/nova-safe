@@ -44,13 +44,22 @@ pub(crate) enum Instruction {
     /// Load, StoreConstant and an arithmetic or bitwise
     /// Apply…BinaryOperator, as one instruction: `x & 255` or `x + 1`, with
     /// the left operand as the result value. The arguments are the constant
-    /// and the number of the operator (its place among the fused operators).
+    /// and a description of the operation: the number of the operator (its
+    /// place among the fused operators) in the four high bits, and below
+    /// them a bit that says the result is pushed onto the stack, as a Load
+    /// after the instruction would.
     ApplyBinaryOperatorWithConstant,
     /// LoadFromIndexStoreConstant and such an operator, as one instruction:
-    /// `i - 1` or `n * 2` of a local. The first argument is the stack slot
-    /// in its low twelve bits and the number of the operator above them,
-    /// the second the constant.
+    /// `i - 1` or `n * 2` of a local. The first argument is the description
+    /// of the operation, with the stack slot of the left operand in its low
+    /// eleven bits; the second is the constant.
     ApplyBinaryOperatorToIndexWithConstant,
+    /// An arithmetic or bitwise Apply…BinaryOperator and what is done with
+    /// its value, as one instruction: PutValueToIndex of it (`sum = a + b`)
+    /// or a Load (`a * b` as an operand). The argument is the description
+    /// of the operation, with the stack slot that takes the value in its
+    /// low eleven bits where it is not pushed.
+    ApplyBinaryOperatorAndMove,
     /// Add the result value to the stack, without removing it as the result
     /// value.
     LoadCopy,
@@ -145,6 +154,10 @@ pub(crate) enum Instruction {
     /// EvaluatePropertyAccessWithIdentifierKey followed by
     /// GetValueWithCacheKeepReference.
     GetPropertyWithCacheKeepReference,
+    /// GetPropertyWithCacheKeepReference, PushReference and Load: the
+    /// function of `o.m(x)`, pushed with its Reference before the
+    /// arguments. The immediates are the identifier and the cache.
+    LoadPropertyWithCachePushReference,
     /// ResolveThisBinding followed by GetPropertyWithCache: `this.x`. The
     /// immediates are the identifier and the cache.
     GetThisPropertyWithCache,
@@ -809,6 +822,7 @@ impl Instruction {
             | Self::PushExceptionJumpTarget
             | Self::GetPropertyWithCache
             | Self::GetPropertyWithCacheKeepReference
+            | Self::LoadPropertyWithCachePushReference
             | Self::GetThisPropertyWithCache
             | Self::GetThisPropertyWithCacheKeepReference
             | Self::PutPropertyWithCache
@@ -860,6 +874,7 @@ impl Instruction {
             | Self::StringConcat
             | Self::ThrowError
             | Self::GetValueWithIndexKey
+            | Self::ApplyBinaryOperatorAndMove
             | Self::VerifyIsObject => 1,
             _ => 0,
         }
@@ -898,6 +913,7 @@ impl Instruction {
                 | Self::GetValueWithCacheKeepReference
                 | Self::GetPropertyWithCache
                 | Self::GetPropertyWithCacheKeepReference
+                | Self::LoadPropertyWithCachePushReference
                 | Self::GetThisPropertyWithCache
                 | Self::GetThisPropertyWithCacheKeepReference
                 | Self::GetIndexPropertyWithCache
@@ -937,6 +953,7 @@ impl Instruction {
                 | Self::EvaluatePropertyAccessWithIdentifierKey
                 | Self::GetPropertyWithCache
                 | Self::GetPropertyWithCacheKeepReference
+                | Self::LoadPropertyWithCachePushReference
                 | Self::GetThisPropertyWithCache
                 | Self::GetThisPropertyWithCacheKeepReference
                 | Self::GetIndexPropertyWithCache
@@ -1102,21 +1119,32 @@ impl Instruction {
         })
     }
 
-    /// The stack slots that ApplyBinaryOperatorToIndexWithConstant can name:
-    /// its first argument has the number of the operator above them.
-    pub(crate) const FUSED_SLOTS: usize = 1 << 12;
+    /// The stack slots that the description of a fused operation can name:
+    /// the bit above them says the result is pushed, and the number of the
+    /// operator is above that.
+    pub(crate) const FUSED_SLOTS: usize = 1 << 11;
 
-    /// The first argument of ApplyBinaryOperatorToIndexWithConstant for a
-    /// stack slot and the number of an operator.
+    /// In the description of a fused operation: its result is pushed onto
+    /// the stack.
+    pub(crate) const FUSED_PUSHES: usize = 1 << 11;
+
+    /// The description of a fused operation for a stack slot and the number
+    /// of an operator, with a result that is not pushed.
     pub(crate) const fn fused_slot_with_operator(slot: usize, operator: usize) -> usize {
         debug_assert!(slot < Self::FUSED_SLOTS && operator < 16);
         slot | operator << 12
     }
 
-    /// The stack slot and the number of the operator in such an argument.
+    /// The stack slot and the number of the operator in such a description.
     #[inline(always)]
-    pub(crate) const fn fused_slot_and_operator(argument: usize) -> (usize, usize) {
-        (argument & (Self::FUSED_SLOTS - 1), argument >> 12)
+    pub(crate) const fn fused_slot_and_operator(description: usize) -> (usize, usize) {
+        (description & (Self::FUSED_SLOTS - 1), description >> 12)
+    }
+
+    /// Whether such a description says the result is pushed.
+    #[inline(always)]
+    pub(crate) const fn fused_pushes(description: usize) -> bool {
+        description & Self::FUSED_PUSHES != 0
     }
 
     /// The instruction that makes the step `step` on a local, compares it by
@@ -1441,11 +1469,18 @@ impl Instr {
         }
     }
 
-    /// The operator that a fused instruction has as an argument.
-    fn print_operator(operator: usize) -> std::string::String {
+    /// The operator in the description of a fused operation, and whether
+    /// its result is pushed.
+    fn print_operation(description: usize) -> std::string::String {
+        let (_, operator) = Instruction::fused_slot_and_operator(description);
+        let pushed = if Instruction::fused_pushes(description) {
+            ", pushed"
+        } else {
+            ""
+        };
         match Instruction::fused_operator(operator) {
-            Some(kind) => format!("{kind:?}"),
-            None => format!("unknown operator {operator}"),
+            Some(kind) => format!("{kind:?}{pushed}"),
+            None => format!("unknown operator {operator}{pushed}"),
         }
     }
 
@@ -1478,6 +1513,13 @@ impl Instr {
                     name.as_deref().unwrap_or("anonymous"),
                     expr.template.span
                 )
+            }
+        } else if kind == Instruction::ApplyBinaryOperatorAndMove {
+            let (slot, _) = Instruction::fused_slot_and_operator(index);
+            if Instruction::fused_pushes(index) {
+                Self::print_operation(index)
+            } else {
+                format!("{}, to {slot}", Self::print_operation(index))
             }
         } else if kind == Instruction::ClassDefineDefaultConstructor {
             if exe.fetch_class_initializer_bytecode(agent, index, gc).1 {
@@ -1523,15 +1565,15 @@ impl Instr {
                 format!(
                     "{}, {}",
                     debug_print_constant(agent, exe.clone(), arg0 as usize, gc),
-                    Self::print_operator(arg1 as usize)
+                    Self::print_operation(arg1 as usize)
                 )
             }
             Instruction::ApplyBinaryOperatorToIndexWithConstant => {
-                let (slot, operator) = Instruction::fused_slot_and_operator(arg0 as usize);
+                let (slot, _) = Instruction::fused_slot_and_operator(arg0 as usize);
                 format!(
                     "{slot}, {}, {}",
                     debug_print_constant(agent, exe.clone(), arg1 as usize, gc),
-                    Self::print_operator(operator)
+                    Self::print_operation(arg0 as usize)
                 )
             }
             Instruction::BindingPatternBindNamed => {
@@ -1593,6 +1635,7 @@ impl Instr {
             | Instruction::PutValueAtSite
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference
+            | Instruction::LoadPropertyWithCachePushReference
             | Instruction::GetThisPropertyWithCache
             | Instruction::GetThisPropertyWithCacheKeepReference
             | Instruction::PutPropertyWithCache => {
@@ -1869,6 +1912,9 @@ impl Instruction {
             Instruction::ApplyBinaryOperatorWithConstant.as_u8();
         const APPLYBINARYOPERATORTOINDEXWITHCONSTANT: u8 =
             Instruction::ApplyBinaryOperatorToIndexWithConstant.as_u8();
+        const APPLYBINARYOPERATORANDMOVE: u8 = Instruction::ApplyBinaryOperatorAndMove.as_u8();
+        const LOADPROPERTYWITHCACHEPUSHREFERENCE: u8 =
+            Instruction::LoadPropertyWithCachePushReference.as_u8();
         const PUTBINDINGATSITE: u8 = Instruction::PutBindingAtSite.as_u8();
         const RESOLVEGLOBALATSITE: u8 = Instruction::ResolveGlobalAtSite.as_u8();
         const GETGLOBALATSITE: u8 = Instruction::GetGlobalAtSite.as_u8();
@@ -2151,6 +2197,10 @@ impl Instruction {
             APPLYBINARYOPERATORWITHCONSTANT => Some(Instruction::ApplyBinaryOperatorWithConstant),
             APPLYBINARYOPERATORTOINDEXWITHCONSTANT => {
                 Some(Instruction::ApplyBinaryOperatorToIndexWithConstant)
+            }
+            APPLYBINARYOPERATORANDMOVE => Some(Instruction::ApplyBinaryOperatorAndMove),
+            LOADPROPERTYWITHCACHEPUSHREFERENCE => {
+                Some(Instruction::LoadPropertyWithCachePushReference)
             }
             PUTBINDINGATSITE => Some(Instruction::PutBindingAtSite),
             RESOLVEGLOBALATSITE => Some(Instruction::ResolveGlobalAtSite),

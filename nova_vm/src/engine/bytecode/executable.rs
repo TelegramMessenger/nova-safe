@@ -337,6 +337,13 @@ impl<'gc> Executable<'gc> {
         self.get(agent).instructions.clone()
     }
 
+    /// Whether `instructions` is this Executable's bytecode itself: the one
+    /// allocation, not an equal copy.
+    #[inline]
+    pub(super) fn has_instructions(self, agent: &Agent, instructions: &Arc<[u8]>) -> bool {
+        Arc::ptr_eq(&self.get(agent).instructions, instructions)
+    }
+
     #[inline]
     fn peek_instruction_byte(self, agent: &Agent, ip: usize) -> Option<u8> {
         self.get(agent).instructions.get(ip).copied()
