@@ -40,17 +40,17 @@ below.
 | math | 4 | 9.7x | 2.7x |
 | array | 14 | 5.8x | 2.6x |
 | string | 26 | 10.6x | 2.4x |
-| app | 8 | 6.1x | 2.3x |
 | map, set | 4 | 4.6x | 2.3x |
-| regexp | 4 | 2.4x | 1.9x |
-| loop | 11 | 11.1x | 1.9x |
+| app | 8 | 6.1x | 2.3x |
+| loop | 11 | 11.1x | 2.0x |
+| regexp | 4 | 2.4x | 1.7x |
 | gc | 3 of 5 | 3.6x | 1.3x |
 | json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 2.4x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(38x, area 7); after it come generators (6.4x), then calls that bind an arguments object or go through an accessor
-(5-6x). 43 of the 108 cases are above 3x and 32 at or under 2x. One case ran Nova out of memory before
+(38x, area 7); after it come generators (6.2x), then calls that bind an arguments object or go through an accessor
+(5x). 41 of the 108 cases are above 3x and 30 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -455,6 +455,17 @@ case conversion and trimming from 1.7x to 1.3x, the tokenizer from 3.9x to 2.5x;
 Left: the calls themselves, which are native ones (area 3), and interning each result. Searching and splitting
 are level or faster.
 
+Replacing by a RegExp was the one built-in that stood out in the application cases (escaping HTML: a fifth of
+the list that is rendered to HTML). `RegExp.prototype[Symbol.replace]` is written against the RegExp's
+properties: it read `flags` through nine accessors, looked `exec` up for every match, and had each result made
+an Array of, which it then read the match, the index and the captures back out of. Where `exec`, `flags` and
+the accessors that `flags` reads are the built-in ones, found with nothing on the way that runs a script, those
+steps read what the internal slots say: the matches are collected as ranges by the matcher alone and the result
+is put together from them, a function still being called for each match after all were found. A sticky RegExp,
+a lastIndex that is not a number, named groups and any replaced part of the protocol take the steps as written.
+Replacing with a function went from 1.5x to 0.9x, with a string and a RegExp in turn from 30 to 10 ms (0.5x),
+the rendered list from 2.1x to 1.7x. `match`, `matchAll`, `split` and `search` still go by the properties.
+
 ### 9. Garbage
 
 Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
@@ -527,6 +538,14 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 - The same was seen in the round after: `string/index-of` went from 2.2 to 2.9 ms (0.5x to 0.7x) with not a
   line of the search changed. `Searcher::find_from` has the same instructions in both builds, 0x6d8 bytes
   apart. A case whose time is one small loop can move by a third on where the linker puts it.
+- A RegExp literal evaluated to the one RegExp it was compiled to, every time: a function that returned `/a/g`
+  gave every caller the same object, with the properties set on it and the lastIndex that `test` and `exec`
+  leave (`function f(s) { return /a/g.test(s); }` was true, false, true for one string). Upstream; two tests
+  of test262 failed for it. Each evaluation makes a RegExp now, and all of one literal share the compiled
+  matcher. Fixed.
+- A value assigned to `lastIndex` that is not an index (negative, a fraction, a string, an object, 2^32 or
+  more) was dropped where the RegExp had no other own property: it read back as undefined. A condition was
+  the wrong way round. Upstream; 24 tests of test262 failed for it. Fixed.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
 
