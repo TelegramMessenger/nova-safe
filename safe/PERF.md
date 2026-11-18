@@ -34,8 +34,8 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.7x |
-| call | 14 | 10.4x | 2.4x |
+| typed | 4 | 10.6x | 2.8x |
+| call | 14 | 10.4x | 2.2x |
 | math | 4 | 9.7x | 2.4x |
 | string | 26 | 10.6x | 2.0x |
 | prop | 13 | 7.1x | 2.0x |
@@ -49,13 +49,14 @@ below.
 | all | 108 | 7.6x | 1.9x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 2.6x, and the worst is now prepending
-(36x, area 7); after it come calls that bind an arguments object (4.8x), generators (4.1x), then typed
-`Float64Array` arithmetic (3.9x). 12 of the 108 cases are above 3x and 53 at or under 2x, 13 of them at or
-under QuickJS's time. Over all cases it is 1.88x: 2.12x before the round of patterns, Array iteration and
+(38x, area 7); after it come generators (4.1x), typed `Float64Array` arithmetic (4.0x), then `instanceof`
+(3.5x). 11 of the 108 cases are above 3x and 52 at or under 2x, 14 of them at or under QuickJS's time. Over
+all cases it is 1.88x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
-stepping a generator without a result object took it here.
+stepping a generator without a result object took it here. The arguments object in a stack slot halved one
+case of the 108 and left the mean where it was.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -384,7 +385,7 @@ always needing the record; its body says what it needs now. `new` of a class wit
 
 Left there: binding through the iterator instructions is the general way for each parameter, a rest
 parameter allocates its Array, and the arguments object is made in full at every call and kept in an
-Environment Record (4.7x).
+Environment Record (4.7x; it has a stack slot now, below).
 
 Where a call's time was after that, in a closure called 300,000 times (`call/closure`, 3.3x): 53% in the
 loop of instructions, 20% entering the function and 12% leaving it, 15% reading and writing the two
@@ -414,6 +415,27 @@ context pushed and removed (a third of entering), and after it nothing larger th
 looked up and written, the tables of the code taken and let go of (a count up and a count down), the
 function's executable rooted, the this value taken from the call's Reference, the value stack exchanged
 and emptied.
+
+A function that reads `arguments` (`call/arguments-object`, 4.8x) paid for the object three times at
+every call. Its shape was looked up in the realm's table of shapes, key by key. It was put in a Function
+Environment Record that the function had for nothing else, and found there by name. And `arguments[i]` and
+`arguments.length` went the general way of a property of an exotic object.
+
+- The Agent keeps the shape of an arguments object of up to eight arguments, by length and prototype (a
+  table the collector empties, so it holds nothing alive).
+- The object is in a stack slot where nothing but the function's own code can name it: no arrow function
+  in it says `arguments`, there is no direct eval in it, and it declares nothing of that name (a
+  parameter, a var, a function). A reference is the slot's if what the parser resolved it to is not
+  declared inside the function: a `let arguments` in a block is that block's, while an outer
+  `var arguments`, which the parser resolves a function's own `arguments` to, is not what the function
+  sees (test262 has it; the first build of this failed three of its tests on it).
+- A read by index takes the element from its place among the object's properties (three come before the
+  elements, then one per argument in order) if the key at that place is still that index and it holds a
+  value; `length` goes through the instruction's cache as a property of an ordinary object does. An
+  element deleted or redefined, or anything else, goes the general way.
+
+The case went from 4.8x to 2.3x, and calls from 2.4x to 2.2x. What is left in it is the object itself,
+made at every call with a property per argument.
 
 ### 4. Properties
 
@@ -916,6 +938,10 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   take +0 over -0 without `f64::max` (which answers -0 on 32-bit ARM), and the copy of that fold which runs
   `Math.max` in place of a call kept the old line through the rebase. Found by comparing every commit before
   and after; the copy has the fix.
+
+- A function declared in a block and named `arguments` does not take the place of the arguments object
+  after the block in sloppy code (Annex B.3.3), here or in the build this started from; Node does it.
+  Found by the script written for the arguments object's stack slot. Not fixed.
 
 - `loop/switch` read 4% slower after the round of the text of a Number (5.5 to 5.75 ms, in seven runs of
   each binary in turn), which touched nothing it runs: where the loop of instructions lands in the binary
