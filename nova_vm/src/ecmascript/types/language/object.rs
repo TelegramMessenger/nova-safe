@@ -513,6 +513,7 @@ impl<'a> OrdinaryObject<'a> {
 
     /// The value slots of the Object's property storage, without its
     /// descriptors: None is an accessor property.
+    #[inline]
     pub(crate) fn get_elements_values<'b>(self, agent: &'b Agent) -> &'b [Option<Value<'a>>] {
         let Heap {
             elements,
@@ -525,6 +526,32 @@ impl<'a> OrdinaryObject<'a> {
             data.get_values(),
             data.values_capacity(object_shapes),
             data.len(object_shapes),
+        )
+    }
+
+    /// Sets the property at `offset` of the Object's property storage to
+    /// `value` where it is an own data property that is writable, in one
+    /// look at the storage. Returns whether it did.
+    #[inline]
+    pub(crate) fn set_writable_value_at(
+        self,
+        agent: &mut Agent,
+        offset: usize,
+        value: Value<'static>,
+    ) -> bool {
+        let Heap {
+            elements,
+            objects,
+            object_shapes,
+            ..
+        } = &mut agent.heap;
+        let data = self.get_direct(objects);
+        elements.set_writable_value_raw(
+            data.get_values().unbind(),
+            data.values_capacity(object_shapes),
+            data.len(object_shapes),
+            offset,
+            value,
         )
     }
 

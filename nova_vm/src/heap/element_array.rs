@@ -1727,6 +1727,35 @@ impl<const N: usize> ElementArray<N> {
         &self.values[index][0..len as usize]
     }
 
+    /// Sets the slot at `offset` of the storage to `value` where it holds a
+    /// value and no descriptor says it is not writable: an own data
+    /// property that is writable. Returns whether it did.
+    #[inline]
+    fn set_writable_value(
+        &mut self,
+        index: ElementIndex,
+        len: u32,
+        offset: usize,
+        value: Value<'static>,
+    ) -> bool {
+        let Some(slot @ Some(_)) = self.values[index][0..len as usize].get_mut(offset) else {
+            return false;
+        };
+        // Few storages have descriptors: none is looked for where there is
+        // none at all.
+        if !self.descriptors.is_empty()
+            && self
+                .descriptors
+                .get(&index.unbind())
+                .and_then(|descriptors| descriptors.get(&(offset as u32)))
+                .is_some_and(|descriptor| descriptor.is_writable() != Some(true))
+        {
+            return false;
+        }
+        *slot = Some(value);
+        true
+    }
+
     fn get_values_mut(&mut self, vector: &ElementsVector) -> &mut [Option<Value<'static>>] {
         &mut self.values[vector.elements_index][0..vector.len() as usize]
     }
@@ -4270,6 +4299,7 @@ impl ElementArrays {
     /// looking up its descriptors.
     ///
     /// Value slots with None are either array holes, or accessor properties.
+    #[inline]
     pub(crate) fn get_element_values_raw(
         &self,
         index: ElementIndex,
@@ -4303,6 +4333,47 @@ impl ElementArrays {
             ElementArrayKey::E16 => e2pow16.get_values_raw(index, len),
             ElementArrayKey::E24 => e2pow24.get_values_raw(index, len),
             ElementArrayKey::E32 => e2pow32.get_values_raw(index, len),
+        }
+    }
+
+    /// Sets the slot at `offset` of an elements storage where it is an own
+    /// writable data property: see [`ElementArray::set_writable_value`].
+    #[inline]
+    pub(crate) fn set_writable_value_raw(
+        &mut self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        len: u32,
+        offset: usize,
+        value: Value<'static>,
+    ) -> bool {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => false,
+            ElementArrayKey::E1 => e2pow1.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E2 => e2pow2.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E3 => e2pow3.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E4 => e2pow4.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E6 => e2pow6.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E8 => e2pow8.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E10 => e2pow10.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E12 => e2pow12.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E16 => e2pow16.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E24 => e2pow24.set_writable_value(index, len, offset, value),
+            ElementArrayKey::E32 => e2pow32.set_writable_value(index, len, offset, value),
         }
     }
 
