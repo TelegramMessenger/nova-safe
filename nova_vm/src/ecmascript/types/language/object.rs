@@ -374,6 +374,18 @@ impl Object<'_> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct OrdinaryObject<'a>(BaseIndex<'a, ObjectRecord<'static>>);
+
+/// What [`OrdinaryObject::set_value_by_cache`] made of an assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CachedSet {
+    /// The property was set.
+    Done,
+    /// The cache knows that neither the Object nor any it inherits from
+    /// has the property: nothing was done.
+    Absent,
+    /// Nothing was done, and the cache does not say what to do.
+    Unknown,
+}
 object_handle!(OrdinaryObject, Object);
 arena_vec_access!(
     OrdinaryObject,
@@ -527,6 +539,84 @@ impl<'a> OrdinaryObject<'a> {
             data.values_capacity(object_shapes),
             data.len(object_shapes),
         )
+    }
+
+    /// What `object.name` is where `cache`, the property cache of a place
+    /// that names the property, knows the shape of this Object: the value
+    /// of a data property of its own or of the object it inherits it from,
+    /// undefined where the cache knows that neither has the property. None
+    /// leaves everything to \[\[Get]]: a shape the cache does not know, an
+    /// accessor property.
+    ///
+    /// All of it in one function, which is called for every property read
+    /// by name in the loop of instructions: the shape, the search of the
+    /// cache and the one look at the storage, where the shape was read, the
+    /// cache searched by a function, the property read by another through
+    /// a third, and what that returned was taken apart again.
+    #[inline(never)]
+    pub(crate) fn value_by_cache<'gc>(
+        self,
+        agent: &Agent,
+        cache: PropertyLookupCache,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        let Heap {
+            elements,
+            objects,
+            object_shapes,
+            ..
+        } = &agent.heap;
+        let data = self.get_direct(objects);
+        let (offset, prototype) = cache.find_cached_property_offset(agent, data.get_shape())?;
+        if offset.is_unset() {
+            return Some(Value::Undefined);
+        }
+        let data = match prototype {
+            None => data,
+            Some(Object::Object(prototype)) => prototype.get_direct(objects),
+            // An object with properties of its own kind beside those of
+            // its backing object.
+            Some(prototype) => {
+                return match prototype.get_own_property_at_offset(agent, offset, gc) {
+                    TryGetResult::Value(value) => Some(value),
+                    _ => None,
+                };
+            }
+        };
+        elements
+            .get_element_value_raw(
+                data.get_values(),
+                data.values_capacity(object_shapes),
+                data.len(object_shapes),
+                offset.get_property_offset() as usize,
+            )
+            .bind(gc)
+    }
+
+    /// `object.name = value` where `cache` knows the shape of this Object
+    /// and places the property in it as its own: set where it is a data
+    /// property that is writable. As [`OrdinaryObject::value_by_cache`],
+    /// all of it in one function.
+    #[inline(never)]
+    pub(crate) fn set_value_by_cache(
+        self,
+        agent: &mut Agent,
+        cache: PropertyLookupCache,
+        value: Value,
+    ) -> CachedSet {
+        let shape = self.get_direct(&agent.heap.objects).get_shape();
+        let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
+            return CachedSet::Unknown;
+        };
+        if offset.is_unset() {
+            return CachedSet::Absent;
+        }
+        if self.set_writable_value_at(agent, offset.get_property_offset() as usize, value.unbind())
+        {
+            CachedSet::Done
+        } else {
+            CachedSet::Unknown
+        }
     }
 
     /// Sets the property at `offset` of the Object's property storage to

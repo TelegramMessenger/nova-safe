@@ -15,12 +15,12 @@ use wtf8::Wtf8Buf;
 use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayPrototype};
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, ECMAScriptFunction, Environment,
-        ExceptionType, InternalMethods, InternalSlots, JsError, JsResult, Number, Object,
-        OrdinaryObject, Primitive, Promise, PropertyKey, Reference, SmallInteger, String,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, BigInt, CachedSet, ECMAScriptFunction,
+        Environment, ExceptionType, InternalMethods, InternalSlots, JsError, JsResult, Number,
+        Object, OrdinaryObject, Primitive, Promise, PropertyKey, Reference, SmallInteger, String,
         TryGetResult, Value, binding_value_at_site, call_function, get_method, get_this_value,
         is_callable, is_property_reference, is_same_type, is_strictly_equal,
-        ordinary_add_own_data_by_cache, ordinary_has_instance, ordinary_set_own_data_at_offset,
+        ordinary_add_own_data_by_cache, ordinary_has_instance,
         prepare_for_call_without_function_environment, reference_is_at_global_site,
         set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
         to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
@@ -1988,20 +1988,18 @@ impl Vm {
                     return Plain::No;
                 };
                 let cache = tables.cache(instr.get_second_index(), gc);
-                let shape = object.object_shape(agent);
-                let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
-                    return Plain::No;
-                };
-                if offset.is_unset() {
-                    // Neither the object nor any it inherits from has the
-                    // property: it is added, as most properties of an
-                    // object are.
-                    let key = tables.property_key(instr.get_first_index(), gc);
-                    if !ordinary_add_own_data_by_cache(agent, object, key, value, cache, gc) {
-                        return Plain::No;
+                match object.set_value_by_cache(agent, cache, value) {
+                    CachedSet::Done => {}
+                    CachedSet::Absent => {
+                        // Neither the object nor any it inherits from has
+                        // the property: it is added, as most properties of
+                        // an object are.
+                        let key = tables.property_key(instr.get_first_index(), gc);
+                        if !ordinary_add_own_data_by_cache(agent, object, key, value, cache, gc) {
+                            return Plain::No;
+                        }
                     }
-                } else if !ordinary_set_own_data_at_offset(agent, object, offset, value) {
-                    return Plain::No;
+                    CachedSet::Unknown => return Plain::No,
                 }
                 vm.stack.pop();
                 vm.result = None;
@@ -2017,13 +2015,7 @@ impl Vm {
                     return Plain::No;
                 };
                 let cache = tables.cache(instr.get_first_index(), gc);
-                let shape = object.object_shape(agent);
-                let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
-                    return Plain::No;
-                };
-                if offset.is_unset()
-                    || !ordinary_set_own_data_at_offset(agent, object, offset, value)
-                {
+                if object.set_value_by_cache(agent, cache, value) != CachedSet::Done {
                     return Plain::No;
                 }
                 vm.result = None;
@@ -2536,19 +2528,7 @@ impl Vm {
         match base {
             Value::Object(object) => {
                 let cache = tables.cache(instr.get_second_index(), gc);
-                let shape = object.object_shape(agent);
-                let (offset, prototype) = cache.find_cached_property_offset(agent, shape)?;
-                if offset.is_unset() {
-                    return Some(Value::Undefined);
-                }
-                let found = match prototype {
-                    Some(prototype) => prototype.get_own_property_at_offset(agent, offset, gc),
-                    None => object.get_own_property_at_offset(agent, offset, gc),
-                };
-                match found {
-                    TryGetResult::Value(value) => Some(value.unbind()),
-                    _ => None,
-                }
+                object.value_by_cache(agent, cache, gc).unbind()
             }
             Value::Array(array) => {
                 let key = tables.property_key(instr.get_first_index(), gc);

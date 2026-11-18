@@ -1727,6 +1727,22 @@ impl<const N: usize> ElementArray<N> {
         &self.values[index][0..len as usize]
     }
 
+    /// The value in the slot at `offset` of the storage. None where the
+    /// slot holds none (an accessor property, a hole) and where the storage
+    /// has no such slot.
+    #[inline]
+    fn get_value_raw(
+        &self,
+        index: ElementIndex,
+        len: u32,
+        offset: usize,
+    ) -> Option<Value<'static>> {
+        self.values[index][0..len as usize]
+            .get(offset)
+            .copied()
+            .flatten()
+    }
+
     /// Sets the slot at `offset` of the storage to `value` where it holds a
     /// value and no descriptor says it is not writable: an own data
     /// property that is writable. Returns whether it did.
@@ -4333,6 +4349,46 @@ impl ElementArrays {
             ElementArrayKey::E16 => e2pow16.get_values_raw(index, len),
             ElementArrayKey::E24 => e2pow24.get_values_raw(index, len),
             ElementArrayKey::E32 => e2pow32.get_values_raw(index, len),
+        }
+    }
+
+    /// The value in the slot at `offset` of an elements storage, in one
+    /// look at the storage: see [`ElementArray::get_value_raw`].
+    #[inline]
+    pub(crate) fn get_element_value_raw(
+        &self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        len: u32,
+        offset: usize,
+    ) -> Option<Value<'static>> {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => None,
+            ElementArrayKey::E1 => e2pow1.get_value_raw(index, len, offset),
+            ElementArrayKey::E2 => e2pow2.get_value_raw(index, len, offset),
+            ElementArrayKey::E3 => e2pow3.get_value_raw(index, len, offset),
+            ElementArrayKey::E4 => e2pow4.get_value_raw(index, len, offset),
+            ElementArrayKey::E6 => e2pow6.get_value_raw(index, len, offset),
+            ElementArrayKey::E8 => e2pow8.get_value_raw(index, len, offset),
+            ElementArrayKey::E10 => e2pow10.get_value_raw(index, len, offset),
+            ElementArrayKey::E12 => e2pow12.get_value_raw(index, len, offset),
+            ElementArrayKey::E16 => e2pow16.get_value_raw(index, len, offset),
+            ElementArrayKey::E24 => e2pow24.get_value_raw(index, len, offset),
+            ElementArrayKey::E32 => e2pow32.get_value_raw(index, len, offset),
         }
     }
 

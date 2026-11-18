@@ -5445,3 +5445,127 @@ switch: 123400"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A property read and written where the property cache of the place
+/// knows the shape: in storage of every size, on the object, on what it
+/// inherits from and nowhere, as an accessor with and without a getter or
+/// a setter, not writable, frozen, sealed and not extensible, and on values
+/// of other kinds at the same place. And calls that the interpreter runs
+/// in place: on what a call returned, with calls as arguments, with too
+/// few and too many arguments, and with errors thrown through them and
+/// caught at every depth. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn cached_properties_and_calls_in_place_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(cached_properties_and_calls_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn cached_properties_and_calls_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+function show(name, v) { print(name + ": " + v); }
+function read(o) { return o.p; }
+function write(o, v) { o.p = v; return o.p; }
+function twice(f) { var out = []; for (var round = 0; round < 3; round++) out.push(f()); return out.join("|"); }
+// Objects of every size of storage, the property first, in the middle and last.
+show("sizes", twice(function () {
+  var out = [];
+  [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 63, 65, 127, 129, 255, 257, 300].forEach(function (n) {
+    var first = { p: "first" }, middle = {}, last = {};
+    for (var i = 0; i < n; i++) { first["k" + i] = i; if (i === (n >> 1)) middle.p = "middle"; middle["k" + i] = i; last["k" + i] = i; }
+    if (!("p" in middle)) middle.p = "middle"; last.p = "last";
+    out.push(read(first) + read(middle) + read(last) + write(first, n) + write(middle, -n) + write(last, n + 0.5) + read(first) + read(last));
+  });
+  return out.join(",");
+}));
+// A data property on the object, on its prototype, further up, and nowhere.
+show("where", twice(function () {
+  var top = { p: "top" }, mid = Object.create(top), low = Object.create(mid), none = Object.create(null), own = Object.create(top);
+  own.p = "own";
+  var out = [read(top), read(mid), read(low), read(none), read(own), read({}), read(Object.create(Object.create({})))];
+  mid.p = "mid"; out.push(read(mid), read(low));
+  delete mid.p; out.push(read(mid), read(low));
+  top.p = "changed"; out.push(read(low), read(own));
+  delete top.p; out.push(read(low), read(top));
+  return out.join();
+}));
+// Accessors on the object and on its prototype, with and without a getter or a setter.
+show("accessors", twice(function () {
+  var log = [], stored = 1;
+  var both = { get p() { log.push("get"); return stored; }, set p(v) { log.push("set" + v); stored = v; } };
+  var getter = { get p() { return "only get"; } }, setter = { set p(v) { log.push("only set" + v); } };
+  var child = Object.create(both), childOfGetter = Object.create(getter), childOfSetter = Object.create(setter);
+  var out = [read(both), write(both, 2), read(child), write(child, 3), Object.keys(child).length, read(getter), write(getter, 9), read(setter), write(setter, 8), read(childOfGetter), write(childOfGetter, 7), Object.keys(childOfGetter).length, read(childOfSetter), write(childOfSetter, 6), Object.keys(childOfSetter).length];
+  return out.join() + " " + log.join();
+}));
+// Properties that are not writable, objects that are frozen, sealed or not extensible.
+show("protected", twice(function () {
+  var readonly = Object.defineProperty({}, "p", { value: "fixed", writable: false, configurable: true, enumerable: true });
+  var frozen = Object.freeze({ p: "frozen" }), sealed = Object.seal({ p: "sealed" }), closed = Object.preventExtensions({ q: 1 });
+  var childOfReadonly = Object.create(readonly), childOfFrozen = Object.create(frozen);
+  var out = [write(readonly, 1), write(frozen, 2), write(sealed, 3), write(closed, 4), "p" in closed, write(childOfReadonly, 5), Object.keys(childOfReadonly).length, write(childOfFrozen, 6), Object.keys(childOfFrozen).length];
+  (function () { "use strict"; [readonly, frozen, closed, childOfReadonly].forEach(function (o) { try { o.p = "strict"; out.push("no error"); } catch (e) { out.push(e.constructor.name); } }); })();
+  Object.defineProperty(readonly, "p", { writable: true }); out.push(write(readonly, "now writable"));
+  return out.join();
+}));
+// The same places in the code seeing other kinds of values.
+show("kinds", twice(function () {
+  function F() {} F.prototype.p = "from a function's prototype"; F.p = "on the function";
+  var array = [1, 2, 3]; array.p = "on an array";
+  var out = [read(F), read(new F()), read(array), read([]), read("string"), read(5), read(true), read(function () {}), read(new Map()), read(/x/), read(new Date(0)), read(Symbol.iterator)];
+  Array.prototype.p = "from Array.prototype"; String.prototype.p = "from String.prototype"; Number.prototype.p = "from Number.prototype"; Object.prototype.p = "from Object.prototype";
+  out.push(read([]), read("string"), read(5), read(true), read(new Map()), read({}), read(Object.create(null)));
+  delete Array.prototype.p; delete String.prototype.p; delete Number.prototype.p; delete Object.prototype.p;
+  out.push(read([]), read("string"), read(5), read({}), write(array, "again"), write(F, "F"));
+  try { read(null); } catch (e) { out.push(e.constructor.name); }
+  try { write(undefined, 1); } catch (e) { out.push(e.constructor.name); }
+  return out.join();
+}));
+// Methods called on what a call returned, arguments that are calls, too few and too many arguments.
+show("calls", twice(function () {
+  var log = [];
+  var o = { n: 1, self: function () { log.push("self" + this.n); return this; }, add: function (a, b) { log.push("add"); return this.n + (a === undefined ? 100 : a) + (b === undefined ? 1000 : b); }, make: function (n) { return { n: n, self: o.self, add: o.add, make: o.make }; } };
+  function id(x) { return x; }
+  function three(a, b, c) { return [a, b, c].join("/"); }
+  var out = [o.self().add(1, 2), o.make(5).self().add(id(3)), o.add(o.make(7).add(1, 1), id(id(2))), three(1), three(1, 2, 3, 4, 5), three(id(1), o.self().n, three()), id(o.make(9)).self().make(4).add(), 1 + id(2) * id(3) - o.add(0, 0)];
+  return out.join() + " " + log.join("");
+}));
+// Errors thrown through functions that are run in place, caught at every depth.
+show("throws", twice(function () {
+  function thrower(depth, at) { if (depth === at) throw new RangeError("at " + at); return 1 + thrower(depth + 1, at); }
+  function catcher(depth, catchAt, throwAt) {
+    if (depth === catchAt) { try { return thrower(depth, throwAt); } catch (e) { return e.message + " caught at " + depth; } finally { depthSeen.push(depth); } }
+    return catcher(depth + 1, catchAt, throwAt) + "<" + depth;
+  }
+  var depthSeen = [], out = [];
+  for (var c = 0; c < 4; c++) for (var t = c; t < c + 4; t++) out.push(catcher(0, c, t));
+  function overflow(n) { return overflow(n + 1) + 1; }
+  try { overflow(0); } catch (e) { out.push(e.constructor.name); }
+  out.push(catcher(0, 2, 5), depthSeen.length);
+  return out.join(";");
+}));
+})();
+all.join("\n")"#;
+    let expected = r#"sizes: firstmiddlelast000.500.5,firstmiddlelast1-11.511.5,firstmiddlelast2-22.522.5,firstmiddlelast3-33.533.5,firstmiddlelast4-44.544.5,firstmiddlelast5-55.555.5,firstmiddlelast7-77.577.5,firstmiddlelast8-88.588.5,firstmiddlelast9-99.599.5,firstmiddlelast15-1515.51515.5,firstmiddlelast16-1616.51616.5,firstmiddlelast17-1717.51717.5,firstmiddlelast31-3131.53131.5,firstmiddlelast33-3333.53333.5,firstmiddlelast63-6363.56363.5,firstmiddlelast65-6565.56565.5,firstmiddlelast127-127127.5127127.5,firstmiddlelast129-129129.5129129.5,firstmiddlelast255-255255.5255255.5,firstmiddlelast257-257257.5257257.5,firstmiddlelast300-300300.5300300.5|firstmiddlelast000.500.5,firstmiddlelast1-11.511.5,firstmiddlelast2-22.522.5,firstmiddlelast3-33.533.5,firstmiddlelast4-44.544.5,firstmiddlelast5-55.555.5,firstmiddlelast7-77.577.5,firstmiddlelast8-88.588.5,firstmiddlelast9-99.599.5,firstmiddlelast15-1515.51515.5,firstmiddlelast16-1616.51616.5,firstmiddlelast17-1717.51717.5,firstmiddlelast31-3131.53131.5,firstmiddlelast33-3333.53333.5,firstmiddlelast63-6363.56363.5,firstmiddlelast65-6565.56565.5,firstmiddlelast127-127127.5127127.5,firstmiddlelast129-129129.5129129.5,firstmiddlelast255-255255.5255255.5,firstmiddlelast257-257257.5257257.5,firstmiddlelast300-300300.5300300.5|firstmiddlelast000.500.5,firstmiddlelast1-11.511.5,firstmiddlelast2-22.522.5,firstmiddlelast3-33.533.5,firstmiddlelast4-44.544.5,firstmiddlelast5-55.555.5,firstmiddlelast7-77.577.5,firstmiddlelast8-88.588.5,firstmiddlelast9-99.599.5,firstmiddlelast15-1515.51515.5,firstmiddlelast16-1616.51616.5,firstmiddlelast17-1717.51717.5,firstmiddlelast31-3131.53131.5,firstmiddlelast33-3333.53333.5,firstmiddlelast63-6363.56363.5,firstmiddlelast65-6565.56565.5,firstmiddlelast127-127127.5127127.5,firstmiddlelast129-129129.5129129.5,firstmiddlelast255-255255.5255255.5,firstmiddlelast257-257257.5257257.5,firstmiddlelast300-300300.5300300.5
+where: top,top,top,,own,,,mid,mid,top,top,changed,own,,|top,top,top,,own,,,mid,mid,top,top,changed,own,,|top,top,top,,own,,,mid,mid,top,top,changed,own,,
+accessors: 1,2,2,3,0,only get,only get,,,only get,only get,0,,,0 get,set2,get,get,set3,get,only set8,only set6|1,2,2,3,0,only get,only get,,,only get,only get,0,,,0 get,set2,get,get,set3,get,only set8,only set6|1,2,2,3,0,only get,only get,,,only get,only get,0,,,0 get,set2,get,get,set3,get,only set8,only set6
+protected: fixed,frozen,3,,false,fixed,0,frozen,0,TypeError,TypeError,TypeError,TypeError,now writable|fixed,frozen,3,,false,fixed,0,frozen,0,TypeError,TypeError,TypeError,TypeError,now writable|fixed,frozen,3,,false,fixed,0,frozen,0,TypeError,TypeError,TypeError,TypeError,now writable
+kinds: on the function,from a function's prototype,on an array,,,,,,,,,,from Array.prototype,from String.prototype,from Number.prototype,from Object.prototype,from Object.prototype,from Object.prototype,,,,,,again,F,TypeError,TypeError|on the function,from a function's prototype,on an array,,,,,,,,,,from Array.prototype,from String.prototype,from Number.prototype,from Object.prototype,from Object.prototype,from Object.prototype,,,,,,again,F,TypeError,TypeError|on the function,from a function's prototype,on an array,,,,,,,,,,from Array.prototype,from String.prototype,from Number.prototype,from Object.prototype,from Object.prototype,from Object.prototype,,,,,,again,F,TypeError,TypeError
+calls: 4,1008,12,1//,1/2/3,1/1///,1104,6 self1addself5addaddaddself1self9addadd|4,1008,12,1//,1/2/3,1/1///,1104,6 self1addself5addaddaddself1self9addadd|4,1008,12,1//,1/2/3,1/1///,1104,6 self1addself5addaddaddself1self9addadd
+throws: at 0 caught at 0;at 1 caught at 0;at 2 caught at 0;at 3 caught at 0;at 1 caught at 1<0;at 2 caught at 1<0;at 3 caught at 1<0;at 4 caught at 1<0;at 2 caught at 2<1<0;at 3 caught at 2<1<0;at 4 caught at 2<1<0;at 5 caught at 2<1<0;at 3 caught at 3<2<1<0;at 4 caught at 3<2<1<0;at 5 caught at 3<2<1<0;at 6 caught at 3<2<1<0;RangeError;at 5 caught at 2<1<0;17|at 0 caught at 0;at 1 caught at 0;at 2 caught at 0;at 3 caught at 0;at 1 caught at 1<0;at 2 caught at 1<0;at 3 caught at 1<0;at 4 caught at 1<0;at 2 caught at 2<1<0;at 3 caught at 2<1<0;at 4 caught at 2<1<0;at 5 caught at 2<1<0;at 3 caught at 3<2<1<0;at 4 caught at 3<2<1<0;at 5 caught at 3<2<1<0;at 6 caught at 3<2<1<0;RangeError;at 5 caught at 2<1<0;17|at 0 caught at 0;at 1 caught at 0;at 2 caught at 0;at 3 caught at 0;at 1 caught at 1<0;at 2 caught at 1<0;at 3 caught at 1<0;at 4 caught at 1<0;at 2 caught at 2<1<0;at 3 caught at 2<1<0;at 4 caught at 2<1<0;at 5 caught at 2<1<0;at 3 caught at 3<2<1<0;at 4 caught at 3<2<1<0;at 5 caught at 3<2<1<0;at 6 caught at 3<2<1<0;RangeError;at 5 caught at 2<1<0;17"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
