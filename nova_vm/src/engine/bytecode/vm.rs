@@ -152,6 +152,11 @@ pub(crate) struct Vm {
     /// a frame of [`VmFrames`], the last `depth` of those in use. See
     /// [`Vm::enter_function`].
     depth: usize,
+    /// How many of the exception handlers on their stack are not of the
+    /// code that is running, but of the code that called it in place, and
+    /// of what called that: an error that the running code throws goes to
+    /// the handlers above these, and with none there leaves the function.
+    handler_base: usize,
 }
 
 /// What a `Vm` puts aside of the code that calls a function it runs itself,
@@ -160,12 +165,20 @@ pub(crate) struct Vm {
 #[derive(Debug)]
 struct Frame {
     ip: usize,
-    /// The caller's stacks while the frame is in use; empty stacks for the
-    /// next function at this depth while it is not.
+    /// The caller's value stack while the frame is in use; an empty stack
+    /// for the next function at this depth while it is not. A function has
+    /// a value stack of its own because its instructions name the slots
+    /// of its variables from the bottom of it.
     stack: Vec<Value<'static>>,
-    reference_stack: Vec<Reference<'static>>,
-    iterator_stack: Vec<VmIteratorRecord<'static>>,
-    exception_handler_stack: Vec<ExceptionHandler<'static>>,
+    /// The other three stacks are the caller's and the function's at once:
+    /// the function pushes to them above what the caller left there, and
+    /// balances what it pushes or leaves it to be cut off here when it is
+    /// left. How long the Reference stack and the iterator stack were when
+    /// the function was entered, and the caller's own
+    /// [`Vm::handler_base`].
+    reference_base: usize,
+    iterator_base: usize,
+    handler_base: usize,
     /// The caller's executable, which the collector keeps current here
     /// while the frame is in use.
     executable: Executable<'static>,
@@ -376,7 +389,7 @@ pub(crate) struct SpareVmStacks {
 /// under them those of the `Vm`s that wait for a call it is inside of. A
 /// `Vm` leaves none in use when it is done or suspended.
 ///
-/// The frames after those in use are kept: each holds the emptied stacks
+/// The frames after those in use are kept: each holds the emptied stack
 /// of the last function that ran at its depth, for the next one.
 #[derive(Default)]
 pub(crate) struct VmFrames {
@@ -390,9 +403,9 @@ impl HeapMarkAndSweep for VmFrames {
             let Frame {
                 ip: _,
                 stack,
-                reference_stack,
-                iterator_stack,
-                exception_handler_stack,
+                reference_base: _,
+                iterator_base: _,
+                handler_base: _,
                 executable,
                 tables: _,
                 completion: _,
@@ -401,9 +414,6 @@ impl HeapMarkAndSweep for VmFrames {
                 scoped: _,
             } = frame;
             stack.as_slice().mark_values(queues);
-            reference_stack.as_slice().mark_values(queues);
-            iterator_stack.as_slice().mark_values(queues);
-            exception_handler_stack.as_slice().mark_values(queues);
             executable.mark_values(queues);
         }
     }
@@ -413,9 +423,9 @@ impl HeapMarkAndSweep for VmFrames {
             let Frame {
                 ip: _,
                 stack,
-                reference_stack,
-                iterator_stack,
-                exception_handler_stack,
+                reference_base: _,
+                iterator_base: _,
+                handler_base: _,
                 executable,
                 tables: _,
                 completion: _,
@@ -424,11 +434,6 @@ impl HeapMarkAndSweep for VmFrames {
                 scoped: _,
             } = frame;
             stack.as_mut_slice().sweep_values(compactions);
-            reference_stack.as_mut_slice().sweep_values(compactions);
-            iterator_stack.as_mut_slice().sweep_values(compactions);
-            exception_handler_stack
-                .as_mut_slice()
-                .sweep_values(compactions);
             executable.sweep_values(compactions);
         }
     }
@@ -444,6 +449,7 @@ impl Vm {
         result: None,
         reference: None,
         depth: 0,
+        handler_base: 0,
     };
 
     /// The value and iterator stacks for code that is about to run: emptied
@@ -470,6 +476,7 @@ impl Vm {
             result: None,
             reference: None,
             depth: 0,
+            handler_base: 0,
         }
     }
 
@@ -484,6 +491,7 @@ impl Vm {
             result: _,
             reference: _,
             depth,
+            handler_base: _,
         } = self;
         debug_assert_eq!(depth, 0);
         Self::recycle_stacks(
@@ -545,6 +553,7 @@ impl Vm {
             result: _,
             reference: _,
             depth,
+            handler_base: _,
         } = self;
         // Only the code a `Vm` was started with yields or awaits: a function
         // it runs in place of a call is neither a generator nor async.
@@ -568,6 +577,7 @@ impl Vm {
             result: None,
             reference: None,
             depth: 0,
+            handler_base: 0,
         }
     }
 
@@ -1161,16 +1171,12 @@ impl Vm {
         let code = caller.code;
         let scoped = Scoped::from_root_repr(caller.executable.into_root_repr());
         if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
-            let PooledVmStacks {
-                stack,
-                iterator_stack,
-            } = Self::take_stacks(agent);
             agent.vm_frames.frames.push(Frame {
                 ip: 0,
-                stack,
-                reference_stack: Vec::new(),
-                iterator_stack,
-                exception_handler_stack: Vec::new(),
+                stack: Vec::with_capacity(32),
+                reference_base: 0,
+                iterator_base: 0,
+                handler_base: 0,
                 executable: code,
                 tables: None,
                 completion: Completion::Value,
@@ -1180,25 +1186,24 @@ impl Vm {
             });
         }
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
-        // The function's stacks are the Vm's, and the caller's wait in the
-        // frame. Exchanged before anything here writes to one of them: the
-        // stacks are exchanged several words at a time, and reading a word
+        // The function's value stack is the Vm's, and the caller's waits in
+        // the frame. Exchanged before anything here writes to one of them:
+        // a stack is exchanged several words at a time, and reading a word
         // that was written just before, together with its neighbour, waits
         // for the write to be done.
         core::mem::swap(&mut self.stack, &mut frame.stack);
-        core::mem::swap(&mut self.reference_stack, &mut frame.reference_stack);
-        core::mem::swap(&mut self.iterator_stack, &mut frame.iterator_stack);
-        core::mem::swap(
-            &mut self.exception_handler_stack,
-            &mut frame.exception_handler_stack,
-        );
         // EvaluateCall: the this value of the call, from its Reference.
         let reference = if instr.kind == Instruction::PopReferenceAndEvaluateCall {
             self.reference = None;
-            frame.reference_stack.pop()
+            self.reference_stack.pop()
         } else {
             self.reference.take()
         };
+        // The other stacks go on where the caller left them.
+        frame.reference_base = self.reference_stack.len();
+        frame.iterator_base = self.iterator_stack.len();
+        frame.handler_base = self.handler_base;
+        self.handler_base = self.exception_handler_stack.len();
         let first = frame.stack.len() - instr.get_first_index();
         let arguments = &frame.stack[first..];
         let list = if let Some(parameters) = callee.parameters {
@@ -1293,20 +1298,16 @@ impl Vm {
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
         // The function's instructions and tables are let go of.
         drop(callee);
-        // The caller's stacks are the Vm's again, and the function's are
-        // emptied where they wait for the next one: after the exchange, as
-        // in [`Vm::enter_function`].
+        // The caller's value stack is the Vm's again, and the function's is
+        // emptied where it waits for the next one: after the exchange, as
+        // in [`Vm::enter_function`]. What the function left on the other
+        // stacks (it returned out of a loop, or threw) is cut off.
         core::mem::swap(&mut self.stack, &mut frame.stack);
-        core::mem::swap(&mut self.reference_stack, &mut frame.reference_stack);
-        core::mem::swap(&mut self.iterator_stack, &mut frame.iterator_stack);
-        core::mem::swap(
-            &mut self.exception_handler_stack,
-            &mut frame.exception_handler_stack,
-        );
         frame.stack.clear();
-        frame.reference_stack.clear();
-        frame.iterator_stack.clear();
-        frame.exception_handler_stack.clear();
+        self.reference_stack.truncate(frame.reference_base);
+        self.iterator_stack.truncate(frame.iterator_base);
+        self.exception_handler_stack.truncate(self.handler_base);
+        self.handler_base = frame.handler_base;
         match frame.completion {
             Completion::Value => {}
             Completion::Discarded => self.result = None,
@@ -1457,7 +1458,11 @@ impl Vm {
         if agent.termination().is_some() {
             return false;
         }
-        if let Some(handler) = self.exception_handler_stack.pop() {
+        // A handler of the code that is running: those under
+        // `handler_base` are its callers'.
+        if self.exception_handler_stack.len() > self.handler_base
+            && let Some(handler) = self.exception_handler_stack.pop()
+        {
             match handler {
                 ExceptionHandler::CatchBlock {
                     ip,
@@ -4457,6 +4462,7 @@ impl HeapMarkAndSweep for Vm {
             result,
             reference,
             depth: _,
+            handler_base: _,
         } = self;
         stack.as_slice().mark_values(queues);
         reference_stack.as_slice().mark_values(queues);
@@ -4476,6 +4482,7 @@ impl HeapMarkAndSweep for Vm {
             result,
             reference,
             depth: _,
+            handler_base: _,
         } = self;
         stack.as_mut_slice().sweep_values(compactions);
         reference_stack.as_mut_slice().sweep_values(compactions);
