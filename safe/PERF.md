@@ -36,9 +36,9 @@ below.
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.7x |
 | call | 14 | 10.4x | 2.7x |
-| prop | 13 | 7.1x | 2.4x |
-| array | 14 | 5.8x | 2.4x |
+| array | 14 | 5.8x | 2.5x |
 | math | 4 | 9.7x | 2.4x |
+| prop | 13 | 7.1x | 2.3x |
 | map, set | 4 | 4.6x | 2.3x |
 | string | 26 | 10.6x | 2.2x |
 | app | 8 | 6.1x | 2.1x |
@@ -49,8 +49,7 @@ below.
 | all | 108 | 7.6x | 2.1x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(38x, area 7); after it come generators (6.1x), then calls that bind an arguments object or go through an accessor
-(4.7x). 26 of the 108 cases are above 3x and 40 at or under 2x, 12 of them at or under QuickJS's time. One case
+(38x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.8x). 26 of the 108 cases are above 3x and 40 at or under 2x, 12 of them at or under QuickJS's time. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -414,7 +413,18 @@ the assignment is another. `o.x = o.x + o.y + (o.z & 1)` went from 3.3x to 3.1x,
 Left: a property read is the cache (up to four shapes compared), then the object's record, its shape's record
 for the capacity of the storage, a jump on that capacity to the arena of that size, and the slot: about eight
 dependent loads where QuickJS has three. The loop of `o.x = o.x + o.y + (o.z & 1)` is 3.2x.
-Accessors are calls made the native way (`prop/getter-setter` 4.7x). Functions, Arrays and other objects with
+
+An accessor was a call made the native way. Where the cache of the place knows the shape and the property
+is an accessor, of the object or inherited, whose getter is an ECMAScript function, the read is a call of
+the getter that the `Vm` runs itself (no arguments, the object as the this value, what it returns as the
+result); and the assignment is such a call of the setter, whose result the frame drops. A class with a
+getter and a setter went from 4.7x to 2.9x. Reads that keep a Reference for a call that follows
+(`o.getter()`) take the general way still.
+
+`v instanceof F` looked F[Symbol.hasInstance] up key by key, called the method every function inherits as
+a built-in, and that looked F.prototype up key by key. Both lookups go through the property cache of
+their name, and the inherited method of the running realm is done without the call: 4.4x to 4.0x. What is
+left of that case is the call of `Array.isArray`. Functions, Arrays and other objects with
 a backing object do not take the short way for their named properties yet.
 
 ### 5. Array and typed array elements
@@ -637,6 +647,11 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   a pattern is the whole pattern. Upstream; test262 has no test that fails for it. It is refused now only
   where the read comes first (an earlier element, the element's own default, key or value, or what the
   pattern is initialized from). Fixed.
+- An Array, and any object that has no properties of its own yet, is asked for its prototype through the
+  running realm, not its own: `g.eval("[1]")` of another realm `g` has the caller's %Array.prototype% as
+  its prototype, and `x instanceof g.Array` is true for it only because the call of g's
+  Function.prototype[Symbol.hasInstance] makes g the running realm while it looks. Upstream. Not fixed;
+  the shortcut for instanceof is taken only for the running realm's method because of it.
 - One run of the widget sandbox's tests in hosted mode failed a test that bounds a widget by its layout
   queries: the widget was stopped for 200 ms of continuous execution after 19 queries instead. The machine
   was under a load of ninety at the time; three runs on a quiet machine passed. The limit is wall-clock time.
