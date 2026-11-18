@@ -6467,3 +6467,147 @@ generator 1 12 done"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A pattern that ends before its iterator does closes the iterator as
+/// IteratorClose does: "return" is called once, with no argument, and what
+/// it gives back must be an object. What it gives back and throws, for
+/// every kind of array pattern; an error of the pattern itself, which
+/// closes the iterator too and is the error thrown; iterators that ran
+/// out, that have no "return", and whose "next" fails, which are not
+/// closed; and generators, closed through their `finally`. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn patterns_close_their_iterator_as_iterator_close_does() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(patterns_close_their_iterator)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn patterns_close_their_iterator() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function make(result, thrower) {
+  return { [Symbol.iterator]() { return {
+    next() { return { done: false, value: 1 }; },
+    return() { out.push('  return called with ' + arguments.length); if (thrower) throw new RangeError('r'); return result; },
+  }; } };
+}
+function attempt(name, f) { try { out.push(name + ': ' + f()); } catch (e) { out.push(name + ': threw ' + e.constructor.name); } }
+// What "return" gives back: an object, or a TypeError.
+attempt('object', function () { var [a] = make({}); return a; });
+attempt('function', function () { var [a] = make(function () {}); return a; });
+attempt('number', function () { var [a] = make(5); return a; });
+attempt('string', function () { var [a] = make('s'); return a; });
+attempt('null', function () { var [a] = make(null); return a; });
+attempt('undefined', function () { var [a] = make(undefined); return a; });
+attempt('throws', function () { var [a] = make({}, true); return a; });
+// Every kind of pattern.
+attempt('let', function () { let [a, b] = make({}); return a + b; });
+attempt('const number', function () { const [a] = make(5); return a; });
+attempt('skips', function () { var [, , a] = make({}); return a; });
+attempt('empty', function () { var [] = make(5); return 'bound'; });
+attempt('parameter', function () { return (function ([a]) { return a; })(make({})); });
+attempt('parameter number', function () { return (function ([a]) { return a; })(make(5)); });
+attempt('parameter throws', function () { return (function ([a]) { return a; })(make({}, true)); });
+attempt('arrow', function () { return (([a, b]) => a + b)(make(5)); });
+attempt('nested', function () { var [[a]] = [make(5)]; return a; });
+attempt('nested object', function () { var [{ length }] = make({}); return length; });
+attempt('for-of', function () { for (var [a] of [make(5)]) {} return 'ran'; });
+attempt('catch', function () { try { throw make(5); } catch ([a]) { return a; } });
+// An error from the pattern itself closes the iterator too, once, and is the error that is thrown.
+attempt('element is not iterable', function () { var [[a], b] = make(5); return a; });
+attempt('element is null', function () { var [{ a }] = { [Symbol.iterator]() { return { next() { return { done: false, value: null }; }, return() { out.push('  return called with ' + arguments.length); return {}; } }; } }; return a; });
+attempt('element is null, return throws', function () { var [{ a }] = { [Symbol.iterator]() { return { next() { return { done: false, value: null }; }, return() { out.push('  return called with ' + arguments.length); throw new RangeError('r'); } }; } }; return a; });
+// No close where there is nothing to close.
+function counted(count) { return { [Symbol.iterator]() { var n = 0; return {
+  next() { n++; return { done: n > count, value: n }; },
+  return() { out.push('  return called with ' + arguments.length); return {}; },
+}; } }; }
+attempt('ran out', function () { var [a, b, c] = counted(2); return [a, b, c].join(); });
+attempt('just enough', function () { var [a, b] = counted(2); return [a, b].join(); });
+attempt('rest', function () { var [a, ...rest] = counted(3); return a + ';' + rest.join(); });
+attempt('no return', function () { var [a] = { [Symbol.iterator]() { return { next() { return { done: false, value: 7 }; } }; } }; return a; });
+attempt('return is null', function () { var [a] = { [Symbol.iterator]() { return { next() { return { done: false, value: 7 }; }, return: null }; } }; return a; });
+attempt('return is a number', function () { var [a] = { [Symbol.iterator]() { return { next() { return { done: false, value: 7 }; }, return: 5 }; } }; return a; });
+attempt('next throws', function () { var [a] = { [Symbol.iterator]() { return { next() { throw new EvalError('n'); }, return() { out.push('  return called with ' + arguments.length); return {}; } }; } }; return a; });
+attempt('next gives a number', function () { var [a] = { [Symbol.iterator]() { return { next() { return 5; }, return() { out.push('  return called with ' + arguments.length); return {}; } }; } }; return a; });
+// A generator is closed through its finally.
+function* gen() { try { yield 1; yield 2; } finally { out.push('  finally'); } }
+attempt('generator', function () { var [a] = gen(); return a; });
+attempt('generator, just enough', function () { var [a, b] = gen(); return a + b; });
+attempt('generator, ran out', function () { var [a, b, c] = gen(); return [a, b, c].join(); });
+function* stubborn() { try { yield 1; } finally { return 'not an object, but a generator wraps it'; } }
+attempt('generator that returns in finally', function () { var [a] = stubborn(); return a; });
+out.join("\n")"#;
+    let expected = r#"  return called with 0
+object: 1
+  return called with 0
+function: 1
+  return called with 0
+number: threw TypeError
+  return called with 0
+string: threw TypeError
+  return called with 0
+null: threw TypeError
+  return called with 0
+undefined: threw TypeError
+  return called with 0
+throws: threw RangeError
+  return called with 0
+let: 2
+  return called with 0
+const number: threw TypeError
+  return called with 0
+skips: 1
+  return called with 0
+empty: threw TypeError
+  return called with 0
+parameter: 1
+  return called with 0
+parameter number: threw TypeError
+  return called with 0
+parameter throws: threw RangeError
+  return called with 0
+arrow: threw TypeError
+  return called with 0
+nested: threw TypeError
+  return called with 0
+nested object: undefined
+  return called with 0
+for-of: threw TypeError
+  return called with 0
+catch: threw TypeError
+  return called with 0
+element is not iterable: threw TypeError
+  return called with 0
+element is null: threw TypeError
+  return called with 0
+element is null, return throws: threw TypeError
+ran out: 1,2,
+  return called with 0
+just enough: 1,2
+rest: 1;2,3
+no return: 7
+return is null: 7
+return is a number: threw TypeError
+next throws: threw EvalError
+next gives a number: threw TypeError
+  finally
+generator: 1
+  finally
+generator, just enough: 3
+  finally
+generator, ran out: 1,2,
+generator that returns in finally: 1"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
