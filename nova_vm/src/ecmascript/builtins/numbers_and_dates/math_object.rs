@@ -1453,8 +1453,13 @@ impl MathObject {
         } else {
             if highest_i64 != i64::MIN {
                 // b. If n is +0𝔽 and highest is -0𝔽, set highest to +0𝔽.
-                // Note: This happens automatically as +0.max(-0) is +0.
-                highest_f64 = (highest_i64 as f64).max(highest_f64);
+                // Note: +0 is an integer and -0 is not, so on a tie the
+                // integer is the answer. `f64::max` may return either of two
+                // zeros (it returns -0 on 32-bit ARM).
+                let highest_int = highest_i64 as f64;
+                if highest_int >= highest_f64 {
+                    highest_f64 = highest_int;
+                }
             }
             Some(Number::from_f64(agent, highest_f64, gc).into())
         }
