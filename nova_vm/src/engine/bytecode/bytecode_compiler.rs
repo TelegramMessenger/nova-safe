@@ -1196,7 +1196,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                         while decl_id < node {
                             node = nodes.parent_id(node);
                         }
-                        if decl_id == node {
+                        if decl_id == node
+                            && !is_bound_earlier_in_pattern(
+                                nodes,
+                                ref_id,
+                                decl_id,
+                                scoping.symbol_span(s),
+                            )
+                        {
                             // Self-referential declaration.
                             VariableKind::TemporalDeadZone
                         } else {
@@ -1253,6 +1260,44 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
         };
         kind.compile(ctx, &self.name)
     }
+}
+
+/// Whether a reference inside the declaration of the name it refers to is
+/// evaluated after the name was bound. The bindings of a pattern are
+/// initialized one after another as its elements are reached, so the default
+/// of a later element reads an earlier one: `{ a, b = a }` and `[a, [b = a]]`
+/// do, while `{ b = a, a }`, `{ a = a }`, `{ [a]: a }` and `{ a } = a` are
+/// still read before `a` is initialized.
+///
+/// `binding` is where the name is bound. The lowest node that holds both
+/// it and the reference says which comes first: only in an object or array
+/// pattern, where they are in different elements, is that the order they
+/// are written in.
+fn is_bound_earlier_in_pattern(
+    nodes: &oxc_semantic::AstNodes,
+    ref_id: NodeId,
+    decl_id: NodeId,
+    binding: oxc_span::Span,
+) -> bool {
+    use oxc_span::GetSpan;
+    let reference = nodes.kind(ref_id).span();
+    let mut node = ref_id;
+    while node != decl_id {
+        let parent = nodes.parent_id(node);
+        if parent == node {
+            return false;
+        }
+        let kind = nodes.kind(parent);
+        let span = kind.span();
+        if span.start <= binding.start && binding.end <= span.end {
+            return matches!(
+                kind,
+                oxc_ast::AstKind::ObjectPattern(_) | oxc_ast::AstKind::ArrayPattern(_)
+            ) && binding.end <= reference.start;
+        }
+        node = parent;
+    }
+    false
 }
 
 /// Formal parameter lists also have a temporal dead-zone; when the list does
