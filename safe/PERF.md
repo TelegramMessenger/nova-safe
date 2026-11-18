@@ -37,7 +37,7 @@ below.
 | typed | 4 | 10.6x | 2.8x |
 | call | 14 | 10.4x | 2.2x |
 | math | 4 | 9.7x | 2.4x |
-| string | 26 | 10.6x | 2.0x |
+| string | 26 | 10.6x | 1.6x |
 | prop | 13 | 7.1x | 2.0x |
 | map, set | 4 | 4.6x | 2.0x |
 | app | 8 | 6.1x | 1.9x |
@@ -46,17 +46,19 @@ below.
 | loop | 11 | 11.1x | 1.4x |
 | gc | 3 of 5 | 3.6x | 1.2x |
 | json | 2 | 1.0x | 0.9x |
-| all | 108 | 7.6x | 1.9x |
+| all | 108 | 7.6x | 1.8x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 2.6x, and the worst is now prepending
-(38x, area 7); after it come generators (4.1x), typed `Float64Array` arithmetic (4.0x), then `instanceof`
-(3.5x). 11 of the 108 cases are above 3x and 52 at or under 2x, 14 of them at or under QuickJS's time. Over
-all cases it is 1.88x: 2.12x before the round of patterns, Array iteration and
+The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
+was the worst after it (38x, area 7). The worst is now a generator (4.1x), then typed `Float64Array`
+arithmetic (3.9x), then `instanceof` with `Array.isArray` (3.7x). 11 of the 108 cases are above 3x and 58 at
+or under 2x, 14 of them at or under QuickJS's time. Over all cases it is 1.78x: 2.12x before the round of
+patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
-stepping a generator without a result object took it here. The arguments object in a stack slot halved one
-case of the 108 and left the mean where it was.
+stepping a generator without a result object took it to 1.88x. The arguments object in a stack slot halved
+one case of the 108 and left the mean where it was, and the string hash that follows from the hashes of
+what is concatenated took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -739,14 +741,43 @@ copied to the heap only where no such string exists. The command buffer went fro
 are made and dropped from 4.3x to 3.3x, rows of HTML joined from an array from 4.1x to 3.3x; the application
 cases from 2.5x to 2.3x.
 
-Left: every string made is still hashed for the table, a third of what a short concatenation costs now
-(SipHash, keyed so that a script cannot choose colliding strings), and looked up in it: an appended text is
-a string like any other, so each step still allocates its record and asks the table. Prepending (`s = x + s`,
-36x) still copies and hashes the whole string every time, 5 KB a step on average in the case measured; it is
-rare.
-A keyed multiply-fold hash would take a fraction of SipHash's time on long strings and was not tried: that a
-script cannot choose colliding strings is what SipHash is there for, and giving it up is not a question of
-speed alone.
+What was left then: every string made was hashed for the table with SipHash, keyed so that a script cannot
+choose colliding strings, and prepending (`s = x + s`, 38x) copied and hashed the whole string every time,
+5 KB a step on average in the case measured. By profile nine tenths of that case were SipHash, and in a
+loop that appends a character a sixth: the bytes since the last 64-byte block hashed again at every step,
+the state of the hash copied, and its four closing rounds.
+
+SipHash was not slow (5 GB/s here). It cannot be continued from the other end, or put together from two
+hashes. The hash of a text is now a polynomial of its bytes at a random point modulo 2^61 - 1
+(`hashing.rs`, `TextHasher`): each byte plus one times a power of the point, taken eight bytes at a time
+from a table of 8 by 256 products and 32 bytes to one reduction. The hash of two texts put together is the
+left one's times the point to the right one's length, plus the right one's; so appending continues from
+the hash of what was there by the bytes added, and putting text before costs one multiplication, where the
+text keeps that power from the step before. Every string's record keeps the hash, so the table never reads
+a text again to grow. The table takes a one-to-one mixing of the hash under a second random key. Two
+different texts have the same hash for at most as many points as the longer has bytes, of 2^61, whatever
+the texts; what was given up against SipHash is in `safe/SECURITY.md`.
+
+A text that is being built keeps pieces at its start as it does at its end, with the same rule for how
+long they are, and its first 31 bytes next to its last: text put before a string that a concatenation made
+shares all of that string, as text appended does, and two built texts are compared side by side, each
+side from its edge inwards until both walks stand at the same piece. And a concatenation of two strings
+has its hash before it has its text, so it asks the table first and copies only where there is no such
+string yet, whatever the length (it was so up to 64 bytes).
+
+Prepending went from 38x to 1.9x (5.6 ms to 0.27 ms). The cases that append: a character at a time 2.6x to
+1.9x, short strings 2.6x to 1.7x, numbers 2.2x to 1.8x, text outside ASCII 1.5x to 1.0x, rows of HTML 2.6x
+to 2.0x, `fromCharCode` 2.3x to 1.9x, escaping HTML a character at a time 1.5x to 1.2x. The group went from
+2.0x to 1.6x, all cases from 1.88x to 1.78x.
+
+One thing on the way: the power of the point for a text's length, found by its bits at every step, was two
+fifths of prepending as first written (2.8x). And an append of a few bytes to a long text asked the
+allocator's count whether they fit, at every step; it is let through as a short string is, and the poll
+holds the heap to the limit.
+
+Left in a step of such a loop: the record of the new text allocated and, where the text was built before,
+dropped again after the table found the old one (an eighth each for the table and the record), and the
+collector's sweep of the records (an eighth).
 
 ### 8. Other string work
 

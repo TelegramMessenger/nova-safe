@@ -101,6 +101,16 @@ service.
 - A bug in `rustc`, LLVM, `std` or `nova_embed_ffi` could still break the guarantees; the sandbox is the wall behind
   that.
 - Denial of service inside one widget (it burns its own CPU quota until the interrupt stops it).
+- The string table no longer hashes with SipHash (`nova_vm/src/hashing.rs`, `TextHasher`). The hash of a text is
+  a polynomial of its bytes at a random point modulo 2^61 - 1, so that the hash of two texts put together follows
+  from theirs and a string a script builds by concatenation is not read again for it (SipHash made `s = x + s` in
+  a loop hash the whole text at every step); the table takes a one-to-one mixing of that value under a second
+  random key. What holds: two different texts of at most n bytes have the same hash for at most n of the 2^61
+  points, whatever the texts are, so a script that does not know the point cannot make strings that collide; the
+  point and the key are drawn for each engine through std's randomly keyed SipHash, no script can read a hash,
+  and a flood would slow only its own Agent until the CPU limit ends it. What was given up: SipHash stays unpredictable
+  to someone who sees its outputs, and this hash does not; whoever could read hashes could solve for the keys. A
+  script can only time the table. The maps of the parser, whose keys are script text, keep SipHash.
 - The memory limit is asked at a poll (every 4096 steps), by the allocations that ask before they allocate, and
   after a collection; and the collector is paced by the records allocated, not by the bytes of strings. A script
   that makes long strings with a built-in that does not ask first (`substring`, `slice`, the case conversions,
