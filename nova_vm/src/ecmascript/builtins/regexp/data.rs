@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::sync::Arc;
+
 use oxc_ast::ast::RegExpFlags;
 use regress::{ExecBudget, Flags, Match, MatchError, Regex};
 use wtf8::{Wtf8Buf, Wtf8Str};
@@ -181,7 +183,10 @@ pub(crate) struct RegExpHeapData<'a> {
     pub(super) object_index: Option<OrdinaryObject<'a>>,
     /// \[\[RegExpMatcher]]; `None` until a literal's pattern is first used
     /// (see [`RegExpHeapData::matcher`]).
-    pub(super) reg_exp_matcher: Option<Result<Regex, std::string::String>>,
+    ///
+    /// Shared, not copied, by the RegExps that the evaluations of one
+    /// literal make ([`RegExpHeapData::of_literal`]).
+    pub(super) reg_exp_matcher: Option<Result<Arc<Regex>, std::string::String>>,
     pub(super) original_source: String<'a>,
     pub(super) original_flags: RegExpFlags,
     pub(super) last_index: RegExpLastIndex,
@@ -249,16 +254,36 @@ impl<'a> RegExpHeapData<'a> {
         }
     }
 
+    /// What one evaluation of the literal that this RegExp was made for
+    /// evaluates to: a RegExp of its own, with this one's
+    /// \[\[OriginalSource]], \[\[OriginalFlags]] and \[\[RegExpMatcher]], a
+    /// lastIndex of 0 and no other property. The matcher is compiled for the
+    /// first of them and shared by all: what the pattern compiles to does
+    /// not depend on which of them asks.
+    pub(super) fn of_literal(&mut self, strings: &impl StringHeapAccess) -> Self {
+        let matcher = self.matcher(strings).clone();
+        Self {
+            object_index: None,
+            reg_exp_matcher: Some(matcher),
+            original_source: self.original_source,
+            original_flags: self.original_flags,
+            last_index: RegExpLastIndex::ZERO,
+            utf16_input_key: None,
+            utf16_input: Vec::new(),
+            program_bytes: self.program_bytes,
+        }
+    }
+
     /// \[\[RegExpMatcher]], compiled from \[\[OriginalSource]] and
     /// \[\[OriginalFlags]] if this is its first use.
     pub(super) fn matcher(
         &mut self,
         strings: &impl StringHeapAccess,
-    ) -> &Result<Regex, std::string::String> {
+    ) -> &Result<Arc<Regex>, std::string::String> {
         if self.reg_exp_matcher.is_none() {
             let compiled =
                 Self::compile_pattern(self.original_source.as_wtf8_(strings), self.original_flags);
-            self.reg_exp_matcher = Some(compiled);
+            self.reg_exp_matcher = Some(compiled.map(Arc::new));
         }
         self.reg_exp_matcher
             .as_ref()

@@ -2623,8 +2623,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::RegExp
 
         let pattern = self.regex.pattern.text.as_str();
         // 3. Return ! RegExpCreate(pattern, flags).
+        // The RegExp made here is the literal's, kept with the code: each
+        // evaluation returns a new one of its pattern and flags.
         let regexp = ctx.create_regexp(pattern, self.regex.flags);
         ctx.add_instruction_with_constant(Instruction::StoreConstant, regexp);
+        ctx.add_instruction(Instruction::InstantiateRegExpLiteral);
     }
 }
 

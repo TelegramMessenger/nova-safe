@@ -3030,6 +3030,17 @@ impl Vm {
                 execute_resolve_this_binding(agent, vm, gc.into_nogc())?
             }
             Instruction::StoreCopy => vm.execute_store_copy(),
+            #[cfg(feature = "regexp")]
+            Instruction::InstantiateRegExpLiteral => {
+                let Some(Value::RegExp(literal)) = vm.result else {
+                    unreachable!("a RegExp literal's instruction without its RegExp")
+                };
+                let gc = gc.into_nogc();
+                let regexp = crate::ecmascript::reg_exp_instantiate_literal(agent, literal, gc);
+                vm.result = Some(regexp.unbind().into());
+            }
+            #[cfg(not(feature = "regexp"))]
+            Instruction::InstantiateRegExpLiteral => unreachable!(),
             Instruction::StringConcat => execute_string_concat(agent, vm, instr, gc)?,
             Instruction::Throw => vm.execute_throw(gc.into_nogc())?,
             Instruction::ThrowError => execute_throw_error(agent, vm, instr, gc.into_nogc())?,
