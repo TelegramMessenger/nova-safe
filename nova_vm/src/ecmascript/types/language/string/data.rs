@@ -33,7 +33,7 @@ impl PartialEq for StringRecord {
         {
             return true;
         }
-        self.len() == other.len() && self.as_wtf8() == other.as_wtf8()
+        self.len() == other.len() && self.same_text(other)
     }
 }
 impl Eq for StringRecord {}
@@ -205,7 +205,99 @@ fn utf16_len_of(bytes: &[u8]) -> usize {
         .sum()
 }
 
+/// A walk over the bytes of an appended text from its end, in the chunks it
+/// keeps them in: what it keeps of its end, then its pieces from the last
+/// one back.
+struct FromEnd<'a> {
+    /// What is left of the chunk being walked: its end is taken first.
+    chunk: &'a [u8],
+    /// The piece after it in the walk.
+    piece: Option<&'a Arc<Piece>>,
+}
+
+impl<'a> FromEnd<'a> {
+    fn new(text: &'a AppendedText) -> Self {
+        Self {
+            chunk: text.last(),
+            piece: Some(&text.pieces),
+        }
+    }
+
+    /// Goes on to the next chunk that has bytes when this one has none left;
+    /// the chunk stays empty at the start of the text.
+    fn fill(&mut self) {
+        while self.chunk.is_empty()
+            && let Some(piece) = self.piece
+        {
+            self.chunk = &piece.bytes;
+            self.piece = piece.before.as_ref();
+        }
+    }
+}
+
 impl AppendedText {
+    /// Whether the text is `bytes`, learned from the pieces: nothing is
+    /// joined for it.
+    fn is_text(&self, bytes: &[u8]) -> bool {
+        if let Some(joined) = self.joined.get() {
+            return joined.as_bytes() == bytes;
+        }
+        if self.len != bytes.len() {
+            return false;
+        }
+        let mut end = bytes.len();
+        let mut walk = FromEnd::new(self);
+        loop {
+            walk.fill();
+            if walk.chunk.is_empty() {
+                return end == 0;
+            }
+            let Some(start) = end.checked_sub(walk.chunk.len()) else {
+                return false;
+            };
+            if bytes[start..end] != *walk.chunk {
+                return false;
+            }
+            end = start;
+            walk.chunk = &[];
+        }
+    }
+
+    /// Whether two texts are the same, learned from the pieces of both:
+    /// nothing is joined for it. Texts that continue one text share its
+    /// pieces, and from where both walks come to the same piece the rest is
+    /// the same without being looked at; so the text a loop builds again,
+    /// step by step, is found to be the one it built before by what each
+    /// step added.
+    fn same_text(&self, other: &AppendedText) -> bool {
+        if self.len != other.len {
+            return false;
+        }
+        let (mut ours, mut theirs) = (FromEnd::new(self), FromEnd::new(other));
+        loop {
+            if ours.chunk.is_empty() && theirs.chunk.is_empty() {
+                match (ours.piece, theirs.piece) {
+                    (Some(ours), Some(theirs)) if Arc::ptr_eq(ours, theirs) => return true,
+                    (None, None) => return true,
+                    _ => {}
+                }
+            }
+            ours.fill();
+            theirs.fill();
+            let shared = ours.chunk.len().min(theirs.chunk.len());
+            if shared == 0 {
+                return ours.chunk.is_empty() && theirs.chunk.is_empty();
+            }
+            let (ours_rest, ours_end) = ours.chunk.split_at(ours.chunk.len() - shared);
+            let (theirs_rest, theirs_end) = theirs.chunk.split_at(theirs.chunk.len() - shared);
+            if ours_end != theirs_end {
+                return false;
+            }
+            ours.chunk = ours_rest;
+            theirs.chunk = theirs_rest;
+        }
+    }
+
     /// The text as one buffer, joined on the first call.
     fn joined(&self) -> Wtf8Str<'_> {
         self.joined
@@ -285,6 +377,29 @@ impl StringRecord {
                 RandomState::hash_text_from_state(&text.hash_state, &tail[..count])
             }
             _ => hasher.hash_text(self.as_bytes()),
+        }
+    }
+
+    /// Whether the string's text is `bytes`. An appended text is not joined
+    /// to learn it: the string table asks this of every string whose hash
+    /// is that of a new one, and a join is the whole text copied.
+    pub(crate) fn text_is(&self, bytes: &[u8]) -> bool {
+        match &self.data {
+            StringBuffer::Appended(text) => text.is_text(bytes),
+            _ => self.as_bytes() == bytes,
+        }
+    }
+
+    /// Whether two strings have the same text, with neither joined to learn
+    /// it ([`StringRecord::text_is`]).
+    pub(crate) fn same_text(&self, other: &StringRecord) -> bool {
+        match (&self.data, &other.data) {
+            (StringBuffer::Appended(ours), StringBuffer::Appended(theirs)) => {
+                ours.same_text(theirs)
+            }
+            (StringBuffer::Appended(text), _) => text.is_text(other.as_bytes()),
+            (_, StringBuffer::Appended(text)) => text.is_text(self.as_bytes()),
+            _ => self.as_bytes() == other.as_bytes(),
         }
     }
 
@@ -826,6 +941,99 @@ mod tests {
             hasher.hash_text(expected.as_bytes())
         );
         assert_eq!(text.as_bytes(), expected.as_bytes());
+    }
+
+    /// `text` built by appending it in the pieces of `sizes`, over and over.
+    fn built(
+        text: &str,
+        sizes: &[usize],
+        hasher: &RandomState,
+        budget: &Arc<JoinBudget>,
+    ) -> StringRecord {
+        let bytes = text.as_bytes();
+        let start = 21.min(bytes.len());
+        let mut record = StringRecord::from_concatenation(Wtf8Buf::from_str(&text[..start]));
+        let mut at = start;
+        for &size in sizes.iter().cycle() {
+            if at == bytes.len() {
+                break;
+            }
+            let end = (at + size).min(bytes.len());
+            record = StringRecord::appended(&record, &bytes[at..end], hasher, budget).0;
+            at = end;
+        }
+        record
+    }
+
+    /// The string table asks of a new string whether it is one it has, and
+    /// a loop that builds a text again makes, at every step, the string it
+    /// made before. Texts are compared by their pieces: none is joined for
+    /// it, however they were put together.
+    #[test]
+    fn appended_texts_are_compared_without_being_joined() {
+        let hasher = RandomState::new();
+        let budget = Arc::new(JoinBudget::default());
+        let text: std::string::String = (0..5000usize)
+            .map(|at| char::from(b'a' + ((at * 7 + at / 13) % 26) as u8))
+            .collect();
+        let splits: [&[usize]; 6] = [
+            &[1],
+            &[5],
+            &[LAST_BYTES, 1, LAST_BYTES + 1],
+            &[1, 70, 3, 31, 32, 200, 5],
+            &[400, 3],
+            &[4979],
+        ];
+        let plain = StringRecord::from_wtf8_buf(Wtf8Buf::from_str(&text));
+        for ours in splits {
+            let first = built(&text, ours, &hasher, &budget);
+            assert!(first.text_is(text.as_bytes()), "{ours:?}");
+            assert!(first.same_text(&plain) && plain.same_text(&first));
+            assert!(first == plain);
+            for theirs in splits {
+                let second = built(&text, theirs, &hasher, &budget);
+                assert!(first.same_text(&second), "{ours:?} {theirs:?}");
+                assert_eq!(
+                    first.table_hash(&hasher),
+                    second.table_hash(&hasher),
+                    "{ours:?} {theirs:?}"
+                );
+            }
+            // One byte of difference, wherever it is, and another length.
+            for at in [0, 1, 20, 21, 22, 2500, 4968, 4998, 4999] {
+                let mut changed = text.clone().into_bytes();
+                changed[at] ^= 1;
+                assert!(!first.text_is(&changed), "{ours:?} {at}");
+                let changed = std::string::String::from_utf8(changed).unwrap();
+                for theirs in splits {
+                    let other = built(&changed, theirs, &hasher, &budget);
+                    assert!(!first.same_text(&other), "{ours:?} {theirs:?} {at}");
+                    assert!(!other.same_text(&first), "{ours:?} {theirs:?} {at}");
+                }
+            }
+            assert!(!first.text_is(&text.as_bytes()[1..]));
+            assert!(!first.text_is(&text.as_bytes()[..4999]));
+            let longer = StringRecord::appended(&first, b"!", &hasher, &budget).0;
+            assert!(!first.same_text(&longer) && !longer.same_text(&first));
+            // What continues one text the same way is the same text, and
+            // not what continues it another way.
+            for added in [&b"A"[..], &[b'A'; 40][..]] {
+                let (one, hash) = StringRecord::appended(&first, added, &hasher, &budget);
+                let (two, same_hash) = StringRecord::appended(&first, added, &hasher, &budget);
+                assert!(one.same_text(&two));
+                assert_eq!(hash, same_hash);
+                let mut other = added.to_vec();
+                other[0] = b'B';
+                let three = StringRecord::appended(&first, &other, &hasher, &budget).0;
+                assert!(!one.same_text(&three));
+            }
+        }
+        assert_eq!(budget.joined(), 0, "a comparison joined a text");
+        // A text that was joined is compared as it is.
+        let joined = built(&text, &[7], &hasher, &budget);
+        assert_eq!(joined.as_bytes(), text.as_bytes());
+        assert!(joined.text_is(text.as_bytes()));
+        assert!(joined.same_text(&built(&text, &[9], &hasher, &budget)));
     }
 
     #[test]

@@ -1020,7 +1020,7 @@ impl<'gc> String<'gc> {
         string_lookup_table
             .find(hash, |s| {
                 let record = &strings[s.get_index()];
-                record.len() == message.len() && record.as_wtf8() == message
+                record.len() == message.len() && record.text_is(message.as_bytes())
             })
             .map(|&s| s.into())
             .ok_or(hash)

@@ -546,10 +546,11 @@ impl Heap {
             &self.string_hasher,
             &self.text_join_budget,
         );
-        // A string of another length is not this one, without joining either.
+        // Neither text is joined to compare them: a loop that builds the
+        // same text again finds, at every step, the string it built before.
         let found = self.string_lookup_table.find(hash, |heap_string| {
             let record = &self.strings[heap_string.get_index()];
-            record.len() == data.len() && record.as_wtf8() == data.as_wtf8()
+            record.len() == data.len() && record.same_text(&data)
         });
         if let Some(&found) = found {
             return found.into();
@@ -593,7 +594,7 @@ impl Heap {
         self.string_lookup_table
             .find(hash, |heap_string| {
                 let record = &self.strings[heap_string.get_index()];
-                record.len() == message.len() && record.as_wtf8() == message
+                record.len() == message.len() && record.text_is(message.as_bytes())
             })
             .map(|&heap_string| heap_string.into())
             .ok_or(hash)

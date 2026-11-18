@@ -634,3 +634,51 @@ fn accounts_do_not_drift_between_engines() {
         unsafe { nova_result_free(&mut out) };
     }
 }
+
+/// A script that builds the same text again, step by step, makes at every
+/// step the string it made the time before, and the string table finds it.
+/// Finding it joined both texts, the whole text copied at every step: with
+/// the memory limit counting what the engine allocates, and collecting less
+/// often for it, the joins of a few runs were more than the limit allows
+/// between two collections, and the engine ended as out of memory with a
+/// few megabytes in use.
+#[test]
+fn a_text_built_again_is_not_out_of_memory() {
+    const LIMIT: usize = 16 << 20;
+    let engine = quiet_engine(LIMIT);
+    assert_eq!(
+        unsafe { nova_engine_set_out_of_memory_fatal(engine, true) },
+        NOVA_OK
+    );
+    let rows = "var rows = [];
+        for (var i = 0; i < 400; i++) rows.push({ id: i, name: 'Item ' + i, price: (i * 1.25).toFixed(2) });
+        function run() {
+            var html = '<table>';
+            for (var i = 0; i < rows.length; i++) {
+                var r = rows[i];
+                html += '<tr class=\"' + (i & 1 ? 'odd' : 'even') + '\"><td>' + r.id + '</td><td>'
+                    + r.name + '</td><td>' + r.price + '</td></tr>';
+            }
+            html += '</table>';
+            return html.length;
+        }";
+    let escape = "var s = '';
+        for (var i = 0; i < 300; i++) s += 'Tom & Jerry <cat> said \"meow\" to a mouse ';
+        function run() {
+            var out = '';
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                out += c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '\"' ? '&quot;' : c;
+            }
+            return out.length;
+        }";
+    for setup in [rows, escape] {
+        assert_eq!(eval(engine, setup), NOVA_OK);
+        for run in 0..40 {
+            assert_eq!(eval(engine, "run()"), NOVA_OK, "run {run}");
+            let used = unsafe { nova_engine_memory_used(engine) };
+            assert!(used < LIMIT, "run {run}: {used} bytes");
+        }
+    }
+    unsafe { nova_engine_free(engine) };
+}
