@@ -5,7 +5,8 @@
 use crate::{
     ecmascript::{
         Agent, ExceptionType, ExecutionContext, InternalMethods, InternalSlots, JsError, JsResult,
-        OrdinaryObject, ProtoIntrinsics, Value, create_iter_result_object, object_handle,
+        OrdinaryObject, ProtoIntrinsics, Value, create_iter_result_object,
+        create_iter_result_object_in_realm, object_handle,
     },
     engine::{Bindable, Executable, ExecutionResult, GcScope, Scopable, SuspendedVm},
     heap::{
@@ -29,14 +30,59 @@ pub struct Generator<'a>(BaseIndex<'a, GeneratorHeapData<'static>>);
 object_handle!(Generator);
 arena_vec_access!(Generator, 'a, GeneratorHeapData, generators);
 
+/// What a generator that was resumed came to, for a caller that steps it
+/// ([`Generator::step`]).
+#[derive(Debug, Bindable)]
+pub(crate) enum GeneratorStep<'a> {
+    /// `yield value`: the value, with no iterator result object made for it.
+    Yielded(Value<'a>),
+    /// An iterator result object that is passed on as it is: the one of the
+    /// iterator that `yield*` delegates to.
+    Result(Value<'a>),
+    /// The generator is completed.
+    Done,
+}
+
 impl Generator<'_> {
     /// ### [27.5.3.3 GeneratorResume ( generator, value, generatorBrand )](https://tc39.es/ecma262/#sec-generatorresume)
+    ///
+    /// What %GeneratorPrototype%.next returns: an iterator result object.
     pub(crate) fn resume<'a>(
         self,
         agent: &mut Agent,
         value: Value,
-        mut gc: GcScope<'a, '_>,
+        gc: GcScope<'a, '_>,
     ) -> JsResult<'a, Value<'a>> {
+        match self.resume_as(agent, value, true, gc)? {
+            GeneratorStep::Yielded(result) | GeneratorStep::Result(result) => Ok(result),
+            // Not reached: a result object was asked for.
+            GeneratorStep::Done => Ok(Value::Undefined),
+        }
+    }
+
+    /// GeneratorResume with undefined for a caller that reads the result
+    /// itself, as IteratorStepValue does where the generator's `next` is the
+    /// original one: the value of `yield` comes as it is, and no iterator
+    /// result object is made for the caller to take apart again.
+    pub(crate) fn step<'a>(
+        self,
+        agent: &mut Agent,
+        gc: GcScope<'a, '_>,
+    ) -> JsResult<'a, GeneratorStep<'a>> {
+        self.resume_as(agent, Value::Undefined, false, gc)
+    }
+
+    /// GeneratorResume. With `wrapped`, what comes back is an iterator
+    /// result object ([`GeneratorStep::Result`]) as the specification has
+    /// it; without, the value of a `yield` and the completion come without
+    /// one.
+    fn resume_as<'a>(
+        self,
+        agent: &mut Agent,
+        value: Value,
+        wrapped: bool,
+        mut gc: GcScope<'a, '_>,
+    ) -> JsResult<'a, GeneratorStep<'a>> {
         let value = value.bind(gc.nogc());
         let generator = self.bind(gc.nogc());
         // 1. Let state be ? GeneratorValidate(generator, generatorBrand).
@@ -50,8 +96,11 @@ impl Generator<'_> {
             }
             GeneratorState::Completed => {
                 // 2. If state is completed, return CreateIterResultObject(undefined, true).
+                if !wrapped {
+                    return Ok(GeneratorStep::Done);
+                }
                 return create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc())
-                    .map(|o| o.into());
+                    .map(|o| GeneratorStep::Result(o.into()));
             }
             GeneratorState::SuspendedStart(_) | GeneratorState::SuspendedYield(_) => {
                 // 3. Assert: state is either suspended-start or suspended-yield.
@@ -116,8 +165,11 @@ impl Generator<'_> {
                 // j. Else if result is a return completion, then
                 //    i. Let resultValue be result.[[Value]].
                 // l. Return CreateIterResultObject(resultValue, true).
+                if !wrapped {
+                    return Ok(GeneratorStep::Done);
+                }
                 create_iter_result_object(agent, result_value, true, gc.into_nogc())
-                    .map(|o| o.into())
+                    .map(|o| GeneratorStep::Result(o.into()))
             }
             ExecutionResult::Throw(err) => {
                 // GeneratorStart step 4:
@@ -130,12 +182,17 @@ impl Generator<'_> {
                 //    ii. Return ? result.
                 Err(err.unbind())
             }
-            ExecutionResult::Yield { vm, yielded_value } => {
+            ExecutionResult::Yield {
+                vm,
+                yielded_value,
+                plain,
+            } => {
                 // Yield:
                 // 3. Otherwise, return ? GeneratorYield(CreateIterResultObject(value, false)).
                 // GeneratorYield:
                 // 3. Let generator be the value of the Generator component of genContext.
                 // 5. Set generator.[[GeneratorState]] to suspended-yield.
+                let realm = execution_context.realm;
                 generator.get_mut(agent).generator_state =
                     Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
                         vm,
@@ -144,7 +201,16 @@ impl Generator<'_> {
                     }));
                 // 8. Resume callerContext passing NormalCompletion(iterNextObj). ...
                 // NOTE: `callerContext` here is the `GeneratorResume` execution context.
-                Ok(yielded_value)
+                if !plain {
+                    Ok(GeneratorStep::Result(yielded_value))
+                } else if wrapped {
+                    // The result object that `yield value` asks for, made
+                    // here for the generator's realm as if its code had.
+                    create_iter_result_object_in_realm(agent, realm, yielded_value, false, gc)
+                        .map(|o| GeneratorStep::Result(o.into()))
+                } else {
+                    Ok(GeneratorStep::Yielded(yielded_value))
+                }
             }
             ExecutionResult::Await { .. } => unreachable!(),
         }
@@ -245,14 +311,24 @@ impl Generator<'_> {
                 generator.get_mut(agent).generator_state = Some(GeneratorState::Completed);
                 Err(err)
             }
-            ExecutionResult::Yield { vm, yielded_value } => {
+            ExecutionResult::Yield {
+                vm,
+                yielded_value,
+                plain,
+            } => {
+                let realm = execution_context.realm;
                 generator.get_mut(agent).generator_state =
                     Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
                         vm,
                         executable: executable.unbind(),
                         execution_context,
                     }));
-                Ok(yielded_value.unbind())
+                if plain {
+                    create_iter_result_object_in_realm(agent, realm, yielded_value, false, gc)
+                        .map(|o| o.into())
+                } else {
+                    Ok(yielded_value.unbind())
+                }
             }
             ExecutionResult::Await { .. } => unreachable!(),
         }
@@ -371,14 +447,24 @@ impl Generator<'_> {
                 generator.get_mut(agent).generator_state = Some(GeneratorState::Completed);
                 Err(err)
             }
-            ExecutionResult::Yield { vm, yielded_value } => {
+            ExecutionResult::Yield {
+                vm,
+                yielded_value,
+                plain,
+            } => {
+                let realm = execution_context.realm;
                 generator.get_mut(agent).generator_state =
                     Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
                         vm,
                         executable: executable.unbind(),
                         execution_context,
                     }));
-                Ok(yielded_value)
+                if plain {
+                    create_iter_result_object_in_realm(agent, realm, yielded_value, false, gc)
+                        .map(|o| o.into())
+                } else {
+                    Ok(yielded_value)
+                }
             }
             ExecutionResult::Await { .. } => unreachable!(),
         }

@@ -49,6 +49,10 @@ pub(crate) enum ExecutionResult<'a> {
     Yield {
         vm: SuspendedVm,
         yielded_value: Value<'a>,
+        /// Whether `yielded_value` is the value `yield` was given, with no
+        /// iterator result object around it yet
+        /// ([`Instruction::YieldValue`]).
+        plain: bool,
     },
 }
 impl<'a> ExecutionResult<'a> {
@@ -68,6 +72,7 @@ enum ContinuationKind {
     Normal,
     Return,
     Yield,
+    YieldValue,
     Await,
 }
 
@@ -1555,7 +1560,7 @@ impl Vm {
                 let result = self.result.unwrap_or(Value::Undefined);
                 Some(ExecutionResult::Return(result))
             }
-            Ok(ContinuationKind::Yield) => {
+            Ok(kind @ (ContinuationKind::Yield | ContinuationKind::YieldValue)) => {
                 let yielded_value = self.result.take().unwrap();
                 if agent.options.print_internals {
                     Self::print_yielding(yielded_value);
@@ -1563,6 +1568,7 @@ impl Vm {
                 Some(ExecutionResult::Yield {
                     vm: core::mem::take(self).suspend(),
                     yielded_value,
+                    plain: matches!(kind, ContinuationKind::YieldValue),
                 })
             }
             Ok(ContinuationKind::Await) => {
@@ -3632,6 +3638,7 @@ impl Vm {
                 return Ok(ContinuationKind::Await);
             }
             Instruction::Yield => return Ok(ContinuationKind::Yield),
+            Instruction::YieldValue => return Ok(ContinuationKind::YieldValue),
             Instruction::IsStrictlyEqual => execute_is_strictly_equal(agent, vm, gc.into_nogc()),
             Instruction::IsStrictlyEqualConstant => {
                 vm.execute_load();

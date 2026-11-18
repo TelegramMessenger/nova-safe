@@ -5,10 +5,11 @@
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinIntrinsic,
-        ExceptionType, JsResult, Realm, String, Value, builders::OrdinaryObjectBuilder,
+        ExceptionType, Function, JsResult, Realm, RegularFn, String, Value,
+        builders::OrdinaryObjectBuilder,
     },
-    engine::{Bindable, GcScope},
-    heap::{IntrinsicFunctionIndexes, WellKnownSymbols},
+    engine::{Bindable, GcScope, NoGcScope},
+    heap::{ArenaAccess, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
 pub(crate) struct GeneratorPrototype;
@@ -60,6 +61,25 @@ impl GeneratorPrototype {
 
         // 1. Return ? GeneratorResume(this value, value, empty).
         generator.resume(agent, arguments.get(0), gc)
+    }
+
+    /// Whether `function` is %GeneratorPrototype%.next of the running realm:
+    /// what a call of it on a generator returns is then
+    /// [`Generator::step`](super::generator_objects::Generator::step) in an
+    /// iterator result object. Of the running realm only: the call of
+    /// another realm's makes that realm the running one for the error of a
+    /// generator that is already running.
+    pub(crate) fn is_next(agent: &Agent, function: Function, gc: NoGcScope) -> bool {
+        let Function::BuiltinFunction(function) = function else {
+            return false;
+        };
+        let function = function.get(agent);
+        // Two functions at one address do the same thing.
+        matches!(
+            function.behaviour,
+            Behaviour::Regular(behaviour)
+                if core::ptr::fn_addr_eq(behaviour, Self::next as RegularFn)
+        ) && function.realm == agent.current_realm(gc)
     }
 
     /// ### [27.5.1.3 %GeneratorPrototype%.return ( value )](https://tc39.es/ecma262/#sec-generator.prototype.return)

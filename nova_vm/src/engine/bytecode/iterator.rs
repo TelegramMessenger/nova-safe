@@ -9,12 +9,12 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, ArrayIterator, ArrayIteratorPrototype,
         AsyncFromSyncIteratorPrototype, BUILTIN_STRING_MEMORY, CollectionIteratorKind,
-        ExceptionType, Function, InternalMethods, IteratorRecord, JsError, JsResult, Object,
-        OrdinaryObject, Promise, PropertyKey, PropertyKeySet, PropertyLookupCache,
-        ScopedArgumentsList, StringIteratorPrototype, TryError, TryGetResult, TryResult, Value,
-        call_function, create_async_from_sync_iterator, create_iter_result_object, get,
-        get_iterator_from_method, get_method, get_object_method, throw_not_callable, to_boolean,
-        try_get,
+        ExceptionType, Function, GeneratorPrototype, GeneratorStep, InternalMethods,
+        IteratorRecord, JsError, JsResult, Object, OrdinaryObject, Promise, PropertyKey,
+        PropertyKeySet, PropertyLookupCache, ScopedArgumentsList, StringIteratorPrototype,
+        TryError, TryGetResult, TryResult, Value, call_function, create_async_from_sync_iterator,
+        create_iter_result_object, get, get_iterator_from_method, get_method, get_object_method,
+        throw_not_callable, to_boolean, try_get,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, ScopeToken, Scoped},
     heap::{ArenaAccessMut, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
@@ -953,15 +953,37 @@ impl<'a> GenericIterator<'a> {
             ));
         }
 
-        let result = call_function(
-            agent,
-            next_method.unbind(),
-            iterator.unbind().into(),
-            None,
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
+        // The original %GeneratorPrototype%.next on a generator resumes it
+        // and puts what it yielded into an iterator result object, which
+        // this step would take apart again: the generator is resumed here
+        // and what it yielded taken as it is. Only what `yield*` passes on
+        // is a result object already, and is read as any other.
+        let result = if let Object::Generator(generator) = iterator
+            && GeneratorPrototype::is_next(agent, next_method, gc.nogc())
+        {
+            match generator
+                .unbind()
+                .step(agent, gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc())
+            {
+                GeneratorStep::Yielded(value) => {
+                    return Ok(Some(value.unbind().bind(gc.into_nogc())));
+                }
+                GeneratorStep::Done => return Ok(None),
+                GeneratorStep::Result(result) => result,
+            }
+        } else {
+            call_function(
+                agent,
+                next_method.unbind(),
+                iterator.unbind().into(),
+                None,
+                gc.reborrow(),
+            )
+            .unbind()?
+            .bind(gc.nogc())
+        };
         let Ok(result) = Object::try_from(result) else {
             return Err(throw_iterator_returned_non_object(agent, gc.into_nogc()));
         };

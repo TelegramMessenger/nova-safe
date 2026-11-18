@@ -388,7 +388,9 @@ pub(crate) fn evaluate_generator_body<'gc>(
         ExecutionResult::Throw(err) => {
             return Err(err.unbind().bind(gc.into_nogc()));
         }
-        ExecutionResult::Yield { vm, yielded_value } => {
+        ExecutionResult::Yield {
+            vm, yielded_value, ..
+        } => {
             debug_assert!(yielded_value.is_undefined());
             vm
         }
@@ -456,7 +458,9 @@ pub(crate) fn evaluate_async_generator_body<'gc>(
         ExecutionResult::Throw(err) => {
             return Err(err.unbind().bind(gc.into_nogc()));
         }
-        ExecutionResult::Yield { vm, yielded_value } => {
+        ExecutionResult::Yield {
+            vm, yielded_value, ..
+        } => {
             debug_assert!(yielded_value.is_undefined());
             vm
         }

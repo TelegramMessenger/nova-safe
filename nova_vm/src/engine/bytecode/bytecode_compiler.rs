@@ -3123,11 +3123,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::YieldE
         // 2. If generatorKind is async, return ? AsyncGeneratorYield(? Await(value)).
         if generator_kind_is_async {
             ctx.add_instruction(Instruction::Await);
+            ctx.add_instruction(Instruction::Yield);
         } else {
             // 3. Otherwise, return ? GeneratorYield(CreateIteratorResultObject(value, false)).
-            compile_create_iterator_result_object(ctx, false);
+            // The value is yielded as it is: the result object is made for
+            // it where the generator was resumed from, if one is wanted
+            // there (%GeneratorPrototype%.next does; a loop does not).
+            ctx.add_instruction(Instruction::YieldValue);
         }
-        ctx.add_instruction(Instruction::Yield);
         // Note: generators can be resumed with a Return instruction. For those
         // cases we need to generate Return handling here.
         let jump_over_return = ctx.add_instruction_with_jump_slot(Instruction::Jump);

@@ -192,6 +192,11 @@ pub(crate) enum Instruction {
     /// Performs Yield() on the result value, and after resuming, stores the
     /// value passed to `next()` as the result value.
     Yield,
+    /// Yield for `yield value` in a generator that is not async: the result
+    /// value is the value itself, and the iterator result object for it is
+    /// made by whoever resumed the generator, if it wants one. A loop that
+    /// steps the generator takes the value as it is.
+    YieldValue,
     /// Take the result value and the top stack value, compare them using
     /// IsStrictlyEqual() and store the result as the result value.
     IsStrictlyEqual,
@@ -1973,6 +1978,7 @@ impl Instruction {
         const TYPEOF: u8 = Instruction::Typeof.as_u8();
         const UNARYMINUS: u8 = Instruction::UnaryMinus.as_u8();
         const YIELD: u8 = Instruction::Yield.as_u8();
+        const YIELDVALUE: u8 = Instruction::YieldValue.as_u8();
         const CREATEIMMUTABLEBINDING: u8 = Instruction::CreateImmutableBinding.as_u8();
         const CREATEMUTABLEBINDING: u8 = Instruction::CreateMutableBinding.as_u8();
         const INITIALIZEREFERENCEDBINDING: u8 = Instruction::InitializeReferencedBinding.as_u8();
@@ -2262,6 +2268,7 @@ impl Instruction {
             TYPEOF => Some(Instruction::Typeof),
             UNARYMINUS => Some(Instruction::UnaryMinus),
             YIELD => Some(Instruction::Yield),
+            YIELDVALUE => Some(Instruction::YieldValue),
             CREATEIMMUTABLEBINDING => Some(Instruction::CreateImmutableBinding),
             CREATEMUTABLEBINDING => Some(Instruction::CreateMutableBinding),
             INITIALIZEREFERENCEDBINDING => Some(Instruction::InitializeReferencedBinding),

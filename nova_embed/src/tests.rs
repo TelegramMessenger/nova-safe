@@ -8641,3 +8641,128 @@ misc: ff 0.1 14 25 12345678 1234.57 1.23e+3 1.5 12345678 0 0 0 0"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `yield value` hands the value over as it is, and whoever resumed the
+/// generator makes the iterator result object for it if it wants one:
+/// %GeneratorPrototype%.next does, a loop and the built-ins that step an
+/// iterator do not where that `next` is the generator's. What a script can
+/// tell is as it was: the result objects of `next`, `return` and `throw`,
+/// values sent in, `yield*` and the result objects it passes on, a `next`
+/// that was replaced on the object, on the function's prototype or on
+/// %GeneratorPrototype%, a generator that is already running, closing on
+/// `break` and on a throw. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn a_generator_yields_its_value_without_a_result_object() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(generators)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn generators() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function say(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e) + ": " + (e && e.message !== undefined ? e.message : e); } print(name + ": " + v); }
+function show(r) { return r === undefined ? "undefined" : Object.keys(r).join("+") + "=" + String(r.value) + "/" + r.done + "/" + (Object.getPrototypeOf(r) === Object.prototype) + "/" + JSON.stringify(Object.getOwnPropertyDescriptor(r, "value")); }
+function* range(n) { for (var i = 0; i < n; i++) yield i; return "end"; }
+say("for-of", function () { var s = []; for (var v of range(5)) s.push(v); return s.join(","); });
+say("manual next", function () { var g = range(2), a = g.next(), b = g.next(), c = g.next(), d = g.next(); return [show(a), show(b), show(c), show(d), a === b, c === d].join(" | "); });
+say("result objects are fresh and writable", function () { var g = range(3), a = g.next(); a.value = 9; a.extra = 1; var b = g.next(); return a.value + " " + b.value + " " + ("extra" in b) + " " + Object.isExtensible(b) + " " + (a !== b); });
+say("values sent in", function () { function* echo() { var got = []; var x = yield 1; got.push(x); x = yield 2; got.push(x); try { x = yield 3; } finally { got.push("f"); } return got.join(""); } var g = echo(); return [g.next("ignored").value, g.next("a").value, g.next("b").value, show(g.next("c"))].join(" "); });
+say("yield value in a loop is undefined", function () { var got = []; function* g() { got.push(yield 1); got.push(yield 2); } for (var v of g()) {} return got.length + ":" + got.join(","); });
+say("return", function () { var log = []; function* g() { try { yield 1; yield 2; } finally { log.push("cleanup"); yield "from finally"; log.push("after"); } } var it = g(); var a = it.next(), b = it.return("r"), c = it.next(), d = it.next(); return [show(a), show(b), show(c), show(d), log.join(",")].join(" | "); });
+say("return before start and after end", function () { var it = range(3); var a = it.return("early"), b = it.next(); var it2 = range(1); it2.next(); it2.next(); return [show(a), show(b), show(it2.return("late")), show(it2.next())].join(" | "); });
+say("throw", function () { function* g() { var caught = []; for (;;) { try { yield caught.length; } catch (e) { caught.push(e); if (caught.length === 2) return caught.join("+"); } } } var it = g(); return [show(it.next()), show(it.throw("x")), show(it.throw("y")), show(it.next())].join(" | "); });
+say("throw not caught", function () { var it = range(3); it.next(); try { it.throw(new RangeError("out")); } catch (e) { return e.constructor.name + " " + show(it.next()); } });
+say("break calls return", function () { var log = []; function* g() { try { yield 1; yield 2; yield 3; } finally { log.push("closed"); } } for (var v of g()) { log.push(v); if (v === 2) break; } return log.join(","); });
+say("throw in body closes", function () { var log = []; function* g() { try { yield 1; yield 2; } finally { log.push("closed"); } } try { for (var v of g()) { log.push(v); throw new Error("body"); } } catch (e) { log.push(e.message); } return log.join(","); });
+say("continue and labels", function () { var out = []; outer: for (var a of range(3)) { for (var b of range(3)) { if (b === 1) continue outer; out.push(a + "" + b); } } return out.join(","); });
+say("generator throws", function () { function* g() { yield 1; throw new TypeError("inside"); } var it = g(), got = []; try { for (var v of it) got.push(v); } catch (e) { got.push(e.message); } return got.join(",") + " " + show(it.next()); });
+say("exhausted", function () { var it = range(2), n = 0; for (var v of it) n++; for (var w of it) n += 100; return n + " " + show(it.next()); });
+say("delegate to array and generator", function () { function* g() { var r = yield* range(2); yield r; yield* [7, 8]; yield* "ab"; return yield* (function* () { return "inner"; })(); } var out = []; var it = g(), r; while (!(r = it.next()).done) out.push(r.value); return out.join(",") + " " + r.value; });
+say("delegate passes result objects on", function () { var results = [{ value: 1, done: false, tag: "a" }, Object.create({ value: "inherited", done: false }), { get value() { return "getter"; }, get done() { return false; } }, { done: 0, value: "falsy done" }, { done: "yes", value: "end" }]; var i = 0; var inner = { [Symbol.iterator]() { return this; }, next() { return results[i++]; } }; function* g() { return yield* inner; } var it = g(); var a = it.next(), b = it.next(), c = it.next(), d = it.next(), e = it.next(); return [a === results[0], a.tag, b === results[1], b.value, c === results[2], c.value, d === results[3], show(e)].join(" "); });
+say("delegate in a loop reads them", function () { var results = [{ value: 1, done: false }, Object.create({ value: "inherited", done: false }), { get value() { return "getter"; }, get done() { return false; } }, { done: 0, value: "falsy" }, { done: 1 }]; var i = 0; var inner = { [Symbol.iterator]() { return this; }, next() { return results[i++]; } }; function* g() { yield "first"; yield* inner; yield "not reached?"; } var out = []; for (var v of g()) out.push(v); return out.join(","); });
+say("delegate to a non-object result", function () { var inner = { [Symbol.iterator]() { return this; }, next() { return 5; } }; function* g() { yield* inner; } var out = []; try { for (var v of g()) out.push(v); } catch (e) { return e.constructor.name; } return out.join(","); });
+say("delegate return and throw", function () { var log = []; var inner = { [Symbol.iterator]() { return this; }, next(v) { log.push("next:" + v); return { value: 1, done: false }; }, return(v) { log.push("return:" + v); return { value: "ret", done: true }; }, throw(e) { log.push("throw:" + e); return { value: "thrown", done: false }; } }; function* g() { yield* inner; } var it = g(); it.next("a"); it.next("b"); var t = it.throw("t"); var r = it.return("r"); return [log.join(","), show(t), show(r)].join(" | "); });
+say("next replaced on the object", function () { var it = range(3), n = 0; it.next = function () { n++; return n > 2 ? { done: true } : { value: "mine" + n, done: false }; }; var out = []; for (var v of it) out.push(v); return out.join(",") + " " + n; });
+say("next replaced on the function's prototype", function () { function* g() { yield 1; yield 2; } var calls = 0; g.prototype.next = function () { calls++; return calls > 1 ? { done: true } : { value: "proto", done: false }; }; var out = []; for (var v of g()) out.push(v); return out.join(",") + " " + calls; });
+say("next replaced on the generator prototype", function () { var GeneratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf(range(0))), original = GeneratorPrototype.next, calls = 0, out = []; GeneratorPrototype.next = function (v) { calls++; var r = original.call(this, v); if (!r.done) r.value = r.value * 10; return r; }; try { for (var v of range(3)) out.push(v); out.push(String([...range(2)])); } finally { GeneratorPrototype.next = original; } for (var w of range(2)) out.push(w); return out.join(",") + " " + calls; });
+say("another object with the generator's next", function () { var it = range(2); var fake = { next: it.next, [Symbol.iterator]() { return this; } }; try { for (var v of fake) {} return "ran"; } catch (e) { return e.constructor.name; } });
+say("next called on something else", function () { var next = range(1).next; return [1, {}, null].map(function (t) { try { next.call(t); return "ok"; } catch (e) { return e.constructor.name; } }).join(","); });
+say("already running", function () { var it; function* g() { var r = []; try { it.next(); } catch (e) { r.push(e.constructor.name); } try { for (var v of it) r.push("ran"); } catch (e) { r.push(e.constructor.name); } try { it.return(1); } catch (e) { r.push(e.constructor.name); } yield r.join("+"); } it = g(); return it.next().value + " " + show(it.next()); });
+say("spread destructuring from", function () { var [a, b, ...rest] = range(5); var [x, , y = "d"] = range(2); return [[...range(3)].join(""), a, b, rest.join(""), x, y, Array.from(range(4)).join(""), Array.from(range(3), function (v) { return v * 2; }).join(""), Math.max(...range(4)), new Set(range(3)).size, new Map((function* () { yield [1, "a"]; yield [2, "b"]; })()).get(2), Object.fromEntries((function* () { yield ["k", 1]; })()).k].join(" "); });
+say("destructuring closes", function () { var log = []; function* g() { try { yield 1; yield 2; yield 3; } finally { log.push("closed"); } } var [a] = g(); var [b, c, d, e] = g(); return [a, b, c, d, e, log.join(",")].join(" "); });
+say("methods classes arguments", function () { class C { constructor() { this.items = [3, 4]; } *[Symbol.iterator]() { for (var i of this.items) yield i * 2; } static *count(n) { while (n--) yield arguments.length + ":" + n; } } var o = { *g(a, b = a + 1, ...r) { yield a; yield b; yield r.length; yield this === o; } }; return [[...new C()].join(""), [...C.count(2)].join(","), [...o.g(1, undefined, 5, 6)].join(",")].join(" "); });
+say("nested and recursive", function () { function* tree(d) { if (d === 0) { yield "leaf"; return; } for (var v of tree(d - 1)) yield d + v; yield* tree(d - 1); } function* pairs() { for (var a of range(3)) for (var b of range(a)) yield a + "" + b; } return [...tree(3)].length + " " + [...pairs()].join(","); });
+say("closures over loop variables", function () { var fs = []; for (let v of range(3)) fs.push(function () { return v; }); return fs.map(function (f) { return f(); }).join(""); });
+say("infinite with break", function () { function* nat() { var n = 0; for (;;) yield n++; } var sum = 0; for (var v of nat()) { if (v > 1000) break; sum += v; } return sum; });
+say("many generators", function () { var total = 0; for (var i = 0; i < 3000; i++) { for (var v of range(i % 7)) total += v; } var its = []; for (var j = 0; j < 500; j++) { var it = range(3); it.next(); its.push(it); } for (var k = 0; k < its.length; k++) total += its[k].next().value; return total; });
+say("yield in arguments and expressions", function () { function* g() { var a = [yield 1, yield 2]; var o = { k: yield 3 }; return a.join("") + o.k + (yield 4) + `${yield 5}`; } var it = g(), sent = ["", "a", "b", "c", "d", "e"], out = [], r, i = 0; while (!(r = it.next(sent[i++])).done) out.push(r.value); return out.join("") + " " + r.value; });
+say("return value and done result", function () { function* g() { return 5; } function* h() { } var a = g().next(), b = h().next(); return show(a) + " | " + show(b) + " | " + [...g()].length; });
+say("symbol iterator and tags", function () { var it = range(1); return [it[Symbol.iterator]() === it, Object.prototype.toString.call(it), typeof it.next, it.next.name, it.next.length, Object.getOwnPropertyNames(Object.getPrototypeOf(Object.getPrototypeOf(it))).sort().join(",")].join(" "); });
+say("async generator untouched", function () { async function* ag() { yield 1; yield 2; } var it = ag(); var p = it.next(); return (p instanceof Promise) + " " + typeof it[Symbol.asyncIterator]; });
+
+say("native consumers", function () { function* g() { yield 1; yield* [2, 3]; yield* (function* () { yield 4; return "x"; })(); return 9; } return [Array.from(g()).join(""), [...new Set(g())].join(""), new Map((function* () { for (var v of g()) yield [v, v * 2]; })()).get(4), Array.from(g(), function (v, i) { return v + i; }).join(","), Object.fromEntries((function* () { yield* [["a", 1], ["b", 2]]; })()).b, new Uint8Array(g()).join(""), Array.from(new Set(g()).values()).length].join(" "); });
+say("native consumers with their own results", function () { var results = [{ value: 1, done: false }, Object.create({ value: "inherited", done: false }), { get value() { return "getter"; }, get done() { return false; } }, { done: 1 }]; var i = 0; var inner = { [Symbol.iterator]() { return this; }, next() { return results[i++]; } }; function* g() { yield "first"; yield* inner; } return Array.from(g()).join(","); });
+say("native consumers with next replaced", function () { var it = range(3), n = 0; it.next = function () { n++; return n > 2 ? { done: true } : { value: "mine" + n, done: false }; }; var a = Array.from(it).join(","); var GeneratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf(range(0))), original = GeneratorPrototype.next, calls = 0; GeneratorPrototype.next = function (v) { calls++; return original.call(this, v); }; try { var b = Array.from(range(3)).join("") + new Set(range(2)).size; } finally { GeneratorPrototype.next = original; } return a + " " + b + " " + calls; });
+say("native consumer closes on a throw", function () { var log = []; function* g() { try { yield 1; yield 2; yield 3; } finally { log.push("closed"); } } try { Array.from(g(), function (v) { if (v === 2) throw new Error("mapper"); return v; }); } catch (e) { log.push(e.message); } try { new Map(g()); } catch (e) { log.push(e.constructor.name); } return log.join(","); });
+say("native consumer of a running generator", function () { var it; function* g() { var r; try { r = Array.from(it).length; } catch (e) { r = e.constructor.name; } yield r; try { r = new Set(it).size; } catch (e) { r = e.constructor.name; } yield r; } it = g(); return it.next().value + " " + it.next().value + " " + show(it.next()); });
+say("native consumer of a generator that throws", function () { function* g() { yield 1; throw new RangeError("inside"); } var it = g(); try { Array.from(it); return "no"; } catch (e) { return e.message + " " + show(it.next()); } });
+say("promise combinators take a generator", function () { function* g() { yield 1; yield Promise.resolve(2); } var p = Promise.all(g()), q = Promise.race(g()), r = Promise.allSettled(g()); return [p instanceof Promise, q instanceof Promise, r instanceof Promise].join(","); });
+lines.join("\n")"#;
+    let expected = r#"for-of: 0,1,2,3,4
+manual next: value+done=0/false/true/{"value":0,"writable":true,"enumerable":true,"configurable":true} | value+done=1/false/true/{"value":1,"writable":true,"enumerable":true,"configurable":true} | value+done=end/true/true/{"value":"end","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | false | false
+result objects are fresh and writable: 9 1 false true true
+values sent in: 1 2 3 value+done=abf/true/true/{"value":"abf","writable":true,"enumerable":true,"configurable":true}
+yield value in a loop is undefined: 2:,
+return: value+done=1/false/true/{"value":1,"writable":true,"enumerable":true,"configurable":true} | value+done=from finally/false/true/{"value":"from finally","writable":true,"enumerable":true,"configurable":true} | value+done=r/true/true/{"value":"r","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | cleanup,after
+return before start and after end: value+done=early/true/true/{"value":"early","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | value+done=late/true/true/{"value":"late","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+throw: value+done=0/false/true/{"value":0,"writable":true,"enumerable":true,"configurable":true} | value+done=1/false/true/{"value":1,"writable":true,"enumerable":true,"configurable":true} | value+done=x+y/true/true/{"value":"x+y","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+throw not caught: RangeError value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+break calls return: 1,2,closed
+throw in body closes: 1,closed,body
+continue and labels: 00,10,20
+generator throws: 1,inside value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+exhausted: 2 value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+delegate to array and generator: 0,1,end,7,8,a,b inner
+delegate passes result objects on: true a true inherited true getter true value+done=end/true/true/{"value":"end","writable":true,"enumerable":true,"configurable":true}
+delegate in a loop reads them: first,1,inherited,getter,falsy,not reached?
+delegate to a non-object result: TypeError
+delegate return and throw: next:undefined,next:b,throw:t,return:r | value+done=thrown/false/true/{"value":"thrown","writable":true,"enumerable":true,"configurable":true} | value+done=ret/true/true/{"value":"ret","writable":true,"enumerable":true,"configurable":true}
+next replaced on the object: mine1,mine2 3
+next replaced on the function's prototype: proto 2
+next replaced on the generator prototype: 0,10,20,0,10,0,1 7
+another object with the generator's next: TypeError
+next called on something else: TypeError,TypeError,TypeError
+already running: TypeError+TypeError+TypeError value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+spread destructuring from: 012 0 1 234 0 d 0123 024 3 3 b 1
+destructuring closes: 1 1 2 3  closed,closed
+methods classes arguments: 68 1:1,1:0 1,2,2,true
+nested and recursive: 8 10,20,21
+closures over loop variables: 012
+infinite with break: 500500
+many generators: 15484
+yield in arguments and expressions: 12345 abcde
+return value and done result: value+done=5/true/true/{"value":5,"writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | 0
+symbol iterator and tags: true [object Generator] function next 1 constructor,next,return,throw
+async generator untouched: true function
+native consumers: 1234 1234 8 1,3,5,7 2 1234 4
+native consumers with their own results: first,1,inherited,getter
+native consumers with next replaced: mine1,mine2 0122 7
+native consumer closes on a throw: closed,mapper,closed,TypeError
+native consumer of a running generator: TypeError TypeError value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+native consumer of a generator that throws: inside value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+promise combinators take a generator: true,true,true"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
