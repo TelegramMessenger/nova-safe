@@ -35,9 +35,9 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.5x |
-| call | 14 | 10.4x | 2.2x |
+| call | 14 | 10.4x | 2.1x |
 | math | 4 | 9.7x | 2.0x |
-| string | 26 | 10.6x | 1.5x |
+| string | 26 | 10.6x | 1.4x |
 | prop | 13 | 7.1x | 1.8x |
 | map, set | 4 | 4.6x | 1.7x |
 | app | 8 | 6.1x | 1.7x |
@@ -51,8 +51,8 @@ below.
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst is now a generator (4.1x), then typed `Float64Array`
 arithmetic (3.3x), a step of a particle animation (3.2x) and the properties of one object read and
-written in a loop (3.1x). 4 of the 108 cases are above 3x and 72 at or under 2x, 14 of them at or under
-QuickJS's time. Over all cases it is 1.65x: 2.12x before the round of patterns, Array iteration and
+written in a loop (3.2x). 4 of the 108 cases are above 3x and 74 at or under 2x, 15 of them at or under
+QuickJS's time. Over all cases it is 1.64x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -60,7 +60,8 @@ stepping a generator without a result object took it to 1.88x. The arguments obj
 one case of the 108 and left the mean where it was, the string hash that follows from the hashes of
 what is concatenated took it to 1.78x, more built-in functions run in place of a call to 1.71x, and
 chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles done as that to 1.67x,
-and objects copied by their shape took it here.
+objects copied by their shape to 1.65x, and bound functions and rest parameters run in the loop of
+instructions took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -462,6 +463,26 @@ Environment Record that the function had for nothing else, and found there by na
 
 The case went from 4.8x to 2.3x, and calls from 2.4x to 2.2x. What is left in it is the object itself,
 made at every call with a property per argument.
+
+A bound function (`f.bind(o)`) was called the native way: its \[\[Call]] calls the function it was bound
+from, with a `Vm` of its own for that. Its \[\[Call]] is that function's call with another this value;
+where it has no bound arguments and the function is one the `Vm` runs in place, the call instruction
+runs the function in place and gives the call a Reference whose base is the bound this value, which is
+where a call takes its this value from. A bound function with bound arguments, or of any other kind of
+function, takes the call as before. `call/bound-function` went from 2.5x to 1.8x.
+
+A function with a default value or a rest parameter binds its parameters by instructions that step
+through the list of its arguments, and those went the general way of an instruction each: a step of the
+list as of any iterator, a rest parameter's Array made empty and filled a property at a time. Where the
+list is the call's arguments, the step, the Array of what is left (of up to 16 arguments) and the end of
+the list are done in the loop of instructions. `call/rest-and-default` went from 2.7x to 1.7x; calls
+from 2.2x to 2.1x.
+
+Where calls are after that: a plain call and its return take about 14 ns of entering and leaving
+against QuickJS's 14 ns for the whole step of the loop, and no line of the two is above a twentieth of
+the case (the execution context pushed, the frame found and written, the stacks exchanged, the this
+value, the executable rooted). A derived class constructor and `super(...)` take the native way, and so
+does every step of a generator, which enters the loop of instructions anew (4.1x).
 
 ### 4. Properties
 
