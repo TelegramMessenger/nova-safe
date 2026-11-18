@@ -9,7 +9,8 @@ use crate::{
     ecmascript::{
         Agent, BUILTIN_STRING_MEMORY, BuiltinFunctionHeapData, ExceptionType, ExecutionContext,
         Function, FunctionInternalProperties, InternalSlots, JsResult, MathObject, Object,
-        OrdinaryObject, PropertyKey, Realm, ScopedValuesIterator, String, Value, function_handle,
+        OrdinaryObject, PropertyKey, Realm, ScopedValuesIterator, String, StringPrototype, Value,
+        function_handle,
     },
     engine::{Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData},
     heap::{
@@ -353,28 +354,52 @@ pub(crate) enum DirectBuiltin {
     MathSign,
     MathSqrt,
     MathTrunc,
+    StringCharCodeAt,
 }
 
 impl DirectBuiltin {
     /// The function of `behaviour`, if it is one of these.
     pub(crate) fn of(behaviour: Behaviour) -> Option<Self> {
         match behaviour {
-            Behaviour::Regular(function) => MathObject::direct_builtin(function),
+            Behaviour::Regular(function) => MathObject::direct_builtin(function)
+                .or_else(|| StringPrototype::direct_builtin(function)),
             Behaviour::Constructor(_) => None,
         }
     }
 
-    /// What a call of the function with `arguments` returns, where it needs
-    /// nothing but them and does nothing else; None where the call is to be
-    /// made.
+    /// Whether the function computes from its this value: the others are
+    /// run without looking for it.
+    #[inline]
+    pub(crate) fn takes_this(self) -> bool {
+        matches!(self, Self::StringCharCodeAt)
+    }
+
+    /// What a call of the function with `this` (where the function takes
+    /// it) and `arguments` returns, where it needs nothing but them and
+    /// does nothing else; None where the call is to be made.
     #[inline]
     pub(crate) fn run<'gc>(
         self,
         agent: &mut Agent,
+        this: Option<Value<'gc>>,
         arguments: &[Value<'gc>],
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
-        MathObject::run_direct(agent, self, arguments, gc)
+        match self {
+            Self::StringCharCodeAt => {
+                let string = String::try_from(this?).ok()?;
+                let Some(&Value::Integer(position)) = arguments.first() else {
+                    return None;
+                };
+                Some(StringPrototype::char_code_at_of(
+                    agent,
+                    string,
+                    position.into_i64(),
+                    gc,
+                ))
+            }
+            _ => MathObject::run_direct(agent, self, arguments, gc),
+        }
     }
 }
 
