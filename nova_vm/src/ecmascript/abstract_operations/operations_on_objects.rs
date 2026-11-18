@@ -2230,7 +2230,7 @@ pub(crate) fn copy_data_properties<'a>(
         // Attempt a super-fast path: if we're just making a copy of an
         // ordinary object that contains data properties, we can simply reuse
         // the source object's Shape and make a copy of the data.
-        if from.try_copy_from_object(agent, from) {
+        if target.try_copy_from_object(agent, from) {
             return Ok(());
         }
     }

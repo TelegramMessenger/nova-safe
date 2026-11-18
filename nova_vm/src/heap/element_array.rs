@@ -2158,7 +2158,7 @@ impl KeyOffsets {
         key: PropertyKey,
     ) -> Option<usize> {
         if keys.len() < KEY_OFFSETS_MIN_LEN {
-            return keys.iter().position(|k| *k == key);
+            return key.position_in(keys);
         }
         let hasher = &self.hasher;
         let mut storages = self.storages.borrow_mut();

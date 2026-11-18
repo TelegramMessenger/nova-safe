@@ -890,7 +890,7 @@ impl<'a> Value<'a> {
             }
             Value::String(data) => {
                 // Skip discriminant hashing in strings
-                data.get(arena).data.hash(hasher);
+                data.get(arena).hash_text(hasher);
             }
             Value::SmallString(data) => {
                 data.as_wtf8().hash(hasher);

@@ -9538,3 +9538,253 @@ compound 4.5 2.25 1.5 1152921504606847000 Infinity NaN"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Object spread and Object.assign, which copy the properties of a plain
+/// object without a list of its keys: sources of every size and kind
+/// (frozen, with accessors, read-only or hidden properties, Symbol and
+/// integer keys, private fields, proxies, primitives), where the spread
+/// stands in the literal, copies that go their own ways, and targets that
+/// take a property as it is and those that do not (fixed, read-only,
+/// setters, proxies). What is expected is what Node prints for the same
+/// script.
+#[test]
+fn a_spread_object_is_a_copy_of_its_own() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(spread_objects)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn spread_objects() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+function D(o) { var out = ""; var keys = Reflect.ownKeys(o); for (var i = 0; i < keys.length; i++) { var d = Object.getOwnPropertyDescriptor(o, keys[i]); out += String(keys[i]) + ":" + ("value" in d ? JSON.stringify(d.value) : "accessor") + (d.writable ? "w" : "-") + (d.enumerable ? "e" : "-") + (d.configurable ? "c" : "-") + " "; } return out + (Object.isExtensible(o) ? "ext" : "fixed") + (Object.getPrototypeOf(o) === Object.prototype ? "" : " proto!"); }
+var sym = Symbol("s"), log = "";
+
+// Plain objects of every size, and what the copy is.
+for (var n = 0; n <= 40; n += n < 6 ? 1 : 7) { var src = {}; for (var k = 0; k < n; k++) src["key" + k] = k * 3; var c = { ...src }; var c2 = { ...src, extra: n }; var c3 = { first: 1, ...src }; P("size", n, Object.keys(c).length, c === src, JSON.stringify(c) === JSON.stringify(src), Object.keys(c2).pop(), Object.keys(c3)[0], c3["key" + (n - 1)], D(c).length); }
+var base = { a: 1, b: "two", c: [3], d: { e: 4 } };
+var copy = { ...base }; P("copy", D(copy), copy.c === base.c, copy.d === base.d);
+copy.a = 10; copy.z = 26; delete copy.b; base.b = "changed"; base.y = 25; P("apart", JSON.stringify(copy), JSON.stringify(base));
+var copy2 = { ...base }; delete base.a; base.a = "again"; P("after delete", JSON.stringify(copy2), JSON.stringify(base), JSON.stringify({ ...base }), Object.keys({ ...base }).join());
+
+// What is and is not a plain data property.
+var frozen = Object.freeze({ f: 1, g: 2 }), sealed = Object.seal({ s: 1 }), fixed = Object.preventExtensions({ p: 1 });
+P("frozen", D({ ...frozen }), D({ ...sealed }), D({ ...fixed }), Object.isFrozen({ ...frozen }), T(function () { var c = { ...frozen }; c.f = 5; c.h = 6; delete c.g; return JSON.stringify(c); }));
+var ro = {}; Object.defineProperty(ro, "r", { value: 1, writable: false, enumerable: true, configurable: true }); Object.defineProperty(ro, "nc", { value: 2, writable: true, enumerable: true, configurable: false }); Object.defineProperty(ro, "hidden", { value: 3, enumerable: false, writable: true, configurable: true }); ro.plain = 4;
+P("attributes", D({ ...ro }), D(ro));
+var acc = { a: 1, get g() { log += "get g;"; return this.a + 1; }, set s(v) { log += "set s;"; }, b: 2 }; log = ""; var ca = { ...acc }; P("accessors", D(ca), log, D(acc).length);
+var order = { b: 1, [sym]: "sym", 2: "two", a: 3, 1: "one", [Symbol.for("t")]: "t" }; P("order", D({ ...order }), Reflect.ownKeys({ ...order }).map(String).join(","));
+var ints = { 10: "a", 2: "b", x: 1, 1: "c" }; P("integers", JSON.stringify({ ...ints }), Object.keys({ ...ints, 0: "z", 5: "y" }).join());
+class K { #priv = 1; pub = 2; static s = 3; get acc() { return 4; } m() { return this.#priv; } } var inst = new K(); var ci = { ...inst }; P("class instance", D(ci), T(function () { return K.prototype.m.call(ci); }), ci instanceof K, ci.m);
+var nullp = Object.create(null); nullp.n = 1; var derived = Object.create({ inherited: 1 }); derived.own = 2; P("prototypes", D({ ...nullp }), D({ ...derived }), ({ ...derived }).inherited, D({ ...Object.create(base) }));
+var protoTarget = { __proto__: { p: 1 }, ...base }; P("target prototype", Object.keys(protoTarget).join(), protoTarget.p, Object.getPrototypeOf(protoTarget) !== Object.prototype);
+
+// Other things spread.
+P("primitives", D({ ..."abc" }), D({ ...123 }), D({ ...null }), D({ ...undefined }), D({ ...true }), D({ ...Symbol() }), D({ ...10n }), D({ ...[1, , 3] }), D({ ...function f(a, b) {} }), D({ ...new String("xy") }).length, D({ ...Math }), D({ ...JSON }), Object.keys({ ...Object.prototype }).length, D({ ...new Map([[1, 2]]) }), D({ ...new Date(0) }), D({ .../re/g }), D({ ...new Error("m") }));
+(function () { P("arguments", D({ ...arguments })); })(7, 8);
+log = ""; var proxy = new Proxy({ a: 1, b: 2, c: 3 }, { ownKeys: function (t) { log += "ownKeys;"; return ["c", "a", "b"]; }, getOwnPropertyDescriptor: function (t, k) { log += "gopd " + String(k) + ";"; return Reflect.getOwnPropertyDescriptor(t, k); }, get: function (t, k) { log += "get " + String(k) + ";"; return t[k] * 10; } }); P("proxy", D({ ...proxy }), log);
+var thrower = { a: 1, get b() { throw new RangeError("b"); }, c: 3 }; P("getter throws", T(function () { return D({ ...thrower }); }));
+var mutating = { a: 1, get b() { delete this.c; this.d = 4; return 2; }, c: 3 }; P("getter changes the source", D({ ...mutating }), Object.keys(mutating).join());
+
+// Where the spread stands in the literal.
+var s1 = { x: 1, y: 2 }, s2 = { y: 20, z: 30 };
+P("places", JSON.stringify({ ...s1, ...s2 }), JSON.stringify({ ...s2, ...s1 }), JSON.stringify({ y: 0, ...s1 }), JSON.stringify({ ...s1, y: 0 }), JSON.stringify({ a: 0, ...s1, b: 9, ...s2, c: 8 }), JSON.stringify({ ...{}, ...s1 }), JSON.stringify({ ...s1, ...{} }), JSON.stringify({ ...s1, ...s1 }), JSON.stringify({ ...{ ...{ ...s1 } } }), JSON.stringify({ ["y"]: 5, ...s1 }), JSON.stringify({ ...s1, get y() { return "getter"; } }), D({ get y() { return 1; }, ...s1 }), D({ ...s1, __proto__: null }).length);
+Object.defineProperty(Object.prototype, "x", { set: function (v) { log += "proto setter;"; }, get: function () { return "proto"; }, configurable: true }); log = ""; var overProto = { ...s1 }; P("setter in the prototype", D(overProto), log, overProto.x); delete Object.prototype.x;
+var self = { me: 1 }; self.self = self; var cs = { ...self }; P("self", cs.self === self, cs.self.self === self, cs !== self);
+
+// Many copies, each going its own way.
+var template = { id: 0, name: "n", tags: null, on: true };
+var made = []; for (var i = 0; i < 300; i++) { var o = { ...template, id: i }; if (i % 3 === 0) o["extra" + (i % 5)] = i; if (i % 4 === 0) delete o.name; if (i % 7 === 0) Object.freeze(o); made.push(o); }
+var sig = 0; for (var i = 0; i < made.length; i++) { var keys = Object.keys(made[i]).join(); for (var j = 0; j < keys.length; j++) sig = (sig * 31 + keys.charCodeAt(j)) | 0; sig = (sig + made[i].id) | 0; }
+P("many", sig, JSON.stringify(template), D(made[0]), D(made[1]), D(made[12]), Object.isFrozen(template), made[299].id);
+var chain = { v: 0 }; for (var i = 0; i < 200; i++) chain = { ...chain, ["k" + i]: i, v: chain.v + 1 }; P("chained", Object.keys(chain).length, chain.v, chain.k199, Object.keys(chain).slice(0, 3).join());
+var last; for (var i = 0; i < 2000; i++) { last = { ...base, e: i }; last = Object.assign({}, last, { f: 1 }); } P("loop", JSON.stringify(last), D(last).length);
+
+// Object.assign and rest, which copy in their own ways.
+var target = { t: 1 }; var ret = Object.assign(target, base, { [sym]: 1 }, null, "ab", acc); P("assign", ret === target, D(target).length, JSON.stringify(target));
+var { a: ra, ...rest } = { a: 1, b: 2, [sym]: 3, 4: 5 }; P("rest", ra, D(rest)); var { ...all } = frozen; P("rest of frozen", D(all));
+function f({ a, ...others }) { return D(others); } P("rest parameter", f({ a: 1, b: 2, c: 3 }), f(acc).length);
+
+// Object.assign: targets that take a property as it is, and those that do not.
+var src = { a: 1, b: 2, c: 3 };
+P("assign plain", D(Object.assign({}, src)), D(Object.assign({ c: 0, z: 9 }, src)), D(Object.assign({}, src, { b: "B", d: 4 }, { a: "A" })), Object.assign(src) === src, D(Object.assign({}, src, src)), JSON.stringify(Object.assign([7, 8], { 1: "x", length: 5 })), Object.keys(Object.assign(function () {}, src)).join(), typeof Object.assign(5, src), D(Object.assign(Object("s"), { z: 1 })).length, T(function () { return Object.assign(null, src); }), T(function () { return Object.assign(undefined, src); }), D(Object.assign({}, null, undefined, 1, true, "ab", sym, src)));
+var same = { p: 1, q: 2 }; P("assign to itself", Object.assign(same, same) === same, D(same)); var child = Object.create(src); P("assign from the prototype", D(Object.assign(child, src)).length > 0, Object.keys(child).join(), child.a, src.a, Object.getPrototypeOf(child) === src);
+function partial(target, source) { var r = T(function () { Object.assign(target, source); return "ok"; }); return r + " " + JSON.stringify(target) + " " + Object.isExtensible(target); }
+P("assign to fixed", partial(Object.freeze({ a: 0 }), src), partial(Object.seal({ a: 0 }), src), partial(Object.preventExtensions({ b: 0 }), src), partial(Object.preventExtensions({ a: 0, b: 0, c: 0 }), src), partial(Object.freeze({}), {}), partial(Object.freeze({}), { x: 1 }));
+var roTarget = { a: 0 }; Object.defineProperty(roTarget, "b", { value: "ro", writable: false, enumerable: true, configurable: true }); P("assign to read-only", partial(roTarget, src), D(roTarget));
+log = ""; var setTarget = { set b(v) { log += "set b=" + v + ";"; }, a: 0 }; P("assign to a setter", partial(setTarget, src), log, D(setTarget));
+log = ""; var protoSet = Object.create({ set b(v) { log += "proto set b=" + v + " on own " + Object.keys(this).join() + ";"; }, get c() { return "only a getter"; } }); P("assign under a setter", partial(protoSet, src), log, D(protoSet).length, Object.keys(protoSet).join());
+var protoRo = Object.create(Object.freeze({ b: "frozen above" })); P("assign under read-only", partial(protoRo, src), Object.keys(protoRo).join(), protoRo.b);
+log = ""; var pTarget = new Proxy({}, { set: function (t, k, v, r) { log += "set " + String(k) + ";"; return Reflect.set(t, k, v, r); }, defineProperty: function (t, k, d) { log += "define " + String(k) + ";"; return Reflect.defineProperty(t, k, d); } }); Object.assign(pTarget, src); P("assign to a proxy", log, JSON.stringify(pTarget));
+var dunder = JSON.parse('{"__proto__": {"injected": 1}, "ok": 2}'); var dt = Object.assign({}, dunder); P("assign __proto__", "ok" in dt, dt.ok, Object.keys({ ...dunder }).join(), ({ ...dunder }).injected, Object.getPrototypeOf({ ...dunder }) === Object.prototype);
+log = ""; var srcGet = { a: 1, get b() { log += "get b;"; return 2; }, c: 3 }; var tSet = { set a(v) { log += "set a;"; }, set c(v) { log += "set c;"; } }; Object.assign(tSet, srcGet); P("assign order", log);
+var srcMut = { a: 1, b: 2, c: 3, d: 4 }; var tMut = { set a(v) { delete srcMut.b; srcMut.e = 5; Object.defineProperty(srcMut, "c", { enumerable: false }); } }; Object.assign(tMut, srcMut); P("setter changes the source", Object.keys(tMut).join(), JSON.stringify(tMut), Object.keys(srcMut).join());
+var srcMut2 = { a: 1, b: 2, c: 3 }; var tMut2 = { x: 0, set b(v) { delete srcMut2.c; } }; Object.assign(tMut2, srcMut2); P("setter in the middle", JSON.stringify(tMut2), Object.keys(tMut2).join());
+P("assign kinds of sources", D(Object.assign({}, order)), D(Object.assign({}, ro)), D(Object.assign({}, frozen)), D(Object.assign({}, inst)), D(Object.assign({}, [1, 2])), D(Object.assign({}, proxy)).length, D(Object.assign({}, derived)), D(Object.assign({}, nullp)), D(Object.assign(Object.create(null), src)), T(function () { return D(Object.assign({}, thrower)); }));
+var shared1 = { ...src }, shared2 = { ...src }; Object.assign(shared1, { d: 4 }); Object.assign(shared2, { a: "changed" }); P("assign to copies", JSON.stringify(shared1), JSON.stringify(shared2), JSON.stringify(src));
+var big = {}; for (var i = 0; i < 300; i++) big["p" + i] = i; var bigCopy = Object.assign({}, big, { p5: "five", extra: true }); P("assign many", Object.keys(bigCopy).length, bigCopy.p5, bigCopy.p299, Object.keys(bigCopy)[5], Object.keys({ ...big, p5: 0 }).length);
+var acc2 = 0; for (var i = 0; i < 3000; i++) { var o1 = Object.assign({}, src, { n: i }); var o2 = Object.assign(o1, { a: i }); acc2 += o2.a + o2.n + Object.keys(o2).length; } P("assign loop", acc2);
+class Cfg { constructor(opts) { Object.assign(this, { size: 1, color: "red" }, opts); } set color(v) { this._color = v + "!"; } get color() { return this._color; } } var cfg = new Cfg({ size: 3, color: "blue", extra: 1 }); P("assign in a constructor", JSON.stringify(cfg), cfg.color, Object.keys(cfg).join());
+lines.join("\n")"##;
+    let expected = r##"size 0 0 false true extra first  3
+size 1 1 false true extra first 0 13
+size 2 2 false true extra first 3 23
+size 3 3 false true extra first 6 33
+size 4 4 false true extra first 9 43
+size 5 5 false true extra first 12 54
+size 6 6 false true extra first 15 65
+size 13 13 false true extra first 36 145
+size 20 20 false true extra first 57 229
+size 27 27 false true extra first 78 313
+size 34 34 false true extra first 99 397
+copy a:1wec b:"two"wec c:[3]wec d:{"e":4}wec ext true true
+apart {"a":10,"c":[3],"d":{"e":4},"z":26} {"a":1,"b":"changed","c":[3],"d":{"e":4},"y":25}
+after delete {"a":1,"b":"changed","c":[3],"d":{"e":4},"y":25} {"b":"changed","c":[3],"d":{"e":4},"y":25,"a":"again"} {"b":"changed","c":[3],"d":{"e":4},"y":25,"a":"again"} b,c,d,y,a
+frozen f:1wec g:2wec ext s:1wec ext p:1wec ext false {"f":5,"h":6}
+attributes r:1wec nc:2wec plain:4wec ext r:1-ec nc:2we- hidden:3w-c plain:4wec ext
+accessors a:1wec g:2wec s:undefinedwec b:2wec ext get g; 45
+order 1:"one"wec 2:"two"wec b:1wec a:3wec Symbol(s):"sym"wec Symbol(t):"t"wec ext 1,2,b,a,Symbol(s),Symbol(t)
+integers {"1":"c","2":"b","10":"a","x":1} 0,1,2,5,10,x
+class instance pub:2wec ext threw TypeError false 
+prototypes n:1wec ext own:2wec ext  ext
+target prototype b,c,d,y,a 1 true
+primitives 0:"a"wec 1:"b"wec 2:"c"wec ext ext ext ext ext ext ext 0:1wec 2:3wec ext ext 21 ext ext 0 ext ext ext ext
+arguments 0:7wec 1:8wec ext
+proxy c:30wec a:10wec b:20wec ext ownKeys;gopd c;get c;gopd a;get a;gopd b;get b;
+getter throws threw RangeError
+getter changes the source a:1wec b:2wec ext a,b,d
+places {"x":1,"y":20,"z":30} {"y":2,"z":30,"x":1} {"y":2,"x":1} {"x":1,"y":0} {"a":0,"x":1,"y":20,"b":9,"z":30,"c":8} {"x":1,"y":2} {"x":1,"y":2} {"x":1,"y":2} {"x":1,"y":2} {"y":2,"x":1} {"x":1,"y":"getter"} y:2wec x:1wec ext 24
+setter in the prototype x:1wec y:2wec ext  1
+self true true true
+many 555476635 {"id":0,"name":"n","tags":null,"on":true} id:0-e- tags:null-e- on:true-e- extra0:0-e- fixed id:1wec name:"n"wec tags:nullwec on:truewec ext id:12wec tags:nullwec on:truewec extra2:12wec ext false 299
+chained 201 200 199 v,k0,k1
+loop {"b":"changed","c":[3],"d":{"e":4},"y":25,"a":"again","e":1999,"f":1} 78
+assign true 109 {"0":"a","1":"b","t":1,"b":2,"c":[3],"d":{"e":4},"y":25,"a":1,"g":2}
+rest 1 4:5wec b:2wec Symbol(s):3wec ext
+rest of frozen f:1wec g:2wec ext
+rest parameter b:2wec c:3wec ext 32
+assign plain a:1wec b:2wec c:3wec ext c:3wec z:9wec a:1wec b:2wec ext a:"A"wec b:"B"wec c:3wec d:4wec ext true a:1wec b:2wec c:3wec ext [7,"x",null,null,null] a,b,c object 38 threw TypeError threw TypeError 0:"a"wec 1:"b"wec a:1wec b:2wec c:3wec ext
+assign to itself true p:1wec q:2wec ext
+assign from the prototype true a,b,c 1 1 true
+assign to fixed threw TypeError {"a":0} false threw TypeError {"a":1} false threw TypeError {"b":0} false ok {"a":1,"b":2,"c":3} false ok {} false threw TypeError {} false
+assign to read-only threw TypeError {"a":1,"b":"ro"} true a:1wec b:"ro"-ec ext
+assign to a setter ok {"a":1,"c":3} true set b=2; b:accessor-ec a:1wec c:3wec ext
+assign under a setter threw TypeError {"a":1} true proto set b=2 on own a; 17 a
+assign under read-only threw TypeError {"a":1} true a frozen above
+assign to a proxy set a;define a;set b;define b;set c;define c; {"a":1,"b":2,"c":3}
+assign __proto__ true 2 __proto__,ok  true
+assign order set a;get b;set c;
+setter changes the source a,d {"d":4} a,d,e
+setter in the middle {"x":0,"a":1} x,b,a
+assign kinds of sources 1:"one"wec 2:"two"wec b:1wec a:3wec Symbol(s):"sym"wec Symbol(t):"t"wec ext r:1wec nc:2wec plain:4wec ext f:1wec g:2wec ext pub:2wec ext 0:1wec 1:2wec ext 27 own:2wec ext n:1wec ext a:1wec b:2wec c:3wec ext proto! threw RangeError
+assign to copies {"a":1,"b":2,"c":3,"d":4} {"a":"changed","b":2,"c":3} {"a":1,"b":2,"c":3}
+assign many 301 five 299 p5 300
+assign loop 9009000
+assign in a constructor {"size":3,"_color":"blue!","extra":1} blue! size,_color,extra"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `in`, hasOwnProperty, reads and deletes on objects with few keys and with
+/// hundreds, which are found by a table of the shape's keys: keys deleted
+/// and put back, a dictionary filled and emptied in rounds, keys inherited,
+/// and other kinds of objects. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn a_key_is_found_in_an_object_of_any_size() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(keys_of_objects)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn keys_of_objects() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+// Objects with few and with many keys: `in`, hasOwnProperty, reads, deletes, and keys that come back.
+var sym = Symbol("s");
+for (var size = 0; size <= 300; size += size < 40 ? 7 : 65) {
+  var d = {}; for (var i = 0; i < size; i++) d["k" + i] = i; d[sym] = 1; d[7] = "seven";
+  var hits = 0, own = 0, sum = 0;
+  for (var i = -3; i < size + 3; i++) { var key = "k" + i; if (key in d) hits++; if (Object.prototype.hasOwnProperty.call(d, key)) own++; sum += d[key] | 0; }
+  P("size", size, hits, own, sum, "toString" in d, "valueOf" in d, sym in d, 7 in d, "7" in d, 8 in d, "k" in d, "" in d, Object.keys(d).length);
+  for (var i = 0; i < size; i += 3) delete d["k" + i];
+  var left = 0; for (var i = 0; i < size; i++) if ("k" + i in d) left++;
+  for (var i = 0; i < size; i += 6) d["k" + i] = -i;
+  var back = 0, order = ""; for (var i = 0; i < size; i++) if ("k" + i in d) back++; var ks = Object.keys(d); order = ks.slice(0, 4).join() + ".." + ks.slice(-3).join();
+  P("after deletes", size, left, back, order, ks.length);
+}
+// A dictionary that is filled, asked and emptied again and again.
+var dict = {}; var n = 0;
+for (var round = 0; round < 4; round++) {
+  for (var i = 0; i < 2000; i++) dict["k" + (i % 500)] = i + round;
+  for (var j = 0; j < 2000; j++) { var key = "k" + (j % 500); if (key in dict) n += dict[key] & 1; if ((j & 7) === 0) delete dict[key]; }
+}
+P("churn", n, Object.keys(dict).length, "k1" in dict, "k0" in dict, "k8" in dict);
+// Keys found above the object, and on other kinds of objects.
+var proto = { inherited: 1 }; for (var i = 0; i < 60; i++) proto["p" + i] = i; var child = Object.create(proto); for (var i = 0; i < 60; i++) child["c" + i] = i;
+var up = 0; for (var i = 0; i < 70; i++) { if ("p" + i in child) up++; if ("c" + i in child) up += 100; if (child.hasOwnProperty("p" + i)) up += 10000; }
+P("inherited", up, "inherited" in child, "missing" in child, delete proto.p5, "p5" in child, delete child.c5, "c5" in child, (child.p5 = 1, "p5" in child), child.hasOwnProperty("p5"));
+var arr = [1, 2, 3]; arr.extra = 1; var fn = function () {}; fn.own = 1; var str = new String("abc"); str.note = 1; var map = new Map(); map.tag = 1;
+P("other objects", 1 in arr, 3 in arr, "length" in arr, "extra" in arr, "push" in arr, "own" in fn, "name" in fn, "call" in fn, 1 in str, 5 in str, "note" in str, "length" in str, "tag" in map, "get" in map, "size" in map);
+var acc = { get g() { return 1; } }; Object.defineProperty(acc, "hidden", { value: 1, enumerable: false }); P("accessors", "g" in acc, "hidden" in acc, acc.hasOwnProperty("g"), Object.keys(acc).join());
+var big = {}; for (var i = 0; i < 100; i++) Object.defineProperty(big, "f" + i, { value: i, enumerable: i % 2 === 0, writable: i % 3 === 0, configurable: true }); var seen = 0; for (var i = 0; i < 110; i++) if ("f" + i in big) seen++; P("defined", seen, Object.keys(big).length, big.f99, (big.f3 = "no", big.f3), (big.f6 = "yes", big.f6));
+var frozen = Object.freeze(Object.assign({}, big, { z: 1 })); P("frozen", "z" in frozen, "f98" in frozen, "f99" in frozen, "zz" in frozen);
+P("throws", (function () { try { return "a" in 5; } catch (e) { return e.constructor.name; } })(), (function () { try { return "a" in null; } catch (e) { return e.constructor.name; } })(), (function () { try { return ({ toString: function () { throw new RangeError("k"); } }) in {}; } catch (e) { return e.constructor.name; } })(), Symbol.iterator in [], sym in Object(sym));
+lines.join("\n")"##;
+    let expected = r##"size 0 0 0 0 true true true true true false false false 1
+after deletes 0 0 0 7..7 1
+size 7 7 7 21 true true true true true false false false 8
+after deletes 7 4 6 7,k1,k2,k4..k5,k0,k6 7
+size 14 14 14 91 true true true true true false false false 15
+after deletes 14 9 12 7,k1,k2,k4..k0,k6,k12 13
+size 21 21 21 210 true true true true true false false false 22
+after deletes 21 14 18 7,k1,k2,k4..k6,k12,k18 19
+size 28 28 28 378 true true true true true false false false 29
+after deletes 28 18 23 7,k1,k2,k4..k12,k18,k24 24
+size 35 35 35 595 true true true true true false false false 36
+after deletes 35 23 29 7,k1,k2,k4..k18,k24,k30 30
+size 42 42 42 861 true true true true true false false false 43
+after deletes 42 28 35 7,k1,k2,k4..k24,k30,k36 36
+size 107 107 107 5671 true true true true true false false false 108
+after deletes 107 71 89 7,k1,k2,k4..k90,k96,k102 90
+size 172 172 172 14706 true true true true true false false false 173
+after deletes 172 114 143 7,k1,k2,k4..k156,k162,k168 144
+size 237 237 237 27966 true true true true true false false false 238
+after deletes 237 158 198 7,k1,k2,k4..k222,k228,k234 199
+churn 3374 375 true false false
+inherited 6060 true false true false true false true true
+other objects true false true true true true true true true false true true true true true
+accessors true true true g
+defined 100 50 99 no yes
+frozen true true false false
+throws TypeError TypeError RangeError true false"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

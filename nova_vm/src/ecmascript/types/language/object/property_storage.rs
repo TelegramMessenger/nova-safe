@@ -26,13 +26,18 @@ use super::{InternalSlots, Object, OrdinaryObject, PropertyKey};
 #[repr(transparent)]
 pub(crate) struct PropertyStorage<'a>(OrdinaryObject<'a>);
 
-/// The offset of `key` among the keys of `object`'s shape.
+/// The offset of `key` among the keys of `object`'s shape: by a search of
+/// a few keys, and by the table of the shape's keys where they are many.
 #[inline]
-fn find_key_offset(agent: &Agent, object: OrdinaryObject, key: PropertyKey) -> Option<usize> {
+pub(crate) fn find_key_offset(
+    agent: &Agent,
+    object: OrdinaryObject,
+    key: PropertyKey,
+) -> Option<usize> {
     let shape = object.get_direct(&agent.heap.objects).get_shape();
     let keys = shape.keys(&agent.heap.object_shapes, &agent.heap.elements);
     if keys.len() < KEY_OFFSETS_MIN_LEN {
-        return keys.iter().position(|k| *k == key);
+        return key.position_in(keys);
     }
     agent.heap.elements.key_offsets.find(
         shape.keys_capacity(agent),
@@ -326,7 +331,7 @@ impl<'a> PropertyStorage<'a> {
             descriptors,
         } = object.get_property_storage(agent);
         let result = if keys.len() < KEY_OFFSETS_MIN_LEN {
-            keys.iter().position(|k| *k == key)
+            key.position_in(keys)
         } else {
             find_key_offset(agent, object, key)
         };

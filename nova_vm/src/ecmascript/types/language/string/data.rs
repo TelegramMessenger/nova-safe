@@ -484,6 +484,21 @@ impl StringRecord {
         self.hash
     }
 
+    /// Feeds what stands for the string's text to the hasher of another
+    /// table (the keys of a Map, the values of a Set): the value of the
+    /// text, which every string of the string table has, in place of the
+    /// text itself. Equal texts have equal values, and the hasher makes of
+    /// the value what it would have made of the text; so a long key is not
+    /// read again at every lookup, and one that is being built is not
+    /// joined for it.
+    #[inline]
+    pub(crate) fn hash_text<H: core::hash::Hasher>(&self, state: &mut H) {
+        if self.hash == UNHASHED {
+            return self.data.hash(state);
+        }
+        state.write_u64(self.hash);
+    }
+
     /// The string's hash in the heap's string table.
     #[inline]
     pub(crate) fn table_hash(&self, hasher: &TextHasher) -> u64 {

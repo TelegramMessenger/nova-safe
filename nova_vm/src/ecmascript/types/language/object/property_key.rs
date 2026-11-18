@@ -283,6 +283,15 @@ impl<'a> PropertyKey<'a> {
         (u64::from(discriminant) << 56) | payload
     }
 
+    /// The place of the key among `keys`, by a search from the first one:
+    /// for the few keys of a small object. (Comparing the keys as the 64
+    /// bits each is, [`PropertyKey::identity_bits`], was tried here and was
+    /// a twelfth slower than comparing them as they are.)
+    #[inline]
+    pub(crate) fn position_in(self, keys: &[PropertyKey]) -> Option<usize> {
+        keys.iter().position(|key| *key == self)
+    }
+
     /// Hash of the key's identity under the given random keys.
     #[inline]
     pub(crate) fn identity_hash(self, state: &HandleState) -> u64 {
@@ -298,7 +307,7 @@ impl<'a> PropertyKey<'a> {
             }
             PropertyKey::String(s) => {
                 // Skip discriminant hashing in strings
-                s.get(agent).data.hash(&mut hasher);
+                s.get(agent).hash_text(&mut hasher);
             }
             PropertyKey::SmallString(s) => {
                 s.as_wtf8().hash(&mut hasher);
