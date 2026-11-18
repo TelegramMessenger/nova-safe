@@ -34,23 +34,23 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 3.4x |
+| call | 14 | 10.4x | 3.3x |
 | typed | 4 | 10.6x | 3.3x |
-| math | 4 | 9.7x | 3.0x |
-| prop | 13 | 7.1x | 3.0x |
+| math | 4 | 9.7x | 3.1x |
+| prop | 13 | 7.1x | 2.8x |
 | array | 14 | 5.8x | 2.7x |
 | app | 8 | 6.1x | 2.6x |
-| string | 26 | 10.6x | 2.5x |
+| string | 26 | 10.6x | 2.6x |
 | map, set | 4 | 4.6x | 2.4x |
 | loop | 11 | 11.1x | 2.2x |
-| regexp | 4 | 2.4x | 1.9x |
+| regexp | 4 | 2.4x | 2.0x |
 | gc | 3 of 5 | 3.6x | 1.5x |
 | json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 2.6x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 4.4x, and the worst is now prepending
+The worst case was 303x (appending to a string 100,000 times); that one is 4.0x, and the worst is now prepending
 (38x, area 7); after it come generators (6.5x), then calls that bind an arguments object or go through an accessor
-(5-6x). 47 of the 108 cases are above 3x and 26 at or under 2x. One case ran Nova out of memory before
+(5-6x). 46 of the 108 cases are above 3x and 27 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -276,6 +276,22 @@ An assignment by the cache looked the storage up twice, once with its descriptor
 the property is writable) and once to write: it is one look now, which asks for a descriptor only where the
 storage's arena has any. This changed little (2% on one shape).
 
+`o.x = v` that adds the property (every assignment in a constructor, and `o.a = 1; o.b = 2` after `{}`) took
+the general way each time: the cache had nothing for a shape without the property, because only reads record
+that a property is absent. The assignment's general way now looks the property up as a read would before it
+assigns, which records the absence for that shape; the next assignment on that shape finds it, and where the
+object is ordinary and extensible, appends the value and records the new shape's offset
+(`ordinary_add_own_data_by_cache`). An absence is recorded only by a lookup that walked the whole chain through
+ordinary lookups and found no property of that name, so there is no setter and nothing that is not writable to
+find, and it is dropped when an object of the chain gains the property or gets another prototype: the append
+is what OrdinarySet would do. A Proxy in the chain records nothing, and neither does a typed array for the
+names it answers itself (`NaN`, `Infinity`). Adding six properties one by one went from 3.6x to 1.3x, `new` of
+a class from 4.8x to 3.2x and a constructor that calls `super` from 3.9x to 3.3x.
+
+This leans on the caches being told of every change to a prototype, and checking that found a way they were
+not (`Object.create`, under Defects): fixed in the same round, and tested for every way an object gets its
+prototype.
+
 Left: a property read is the cache (up to four shapes compared), then the object's record, its shape's record
 for the capacity of the storage, a jump on that capacity to the arena of that size, and the slot: about eight
 dependent loads where QuickJS has three. The loop of `o.x = o.x + o.y` is 4.2x with dispatch a third of it.
@@ -398,12 +414,38 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   under an 8 MB limit, in a loop or through calls, ends at the same point with and without this round's
   changes. Not fixed here (the allocator's own count on `android-dev` replaces the estimate).
 
+- An object that became a prototype through `Object.create`, or as the `prototype` of a subclass of Array, of a
+  typed array or of Function, or through `Reflect.construct` of those, was not known to the property caches as
+  a prototype. After one read through it, what was added to it, removed from it or redefined on it, and a change
+  of its own prototype, went unseen: `var p = {}, o = Object.create(p); o.x; p.x = 1; o.x` gave undefined, and
+  `var q = { y: 1 }, r = Object.create(q); r.y; delete q.y; r.y` panicked (an index out of bounds; the engine
+  died). Upstream; test262 has no test that fails for it. The caches' invalidation is keyed on a prototype's
+  shape being intrinsic, which `new`, `setPrototypeOf` and `__proto__` in a literal saw to and the creation of
+  an object by its prototype alone did not. Now the first shape made for a prototype makes the prototype's own
+  shape intrinsic (`ObjectShape::get_shape_for_prototype`). Fixed.
+- Whether an object is extensible is a bit in its reference to its shape, and three places that replace the
+  shape dropped it. An object that was frozen, sealed or made non-extensible took new properties again (and
+  `Object.isFrozen` said false) once it became a prototype, by `new`, `setPrototypeOf`, `__proto__` or class
+  heritage; after one of its properties was deleted; and when private fields were added onto it. Upstream. One
+  staging test of test262 failed for it (`staging/sm/Symbol/property-reflection.js`) and passes now. Fixed.
+- `Object.prototype.__proto__` does not exist: `o.__proto__` reads undefined and `o.__proto__ = p` adds an own
+  property named `__proto__` (the `__proto__: p` of an object literal does set the prototype). Upstream, with
+  the rest of Annex B's additions to Object.prototype. Not fixed.
 - A `let` or `const` of one `case` read in another case that is entered first (`switch (2) { case 1: let x;
   case 2: x; }`) gives undefined where it must throw a ReferenceError: the variable is a stack slot and the
   compiler takes it for initialized. Upstream. Not fixed.
 - Two cases whose time is in native code (`gc/string-garbage`, which hashes every string it makes, and
   `array/index-of-includes`) read 7-10% slower in the build of the loop changes than in the build just before
   it, whose code for them is the same. Taken for the placement of code by the linker; not explained further.
+- The build with the fix for prototypes made by `Object.create` reads 5-7% slower on three cases that never
+  come near it (`array/index-read-write` 13.7 to 14.4 ms, `app/particles-step` 5.8 to 6.1 ms,
+  `array/two-dimensional-grid` 8.5 to 8.9 ms), reproducibly, against the same code without the fix built side
+  by side.
+  The two binaries spend their samples in the same functions, and the instructions of the dispatch in `Vm::run`
+  are the same one for one: the function starts 100 bytes later, and that is all that differs. Moving the fix's
+  rare path out of line changed nothing. It is the placement of the loop, as with the two cases above; over
+  all cases the build is 1% faster than the one before the round. Not pursued: making the placement of
+  `Vm::run` the same in every build (an alignment for functions) is the thing to try.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
 
