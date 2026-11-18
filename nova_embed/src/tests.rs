@@ -4851,3 +4851,138 @@ returnsInPlace1: [1,undefined,"at1","big","big","at11","kept","try","finally","o
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The `+` of a String and any other primitive, which converts the other
+/// one where it stands, and of two strings that make a short one, which
+/// the heap is asked for before it is copied: every primitive on either
+/// side, Symbols and objects (which still convert the general way), the
+/// lengths around the limits of a small string, a short and a long
+/// concatenation, surrogates that join into a pair, and that equal texts
+/// are one string however they were made. Then elements appended to
+/// Arrays, which look at their prototypes' keys only once some prototype
+/// was given an integer key: a setter, a read-only property and an
+/// element under an index on %Object.prototype% and %Array.prototype%,
+/// and Arrays that cannot grow. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn concatenations_and_appended_elements_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(concatenations_and_appended_elements)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn concatenations_and_appended_elements() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+function t(name, f) { for (var round = 0; round < 2; round++) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e); } print(name + round + ": " + v); } }
+function hash(s) { var h = 7; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+var prims = [0, -0, 1, -1, 42, 255, 1234567, 12345678, 4294967296, 9007199254740991, 1e21, 1e-7, 0.1, 0.30000000000000004, -2.5, NaN, Infinity, -Infinity, true, false, null, undefined, 10n, -5n, 123456789012345678901234567890n, "", "a", "seven77", "eight888", "é", "😀", "\ud83d", "\ude00"];
+t("stringWithPrimitive", function () {
+  var rows = [], lefts = ["", "x", "rgb(", "a long enough string to live on the heap ", "é", "\ud83d"];
+  for (var i = 0; i < lefts.length; i++) for (var j = 0; j < prims.length; j++) { var l = lefts[i], p = prims[j]; rows.push(l + p, p + l, l + p + l, p + l + p); }
+  var all = rows.join("|");
+  return [rows.length, all.length, hash(all), JSON.stringify([rows[5], rows[130], rows[400], rows[rows.length - 3]])].join(" ");
+});
+t("symbolsAndObjects", function () {
+  var r = [], log = [];
+  try { r.push("s" + Symbol("q")); } catch (e) { r.push(e.constructor.name); } try { r.push(Symbol("q") + "s"); } catch (e) { r.push(e.constructor.name); } try { r.push(1 + Symbol()); } catch (e) { r.push(e.constructor.name); } try { r.push("a" + Object(Symbol())); } catch (e) { r.push(e.constructor.name); }
+  var o = { valueOf: function () { log.push("v"); return 7; }, toString: function () { log.push("s"); return "str"; } }, p = { toString: function () { log.push("p"); return "P"; }, valueOf: undefined }, d = new Date(0);
+  r.push("a" + o, o + "a", o + o, "a" + p, p + 1, [1, 2] + "x", "x" + [3], "x" + {}, "x" + function f() {}.name, "y" + null + undefined + true, typeof (d + ""), ("" + d).length > 10, 1 + 2 + "3", "1" + 2 + 3, 1 + "2" + 3, "5" + -0, "" + -0, `${-0}` + 0, null + "x", undefined + "", true + "!", 1n + "n", "n" + 2n);
+  var thrower = { toString: function () { throw new RangeError("t"); } }; try { r.push("a" + thrower); } catch (e) { r.push(e.constructor.name); } try { r.push(thrower + "a"); } catch (e) { r.push(e.constructor.name); }
+  return r.join(",") + "|" + log.join("");
+});
+t("lengthsAroundTheLimits", function () {
+  var r = [], base = "0123456789abcdef";
+  var lens = [0, 1, 3, 6, 7, 8, 9, 15, 31, 32, 33, 62, 63, 64, 65, 127, 128, 254, 255, 256, 257, 300, 1000];
+  for (var i = 0; i < lens.length; i++) {
+    var n = lens[i], left = "", k = 0; while (left.length < n) left += base[k++ & 15];
+    var a = left + "Z", b = "Z" + left, c = left + 5, d = left + left, e = left + "é", f = left + "\ud83d" + "\ude00";
+    r.push([a.length, b.length, c.length, d.length, e.length, f.length, a === left + "Z", a === "Z" + left, d === left + left, a.charCodeAt(n), b.charCodeAt(0), f.codePointAt(n), hash(a + b + c)].join("/"));
+  }
+  return r.join(" ");
+});
+t("surrogatesJoin", function () {
+  var lead = "\ud83d", trail = "\ude00", r = [];
+  var joined = lead + trail, apart = trail + lead, text = "abcdefg" + lead, more = text + trail, pre = lead + "x", long = "0123456789012345678901234567890123456789" + lead;
+  r.push(joined === "😀", joined.length, joined.codePointAt(0), apart.length, apart.codePointAt(0), more === "abcdefg😀", more.length, more.codePointAt(7), (pre + trail).length, (long + trail).codePointAt(40), (long + trail) === "0123456789012345678901234567890123456789😀", ("a" + lead + trail + "b").length, [..."x" + lead + trail].length, encodeURIComponent("q" + lead + trail), (lead + lead + trail + trail).length, (lead + 1 + trail).length);
+  return r.join(",");
+});
+t("identityOfResults", function () {
+  var o = {}, m = new Map(), s = new Set(), r = [];
+  for (var i = 0; i < 40; i++) { var key = "key-" + (i % 8) + "-suffix"; o[key] = (o[key] || 0) + 1; m.set("m" + (i % 5) + "longer key text", i); s.add("member " + (i % 3)); }
+  var a = "prefix-" + 12, b = "prefix-" + "12", c = "pre" + "fix-12", d = "prefix-1" + 2;
+  r.push(Object.keys(o).length, o["key-3-suffix"], m.size, m.get("m4longer key text"), s.size, s.has("member " + 2), a === b, b === c, c === d, a === "prefix-12", [a, b, c, d].indexOf("prefix-12"), ("x" + 1 === "x1") + "", ("ab" + "cdefgh" === "abcdefgh") + "", "abcdefg" + "h" === "abcdefgh", ("same text here " + 1) === ("same text here " + 1), Object.is("a" + 1.5, "a1.5"));
+  switch ("case-" + 2) { case "case-2": r.push("matched"); break; default: r.push("missed"); }
+  var parts = []; for (var j = 0; j < 300; j++) parts.push("rgb(" + (j & 255) + ",10," + (j * 12) + ")"); r.push(parts[299], parts.length, hash(parts.join(";")));
+  var built = ""; for (var k = 0; k < 2000; k++) built += "<" + k + ">"; r.push(built.length, hash(built));
+  var pre = ""; for (var q = 0; q < 300; q++) pre = q + "," + pre; r.push(pre.length, hash(pre));
+  return r.join(",");
+});
+})();
+(function () {
+var print = function (s) { all.push(s); };
+function t(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e); } print(name + ": " + v); }
+function fill(a, n) { for (var i = 0; i < n; i++) a.push(i * 2); return a; }
+function assign(a, n) { for (var i = 0; i < n; i++) a[a.length] = i + 1; return a; }
+t("plain pushes", function () { var a = fill([], 50), b = assign([], 50), c = [1, 2]; c.push(3, "s", null, undefined, 1.5, {}, [], true, c.length, "end"); return [a.length, a[49], b.length, b[49], c.length, c[10], [].push(), [].push(1, 2, 3)].join(); });
+t("push onto other arrays", function () {
+  var frozen = Object.freeze([1]), r = [];
+  try { frozen.push(2); } catch (e) { r.push(e.constructor.name); } var fixed = [1]; Object.defineProperty(fixed, "length", { writable: false }); try { fixed.push(2); } catch (e) { r.push(e.constructor.name); } r.push(fixed.length);
+  var noext = Object.preventExtensions([1]); try { noext.push(2); } catch (e) { r.push(e.constructor.name); } r.push(noext.length);
+  var holes = [1, , 3]; holes.push(4); r.push(holes.length, 1 in holes);
+  var withGetter = [1]; Object.defineProperty(withGetter, 3, { get: function () { return "g"; }, configurable: true }); withGetter.push(5); r.push(withGetter.length, withGetter[4], withGetter[3]);
+  class Sub extends Array {} var sub = new Sub(); sub.push(1, 2); r.push(sub.length, sub instanceof Sub);
+  var proto = []; var child = Object.setPrototypeOf([], proto); child.push(7); r.push(child.length, proto.length);
+  var like = { length: 2 }; Array.prototype.push.call(like, "x"); r.push(like.length, like[2]);
+  return r.join();
+});
+t("a key on a class prototype", function () { class C {} C.prototype[0] = "zero"; C.prototype[7] = "seven"; var a = fill([], 12), b = assign([], 12); return [a.length, a[7], b[7], new C()[7]].join(); });
+t("setter on Object.prototype", function () {
+  var seen = [];
+  Object.defineProperty(Object.prototype, 3, { set: function (v) { seen.push("set" + v); }, get: function () { return "inherited"; }, configurable: true });
+  var a = fill([], 6), b = assign([], 6), c = [0, 1, 2]; c.push("p"); var r = [a.length, a[3], 3 in a, a.hasOwnProperty(3), b.length, b[3], b.hasOwnProperty(3), c.length, c[3], seen.join("")];
+  delete Object.prototype[3]; var d = fill([], 6); r.push(d[3], d.hasOwnProperty(3)); return r.join();
+});
+t("read-only on Array.prototype", function () {
+  Object.defineProperty(Array.prototype, 2, { value: "fixed", writable: false, configurable: true });
+  var r = [], a = [0, 1]; try { a.push("x"); r.push("pushed"); } catch (e) { r.push(e.constructor.name); } r.push(a.length, a[2], a.hasOwnProperty(2));
+  var b = [0, 1]; b[b.length] = "y"; r.push(b.length, b[2]); function strict() { "use strict"; var c = [0, 1]; try { c[c.length] = "z"; return "set"; } catch (e) { return e.constructor.name; } } r.push(strict());
+  delete Array.prototype[2]; var d = fill([], 5); r.push(d[2], d.length, Array.prototype.length); return r.join();
+});
+t("element on Array.prototype", function () { Array.prototype[1] = "proto"; var a = [0]; var r = [a[1], a.length]; a.push("own"); r.push(a[1], a.length, a.hasOwnProperty(1)); var b = []; b.length = 3; r.push(b[1], 1 in b, b.hasOwnProperty(1)); Array.prototype.length = 0; var c = fill([], 4); r.push(c[1], Array.prototype.length); return r.join(); });
+t("after the keys are gone", function () { var a = fill([], 30), b = assign([], 30), c = []; for (var i = 0; i < 20; i++) c.push(i, i + 1); return [a.length, a[29], b[29], c.length, c[39]].join(); });
+t("accessor on a later-added key", function () { var seen = []; Object.defineProperty(Object.prototype, 10, { set: function (v) { seen.push(v); }, configurable: true }); var a = fill([], 12); var r = [a.length, a.hasOwnProperty(10), seen.join(), a[11]]; delete Object.prototype[10]; return r.join(); });
+})();
+all.join("\n")"#;
+    let expected = r#"stringWithPrimitive0: 792 14201 2093109899 ["0","\ude00","a long enough string to live on the heap 0","\ude00\ud83d"]
+stringWithPrimitive1: 792 14201 2093109899 ["0","\ude00","a long enough string to live on the heap 0","\ude00\ud83d"]
+symbolsAndObjects0: TypeError,TypeError,TypeError,TypeError,a7,7a,14,aP,P1,1,2x,x3,x[object Object],xf,ynullundefinedtrue,string,true,33,123,123,50,0,00,nullx,undefined,true!,1n,n2,RangeError,RangeError|vvvvpp
+symbolsAndObjects1: TypeError,TypeError,TypeError,TypeError,a7,7a,14,aP,P1,1,2x,x3,x[object Object],xf,ynullundefinedtrue,string,true,33,123,123,50,0,00,nullx,undefined,true!,1n,n2,RangeError,RangeError|vvvvpp
+lengthsAroundTheLimits0: 1/1/1/0/1/2/true/true/true/90/90/128512/297870 2/2/2/2/2/3/true/false/true/90/90/128512/-917363828 4/4/4/6/4/5/true/false/true/90/90/128512/333120747 7/7/7/12/7/8/true/false/true/90/90/128512/-1686381083 8/8/8/14/8/9/true/false/true/90/90/128512/-674484951 9/9/9/16/9/10/true/false/true/90/90/128512/-1688690942 10/10/10/18/10/11/true/false/true/90/90/128512/-67939320 16/16/16/30/16/17/true/false/true/90/90/128512/-1174784770 32/32/32/62/32/33/true/false/true/90/90/128512/-389461850 33/33/33/64/33/34/true/false/true/90/90/128512/360233374 34/34/34/66/34/35/true/false/true/90/90/128512/-1456227620 63/63/63/124/63/64/true/false/true/90/90/128512/452431153 64/64/64/126/64/65/true/false/true/90/90/128512/-1749508106 65/65/65/128/65/66/true/false/true/90/90/128512/-2095568978 66/66/66/130/66/67/true/false/true/90/90/128512/792826412 128/128/128/254/128/129/true/false/true/90/90/128512/-698610026 129/129/129/256/129/130/true/false/true/90/90/128512/-1965505586 255/255/255/508/255/256/true/false/true/90/90/128512/-888485487 256/256/256/510/256/257/true/false/true/90/90/128512/-1296700458 257/257/257/512/257/258/true/false/true/90/90/128512/1214315534 258/258/258/514/258/259/true/false/true/90/90/128512/-1388978676 301/301/301/600/301/302/true/false/true/90/90/128512/1434181036 1001/1001/1001/2000/1001/1002/true/false/true/90/90/128512/-898866446
+lengthsAroundTheLimits1: 1/1/1/0/1/2/true/true/true/90/90/128512/297870 2/2/2/2/2/3/true/false/true/90/90/128512/-917363828 4/4/4/6/4/5/true/false/true/90/90/128512/333120747 7/7/7/12/7/8/true/false/true/90/90/128512/-1686381083 8/8/8/14/8/9/true/false/true/90/90/128512/-674484951 9/9/9/16/9/10/true/false/true/90/90/128512/-1688690942 10/10/10/18/10/11/true/false/true/90/90/128512/-67939320 16/16/16/30/16/17/true/false/true/90/90/128512/-1174784770 32/32/32/62/32/33/true/false/true/90/90/128512/-389461850 33/33/33/64/33/34/true/false/true/90/90/128512/360233374 34/34/34/66/34/35/true/false/true/90/90/128512/-1456227620 63/63/63/124/63/64/true/false/true/90/90/128512/452431153 64/64/64/126/64/65/true/false/true/90/90/128512/-1749508106 65/65/65/128/65/66/true/false/true/90/90/128512/-2095568978 66/66/66/130/66/67/true/false/true/90/90/128512/792826412 128/128/128/254/128/129/true/false/true/90/90/128512/-698610026 129/129/129/256/129/130/true/false/true/90/90/128512/-1965505586 255/255/255/508/255/256/true/false/true/90/90/128512/-888485487 256/256/256/510/256/257/true/false/true/90/90/128512/-1296700458 257/257/257/512/257/258/true/false/true/90/90/128512/1214315534 258/258/258/514/258/259/true/false/true/90/90/128512/-1388978676 301/301/301/600/301/302/true/false/true/90/90/128512/1434181036 1001/1001/1001/2000/1001/1002/true/false/true/90/90/128512/-898866446
+surrogatesJoin0: true,2,128512,2,56832,true,9,128512,3,128512,true,4,2,q%F0%9F%98%80,4,3
+surrogatesJoin1: true,2,128512,2,56832,true,9,128512,3,128512,true,4,2,q%F0%9F%98%80,4,3
+identityOfResults0: 8,5,5,39,3,true,true,true,true,true,0,true,true,true,true,true,matched,rgb(43,10,3588),300,552677117,10890,-953371419,1090,1717448851
+identityOfResults1: 8,5,5,39,3,true,true,true,true,true,0,true,true,true,true,true,matched,rgb(43,10,3588),300,552677117,10890,-953371419,1090,1717448851
+plain pushes: 50,98,50,50,12,2,0,3
+push onto other arrays: TypeError,TypeError,1,TypeError,1,4,false,5,5,g,2,true,1,0,3,x
+a key on a class prototype: 12,14,8,seven
+setter on Object.prototype: threw RangeError
+read-only on Array.prototype: threw TypeError
+element on Array.prototype: threw TypeError
+after the keys are gone: threw TypeError
+accessor on a later-added key: threw TypeError"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

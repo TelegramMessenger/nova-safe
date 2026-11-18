@@ -196,8 +196,10 @@ impl<'a> Array<'a> {
     /// and its length is writable), and inherits from the realm's
     /// %Array.prototype% and that from %Object.prototype%, neither of which
     /// has a property under an integer key (a setter or a read-only
-    /// property there would take the assignment). All of it is looked at
-    /// every time: nothing remembers an earlier answer.
+    /// property there would take the assignment). The keys of the two
+    /// prototypes are only looked through once some object with an
+    /// intrinsic shape, as both have, was given an integer key: the heap
+    /// notes that where such a key is added.
     pub(crate) fn appends_plainly(self, agent: &Agent) -> bool {
         if !self.is_trivial(agent)
             || !self.length_writable(agent)
@@ -221,6 +223,9 @@ impl<'a> Array<'a> {
             || object_prototype.internal_prototype(agent).is_some()
         {
             return false;
+        }
+        if !agent.heap.intrinsic_integer_keys {
+            return true;
         }
         let no_integer_keys = |object: OrdinaryObject| {
             object

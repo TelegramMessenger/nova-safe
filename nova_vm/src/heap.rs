@@ -179,6 +179,11 @@ pub(crate) struct Heap {
     pub(crate) strings: Vec<StringRecord>,
     pub(crate) string_lookup_table: HashTable<HeapString<'static>>,
     pub(crate) string_hasher: crate::hashing::RandomState,
+    /// Whether an object that has an intrinsic Object Shape (a prototype,
+    /// %Object.prototype% and %Array.prototype% among them) was ever given
+    /// a property under an integer key. While none was, an element added
+    /// to an Array past its length is not looked for on its prototypes.
+    pub(crate) intrinsic_integer_keys: bool,
     /// What appended strings may join, and have joined since the strings
     /// were last measured.
     pub(crate) text_join_budget: std::sync::Arc<crate::ecmascript::JoinBudget>,
@@ -328,6 +333,7 @@ impl Heap {
             string_iterators: Vec::with_capacity(0),
             string_lookup_table: HashTable::with_capacity(0),
             string_hasher: crate::hashing::RandomState::new(),
+            intrinsic_integer_keys: false,
             text_join_budget: Default::default(),
             shape_key_hasher: crate::hashing::HandleState::default(),
             symbols: Vec::with_capacity(0),
@@ -479,6 +485,21 @@ impl Heap {
             Ok(string) => string,
             Err(hash) => {
                 let data = StringRecord::from_wtf8_buf(message);
+                self.create((data, hash))
+            }
+        }
+    }
+
+    /// The heap string with this text, which is too long for a SmallString:
+    /// the one there is, or a new one. A text that the heap has already is
+    /// not copied for the asking.
+    pub(crate) fn alloc_wtf8(&mut self, message: Wtf8Str<'_>) -> String<'static> {
+        match self.find_equal_wtf8(message) {
+            Ok(string) => string,
+            Err(hash) => {
+                let mut text = Wtf8Buf::with_capacity(message.len());
+                text.push_wtf8(message);
+                let data = StringRecord::from_wtf8_buf(text);
                 self.create((data, hash))
             }
         }

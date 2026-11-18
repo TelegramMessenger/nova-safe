@@ -534,6 +534,15 @@ pub(super) fn execute_apply_addition_binary_operator<'gc>(
         BigInt::add(agent, lnum, rnum)
             .check_size(agent, gc.into_nogc())?
             .into()
+    } else if let Some((lprim, rprim)) = string_and_primitive(lval, rval) {
+        // A String and a Number, or another primitive that ToString takes:
+        // nothing is converted that could run a script, and the Vm stays
+        // where it is.
+        let gc = gc.into_nogc();
+        let lstr = to_string_primitive(agent, lprim.bind(gc), gc)?;
+        let rstr = to_string_primitive(agent, rprim.bind(gc), gc)?;
+        agent.check_concat_length(lstr, rstr, gc)?;
+        String::concat(agent, [lstr, rstr], gc).into()
     } else {
         with_vm_gc(
             agent,
@@ -544,6 +553,23 @@ pub(super) fn execute_apply_addition_binary_operator<'gc>(
     };
     vm.result = Some(result.unbind());
     Ok(())
+}
+
+/// The operands of a `+` as primitives, where one is a String and the other
+/// a primitive that ToString converts: not a Symbol, which it throws for.
+fn string_and_primitive<'a>(
+    lval: Value<'a>,
+    rval: Value<'a>,
+) -> Option<(Primitive<'a>, Primitive<'a>)> {
+    let (Ok(lprim), Ok(rprim)) = (Primitive::try_from(lval), Primitive::try_from(rval)) else {
+        return None;
+    };
+    let is_string = |primitive: Primitive| {
+        matches!(primitive, Primitive::String(_) | Primitive::SmallString(_))
+    };
+    let is_symbol = |primitive: Primitive| matches!(primitive, Primitive::Symbol(_));
+    ((is_string(lprim) || is_string(rprim)) && !is_symbol(lprim) && !is_symbol(rprim))
+        .then_some((lprim, rprim))
 }
 
 pub(super) fn execute_apply_binary_operator<'gc>(
