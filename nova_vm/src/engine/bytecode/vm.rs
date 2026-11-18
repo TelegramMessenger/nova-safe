@@ -179,10 +179,11 @@ struct Frame {
     /// to after each of the caller's instructions.
     stack_depth: usize,
     collections_depth: usize,
-    /// Where the scoped values of the caller's own call start: its
-    /// executable is the first of them. Not used for the code the `Vm` was
-    /// started with.
-    scope_base: usize,
+    /// The rooted handle of the caller's executable. It stays where it is
+    /// among the Agent's scoped values while the function runs (what the
+    /// function's instructions scope is above it), and is the caller's
+    /// again when the function is left.
+    scoped: Scoped<'static, Executable<'static>>,
 }
 
 /// The code that is running in a `Vm`, between two changes of it: the code
@@ -190,6 +191,11 @@ struct Frame {
 /// function it called, runs in place of the call.
 struct Running<'s> {
     executable: Scoped<'s, Executable<'static>>,
+    /// The executable itself, as it is when the code starts to run or goes
+    /// on after a call: what `executable` gives until a collection moves
+    /// it. The loop of instructions starts from it, and asks the rooted
+    /// handle only after a collection.
+    code: Executable<'static>,
     /// The instructions of the executable with its constants, property
     /// caches and binding sites, held with it so that the loop reads them
     /// without the heap.
@@ -198,9 +204,6 @@ struct Running<'s> {
     /// to after each instruction.
     stack_depth: usize,
     collections_depth: usize,
-    /// Where the scoped values of the call of this code start: see
-    /// [`Frame::scope_base`].
-    scope_base: usize,
 }
 
 /// Why the loop of instructions stops with the `Vm` not done.
@@ -395,7 +398,7 @@ impl HeapMarkAndSweep for VmFrames {
                 completion: _,
                 stack_depth: _,
                 collections_depth: _,
-                scope_base: _,
+                scoped: _,
             } = frame;
             stack.as_slice().mark_values(queues);
             reference_stack.as_slice().mark_values(queues);
@@ -418,7 +421,7 @@ impl HeapMarkAndSweep for VmFrames {
                 completion: _,
                 stack_depth: _,
                 collections_depth: _,
-                scope_base: _,
+                scoped: _,
             } = frame;
             stack.as_mut_slice().sweep_values(compactions);
             reference_stack.as_mut_slice().sweep_values(compactions);
@@ -722,18 +725,23 @@ impl Vm {
         let base_executable = executable;
         let mut running = Running {
             executable: base_executable.clone(),
+            code: base_executable.get(agent),
             tables: base_executable.get_tables(agent),
             stack_depth,
             collections_depth,
-            scope_base: stack_depth,
         };
         loop {
+            // The executable is looked up through its rooted handle after
+            // every collection, which is all that moves it, not by every
+            // instruction that fetches a constant, a name or a cache; and
+            // not here, where the code that starts or goes on comes with
+            // it.
             let Running {
                 executable,
+                mut code,
                 tables: code_tables,
                 stack_depth,
                 collections_depth,
-                scope_base,
             } = running;
             // The instruction pointer is a local across the plain
             // instructions, which only jumps move: read and written in the
@@ -742,10 +750,6 @@ impl Vm {
             // looks for it, around every instruction that is not plain and
             // whenever the loop is left.
             let mut ip = self.ip;
-            // The executable is looked up through its rooted handle here and
-            // after every collection, which is all that moves it, not by
-            // every instruction that fetches a constant, a name or a cache.
-            let mut code = executable.get(agent);
             let mut collections = agent.heap.collections;
             // The code as the loop reads an instruction from it with one
             // look at how much is left: an instruction and the four bytes
@@ -912,22 +916,14 @@ impl Vm {
             let mut thrown = None;
             running = Running {
                 executable,
+                code,
                 tables: code_tables,
                 stack_depth,
                 collections_depth,
-                scope_base,
             };
             match change {
                 Change::Call(callee, instr) => {
-                    running = self.enter_function(
-                        agent,
-                        instr,
-                        callee,
-                        ip,
-                        code.unbind(),
-                        running,
-                        gc.nogc(),
-                    );
+                    running = self.enter_function(agent, instr, callee, ip, running, gc.nogc());
                     if print_internals {
                         self.print_internals(agent, running.executable.clone(), gc.nogc());
                     }
@@ -937,6 +933,7 @@ impl Vm {
                         thrown = Some(err.unbind());
                     } else if agent.check_gc() {
                         self.trigger_gc(agent, gc.reborrow());
+                        running.code = running.executable.get(agent);
                     }
                 }
                 Change::End if self.depth == 0 => {
@@ -950,12 +947,12 @@ impl Vm {
                     if self.result.is_none() || matches!(change, Change::End) {
                         self.result = Some(Value::Undefined);
                     }
-                    running = self.leave_function(agent, &base_executable, running, gc.nogc());
+                    running = self.leave_function(agent, running);
                 }
                 Change::Throw(error) => thrown = Some(error),
                 Change::Terminate => {
                     while self.depth != 0 {
-                        running = self.leave_function(agent, &base_executable, running, gc.nogc());
+                        running = self.leave_function(agent, running);
                     }
                     return ExecutionResult::Throw(JsError::new(Value::Undefined));
                 }
@@ -971,7 +968,7 @@ impl Vm {
                         }
                         return ExecutionResult::Throw(error.bind(gc.into_nogc()));
                     }
-                    running = self.leave_function(agent, &base_executable, running, gc.nogc());
+                    running = self.leave_function(agent, running);
                     if self.handle_error(agent, error) {
                         break;
                     }
@@ -1150,17 +1147,19 @@ impl Vm {
     /// The calling code, which goes on at `ip`, is put aside with its
     /// stacks; the function's code finds them empty but for its parameters.
     /// Returns the function's code as the code to run.
-    #[allow(clippy::too_many_arguments)]
     fn enter_function<'s>(
         &mut self,
         agent: &mut Agent,
         instr: Instr,
         callee: CalledInPlace,
         ip: usize,
-        code: Executable<'static>,
         caller: Running,
         gc: NoGcScope<'_, 's>,
     ) -> Running<'s> {
+        // The caller's rooted handle waits in the frame: the scoped value
+        // it names is below everything the function scopes.
+        let code = caller.code;
+        let scoped = Scoped::from_root_repr(caller.executable.into_root_repr());
         if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
             let PooledVmStacks {
                 stack,
@@ -1177,7 +1176,7 @@ impl Vm {
                 completion: Completion::Value,
                 stack_depth: 0,
                 collections_depth: 0,
-                scope_base: 0,
+                scoped: scoped.clone(),
             });
         }
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
@@ -1227,7 +1226,7 @@ impl Vm {
         frame.completion = callee.completion;
         frame.stack_depth = caller.stack_depth;
         frame.collections_depth = caller.collections_depth;
-        frame.scope_base = caller.scope_base;
+        frame.scoped = scoped;
         agent.vm_frames.in_use += 1;
         self.depth += 1;
         self.ip = 0;
@@ -1272,15 +1271,13 @@ impl Vm {
         }
         // The function's instructions and tables, held while it runs.
         let tables = callee.executable.get_tables(agent);
-        let stack_refs = agent.stack_refs.get_mut();
-        let scope_base = stack_refs.len();
         let executable = callee.executable.scope(agent, gc);
         Running {
             executable,
+            code: callee.executable,
             tables,
             stack_depth: agent.stack_refs.get_mut().len(),
             collections_depth: agent.stack_ref_collections.get_mut().len(),
-            scope_base,
         }
     }
 
@@ -1288,15 +1285,8 @@ impl Vm {
     /// or threw: its execution context is removed, and its stacks, emptied,
     /// stay in the frame for the next function, while those of the calling
     /// code are the `Vm`'s again. Returns the calling code as the code to
-    /// run; `base` is the executable the `Vm` was started with, `callee` the
-    /// function's code.
-    fn leave_function<'s>(
-        &mut self,
-        agent: &mut Agent,
-        base: &Scoped<'s, Executable<'static>>,
-        callee: Running,
-        gc: NoGcScope<'_, 's>,
-    ) -> Running<'s> {
+    /// run; `callee` is the function's code.
+    fn leave_function<'s>(&mut self, agent: &mut Agent, callee: Running) -> Running<'s> {
         agent.remove_execution_context();
         self.depth -= 1;
         agent.vm_frames.in_use -= 1;
@@ -1340,33 +1330,26 @@ impl Vm {
             .tables
             .take()
             .expect("the frame of the calling code is in use");
-        let (stack_depth, collections_depth, scope_base) =
-            (frame.stack_depth, frame.collections_depth, frame.scope_base);
-        let caller_executable = frame.executable;
+        let (stack_depth, collections_depth) = (frame.stack_depth, frame.collections_depth);
+        // The caller's executable, which the collector kept current in the
+        // frame, and its rooted handle: the scoped value that names was
+        // below what the function scoped, and is there still.
+        let code = frame.executable;
+        let executable = frame.scoped.clone();
         if agent.vm_frames.in_use == 0 {
             // No frame is in use: the Agent keeps a few of them, and none
             // of a deep recursion.
             agent.vm_frames.frames.truncate(SPARE_FRAMES);
         }
-        let executable = if self.depth == 0 {
-            agent.stack_refs.get_mut().truncate(stack_depth);
-            base.clone()
-        } else {
-            // The caller is itself run in place of a call: its executable
-            // is scoped anew where it was.
-            let executable = caller_executable;
-            agent.stack_refs.get_mut().truncate(scope_base);
-            let executable = executable.scope(agent, gc);
-            debug_assert_eq!(agent.stack_refs.get_mut().len(), stack_depth);
-            executable
-        };
+        agent.stack_refs.get_mut().truncate(stack_depth);
+        debug_assert_eq!(executable.get(agent), code);
         release_scoped_collections(agent, collections_depth);
         Running {
             executable,
+            code,
             tables,
             stack_depth,
             collections_depth,
-            scope_base,
         }
     }
 
