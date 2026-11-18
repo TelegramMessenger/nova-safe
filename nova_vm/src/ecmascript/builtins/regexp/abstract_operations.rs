@@ -11,7 +11,7 @@ use oxc_regular_expression::{LiteralParser, Options};
 
 use super::data::{
     COMPILE_PEAK_BYTES_PER_BYTE, MAX_PATTERN_NESTING, PROGRAM_BYTES_PER_BYTE, RegExpExecError,
-    pattern_nesting,
+    backtrack_entries_for, pattern_nesting,
 };
 use crate::{
     ecmascript::{
@@ -970,12 +970,25 @@ fn search(
 ) -> Result<Option<regress::Match>, RegExpExecError> {
     let heap_size = agent.heap_size();
     let collectable = agent.heap.alloc_counter != 0 || agent.heap.data_bytes_since_gc != 0;
+    // What the search may put on its backtracking stacks is what the heap
+    // limit has room for: the poll below sees the heap as it was before.
+    let room = agent
+        .heap_limit()
+        .map(|limit| limit.saturating_sub(heap_size));
+    let backtrack_entries = backtrack_entries_for(room);
     let host_hooks = agent.host_hooks;
     let limits = &mut agent.limits;
     let mut poll = || limits.should_terminate_matcher(host_hooks, heap_size, collectable);
     let data = r.get_direct_mut(&mut agent.heap.regexps);
     let cached_before = data.utf16_input_bytes();
-    let result = data.search(&agent.heap.strings, s, last_index, sticky, &mut poll);
+    let result = data.search(
+        &agent.heap.strings,
+        s,
+        last_index,
+        sticky,
+        backtrack_entries,
+        &mut poll,
+    );
     let grown = data.utf16_input_bytes().saturating_sub(cached_before);
     agent.heap.data_bytes_since_gc += grown;
     result

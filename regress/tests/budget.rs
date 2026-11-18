@@ -105,6 +105,49 @@ fn backtrack_stack_is_bounded() {
     assert_eq!(result.map(|m| m.is_some()), Err(MatchError::StackLimit));
 }
 
+/// A lookaround is matched on a stack of its own while the one before it
+/// is set aside: a nest of them holds as many stacks as it is deep, and they
+/// are bounded together, not each by the whole bound.
+#[test]
+fn the_stacks_of_nested_lookarounds_are_bounded_together() {
+    fn nest(depth: usize) -> String {
+        if depth == 0 {
+            "(a)*".to_string()
+        } else {
+            format!("(a)*(?<=(?={})(a)*)", nest(depth - 1))
+        }
+    }
+    let text = utf16(&"a".repeat(10_000));
+    let exec = |pattern: &str, max_backtrack_entries: usize| {
+        Regex::new(pattern)
+            .unwrap()
+            .exec_utf16(
+                &text,
+                0,
+                false,
+                ExecBudget {
+                    max_steps: u64::MAX,
+                    poll_interval: 1 << 10,
+                    max_backtrack_entries,
+                    poll: None,
+                },
+            )
+            .map(|found| found.is_some())
+    };
+    // One stack of the loop over the text fits the bound with room to spare.
+    assert_eq!(exec(&nest(0), 1 << 16), Ok(true));
+    // Two of them do not, and no deeper nest does.
+    for depth in [1, 2, 6] {
+        assert_eq!(
+            exec(&nest(depth), 1 << 16),
+            Err(MatchError::StackLimit),
+            "{depth}"
+        );
+    }
+    // With room for all of its stacks a nest matches as it did.
+    assert_eq!(exec(&nest(2), 1 << 22), Ok(true));
+}
+
 #[test]
 fn deep_nesting_is_a_syntax_error() {
     let pattern = "(".repeat(100_000) + &")".repeat(100_000);

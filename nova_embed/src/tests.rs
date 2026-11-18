@@ -8420,3 +8420,36 @@ fn stringify_of_a_length_without_elements_is_bounded() {
         Ok(Completion::String("[1,\"two\",[3]]".into()))
     );
 }
+
+/// What a RegExp search puts on its backtracking stacks is its own memory,
+/// outside the heap. It is bounded by the room the memory limit leaves, and
+/// the stacks of a nest of lookarounds, each of which keeps the one before
+/// it, are bounded together: a search that would need more is refused as
+/// too complex, and the engine goes on.
+#[test]
+fn a_regexp_search_keeps_its_stacks_within_the_memory_limit() {
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    let script = r#"var s = 'a'.repeat(300000), r = [];
+function t(name, f) { try { r.push(name + ': ' + f()); } catch (e) { r.push(name + ': ' + e.constructor.name + ': ' + e.message); } }
+function nest(k) { return k ? '(a)*(?<=(?=' + nest(k - 1) + ')(a)*)' : '(a)*'; }
+t('short', function () { return /(a)*/.exec('a'.repeat(1000))[0].length; });
+t('long', function () { return /(a)*/.test(s); });
+t('one char at a time', function () { return /a*b?/.exec(s)[0].length; });
+t('nested short', function () { return new RegExp(nest(3)).test('a'.repeat(200)); });
+t('nested long', function () { return new RegExp(nest(3)).test('a'.repeat(20000)); });
+t('after', function () { return /(a)*b?/.exec('aaab')[0]; });
+r.join('\n')"#;
+    let expected = "short: 1000
+long: RangeError: regular expression is too complex to match
+one char at a time: 300000
+nested short: true
+nested long: RangeError: regular expression is too complex to match
+after: aaab";
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    assert_eq!(
+        std::string::String::from_utf8(found).expect("text"),
+        expected
+    );
+}

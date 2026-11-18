@@ -123,8 +123,25 @@ impl From<usize> for RegExpLastIndex {
 const MAX_STEPS: u64 = 200_000_000;
 /// How many steps go between two host interrupt polls.
 const POLL_INTERVAL: u64 = crate::ecmascript::POLL_INTERVAL as u64;
-/// The most entries of the backtracking stack (each a few machine words).
+/// The most entries of a search's backtracking stacks (each a few machine
+/// words), whatever the heap limit.
 const MAX_BACKTRACK_ENTRIES: usize = 4 << 20;
+/// The fewest: a search that starts with the heap at its limit still matches
+/// what needs little backtracking.
+const MIN_BACKTRACK_ENTRIES: usize = 1 << 12;
+
+/// How many entries the backtracking stacks of one search may hold together
+/// where the heap limit leaves `room` bytes (`None`: there is no limit). The
+/// stacks are the search's own memory, outside the heap and as large as the
+/// pattern and the text make them; a stack keeps up to as much room spare as
+/// it uses, so half the room is what the entries may take.
+pub(super) fn backtrack_entries_for(room: Option<usize>) -> usize {
+    match room {
+        None => MAX_BACKTRACK_ENTRIES,
+        Some(room) => (room / 2 / regress::BACKTRACK_ENTRY_BYTES)
+            .clamp(MIN_BACKTRACK_ENTRIES, MAX_BACKTRACK_ENTRIES),
+    }
+}
 
 /// Append the letters of `flags` in the order the `flags` getter writes
 /// them (RegExp.prototype.flags: "dgimsuvy").
@@ -304,6 +321,7 @@ impl<'a> RegExpHeapData<'a> {
         s: String<'_>,
         start: usize,
         sticky: bool,
+        max_backtrack_entries: usize,
         poll: &mut dyn FnMut() -> bool,
     ) -> Result<Option<Match>, RegExpExecError> {
         let _ = self.matcher(strings);
@@ -312,7 +330,7 @@ impl<'a> RegExpHeapData<'a> {
         let budget = ExecBudget {
             max_steps: MAX_STEPS,
             poll_interval: POLL_INTERVAL,
-            max_backtrack_entries: MAX_BACKTRACK_ENTRIES,
+            max_backtrack_entries,
             poll: Some(poll),
         };
         let full_unicode = self
