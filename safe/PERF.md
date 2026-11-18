@@ -34,26 +34,26 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.7x |
-| call | 14 | 10.4x | 2.5x |
+| typed | 4 | 10.6x | 2.8x |
+| call | 14 | 10.4x | 2.4x |
 | math | 4 | 9.7x | 2.4x |
 | string | 26 | 10.6x | 2.2x |
 | app | 8 | 6.1x | 2.1x |
-| array | 14 | 5.8x | 2.0x |
 | prop | 13 | 7.1x | 2.0x |
 | map, set | 4 | 4.6x | 2.0x |
+| array | 14 | 5.8x | 1.7x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.4x |
-| gc | 3 of 5 | 3.6x | 1.2x |
+| gc | 3 of 5 | 3.6x | 1.1x |
 | json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 2.0x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.0x, and the worst is now prepending
-(38x, area 7); after it come generators (5.9x), then calls that bind an arguments object (4.7x). 22 of the
-108 cases are above 3x (seven of them within a twentieth of it) and 44 at or under 2x, 14 of them at or
-under QuickJS's time. Over all cases it is 2.01x: 2.12x before the round of patterns, Array iteration and
-array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, and the
-round of entering and leaving a function took it here. One case
+(38x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.7x). 20 of the
+108 cases are above 3x (four of them within a twentieth of it) and 49 at or under 2x, 14 of them at or
+under QuickJS's time. Over all cases it is 1.96x: 2.12x before the round of patterns, Array iteration and
+array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
+after the round of entering and leaving a function, and the round of callbacks took it here. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -534,9 +534,42 @@ Agent and back for it), inside an exception handler that pops the Array where an
 values go to the stack now, as the arguments of a call do, and one instruction makes the Array of them.
 A literal with a hole or a spread element is made as before. `array/literal-alloc` went from 3.7x to 0.9x.
 
+A method that calls a callback for every element (`forEach`, `map`, `filter`, `some`, `every`, `reduce`,
+the find methods, the comparator of `sort`, the mapper of Array.from) made a call from native code each
+time, and that is the costliest way to call: a `Vm` made for the call and let go of after, the kind of
+the function and the way its code takes arguments found out again, its executable rooted, and around it
+HasProperty and Get of the element by its key. Two fifths of a `forEach` over a thousand elements was
+that, and less than a third the callback's own instructions.
+
+Such a method keeps one `Vm` for all its calls now (`RepeatedCall`): what kind of function the callback
+is, is found out once, and a call is the execution context of the call, the arguments put in the
+function's parameter slots, and the code run. It is for the functions the interpreter could run in place
+of a call instruction (ordinary, compiled, parameters on the stack, no Function Environment Record); any
+other callback is called as before. And an element that is there as a plain value is read where it is,
+which is what HasProperty and Get of it come to. `forEach` with an arrow function went from 3.1x to 2.0x,
+`map`, `filter` and `reduce` in a chain from 2.8x to 1.8x, `find`, `some` and `every` from 2.9x to 1.8x,
+a sort with a comparator from 2.6x to 1.9x.
+
+Get and CreateDataPropertyOrThrow, as built-ins call them, went straight to the internal method that can
+run a script, which roots its operands first. Both look without a script first now, which answers for
+every data property and every missing one, and for every object that is not a Proxy; the internal method
+is for a getter and a Proxy. `fill` wrote directly only into an Array with no holes, so
+`new Array(n).fill(v)`, which is all holes, assigned element by element; a hole is written like an
+element where assigning to it comes to making it (`Array::appends_plainly`). With the mapper of
+Array.from called like the other callbacks, `array/from-and-fill` went from 3.9x to 1.6x.
+
+An element made by a path that writes storage directly has to be counted for the heap's size where it is
+made: the storage of an Array is not counted when it is allocated, only as elements are defined. `fill`
+over holes counts them, and so does the instruction that makes an array literal, which had not since it
+was added (an Array of a hundred thousand filled holes was 800 KB the memory limit did not see until the
+next collection; a test of the limit caught it). `array/literal-alloc` is 4% slower for the collections
+that are due sooner.
+
 Left: a compound assignment to an element (`a[i] += 1`) and one whose value is used still make a Reference.
-Other built-ins that take a callback or build an Array (`map`, `filter`, `forEach`) run their general steps.
-Float64 elements allocate (area 6).
+The same methods of typed arrays, `flatMap`, and `forEach` of Map and Set call their callbacks the general
+way; so does every single call from native code (a bound function, `call` and `apply`, a getter reached
+from a built-in). The result of `map` and `filter` is still defined element by element. Float64 elements
+allocate (area 6).
 
 ### 5a. Iteration
 
@@ -779,7 +812,21 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   error. Any iterator, not only an Array's. Upstream; test262 has no test that fails for it. Fixed.
 - `string/index-of` moved by a third again with the build of the shared stacks (2.2 to 2.9 ms, 0.5x to
   0.7x), and not with the build of the commit before it: the search has not changed since it last did
-  that. Placement, as above.
+  that. Placement, as above. (And back to 2.2 ms with the build of the round after.)
+- Whether an Array takes new properties and whether its "length" is writable were one flag.
+  `Object.preventExtensions(a)` made "length" read-only: `a.length = 1` did nothing, `a.pop()` threw, and
+  a sealed Array reported a read-only "length". And an Array whose "length" was made read-only took no
+  element in a hole under that length (`a[1] = 2`, defineProperty, `fill`). Upstream; four tests of
+  test262 failed for it and pass now. The flag is the writability of "length" alone now, and the
+  Array's backing object says whether it is extensible, as it does for every other object. A template
+  object and its raw strings, which were frozen by way of the flag, are given a read-only "length"
+  themselves. `unshift` took its direct way without asking whether a prototype has a setter under an
+  index; it asks as `push` does. Fixed.
+- A Proxy whose target is a function is not accepted where a callback is asked for:
+  `[1].map(new Proxy(function () {}, {}))` throws a TypeError (IsCallable is false for it). Upstream.
+  Not fixed.
+- `Object.isFrozen(Object.preventExtensions([]))` is false here and true in V8, whose "length" for that
+  Array is writable all the same. Taken for V8's departure, and left out of the comparison with Node.
 - One run of the widget sandbox's tests in hosted mode failed a test that bounds a widget by its layout
   queries: the widget was stopped for 200 ms of continuous execution after 19 queries instead. The machine
   was under a load of ninety at the time; three runs on a quiet machine passed. The limit is wall-clock time.
