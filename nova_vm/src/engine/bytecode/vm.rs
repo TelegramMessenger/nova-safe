@@ -20,8 +20,9 @@ use crate::{
         Object, OrdinaryObject, Primitive, Promise, PropertyKey, Reference, SmallInteger, String,
         TryGetResult, Value, binding_value_at_site, call_function, get_method, get_this_value,
         is_callable, is_property_reference, is_same_type, is_strictly_equal,
-        ordinary_add_own_data_by_cache, ordinary_has_instance,
-        prepare_for_call_without_function_environment, reference_is_at_global_site,
+        ordinary_add_own_data_by_cache, ordinary_call_bind_this, ordinary_has_instance,
+        prepare_for_call_without_function_environment, prepare_for_ordinary_call,
+        reference_is_at_global_site, release_scoped_collections, scope_arguments_of_call,
         set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
         to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
         try_get_object_method, try_resolve_binding_at_site, try_result_into_option_js,
@@ -195,10 +196,14 @@ enum Change {
 struct CalledInPlace {
     function: ECMAScriptFunction<'static>,
     executable: Executable<'static>,
-    /// How many parameters the function keeps in its first stack slots.
-    parameters: usize,
-    /// The function's bindings need a Declarative Environment Record.
-    declarative_environment: bool,
+    /// How many parameters the function keeps in its first stack slots,
+    /// where the call puts the arguments. None for a function that binds
+    /// its parameters with its own instructions (a default value, a rest
+    /// parameter, a pattern, an arguments object): the call leaves it the
+    /// list of arguments.
+    parameters: Option<usize>,
+    /// The environment that the call makes for the function.
+    environment: CallEnvironment,
 }
 
 #[derive(Debug)]
@@ -935,10 +940,9 @@ impl Vm {
 
     /// The function that a call instruction is about to call, if this `Vm`
     /// runs it itself: an ordinary function (not a generator, not async, not
-    /// a class constructor) that keeps its parameters in its first stack
-    /// slots and is called without a Function Environment Record, called
-    /// with a number of arguments that the instruction states, where one
-    /// more call is not one too many.
+    /// a class constructor) that has been compiled, called with a number
+    /// of arguments that the instruction states, where one more call is
+    /// not one too many.
     #[inline]
     fn function_called_in_place(&self, agent: &Agent, instr: Instr) -> Option<CalledInPlace> {
         let count = instr.get_first_index();
@@ -961,16 +965,15 @@ impl Vm {
             return None;
         }
         let executable = data.compiled_bytecode?;
-        let code = executable.get(agent);
-        let parameters = code.stack_parameters? as usize;
-        if code.call_environment == CallEnvironment::Function || agent.call_depth_exceeded() {
+        if agent.call_depth_exceeded() {
             return None;
         }
+        let code = executable.get(agent);
         Some(CalledInPlace {
             function,
             executable,
-            parameters,
-            declarative_environment: code.call_environment == CallEnvironment::Declarative,
+            parameters: code.stack_parameters.map(usize::from),
+            environment: code.call_environment,
         })
     }
 
@@ -1028,15 +1031,26 @@ impl Vm {
         } else {
             self.reference.take()
         };
-        // The arguments go where the function keeps its parameters:
-        // undefined for those not given, and those beyond the parameters
-        // are dropped.
         let first = frame.stack.len() - instr.get_first_index();
         let arguments = &frame.stack[first..];
-        self.stack.extend(
-            (0..callee.parameters)
-                .map(|index| arguments.get(index).copied().unwrap_or(Value::Undefined)),
-        );
+        let list = if let Some(parameters) = callee.parameters {
+            // The arguments go where the function keeps its parameters:
+            // undefined for those not given, and those beyond the
+            // parameters are dropped.
+            self.stack.extend(
+                (0..parameters)
+                    .map(|index| arguments.get(index).copied().unwrap_or(Value::Undefined)),
+            );
+            None
+        } else if arguments.is_empty() {
+            Some(Vec::new())
+        } else {
+            // The function binds its parameters itself, from the list of
+            // its arguments: a vector kept from an earlier call.
+            let mut list = agent.arguments_pool.pop().unwrap_or_default();
+            list.extend_from_slice(arguments);
+            Some(list)
+        };
         frame.stack.truncate(first - 1);
         frame.ip = ip;
         frame.executable = code;
@@ -1059,13 +1073,33 @@ impl Vm {
             None => Value::Undefined,
         };
         // PrepareForOrdinaryCall and OrdinaryCallBindThis.
-        prepare_for_call_without_function_environment(
-            agent,
-            callee.function,
-            this_value,
-            callee.declarative_environment,
-            gc,
-        );
+        if callee.environment == CallEnvironment::Function {
+            let context = prepare_for_ordinary_call(agent, callee.function, None, gc);
+            let Some(Environment::Function(environment)) = context
+                .ecmascript_code
+                .as_ref()
+                .map(|code| code.lexical_environment)
+            else {
+                unreachable!("PrepareForOrdinaryCall made no Function Environment Record")
+            };
+            ordinary_call_bind_this(agent, callee.function, environment, this_value, gc);
+        } else {
+            prepare_for_call_without_function_environment(
+                agent,
+                callee.function,
+                this_value,
+                callee.environment == CallEnvironment::Declarative,
+                gc,
+            );
+        }
+        if let Some(list) = list {
+            // The list is rooted until the function is left, under what
+            // the function's own instructions scope: they find it on the
+            // iterator stack, as the code of a `Vm` of its own does.
+            let list = scope_arguments_of_call(agent, list);
+            self.iterator_stack
+                .push(VmIteratorRecord::SliceIterator(list));
+        }
         // The function's instructions and tables, held while it runs.
         let tables = callee.executable.get_tables(agent);
         let stack_refs = agent.stack_refs.get_mut();
@@ -1143,10 +1177,7 @@ impl Vm {
             debug_assert_eq!(agent.stack_refs.get_mut().len(), stack_depth);
             executable
         };
-        agent
-            .stack_ref_collections
-            .get_mut()
-            .truncate(collections_depth);
+        release_scoped_collections(agent, collections_depth);
         Running {
             executable,
             tables,

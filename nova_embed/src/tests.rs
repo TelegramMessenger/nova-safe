@@ -5728,3 +5728,126 @@ nested own default: ReferenceError"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Functions that bind their parameters with their own instructions, which
+/// are run in place of their calls like any other: defaults, rest
+/// parameters and patterns, with and without vars, lets and functions in
+/// the body; what a default sees of the scope outside, of the parameters
+/// before it and of the body; a direct eval in the parameters and in the
+/// body; `this`, `arguments` and `new.target`; many and few arguments,
+/// recursion and errors through such functions; and generators, classes
+/// and bound functions, which are called as before. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn functions_that_bind_their_parameters_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(functions_that_bind_their_parameters)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn functions_that_bind_their_parameters() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+var print = function (s) { all.push(s); };
+function show(name, v) { print(name + ": " + v); }
+function twice(f) { var out = []; for (var round = 0; round < 3; round++) { try { out.push(f()); } catch (e) { out.push("threw " + e.constructor.name + " " + e.message); } } return out.join("|"); }
+var x = "outer x", y = "outer y";
+// Defaults, rest parameters and patterns, with and without vars, lets and functions in the body.
+show("defaults", twice(function () {
+  function plain(a, b = 2, ...rest) { return [a, b, rest.join("+"), rest.length].join("/"); }
+  function withLet(a, b = a + 1, c = b * 2) { let d = a + b + c; const e = d * 2; return [a, b, c, d, e].join("/"); }
+  function withVar(a, b = a + 1) { var c = a + b; var a; return [a, b, c].join("/"); }
+  function withFunction(a = 1, b = inner) { function inner() { return "inner"; } return [a, typeof b, inner()].join("/"); }
+  function pattern({ p, q = p + 1 } = {}, [r, s = 9] = []) { return [p, q, r, s].join("/"); }
+  function undefinedArgs(a = 1, b = 2) { return a + "/" + b; }
+  var out = [plain(1), plain(1, undefined), plain(1, null, 3), plain(1, 2, 3, 4, 5), plain(), withLet(1), withLet(1, 5), withLet(1, 5, 0), withVar(1), withVar(1, 10), pattern(), pattern({ p: 1 }, [2]), pattern({ p: 1, q: 5 }, [2, 3]), undefinedArgs(undefined, undefined), undefinedArgs(null, 0), undefinedArgs(void 0, "")];
+  try { out.push(withFunction()); } catch (e) { out.push(e.constructor.name); }
+  return out.join(" ");
+}));
+// What a default value sees: the parameters before it and the scope outside, never the body.
+show("scopes", twice(function () {
+  function seesOuter(a = x) { let x = "body let"; return a + "," + x; }
+  function seesOuterVar(a = y) { var y = "body var"; return a + "," + y; }
+  function seesEarlier(a, b = a, c = b) { a = "changed"; return [a, b, c].join(","); }
+  function tdz(a = b, b = 1) { return a; }
+  function selfTdz(a = a) { return a; }
+  function closureInParams(a = function () { return x; }, b = () => typeof hidden) { var x = "body var"; let hidden = 1; return a() + "," + b() + "," + x; }
+  function closureSeesParam(a, get = () => a, set = (v) => { a = v; }) { var a; set(5); return [a, get()].join(","); }
+  function arrowInBody(a, b = a * 2) { let c = b + 1; return (() => a + b + c)(); }
+  function shadows(a, b = 1) { let x = a; { let x = b; b = x + 10; } return [x, b].join(","); }
+  function classInParams(C = class { m() { return typeof bodyLet; } }) { let bodyLet = 1; return new C().m(); }
+  var out = [seesOuter(), seesOuterVar(), seesEarlier(1), arrowInBody(1), shadows(3), closureInParams(), closureSeesParam(1), classInParams()];
+  [tdz, selfTdz].forEach(function (f) { try { out.push(f()); } catch (e) { out.push(e.constructor.name); } });
+  out.push(tdz(7), selfTdz(8));
+  return out.join(" ");
+}));
+// eval in the parameters and in the body of functions with defaults, strict and not.
+show("eval", twice(function () {
+  function evalInParam(a = eval("var z = 'declared by eval'; 1"), b = () => typeof z) { return [a, b(), typeof z].join(","); }
+  function evalInBody(a = 1) { eval("var w = 2"); return a + w; }
+  function evalSeesParam(a, b = eval("a + 1")) { return b; }
+  var strictEval = (function () { "use strict"; return function (a = eval("var q = 1; q"), b = () => typeof q) { return a + b(); }; })();
+  var out = [evalInBody(), evalSeesParam(1), evalSeesParam(1, 9)];
+  try { out.push(evalInParam()); } catch (e) { out.push(e.constructor.name); }
+  try { out.push(strictEval()); } catch (e) { out.push(e.constructor.name); }
+  return out.join(" ");
+}));
+// this, arguments and new.target in functions that bind their parameters themselves.
+show("this and arguments", twice(function () {
+  var o = { n: 7,
+    m: function (a = this.n, ...rest) { return [a, rest.length, arguments.length, this === o].join("/"); },
+    arrow: function (a = 1) { return (() => this.n + a + arguments.length)(); },
+    args: function () { arguments[0] = "changed"; return [arguments.length, arguments[0], Array.prototype.slice.call(arguments, 1).join("+"), Object.prototype.toString.call(arguments)].join("/"); },
+    strictArgs: function (a) { "use strict"; arguments[0] = "changed"; return [a, arguments[0], arguments.length].join("/"); },
+    nested: function () { var self = this; return (function () { return [arguments.length, this === undefined || this === globalThis, self.n].join("/"); })(1, 2); } };
+  function sloppyThis(a = 1) { return this === globalThis || this === undefined; }
+  function Ctor(a = 3, ...rest) { this.a = a; this.rest = rest.length; this.target = new.target === Ctor; }
+  var made = new Ctor(), made2 = new Ctor(1, 2, 3);
+  var detached = o.m;
+  var out = [o.m(), o.m(1, 2, 3), o.arrow(), o.arrow(5, 6), o.args(1, 2, 3), o.args(), o.strictArgs(1, 2), o.nested(), sloppyThis(), sloppyThis.call(5) , [made.a, made.rest, made.target].join("/"), [made2.a, made2.rest].join("/"), o.m.call({ n: "other" }), o.m.apply(o, [undefined, 2])];
+  try { out.push(detached()); } catch (e) { out.push(e.constructor.name); }
+  return out.join(" ");
+}));
+// Many and few arguments, recursion and errors through such functions.
+show("calls", twice(function () {
+  function sum(first = 0, ...rest) { return rest.length ? first + sum(...rest) : first; }
+  function count() { return arguments.length ? 1 + count.apply(null, Array.prototype.slice.call(arguments, 1)) : 0; }
+  function thrower(depth = 0, limit = 3) { if (depth === limit) throw new RangeError("depth " + depth); try { return thrower(depth + 1, limit); } finally { log.push(depth); } }
+  function deep(n, acc = []) { acc.push(n); return n ? deep(n - 1, acc) : acc.length; }
+  var log = [], big = []; for (var i = 0; i < 12; i++) big.push(i);
+  var out = [sum(), sum(1), sum(1, 2, 3, 4, 5), sum.apply(null, big), count(), count(1, 2, 3), count.apply(null, big), deep(50), deep(400)];
+  try { thrower(); } catch (e) { out.push(e.message + " after " + log.join("")); }
+  function forever(a = 1, ...rest) { return forever(a + 1, ...rest) + 1; }
+  try { forever(0, 1, 2); } catch (e) { out.push(e.constructor.name); }
+  return out.join(" ");
+}));
+// Generators, async functions, classes and bound functions are called as before.
+show("others", twice(function () {
+  function* gen(a = 1, ...rest) { yield a; yield rest.length; return arguments.length; }
+  class K { constructor(a = 1) { this.a = a; } static make(...args) { return new K(...args).a; } get twice() { return this.a * 2; } m(b = this.a) { return b; } }
+  class L extends K { constructor(a, b = a * 2) { super(b); this.b = b; } m(c = super.m()) { return c + this.b; } }
+  var bound = function (a, b = 2, ...rest) { return [this.tag, a, b, rest.length].join("/"); }.bind({ tag: "bound" }, 1);
+  var g = gen(5, 6, 7), l = new L(3);
+  var out = [g.next().value, g.next().value, g.next().value, K.make(), K.make(4), new K(6).twice, new K(6).m(), new K(6).m(1), l.a, l.b, l.m(), l.m(1), bound(), bound(9, 8, 7)];
+  try { K(); } catch (e) { out.push(e.constructor.name); }
+  return out.join(" ");
+}));
+all.join("\n")"#;
+    let expected = r#"defaults: 1/2//0 1/2//0 1//3/1 1/2/3+4+5/3 /2//0 1/2/4/7/14 1/5/10/16/32 1/5/0/6/12 1/2/3 1/10/11 /NaN//9 1/2/2/9 1/5/2/3 1/2 null/0 1/ ReferenceError|1/2//0 1/2//0 1//3/1 1/2/3+4+5/3 /2//0 1/2/4/7/14 1/5/10/16/32 1/5/0/6/12 1/2/3 1/10/11 /NaN//9 1/2/2/9 1/5/2/3 1/2 null/0 1/ ReferenceError|1/2//0 1/2//0 1//3/1 1/2/3+4+5/3 /2//0 1/2/4/7/14 1/5/10/16/32 1/5/0/6/12 1/2/3 1/10/11 /NaN//9 1/2/2/9 1/5/2/3 1/2 null/0 1/ ReferenceError
+scopes: outer x,body let outer y,body var changed,1,1 6 3,11 outer x,undefined,body var 1,5 undefined ReferenceError ReferenceError 7 8|outer x,body let outer y,body var changed,1,1 6 3,11 outer x,undefined,body var 1,5 undefined ReferenceError ReferenceError 7 8|outer x,body let outer y,body var changed,1,1 6 3,11 outer x,undefined,body var 1,5 undefined ReferenceError ReferenceError 7 8
+eval: 3 2 9 1,string,string 1undefined|3 2 9 1,string,string 1undefined|3 2 9 1,string,string 1undefined
+this and arguments: 7/0/0/true 1/2/3/true 8 14 3/changed/2+3/[object Arguments] 0/changed//[object Arguments] 1/changed/2 2/true/7 true false 3/0/true 1/2 other/0/0/false 7/1/2/true /0/0/false|7/0/0/true 1/2/3/true 8 14 3/changed/2+3/[object Arguments] 0/changed//[object Arguments] 1/changed/2 2/true/7 true false 3/0/true 1/2 other/0/0/false 7/1/2/true /0/0/false|7/0/0/true 1/2/3/true 8 14 3/changed/2+3/[object Arguments] 0/changed//[object Arguments] 1/changed/2 2/true/7 true false 3/0/true 1/2 other/0/0/false 7/1/2/true /0/0/false
+calls: 0 1 15 66 0 3 12 51 401 depth 3 after 210 RangeError|0 1 15 66 0 3 12 51 401 depth 3 after 210 RangeError|0 1 15 66 0 3 12 51 401 depth 3 after 210 RangeError
+others: 5 2 3 1 4 12 6 1 6 6 12 7 bound/1/2/0 bound/1/9/2 TypeError|5 2 3 1 4 12 6 1 6 6 12 7 bound/1/2/0 bound/1/9/2 TypeError|5 2 3 1 4 12 6 1 6 6 12 7 bound/1/2/0 bound/1/9/2 TypeError"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
