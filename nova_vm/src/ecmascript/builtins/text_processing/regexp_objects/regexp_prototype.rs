@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use core::ops::ControlFlow;
+
 use oxc_ast::ast::RegExpFlags;
 use wtf8::Wtf8Buf;
 
@@ -9,19 +11,27 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, Behaviour, Builtin, BuiltinGetter,
         BuiltinIntrinsic, ExceptionType, Function, JsError, JsResult, Number, Object, PropertyKey,
-        PropertyLookupCache, ProtoIntrinsics, Realm, String, TryGetResult, Value,
-        advance_string_index, array_create, builders::OrdinaryObjectBuilder, call_function,
+        PropertyLookupCache, ProtoIntrinsics, Realm, RegExp, RegularFn, String, TryGetResult,
+        Value, advance_string_index, array_create, builders::OrdinaryObjectBuilder, call_function,
         construct, create_reg_exp_string_iterator, get, get_substitution, is_callable,
         length_of_array_like, push_flag_letters, reg_exp_builtin_exec, reg_exp_builtin_test,
-        reg_exp_exec, reg_exp_test, require_internal_slot_reg_exp, same_value, set,
-        species_constructor, to_boolean, to_integer_or_infinity, to_length, to_object, to_string,
-        to_uint32, try_create_data_property_or_throw, try_get, unwrap_try,
+        reg_exp_collect_matches, reg_exp_exec, reg_exp_test, require_internal_slot_reg_exp,
+        same_value, set, species_constructor, to_boolean, to_integer_or_infinity, to_length,
+        to_object, to_string, to_uint32, try_create_data_property_or_throw, try_get, unwrap_try,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
-    heap::{IntrinsicFunctionIndexes, WellKnownSymbols},
+    heap::{ArenaAccess, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
 pub(crate) struct RegExpPrototype;
+
+/// The second argument of RegExp.prototype\[%Symbol.replace%]: a function
+/// that is called for each match, or the template of what replaces it.
+#[derive(Clone)]
+enum ReplaceValue<'a> {
+    Functional(Scoped<'a, Function<'static>>),
+    String(Scoped<'a, String<'static>>),
+}
 
 #[cfg(feature = "annex-b-regexp")]
 use crate::ecmascript::reg_exp_initialize;
@@ -741,11 +751,6 @@ impl RegExpPrototype {
             .scope(agent, gc.nogc());
         // 4. Let lengthS be the length of S.
         let length_s = s.get(agent).utf16_len_(agent);
-        #[derive(Clone)]
-        enum ReplaceValue<'a> {
-            Functional(Scoped<'a, Function<'static>>),
-            String(Scoped<'a, String<'static>>),
-        }
         // 5. Let functionalReplace be IsCallable(replaceValue).
         let (replace_value, functional_replace) =
             if let Some(functional_replace) = is_callable(replace_value.get(agent), gc.nogc()) {
@@ -768,6 +773,19 @@ impl RegExpPrototype {
                     false,
                 )
             };
+        // The steps from here by the RegExp's internal slots, where what
+        // they read through its properties is what those say.
+        let replaced = Self::replace_by_slots(
+            agent,
+            rx.clone(),
+            s.clone(),
+            replace_value.clone(),
+            gc.reborrow(),
+        )
+        .unbind()?;
+        if let Some(replaced) = replaced {
+            return Ok(replaced.bind(gc.into_nogc()).into());
+        }
         // 7. Let flags be ? ToString(? Get(rx, "flags")).
         let flags = get(
             agent,
@@ -1069,6 +1087,249 @@ impl RegExpPrototype {
             s.push_utf16_substring(agent, &mut accumulated_result, next_source_position, length_s);
         }
         Ok(String::from_wtf8_buf(agent, accumulated_result, gc.into_nogc()).into())
+    }
+
+    /// Whether `rx` is a RegExp object for which `exec`, `flags` and the
+    /// accessors of the flags that `flags` reads are the built-in ones:
+    /// found on the object or where it inherits them, with nothing on the
+    /// way that a script would be run for. What the methods of
+    /// %RegExp.prototype% read through those properties is then what the
+    /// object's internal slots say.
+    fn built_in_protocol<'a>(
+        agent: &mut Agent,
+        rx: Object<'a>,
+        gc: NoGcScope<'a, '_>,
+    ) -> Option<RegExp<'a>> {
+        let Object::RegExp(r) = rx else {
+            return None;
+        };
+        let key = BUILTIN_STRING_MEMORY.exec.to_property_key();
+        let cache = PropertyLookupCache::new(agent, key);
+        let exec = agent
+            .current_realm_record()
+            .intrinsics()
+            .reg_exp_prototype_exec();
+        if !matches!(
+            try_get(agent, r, key, Some(cache), gc),
+            ControlFlow::Continue(TryGetResult::Value(found)) if found == exec.into()
+        ) {
+            return None;
+        }
+        let accessors: [(PropertyKey, RegularFn); 9] = [
+            (
+                BUILTIN_STRING_MEMORY.flags.to_property_key(),
+                Self::get_flags,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.hasIndices.to_property_key(),
+                Self::get_has_indices,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.global.to_property_key(),
+                Self::get_global,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.ignoreCase.to_property_key(),
+                Self::get_ignore_case,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.multiline.to_property_key(),
+                Self::get_multiline,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.dotAll.to_property_key(),
+                Self::get_dot_all,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.unicode.to_property_key(),
+                Self::get_unicode,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.unicodeSets.to_property_key(),
+                Self::get_unicode_sets,
+            ),
+            (
+                BUILTIN_STRING_MEMORY.sticky.to_property_key(),
+                Self::get_sticky,
+            ),
+        ];
+        for (key, behaviour) in accessors {
+            let cache = PropertyLookupCache::new(agent, key);
+            let ControlFlow::Continue(TryGetResult::Get(Function::BuiltinFunction(getter))) =
+                try_get(agent, r, key, Some(cache), gc)
+            else {
+                return None;
+            };
+            // Two functions at one address do the same thing.
+            if !matches!(
+                getter.get(agent).behaviour,
+                Behaviour::Regular(found) if core::ptr::fn_addr_eq(found, behaviour)
+            ) {
+                return None;
+            }
+        }
+        Some(r)
+    }
+
+    /// Steps 7 to 17 of RegExp.prototype\[%Symbol.replace%] for a RegExp
+    /// with the built-in protocol ([`Self::built_in_protocol`]): the flags
+    /// are its \[\[OriginalFlags]], RegExpExec is RegExpBuiltinExec, and
+    /// what the steps read from each result (its length, "0", "index", the
+    /// captures) is what RegExpBuiltinExec put there. So the matches are
+    /// collected as ranges, and no result is made an Array of. `None` where
+    /// the steps have to be taken as written; nothing a script could tell
+    /// from them has happened then.
+    fn replace_by_slots<'gc>(
+        agent: &mut Agent,
+        rx: Scoped<Object>,
+        s: Scoped<String>,
+        replace_value: ReplaceValue,
+        mut gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Option<String<'gc>>> {
+        let Some(r) = Self::built_in_protocol(agent, rx.get(agent), gc.nogc()) else {
+            return Ok(None);
+        };
+        // 7. to 12.
+        let matches = reg_exp_collect_matches(agent, r.unbind(), s.get(agent), gc.nogc())
+            .map_err(|err| err.unbind())?;
+        let Some(matches) = matches else {
+            return Ok(None);
+        };
+        if matches.is_empty() {
+            // 16., 17. with nothing replaced.
+            return Ok(Some(s.get(agent).bind(gc.into_nogc())));
+        }
+        // 4. Let lengthS be the length of S.
+        let length_s = s.get(agent).utf16_len_(agent);
+        // A template without a `$` is its own substitution.
+        let plain_template = match &replace_value {
+            ReplaceValue::String(template) => !template.get(agent).as_bytes_(agent).contains(&b'$'),
+            ReplaceValue::Functional(_) => false,
+        };
+        // 13. Let accumulatedResult be the empty String.
+        let mut accumulated_result = Wtf8Buf::new();
+        // 14. Let nextSourcePosition be 0.
+        let mut next_source_position = 0;
+        // 15. For each element result of results, do
+        for found in matches {
+            agent.poll_interrupt(gc.nogc()).unbind()?;
+            // d. Let matchLength be the length of matched.
+            let match_length = found.end - found.start;
+            // e., f. position, which RegExpBuiltinExec made "index".
+            let position = found.start;
+            let replacement_string = match &replace_value {
+                ReplaceValue::String(template) if plain_template => {
+                    template.get(agent).bind(gc.nogc())
+                }
+                ReplaceValue::String(template) => {
+                    // l. ii. Let replacementString be ? GetSubstitution(
+                    //    matched, S, position, captures, namedCaptures,
+                    //    replaceValue).
+                    let matched = s
+                        .get(agent)
+                        .utf16_substring(agent, found.start, found.end, gc.nogc())
+                        .scope(agent, gc.nogc());
+                    let captures = found
+                        .captures
+                        .iter()
+                        .map(|capture| {
+                            capture.as_ref().map(|range| {
+                                s.get(agent)
+                                    .utf16_substring(agent, range.start, range.end, gc.nogc())
+                                    .scope(agent, gc.nogc())
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    get_substitution(
+                        agent,
+                        matched,
+                        s.clone(),
+                        position,
+                        captures,
+                        None,
+                        template.clone(),
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc())
+                }
+                ReplaceValue::Functional(replace_value) => {
+                    // k. i. Let replacerArgs be the list-concatenation of
+                    //    « matched », captures, and « 𝔽(position), S ».
+                    let mut replacer_args: Vec<Value> =
+                        Vec::with_capacity(found.captures.len() + 3);
+                    replacer_args.push(
+                        s.get(agent)
+                            .utf16_substring(agent, found.start, found.end, gc.nogc())
+                            .unbind()
+                            .into(),
+                    );
+                    for capture in found.captures.iter() {
+                        replacer_args.push(match capture {
+                            Some(range) => s
+                                .get(agent)
+                                .utf16_substring(agent, range.start, range.end, gc.nogc())
+                                .unbind()
+                                .into(),
+                            None => Value::Undefined,
+                        });
+                    }
+                    replacer_args.push(Number::try_from(position).unwrap().into());
+                    replacer_args.push(s.get(agent).into());
+                    // iii. Let replacementValue be ? Call(replaceValue,
+                    //      undefined, replacerArgs).
+                    let replacement_value = call_function(
+                        agent,
+                        replace_value.get(agent),
+                        Value::Undefined,
+                        Some(ArgumentsList::from_mut_slice(&mut replacer_args)),
+                        gc.reborrow(),
+                    )
+                    .unbind()?
+                    .bind(gc.nogc());
+                    // iv. Let replacementString be ? ToString(replacementValue).
+                    to_string(agent, replacement_value.unbind(), gc.reborrow())
+                        .unbind()?
+                        .bind(gc.nogc())
+                }
+            };
+            // m. If position ≥ nextSourcePosition, then
+            if position >= next_source_position {
+                // ii. Set accumulatedResult to the string-concatenation of
+                //     accumulatedResult, the substring of S from
+                //     nextSourcePosition to position, and replacementString.
+                let s = s.get(agent).bind(gc.nogc());
+                s.push_utf16_substring(
+                    agent,
+                    &mut accumulated_result,
+                    next_source_position,
+                    position,
+                );
+                accumulated_result.push_wtf8(replacement_string.as_wtf8_(agent));
+                agent
+                    .check_string_length(accumulated_result.len(), gc.nogc())
+                    .unbind()?;
+                // iii. Set nextSourcePosition to position + matchLength.
+                next_source_position = position + match_length;
+            }
+        }
+        // 16. If nextSourcePosition ≥ lengthS, return accumulatedResult.
+        if next_source_position < length_s {
+            // 17. Return the string-concatenation of accumulatedResult and the
+            // substring of S from nextSourcePosition.
+            let s = s.get(agent).bind(gc.nogc());
+            s.push_utf16_substring(
+                agent,
+                &mut accumulated_result,
+                next_source_position,
+                length_s,
+            );
+        }
+        Ok(Some(String::from_wtf8_buf(
+            agent,
+            accumulated_result,
+            gc.into_nogc(),
+        )))
     }
 
     /// ### [22.2.6.12 RegExp.prototype \[ %Symbol.search% \] ( string )](https://tc39.es/ecma262/#sec-regexp.prototype-%symbol.search%)

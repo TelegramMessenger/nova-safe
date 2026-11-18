@@ -5091,3 +5091,126 @@ lastIndex values: number:3>3>number:4,number:0>0>number:1,number:-1>0>number:1,n
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// RegExp.prototype\[%Symbol.replace%] by a RegExp that nothing was done
+/// to, which is made from the RegExp's internal slots, gives what the
+/// steps as written give: templates and callbacks, empty matches, the
+/// unicode flag and lone surrogates, lastIndex before and after, named
+/// groups and sticky RegExps (which take the steps as written), and every
+/// way a script has of putting its own `exec`, `flags` or flag accessor in
+/// the way: on the object, on its class, on %RegExp.prototype%, or while
+/// the replacement is converted. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn regexp_replacements_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(regexp_replacements)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn regexp_replacements() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+function j(v) { return JSON.stringify(v); }
+function t(name, f) { for (var round = 0; round < 2; round++) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e); } print(name + round + ": " + v); } }
+t("plain", function () {
+  var r = [], s = "The quick brown fox & the <lazy> dog & co.";
+  r.push(s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"), s.replace(/o/, "0"), s.replace(/o/g, "0"), s.replace(/z+/g, "Z"), s.replace(/nomatch/g, "x") === s, s.replace(/the/gi, "A"), s.replace(/^/, ">"), s.replace(/$/, "<"), s.replace(/\b/g, "|"), "".replace(/x*/g, "-"), "abc".replace(/x*/g, "-"), "abc".replace(/(?:)/g, "."), "a\nb\nc".replace(/^/gm, "> "), "aaa".replace(/a/g, ""), "abc".replace(/b/g, undefined), "abc".replace(/b/g, null), "abc".replace(/b/g, 5), "x".replace(/x/, ""), "a.b.c".replace(/\./g, "$"), "tabs\tand\nlines".replace(/\s/g, "_"));
+  return j(r);
+});
+t("templates", function () {
+  var r = [], s = "John Smith and Jane Doe";
+  r.push(s.replace(/(\w+)\s(\w+)/, "$2, $1"), s.replace(/(\w+)\s(\w+)/g, "$2 $1"), s.replace(/and/, "[$&]"), s.replace(/and/, "[$`]"), s.replace(/and/, "[$']"), s.replace(/and/, "$$"), s.replace(/and/, "$$1"), s.replace(/(a)(n)(d)/, "$3$2$1$0$4$01$10"), s.replace(/(a)|(z)/g, "[$1|$2]"), s.replace(/and/, "$<name>"), s.replace(/(J)/g, "$"), s.replace(/(J)/g, "$1$"), "abcdefghijkl".replace(/(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)/, "$12$11$10$9$1$13$00"), "aXb".replace(/X/, "$`$'$&$$"), "é😀x".replace(/x/, "[$`]"), "x😀é".replace(/x/, "[$']"));
+  return j(r);
+});
+t("callbacks", function () {
+  var r = [], log = [];
+  r.push("a1b22c333".replace(/\d+/g, function (m) { return "<" + m.length + ">"; }), "a1b22c333".replace(/(\d)(\d)?/g, function () { log.push(Array.prototype.slice.call(arguments).map(String).join("/")); return arguments.length; }), "abc".replace(/b/, function (m, offset, whole) { return typeof offset + offset + whole; }), "abc".replace(/(x)?b/, function (m, p1) { return String(p1); }), "abc".replace(/b/g, function () { return { toString: function () { return "T"; } }; }), "abc".replace(/b/g, function () { return undefined; }), "abc".replace(/b/g, function () { return 7; }), "aaa".replace(/a/g, function (m, i) { return i; }), "abc".replace(/x*/g, function (m, i) { return "[" + i + "]"; }));
+  try { "abc".replace(/b/g, function () { throw new RangeError("cb"); }); } catch (e) { r.push(e.constructor.name); }
+  var rx = /b/g; rx.lastIndex = 2; r.push("abcabc".replace(rx, function (m, i) { rx.lastIndex = 99; rx.exec = function () { return null; }; return "B" + i; }), rx.lastIndex, typeof rx.exec, "abcabc".replace(rx, "y"));
+  return j(r) + "|" + log.join(",");
+});
+t("lastIndex", function () {
+  var r = [], g = /a/g, n = /a/, y = /a/y, gy = /a/gy;
+  g.lastIndex = 2; n.lastIndex = 2; y.lastIndex = 1; gy.lastIndex = 2;
+  r.push("aaaa".replace(g, "b"), g.lastIndex, "aaaa".replace(n, "b"), n.lastIndex, "aaaa".replace(y, "b"), y.lastIndex, "aaaa".replace(gy, "b"), gy.lastIndex, "baaa".replace(y, "c"), y.lastIndex, "baaa".replace(gy, "c"), gy.lastIndex);
+  var frozenG = Object.freeze(/a/g), frozenN = Object.freeze(/a/); try { r.push("aa".replace(frozenG, "b")); } catch (e) { r.push(e.constructor.name); } r.push("aa".replace(frozenN, "b"));
+  var ro = /a/g; Object.defineProperty(ro, "lastIndex", { value: 0, writable: false }); try { r.push("aa".replace(ro, "b")); } catch (e) { r.push(e.constructor.name); }
+  var log = [], odd = /a/; odd.lastIndex = { valueOf: function () { log.push("valueOf"); return 1; } }; r.push("aaa".replace(odd, "b"), typeof odd.lastIndex); var oddG = /a/g; oddG.lastIndex = { valueOf: function () { log.push("g"); return 1; } }; r.push("aaa".replace(oddG, "b"), oddG.lastIndex);
+  var str = /a/g; str.lastIndex = "2"; r.push("aaaa".replace(str, "b"), str.lastIndex); var neg = /a/; neg.lastIndex = -5; r.push("aa".replace(neg, "b"), neg.lastIndex); var big = /a/g; big.lastIndex = 4294967296; r.push("aa".replace(big, "b"), big.lastIndex);
+  return j(r) + "|" + log.join(",");
+});
+t("unicode", function () {
+  var r = [], s = "a😀b😀c", lone = "x\ud83dy";
+  function units(x) { var o = []; for (var i = 0; i < x.length; i++) o.push(x.charCodeAt(i).toString(16)); return o.join(" "); }
+  r.push(units(s.replace(/(?:)/g, "-")), units(s.replace(/(?:)/gu, "-")), units(s.replace(/./g, "x")), units(s.replace(/./gu, "x")), units(s.replace(/\ud83d/g, "L")), units(s.replace(/\ud83d/gu, "L")), units(s.replace(/\ude00/g, "T")), units(lone.replace(/\ud83d/, "\ude00")), units(lone.replace(/y/, "\ude00")), units("x\ud83d".replace(/$/, "\ude00")), units("é".replace(/é/gi, "É")), units("ÀÉ".replace(/[à-é]/gi, "_")), units("😀".replace(/\u{1F600}/u, "ok")), units("abc".replace(/b/v, "V")), "ǅ".replace(/ǆ/i, "!") , "ſ".replace(/s/i, "!"), "ſ".replace(/s/iu, "!"));
+  return j(r);
+});
+t("named and other flags", function () {
+  var r = [];
+  r.push("2024-05-06".replace(/(?<y>\d+)-(?<m>\d+)-(?<d>\d+)/, "$<d>/$<m>/$<y>"), "2024-05-06".replace(/(?<y>\d+)-(?<m>\d+)/g, function () { var a = arguments, g = a[a.length - 1]; return typeof g + ":" + g.y + g.m + ":" + a.length; }), "ab".replace(/(?<x>a)|(?<x>b)/g, "[$<x>]"), "aXbxc".replace(/x/gi, "-"), "a\nb".replace(/a.b/s, "S"), "a\nb".replace(/a.b/, "S"), "abc".replace(/b/d, "D"), "abc".replace(/B/dgimsu, "all"));
+  return j(r);
+});
+t("customised", function () {
+  var r = [], log = [];
+  var own = /b/g; own.exec = function (s) { log.push("own-exec"); return null; }; r.push("abc".replace(own, "x"));
+  var ownFlags = /b/g; Object.defineProperty(ownFlags, "flags", { value: "" }); r.push("abcb".replace(ownFlags, "x"), ownFlags.lastIndex);
+  var ownGlobal = /b/g; Object.defineProperty(ownGlobal, "global", { value: false }); r.push("abcb".replace(ownGlobal, "x"), ownGlobal.lastIndex);
+  var extra = /b/g; extra.note = 1; r.push("abcb".replace(extra, "x"));
+  class Plain extends RegExp {} r.push("abcb".replace(new Plain("b", "g"), "x"));
+  class Loud extends RegExp { exec(s) { log.push("sub-exec"); return super.exec(s); } } r.push("abcb".replace(new Loud("b", "g"), "x"));
+  class Flagged extends RegExp { get flags() { log.push("sub-flags"); return ""; } } r.push("abcb".replace(new Flagged("b", "g"), "x"));
+  class Globalish extends RegExp { get global() { log.push("sub-global"); return false; } } r.push("abcb".replace(new Globalish("b", "g"), "x"));
+  var original = RegExp.prototype.exec; RegExp.prototype.exec = function (s) { log.push("proto-exec"); return original.call(this, s); }; r.push("abcb".replace(/b/g, "x")); RegExp.prototype.exec = original; r.push("abcb".replace(/b/g, "y"));
+  var desc = Object.getOwnPropertyDescriptor(RegExp.prototype, "global"); Object.defineProperty(RegExp.prototype, "global", { get: function () { log.push("proto-global"); return false; }, configurable: true }); r.push("abcb".replace(/b/g, "x")); Object.defineProperty(RegExp.prototype, "global", desc); r.push("abcb".replace(/b/g, "y"));
+  var fdesc = Object.getOwnPropertyDescriptor(RegExp.prototype, "flags"); Object.defineProperty(RegExp.prototype, "flags", { get: function () { log.push("proto-flags"); return ""; }, configurable: true }); r.push("abcb".replace(/b/g, "x")); Object.defineProperty(RegExp.prototype, "flags", fdesc); r.push("abcb".replace(/b/g, "y"));
+  var sdesc = Object.getOwnPropertyDescriptor(RegExp.prototype, "sticky"); Object.defineProperty(RegExp.prototype, "sticky", { get: function () { log.push("proto-sticky"); return false; }, configurable: true }); r.push("abcb".replace(/b/g, "x")); Object.defineProperty(RegExp.prototype, "sticky", sdesc); r.push("abcb".replace(/b/g, "z"));
+  var idesc = Object.getOwnPropertyDescriptor(RegExp.prototype, "ignoreCase"); Object.defineProperty(RegExp.prototype, "ignoreCase", { get: function () { log.push("proto-ignoreCase"); return true; }, configurable: true }); r.push("aBcb".replace(/b/g, "x")); Object.defineProperty(RegExp.prototype, "ignoreCase", idesc);
+  delete RegExp.prototype.unicodeSets; r.push("abcb".replace(/b/g, "u")); Object.defineProperty(RegExp.prototype, "unicodeSets", { get: function () { return false; }, configurable: true }); r.push("abcb".replace(/b/g, "v"));
+  var fake = { exec: function (s) { log.push("fake-exec"); if (this.done) return null; this.done = true; var m = ["b"]; m.index = 1; return m; }, flags: "", lastIndex: 0 }; r.push(RegExp.prototype[Symbol.replace].call(fake, "abc", "X"));
+  var late = /b/g; r.push("abcb".replace(late, { toString: function () { late.exec = function () { log.push("late-exec"); return null; }; return "L"; } }));
+  var proxied = new Proxy(/b/g, {}); try { r.push("abcb".replace(proxied, "x")); } catch (e) { r.push(e.constructor.name); }
+  var viaProto = Object.create(/b/g); try { r.push("abcb".replace(viaProto, "x")); } catch (e) { r.push(e.constructor.name); }
+  var rep = /b/g; rep[Symbol.replace] = function (s, v) { return "own-replace"; }; r.push("abcb".replace(rep, "x"), "abcb".replaceAll(/b/g, "z"));
+  try { "abcb".replaceAll(/b/, "z"); } catch (e) { r.push(e.constructor.name); }
+  return j(r) + "|" + log.join(",");
+});
+t("many and long", function () {
+  var s = "", h = 0; for (var i = 0; i < 3000; i++) s += "item" + (i % 10) + ";";
+  var a = s.replace(/;/g, ", "), b = s.replace(/item(\d)/g, "$1"), c = s.replace(/\d/g, function (d) { return d * 2; }), d = s.replace(/item/g, "");
+  function hash(x) { var v = 7; for (var k = 0; k < x.length; k += 7) v = (v * 31 + x.charCodeAt(k)) | 0; return v; }
+  var rx = /(\w)(\d)/g, count = 0; for (var n = 0; n < 200; n++) count += "a1 b2 c3".replace(rx, "$2$1").length; 
+  return [a.length, hash(a), b.length, hash(b), c.length, hash(c), d.length, hash(d), count, rx.lastIndex].join();
+});
+})();
+all.join("\n")"#;
+    let expected = r#"plain0: ["The quick brown fox &amp; the &lt;lazy&gt; dog &amp; co.","The quick br0wn fox & the <lazy> dog & co.","The quick br0wn f0x & the <lazy> d0g & c0.","The quick brown fox & the <laZy> dog & co.",true,"A quick brown fox & A <lazy> dog & co.",">The quick brown fox & the <lazy> dog & co.","The quick brown fox & the <lazy> dog & co.<","|The| |quick| |brown| |fox| & |the| <|lazy|> |dog| & |co|.","-","-a-b-c-",".a.b.c.","> a\n> b\n> c","","aundefinedc","anullc","a5c","","a$b$c","tabs_and_lines"]
+plain1: ["The quick brown fox &amp; the &lt;lazy&gt; dog &amp; co.","The quick br0wn fox & the <lazy> dog & co.","The quick br0wn f0x & the <lazy> d0g & c0.","The quick brown fox & the <laZy> dog & co.",true,"A quick brown fox & A <lazy> dog & co.",">The quick brown fox & the <lazy> dog & co.","The quick brown fox & the <lazy> dog & co.<","|The| |quick| |brown| |fox| & |the| <|lazy|> |dog| & |co|.","-","-a-b-c-",".a.b.c.","> a\n> b\n> c","","aundefinedc","anullc","a5c","","a$b$c","tabs_and_lines"]
+templates0: ["Smith, John and Jane Doe","Smith John Jane and Doe","John Smith [and] Jane Doe","John Smith [John Smith ] Jane Doe","John Smith [ Jane Doe] Jane Doe","John Smith $ Jane Doe","John Smith $1 Jane Doe","John Smith dna$0$4aa0 Jane Doe","John Smith [a|]nd J[a|]ne Doe","John Smith $<name> Jane Doe","$ohn Smith and $ane Doe","J$ohn Smith and J$ane Doe","lkjiaa3$00","aabX$b","é😀[é😀]","[😀é]😀é"]
+templates1: ["Smith, John and Jane Doe","Smith John Jane and Doe","John Smith [and] Jane Doe","John Smith [John Smith ] Jane Doe","John Smith [ Jane Doe] Jane Doe","John Smith $ Jane Doe","John Smith $1 Jane Doe","John Smith dna$0$4aa0 Jane Doe","John Smith [a|]nd J[a|]ne Doe","John Smith $<name> Jane Doe","$ohn Smith and $ane Doe","J$ohn Smith and J$ane Doe","lkjiaa3$00","aabX$b","é😀[é😀]","[😀é]😀é"]
+callbacks0: ["a<1>b<2>c<3>","a5b5c55","anumber1abcc","aundefinedc","aTc","aundefinedc","a7c","012","[0]a[1]b[2]c[3]","RangeError","aB1caB4c",99,"function","abcabc"]|1/1/undefined/1/a1b22c333,22/2/2/3/a1b22c333,33/3/3/6/a1b22c333,3/3/undefined/8/a1b22c333
+callbacks1: ["a<1>b<2>c<3>","a5b5c55","anumber1abcc","aundefinedc","aTc","aundefinedc","a7c","012","[0]a[1]b[2]c[3]","RangeError","aB1caB4c",99,"function","abcabc"]|1/1/undefined/1/a1b22c333,22/2/2/3/a1b22c333,33/3/3/6/a1b22c333,3/3/undefined/8/a1b22c333
+lastIndex0: ["bbbb",0,"baaa",2,"abaa",2,"bbbb",0,"baca",3,"baaa",0,"TypeError","ba","TypeError","baa","object","bbb",0,"bbbb",0,"ba",-5,"bb",0]|valueOf
+lastIndex1: ["bbbb",0,"baaa",2,"abaa",2,"bbbb",0,"baca",3,"baaa",0,"TypeError","ba","TypeError","baa","object","bbb",0,"bbbb",0,"ba",-5,"bb",0]|valueOf
+unicode0: ["2d 61 2d d83d 2d de00 2d 62 2d d83d 2d de00 2d 63 2d","2d 61 2d d83d de00 2d 62 2d d83d de00 2d 63 2d","78 78 78 78 78 78 78","78 78 78 78 78","61 4c de00 62 4c de00 63","61 d83d de00 62 d83d de00 63","61 d83d 54 62 d83d 54 63","78 de00 79","78 d83d de00","78 d83d de00","c9","5f 5f","6f 6b","61 56 63","!","ſ","!"]
+unicode1: ["2d 61 2d d83d 2d de00 2d 62 2d d83d 2d de00 2d 63 2d","2d 61 2d d83d de00 2d 62 2d d83d de00 2d 63 2d","78 78 78 78 78 78 78","78 78 78 78 78","61 4c de00 62 4c de00 63","61 d83d de00 62 d83d de00 63","61 d83d 54 62 d83d 54 63","78 de00 79","78 d83d de00","78 d83d de00","c9","5f 5f","6f 6b","61 56 63","!","ſ","!"]
+named and other flags0: ["06/05/2024","object:202405:6-06","[a][b]","a-b-c","S","a\nb","aDc","aallc"]
+named and other flags1: ["06/05/2024","object:202405:6-06","[a][b]","a-b-c","S","a\nb","aDc","aallc"]
+customised0: ["abc","axcb",2,"axcb",2,"axcx","axcx","axcx","axcb","axcb","axcx","aycy","axcb","aycy","axcb","aycy","axcx","azcz","aBcx","aucu","avcv","aXc","abcb","TypeError","TypeError","own-replace","azcz","TypeError"]|own-exec,sub-exec,sub-exec,sub-exec,sub-flags,sub-global,proto-exec,proto-exec,proto-exec,proto-global,proto-flags,proto-sticky,proto-ignoreCase,fake-exec,late-exec
+customised1: ["abc","axcb",2,"axcb",2,"axcx","axcx","axcx","axcb","axcb","axcx","aycy","axcb","aycy","axcb","aycy","axcx","azcz","aBcx","aucu","avcv","aXc","abcb","TypeError","TypeError","own-replace","azcz","TypeError"]|own-exec,sub-exec,sub-exec,sub-exec,sub-flags,sub-global,proto-exec,proto-exec,proto-exec,proto-global,proto-flags,proto-sticky,proto-ignoreCase,fake-exec,late-exec
+many and long0: 21000,-1906719097,6000,-79641430,19500,-1921322380,6000,-79641430,1600,0
+many and long1: 21000,-1906719097,6000,-79641430,19500,-1921322380,6000,-79641430,1600,0"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

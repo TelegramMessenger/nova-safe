@@ -836,6 +836,106 @@ pub(crate) fn reg_exp_builtin_test<'a>(
     }
 }
 
+/// One match as [`reg_exp_collect_matches`] found it: where it starts and
+/// ends in the string and where each of its captures does, in code units.
+pub(crate) struct MatchRange {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) captures: Box<[Option<core::ops::Range<usize>>]>,
+}
+
+/// The matches that RegExp.prototype\[%Symbol.replace%] collects with
+/// RegExpExec (its steps 9 to 12), for a RegExp whose `exec` is the built-in
+/// one: lastIndex set to 0 and RegExpBuiltinExec until it finds no more for
+/// a global RegExp, RegExpBuiltinExec once for another, with no Array made
+/// of any result. Nothing here runs a script, and what RegExpBuiltinExec
+/// would have left in lastIndex is in it at the end: 0 for a global RegExp
+/// (also where the matcher gives up, as far as it came), and what it was
+/// for another.
+///
+/// `None`, with nothing done but the first of those steps, for what is left
+/// to the general way: a sticky RegExp, a lastIndex that is not a number
+/// (ToLength of it could run a script), and named groups, which a result
+/// has an object for.
+pub(crate) fn reg_exp_collect_matches<'a>(
+    agent: &mut Agent,
+    r: RegExp,
+    s: String,
+    gc: NoGcScope<'a, '_>,
+) -> JsResult<'a, Option<Vec<MatchRange>>> {
+    let r = r.bind(gc);
+    let s = s.bind(gc);
+    let flags = r.original_flags(agent);
+    let global = (flags & RegExpFlags::G).bits() > 0;
+    let sticky = (flags & RegExpFlags::Y).bits() > 0;
+    let full_unicode = (flags & (RegExpFlags::U | RegExpFlags::V)).bits() > 0;
+    if sticky || r.try_get_last_index(agent).is_none() {
+        return Ok(None);
+    }
+    // 9. If global is true, perform ? Set(rx, "lastIndex", +0𝔽, true).
+    if global {
+        set_last_index(agent, r, RegExpLastIndex::ZERO, gc)?;
+    }
+    // RegExpBuiltinExec, 8. Let matcher be R.[[RegExpMatcher]].
+    if let Err(err) = r
+        .get_direct_mut(&mut agent.heap.regexps)
+        .matcher(&agent.heap.strings)
+    {
+        let message = err.clone();
+        return Err(agent.throw_exception(ExceptionType::SyntaxError, message, gc));
+    };
+    let length = s.utf16_len_(agent);
+    let mut matches = Vec::new();
+    // Where the next RegExpBuiltinExec starts: its lastIndex.
+    let mut last_index = 0;
+    loop {
+        agent.poll_interrupt(gc)?;
+        if matches.len() % 4096 == 4095 {
+            agent.check_heap_limit(matches.len() * core::mem::size_of::<MatchRange>(), gc)?;
+        }
+        // 13. a. If lastIndex > length, return null.
+        if last_index > length {
+            break;
+        }
+        let found = match search(agent, r, s, last_index, false) {
+            Ok(found) => found,
+            Err(err) => {
+                // The lastIndex of the last RegExpBuiltinExec that returned.
+                if global {
+                    r.set_last_index(agent, last_index.into(), gc);
+                }
+                return Err(throw_exec_error(agent, err, gc));
+            }
+        };
+        let Some(found) = found else {
+            break;
+        };
+        if !found.group_names().is_empty() {
+            // Before anything was collected: every match has the names.
+            return Ok(None);
+        }
+        let (start, end) = (found.start(), found.end());
+        matches.push(MatchRange {
+            start,
+            end,
+            captures: (1..=found.captures.len())
+                .map(|group| found.group(group))
+                .collect(),
+        });
+        if !global {
+            break;
+        }
+        // RegExpBuiltinExec sets lastIndex to the end of the match, and for
+        // an empty match the caller sets it to AdvanceStringIndex of that.
+        last_index = if start == end {
+            advance_string_index(agent, s, end, full_unicode)
+        } else {
+            end
+        };
+    }
+    Ok(Some(matches))
+}
+
 /// Set(R, "lastIndex", value, true) for RegExpBuiltinExec: a TypeError when
 /// lastIndex was made non-writable.
 fn set_last_index<'a>(
