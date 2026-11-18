@@ -18,8 +18,8 @@ use wtf8::Wtf8Buf;
 use crate::ecmascript::{RegExp, reg_exp_create_literal};
 use crate::{
     ecmascript::{
-        Agent, BigInt, BindingSite, ExceptionType, Number, ObjectShape, PropertyKey,
-        PropertyLookupCache, String, Value,
+        Agent, BigInt, ExceptionType, Number, ObjectShape, PropertyKey, PropertyLookupCache,
+        String, Value,
     },
     engine::{
         Bindable, Executable, ExecutableHeapData, FunctionExpression, Instruction, NoGcScope,
@@ -29,7 +29,7 @@ use crate::{
 };
 
 use super::{IndexType, JumpIndex};
-use crate::engine::{CallEnvironment, SwitchTable};
+use crate::engine::{CallEnvironment, CodeTables, SwitchTable};
 
 /// The ThrowError immediate of an executable that stands in for code using
 /// syntax the compiler does not support. Running it panics, as compiling that
@@ -272,10 +272,15 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             .into_iter()
             .map(|cases| SwitchTable::new(cases, &self.constants))
             .collect();
+        let instructions: std::sync::Arc<[u8]> = self.instructions.into();
         self.agent.heap.create(ExecutableHeapData {
-            instructions: self.instructions.into(),
-            caches: self.caches.unbind().into_boxed_slice(),
-            constants: self.constants.unbind().into_boxed_slice(),
+            tables: CodeTables::new(
+                instructions.clone(),
+                self.constants.unbind(),
+                self.caches.unbind(),
+                self.binding_sites,
+            ),
+            instructions,
             wide_constants: self.wide_constants.unbind().into_boxed_slice(),
             shapes: self.shapes.unbind().into_boxed_slice(),
             function_expressions: self.function_expressions.unbind().into_boxed_slice(),
@@ -288,7 +293,6 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             instance_initializer: self.instance_initializer.unbind(),
             call_environment: self.call_environment,
             stack_parameters: self.stack_parameters,
-            binding_sites: vec![BindingSite::UNKNOWN; self.binding_sites].into_boxed_slice(),
             switch_tables,
             _gc: PhantomData,
         })

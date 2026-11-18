@@ -16,10 +16,10 @@ use crate::{
         arena_vec_access, {BaseIndex, HeapIndexHandle, index_handle},
     },
 };
-use core::marker::PhantomData;
+use core::{cell::Cell, marker::PhantomData};
 use oxc_ast::ast;
 use oxc_semantic::{AstNodes, Scoping};
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
 use super::bytecode_compiler::GeneratorKind;
 
@@ -111,8 +111,11 @@ const EXECUTABLE_OPTION_SIZE_IS_U32: () =
 #[derive(Debug, Clone, Bindable)]
 pub(crate) struct ExecutableHeapData<'a> {
     pub(crate) instructions: Arc<[u8]>,
-    pub(crate) caches: Box<[PropertyLookupCache<'static>]>,
-    pub(crate) constants: Box<[Value<'static>]>,
+    /// The constants, the property caches and the binding sites: see
+    /// [`CodeTables`]. A copy of this data shares them, and is only to be
+    /// read: two Executables in the heap with one set of tables would have
+    /// the collector rewrite them twice.
+    pub(crate) tables: Rc<CodeTables>,
     /// Constants past the 16-bit indices, loaded by the Wide instructions:
     /// literals of a script with more distinct constants than those fit.
     pub(crate) wide_constants: Box<[Value<'static>]>,
@@ -131,15 +134,171 @@ pub(crate) struct ExecutableHeapData<'a> {
     /// whoever starts the code puts the arguments there
     /// (function_declaration_instantiation::instantiation, Vm::execute).
     pub(crate) stack_parameters: Option<u16>,
-    /// Where each place in the instructions that names a variable of an
-    /// enclosing scope found it the last time; nothing here is known to the
-    /// collector.
-    pub(crate) binding_sites: Box<[BindingSite]>,
     /// The `case` selectors of each `switch` that tests them with one
     /// JumpToCase instruction; nothing here is known to the collector, the
     /// selectors are among the constants.
     pub(crate) switch_tables: Arc<[SwitchTable]>,
     pub(crate) _gc: PhantomData<Value<'a>>,
+}
+
+/// What a `Vm` reads of an Executable at every turn of its loop: the
+/// instructions, and the tables they read by an index, which are the
+/// constants (the names of variables and properties among them), the
+/// property cache of each place that names a property, and where each
+/// place that names a variable of an enclosing scope found it the last
+/// time (nothing of which is known to the collector).
+///
+/// The Executable in the heap and every `Vm` that is running its code hold
+/// this together, by one count: a call that the `Vm` runs itself takes one
+/// reference for all of it, and the loop reads a constant with one look at
+/// the table, where it went by the heap's table of executables to this
+/// Executable and from there to its constants, for every one. The entries
+/// of the tables are cells. The collector moves what the constants and the caches
+/// refer to and rewrites them where they are, and a binding site is
+/// remembered where it is: whoever holds the tables reads what is current.
+#[derive(Debug)]
+pub(crate) struct CodeTables {
+    /// The bytecode itself, which the Executable holds too.
+    instructions: Arc<[u8]>,
+    constants: Box<[Cell<Value<'static>>]>,
+    caches: Box<[Cell<PropertyLookupCache<'static>>]>,
+    binding_sites: Box<[Cell<BindingSite>]>,
+}
+
+impl CodeTables {
+    /// The tables of a new Executable, with `binding_sites` places that
+    /// have found nothing yet.
+    pub(crate) fn new(
+        instructions: Arc<[u8]>,
+        constants: Vec<Value<'static>>,
+        caches: Vec<PropertyLookupCache<'static>>,
+        binding_sites: usize,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            instructions,
+            constants: constants.into_iter().map(Cell::new).collect(),
+            caches: caches.into_iter().map(Cell::new).collect(),
+            binding_sites: (0..binding_sites)
+                .map(|_| Cell::new(BindingSite::UNKNOWN))
+                .collect(),
+        })
+    }
+
+    #[inline(always)]
+    pub(crate) fn instructions(&self) -> &[u8] {
+        &self.instructions
+    }
+
+    /// The tables as the loop of a `Vm` keeps them at hand.
+    #[inline(always)]
+    pub(crate) fn view(&self) -> TablesView<'_> {
+        TablesView {
+            constants: &self.constants,
+            caches: &self.caches,
+            binding_sites: &self.binding_sites,
+        }
+    }
+
+    pub(crate) fn constants(&self) -> impl ExactSizeIterator<Item = Value<'static>> + '_ {
+        self.constants.iter().map(Cell::get)
+    }
+
+    pub(crate) fn caches(
+        &self,
+    ) -> impl ExactSizeIterator<Item = PropertyLookupCache<'static>> + '_ {
+        self.caches.iter().map(Cell::get)
+    }
+
+    pub(crate) fn binding_sites(&self) -> usize {
+        self.binding_sites.len()
+    }
+
+    #[inline]
+    fn constant(&self, index: usize) -> Option<Value<'static>> {
+        self.constants.get(index).map(Cell::get)
+    }
+
+    fn set_binding_site(&self, index: usize, site: BindingSite) {
+        if let Some(slot) = self.binding_sites.get(index) {
+            slot.set(site);
+        }
+    }
+
+    /// Bytes of the heap that the constants and the caches take.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        core::mem::size_of_val::<[_]>(&self.constants) + core::mem::size_of_val::<[_]>(&self.caches)
+    }
+
+    fn mark_values(&self, queues: &mut WorkQueues) {
+        for constant in self.constants.iter() {
+            constant.get().mark_values(queues);
+        }
+        for cache in self.caches.iter() {
+            cache.get().mark_values(queues);
+        }
+    }
+
+    fn sweep_values(&self, compactions: &CompactionLists) {
+        for constant in self.constants.iter() {
+            let mut value = constant.get();
+            value.sweep_values(compactions);
+            constant.set(value);
+        }
+        for cache in self.caches.iter() {
+            let mut value = cache.get();
+            value.sweep_values(compactions);
+            cache.set(value);
+        }
+    }
+}
+
+/// The three tables of a [`CodeTables`], each a slice: what the loop of a
+/// `Vm` reads constants, names, caches and binding sites from.
+#[derive(Clone, Copy)]
+pub(crate) struct TablesView<'a> {
+    constants: &'a [Cell<Value<'static>>],
+    caches: &'a [Cell<PropertyLookupCache<'static>>],
+    binding_sites: &'a [Cell<BindingSite>],
+}
+
+impl TablesView<'_> {
+    #[inline(always)]
+    pub(super) fn constant<'gc>(self, index: usize, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
+        self.constants[index].get().bind(gc)
+    }
+
+    #[inline(always)]
+    pub(super) fn identifier<'gc>(self, index: usize, gc: NoGcScope<'gc, '_>) -> String<'gc> {
+        let Ok(value) = String::try_from(self.constants[index].get()) else {
+            handle_identifier_failure()
+        };
+        value.bind(gc)
+    }
+
+    #[inline(always)]
+    pub(super) fn property_key<'gc>(
+        self,
+        index: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> PropertyKey<'gc> {
+        PropertyKey::from_value_unchecked(self.constants[index].get()).bind(gc)
+    }
+
+    #[inline(always)]
+    pub(super) fn cache<'gc>(
+        self,
+        index: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> PropertyLookupCache<'gc> {
+        self.caches[index].get().bind(gc)
+    }
+
+    #[inline(always)]
+    pub(super) fn binding_site(self, index: usize) -> BindingSite {
+        self.binding_sites
+            .get(index)
+            .map_or(BindingSite::ELSEWHERE, Cell::get)
+    }
 }
 
 /// The `case` selectors of a `switch` statement that are all literals, for
@@ -337,13 +496,6 @@ impl<'gc> Executable<'gc> {
         self.get(agent).instructions.clone()
     }
 
-    /// Whether `instructions` is this Executable's bytecode itself: the one
-    /// allocation, not an equal copy.
-    #[inline]
-    pub(super) fn has_instructions(self, agent: &Agent, instructions: &Arc<[u8]>) -> bool {
-        Arc::ptr_eq(&self.get(agent).instructions, instructions)
-    }
-
     #[inline]
     fn peek_instruction_byte(self, agent: &Agent, ip: usize) -> Option<u8> {
         self.get(agent).instructions.get(ip).copied()
@@ -354,9 +506,18 @@ impl<'gc> Executable<'gc> {
         Instr::consume_instruction(&self.get(agent).instructions, ip)
     }
 
+    /// The tables of this Executable, shared: see [`CodeTables`].
     #[inline]
-    fn get_constants<'a>(self, agent: &'a Agent, _: NoGcScope<'gc, '_>) -> &'a [Value<'gc>] {
-        &self.get(agent).constants[..]
+    pub(super) fn get_tables(self, agent: &Agent) -> Rc<CodeTables> {
+        self.get(agent).tables.clone()
+    }
+
+    fn get_constants(self, agent: &Agent, gc: NoGcScope<'gc, '_>) -> Vec<Value<'gc>> {
+        self.get(agent)
+            .tables
+            .constants()
+            .map(|value| value.bind(gc))
+            .collect()
     }
 
     #[inline(always)]
@@ -366,7 +527,7 @@ impl<'gc> Executable<'gc> {
         index: usize,
         gc: NoGcScope<'gc, '_>,
     ) -> PropertyLookupCache<'gc> {
-        self.get(agent).caches[index].bind(gc)
+        self.get(agent).tables.view().cache(index, gc)
     }
 
     #[inline(always)]
@@ -376,7 +537,7 @@ impl<'gc> Executable<'gc> {
         index: usize,
         gc: NoGcScope<'gc, '_>,
     ) -> Value<'gc> {
-        self.get(agent).constants[index].bind(gc)
+        self.get(agent).tables.view().constant(index, gc)
     }
 
     #[inline]
@@ -386,11 +547,7 @@ impl<'gc> Executable<'gc> {
 
     #[inline(always)]
     pub(super) fn fetch_binding_site(self, agent: &Agent, index: usize) -> BindingSite {
-        self.get(agent)
-            .binding_sites
-            .get(index)
-            .copied()
-            .unwrap_or(BindingSite::ELSEWHERE)
+        self.get(agent).tables.view().binding_site(index)
     }
 
     /// Where the `switch` whose table is at `index` goes for `value`: to
@@ -413,22 +570,15 @@ impl<'gc> Executable<'gc> {
             .cases
             .iter()
             .find(|&&(selector, _)| {
-                data.constants
-                    .get(selector as usize)
-                    .is_some_and(|selector| is_strictly_equal(agent, value, *selector))
+                data.tables
+                    .constant(selector as usize)
+                    .is_some_and(|selector| is_strictly_equal(agent, value, selector))
             })
             .map(|&(_, target)| target as usize)
     }
 
-    fn set_binding_site(self, agent: &mut Agent, index: usize, site: BindingSite) {
-        use crate::heap::DirectArenaAccessMut;
-        if let Some(slot) = self
-            .get_direct_mut(&mut agent.heap.executables)
-            .binding_sites
-            .get_mut(index)
-        {
-            *slot = site;
-        }
+    fn set_binding_site(self, agent: &Agent, index: usize, site: BindingSite) {
+        self.get(agent).tables.set_binding_site(index, site);
     }
 
     #[inline]
@@ -448,11 +598,7 @@ impl<'gc> Executable<'gc> {
         index: usize,
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
-        let value = self.get(agent).constants[index];
-        let Ok(value) = String::try_from(value) else {
-            handle_identifier_failure()
-        };
-        value.bind(gc)
+        self.get(agent).tables.view().identifier(index, gc)
     }
 
     #[inline(always)]
@@ -462,8 +608,7 @@ impl<'gc> Executable<'gc> {
         index: usize,
         gc: NoGcScope<'gc, '_>,
     ) -> PropertyKey<'gc> {
-        let value = self.get(agent).constants[index];
-        PropertyKey::from_value_unchecked(value).bind(gc)
+        self.get(agent).tables.view().property_key(index, gc)
     }
 
     fn fetch_function_expression<'a>(
@@ -519,12 +664,17 @@ impl Scoped<'_, Executable<'static>> {
         self.get(agent).get_instruction(agent, ip)
     }
 
+    /// See [`CodeTables`].
     #[inline]
-    pub(super) fn get_constants<'a, 'gc>(
+    pub(super) fn get_tables(&self, agent: &Agent) -> Rc<CodeTables> {
+        self.get(agent).get_tables(agent)
+    }
+
+    pub(super) fn get_constants<'gc>(
         &self,
-        agent: &'a Agent,
+        agent: &Agent,
         gc: NoGcScope<'gc, '_>,
-    ) -> &'a [Value<'gc>] {
+    ) -> Vec<Value<'gc>> {
         self.get(agent).get_constants(agent, gc)
     }
 
@@ -660,8 +810,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
     fn mark_values(&self, queues: &mut WorkQueues) {
         let Self {
             instructions: _,
-            caches,
-            constants,
+            tables,
             wide_constants,
             shapes,
             function_expressions,
@@ -670,15 +819,13 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             instance_initializer,
             call_environment: _,
             stack_parameters: _,
-            binding_sites: _,
             switch_tables: _,
             _gc: _,
         } = self;
         instance_initializer.mark_values(queues);
-        constants.mark_values(queues);
+        tables.mark_values(queues);
         wide_constants.mark_values(queues);
         arrow_function_expressions.mark_values(queues);
-        caches.mark_values(queues);
         shapes.mark_values(queues);
         function_expressions.mark_values(queues);
         class_initializer_bytecodes.mark_values(queues);
@@ -687,8 +834,7 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let Self {
             instructions: _,
-            caches,
-            constants,
+            tables,
             wide_constants,
             shapes,
             function_expressions,
@@ -697,15 +843,13 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
             instance_initializer,
             call_environment: _,
             stack_parameters: _,
-            binding_sites: _,
             switch_tables: _,
             _gc: _,
         } = self;
         instance_initializer.sweep_values(compactions);
-        constants.sweep_values(compactions);
+        tables.sweep_values(compactions);
         wide_constants.sweep_values(compactions);
         arrow_function_expressions.sweep_values(compactions);
-        caches.sweep_values(compactions);
         shapes.sweep_values(compactions);
         function_expressions.sweep_values(compactions);
         class_initializer_bytecodes.sweep_values(compactions);
