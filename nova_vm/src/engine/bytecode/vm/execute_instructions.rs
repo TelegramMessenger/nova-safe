@@ -51,8 +51,8 @@ use super::{
     ExceptionHandler, Vm, apply_string_or_numeric_addition,
     apply_string_or_numeric_binary_operator, bigint_binary_operator,
     binding_methods::{execute_simple_array_binding, execute_simple_object_binding},
-    concat_string_from_slice, instanceof_operator, number_binary_operator, set_class_name,
-    throw_error_in_target_not_object, typeof_operator, verify_is_object, with_vm_gc,
+    instanceof_operator, number_binary_operator, set_class_name, throw_error_in_target_not_object,
+    typeof_operator, verify_is_object, with_vm_gc,
 };
 
 // Perform step 2 of `Await( value )` in the VM context.
@@ -3097,69 +3097,191 @@ pub(super) fn execute_binding_pattern() -> ! {
     unreachable!("BeginArrayBindingPattern should take care of stepping over these");
 }
 
-pub(super) fn execute_string_concat<'gc>(
+/// The longest text that a concatenation puts together without asking
+/// whether it fits ([`Agent::check_concat_length`] lets as much through).
+const UNASKED_CONCATENATION: usize = 4096;
+
+/// The longest text that a concatenation puts together on the native stack
+/// before it asks the heap for the String: most are shorter, and many are
+/// Strings the heap has already.
+const SHORT_CONCATENATION: usize = 64;
+
+/// What a chain of `+` or a template literal left on the stack for one of
+/// its parts: a String, by the instruction before the one that put it
+/// there.
+#[inline]
+fn string_part<'a>(value: Value<'a>) -> String<'a> {
+    debug_assert!(value.is_string());
+    String::try_from(value).unwrap_or(String::EMPTY_STRING)
+}
+
+/// The parts of a short concatenation, none of them being built, as one
+/// String: put together here, and copied to the heap only where it has no
+/// such String yet. None where a lead surrogate at the end of one part and
+/// a trail surrogate at the start of the next make one code point, which
+/// the general way does.
+fn concat_short_text<'gc>(
+    agent: &mut Agent,
+    values: &[Value<'gc>],
+    gc: NoGcScope<'gc, '_>,
+) -> Option<String<'gc>> {
+    let mut text = [0u8; SHORT_CONCATENATION];
+    let mut len = 0;
+    let mut ends_with_lead = false;
+    for value in values {
+        let part = string_part(*value);
+        let part = part.as_wtf8_(agent);
+        if part.is_empty() {
+            continue;
+        }
+        if ends_with_lead && part.initial_trail_surrogate().is_some() {
+            return None;
+        }
+        let end = len + part.len();
+        text.get_mut(len..end)?.copy_from_slice(part.as_bytes());
+        len = end;
+        ends_with_lead = part.final_lead_surrogate().is_some();
+    }
+    let text = wtf8::Wtf8Str::from_wtf8_bytes(&text[..len]);
+    if let Ok(small) = String::try_from(text) {
+        return Some(small);
+    }
+    Some(agent.heap.alloc_wtf8(text).bind(gc))
+}
+
+/// The Strings that a chain of `+` or a template literal left on the stack,
+/// as one String. Strings that are not being built are put together at once,
+/// with no String made of those before them. One that is being built takes
+/// what stands before it and after it as the operators would have given it
+/// that, so that a loop that builds a text with such a chain adds to the
+/// text and does not copy it.
+///
+/// With `ask`, a text that does not fit is refused before it is made;
+/// without it nothing is refused, and None is what a text long enough to be
+/// asked for gets.
+fn concat_strings<'gc>(
+    agent: &mut Agent,
+    values: &[Value<'gc>],
+    ask: bool,
+    gc: NoGcScope<'gc, '_>,
+) -> JsResult<'gc, Option<String<'gc>>> {
+    let mut bytes = 0usize;
+    let mut being_built = false;
+    for value in values {
+        match string_part(*value) {
+            String::SmallString(part) => bytes += part.len(),
+            String::String(part) => {
+                let record = part.get(agent);
+                bytes = bytes.saturating_add(record.len());
+                being_built |= record.is_being_built();
+            }
+        }
+    }
+    if bytes > UNASKED_CONCATENATION && !ask {
+        return Ok(None);
+    }
+    let ask = ask && bytes > UNASKED_CONCATENATION;
+    if !being_built
+        && bytes <= SHORT_CONCATENATION
+        && let Some(text) = concat_short_text(agent, values, gc)
+    {
+        return Ok(Some(text));
+    }
+    let mut few = [String::EMPTY_STRING; 8];
+    let many: Vec<String<'gc>>;
+    let strings: &[String<'gc>] = if values.len() <= few.len() {
+        for (slot, value) in few.iter_mut().zip(values) {
+            *slot = string_part(*value);
+        }
+        &few[..values.len()]
+    } else {
+        many = values.iter().map(|value| string_part(*value)).collect();
+        &many
+    };
+    let mut text: Option<String<'gc>> = None;
+    let mut rest = strings;
+    while !rest.is_empty() {
+        // The Strings up to the next one that is being built, as one.
+        let run = rest
+            .iter()
+            .position(|string| string.is_being_built_(agent))
+            .unwrap_or(rest.len());
+        let (next, after) = if run == 0 {
+            (rest[0], &rest[1..])
+        } else {
+            let (run, after) = rest.split_at(run);
+            if ask {
+                agent.check_concat_lengths(run, gc)?;
+            }
+            (String::concat(agent, run, gc), after)
+        };
+        text = Some(match text {
+            None => next,
+            Some(text) => {
+                if ask {
+                    agent.check_concat_length(text, next, gc)?;
+                }
+                String::concat(agent, [text, next], gc)
+            }
+        });
+        rest = after;
+    }
+    Ok(Some(text.unwrap_or(String::EMPTY_STRING)))
+}
+
+/// [`concat_strings`] of a text short enough that nothing is asked; None
+/// for a longer one.
+pub(super) fn concat_short_strings<'gc>(
+    agent: &mut Agent,
+    values: &[Value<'gc>],
+    gc: NoGcScope<'gc, '_>,
+) -> Option<String<'gc>> {
+    concat_strings(agent, values, false, gc).ok().flatten()
+}
+
+pub(super) fn execute_concat_strings<'gc>(
     agent: &mut Agent,
     vm: &mut Vm,
     instr: Instr,
-    mut gc: GcScope<'gc, '_>,
+    gc: NoGcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let argument_count = instr.get_first_index();
-    let first_arg_index = vm.stack.len() - argument_count;
-    let mut length = 0;
-    let all_easy = vm.stack[first_arg_index..]
-        .iter()
-        .all(|ele| ele.is_primitive() && !ele.is_symbol());
-    let string = if all_easy {
-        let gc = gc.nogc();
-        let args = &mut vm.stack[first_arg_index..];
-        for arg in args.iter_mut() {
-            let string: String<'_> =
-                to_string_primitive(agent, Primitive::try_from(*arg).unwrap(), gc).unwrap();
-            length += string.len_(agent);
-            // Note: We write String into each arg.
-            *arg = string.unbind().into();
-        }
-        let args = args.iter().map(|arg| {
-            String::try_from(*arg).expect("a String was written into each argument above")
-        });
-        concat_string_from_slice(agent, args, length, gc)
+    let count = instr.get_first_index();
+    let first = vm.stack.len() - count;
+    let string =
+        concat_strings(agent, &vm.stack[first..], true, gc)?.unwrap_or(String::EMPTY_STRING);
+    vm.stack.truncate(first);
+    vm.result = Some(string.unbind().into());
+    Ok(())
+}
+
+/// Makes the result value the String that a part of a concatenation is: a
+/// substitution of a template literal (ToString), or an operand of `+`
+/// whose other operand is a String (ToPrimitive, then ToString).
+pub(super) fn execute_to_string_part<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    substitution: bool,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let value = vm.result.take().unwrap().bind(gc.nogc());
+    let string = if let Ok(primitive) = Primitive::try_from(value) {
+        to_string_primitive(agent, primitive.unbind(), gc.into_nogc())?
     } else {
-        let mut args = vm
-            .stack
-            .split_off(first_arg_index)
-            .iter_mut()
-            .map(|v| v.scope(agent, gc.nogc()))
-            .collect::<Vec<_>>();
-        with_vm_gc::<JsResult<()>>(
+        let value = value.unbind();
+        with_vm_gc(
             agent,
             vm,
             |agent, mut gc| {
-                for ele in args.iter_mut() {
-                    let maybe_string = ele.get(agent).bind(gc.nogc());
-                    if maybe_string.is_string() {
-                        continue;
-                    }
-                    let string = to_string(agent, maybe_string.unbind(), gc.reborrow())
-                        .unbind()?
-                        .bind(gc.nogc());
-                    length += string.len_(agent);
-                    let string: Value = string.into();
-                    ele.replace(agent, string.unbind());
+                if substitution {
+                    return to_string(agent, value, gc);
                 }
-                Ok(())
+                let primitive =
+                    crate::ecmascript::to_primitive(agent, value, None, gc.reborrow()).unbind()?;
+                to_string_primitive(agent, primitive, gc.into_nogc())
             },
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
-        let gc = gc.nogc();
-        let args = args
-            .into_iter()
-            .map(|v| String::try_from(v.get(agent)).unwrap().bind(gc))
-            .collect::<Vec<_>>();
-        concat_string_from_slice(agent, args, length, gc)
+            gc,
+        )?
     };
-    vm.stack.truncate(first_arg_index);
     vm.result = Some(string.unbind().into());
     Ok(())
 }

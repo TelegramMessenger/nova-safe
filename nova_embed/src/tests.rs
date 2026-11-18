@@ -9309,3 +9309,159 @@ unpatched v"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Chains of `+` that are compiled as one concatenation, and template
+/// literals: every kind of operand, the order in which operands are
+/// evaluated and made Strings, what happens when one throws, halves of a
+/// surrogate pair that meet between operands, texts that are being built
+/// at either end of a chain, and the results as keys. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn a_chain_of_additions_is_what_the_additions_are() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(chains_of_additions)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn chains_of_additions() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+var log = "";
+function O(name, how) { var o = {}; if (how !== "s") o.valueOf = function () { log += name + ".valueOf;"; return how === "obj" ? {} : "V" + name; }; if (how !== "v") o.toString = function () { log += name + ".toString;"; return "S" + name; }; return o; }
+function E(name, value) { log += "eval " + name + ";"; return value; }
+
+// Every kind of value after a string, and before one.
+var kinds = [0, -0, 1, -1.5, 1e21, 1e-7, NaN, Infinity, true, false, null, undefined, "", "s", 10n, [1, [2, 3]], {}, function f() {}, O("a", "both"), O("b", "s"), O("c", "obj"), new Date(0).getTime(), Object(5), Object("w"), [null], [undefined]];
+var out = [];
+for (var i = 0; i < kinds.length; i++) { var k = kinds[i]; out.push("<" + k + ">", "a" + k + "b" + k, k + "x" + k, k + k + "y" + k + k, `t${1}` + k + "z"); }
+var sum = 0; var joined = out.join("|"); for (var i = 0; i < joined.length; i++) sum = (sum * 31 + joined.charCodeAt(i)) | 0;
+P("kinds", out.length, joined.length, sum, out.slice(0, 10).join(" "), out.slice(75, 80).join(" ")); P("log", log.length, log.slice(0, 120));
+P("symbols", T(function () { return "a" + Symbol("s") + "b"; }), T(function () { return "a" + 1 + Symbol(); }), T(function () { return Symbol() + "a" + 1; }), T(function () { return "a" + Object(Symbol()) + "b"; }), "a" + Symbol("d").toString() + "b", "a" + Symbol("e").description + 1);
+
+// The order of what is evaluated and what is converted.
+log = ""; var r1 = "start" + E("1", O("p", "both")) + E("2", O("q", "both")) + E("3", "lit") + E("4", O("r", "s")); P("order", r1, log);
+log = ""; var r2 = E("1", O("p", "both")) + E("2", "mid") + E("3", O("q", "both")) + E("4", O("r", "both")) + E("5", 5); P("order after a string", r2, log);
+log = ""; var r3 = E("1", 1) + E("2", 2) + "s" + E("3", 3) + E("4", 4) + E("5", O("t", "both")); P("numbers first", r3, log);
+log = ""; var r4 = T(function () { return "a" + E("1", O("u", "both")) + E("2", { valueOf: function () { log += "throws;"; throw new RangeError("v"); } }) + E("3", O("w", "both")) + E("4", 4); }); P("throws midway", r4, log);
+log = ""; var r5 = T(function () { return "a" + E("1", 1) + E("2", Symbol()) + E("3", O("x", "both")); }); P("symbol midway", r5, log);
+log = ""; var tp = { [Symbol.toPrimitive]: function (hint) { log += "hint " + hint + ";"; return hint === "default" ? "D" : "X"; } }; P("toPrimitive", "a" + tp + "b" + tp, `${tp}` + tp + "c", tp + "d" + tp + tp, log);
+log = ""; var bad = { [Symbol.toPrimitive]: function () { return {}; } }, bad2 = { valueOf: function () { return {}; }, toString: function () { return {}; } }; P("no primitive", T(function () { return "a" + bad + "b"; }), T(function () { return "a" + 1 + bad2; }));
+var x = 1; P("assignments", "a" + (x = 2) + x + (x += 3) + x, "b" + x++ + x + ++x + x, x);
+var g = { n: 0, get v() { return ++this.n; } }; P("getters", "g" + g.v + g.v + "-" + g.v + g.v, g.n);
+var d = new Date(0); P("date", typeof ("d" + d + "e"), ("d" + d + 1).length === ("d" + d.toString() + 1).length, "n" + d.getTime() + d.getTime());
+function count() { count.calls++; return count.calls; } count.calls = 0; P("calls", "c" + count() + count() + "," + count() + (count() + count()) + count(), count.calls);
+P("nested", "a" + ("b" + 1 + 2) + (3 + 4) + ("" + 5 + 6) + (7 + "8" + 9), 1 + (2 + "3") + 4 + 5, ("x" + 1) + (2 + 3) + ("y" + 4 + 5), "p" + (1, 2) + (3, "q") + 4);
+P("no string", 1 + 2 + 3, 1 + 2 + 3 + "", "" + 1 + 2 + 3, 1 + "" + 2 + 3, 1 + 2 + "" + 3, true + 1 + null + "!" + undefined + 1, 1n + 2n + "n" + 3n + 4n, T(function () { return 1n + 2 + "s" + 3; }));
+var u; P("typeof and friends", typeof u + 1 + 2, void 0 + "v" + 1 + void 0, !0 + "b" + !1 + 2, -1 + "m" + -2 + +"3", "t" + typeof 1 + typeof "s" + 4);
+var tl = 5; P("templates", `a${tl}` + tl + "b" + `${tl}c`, "x" + `y` + tl + `${tl}${tl}` + 1, `` + tl + tl, `${"q"}` + 1 + 2);
+
+// Halves of a pair that meet between operands.
+var lead = "\uD83D", trail = "\uDE00", empty = "";
+var sp = [lead + trail + "x", "a" + lead + trail, "a" + lead + empty + trail + "b", lead + "" + "" + trail, "long enough to be a heap string " + lead + trail + lead, "q" + trail + lead + trail + lead + "r", "a" + lead + 1 + trail, "" + lead + "" + trail + "", "abcdefgh" + lead + trail + "ijklmnop" + lead + "" + trail];
+var spo = []; for (var i = 0; i < sp.length; i++) spo.push(sp[i].length + ":" + [...sp[i]].length + ":" + sp[i].codePointAt(sp[i].indexOf(lead) < 0 ? 0 : sp[i].indexOf(lead)).toString(16) + ":" + (sp[i].isWellFormed ? sp[i].isWellFormed() : "")); P("pairs", spo.join(" "));
+
+// Short and long results, the same text made in other ways.
+var a1 = "a", n1 = 1;
+P("short", "" + a1 + n1, (a1 + n1 + a1).length, a1 + n1 + a1 + n1 + a1 + n1 + a1, (a1 + n1 + a1 + n1 + a1 + n1 + a1 + n1).length, "abc" + "defg" + "", "abcd" + "efg" + "h", ("" + "" + "").length, "" + "" + "x" + "" + "");
+var id = 7, name = "Item 7", price = "8.75", i5 = 5;
+var row = "<tr class=\"" + (i5 & 1 ? "odd" : "even") + "\"><td>" + id + "</td><td>" + name + "</td><td>" + price + "</td></tr>";
+var row2 = ["<tr class=\"", "odd", "\"><td>", 7, "</td><td>", "Item 7", "</td><td>", "8.75", "</td></tr>"].join("");
+var row3 = `<tr class="${i5 & 1 ? "odd" : "even"}"><td>${id}</td><td>${name}</td><td>${price}</td></tr>`;
+P("rows", row === row2, row === row3, row.length, row.slice(10, 30)); var keyed = {}; keyed[row] = 1; keyed["rgb(" + 1 + "," + 2 + "," + 3 + ")"] = 2; P("keys", keyed[row3], keyed["rgb(1,2,3)"], Object.keys(keyed).length, new Set([row, row2, row3, "rgb(" + 1 + ",2," + 3 + ")", "rgb(1,2,3)"]).size, new Map([["k" + id + "-" + name, 1]]).get("k7-Item 7"));
+var g2 = 0; for (var i = 0; i < 3000; i++) g2 += ("row-" + i + "-" + (i & 15)).length + ("rgb(" + (i & 255) + ",10," + (i % 7) + ")").length; P("garbage", g2);
+
+// A text that is being built, first or in the middle.
+var s = ""; for (var i = 0; i < 2000; i++) s = s + "<" + i + ">" + (i & 1 ? "odd" : "") + ";"; P("built first", s.length, s.slice(0, 20), s.slice(-12));
+var s2 = ""; for (var i = 0; i < 2000; i++) s2 += "<" + i + ">" + (i & 1 ? "odd" : "") + ";"; P("appended chain", s2 === s, s2.length);
+var s3 = ""; for (var i = 0; i < 1500; i++) s3 = "[" + i + "]" + s3 + "."; P("built in the middle", s3.length, s3.slice(0, 16), s3.slice(-6));
+var s4 = ""; for (var i = 0; i < 1500; i++) s4 = "a" + i + s4; P("put before", s4.length, s4.slice(0, 12), s4.slice(-6));
+var s5 = "x".repeat(300); var s6 = s5 + 1 + s5 + 2 + s5; P("long operands", s6.length, s6.indexOf("1"), s6.indexOf("2"), s6 === "x".repeat(300) + "1" + "x".repeat(300) + "2" + "x".repeat(300));
+var acc = ""; for (var i = 0; i < 300; i++) { var piece = "k" + i + "=" + (i * i) + "&"; acc = acc + piece; if (i % 50 === 0) acc = acc + "#" + acc.length + "#"; } P("mixed", acc.length, acc.slice(-24));
+
+// Where the operands are, and what holds the result.
+function concat3(a, b, c) { return a + b + c; } function withLit(a, b) { return "(" + a + ", " + b + ")"; }
+P("functions", concat3(1, 2, 3), concat3("1", 2, 3), concat3(1, "2", 3), concat3(1, 2, "3"), withLit(1, 2), withLit("a", [3]), withLit(withLit(1, 2), withLit(3, 4)));
+var arr = [1, 2, 3]; P("in calls", String("a" + arr[0] + arr[1]), ["a" + 1 + 2, "b" + 3 + 4].join(), ("a" + 1 + 2).length, parseInt("1" + 2 + 3) + 1, ["x"]["" + 0 + ""], { ["k" + 1 + 2]: 3 }.k12);
+var cond = 1; P("conditional", "a" + (cond ? "b" : 2) + (cond && "c") + (cond || "d") + (null ?? "e"), "f" + cond + (cond ? 1 : "g") + cond);
+var obj = { toString: function () { return "T"; } }; var compound = "a"; compound += obj + "b" + obj; var c2 = 1; c2 += "x" + c2 + c2; var c3 = "s"; c3 = c3 + c3 + c3 + 1; P("compound", compound, c2, c3);
+label: for (var i = 0; i < 3; i++) { var lv = "i" + i + (i ? "+" : "") + i; if (i === 2) { P("loop", lv); break label; } }
+P("generators", [...(function* () { var v = "a" + (yield 1) + (yield 2) + "z"; yield v; })()].join(","), (function () { var it = (function* () { return "g" + (yield "one") + "-" + (yield "two"); })(); it.next(); it.next("A"); return it.next("B").value; })());
+P("with catch", (function () { try { return "a" + (function () { throw 1; })() + "b" + 2; } catch (e) { return "caught" + e + 1 + "!"; } finally { log = "f" + 1 + 2; } })(), log);
+
+// Template literals: each substitution is a String before the next is evaluated.
+log = ""; function OT(name) { return { toString: function () { log += name + ".toString;"; return name; }, valueOf: function () { log += name + ".valueOf;"; return "V" + name; } }; }
+var t1 = `${E("1", OT("a"))}-${E("2", OT("b"))}-${E("3", 3)}`; P("template order", t1, log);
+log = ""; P("template symbol", T(function () { return `${E("1", OT("a"))}${E("2", Symbol())}${E("3", OT("c"))}`; }), log);
+log = ""; P("template throws", T(function () { return `${E("1", { toString: function () { log += "throws;"; throw new RangeError("x"); } })}${E("2", 2)}`; }), log);
+log = ""; P("template hint", `${tp}|${d === d ? tp : 0}`, `a${OT("x")}b` + OT("y") + `${OT("z")}`, log);
+var tk = []; for (var i = 0; i < kinds.length; i++) tk.push(T(function () { return `<${kinds[i]}|${kinds[i]}>`; }));
+var tks = tk.join("|"), tsum = 0; for (var i = 0; i < tks.length; i++) tsum = (tsum * 31 + tks.charCodeAt(i)) | 0; P("template kinds", tk.length, tks.length, tsum, tk.slice(0, 8).join(" "));
+P("template shapes", ``, `a`, `${1}`, `${"s"}`, `${1}${2}`, `a${1}`, `${1}b`, `a${`b${`c${1}`}`}`, `${lead}${trail}`.length, `${lead}${""}${trail}x`.codePointAt(0).toString(16), `x${1n}y${null}z${undefined}${true}`, `${[1, 2]}${{}}`, `line
+break${1}`.length);
+function tagged(strings) { var r = strings.raw.join("|"); for (var i = 1; i < arguments.length; i++) r += ":" + typeof arguments[i]; return r; }
+P("tagged", tagged`a${OT("q")}b${1}c`, log.indexOf("q.toString") < 0);
+var built = "seed "; for (var i = 0; i < 1200; i++) built = `${built}${i},`; var built2 = "seed "; for (var i = 0; i < 1200; i++) built2 += `${i},`; P("template built", built.length, built === built2, built.slice(-10));
+var pre = ""; for (var i = 0; i < 1200; i++) pre = `${i};${pre}`; P("template put before", pre.length, pre.slice(0, 14), pre.slice(-6));
+lines.join("\n")"##;
+    let expected = r##"kinds 130 1253 -1942846379 <0> a0b0 0x0 0y00 t10z <0> a0b0 0x0 0y00 t10z <1,2,3> a1,2,3b1,2,3 1,2,3x1,2,3 1,2,31,2,3y1,2,31,2,3 t11,2,3z
+log 420 a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;b.toString;b.toStrin
+symbols threw TypeError threw TypeError threw TypeError threw TypeError aSymbol(d)b ae1
+order startVpVqlitSr eval 1;p.valueOf;eval 2;q.valueOf;eval 3;eval 4;r.toString;
+order after a string VpmidVqVr5 eval 1;eval 2;p.valueOf;eval 3;q.valueOf;eval 4;r.valueOf;eval 5;
+numbers first 3s34Vt eval 1;eval 2;eval 3;eval 4;eval 5;t.valueOf;
+throws midway threw RangeError eval 1;u.valueOf;eval 2;throws;
+symbol midway threw TypeError eval 1;eval 2;
+toPrimitive aDbD XDc DdDD hint default;hint default;hint string;hint default;hint default;hint default;hint default;
+no primitive threw TypeError threw TypeError
+assignments a2255 b5677 7
+getters g12-34 4
+date string true n00
+calls c12,396 6
+nested ab12756789 12345 x15y45 p2q4
+no string 6 6 123 123 33 2!undefined1 3n34 threw TypeError
+typeof and friends undefined12 undefinedv1undefined truebfalse2 -1m-23 tnumberstring4
+templates a55b5c xy5551 55 q12
+pairs 3:2:1f600:true 3:2:1f600:true 4:3:1f600:true 2:1:1f600:true 35:34:1f600:false 6:5:1f600:false 4:4:d83d:false 2:1:1f600:true 20:18:1f600:true
+short a1 3 a1a1a1a 8 abcdefg abcdefgh 0 x
+rows true true 59 "odd"><td>7</td><td>
+keys 1 2 2 2 1
+garbage 67692
+built first 15890 <0>;<1>odd;<2>;<3>od >;<1999>odd;
+appended chain true 15890
+built in the middle 9390 [1499][1498][149 ......
+put before 6390 a1499a1498a1 a2a1a0
+long operands 902 300 601 true
+mixed 3075 9&k298=88804&k299=89401&
+functions 6 123 123 33 (1, 2) (a, 3) ((1, 2), (3, 4))
+in calls a12 a12,b34 3 124 x 3
+conditional abc1e f111
+compound aTbT 1x11 sss1
+loop i2+2
+generators 1,2,aundefinedundefinedz gA-B
+with catch caught11! f12
+template order a-b-3 eval 1;a.toString;eval 2;b.toString;eval 3;
+template symbol threw TypeError eval 1;a.toString;eval 2;
+template throws threw RangeError eval 1;throws;
+template hint X|X axbVyz hint string;hint string;x.toString;y.valueOf;z.toString;
+template kinds 26 295 -998977338 <0|0> <0|0> <1|1> <-1.5|-1.5> <1e+21|1e+21> <1e-7|1e-7> <NaN|NaN> <Infinity|Infinity>
+template shapes  a 1 s 12 a1 1b abc1 2 1f600 x1ynullzundefinedtrue 1,2[object Object] 11
+tagged a|b|c:object:number true
+template built 4895 true 1198,1199,
+template put before 4890 1199;1198;1197 2;1;0;"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

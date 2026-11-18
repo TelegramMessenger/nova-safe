@@ -9,8 +9,6 @@ use execute_instructions::*;
 
 use std::rc::Rc;
 
-use wtf8::Wtf8Buf;
-
 #[cfg(feature = "array-buffer")]
 use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayPrototype};
 use crate::{
@@ -2607,6 +2605,42 @@ impl Vm {
                 vm.stack.truncate(vm.stack.len() - 2);
                 vm.result = None;
             }
+            // A part of a concatenation that is a String, or a primitive
+            // that ToString takes as it is: most are.
+            Instruction::ToStringOperand | Instruction::ToStringSubstitution => {
+                step!(ToStringOperand, ToStringSubstitution);
+                match vm.result {
+                    Some(Value::String(_) | Value::SmallString(_)) => {}
+                    Some(value) => {
+                        let Ok(primitive) = Primitive::try_from(value) else {
+                            return Plain::No;
+                        };
+                        if matches!(primitive, Primitive::Symbol(_)) {
+                            return Plain::No;
+                        }
+                        let Ok(string) = to_string_primitive(agent, primitive, gc) else {
+                            return Plain::No;
+                        };
+                        vm.result = Some(string.unbind().into());
+                    }
+                    None => return Plain::No,
+                }
+            }
+            // The parts of a concatenation as one String, where the text is
+            // short: a longer one is asked for where it can be refused.
+            Instruction::ConcatStrings => {
+                step!(ConcatStrings);
+                let count = instr.get_first_index();
+                let Some(first) = vm.stack.len().checked_sub(count) else {
+                    return Plain::No;
+                };
+                let Some(string) = concat_short_strings(agent, &vm.stack[first..], gc) else {
+                    return Plain::No;
+                };
+                let string = string.unbind();
+                vm.stack.truncate(first);
+                vm.result = Some(string.into());
+            }
             // A Number is its own numeric value: the counter of nearly every
             // loop.
             Instruction::ToNumeric => {
@@ -3831,7 +3865,9 @@ impl Vm {
             }
             #[cfg(not(feature = "regexp"))]
             Instruction::InstantiateRegExpLiteral => unreachable!(),
-            Instruction::StringConcat => execute_string_concat(agent, vm, instr, gc)?,
+            Instruction::ConcatStrings => execute_concat_strings(agent, vm, instr, gc.into_nogc())?,
+            Instruction::ToStringOperand => execute_to_string_part(agent, vm, false, gc)?,
+            Instruction::ToStringSubstitution => execute_to_string_part(agent, vm, true, gc)?,
             Instruction::Throw => vm.execute_throw(gc.into_nogc())?,
             Instruction::ThrowError => execute_throw_error(agent, vm, instr, gc.into_nogc())?,
             Instruction::ToNumber => execute_to_number(agent, vm, gc)?,
@@ -4135,19 +4171,6 @@ impl Vm {
         let result = self.result.take().unwrap();
         Err(JsError::new(result).bind(gc))
     }
-}
-
-fn concat_string_from_slice<'a, 'gc>(
-    agent: &mut Agent,
-    strings: impl IntoIterator<Item = String<'a>>,
-    string_length: usize,
-    gc: NoGcScope<'gc, '_>,
-) -> String<'gc> {
-    let mut result_string = Wtf8Buf::with_capacity(string_length);
-    for string in strings {
-        result_string.push_wtf8(string.as_wtf8_(agent));
-    }
-    String::from_wtf8_buf(agent, result_string, gc)
 }
 
 /// ### [13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval )](https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator)

@@ -527,8 +527,16 @@ pub(crate) enum Instruction {
     /// RegularExpressionLiteral was compiled to, with a new RegExp of its
     /// pattern and flags: what an evaluation of the literal returns.
     InstantiateRegExpLiteral,
-    /// Take N items from the stack and string-concatenate them together.
-    StringConcat,
+    /// Take N Strings from the stack and string-concatenate them together:
+    /// the operands of a chain of `+` that starts with a String, or the
+    /// parts of a template literal, each already the String it is there.
+    ConcatStrings,
+    /// Make the result value the String it is as an operand of `+` whose
+    /// other operand is a String: ToPrimitive, then ToString.
+    ToStringOperand,
+    /// Make the result value a String as ToString does: a substitution of a
+    /// template literal.
+    ToStringSubstitution,
     /// Throw the result value as an exception.
     Throw,
     /// Throw a new Error object as an exception with the result value as the
@@ -894,7 +902,7 @@ impl Instruction {
             | Self::PutValueWithCache
             | Self::ResolveBinding
             | Self::StoreConstant
-            | Self::StringConcat
+            | Self::ConcatStrings
             | Self::ThrowError
             | Self::GetValueWithIndexKey
             | Self::ApplyBinaryOperatorAndMove
@@ -1968,7 +1976,9 @@ impl Instruction {
         const STORECONSTANT: u8 = Instruction::StoreConstant.as_u8();
         const STORECONSTANTWIDE: u8 = Instruction::StoreConstantWide.as_u8();
         const STOREFROMINDEX: u8 = Instruction::GetValueFromIndex.as_u8();
-        const STRINGCONCAT: u8 = Instruction::StringConcat.as_u8();
+        const CONCATSTRINGS: u8 = Instruction::ConcatStrings.as_u8();
+        const TOSTRINGOPERAND: u8 = Instruction::ToStringOperand.as_u8();
+        const TOSTRINGSUBSTITUTION: u8 = Instruction::ToStringSubstitution.as_u8();
         const THROW: u8 = Instruction::Throw.as_u8();
         const THROWERROR: u8 = Instruction::ThrowError.as_u8();
         const TONUMBER: u8 = Instruction::ToNumber.as_u8();
@@ -2258,7 +2268,9 @@ impl Instruction {
             STORECONSTANT => Some(Instruction::StoreConstant),
             STORECONSTANTWIDE => Some(Instruction::StoreConstantWide),
             STOREFROMINDEX => Some(Instruction::GetValueFromIndex),
-            STRINGCONCAT => Some(Instruction::StringConcat),
+            CONCATSTRINGS => Some(Instruction::ConcatStrings),
+            TOSTRINGOPERAND => Some(Instruction::ToStringOperand),
+            TOSTRINGSUBSTITUTION => Some(Instruction::ToStringSubstitution),
             THROW => Some(Instruction::Throw),
             THROWERROR => Some(Instruction::ThrowError),
             TONUMBER => Some(Instruction::ToNumber),

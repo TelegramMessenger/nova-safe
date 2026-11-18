@@ -1518,9 +1518,96 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
     }
 }
 
+/// `expression` without the parentheses around it.
+fn unparenthesized<'s>(mut expression: &'s ast::Expression<'s>) -> &'s ast::Expression<'s> {
+    while let ast::Expression::ParenthesizedExpression(inner) = expression {
+        expression = &inner.expression;
+    }
+    expression
+}
+
+/// Whether the expression is a String whatever is evaluated: a literal.
+fn is_string_whatever(expression: &ast::Expression) -> bool {
+    matches!(
+        unparenthesized(expression),
+        ast::Expression::StringLiteral(_) | ast::Expression::TemplateLiteral(_)
+    )
+}
+
+/// Compiles `a + b + ... + z`, from its first operand that is a String
+/// whatever is evaluated, as one concatenation: `"<td>" + id + "</td>"`
+/// makes one String, not one for every `+`. What stands before that operand
+/// is added up as it is written, and ends as a String; each operand after it
+/// is made the String it is there (ToPrimitive, then ToString) before the
+/// next one is evaluated, as the operators make it. None where the
+/// expression is not such a chain, or has too few operands after the String
+/// to save one.
+fn compile_concatenation_chain<'a, 's, 'gc, 'scope>(
+    expression: &'s ast::BinaryExpression<'s>,
+    ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+) -> Option<Result<ValueOutput<'gc>, ExpressionError>> {
+    // The additions from the first one on: the operands are the left operand
+    // of the first, and then the right operand of each.
+    let mut additions = vec![expression];
+    let mut first = &expression.left;
+    while let ast::Expression::BinaryExpression(left) = unparenthesized(first)
+        && left.operator == BinaryOperator::Addition
+    {
+        additions.push(left);
+        first = &left.left;
+    }
+    additions.reverse();
+    let string_at = if is_string_whatever(first) {
+        0
+    } else {
+        1 + additions
+            .iter()
+            .position(|addition| is_string_whatever(&addition.right))?
+    };
+    // The additions after the String operand: each takes one more operand.
+    let additions = &additions[string_at..];
+    if additions.len() < 2 {
+        return None;
+    }
+    // What stands before with the String operand: the left operand of the
+    // addition after it.
+    if let Err(err) = additions[0]
+        .left
+        .compile(ctx)
+        .and_then(|r| r.get_value(ctx))
+    {
+        return Some(Err(err));
+    }
+    let mut parts = vec![ctx.load_to_stack()];
+    for addition in additions {
+        if let Err(err) = addition.right.compile(ctx).and_then(|r| r.get_value(ctx)) {
+            for part in parts {
+                part.forget(ctx);
+            }
+            return Some(Err(err));
+        }
+        if !is_string_whatever(&addition.right) {
+            ctx.add_instruction(Instruction::ToStringOperand);
+        }
+        parts.push(ctx.load_to_stack());
+    }
+    let count = parts.len();
+    // Note: ConcatStrings consumes the parts from stack.
+    for part in parts {
+        part.forget(ctx);
+    }
+    ctx.add_instruction_with_immediate(Instruction::ConcatStrings, count);
+    Some(Ok(ValueOutput::Value))
+}
+
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::BinaryExpression<'s> {
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
+        if self.operator == BinaryOperator::Addition
+            && let Some(result) = compile_concatenation_chain(self, ctx)
+        {
+            return result;
+        }
         // 1. Let lref be ? Evaluation of leftOperand.
         let lref = self.left.compile(ctx)?;
         // 2. Let lval be ? GetValue(lref).
@@ -2874,18 +2961,22 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Templa
                         return Err(err);
                     }
                     // 4. Let middle be ? ToString(sub).
-                    // Note: This is done by StringConcat.
+                    // Here, before the next substitution is evaluated: what
+                    // it does to become a String, the next one can see.
+                    if !is_string_whatever(expression) {
+                        ctx.add_instruction(Instruction::ToStringSubstitution);
+                    }
                     parts.push(ctx.load_to_stack());
                 }
                 // 5. Let tail be ? Evaluation of TemplateSpans.
             }
             // 6. Return the string-concatenation of head, middle, and tail.
             let count = parts.len();
-            // Note: StringConcat consumes the parts from stack.
+            // Note: ConcatStrings consumes the parts from stack.
             for part in parts {
                 part.forget(ctx);
             }
-            ctx.add_instruction_with_immediate(Instruction::StringConcat, count);
+            ctx.add_instruction_with_immediate(Instruction::ConcatStrings, count);
             Ok(ValueOutput::Value)
         }
     }
