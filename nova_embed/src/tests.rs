@@ -7107,3 +7107,254 @@ deep nest 200"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `for`-`in`, whose steps the interpreter takes itself where no object on
+/// the way is a Proxy, and which keeps no set of the keys it has seen until
+/// an inherited enumerable property makes it ask: the own properties of
+/// every kind of object, in their order; prototypes, where a key is given
+/// once and a property that is not enumerable hides an inherited one; the
+/// object and its prototypes changed while the loop runs; a Proxy as the
+/// object and as a prototype, with every trap in its order; many keys, and
+/// collections while a loop runs. What is expected is what the build
+/// before this change prints: Node's but for six lines, where the order of
+/// a loop's steps is the implementation's (V8 gathers every key before the
+/// first step).
+#[test]
+fn for_in_keeps_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(for_in_semantics)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn for_in_semantics() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function say() { out.push(Array.prototype.join.call(arguments, ' ')); }
+function keys(o) { var r = []; for (var k in o) r.push(k); return r.join(); }
+function attempt(name, f) { try { say(name, f()); } catch (e) { say(name, 'threw', e && e.constructor ? e.constructor.name : e); } }
+
+// Own properties, in their order, of every kind of object.
+say('plain', keys({ b: 1, a: 2, 10: 'x', 2: 'y', c: 3, '-1': 'neg', 1.5: 'f' }));
+say('empty', '[' + keys({}) + ']', '[' + keys(Object.create(null)) + ']');
+say('array', keys(['a', 'b', , 'd']), keys(Object.assign([1, 2], { extra: 1 })));
+say('string', keys('abc'), keys(new String('hi')), keys(Object.assign(new String('z'), { own: 1 })));
+say('primitives', '[' + keys(5) + ']', '[' + keys(true) + ']', '[' + keys(null) + ']', '[' + keys(undefined) + ']', '[' + keys(Symbol()) + ']');
+say('function', keys(Object.assign(function f(a, b) {}, { p: 1, q: 2 })));
+say('arguments', keys((function () { return arguments; })('x', 'y')));
+say('typed array', keys(new Uint8Array(3)), keys(Object.assign(new Float64Array(1), { tag: 1 })));
+say('map', '[' + keys(new Map([[1, 2]])) + ']', keys(Object.assign(new Map(), { own: 1 })));
+say('symbols skipped', keys({ a: 1, [Symbol('s')]: 2, [Symbol.iterator]: 3, b: 4 }));
+say('accessors', keys({ get g() { throw new Error('not read'); }, set s(v) {}, v: 1 }));
+var hidden = { shown: 1 }; Object.defineProperty(hidden, 'secret', { value: 2, enumerable: false }); Object.defineProperty(hidden, 'visible', { value: 3, enumerable: true });
+say('not enumerable', keys(hidden));
+say('frozen', keys(Object.freeze({ a: 1, b: 2 })), keys(Object.seal({ c: 1 })), keys(Object.preventExtensions({ d: 1 })));
+
+// Prototypes: what is inherited comes after, and a key is given once.
+(function () {
+  var grand = { g: 1, shared: 'grand', both: 1 };
+  var parent = Object.create(grand); parent.p = 1; parent.shared = 'parent'; parent[5] = 'five';
+  var child = Object.create(parent); child.c = 1; child.both = 2; child[3] = 'three';
+  say('chain', keys(child));
+  say('chain of parent', keys(parent));
+  function Old() { this.own = 1; } Old.prototype.method = function () {}; Old.prototype.other = 2;
+  say('old-style constructor', keys(new Old()));
+  class Modern { constructor() { this.field = 1; } method() {} static s() {} get g() { return 1; } }
+  class Sub extends Modern { constructor() { super(); this.more = 2; } extra() {} }
+  say('classes', keys(new Modern()), keys(new Sub()), '[' + keys(Modern) + ']');
+  // A property that is not enumerable hides an enumerable one of the same key further on.
+  var base = { hiddenByChild: 1, seen: 2, hiddenByMiddle: 3 };
+  var middle = Object.create(base); Object.defineProperty(middle, 'hiddenByMiddle', { value: 0, enumerable: false }); middle.m = 1;
+  var top = Object.create(middle); Object.defineProperty(top, 'hiddenByChild', { value: 0, enumerable: false }); top.t = 1;
+  say('hidden by what is not enumerable', keys(top));
+  // And an enumerable one hides one that is not.
+  var low = {}; Object.defineProperty(low, 'k', { value: 1, enumerable: false }); low.z = 1;
+  var high = Object.create(low); high.k = 2;
+  say('own enumerable over inherited not', keys(high));
+  // The same key on every level, many keys, and integer keys on each.
+  var levels = [], previous = null;
+  for (var level = 0; level < 6; level++) {
+    var o = Object.create(previous);
+    for (var i = 0; i < 40; i++) o['k' + ((i * (level + 3)) % 60)] = level;
+    o[level] = level; o[10 - level] = level; o['only' + level] = level;
+    levels.push(o); previous = o;
+  }
+  var all = keys(levels[5]).split(',');
+  say('six levels', all.length, new Set(all).size, all.slice(0, 12).join(), all.slice(-6).join());
+  Object.prototype.inherited = 'from Object.prototype';
+  say('Object.prototype', keys({ a: 1 }), keys([7]), keys(Object.create(null)), keys('s'));
+  var shadow = { inherited: 'own', b: 1 }; say('own shadows it', keys(shadow));
+  var shadowHidden = {}; Object.defineProperty(shadowHidden, 'inherited', { value: 0, enumerable: false }); say('hidden shadows it', '[' + keys(shadowHidden) + ']');
+  delete Object.prototype.inherited;
+  Array.prototype.extra = function () {};
+  say('Array.prototype', keys([1, 2]));
+  delete Array.prototype.extra;
+})();
+
+// The object changes while the loop runs.
+(function () {
+  var seen = [];
+  var o = { a: 1, b: 2, c: 3, d: 4 };
+  for (var k in o) { seen.push(k); if (k === 'a') { delete o.c; o.added = 1; } }
+  say('deleted and added', seen.join());
+  seen = []; o = { a: 1, b: 2, c: 3 };
+  for (k in o) { seen.push(k); if (k === 'a') Object.defineProperty(o, 'b', { enumerable: false }); }
+  say('made not enumerable', seen.join());
+  seen = []; var proto = { p1: 1, p2: 2 }; o = Object.create(proto); o.a = 1; o.b = 2;
+  for (k in o) { seen.push(k); if (k === 'a') { delete proto.p1; proto.p3 = 3; } }
+  say('prototype changed before it is reached', seen.join());
+  seen = []; proto = { p1: 1, p2: 2, p3: 3 }; o = Object.create(proto); o.a = 1;
+  for (k in o) { seen.push(k); if (k === 'p1') { delete proto.p2; o.late = 1; } }
+  say('prototype changed while it is walked', seen.join());
+  seen = []; o = { a: 1, b: 2 }; var other = { x: 1, y: 2 };
+  for (k in o) { seen.push(k); if (k === 'a') Object.setPrototypeOf(o, other); }
+  say('prototype replaced', seen.join());
+  seen = []; o = { a: 1, b: 2, c: 3 };
+  for (k in o) { seen.push(k); o = { z: 26 }; }
+  say('variable reassigned', seen.join());
+  seen = []; o = { a: 1, b: 2 };
+  for (k in o) { for (var j in o) seen.push(k + j); }
+  say('nested over one object', seen.join());
+  seen = []; o = { a: 1, b: 2, c: 3, d: 4 };
+  for (k in o) { if (k === 'b') continue; if (k === 'd') break; seen.push(k); }
+  say('continue and break', seen.join());
+  seen = []; var arr = [1, 2, 3];
+  for (k in arr) { seen.push(k); if (k === '0') { arr.push(4); arr.length = 2; } }
+  say('array changed', seen.join());
+  // A key that was deleted before it was reached, and that a prototype has.
+  seen = []; proto = { shared: 'p', q: 1 }; o = Object.create(proto); o.first = 1; o.shared = 'own'; o.last = 2;
+  for (k in o) { seen.push(k + '=' + o[k]); if (k === 'first') delete o.shared; }
+  say('deleted own, inherited stays', seen.sort().join());
+})();
+
+// A Proxy: every trap, in its order; as the object, and as a prototype.
+(function () {
+  function traced(target, log, name) {
+    return new Proxy(target, {
+      ownKeys(t) { log.push(name + '.ownKeys'); return Reflect.ownKeys(t); },
+      getOwnPropertyDescriptor(t, k) { log.push(name + '.gopd(' + String(k) + ')'); return Reflect.getOwnPropertyDescriptor(t, k); },
+      getPrototypeOf(t) { log.push(name + '.getPrototypeOf'); return Reflect.getPrototypeOf(t); },
+      has(t, k) { log.push(name + '.has(' + String(k) + ')'); return Reflect.has(t, k); },
+      get(t, k, r) { log.push(name + '.get(' + String(k) + ')'); return Reflect.get(t, k, r); },
+    });
+  }
+  var log = [];
+  var target = Object.create({ inherited: 1, b: 'shadowed' }); target.a = 1; target.b = 2; target[Symbol('s')] = 3;
+  Object.defineProperty(target, 'hidden', { value: 1, enumerable: false });
+  say('proxy', keys(traced(target, log, 'P')));
+  say('proxy traps', log.join(' '));
+  log = [];
+  var protoTarget = { pa: 1, shared: 'proto', hiddenOwn: 1 };
+  var withProxyProto = Object.create(traced(protoTarget, log, 'Q'));
+  withProxyProto.own = 1; withProxyProto.shared = 'own'; Object.defineProperty(withProxyProto, 'hiddenOwn', { value: 0, enumerable: false });
+  say('proxy as prototype', keys(withProxyProto));
+  say('proxy as prototype traps', log.join(' '));
+  log = [];
+  var deep = Object.create(Object.create(traced(Object.create({ far: 1, own: 'far' }), log, 'R')));
+  deep.own = 1;
+  say('proxy in the middle', keys(deep), log.join(' '));
+  var liar = new Proxy({}, { ownKeys() { return ['x', 'y']; }, getOwnPropertyDescriptor(t, k) { return k === 'x' ? { value: 1, enumerable: true, configurable: true } : undefined; } });
+  say('keys without properties', keys(liar));
+  attempt('ownKeys throws', function () { return keys(new Proxy({}, { ownKeys() { throw new RangeError('k'); } })); });
+  attempt('descriptor throws', function () { return keys(Object.create(new Proxy({ a: 1 }, { getOwnPropertyDescriptor() { throw new EvalError('d'); } }))); });
+  attempt('getPrototypeOf throws', function () { return keys(Object.create(new Proxy({}, { getPrototypeOf() { throw new SyntaxError('p'); } }))); });
+  var seen = [], changing = Object.create(traced({ late: 1 }, [], 'S')); changing.a = 1; changing.b = 2;
+  for (var k in changing) { seen.push(k); if (k === 'a') changing.late = 'own now'; }
+  say('own added before the proxy is reached', seen.join());
+})();
+
+// Many keys, many loops, and collections while a loop runs.
+(function () {
+  var big = {}; for (var i = 0; i < 3000; i++) big['key' + i] = i;
+  var count = 0, sum = 0; for (var k in big) { count++; sum += big[k]; }
+  say('big', count, sum);
+  var proto = {}; for (i = 0; i < 500; i++) proto['key' + (i * 7)] = -1;
+  var child = Object.create(proto); for (i = 0; i < 500; i++) child['key' + (i * 5)] = i;
+  var names = []; for (k in child) names.push(k);
+  say('big with a prototype', names.length, new Set(names).size, names[0], names[499], names[500], names[names.length - 1]);
+  var total = 0;
+  for (var round = 0; round < 300; round++) { var o = { a: round, b: 1, c: 2 }; for (k in o) total += o[k]; }
+  say('many loops', total);
+  var parent = { inherited1: 1, shared: 0, inherited2: 2 };
+  var holder = Object.create(parent); for (i = 0; i < 400; i++) holder['p' + i] = i; holder.shared = 1;
+  var garbage = [], got = [];
+  for (k in holder) { got.push(k); for (var g = 0; g < 400; g++) garbage.push('garbage string number ' + g + ' of key ' + k); if (garbage.length > 20000) garbage = []; }
+  say('collections during a loop', got.length, got[0], got[399], got.slice(-3).join());
+  var dict = Object.create(null); dict.x = 1; dict.y = 2; dict.constructor = 3; dict.toString = 4;
+  say('dictionary', keys(dict));
+  var counts = {}; var words = 'the quick brown fox jumps over the lazy dog the end'.split(' ');
+  for (var w = 0; w < words.length; w++) counts[words[w]] = (counts[words[w]] || 0) + 1;
+  var report = []; for (var word in counts) report.push(word + ':' + counts[word]);
+  say('word counts', report.join());
+  function* gen(o) { for (var k in o) { var got = yield k; if (got) o[got] = 1; } }
+  var it = gen({ a: 1, b: 2, c: 3 }), steps = [], step = it.next();
+  while (!step.done) { steps.push(step.value); step = it.next(steps.length === 1 ? 'zz' : undefined); }
+  say('across yields', steps.join());
+  var lhs = {}, order = []; for (lhs.prop in { x: 1, y: 2 }) order.push(lhs.prop);
+  var [first] = [0]; for (var [c0, c1] in { ab: 1, cd: 2 }) order.push(c0 + '+' + c1);
+  say('other targets', order.join());
+})();
+out.join("\n")"#;
+    let expected = r#"plain 2,10,b,a,c,-1,1.5
+empty [] []
+array 0,1,3 0,1,extra
+string 0,1,2 0,1 0,own
+primitives [] [] [] [] []
+function p,q
+arguments 0,1
+typed array 0,1,2 0,tag
+map [] own
+symbols skipped a,b
+accessors g,s,v
+not enumerable shown,visible
+frozen a,b c d
+chain 3,c,both,5,p,shared,g
+chain of parent 5,p,shared,g,both
+old-style constructor own,method,other
+classes field field,more []
+hidden by what is not enumerable t,m,seen
+own enumerable over inherited not z
+six levels 69 69 5,k0,k8,k16,k24,k32,k40,k48,k56,k4,k12,k20 only1,0,10,k39,k57,only0
+Object.prototype a,inherited 0,inherited  0,inherited
+own shadows it inherited,b
+hidden shadows it []
+Array.prototype 0,1,extra
+deleted and added a,b,d
+made not enumerable a,c
+prototype changed before it is reached a,b,p2,p3
+prototype changed while it is walked a,p1,p3
+prototype replaced a,b,x,y
+variable reassigned a,b,c
+nested over one object aa,ab,ba,bb
+continue and break a,c
+array changed 0,1
+deleted own, inherited stays first=1,last=2,q=1,shared=p
+proxy a,b,inherited
+proxy traps P.ownKeys P.gopd(a) P.gopd(b) P.gopd(hidden) P.getPrototypeOf
+proxy as prototype own,shared,pa
+proxy as prototype traps Q.ownKeys Q.gopd(pa) Q.getPrototypeOf
+proxy in the middle own,far R.ownKeys R.getPrototypeOf
+keys without properties x
+ownKeys throws threw RangeError
+descriptor throws threw EvalError
+getPrototypeOf throws threw SyntaxError
+own added before the proxy is reached a,b,late
+big 3000 4498500
+big with a prototype 928 928 key0 key2495 key7 key3493
+many loops 45750
+collections during a loop 403 p0 p399 shared,inherited1,inherited2
+dictionary x,y,constructor,toString
+word counts the:3,quick:1,brown:1,fox:1,jumps:1,over:1,lazy:1,dog:1,end:1
+across yields a,b,c
+other targets x,y,a+b,c+d"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

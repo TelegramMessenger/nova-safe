@@ -441,6 +441,9 @@ impl<'a> ObjectPropertiesIterator<'a> {
         agent: &mut Agent,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Option<Value<'gc>>> {
+        // This step asks whether a key was met before it looks for the
+        // property of the key, for every key.
+        self.note_pending_keys(agent);
         loop {
             // A Proxy can make the prototype chain a cycle.
             agent.poll_interrupt(gc.nogc()).unbind()?;
@@ -523,7 +526,23 @@ impl<'a> ObjectPropertiesIterator<'a> {
     fn set_object(&mut self, agent: &mut Agent, object: Object) {
         let iter = self.get_mut(agent);
         iter.object = object.unbind();
+        iter.inherited = true;
         iter.remaining_keys = None;
+    }
+
+    /// Moves the keys that wait for it into the set of the visited ones
+    /// ([`ObjectPropertiesIteratorRecord::pending_keys`]).
+    fn note_pending_keys(&mut self, agent: &mut Agent) {
+        let record = self.get_mut(agent);
+        if record.pending_keys.is_empty() {
+            return;
+        }
+        let pending_keys = core::mem::take(&mut record.pending_keys);
+        let mut visited_keys = core::mem::take(&mut record.visited_keys);
+        for key in pending_keys {
+            visited_keys.insert(agent, key);
+        }
+        self.get_mut(agent).visited_keys = visited_keys;
     }
 
     fn next_remaining_key<'gc>(
@@ -569,7 +588,17 @@ impl<'a> ObjectPropertiesIterator<'a> {
 #[derive(Debug)]
 pub(crate) struct ObjectPropertiesIteratorRecord<'a> {
     object: Object<'a>,
+    /// The keys of the properties met so far, on `object` and on the
+    /// objects before it: a key among them is not given again.
     visited_keys: PropertyKeySet<'a>,
+    /// Keys that belong in `visited_keys` and are not there yet: those met
+    /// by steps that run nothing, which ask about a key only where an
+    /// object after the first has an enumerable property of that key. Most
+    /// loops end without that, and with no key ever hashed.
+    pending_keys: Vec<PropertyKey<'a>>,
+    /// `object` is not the object the loop is over, but one of its
+    /// prototypes.
+    inherited: bool,
     remaining_keys: Option<Vec<PropertyKey<'a>>>,
 }
 
@@ -578,8 +607,23 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
         Self {
             object,
             visited_keys: Default::default(),
+            pending_keys: Vec::new(),
+            inherited: false,
             remaining_keys: Default::default(),
         }
+    }
+
+    /// Moves the pending keys into the set of the visited ones.
+    fn note_pending_keys(&mut self, agent: &Agent) {
+        for key in self.pending_keys.drain(..) {
+            self.visited_keys.insert(agent, key);
+        }
+    }
+
+    /// True if a property of `key` was met before.
+    fn was_visited(&mut self, agent: &Agent, key: PropertyKey) -> bool {
+        self.note_pending_keys(agent);
+        self.visited_keys.contains(agent, key)
     }
 
     fn object_is_visited(&self) -> bool {
@@ -594,26 +638,8 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
     fn set_object(&mut self, object: Object) {
         let iter = self;
         iter.object = object.unbind();
+        iter.inherited = true;
         iter.remaining_keys = None;
-    }
-
-    fn next_remaining_key<'gc>(
-        &mut self,
-        agent: &mut Agent,
-        gc: NoGcScope<'gc, '_>,
-    ) -> Option<(Object<'gc>, PropertyKey<'gc>)> {
-        loop {
-            let next_key = self.remaining_keys.as_mut().unwrap().pop()?;
-            if self.visited_keys.contains(agent, next_key) {
-                // Skip visited keys.
-                continue;
-            }
-            return Some((self.object.bind(gc), next_key.bind(gc)));
-        }
-    }
-
-    fn mark_key_visited(&mut self, agent: &mut Agent, key: PropertyKey) {
-        self.visited_keys.insert(agent, key);
     }
 
     /// ### [7.4.8 IteratorStepValue ( iteratorRecord )](https://tc39.es/ecma262/#sec-iteratorstepvalue)
@@ -622,7 +648,17 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
     /// function implements much the same intent. It does the IteratorNext
     /// step, followed by a completion check, and finally extracts the value
     /// if the iterator did not complete yet.
-    fn try_step_value<'gc>(
+    ///
+    /// The step, where nothing has to run for it. Where something has to (a
+    /// trap of a Proxy), nothing is lost: the key that the step stopped at
+    /// is still the next one for the step that runs it.
+    ///
+    /// Nothing runs for the property of a key here, so whether a property
+    /// of the key was met before may be asked after the property is found,
+    /// and only where the answer changes anything: where the property is
+    /// enumerable, on an object that is not the first. The keys of the
+    /// first object are all different, and none was met before them.
+    pub(super) fn try_step_value<'gc>(
         &mut self,
         agent: &mut Agent,
         gc: NoGcScope<'gc, '_>,
@@ -644,16 +680,23 @@ impl<'a> ObjectPropertiesIteratorRecord<'a> {
                 }
                 self.set_remaining_keys(remaining_keys);
             }
-            while let Some((object, next_key)) = self.next_remaining_key(agent, gc) {
+            while let Some(next_key) = self.remaining_keys.as_ref().unwrap().last().copied() {
+                let next_key = next_key.bind(gc);
                 let desc = object.try_get_own_property(agent, next_key, None, gc)?;
-                if let Some(desc) = desc {
-                    self.mark_key_visited(agent, next_key);
-                    if desc.enumerable == Some(true) {
-                        return TryResult::Continue(Some(
-                            ObjectPropertiesIterator::convert_result(agent, next_key, gc),
-                        ));
+                self.remaining_keys.as_mut().unwrap().pop();
+                let Some(desc) = desc else {
+                    continue;
+                };
+                if desc.enumerable == Some(true) {
+                    if self.inherited && self.was_visited(agent, next_key) {
+                        continue;
                     }
+                    self.pending_keys.push(next_key.unbind());
+                    return TryResult::Continue(Some(ObjectPropertiesIterator::convert_result(
+                        agent, next_key, gc,
+                    )));
                 }
+                self.pending_keys.push(next_key.unbind());
             }
             let prototype = object.try_get_prototype_of(agent, gc)?;
             if let Some(prototype) = prototype {
@@ -1165,10 +1208,15 @@ impl HeapMarkAndSweep for ObjectPropertiesIteratorRecord<'static> {
         let Self {
             object,
             visited_keys,
+            pending_keys,
+            inherited: _,
             remaining_keys,
         } = self;
         object.mark_values(queues);
         visited_keys.mark_values(queues);
+        for key in pending_keys.iter() {
+            key.mark_values(queues);
+        }
         if let Some(remaining_keys) = remaining_keys {
             for key in remaining_keys.iter() {
                 key.mark_values(queues);
@@ -1180,10 +1228,15 @@ impl HeapMarkAndSweep for ObjectPropertiesIteratorRecord<'static> {
         let Self {
             object,
             visited_keys,
+            pending_keys,
+            inherited: _,
             remaining_keys,
         } = self;
         object.sweep_values(compactions);
         visited_keys.sweep_values(compactions);
+        for key in pending_keys.iter_mut() {
+            key.sweep_values(compactions);
+        }
         if let Some(remaining_keys) = remaining_keys {
             for key in remaining_keys.iter_mut() {
                 key.sweep_values(compactions);
