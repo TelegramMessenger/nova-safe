@@ -3911,3 +3911,525 @@ numberPatched1=patched1,patched0,7.5,number15,number8,undefined,3.75,4.5,undefin
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Properties that an object finds through its prototypes, and assignments
+/// that add a property where the chain has none, when the chain changes
+/// afterwards: a prototype gains the property as data, as an accessor or
+/// as one that is not writable, loses it, or gets another prototype
+/// itself. The prototype is given in every way there is (Object.create,
+/// `new`, classes and their static side, subclasses of Array, typed arrays
+/// and others, Reflect.construct, setPrototypeOf, `__proto__` in a
+/// literal, generators, bound functions) and is of every kind (ordinary,
+/// Array, function, typed array, String object, arguments and more), and
+/// a Proxy or a typed array may stand in the chain. And an object that is
+/// frozen, sealed or not extensible stays so when it becomes a prototype,
+/// loses a property or is given private fields. What is expected is what
+/// Node prints for the same script.
+#[test]
+fn properties_follow_the_changes_of_their_prototypes() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_follow_prototypes)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_follow_prototypes() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+var out = [];
+function log(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor && e.constructor.name) + ": " + (e && e.message); } out.push(name + ": " + v); }
+log("typedArrayInChain", function () {
+  function setNumeric(o) { o.NaN = 1; o.Infinity = 2; o.plain = 3; return Object.keys(o).join("") + "/" + o.NaN + "/" + o.plain; }
+  var ta = new Uint8Array(2), r = [];
+  for (var i = 0; i < 4; i++) r.push(setNumeric(Object.create(ta)));
+  for (var j = 0; j < 3; j++) r.push(setNumeric({}));
+  function onTyped(t) { t.NaN = 1; t.tag = 2; t.other = 3; return Object.keys(t).join("") + "/" + t.NaN; }
+  for (var k = 0; k < 3; k++) r.push(onTyped(new Uint8Array(1)));
+  return r.join();
+});
+log("stringAndArrayInChain", function () {
+  function setLen(o) { o.length = 5; o.tag = 1; return Object.keys(o).join("") + "/" + o.length; }
+  var r = [];
+  for (var i = 0; i < 3; i++) r.push(setLen(Object.create(new String("ab"))));
+  for (var j = 0; j < 3; j++) r.push(setLen(Object.create([1, 2])));
+  for (var k = 0; k < 3; k++) r.push(setLen(Object.create(function (a, b, c) {})));
+  function strictLen(o) { "use strict"; try { o.length = 5; return "set"; } catch (e) { return e.constructor.name; } }
+  for (var m = 0; m < 3; m++) r.push(strictLen(Object.create(new String("ab"))));
+  return r.join();
+});
+log("proxyInChain", function () {
+  var seen = [];
+  var px = new Proxy({}, {
+    set: function (t, k, v, rc) { seen.push("set:" + String(k)); return Reflect.set(t, k, v, rc); },
+    get: function (t, k, rc) { seen.push("get:" + String(k)); return Reflect.get(t, k, rc); },
+    has: function (t, k) { seen.push("has:" + String(k)); return Reflect.has(t, k); },
+    getOwnPropertyDescriptor: function (t, k) { seen.push("gopd:" + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); },
+    getPrototypeOf: function (t) { seen.push("proto"); return Reflect.getPrototypeOf(t); }
+  });
+  function add(o) { o.q = 1; o.w = 2; return Object.keys(o).join(""); }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(add(Object.create(px)));
+  var deep = Object.create(Object.create(px));
+  for (var j = 0; j < 3; j++) r.push(add(Object.create(deep)));
+  return r.join() + "|" + seen.join();
+});
+log("nullPrototype", function () {
+  function add(o) { o.a = 1; o.b = 2; o.a = 3; return Object.keys(o).join("") + o.a; }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(add(Object.create(null)));
+  var bare = Object.create(null); bare.toString = 1; r.push(add(bare));
+  return r.join();
+});
+log("getterOnlyAndReadOnlyInChain", function () {
+  var p = { get g() { return "got"; } }; Object.defineProperty(p, "ro", { value: "fixed", writable: false });
+  function add(o) { o.g = 1; o.ro = 2; o.z = 3; return Object.keys(o).join("") + "/" + o.g + "/" + o.ro; }
+  function strictAdd(o) { "use strict"; var e1, e2; try { o.g = 1; } catch (e) { e1 = e.constructor.name; } try { o.ro = 1; } catch (e) { e2 = e.constructor.name; } return e1 + "+" + e2 + Object.keys(o).length; }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(add(Object.create(p)), strictAdd(Object.create(p)));
+  return r.join();
+});
+log("shapeChangesBetweenAdds", function () {
+  function add(o, v) { o.late = v; return o; }
+  var r = [], seen = [];
+  var a = add({}, 1), b = add({}, 2);
+  var withSetter = { set late(v) { seen.push("s" + v); } };
+  var c = {}; Object.setPrototypeOf(c, withSetter); add(c, 3); r.push(Object.keys(c).length);
+  var d = {}; add(d, 4); Object.setPrototypeOf(d, withSetter); add(d, 5); r.push(d.late, Object.keys(d).length);
+  var e = { late: 0 }; add(e, 6); delete e.late; add(e, 7); r.push(e.late, Object.keys(e).join(""));
+  var f = { x: 1, y: 2 }; delete f.x; add(f, 8); f.x = 9; r.push(Object.keys(f).join(""), f.late, f.x);
+  var g = {}; Object.defineProperty(g, "late", { value: "own-ro", writable: false, configurable: true }); add(g, 9); r.push(g.late);
+  var h = {}; Object.defineProperty(h, "late", { set: function (v) { seen.push("own" + v); }, configurable: true }); add(h, 10); r.push(Object.keys(h).length);
+  var frozen = Object.freeze({}); add(frozen, 11); r.push(Object.keys(frozen).length, Object.isFrozen(frozen));
+  var many = []; for (var i = 0; i < 40; i++) { var o = {}; o["k" + (i % 7)] = i; add(o, i); many.push(Object.keys(o).join("") + o.late); }
+  return r.map(String).join() + "|" + seen.join() + "|" + a.late + b.late + "|" + many.slice(0, 9).join() + "|" + many[39];
+});
+log("classesAndSuper", function () {
+  var seen = [];
+  class Base { constructor() { this.a = 1; this.b = 2; } }
+  class Mid extends Base { constructor() { super(); this.c = 3; } set late(v) { seen.push("mid" + v); } }
+  class Leaf extends Mid { constructor() { super(); this.d = 4; this.late = 5; this.a = "re"; } }
+  var r = [];
+  for (var i = 0; i < 4; i++) { var l = new Leaf(); r.push(Object.keys(l).join("") + l.a); }
+  Object.defineProperty(Base.prototype, "d", { set: function (v) { seen.push("base" + v); }, configurable: true });
+  var after = new Leaf(); r.push(Object.keys(after).join(""));
+  delete Base.prototype.d; var again = new Leaf(); r.push(Object.keys(again).join(""));
+  Object.setPrototypeOf(Mid.prototype, { set c(v) { seen.push("swapped" + v); } }); var swapped = new Leaf(); r.push(Object.keys(swapped).join(""));
+  return r.join() + "|" + seen.join();
+});
+log("valuesKept", function () {
+  function P(i) { this.n = i; this.s = "s" + i; this.o = { i: i }; this.f = i / 2; this.u = undefined; this.z = null; this.big = i * 4294967296; }
+  var all = []; for (var i = 0; i < 300; i++) all.push(new P(i));
+  var sum = 0, bad = 0; for (var j = 0; j < all.length; j++) { var p = all[j]; sum += p.n + p.o.i + p.f; if (p.s !== "s" + j || p.u !== undefined || p.z !== null || p.big !== j * 4294967296 || Object.keys(p).length !== 7) bad++; }
+  return sum + "|" + bad + "|" + JSON.stringify(all[299]);
+});
+print(out.join("\n"));
+})();
+(function () {
+var print = function (s) { all.push(s); };
+var out = [];
+function log(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor && e.constructor.name) + ": " + (e && e.message); } out.push(name + ": " + v); }
+function readNaN(o) { return o.NaN; } function hasNaN(o) { return "NaN" in o; } function writeNaN(o) { o.NaN = 1; return Object.keys(o).join("") + "/" + o.NaN; }
+function readInf(o) { return o.Infinity; } function writeInf(o) { o.Infinity = 1; return Object.keys(o).join("") + "/" + o.Infinity; }
+function readLen(o) { return o.length; } function hasLen(o) { return "length" in o; } function writeLen(o) { o.length = 9; return Object.keys(o).join("") + "/" + o.length; }
+function readTag(o) { return o.tag; } function hasTag(o) { return "tag" in o; } function writeTag(o) { o.tag = 7; return Object.keys(o).join("") + "/" + o.tag; }
+function round(make, read, has, write) {
+  var r = [];
+  for (var i = 0; i < 3; i++) { var a = make(); r.push(read(a), read(a), has(a), write(a), read(a), has(a)); }
+  for (var j = 0; j < 3; j++) { var b = make(); r.push(write(b), write(b)); }
+  return r.map(String).join();
+}
+log("readThenWrite typed NaN", function () { var ta = new Float64Array(2); return round(function () { return Object.create(ta); }, readNaN, hasNaN, writeNaN); });
+log("readThenWrite typed Infinity", function () { var ta = new Int8Array(2); return round(function () { return Object.create(ta); }, readInf, hasNaN, writeInf); });
+log("readThenWrite typed deep", function () { var ta = new Uint16Array(2); var mid = Object.create(ta); return round(function () { return Object.create(mid); }, readNaN, hasNaN, writeNaN); });
+log("readThenWrite typed tag", function () { var ta = new Uint16Array(2); return round(function () { return Object.create(ta); }, readTag, hasTag, writeTag); });
+log("readThenWrite string length", function () { var s = new String("abc"); return round(function () { return Object.create(s); }, readLen, hasLen, writeLen); });
+log("readThenWrite string tag", function () { var s = new String("abc"); return round(function () { return Object.create(s); }, readTag, hasTag, writeTag); });
+log("readThenWrite array length", function () { var s = [1, 2, 3]; return round(function () { return Object.create(s); }, readLen, hasLen, writeLen); });
+log("readThenWrite function length", function () { var s = function (a, b) {}; return round(function () { return Object.create(s); }, readLen, hasLen, writeLen); });
+log("readThenWrite arguments", function () { var s = (function () { return arguments; })(1, 2); return round(function () { return Object.create(s); }, readLen, hasLen, writeLen) + ";" + round(function () { return Object.create(s); }, readTag, hasTag, writeTag); });
+log("readThenWrite wrappers", function () {
+  var kinds = [new Number(1), new Boolean(true), Object(Symbol("s")), new Date(0), new Map(), new Set(), /x/, new Error("e"), new ArrayBuffer(2), new DataView(new ArrayBuffer(2)), Promise.resolve(1), function* () {}(), Math, JSON, globalThis, (function () {}).bind(null), new WeakMap()];
+  return kinds.map(function (k) { return round(function () { return Object.create(k); }, readTag, hasTag, writeTag).length; }).join();
+});
+log("readThenWrite proxy", function () {
+  var seen = [];
+  var px = new Proxy({}, { has: function (t, k) { seen.push("has:" + String(k)); return false; }, get: function (t, k) { seen.push("get:" + String(k)); return undefined; }, set: function (t, k, v, rc) { seen.push("set:" + String(k)); return true; } });
+  return round(function () { return Object.create(px); }, readTag, hasTag, writeTag) + "|" + seen.join("").length + seen.slice(0, 8).join();
+});
+log("absent then prototype gains", function () {
+  var r = [], seen = [];
+  var proto = {}; function make() { return Object.create(proto); }
+  r.push(round(make, readTag, hasTag, writeTag));
+  Object.defineProperty(proto, "tag", { get: function () { return "getter"; }, configurable: true }); r.push(round(make, readTag, hasTag, writeTag));
+  Object.defineProperty(proto, "tag", { set: function (v) { seen.push(v); }, configurable: true }); r.push(round(make, readTag, hasTag, writeTag));
+  Object.defineProperty(proto, "tag", { value: "data", writable: true, configurable: true }); r.push(round(make, readTag, hasTag, writeTag));
+  Object.defineProperty(proto, "tag", { writable: false }); r.push(round(make, readTag, hasTag, writeTag));
+  delete proto.tag; r.push(round(make, readTag, hasTag, writeTag));
+  Object.setPrototypeOf(proto, new Uint8Array(1)); r.push(round(make, readNaN, hasNaN, writeNaN));
+  Object.setPrototypeOf(proto, null); r.push(round(make, readNaN, hasNaN, writeNaN));
+  Object.preventExtensions(proto); r.push(round(make, readTag, hasTag, writeTag));
+  return r.join(" ; ") + "|" + seen.join();
+});
+print(out.join("\n"));
+})();
+(function () {
+var print = function (s) { all.push(s); };
+var out = [];
+function read(o) { return o.tag; }
+function write(o) { o.tag = "w"; }
+function own(o) { return Object.prototype.hasOwnProperty.call(o, "tag"); }
+function scenario(name, make, proto) {
+  var v;
+  try {
+    var r = [], seen = [];
+    var o = make(); r.push(read(o), read(o));
+    proto.tag = "data"; r.push(read(o), read(make()));
+    delete proto.tag; r.push(read(o), read(make()));
+    Object.defineProperty(proto, "tag", { get: function () { return "got"; }, set: function (v) { seen.push(v); }, configurable: true });
+    r.push(read(o), read(make())); var w = make(); write(w); write(o); r.push(own(w), seen.join(""));
+    Object.defineProperty(proto, "tag", { value: "fixed", writable: false, configurable: true });
+    var f = make(); write(f); r.push(read(f), own(f));
+    delete proto.tag; var w2 = make(); write(w2); r.push(read(w2), own(w2), read(make()));
+    v = r.map(String).join();
+  } catch (e) { v = "threw " + (e && e.constructor && e.constructor.name) + ": " + (e && e.message); }
+  try { delete proto.tag; } catch (e) {}
+  print(name + ": " + v);
+}
+(function () { var p = {}; scenario("create", function () { return Object.create(p); }, p); })();
+(function () { var p = {}; scenario("createWithProps", function () { return Object.create(p, { x: { value: 1 } }); }, p); })();
+(function () { var p = []; scenario("createArrayProto", function () { return Object.create(p); }, p); })();
+(function () { var p = function () {}; scenario("createFunctionProto", function () { return Object.create(p); }, p); })();
+(function () { var p = new Uint8Array(1); scenario("createTypedProto", function () { return Object.create(p); }, p); })();
+(function () { var p = new Map(); scenario("createMapProto", function () { return Object.create(p); }, p); })();
+(function () { var p = new Date(0); scenario("createDateProto", function () { return Object.create(p); }, p); })();
+(function () { var p = (function () {}).bind(null); scenario("createBoundProto", function () { return Object.create(p); }, p); })();
+(function () { var p = (function () { return arguments; })(1); scenario("createArgumentsProto", function () { return Object.create(p); }, p); })();
+(function () { var p = new String("s"); scenario("createStringProto", function () { return Object.create(p); }, p); })();
+(function () { var p = /x/; scenario("createRegExpProto", function () { return Object.create(p); }, p); })();
+(function () { var p = new Error("e"); scenario("createErrorProto", function () { return Object.create(p); }, p); })();
+(function () { var p = Promise.resolve(1); scenario("createPromiseProto", function () { return Object.create(p); }, p); })();
+(function () { var p = Object.create(null); scenario("createNullBasedProto", function () { return Object.create(p); }, p); })();
+(function () { function F() {} scenario("newDefault", function () { return new F(); }, F.prototype); })();
+(function () { function F() {} var p = {}; F.prototype = p; scenario("newAssigned", function () { return new F(); }, p); })();
+(function () { class C {} scenario("classInstance", function () { return new C(); }, C.prototype); })();
+(function () { class X {} scenario("classStatic", function () { return class extends X {}; }, X); })();
+(function () { class B {} class D extends B {} scenario("derivedInstance", function () { return new D(); }, B.prototype); })();
+(function () { class A extends Array {} scenario("arraySubclass", function () { return new A(); }, A.prototype); })();
+(function () { class T extends Uint8Array {} scenario("typedSubclass", function () { return new T(1); }, T.prototype); })();
+(function () { class M extends Map {} scenario("mapSubclass", function () { return new M(); }, M.prototype); })();
+(function () { class E extends Error {} scenario("errorSubclass", function () { return new E("m"); }, E.prototype); })();
+(function () { class R extends RegExp {} scenario("regexpSubclass", function () { return new R("x"); }, R.prototype); })();
+(function () { class Fn extends Function {} scenario("functionSubclass", function () { return new Fn(""); }, Fn.prototype); })();
+(function () { function NT() {} var p = {}; NT.prototype = p; scenario("reflectConstructObject", function () { return Reflect.construct(Object, [], NT); }, p); })();
+(function () { function NT() {} var p = {}; NT.prototype = p; scenario("reflectConstructArray", function () { return Reflect.construct(Array, [], NT); }, p); })();
+(function () { function NT() {} var p = {}; NT.prototype = p; scenario("reflectConstructFunction", function () { return Reflect.construct(function () {}, [], NT); }, p); })();
+(function () { function NT() {} var p = {}; NT.prototype = p; scenario("reflectConstructDate", function () { return Reflect.construct(Date, [0], NT); }, p); })();
+(function () { var p = {}; scenario("setProto", function () { return Object.setPrototypeOf({}, p); }, p); })();
+(function () { var p = {}; scenario("setProtoOnArray", function () { return Object.setPrototypeOf([], p); }, p); })();
+(function () { var p = {}; scenario("setProtoOnFunction", function () { return Object.setPrototypeOf(function () {}, p); }, p); })();
+(function () { var p = {}; scenario("reflectSetProto", function () { var o = {}; Reflect.setPrototypeOf(o, p); return o; }, p); })();
+(function () { var p = {}; scenario("literalProto", function () { return { __proto__: p }; }, p); })();
+(function () { var p = {}; scenario("literalProtoWithKeys", function () { return { a: 1, __proto__: p, b: 2 }; }, p); })();
+(function () { function* g() {} scenario("generator", function () { return g(); }, g.prototype); })();
+(function () { function* g() {} var p = {}; g.prototype = p; scenario("generatorAssigned", function () { return g(); }, p); })();
+(function () { var p = {}; var mid = Object.create(p); scenario("deepChain", function () { return Object.create(mid); }, p); })();
+(function () { var p = {}; var mid = Object.create(p); var mid2 = Object.create(mid); scenario("deeperChain", function () { return Object.create(mid2); }, p); })();
+(function () { var p = {}; var mid = Object.create(p); scenario("deepChainMiddle", function () { return Object.create(mid); }, mid); })();
+(function () { var p = Object.create(Function.prototype); function f() {} Object.setPrototypeOf(f, p); scenario("boundFunction", function () { return f.bind(null); }, p); })();
+(function () { var p = {}; scenario("assignInto", function () { return Object.assign(Object.create(p), { z: 1 }); }, p); })();
+(function () { scenario("objectPrototypeViaLiteral", function () { return {}; }, Object.prototype); })();
+(function () { scenario("objectPrototypeViaArray", function () { return []; }, Object.prototype); })();
+(function () { scenario("arrayPrototype", function () { return [1]; }, Array.prototype); })();
+(function () { scenario("functionPrototype", function () { return function () {}; }, Function.prototype); })();
+(function () { scenario("stringPrototype", function () { return "str"; }, String.prototype); })();
+(function () { scenario("numberPrototype", function () { return 5; }, Number.prototype); })();
+(function () { scenario("booleanPrototype", function () { return true; }, Boolean.prototype); })();
+(function () { scenario("objectPrototypeViaString", function () { return "str"; }, Object.prototype); })();
+(function () { scenario("objectPrototypeViaNumber", function () { return 1.5; }, Object.prototype); })();
+(function () {
+  var a = {}, b = { tag: "b" }; var o = Object.create(a); var r = [read(o), read(o)];
+  Object.setPrototypeOf(a, b); r.push(read(o), read(Object.create(a))); Object.setPrototypeOf(a, null); r.push(read(o)); Object.setPrototypeOf(a, { get tag() { return "g"; } }); r.push(read(o)); var w = Object.create(a); write(w); r.push(own(w));
+  print("prototypeOfPrototypeChanges: " + r.map(String).join());
+})();
+(function () {
+  var p = { tag: 0 }; var o = Object.create(p); var r = [read(o), read(o)]; delete p.tag; r.push(read(o), read(o)); p.other = 1; p.tag = 2; r.push(read(o)); delete p.other; r.push(read(o), read(Object.create(p)));
+  var q = { a: 1, tag: "q", c: 3 }; var x = Object.create(q); r.push(read(x), read(x)); delete q.a; r.push(read(x)); delete q.tag; r.push(read(x)); q.tag = "again"; r.push(read(x));
+  print("prototypePropertyRemoved: " + r.map(String).join());
+})();
+})();
+(function () {
+var print = function (s) { all.push(s); };
+function read(o) { return o.tag; }
+function write(o) { o.tag = "w"; }
+function own(o) { return Object.prototype.hasOwnProperty.call(o, "tag"); }
+function scenario(name, proto) {
+  var v;
+  try {
+    var make = function () { return Object.create(proto); };
+    var r = [], seen = [];
+    var o = make(); r.push(read(o), read(o));
+    proto.tag = "data"; r.push(read(o), read(make()));
+    delete proto.tag; r.push(read(o), read(make()));
+    Object.defineProperty(proto, "tag", { get: function () { return "got"; }, set: function (v) { seen.push(v); }, configurable: true });
+    r.push(read(o), read(make())); var w = make(); write(w); write(o); r.push(own(w), seen.join(""));
+    delete proto.tag; var w2 = make(); write(w2); r.push(read(w2), own(w2), read(make()));
+    v = r.map(String).join();
+  } catch (e) { v = "threw " + (e && e.constructor && e.constructor.name); }
+  try { delete proto.tag; } catch (e) {}
+  print(name + ": " + v);
+}
+var gen = function* () { yield 1; };
+var kinds = {
+  set: new Set(), weakMap: new WeakMap(), weakSet: new WeakSet(), weakRef: new WeakRef({}), arrayBuffer: new ArrayBuffer(4), dataView: new DataView(new ArrayBuffer(4)),
+  generatorObject: gen(), generatorFunction: gen, arrayIterator: [][Symbol.iterator](), mapIterator: new Map().entries(), setIterator: new Set().values(), stringIterator: ""[Symbol.iterator](),
+  numberObject: new Number(1), booleanObject: new Boolean(false), symbolObject: Object(Symbol("s")), bigintObject: Object(1n),
+  builtinFunction: Math.max, builtinConstructor: Map, classConstructor: class K {}, arrow: () => 1, asyncFunction: async function () {}, boundBuiltin: Math.max.bind(null),
+  math: Math, json: JSON, reflect: Reflect, global: globalThis, float64: new Float64Array(2), bigInt64: new BigInt64Array(1), clamped: new Uint8ClampedArray(1),
+  finalization: new FinalizationRegistry(function () {}), symbolPrototype: Symbol.prototype, errorType: new TypeError("t"), aggregate: new AggregateError([]), regexpResult: /a/.exec("a"),
+  frozenThenNot: {}, nullProto: Object.create(null), date: new Date(1), promiseCapability: new Promise(function () {}), templateObject: (function (s) { return s.raw; })`x`
+};
+Object.keys(kinds).forEach(function (k) { scenario(k, kinds[k]); });
+})();
+(function () {
+var print = function (s) { all.push(s); };
+function t(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + e.constructor.name; } print(name + ": " + v); }
+function state(p) { p.added = 1; return [Object.isExtensible(p), Object.isFrozen(p), Object.isSealed(p), "added" in p].join(); }
+function read(o) { return o.tag; }
+function write(o) { o.tag = "w"; return Object.prototype.hasOwnProperty.call(o, "tag"); }
+t("create", function () { var p = Object.preventExtensions({ a: 1 }); Object.create(p); return state(p); });
+t("create frozen", function () { var p = Object.freeze({ a: 1 }); Object.create(p); return state(p); });
+t("new", function () { var p = Object.preventExtensions({ a: 1 }); function F() {} F.prototype = p; new F(); return state(p); });
+t("new frozen", function () { var p = Object.freeze({ a: 1 }); function F() {} F.prototype = p; new F(); return state(p); });
+t("setPrototypeOf", function () { var p = Object.preventExtensions({ a: 1 }); Object.setPrototypeOf({}, p); return state(p); });
+t("setPrototypeOf sealed", function () { var p = Object.seal({ a: 1 }); Object.setPrototypeOf({}, p); return state(p); });
+t("literal", function () { var p = Object.preventExtensions({ a: 1 }); var o = { __proto__: p }; return state(p); });
+t("class extends frozen", function () { function B() {} Object.freeze(B.prototype); Object.freeze(B); class D extends B {} new D(); return state(B.prototype) + "/" + state(B); });
+t("frozen array", function () { var p = Object.freeze([1]); Object.create(p); return state(p) + p.length; });
+t("frozen function", function () { var p = Object.freeze(function () {}); Object.create(p); return state(p); });
+t("frozen after use", function () { var p = { a: 1 }; Object.create(p); Object.freeze(p); return state(p); });
+t("template raw", function () { var p = (function (s) { return s.raw; })`x`; Object.create(p); return state(p); });
+t("frozen with empty shape", function () { var p = Object.freeze({}); Object.create(p); return state(p); });
+t("frozen twice used", function () { var p = Object.freeze({ a: 1 }); Object.create(p); function F() {} F.prototype = p; new F(); Object.setPrototypeOf({}, p); return state(p); });
+t("strict add to frozen prototype", function () { "use strict"; var p = Object.freeze({ a: 1 }); Object.create(p); try { p.b = 1; return "added"; } catch (e) { return e.constructor.name + Object.keys(p).join(""); } });
+t("non-extensible prototype loses a property", function () {
+  var p = { tag: "p", other: 1 }; Object.preventExtensions(p); var o = Object.create(p), r = [read(o), read(o)];
+  delete p.tag; r.push(read(o), read(Object.create(p)), write(Object.create(p))); p.tag = "back"; r.push(read(o), "tag" in p);
+  return r.map(String).join();
+});
+t("non-extensible prototype redefines a property", function () {
+  var seen = []; var p = { tag: "p" }; Object.preventExtensions(p); var o = Object.create(p), r = [read(o), read(o)];
+  Object.defineProperty(p, "tag", { get: function () { return "got"; }, set: function (v) { seen.push(v); } }); r.push(read(o), write(o), write(Object.create(p)));
+  Object.defineProperty(p, "tag", { value: "ro", writable: false }); r.push(read(o), write(Object.create(p)));
+  return r.map(String).join() + "|" + seen.join("");
+});
+t("sealed prototype", function () {
+  var p = Object.seal({ tag: "p" }); var o = Object.create(p), r = [read(o), read(o)]; p.tag = "changed"; r.push(read(o), delete p.tag, read(o), write(Object.create(p)));
+  try { Object.setPrototypeOf(p, {}); r.push("moved"); } catch (e) { r.push(e.constructor.name); } r.push(read(Object.create(p)));
+  return r.map(String).join();
+});
+t("frozen prototype shadows by assignment", function () {
+  var p = Object.freeze({ tag: "p" }); var r = []; for (var i = 0; i < 3; i++) { var o = Object.create(p); r.push(read(o), write(o), read(o)); }
+  function strict(o) { "use strict"; try { o.tag = 1; return "set"; } catch (e) { return e.constructor.name; } } r.push(strict(Object.create(p)), strict(Object.create(p)));
+  return r.map(String).join();
+});
+t("absent through a frozen prototype", function () {
+  var p = Object.freeze({ a: 1 }); var r = []; for (var i = 0; i < 3; i++) { var o = Object.create(p); r.push(read(o), write(o), read(o), Object.keys(o).join("")); }
+  var q = Object.preventExtensions({ a: 1 }); for (var j = 0; j < 3; j++) { var x = Object.create(q); r.push(read(x), write(x), read(x)); } q.tag = "no"; r.push(read(Object.create(q)));
+  return r.map(String).join();
+});
+t("receiver made non-extensible", function () {
+  function add(o) { o.fresh = 1; return Object.keys(o).join(""); } var r = [];
+  for (var i = 0; i < 3; i++) r.push(add({}), add(Object.preventExtensions({})), add(Object.freeze({ z: 1 })), add(Object.seal({ y: 1 })));
+  var same = { m: 1 }; r.push(add(same)); Object.preventExtensions(same); delete same.fresh; r.push(add(same));
+  return r.join();
+});
+})();
+(function () {
+var print = function (s) { all.push(s); };
+function t(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + e.constructor.name; } print(name + ": " + v); }
+function add(o) { o.fresh = 1; return Object.keys(o).join("") + Object.isExtensible(o); }
+t("A delete after preventExtensions", function () { var same = { m: 1 }; add(same); Object.preventExtensions(same); delete same.fresh; return add(same); });
+t("B no prior add", function () { var same = { m: 1, fresh: 0 }; Object.preventExtensions(same); delete same.fresh; return add(same); });
+t("C no function", function () { var same = { m: 1, fresh: 0 }; Object.preventExtensions(same); delete same.fresh; same.fresh = 1; return Object.keys(same).join("") + Object.isExtensible(same); });
+t("D computed", function () { var same = { m: 1, fresh: 0 }; Object.preventExtensions(same); delete same.fresh; var k = "fresh"; same[k] = 1; return Object.keys(same).join("") + Object.isExtensible(same); });
+t("E delete only", function () { var same = { m: 1, fresh: 0 }; Object.preventExtensions(same); delete same.fresh; return Object.keys(same).join("") + Object.isExtensible(same) + Object.isFrozen(same); });
+t("F delete last then define", function () { var same = { m: 1, fresh: 0 }; Object.preventExtensions(same); delete same.fresh; try { Object.defineProperty(same, "fresh", { value: 1 }); } catch (e) { return e.constructor.name + Object.isExtensible(same); } return "defined"; });
+t("G delete first key", function () { var same = { fresh: 0, m: 1 }; Object.preventExtensions(same); delete same.fresh; same.fresh = 1; return Object.keys(same).join("") + Object.isExtensible(same); });
+t("H delete on prototype-used", function () { var same = { m: 1, fresh: 0 }; Object.create(same); Object.preventExtensions(same); delete same.fresh; same.fresh = 1; return Object.keys(same).join("") + Object.isExtensible(same); });
+t("I array", function () { var a = [1]; a.fresh = 0; Object.preventExtensions(a); delete a.fresh; a.fresh = 1; return Object.keys(a).join("") + Object.isExtensible(a); });
+})();
+(function () {
+var print = function (s) { all.push(s); };
+function t(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + e.constructor.name; } print(name + ": " + v); }
+function state(p) { p.added = 1; return [Object.isExtensible(p), Object.isFrozen(p), Object.isSealed(p), "added" in p].join(); }
+class Base { constructor(o) { return o; } }
+class Stamper extends Base { #p = 1; #q = 2; static has(o) { return #p in o; } }
+t("private onto frozen", function () { var f = Object.freeze({ a: 1 }); new Stamper(f); return Stamper.has(f) + "/" + state(f); });
+t("private onto non-extensible", function () { var f = Object.preventExtensions({ a: 1, b: 2 }); new Stamper(f); return Stamper.has(f) + "/" + state(f); });
+t("private onto frozen empty", function () { var f = Object.freeze({}); new Stamper(f); return Stamper.has(f) + "/" + state(f); });
+t("private onto frozen prototype", function () { var f = Object.freeze({ a: 1 }); Object.create(f); new Stamper(f); return Stamper.has(f) + "/" + state(f); });
+t("private onto frozen array", function () { var f = Object.freeze([1]); new Stamper(f); return Stamper.has(f) + "/" + state(f); });
+t("private then delete on non-extensible", function () { var f = Object.preventExtensions({ a: 1, b: 2 }); new Stamper(f); delete f.a; return Stamper.has(f) + "/" + state(f) + Object.keys(f).join(""); });
+})();
+all.join("\n")"#;
+    let expected = r#"typedArrayInChain: plain/undefined/3,plain/undefined/3,plain/undefined/3,plain/undefined/3,NaNInfinityplain/1/3,NaNInfinityplain/1/3,NaNInfinityplain/1/3,0tagother/undefined,0tagother/undefined,0tagother/undefined
+stringAndArrayInChain: tag/2,tag/2,tag/2,lengthtag/5,lengthtag/5,lengthtag/5,tag/3,tag/3,tag/3,TypeError,TypeError,TypeError
+proxyInChain: qw,qw,qw,qw,qw,qw,qw|set:q,set:w,set:q,set:w,set:q,set:w,set:q,set:w,set:q,set:w,set:q,set:w,set:q,set:w
+nullPrototype: ab3,ab3,ab3,ab3,toStringab3
+getterOnlyAndReadOnlyInChain: z/got/fixed,TypeError+TypeError0,z/got/fixed,TypeError+TypeError0,z/got/fixed,TypeError+TypeError0,z/got/fixed,TypeError+TypeError0
+shapeChangesBetweenAdds: 0,5,1,7,late,ylatex,8,9,own-ro,0,0,true|s3,own10|12|k0late0,k1late1,k2late2,k3late3,k4late4,k5late5,k6late6,k0late7,k1late8|k4late39
+classesAndSuper: abcdre,abcdre,abcdre,abcdre,abc,abcd,abd|mid5,mid5,mid5,mid5,base4,mid5,mid5,swapped3,mid5
+valuesKept: 112125|0|{"n":299,"s":"s299","o":{"i":299},"f":149.5,"z":null,"big":1284195221504}
+readThenWrite typed NaN: undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,/undefined,/undefined,/undefined,/undefined,/undefined,/undefined
+readThenWrite typed Infinity: undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,/undefined,/undefined,/undefined,/undefined,/undefined,/undefined
+readThenWrite typed deep: undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,/undefined,/undefined,/undefined,/undefined,/undefined,/undefined
+readThenWrite typed tag: undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,tag/7,tag/7,tag/7,tag/7,tag/7,tag/7
+readThenWrite string length: 3,3,true,/3,3,true,3,3,true,/3,3,true,3,3,true,/3,3,true,/3,/3,/3,/3,/3,/3
+readThenWrite string tag: undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,tag/7,tag/7,tag/7,tag/7,tag/7,tag/7
+readThenWrite array length: 3,3,true,length/9,9,true,3,3,true,length/9,9,true,3,3,true,length/9,9,true,length/9,length/9,length/9,length/9,length/9,length/9
+readThenWrite function length: 2,2,true,/2,2,true,2,2,true,/2,2,true,2,2,true,/2,2,true,/2,/2,/2,/2,/2,/2
+readThenWrite arguments: 2,2,true,length/9,9,true,2,2,true,length/9,9,true,2,2,true,length/9,9,true,length/9,length/9,length/9,length/9,length/9,length/9;undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,tag/7,tag/7,tag/7,tag/7,tag/7,tag/7
+readThenWrite wrappers: 152,152,152,152,152,152,152,152,152,152,152,152,152,152,152,152,152
+readThenWrite proxy: undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,/undefined,/undefined,/undefined,/undefined,/undefined,/undefined|231get:tag,get:tag,has:tag,set:tag,get:tag,get:tag,has:tag,get:tag
+absent then prototype gains: undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,tag/7,tag/7,tag/7,tag/7,tag/7,tag/7 ; getter,getter,true,/getter,getter,true,getter,getter,true,/getter,getter,true,getter,getter,true,/getter,getter,true,/getter,/getter,/getter,/getter,/getter,/getter ; getter,getter,true,/getter,getter,true,getter,getter,true,/getter,getter,true,getter,getter,true,/getter,getter,true,/getter,/getter,/getter,/getter,/getter,/getter ; data,data,true,tag/7,7,true,data,data,true,tag/7,7,true,data,data,true,tag/7,7,true,tag/7,tag/7,tag/7,tag/7,tag/7,tag/7 ; data,data,true,/data,data,true,data,data,true,/data,data,true,data,data,true,/data,data,true,/data,/data,/data,/data,/data,/data ; undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,tag/7,tag/7,tag/7,tag/7,tag/7,tag/7 ; undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,undefined,undefined,false,/undefined,undefined,false,/undefined,/undefined,/undefined,/undefined,/undefined,/undefined ; undefined,undefined,false,NaN/1,1,true,undefined,undefined,false,NaN/1,1,true,undefined,undefined,false,NaN/1,1,true,NaN/1,NaN/1,NaN/1,NaN/1,NaN/1,NaN/1 ; undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,undefined,undefined,false,tag/7,7,true,tag/7,tag/7,tag/7,tag/7,tag/7,tag/7|7,7,7,7,7,7,7,7,7
+create: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createWithProps: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createArrayProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createFunctionProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createTypedProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createMapProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createDateProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createBoundProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createArgumentsProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createStringProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createRegExpProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createErrorProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createPromiseProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+createNullBasedProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+newDefault: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+newAssigned: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+classInstance: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+classStatic: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+derivedInstance: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+arraySubclass: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+typedSubclass: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+mapSubclass: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+errorSubclass: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+regexpSubclass: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+functionSubclass: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+reflectConstructObject: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+reflectConstructArray: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+reflectConstructFunction: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+reflectConstructDate: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+setProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+setProtoOnArray: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+setProtoOnFunction: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+reflectSetProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+literalProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+literalProtoWithKeys: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+generator: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+generatorAssigned: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+deepChain: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+deeperChain: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+deepChainMiddle: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+boundFunction: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+assignInto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+objectPrototypeViaLiteral: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+objectPrototypeViaArray: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+arrayPrototype: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+functionPrototype: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,w,true,undefined
+stringPrototype: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,undefined,false,undefined
+numberPrototype: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,undefined,false,undefined
+booleanPrototype: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,undefined,false,undefined
+objectPrototypeViaString: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,undefined,false,undefined
+objectPrototypeViaNumber: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,fixed,false,undefined,false,undefined
+prototypeOfPrototypeChanges: undefined,undefined,b,b,undefined,g,false
+prototypePropertyRemoved: 0,0,undefined,undefined,2,2,2,q,q,q,undefined,again
+set: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+weakMap: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+weakSet: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+weakRef: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+arrayBuffer: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+dataView: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+generatorObject: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+generatorFunction: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+arrayIterator: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+mapIterator: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+setIterator: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+stringIterator: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+numberObject: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+booleanObject: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+symbolObject: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+bigintObject: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+builtinFunction: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+builtinConstructor: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+classConstructor: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+arrow: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+asyncFunction: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+boundBuiltin: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+math: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+json: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+reflect: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+global: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+float64: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+bigInt64: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+clamped: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+finalization: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+symbolPrototype: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+errorType: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+aggregate: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+regexpResult: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+frozenThenNot: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+nullProto: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+date: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+promiseCapability: undefined,undefined,data,data,undefined,undefined,got,got,false,ww,w,true,undefined
+templateObject: threw TypeError
+create: false,false,false,false
+create frozen: false,true,true,false
+new: false,false,false,false
+new frozen: false,true,true,false
+setPrototypeOf: false,false,false,false
+setPrototypeOf sealed: false,false,true,false
+literal: false,false,false,false
+class extends frozen: false,true,true,false/false,true,true,false
+frozen array: false,true,true,false1
+frozen function: false,true,true,false
+frozen after use: false,true,true,false
+template raw: false,true,true,false
+frozen with empty shape: false,true,true,false
+frozen twice used: false,true,true,false
+strict add to frozen prototype: TypeErrora
+non-extensible prototype loses a property: p,p,undefined,undefined,true,undefined,false
+non-extensible prototype redefines a property: p,p,got,false,false,ro,false|ww
+sealed prototype: p,p,changed,false,changed,true,TypeError,changed
+frozen prototype shadows by assignment: p,false,p,p,false,p,p,false,p,TypeError,TypeError
+absent through a frozen prototype: undefined,true,w,tag,undefined,true,w,tag,undefined,true,w,tag,undefined,true,w,undefined,true,w,undefined,true,w,undefined
+receiver made non-extensible: fresh,,z,y,fresh,,z,y,fresh,,z,y,mfresh,m
+A delete after preventExtensions: mfalse
+B no prior add: mfalse
+C no function: mfalse
+D computed: mfalse
+E delete only: mfalsefalse
+F delete last then define: TypeErrorfalse
+G delete first key: mfalse
+H delete on prototype-used: mfalse
+I array: 0false
+private onto frozen: true/false,true,true,false
+private onto non-extensible: true/false,false,false,false
+private onto frozen empty: true/false,true,true,false
+private onto frozen prototype: true/false,true,true,false
+private onto frozen array: true/false,true,true,false
+private then delete on non-extensible: true/false,false,false,falseb"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
