@@ -9788,3 +9788,118 @@ throws TypeError TypeError RangeError true false"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A bound function called as the function it was bound from, in place of
+/// the call, and parameters with defaults and rest parameters bound from
+/// the list of a call's arguments: every kind of this value for a strict
+/// and a sloppy target, the bound function reached in every way, targets
+/// that are not run in place, errors and recursion through a bound
+/// function, and rest parameters of calls with few and with many
+/// arguments. What is expected is what Node prints for the same script.
+#[test]
+fn a_bound_function_is_a_call_of_its_target() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(bound_functions_and_parameters)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn bound_functions_and_parameters() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+var G = (function () { return this; })();
+function sloppy(a, b) { return (this === G ? "global" : typeof this + ":" + String(this && this.tag !== undefined ? this.tag : this)) + "|" + a + "|" + b + "|" + arguments.length; }
+function strict(a, b) { "use strict"; return (this === G ? "global" : this === undefined ? "undefined" : this === null ? "null" : typeof this + ":" + String(this && this.tag !== undefined ? this.tag : this)) + "|" + a + "|" + b + "|" + arguments.length; }
+var thises = [{ tag: "obj" }, undefined, null, 5, "str", true, 10n, [1], function () {}, G];
+var out = [];
+for (var i = 0; i < thises.length; i++) { var bs = sloppy.bind(thises[i]), bt = strict.bind(thises[i]); out.push(bs(1, 2), bt(1, 2), bs(), bt(1, 2, 3, 4)); }
+P("this values", out.join(" ; "));
+// The same call sites, called many times, with the bound function reached in every way.
+var base = { k: 3, tag: "base" }; var f = function (x) { return this.k + x; }.bind(base);
+var total = 0; for (var i = 0; i < 2000; i++) total += f(i & 3); P("loop", total);
+var holder = { f: f, k: 100, get g() { return f; } }; var other = { k: 1000 };
+P("ways", f(1), holder.f(1), holder.g(1), holder["f"](1), f.call(other, 1), f.apply(other, [1]), Reflect.apply(f, other, [1]), (0, holder.f)(1), [1, 2].map(f).join(), f.bind(other)(1), new (function () { return f(1); })() instanceof Object);
+P("with arguments", sloppy.bind(base, "A")("B"), sloppy.bind(base, "A", "B")("C"), strict.bind(base, "A").bind(other, "B")("C"), sloppy.bind(base).bind(other)(1, 2), sloppy.bind()(1), strict.bind()(1));
+// What the target is.
+var arrowThis = { tag: "outer" }; var arrow = (function () { return (x) => typeof this + ":" + this.tag + ":" + x; }).call(arrowThis).bind({ tag: "ignored" });
+class C { constructor(v) { this.v = v; } m() { return this.v; } static s() { return this === C; } }
+function* gen(a) { yield this.tag; yield a; } async function asy(a) { return this.tag + a; }
+P("targets", arrow(1), T(function () { return C.bind(null)(1); }), new (C.bind(null, 7))().v, new (C.bind({ tag: "x" }))(8).m(), C.prototype.m.bind(new C(9))(), C.s.bind(C)(), C.s.bind(null)(), [...gen.bind(base)("a")].join(), typeof asy.bind(base)("z").then, Math.max.bind(null, 5)(1, 9), Array.prototype.join.bind([1, 2])("-"), "abc".slice.bind("abcdef")(2), Object.prototype.hasOwnProperty.bind({ a: 1 })("a"));
+function Ctor(a) { this.a = a; this.who = this instanceof Ctor; } var BCtor = Ctor.bind({ tag: "bound this" }); var made = new BCtor(1); P("constructed", made.a, made.who, made instanceof Ctor, made instanceof BCtor, T(function () { return BCtor(2); }), typeof BCtor.prototype);
+// Parameters bound by instructions, the arguments object, defaults and rest.
+function params(a, b = this.k * 2, ...rest) { return [this.tag, a, b, rest.length, arguments.length].join(); } function args() { return this.tag + ":" + Array.prototype.join.call(arguments); } function pattern({ x }, [y]) { return this.tag + x + y; }
+P("parameters", params.bind(base)(1), params.bind(base)(1, 2, 3, 4), params.bind(base)(), args.bind(base)(1, 2, 3), args.bind(base)(), pattern.bind(base)({ x: 1 }, [2]), T(function () { return pattern.bind(base)(); }));
+// Errors, recursion, and what a call leaves behind.
+function thrower(n) { if (n === 0) throw new RangeError(this.tag); try { return thrower.call(this, n - 1); } finally { thrower.count = (thrower.count || 0) + 1; } }
+P("throws", T(function () { return thrower.bind(base)(3); }), thrower.count, T(function () { try { thrower.bind({ tag: "m" })(0); } catch (e) { return e.message; } }));
+var fact = function (n) { return n <= 1 ? this.one : n * factBound(n - 1); }; var factBound = fact.bind({ one: 1 }); P("recursion", factBound(10), factBound(1));
+var deep = function (n) { return n === 0 ? this.tag : deepBound(n - 1); }; var deepBound = deep.bind(base); P("deep", deepBound(500), T(function () { return deepBound(1e6); }));
+var counter = { n: 0 }; var bump = function (by) { this.n += by; return this; }.bind(counter); bump(1); bump(2); bump(3); P("state", counter.n, bump(0) === counter);
+var mk = function () { var self = this; return function () { return self.tag + ":" + (this === G ? "global" : this.tag); }; }.bind(base); P("closures", mk()(), mk().call({ tag: "inner" }), mk.call(other)());
+P("properties", f.name, f.length, sloppy.bind(base, 1).length, typeof f.prototype, Object.prototype.toString.call(f), f.hasOwnProperty("caller"), sloppy.bind(base).name, (function () {}).bind().name, T(function () { return f.caller; }));
+var rebound = sloppy.bind({ tag: "first" }); var slot = { call: rebound }; var seq = []; for (var i = 0; i < 6; i++) { seq.push((i % 2 ? rebound : strict.bind({ tag: "second" }))(i)); if (i === 3) rebound = sloppy.bind({ tag: "third" }); } P("changing callee", seq.join(" ; "), slot.call(9));
+label: { var early = function (n) { for (var i = 0; i < 10; i++) { if (i === n) return this.tag + i; } return "none"; }.bind(base); P("return from a loop", early(3), early(20)); }
+var getterHolder = { get bound() { return function () { return this.tag; }.bind({ tag: "from getter" }); } }; P("getter", getterHolder.bound(), getterHolder.bound.call(base));
+
+// Rest and default parameters, bound from the list of a call's arguments.
+function rest(...r) { return r.length + ":" + r.join("") + ":" + Array.isArray(r) + ":" + arguments.length; }
+function many(n) { var a = []; for (var i = 0; i < n; i++) a.push(i % 10); return a; }
+var rl = []; for (var n of [0, 1, 2, 15, 16, 17, 18, 40, 300]) rl.push(rest(...many(n)), rest.apply(null, many(n)), rest.call(null, ...many(n)).length); P("rest sizes", rl.join(" "));
+function afterTwo(a, b, ...r) { return [a, b, r.length, r[0], r[r.length - 1]].join(); } P("rest after parameters", afterTwo(), afterTwo(1), afterTwo(1, 2), afterTwo(1, 2, 3), afterTwo(...many(17)), afterTwo(...many(18)), afterTwo(...many(19)));
+var kept = []; function keep(...r) { kept.push(r); r.push("own"); return r; } var k1 = keep(1, 2), k2 = keep(1, 2), k3 = keep(); k1[0] = "changed"; P("rest arrays are their own", JSON.stringify(kept), k1 === kept[0], k1 !== k2, k3.length, Object.getPrototypeOf(k1) === Array.prototype, Object.keys(k2).join(), k2.length);
+var order = ""; function note(v) { order += v + ";"; return v; }
+function defaults(a = note("a"), b = note("b") + a, c = arguments.length, d = b + c, ...r) { return [a, b, c, d, r.length].join(); }
+order = ""; P("defaults", defaults(), order); order = ""; P("defaults given", defaults(1), defaults(1, 2), defaults(undefined, 2), defaults(1, undefined, 3), defaults(null, 0, "", false, 9, 9), order);
+function tdz(a = b, b = 1) { return a + b; } function shadow(a, b = () => a, ...r) { var a = 5; return b() + ":" + a + ":" + r.length; } P("defaults scope", T(function () { return tdz(); }), tdz(1), tdz(1, 2), shadow(1), shadow(1, undefined, 2, 3));
+function throwing(a = (function () { throw new RangeError("default"); })(), ...r) { return "not reached"; } P("default throws", T(function () { return throwing(); }), throwing(1), T(function () { return throwing(undefined, 1, 2); }));
+function restPattern(a, ...[b, c = "C", ...d]) { return [a, b, c, d.length].join(); } function objRest({ x, ...o }, ...r) { return x + Object.keys(o).join() + r.length; } P("patterns", restPattern(1, 2), restPattern(1, 2, 3, 4, 5), restPattern(), objRest({ x: 1, y: 2, z: 3 }, 4, 5));
+var arrowRest = (a = 1, ...r) => a + r.length; var methods = { m(a, b = this.k, ...r) { return a + b + r.length; }, k: 10 }; function* genRest(a = 1, ...r) { yield a; yield r.length; } class WithRest { constructor(a = 2, ...r) { this.v = a + r.length; } static s(...r) { return r.length; } }
+P("kinds of functions", arrowRest(), arrowRest(5, 1, 1), methods.m(1), methods.m(1, 2, 3, 4), [...genRest()].join(), [...genRest(7, 8, 9)].join(), new WithRest().v, new WithRest(1, 2, 3).v, WithRest.s(1, 2), new (function (a = 3, ...r) { this.v = a + r.length; })(undefined, 1).v);
+var restBound = rest.bind(null); var restBound2 = rest.bind(null, "x", "y"); P("rest of bound", restBound(), restBound(1, 2, 3), restBound(...many(20)), restBound2(1), restBound2(...many(16)));
+var total2 = 0; function hot(a, b = 2, ...r) { return a + b + r.length; } for (var i = 0; i < 3000; i++) total2 += hot(i & 3) + hot(1, 2, 3, 4) + hot(1, undefined, ...many(i % 20)); P("loop of calls", total2);
+function lens(a, b = 1, ...r) {} function lens2(...r) {} function lens3(a, b, c = 1, d) {} P("lengths", lens.length, lens2.length, lens3.length, rest.length, defaults.length);
+lines.join("\n")"##;
+    let expected = r##"this values object:obj|1|2|2 ; object:obj|1|2|2 ; object:obj|undefined|undefined|0 ; object:obj|1|2|4 ; global|1|2|2 ; undefined|1|2|2 ; global|undefined|undefined|0 ; undefined|1|2|4 ; global|1|2|2 ; null|1|2|2 ; global|undefined|undefined|0 ; null|1|2|4 ; object:5|1|2|2 ; number:5|1|2|2 ; object:5|undefined|undefined|0 ; number:5|1|2|4 ; object:str|1|2|2 ; string:str|1|2|2 ; object:str|undefined|undefined|0 ; string:str|1|2|4 ; object:true|1|2|2 ; boolean:true|1|2|2 ; object:true|undefined|undefined|0 ; boolean:true|1|2|4 ; object:10|1|2|2 ; bigint:10|1|2|2 ; object:10|undefined|undefined|0 ; bigint:10|1|2|4 ; object:1|1|2|2 ; object:1|1|2|2 ; object:1|undefined|undefined|0 ; object:1|1|2|4 ; function:function () {}|1|2|2 ; function:function () {}|1|2|2 ; function:function () {}|undefined|undefined|0 ; function:function () {}|1|2|4 ; global|1|2|2 ; global|1|2|2 ; global|undefined|undefined|0 ; global|1|2|4
+loop 9000
+ways 4 4 4 4 4 4 4 4 4,5 4 true
+with arguments object:base|A|B|2 object:base|A|B|3 object:base|A|B|3 object:base|1|2|2 global|1|undefined|1 undefined|1|undefined|1
+targets object:outer:1 threw TypeError 7 8 9 true false base,a function 9 1-2 cdef true
+constructed 1 true true true  undefined
+parameters base,1,6,0,1 base,1,2,2,4 base,,6,0,0 base:1,2,3 base: base12 threw TypeError
+throws threw RangeError 3 m
+recursion 3628800 1
+deep base threw RangeError
+state 6 true
+closures base:global base:inner base:global
+properties bound  1 1 undefined [object Function] false bound sloppy bound  threw TypeError
+changing callee object:second|0|undefined|1 ; object:first|1|undefined|1 ; object:second|2|undefined|1 ; object:first|3|undefined|1 ; object:second|4|undefined|1 ; object:third|5|undefined|1 object:first|9|undefined|1
+return from a loop base3 none
+getter from getter from getter
+rest sizes 0::true:0 0::true:0 9 1:0:true:1 1:0:true:1 10 2:01:true:2 2:01:true:2 11 15:012345678901234:true:15 15:012345678901234:true:15 26 16:0123456789012345:true:16 16:0123456789012345:true:16 27 17:01234567890123456:true:17 17:01234567890123456:true:17 28 18:012345678901234567:true:18 18:012345678901234567:true:18 29 40:0123456789012345678901234567890123456789:true:40 40:0123456789012345678901234567890123456789:true:40 51 300:012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789:true:300 300:012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789:true:300 313
+rest after parameters ,,0,, 1,,0,, 1,2,0,, 1,2,1,3,3 0,1,15,2,6 0,1,16,2,7 0,1,17,2,8
+rest arrays are their own [["changed",2,"own"],[1,2,"own"],["own"]] true true 1 true 0,1,2 3
+defaults a,ba,0,ba0,0 a;b;
+defaults given 1,b1,1,b11,0 1,2,2,4,0 a,2,2,4,0 1,b1,3,b13,0 ,0,,false,2 b;a;b;
+defaults scope threw ReferenceError 2 3 1:5:0 1:5:2
+default throws threw RangeError not reached threw RangeError
+patterns 1,2,C,0 1,2,3,2 ,,C,0 1y,z2
+kinds of functions 1 7 11 5 1,0 7,2 2 3 2 4
+rest of bound 0::true:0 3:123:true:3 20:01234567890123456789:true:20 3:xy1:true:3 18:xy0123456789012345:true:18
+loop of calls 63000
+lengths 1 0 2 0 0"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

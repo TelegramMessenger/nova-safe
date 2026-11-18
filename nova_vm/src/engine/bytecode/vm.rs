@@ -237,6 +237,10 @@ enum Change {
     Terminate,
 }
 
+/// The most arguments that a rest parameter takes into its Array in the
+/// loop of instructions: of a longer list the general way makes it.
+const REST_IN_PLACE: usize = 16;
+
 /// A function that a call instruction calls and the `Vm` runs itself.
 #[derive(Clone, Copy)]
 struct CalledInPlace {
@@ -998,6 +1002,11 @@ impl Vm {
                         if let Some(callee) = self.function_called_in_place(agent, instr) {
                             break Change::Call(callee, instr);
                         }
+                        if let Some(callee) =
+                            self.bound_function_called_in_place(agent, instr, gc.nogc())
+                        {
+                            break Change::Call(callee, instr);
+                        }
                     }
                     // `new` of a function that this Vm runs itself.
                     Plain::Construct => {
@@ -1205,6 +1214,71 @@ impl Vm {
         let code = executable.get(agent);
         Some(CalledInPlace {
             function,
+            executable,
+            parameters: code.stack_parameters.map(usize::from),
+            environment: code.call_environment,
+            completion: Completion::Value,
+        })
+    }
+
+    /// The call of a bound function, if this `Vm` runs the function it was
+    /// bound from itself: \[\[Call]] of a bound function is a call of that
+    /// function with the bound this value, and the arguments after the bound
+    /// ones. For a bound function with no bound arguments, whose target is
+    /// a function that [`Vm::function_called_in_place`] takes. The this
+    /// value of a call is the base of its Reference: the Reference of this
+    /// call becomes one of the bound this value. Nothing has changed where
+    /// this returns None.
+    // Not part of the loop of instructions: few instructions end here.
+    #[inline(never)]
+    fn bound_function_called_in_place(
+        &mut self,
+        agent: &Agent,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<CalledInPlace> {
+        let count = instr.get_first_index();
+        if count == IndexType::MAX as usize {
+            return None;
+        }
+        let at = self.stack.len().checked_sub(count + 1)?;
+        let Value::BoundFunction(bound) = self.stack[at] else {
+            return None;
+        };
+        if bound.bound_arguments(agent).len() != 0 {
+            return None;
+        }
+        let Function::ECMAScriptFunction(function) = bound.bound_target_function(agent) else {
+            return None;
+        };
+        let data = function.get(agent);
+        let kind = data.ecmascript_function.kind;
+        if kind.is_generator()
+            || kind.is_async()
+            || data
+                .ecmascript_function
+                .constructor_status
+                .is_class_constructor()
+        {
+            return None;
+        }
+        let executable = data.compiled_bytecode?;
+        if agent.call_depth_exceeded() {
+            return None;
+        }
+        let code = executable.get(agent);
+        // Only the base of the Reference is read, as the this value.
+        let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
+        let reference =
+            Reference::new_property_reference(bound.bound_this(agent).bind(gc), key, false)
+                .unbind();
+        if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+            *self.reference_stack.last_mut()? = reference;
+        } else {
+            self.reference = Some(reference);
+        }
+        Some(CalledInPlace {
+            function: function.unbind(),
             executable,
             parameters: code.stack_parameters.map(usize::from),
             environment: code.call_environment,
@@ -2268,6 +2342,51 @@ impl Vm {
                     }
                 }
             }
+            // A parameter with a default value or after one, bound from the
+            // list of the call's arguments: the next argument, or undefined
+            // where the call gave no more.
+            Instruction::IteratorStepValueOrUndefined => {
+                step!(IteratorStepValueOrUndefined);
+                let Some(VmIteratorRecord::SliceIterator(arguments)) = vm.iterator_stack.last()
+                else {
+                    return Plain::No;
+                };
+                let value = arguments.unshift(agent, gc).unwrap_or(Value::Undefined);
+                vm.result = Some(value.unbind());
+            }
+            // A rest parameter: the arguments that are left, as an Array.
+            // Of a call with few arguments; a long list is asked for where
+            // the Array can be refused.
+            Instruction::IteratorRestIntoArray => {
+                step!(IteratorRestIntoArray);
+                let Some(VmIteratorRecord::SliceIterator(arguments)) = vm.iterator_stack.last()
+                else {
+                    return Plain::No;
+                };
+                if arguments.len(agent) > REST_IN_PLACE {
+                    return Plain::No;
+                }
+                let mut rest = [Value::Undefined; REST_IN_PLACE];
+                let mut count = 0;
+                while let Some(value) = arguments.unshift(agent, gc) {
+                    rest[count] = value.unbind();
+                    count += 1;
+                }
+                let array = crate::ecmascript::create_array_from_list(agent, &rest[..count], gc);
+                vm.result = Some(Value::from(array).unbind());
+            }
+            // The list of the call's arguments, when the parameters are
+            // bound.
+            Instruction::IteratorPop => {
+                step!(IteratorPop);
+                if !matches!(
+                    vm.iterator_stack.last(),
+                    Some(VmIteratorRecord::SliceIterator(_) | VmIteratorRecord::EmptySliceIterator)
+                ) {
+                    return Plain::No;
+                }
+                vm.iterator_stack.pop();
+            }
             // A call of a built-in function that only computes a value from
             // arguments like these: computed here, with no call made.
             Instruction::EvaluateCall | Instruction::PopReferenceAndEvaluateCall => {
@@ -2281,7 +2400,7 @@ impl Vm {
                 }
                 let function = match vm.stack[first - 1] {
                     Value::BuiltinFunction(function) => function,
-                    Value::ECMAScriptFunction(_) => return Plain::Call,
+                    Value::ECMAScriptFunction(_) | Value::BoundFunction(_) => return Plain::Call,
                     _ => return Plain::No,
                 };
                 let Some(direct) = function.get(agent).direct else {
