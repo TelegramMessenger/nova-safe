@@ -5649,3 +5649,82 @@ throws: at 0 caught at 0;at 1 caught at 0;at 2 caught at 0;at 3 caught at 0;at 1
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The default of an element of a pattern reads a name that an earlier
+/// element of the same pattern bound, in a parameter, a `let`, a `const`,
+/// a loop and a `catch`, nested or not; a name read before its element is
+/// reached, in its own default, key or value, is a ReferenceError still.
+/// Read as a variable kept on the stack, every such name was refused as
+/// read before its initialization. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn names_bound_earlier_in_a_pattern_are_read_by_later_defaults() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(names_bound_earlier_in_a_pattern)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn names_bound_earlier_in_a_pattern() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+function attempt(name, f) { var v; try { v = f(); } catch (e) { v = e.constructor.name; } print(name + ": " + v); }
+// A default that reads a name bound earlier in the same pattern.
+attempt("object parameter", function () { function f({ p, q = p + 1 }) { return p + "," + q; } return f({ p: 1 }); });
+attempt("array parameter", function () { function f([r, s = r]) { return r + "," + s; } return f([2]); });
+attempt("let", function () { let { p, q = p + 1 } = { p: 1 }; return p + "," + q; });
+attempt("const", function () { const [a, b = a * 2, c = a + b] = [1]; return [a, b, c].join(); });
+attempt("arrow", function () { var f = ({ p, q = p + 1 }) => p + "," + q; return f({ p: 1 }); });
+attempt("nested", function () { let [a, [b = a, c = b], { d = c + a }] = [1, [], {}]; return [a, b, c, d].join(); });
+attempt("nested object", function () { let { a: { p }, q = p, r: [s = q] } = { a: { p: 4 }, r: [] }; return [p, q, s].join(); });
+attempt("rest", function () { const { a, ...rest } = { a: 1, b: 2 }, { c = a + rest.b } = {}; return c; });
+attempt("for of", function () { for (const { a, b = a * 2 } of [{ a: 2 }]) return a + b; });
+attempt("catch", function () { try { throw { a: 3 }; } catch ({ a, b = a + 1 }) { return a + b; } });
+attempt("two parameters", function () { function f({ a, b = a }, { c = b, d = c } = {}) { return [a, b, c, d].join(); } return f({ a: 1 }); });
+attempt("computed key of a later element", function () { let { a, [a]: b } = { a: "k", k: 5 }; return a + b; });
+// And those that read it before it is bound.
+attempt("later name", function () { let { q = p, p } = { p: 1 }; return q; });
+attempt("own default", function () { let { p = p } = {}; return p; });
+attempt("own value", function () { let { p } = p; return p; });
+attempt("own key", function () { let { [p]: p } = { a: 1 }; return p; });
+attempt("later element of an array", function () { let [a = b, b] = []; return a; });
+attempt("later parameter", function () { function f({ a = b }, { b }) { return a; } return f({}, { b: 1 }); });
+attempt("own initializer", function () { let x = x + 1; return x; });
+attempt("default of the whole parameter", function () { function f({ a } = a) { return a; } return f(); });
+attempt("nested own default", function () { let [a, [b = c, c]] = [1, []]; return b; });
+})();
+all.join("\n")"#;
+    let expected = r#"object parameter: 1,2
+array parameter: 2,2
+let: 1,2
+const: 1,2,3
+arrow: 1,2
+nested: 1,1,1,2
+nested object: 4,4,4
+rest: 3
+for of: 6
+catch: 7
+two parameters: 1,1,1,1
+computed key of a later element: k5
+later name: ReferenceError
+own default: ReferenceError
+own value: ReferenceError
+own key: ReferenceError
+later element of an array: ReferenceError
+later parameter: ReferenceError
+own initializer: ReferenceError
+default of the whole parameter: ReferenceError
+nested own default: ReferenceError"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
