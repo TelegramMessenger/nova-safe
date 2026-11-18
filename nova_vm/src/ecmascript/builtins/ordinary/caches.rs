@@ -495,32 +495,33 @@ impl<'a> PropertyLookupCache<'a> {
 
     /// Find a cached property offset (possibly in a prototype) in this
     /// property lookup cache for the given Object Shape.
+    #[inline]
     pub(crate) fn find_cached_property_offset(
         self,
         agent: &Agent,
         shape: ObjectShape<'a>,
     ) -> Option<(PropertyOffset, Option<Object<'a>>)> {
         let caches = &agent.heap.caches;
-        let record = &caches.property_lookup_caches[self.get_index()];
-        if let Some((i, offset)) = record.find(shape) {
+        // The records of one cache, each of a few shapes, one after another.
+        let mut cache = self;
+        loop {
+            let index = cache.get_index();
+            let record = &caches.property_lookup_caches[index];
+            let Some((i, offset)) = record.find(shape) else {
+                cache = record.next?;
+                continue;
+            };
             let prototype = if !offset.is_unset() && offset.is_prototype_property() {
-                let prototype = caches.property_lookup_cache_prototypes[self.get_index()]
-                    .prototypes[i as usize]
-                    .unwrap();
+                let prototype =
+                    caches.property_lookup_cache_prototypes[index].prototypes[i as usize].unwrap();
                 Some(prototype)
             } else {
                 debug_assert!(
-                    caches.property_lookup_cache_prototypes[self.get_index()].prototypes
-                        [i as usize]
-                        .is_none()
+                    caches.property_lookup_cache_prototypes[index].prototypes[i as usize].is_none()
                 );
                 None
             };
-            Some((offset, prototype))
-        } else if let Some(next) = record.next {
-            next.find_cached_property_offset(agent, shape)
-        } else {
-            None
+            return Some((offset, prototype));
         }
     }
 
