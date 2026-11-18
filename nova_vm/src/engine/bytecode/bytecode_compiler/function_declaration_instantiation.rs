@@ -104,7 +104,22 @@ pub(crate) fn instantiation<'s>(
 
     // 8. Let hasParameterExpressions be ContainsExpression of formals.
     let has_parameter_expressions = formals.contains_expression();
-    if has_parameter_expressions {
+    // The Environment Records that steps 20, 28 and 30 make for a function
+    // with parameter expressions keep three things apart from the
+    // parameters: what a direct eval declares, what a function made in the
+    // parameter list can see, and the vars of the body, which such a
+    // function must not see. Where there is no direct eval, no function is
+    // made in the parameter list and the body declares no var and no
+    // function, nothing can tell those records from the one the parameters
+    // are in: none is made, and the function is called as one without
+    // parameter expressions is.
+    let has_direct_eval = ctx.scope_contains_direct_eval(func.scope_id());
+    let separate_environments = has_parameter_expressions && {
+        let mut has_vars = false;
+        body.var_declared_names(&mut |_| has_vars = true);
+        has_direct_eval || has_vars || FunctionEnvironmentUse::makes_functions(formals)
+    };
+    if separate_environments {
         this_free = false;
     }
     let mut bindings_in_environment = false;
@@ -222,7 +237,9 @@ pub(crate) fn instantiation<'s>(
     //   d. Assert: The VariableEnvironment of calleeContext and calleeEnv are
     //      the same Environment Record.
     //   e. Set the LexicalEnvironment of calleeContext to env.
-    if !strict && has_parameter_expressions {
+    // NOTE: the record is there for a direct eval alone, as the one of step
+    // 30 is.
+    if !strict && has_parameter_expressions && has_direct_eval {
         // Note: these are not lexical scopes per-se, just something we "start
         // with". Thus, we do not use ctx.enter_lexical_scope().
         ctx.add_instruction(Instruction::EnterDeclarativeEnvironment);
@@ -377,7 +394,7 @@ pub(crate) fn instantiation<'s>(
     }
 
     // 27. If hasParameterExpressions is false, then
-    if !has_parameter_expressions {
+    if !separate_environments {
         // a. NOTE: Only a single Environment Record is needed for the
         //    parameters and top-level vars.
         // b. Let instantiatedVarNames be a copy of the List parameterBindings.
@@ -486,10 +503,13 @@ pub(crate) fn instantiation<'s>(
         // 31. Else,
         //   a. Let lexEnv be varEnv.
         // 32. Set the LexicalEnvironment of calleeContext to lexEnv.
+        // NOTE: as in step 27, the separate record of step 30 is there for
+        // a direct eval; without one the lexical declarations go where a
+        // strict function's go.
         ctx.add_instruction_with_immediate_and_immediate(
             Instruction::InitializeVariableEnvironment,
             instantiated_var_names.len(),
-            strict.into(),
+            (strict || !has_direct_eval).into(),
         );
     }
 
