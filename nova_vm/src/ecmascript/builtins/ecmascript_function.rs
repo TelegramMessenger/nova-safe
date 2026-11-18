@@ -120,7 +120,10 @@ pub(crate) struct FunctionTemplate<'a> {
     pub(crate) kind: FunctionKind,
     /// The source text matched by the function's definition.
     pub(crate) span: Span,
-    /// The function body has a "use strict" directive.
+    /// The function's own code makes it strict, whatever the code that
+    /// creates it is: its body has a "use strict" directive, or it is an
+    /// element of a class (a constructor, a method, a getter or a setter),
+    /// and all of a class is strict mode code.
     pub(crate) has_use_strict_directive: bool,
     /// The ExpectedArgumentCount of the function's formal parameters.
     pub(crate) expected_argument_count: u32,

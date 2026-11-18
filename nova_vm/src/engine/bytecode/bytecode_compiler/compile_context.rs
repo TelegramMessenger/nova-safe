@@ -170,7 +170,21 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         &mut self,
         ast: FunctionAstRef<'script>,
     ) -> FunctionTemplate<'gc> {
-        let is_strict = self.runtime_strict || ast.ecmascript_code().has_use_strict_directive();
+        self.compile_nested_function_of(ast, false)
+    }
+
+    /// [`CompileContext::compile_nested_function`] for a function that is
+    /// or is not an element of a class. One that is, is strict whatever the
+    /// code that creates it is: all parts of a ClassDeclaration or a
+    /// ClassExpression are strict mode code.
+    pub(crate) fn compile_nested_function_of(
+        &mut self,
+        ast: FunctionAstRef<'script>,
+        class_element: bool,
+    ) -> FunctionTemplate<'gc> {
+        let is_strict = class_element
+            || self.runtime_strict
+            || ast.ecmascript_code().has_use_strict_directive();
         let is_lexical = matches!(
             ast,
             FunctionAstRef::Arrow(_) | FunctionAstRef::AsyncArrow(_)
@@ -190,7 +204,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             },
             gc,
         );
-        FunctionTemplate::from_ast(ast, Some(executable))
+        let mut template = FunctionTemplate::from_ast(ast, Some(executable));
+        template.has_use_strict_directive |= class_element;
+        template
     }
 
     /// Compile a function defined in this code into the record that the
@@ -200,7 +216,27 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         function: &'script ast::Function<'script>,
         identifier: Option<NamedEvaluationParameter>,
     ) -> FunctionExpression<'gc> {
-        let template = self.compile_nested_function(FunctionAstRef::from(function));
+        self.compile_function_expression_of(function, identifier, false)
+    }
+
+    /// [`CompileContext::compile_function_expression`] for a method, a
+    /// getter or a setter of a class, which is strict mode code.
+    pub(crate) fn compile_class_method(
+        &mut self,
+        function: &'script ast::Function<'script>,
+        identifier: Option<NamedEvaluationParameter>,
+    ) -> FunctionExpression<'gc> {
+        self.compile_function_expression_of(function, identifier, true)
+    }
+
+    fn compile_function_expression_of(
+        &mut self,
+        function: &'script ast::Function<'script>,
+        identifier: Option<NamedEvaluationParameter>,
+        class_element: bool,
+    ) -> FunctionExpression<'gc> {
+        let template =
+            self.compile_nested_function_of(FunctionAstRef::from(function), class_element);
         let binding_name = function
             .id
             .as_ref()
