@@ -82,6 +82,12 @@ enum Plain {
     /// Not executed and nothing changed: a call of an ECMAScript function,
     /// which the Vm may run itself.
     Call,
+    /// Not executed: a read or an assignment of a property that is an
+    /// accessor. Its getter or setter is on the stack (under the value
+    /// assigned, for a setter) and the object is the result: a call of
+    /// the function with the object as its this value, which the Vm may
+    /// run itself.
+    Accessor,
     /// Not executed and nothing changed: the instruction that ends a
     /// function.
     Return,
@@ -148,6 +154,9 @@ struct Frame {
     /// The caller's instructions and tables while the frame is in use: see
     /// [`Running::tables`].
     tables: Option<Rc<CodeTables>>,
+    /// The function that runs from this frame is a setter, called in place
+    /// of an assignment: what it returns is no one's result.
+    discards_result: bool,
     /// What the Agent's scoped values and scoped collections are cut back
     /// to after each of the caller's instructions.
     stack_depth: usize,
@@ -204,6 +213,8 @@ struct CalledInPlace {
     parameters: Option<usize>,
     /// The environment that the call makes for the function.
     environment: CallEnvironment,
+    /// The call is of a setter: see [`Frame::discards_result`].
+    discards_result: bool,
 }
 
 #[derive(Debug)]
@@ -363,6 +374,7 @@ impl HeapMarkAndSweep for VmFrames {
                 exception_handler_stack,
                 executable,
                 tables: _,
+                discards_result: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -385,6 +397,7 @@ impl HeapMarkAndSweep for VmFrames {
                 exception_handler_stack,
                 executable,
                 tables: _,
+                discards_result: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -776,6 +789,14 @@ impl Vm {
                             break Change::Call(callee, instr);
                         }
                     }
+                    // The getter or setter of the property that the
+                    // instruction reads or assigns, called in place of it.
+                    Plain::Accessor => {
+                        let setter = instr.kind == Instruction::PutPropertyWithCache;
+                        if let Some((callee, call)) = self.accessor_called_in_place(agent, setter) {
+                            break Change::Call(callee, call);
+                        }
+                    }
                     // The end of every call, taken here where nothing is
                     // out of the ordinary: a termination that is pending
                     // goes the general way below.
@@ -943,7 +964,9 @@ impl Vm {
     /// a class constructor) that has been compiled, called with a number
     /// of arguments that the instruction states, where one more call is
     /// not one too many.
-    #[inline]
+    // Part of the loop of instructions, for every call there, whoever
+    // else asks: as a function of its own it was a twentieth of a call.
+    #[inline(always)]
     fn function_called_in_place(&self, agent: &Agent, instr: Instr) -> Option<CalledInPlace> {
         let count = instr.get_first_index();
         if count == IndexType::MAX as usize {
@@ -974,7 +997,47 @@ impl Vm {
             executable,
             parameters: code.stack_parameters.map(usize::from),
             environment: code.call_environment,
+            discards_result: false,
         })
+    }
+
+    /// The call that [`Plain::Accessor`] stands for, if this `Vm` runs the
+    /// getter or setter itself: a call of no arguments, or of the value
+    /// assigned, whose this value is the object, as that of a method call
+    /// is the object of its Reference. What a getter returns is the result
+    /// of the read; what a setter returns is dropped.
+    ///
+    /// Where the `Vm` does not run the function after all, everything is
+    /// put back as the instruction found it, for the general way.
+    // Not part of the loop of instructions: few instructions end here.
+    #[inline(never)]
+    fn accessor_called_in_place(
+        &mut self,
+        agent: &Agent,
+        setter: bool,
+    ) -> Option<(CalledInPlace, Instr)> {
+        let call = Instr::new_with_arg(Instruction::EvaluateCall, u16::from(setter));
+        if let Some(mut callee) = self.function_called_in_place(agent, call)
+            && let Some(object) = self.result.take()
+        {
+            callee.discards_result = setter;
+            // Only the base of this Reference is asked for.
+            self.reference = Some(Reference::new_property_reference(
+                object,
+                BUILTIN_STRING_MEMORY.length.to_property_key(),
+                false,
+            ));
+            return Some((callee, call));
+        }
+        if setter {
+            let value = self.stack.pop();
+            self.stack.pop();
+            self.stack.extend(self.result.take());
+            self.result = value;
+        } else {
+            self.stack.pop();
+        }
+        None
     }
 
     /// Starts the call of `callee`, which the call instruction `instr`
@@ -1006,6 +1069,7 @@ impl Vm {
                 exception_handler_stack: Vec::new(),
                 executable: code,
                 tables: None,
+                discards_result: false,
                 stack_depth: 0,
                 collections_depth: 0,
                 scope_base: 0,
@@ -1055,6 +1119,7 @@ impl Vm {
         frame.ip = ip;
         frame.executable = code;
         frame.tables = Some(caller.tables);
+        frame.discards_result = callee.discards_result;
         frame.stack_depth = caller.stack_depth;
         frame.collections_depth = caller.collections_depth;
         frame.scope_base = caller.scope_base;
@@ -1147,6 +1212,9 @@ impl Vm {
         frame.reference_stack.clear();
         frame.iterator_stack.clear();
         frame.exception_handler_stack.clear();
+        if frame.discards_result {
+            self.result = None;
+        }
         if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
             // A stack that grew large is not kept for the next function.
             frame.stack = Vec::new();
@@ -1950,6 +2018,12 @@ impl Vm {
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
                 step!(GetPropertyWithCache, GetPropertyWithCacheKeepReference);
                 let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
+                    if instr.kind == Instruction::GetPropertyWithCache
+                        && let Some(base) = vm.result
+                        && Self::getter_for_call(agent, vm, base, tables, instr, gc)
+                    {
+                        return Plain::Accessor;
+                    }
                     return Plain::No;
                 };
                 if instr.kind == Instruction::GetPropertyWithCacheKeepReference {
@@ -1981,6 +2055,11 @@ impl Vm {
                 let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
                 let Some(value) = Self::cached_property_value_of(agent, base, tables, instr, gc)
                 else {
+                    if instr.kind == Instruction::GetIndexPropertyWithCache
+                        && Self::getter_for_call(agent, vm, base, tables, instr, gc)
+                    {
+                        return Plain::Accessor;
+                    }
                     return Plain::No;
                 };
                 if instr.kind == Instruction::GetIndexPropertyWithCacheKeepReference {
@@ -2004,6 +2083,11 @@ impl Vm {
                 };
                 let Some(value) = Self::cached_property_value_of(agent, this, tables, instr, gc)
                 else {
+                    if instr.kind == Instruction::GetThisPropertyWithCache
+                        && Self::getter_for_call(agent, vm, this, tables, instr, gc)
+                    {
+                        return Plain::Accessor;
+                    }
                     return Plain::No;
                 };
                 if instr.kind == Instruction::GetThisPropertyWithCacheKeepReference {
@@ -2035,7 +2119,19 @@ impl Vm {
                             return Plain::No;
                         }
                     }
-                    CachedSet::Unknown => return Plain::No,
+                    CachedSet::Unknown => {
+                        if let Some(setter) = object.setter_by_cache(agent, cache, gc) {
+                            // The setter and the value are the function and
+                            // the argument of a call, and the object its
+                            // this value.
+                            vm.stack.pop();
+                            vm.stack.push(Value::ECMAScriptFunction(setter.unbind()));
+                            vm.stack.push(value);
+                            vm.result = Some(Value::Object(object));
+                            return Plain::Accessor;
+                        }
+                        return Plain::No;
+                    }
                 }
                 vm.stack.pop();
                 vm.result = None;
@@ -2482,6 +2578,32 @@ impl Vm {
         let strict = agent.is_evaluating_strict_code();
         vm.reference =
             Some(Reference::new_property_reference(base_value, property_key, strict).unbind());
+    }
+
+    /// Where `base.name` is an accessor whose getter this `Vm` may run
+    /// itself (the cache of the instruction knows the shape of `base`, and
+    /// the getter is an ECMAScript function): leaves the getter on the
+    /// stack and `base` as the result, for [`Plain::Accessor`], and returns
+    /// true.
+    #[inline(always)]
+    fn getter_for_call(
+        agent: &Agent,
+        vm: &mut Vm,
+        base: Value,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> bool {
+        let Value::Object(object) = base else {
+            return false;
+        };
+        let cache = tables.cache(instr.get_second_index(), gc);
+        let Some(getter) = object.getter_by_cache(agent, cache, gc) else {
+            return false;
+        };
+        vm.stack.push(Value::ECMAScriptFunction(getter.unbind()));
+        vm.result = Some(base.unbind());
+        true
     }
 
     /// The value of `o.p` for the object in the result register, when it is
