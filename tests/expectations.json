@@ -7250,7 +7250,6 @@
   "staging/sm/String/IsRegExp.js": "FAIL",
   "staging/sm/String/replace-math.js": "TIMEOUT",
   "staging/sm/String/string-upper-lower-mapping.js": "FAIL",
-  "staging/sm/Symbol/property-reflection.js": "FAIL",
   "staging/sm/Symbol/toStringTag.js": "FAIL",
   "staging/sm/TypedArray/filter-species.js": "FAIL",
   "staging/sm/TypedArray/from_surfaces.js": "FAIL",
