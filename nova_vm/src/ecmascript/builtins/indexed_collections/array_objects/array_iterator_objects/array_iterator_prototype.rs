@@ -11,8 +11,8 @@ use crate::{
     ecmascript::{
         ARRAY_INDEX_RANGE, Agent, ArgumentsList, ArrayIterator, BUILTIN_STRING_MEMORY, Behaviour,
         Builtin, BuiltinIntrinsic, CollectionIteratorKind, ExceptionType, InternalSlots, JsResult,
-        Object, Realm, String, Value, builders::OrdinaryObjectBuilder, create_array_from_list,
-        create_iter_result_object, get, length_of_array_like,
+        Object, PropertyKey, Realm, String, Value, builders::OrdinaryObjectBuilder,
+        create_array_from_list, create_iter_result_object, get, length_of_array_like,
     },
     engine::{Bindable, GcScope, Scopable},
     heap::{ArenaAccess, ArenaAccessMut, IntrinsicFunctionIndexes, WellKnownSymbols},
@@ -33,6 +33,36 @@ impl BuiltinIntrinsic for ArrayIteratorPrototypeNext {
 }
 
 impl ArrayIteratorPrototype {
+    /// True while "next" of the realm's %ArrayIteratorPrototype% is the
+    /// function the realm was made with, kept as a data property. Stepping
+    /// an Array Iterator that %Array.prototype.values% made is then no more
+    /// than reading the next element of its array, and code that has the
+    /// array may do that itself, with no iterator and no result objects.
+    ///
+    /// GetIterator reads "next" once, as an iteration begins: this is asked
+    /// then, and what becomes of "next" later changes nothing for an
+    /// iteration that has begun.
+    pub(crate) fn has_original_next(agent: &Agent) -> bool {
+        let intrinsics = agent.current_realm_record().intrinsics();
+        let prototype = intrinsics.array_iterator_prototype();
+        let next: Value = intrinsics.array_iterator_prototype_next().into();
+        let key = PropertyKey::from(BUILTIN_STRING_MEMORY.next);
+        let Some(index) = prototype
+            .get_property_keys(agent)
+            .iter()
+            .position(|k| *k == key)
+        else {
+            return false;
+        };
+        // An accessor has no value here.
+        prototype
+            .get_elements_values(agent)
+            .get(index)
+            .copied()
+            .flatten()
+            == Some(next)
+    }
+
     fn next<'gc>(
         agent: &mut Agent,
         this_value: Value,

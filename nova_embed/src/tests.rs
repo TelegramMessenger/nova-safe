@@ -6531,3 +6531,382 @@ generator that returns in finally: 1"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// An Array that is iterated is walked element by element, with no
+/// iterator object, only while that is what iterating it comes to: its
+/// %Symbol.iterator% method is the original, and so is "next" of
+/// %ArrayIteratorPrototype% as the iteration begins. Every reader of an
+/// Array (a pattern, `for`-`of`, spread, the constructors of the keyed
+/// collections, Object.fromEntries, Array.from, `yield*`) with "next"
+/// replaced, put back, deleted and made an accessor; "return" on any of
+/// the iterator's prototypes, looked for and called with an Array Iterator
+/// that goes on where the walk was, once, with no argument, and what it
+/// gives back and throws; `yield*` thrown into and returned from; holes,
+/// accessors and arrays that change under the walk; and the array's own
+/// ways of being iterated. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn arrays_are_walked_only_as_iterating_them_would() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arrays_walked)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arrays_walked() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var out = [];
+function say() { out.push(Array.prototype.map.call(arguments, function (v) {
+  if (typeof v === 'function') return 'fn:' + v.name;
+  if (v && typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return '[obj]'; } }
+  return String(v);
+}).join(' ')); }
+function attempt(name, f) { try { say(name, f()); } catch (e) { say(name, 'threw', e && e.constructor ? e.constructor.name : e); } }
+var IterProto = Object.getPrototypeOf([][Symbol.iterator]());
+var originalNext = IterProto.next;
+var values = Array.prototype.values;
+function tag(o) { return Object.prototype.toString.call(o); }
+
+// Every reader of an Array, with nothing changed.
+function readers(label) {
+  var log = [];
+  var [a, b] = [1, 2, 3]; log.push('pattern ' + a + b);
+  var [c, d, e] = [1, 2]; log.push('long pattern ' + c + d + e);
+  var [f, ...g] = [1, 2, 3]; log.push('rest ' + f + g.join(''));
+  var [, h, , i = 'i'] = [1, 2, 3]; log.push('skips ' + h + i);
+  var [[j, k], { l }] = [[1, 2], { l: 3 }]; log.push('nested ' + j + k + l);
+  var sum = 0; for (var x of [1, 2, 3]) sum += x; log.push('for-of ' + sum);
+  for (var y of [1, 2, 3]) { if (y === 2) break; } log.push('break ' + y);
+  log.push('spread ' + [...[1, 2], ...[3]].join(''));
+  log.push('call spread ' + Math.max(...[1, 5, 2]));
+  log.push('new spread ' + new Array(...[7, 8]).join(''));
+  log.push('set ' + new Set([1, 2, 2]).size);
+  log.push('map ' + new Map([[1, 'a'], [2, 'b']]).get(2));
+  log.push('weakset ' + (new WeakSet([{}, {}]) instanceof WeakSet));
+  log.push('fromEntries ' + JSON.stringify(Object.fromEntries([['p', 1], ['q', 2]])));
+  log.push('from ' + Array.from([1, 2]).join(''));
+  log.push('params ' + (function (p, [q, r]) { return p + q + r; })(1, [2, 3]));
+  log.push('arrow ' + (([s, t]) => s + t)([4, 5]));
+  function* gen() { yield* [1, 2]; }
+  log.push('yield* ' + [...gen()].join(''));
+  log.push('entries ' + Object.entries({ m: 1 }).map(([key, value]) => key + value).join());
+  say(label, log.join(' | '));
+}
+readers('plain');
+
+// "next" replaced: read once as each iteration begins, and called by every
+// reader. Put back, and nothing calls it.
+(function () {
+  var calls = 0;
+  IterProto.next = function () { calls++; return originalNext.call(this); };
+  readers('patched next');
+  say('patched next calls', calls);
+  var perReader = [];
+  function count(f) { calls = 0; f(); perReader.push(calls); }
+  count(function () { var [a, b] = [1, 2, 3]; });
+  count(function () { var [a, b, c] = [1, 2]; });
+  count(function () { for (var x of [1, 2, 3]) {} });
+  count(function () { return [...[1, 2]]; });
+  count(function () { return Math.max(...[1, 2]); });
+  count(function () { return new Set([1, 2]); });
+  count(function () { return new Map([[1, 2]]); });
+  count(function () { return new WeakSet([{}]); });
+  count(function () { return Object.fromEntries([['a', 1]]); });
+  count(function () { return Array.from([1, 2]); });
+  say('per reader', perReader.join());
+  // An iteration that began with the original goes on with it.
+  calls = 0;
+  IterProto.next = originalNext;
+  var seen = [];
+  for (var v of [1, 2, 3]) {
+    seen.push(v);
+    IterProto.next = function () { calls++; return { done: true }; };
+  }
+  say('replaced while running', seen.join(), calls);
+  for (var w of [1, 2, 3]) seen.push(w);
+  say('then', seen.join(), calls);
+  IterProto.next = originalNext;
+  calls = 0;
+  readers('restored');
+  say('restored calls', calls);
+  // Ends early, returns nonsense, throws.
+  IterProto.next = function () { return { done: true, value: 'never' }; };
+  var [none] = [1, 2]; var n = 0; for (var q of [1, 2]) n++;
+  say('done at once', none, n, [...[1, 2]].length);
+  IterProto.next = function () { return 5; };
+  attempt('not an object', function () { var [z] = [1]; return z; });
+  attempt('not an object for-of', function () { for (var z of [1]) {} });
+  IterProto.next = function () { throw new RangeError('next'); };
+  attempt('throws', function () { var [z] = [1]; return z; });
+  attempt('throws in spread', function () { return [...[1]]; });
+  IterProto.next = function () { return { get done() { return false; }, get value() { return 'from getter'; } }; };
+  var [viaGetter] = [1]; say('result getters', viaGetter);
+  delete IterProto.next;
+  attempt('deleted', function () { var [z] = [1]; return z; });
+  attempt('deleted for-of', function () { for (var z of [1]) {} return 'ran'; });
+  Object.defineProperty(IterProto, 'next', { get: function () { return originalNext; }, configurable: true });
+  var [byAccessor, second] = [1, 2]; say('accessor next', byAccessor, second);
+  Object.defineProperty(IterProto, 'next', { value: originalNext, writable: true, configurable: true, enumerable: false });
+  readers('back');
+})();
+
+// "return": looked for on the iterator as an iteration ends early, and
+// called with it.
+(function () {
+  var log = [];
+  function early() {
+    var [a] = [1, 2]; log.push('a' + a);
+    var [b, c] = [1, 2]; log.push('exact');
+    var [d, e, f] = [1, 2]; log.push('exhausted');
+    for (var x of [1, 2]) break; log.push('break');
+    for (var y of [1, 2]) {} log.push('ran out');
+    (function () { for (var z of [1, 2]) return; })(); log.push('returned');
+    try { for (var w of [1, 2]) throw new EvalError('body'); } catch (err) { log.push('threw ' + err.constructor.name); }
+    outer: for (var o of [1, 2]) { for (var i of [1, 2]) continue outer; } log.push('continue outer');
+    var [g, ...rest] = [1, 2, 3]; log.push('rest');
+  }
+  early(); early();
+  say('no return', log.join());
+  log.length = 0;
+  IterProto.return = function (value) { log.push('RETURN ' + tag(this) + ' ' + arguments.length); return {}; };
+  early();
+  say('return on the prototype', log.join(' '));
+  delete IterProto.return;
+  log.length = 0; early();
+  say('return deleted', log.join());
+  log.length = 0;
+  Object.prototype.return = function () { log.push('RETURN'); return {}; };
+  early();
+  say('return on Object.prototype', log.join(' '));
+  delete Object.prototype.return;
+  var IteratorProto = Object.getPrototypeOf(IterProto);
+  log.length = 0;
+  IteratorProto.return = function () { log.push('RETURN'); return {}; };
+  var [h] = [1, 2];
+  say('return on %IteratorPrototype%', log.join(' '));
+  delete IteratorProto.return;
+  // What "return" gives back and throws.
+  IterProto.return = function () { return 5; };
+  attempt('return gives a number', function () { var [a] = [1, 2]; return a; });
+  attempt('return gives a number, break', function () { for (var x of [1, 2]) break; return 'ok'; });
+  attempt('return gives a number, body threw', function () { for (var x of [1, 2]) throw new EvalError('body'); });
+  IterProto.return = function () { throw new RangeError('return'); };
+  attempt('return throws', function () { var [a] = [1, 2]; return a; });
+  attempt('return throws, body threw', function () { for (var x of [1, 2]) throw new EvalError('body'); });
+  IterProto.return = 5;
+  attempt('return is a number', function () { var [a] = [1, 2]; return a; });
+  IterProto.return = null;
+  attempt('return is null', function () { var [a] = [1, 2]; return a; });
+  IterProto.return = undefined;
+  attempt('return is undefined', function () { for (var x of [1, 2]) break; return 'ok'; });
+  var gets = 0;
+  Object.defineProperty(IterProto, 'return', { get: function () { gets++; return function () { log.push('GOT'); return {}; }; }, configurable: true });
+  log.length = 0;
+  var [i] = [1, 2]; for (var x of [1, 2]) break;
+  say('return by a getter', gets, log.join(' '));
+  delete IterProto.return;
+  // The iterator "return" is called with goes on where the walk was.
+  var kept;
+  IterProto.return = function () { kept = this; return {}; };
+  var [first, second] = [10, 20, 30, 40];
+  say('the iterator', tag(kept), JSON.stringify(kept.next()), JSON.stringify(kept.next()), JSON.stringify(kept.next()));
+  delete IterProto.return;
+})();
+
+// yield* over an Array, thrown into and returned from.
+(function () {
+  function* gen() { try { var got = yield* [1, 2, 3]; say('got', got); } catch (e) { say('caught', e.constructor.name); return 'after'; } }
+  var it = gen(); it.next();
+  attempt('throw into', function () { return it.throw(new RangeError('x')); });
+  it = gen(); it.next();
+  attempt('return from', function () { return it.return('r'); });
+  Array.prototype.throw = function () { return { done: true, value: 'wrong' }; };
+  Array.prototype.return = function () { return { done: true, value: 'wrong' }; };
+  it = gen(); it.next();
+  attempt('throw into, Array.prototype.throw', function () { return it.throw(new RangeError('x')); });
+  it = gen(); it.next();
+  attempt('return from, Array.prototype.return', function () { return it.return('r'); });
+  var [a] = [1, 2]; for (var x of [1, 2]) break;
+  delete Array.prototype.throw; delete Array.prototype.return;
+  IterProto.throw = function (e) { say('THROW', tag(this), e.constructor.name); return { done: false, value: 'thrown into' }; };
+  it = gen(); it.next();
+  attempt('throw method', function () { return it.throw(new RangeError('x')); });
+  attempt('and on', function () { return it.next(); });
+  delete IterProto.throw;
+  IterProto.return = function (v) { say('RETURN', tag(this), v); return { done: true, value: 'returned ' + v }; };
+  it = gen(); it.next();
+  attempt('return method', function () { return it.return('r'); });
+  delete IterProto.return;
+  function* all() { yield* [1, 2]; yield* []; yield* [3]; return 'end'; }
+  var seen = []; var step, runner = all();
+  while (!(step = runner.next()).done) seen.push(step.value);
+  say('yield* values', seen.join(), step.value);
+})();
+
+// Holes, accessors, and arrays that change under the walk.
+(function () {
+  Object.defineProperty(Array.prototype, 1, { get: function () { return 'proto'; }, configurable: true });
+  var [a, b = 'default', c] = [1, , 3]; say('hole to getter, defaults', a, b, c);
+  var [d, e, f] = [1, , 3]; say('hole to getter', d, e, f);
+  var text = ''; for (var v of [1, , 3]) text += v + ';'; say('for-of', text);
+  say('spread', [...[1, , 3]].length, [...[1, , 3]][1]);
+  delete Array.prototype[1];
+  var [g, h = 'default', i] = [1, , 3]; say('plain hole', g, h, i);
+  var withAccessor = [1, 2, 3];
+  var reads = 0;
+  Object.defineProperty(withAccessor, 1, { get: function () { reads++; return 'acc'; } });
+  var [j, k, l] = withAccessor; say('accessor element', j, k, l, reads);
+  var [m, n = 'd', o] = withAccessor; say('accessor element, defaults', m, n, o, reads);
+  text = ''; for (var w of withAccessor) text += w + ';'; say('accessor for-of', text, reads);
+  var shrinking = [1, 2, 3, 4];
+  Object.defineProperty(shrinking, 0, { get: function () { shrinking.length = 2; return 'cut'; } });
+  var [p, q, r] = shrinking; say('shrinks', p, q, r);
+  var growing = [1, 2];
+  text = ''; for (var x of growing) { if (growing.length < 5) growing.push(x * 10); text += x + ';'; }
+  say('grows', text);
+  var cleared = [1, 2, 3];
+  text = ''; for (var y of cleared) { text += y + ';'; cleared.length = 0; }
+  say('cleared', text);
+  var sparse = []; sparse[3] = 'last';
+  var [s0, s1, s2, s3, s4] = sparse; say('sparse', s0, s1, s2, s3, s4);
+  var frozen = Object.freeze([1, 2]);
+  var [t0, t1] = frozen; say('frozen', t0, t1);
+  var holder = [undefined, null, 0, '', NaN, false];
+  var [u0 = 'd', u1 = 'd', u2 = 'd', u3 = 'd', u4 = 'd', u5 = 'd'] = holder; say('falsy', u0, u1, u2, u3, u4, u5);
+})();
+
+// The array's own way of being iterated.
+(function () {
+  var own = [1, 2];
+  own[Symbol.iterator] = function* () { yield 'own'; };
+  var [a] = own; say('own', a, [...own].join(), new Set(own).size, Array.from(own).join());
+  say('own entries', JSON.stringify(Object.fromEntries(Object.assign([['x', 1]], { [Symbol.iterator]: function* () { yield ['y', 2]; } }))));
+  say('own map', new Map(Object.assign([[1, 2]], { [Symbol.iterator]: function* () { yield [3, 4]; } })).get(3));
+  class Sub extends Array { *[Symbol.iterator]() { yield 'sub'; } }
+  var [b] = Sub.from([1]); say('subclass', b);
+  class Plain extends Array {}
+  var [c, d] = Plain.from([5, 6]); say('plain subclass', c, d);
+  var calls = 0;
+  Array.prototype[Symbol.iterator] = function () { calls++; return values.call(this); };
+  var [e] = [7]; for (var x of [1]) {} say('replaced', e, calls, [...[1, 2]].join(''));
+  Array.prototype[Symbol.iterator] = values;
+  calls = 0; var [f] = [8]; say('restored', f, calls);
+  Object.defineProperty(Array.prototype, Symbol.iterator, { get: function () { calls++; return values; }, configurable: true });
+  var [g] = [9]; for (var y of [1, 2]) {} say('by a getter', g, calls);
+  Object.defineProperty(Array.prototype, Symbol.iterator, { value: values, writable: true, configurable: true, enumerable: false });
+  Array.prototype[Symbol.iterator] = Array.prototype.keys;
+  var [h, i] = ['a', 'b']; say('keys', h, i);
+  Array.prototype[Symbol.iterator] = Array.prototype.entries;
+  var [[k0, v0]] = ['a']; say('entries', k0, v0);
+  Array.prototype[Symbol.iterator] = values;
+  delete Array.prototype[Symbol.iterator];
+  attempt('none', function () { var [z] = [1]; return z; });
+  attempt('none for-of', function () { for (var z of [1]) {} });
+  Array.prototype[Symbol.iterator] = 5;
+  attempt('a number', function () { var [z] = [1]; return z; });
+  Object.defineProperty(Array.prototype, Symbol.iterator, { value: values, writable: true, configurable: true, enumerable: false });
+  var proxied = new Proxy([1, 2], {});
+  var [p0, p1] = proxied; say('proxy', p0, p1);
+  var noProto = [1, 2]; Object.setPrototypeOf(noProto, null);
+  attempt('null prototype', function () { var [z] = noProto; return z; });
+  var other = [1, 2]; Object.setPrototypeOf(other, { [Symbol.iterator]: function* () { yield 'other'; } });
+  var [o0] = other; say('other prototype', o0);
+  var args = (function () { return arguments; })(1, 2, 3);
+  var [a0, a1] = args; say('arguments', a0, a1, [...args].length);
+  var [t0, t1] = new Uint8Array([4, 5]); say('typed', t0, t1);
+  var [c0, c1] = 'hi'; say('string', c0, c1);
+  var [m0] = new Map([[1, 2]]); var [s0] = new Set([3]); say('map and set', m0, s0);
+  readers('at the end');
+})();
+out.join("\n")"#;
+    let expected = r#"plain pattern 12 | long pattern 12undefined | rest 123 | skips 2i | nested 123 | for-of 6 | break 2 | spread 123 | call spread 5 | new spread 78 | set 2 | map b | weakset true | fromEntries {"p":1,"q":2} | from 12 | params 6 | arrow 9 | yield* 12 | entries m1
+patched next pattern 12 | long pattern 12undefined | rest 123 | skips 2i | nested 123 | for-of 6 | break 2 | spread 123 | call spread 5 | new spread 78 | set 2 | map b | weakset true | fromEntries {"p":1,"q":2} | from 12 | params 6 | arrow 9 | yield* 12 | entries m1
+patched next calls 60
+per reader 2,3,4,3,3,3,2,2,2,3
+replaced while running 1,2,3 0
+then 1,2,3 1
+restored pattern 12 | long pattern 12undefined | rest 123 | skips 2i | nested 123 | for-of 6 | break 2 | spread 123 | call spread 5 | new spread 78 | set 2 | map b | weakset true | fromEntries {"p":1,"q":2} | from 12 | params 6 | arrow 9 | yield* 12 | entries m1
+restored calls 0
+done at once undefined 0 0
+not an object threw TypeError
+not an object for-of threw TypeError
+throws threw RangeError
+throws in spread threw RangeError
+result getters from getter
+deleted threw TypeError
+deleted for-of threw TypeError
+accessor next 1 2
+back pattern 12 | long pattern 12undefined | rest 123 | skips 2i | nested 123 | for-of 6 | break 2 | spread 123 | call spread 5 | new spread 78 | set 2 | map b | weakset true | fromEntries {"p":1,"q":2} | from 12 | params 6 | arrow 9 | yield* 12 | entries m1
+no return a1,exact,exhausted,break,ran out,returned,threw EvalError,continue outer,rest,a1,exact,exhausted,break,ran out,returned,threw EvalError,continue outer,rest
+return on the prototype RETURN [object Array Iterator] 0 a1 RETURN [object Array Iterator] 0 exact exhausted RETURN [object Array Iterator] 0 break ran out RETURN [object Array Iterator] 0 returned RETURN [object Array Iterator] 0 threw EvalError RETURN [object Array Iterator] 0 RETURN [object Array Iterator] 0 continue outer rest
+return deleted a1,exact,exhausted,break,ran out,returned,threw EvalError,continue outer,rest
+return on Object.prototype RETURN a1 RETURN exact exhausted RETURN break ran out RETURN returned RETURN threw EvalError RETURN RETURN continue outer rest
+return on %IteratorPrototype% RETURN
+return gives a number threw TypeError
+return gives a number, break threw TypeError
+return gives a number, body threw threw EvalError
+return throws threw RangeError
+return throws, body threw threw EvalError
+return is a number threw TypeError
+return is null 1
+return is undefined ok
+return by a getter 2 GOT GOT
+the iterator [object Array Iterator] {"value":30,"done":false} {"value":40,"done":false} {"done":true}
+caught TypeError
+throw into {"value":"after","done":true}
+return from {"value":"r","done":true}
+caught TypeError
+throw into, Array.prototype.throw {"value":"after","done":true}
+return from, Array.prototype.return {"value":"r","done":true}
+THROW [object Array Iterator] RangeError
+throw method {"done":false,"value":"thrown into"}
+and on {"value":2,"done":false}
+RETURN [object Array Iterator] r
+return method {"value":"returned r","done":true}
+yield* values 1,2,3 end
+hole to getter, defaults 1 proto 3
+hole to getter 1 proto 3
+for-of 1;proto;3;
+spread 3 proto
+plain hole 1 default 3
+accessor element 1 acc 3 1
+accessor element, defaults 1 acc 3 2
+accessor for-of 1;acc;3; 3
+shrinks cut 2 undefined
+grows 1;2;10;20;100;
+cleared 1;
+sparse undefined undefined undefined last undefined
+frozen 1 2
+falsy d null 0  NaN false
+own own own 1 own
+own entries {"y":2}
+own map 4
+subclass sub
+plain subclass 5 6
+replaced 7 2 12
+restored 8 0
+by a getter 9 2
+keys 0 1
+entries [0,0] [1,"a"]
+none threw TypeError
+none for-of threw TypeError
+a number threw TypeError
+proxy 1 2
+null prototype threw TypeError
+other prototype other
+arguments 1 2 3
+typed 4 5
+string h i
+map and set [1,2] 3
+at the end pattern 12 | long pattern 12undefined | rest 123 | skips 2i | nested 123 | for-of 6 | break 2 | spread 123 | call spread 5 | new spread 78 | set 2 | map b | weakset true | fromEntries {"p":1,"q":2} | from 12 | params 6 | arrow 9 | yield* 12 | entries m1"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
