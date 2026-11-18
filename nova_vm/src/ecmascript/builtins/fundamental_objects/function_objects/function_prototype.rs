@@ -465,7 +465,7 @@ impl FunctionPrototype {
         // <?:...> is an optional template part.
     }
 
-    fn has_instance<'gc>(
+    pub(crate) fn has_instance<'gc>(
         agent: &mut Agent,
         this_value: Value,
         args: ArgumentsList,
