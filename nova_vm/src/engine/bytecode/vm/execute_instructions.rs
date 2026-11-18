@@ -3189,12 +3189,21 @@ pub(super) fn execute_iterator_step_value<'gc>(
     instr: Instr,
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let result = with_vm_gc(
-        agent,
-        vm,
-        |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
-        gc,
-    )?;
+    // An Array walked element by element: where the next element is a
+    // value, the step is no more than reading it.
+    let plain = match vm.get_active_iterator_mut() {
+        VmIteratorRecord::ArrayValues(iterator) => iterator.plain_next(agent, gc.nogc()).unbind(),
+        _ => None,
+    };
+    let result = match plain {
+        Some(step) => step.bind(gc.into_nogc()),
+        None => with_vm_gc(
+            agent,
+            vm,
+            |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
+            gc,
+        )?,
+    };
     vm.result = result.unbind();
     if result.is_none() {
         // Iterator finished: jump to escape the iterator loop.
