@@ -300,6 +300,25 @@ impl<'a> String<'a> {
                 return agent.heap.alloc_appended(left.unbind(), added).bind(gc);
             }
         }
+        // Two strings that make a short one, as most concatenations do: the
+        // text is put together here and the heap asked for it, which copies
+        // it only where it has no such string yet.
+        if let [left, right] = strings {
+            let (left, right) = (left.as_wtf8_(agent), right.as_wtf8_(agent));
+            let len = left.len() + right.len();
+            if (8..=SHORT_CONCATENATION).contains(&len)
+                && !(right.initial_trail_surrogate().is_some()
+                    && left.final_lead_surrogate().is_some())
+            {
+                let mut text = [0u8; SHORT_CONCATENATION];
+                text[..left.len()].copy_from_slice(left.as_bytes());
+                text[left.len()..len].copy_from_slice(right.as_bytes());
+                return agent
+                    .heap
+                    .alloc_wtf8(Wtf8Str::from_wtf8_bytes(&text[..len]))
+                    .bind(gc);
+            }
+        }
         let mut status = if strings.len() > 1 {
             let len = strings.iter().fold(0usize, |a, s| a + s.len_(agent));
             if len > 7 {
@@ -632,6 +651,7 @@ impl<'a> String<'a> {
         self.len_(agent)
     }
 
+    #[inline]
     pub(crate) fn len_(self, agent: &impl StringHeapAccess) -> usize {
         match self {
             String::String(s) => s.get(agent).len(),
@@ -786,6 +806,7 @@ impl<'a> String<'a> {
         self.as_wtf8_(agent)
     }
 
+    #[inline]
     pub(crate) fn as_wtf8_<'r>(&'r self, agent: &'r impl StringHeapAccess) -> Wtf8Str<'r> {
         match self {
             String::String(s) => s.get(agent).as_wtf8(),
@@ -1063,6 +1084,10 @@ impl Scoped<'_, String<'static>> {
 /// to again ([`Heap::alloc_concatenation`]); shorter strings are cheap to
 /// copy and hash whole.
 const LONG_CONCATENATION: usize = 256;
+
+/// The longest text that a concatenation of two strings puts together
+/// before it asks the heap for the string.
+const SHORT_CONCATENATION: usize = 64;
 
 impl<'a> CreateHeapData<(StringRecord, u64), String<'a>> for Heap {
     fn create(&mut self, (data, hash): (StringRecord, u64)) -> String<'a> {

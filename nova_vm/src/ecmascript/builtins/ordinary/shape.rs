@@ -292,6 +292,10 @@ impl<'a> ObjectShape<'a> {
     /// This is only correct to use on intrinsic Object Shapes.
     fn push_key(self, agent: &mut Agent, key: PropertyKey<'a>) -> Result<(), TryReserveError> {
         debug_assert_eq!(self.values_capacity(agent), self.len(agent).into());
+        if matches!(key, PropertyKey::Integer(_)) {
+            // What Array::appends_plainly goes by.
+            agent.heap.intrinsic_integer_keys = true;
+        }
         let ObjectShapeRecord {
             prototype: _,
             keys,
