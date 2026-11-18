@@ -35,11 +35,11 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.7x |
-| call | 14 | 10.4x | 2.6x |
+| call | 14 | 10.4x | 2.5x |
 | math | 4 | 9.7x | 2.4x |
 | string | 26 | 10.6x | 2.2x |
-| array | 14 | 5.8x | 2.1x |
 | app | 8 | 6.1x | 2.1x |
+| array | 14 | 5.8x | 2.0x |
 | prop | 13 | 7.1x | 2.0x |
 | map, set | 4 | 4.6x | 2.0x |
 | regexp | 4 | 2.4x | 1.7x |
@@ -48,12 +48,12 @@ below.
 | json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 2.0x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 3.9x, and the worst is now prepending
-(38x, area 7); after it come generators (5.9x), then calls that bind an arguments object (4.7x to 5.0x between
-runs). 22 of the 108 cases are above 3x (six of them within a twentieth of it) and 43 at or under 2x, 13 of
-them at or under QuickJS's time. Over all cases it is 2.03x: 2.12x before the round of patterns, Array
-iteration and array literals, 2.05x after it, and the round of `for`-`in` and of the caches of names took it
-here. One case
+The worst case was 303x (appending to a string 100,000 times); that one is 4.0x, and the worst is now prepending
+(38x, area 7); after it come generators (5.9x), then calls that bind an arguments object (4.7x). 22 of the
+108 cases are above 3x (seven of them within a twentieth of it) and 44 at or under 2x, 14 of them at or
+under QuickJS's time. Over all cases it is 2.01x: 2.12x before the round of patterns, Array iteration and
+array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, and the
+round of entering and leaving a function took it here. One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -375,13 +375,34 @@ Left there: binding through the iterator instructions is the general way for eac
 parameter allocates its Array, and the arguments object is made in full at every call and kept in an
 Environment Record (4.7x).
 
-Where a call's time is now, in a closure called 300,000 times (`call/closure`, 3.3x): 53% in the loop of
-instructions, 20% entering the function and 12% leaving it, 15% reading and writing the two variables it
-closes over. The four stacks exchanged with the frame at each end, which looks like the cost, are a
-quarter of entering and leaving (8% of the case), so one stack with a base for each call would win less
-than its one more addition at every local costs. The rest of entering and leaving has no one place: the
-execution context pushed and popped, the frame's fields, the tables taken and let go of, the scoped
-executable. Not taken apart yet; per-line samples of the two functions are what that needs.
+Where a call's time was after that, in a closure called 300,000 times (`call/closure`, 3.3x): 53% in the
+loop of instructions, 20% entering the function and 12% leaving it, 15% reading and writing the two
+variables it closes over. Entering and leaving had no one place in a profile by function or by address.
+A build of the benchmark with line tables (the release profile with `debug = "limited"`, a dSYM, and
+`atos -i` for each sampled address) gave them by source line, and three things stood out that were work
+for nothing:
+
+- The loop read the executable of its code through the rooted handle whenever it was entered, which is
+  after every call and every return: 5% of the case. The code that starts or goes on comes with its
+  executable now, and the handle is asked after a collection.
+- As a function was left, the Agent's scoped values were cut back to under the caller's executable and
+  that was rooted again where it had just been: the frame keeps the caller's handle instead, and the
+  scoped value stays.
+- The function had a Reference stack, an iterator stack and an exception handler stack of its own,
+  exchanged with the caller's at each end and emptied after, though most functions push to none of them.
+  It shares the caller's now, above where the caller left them (an error goes to the handlers above the
+  function's base, then leaves it), and only the value stack is exchanged: a function's instructions
+  name the slots of its variables from the bottom of that one, so a base for it would cost an addition
+  at every local.
+
+A plain call went from 2.8x to 2.4x, a method call from 2.8x to 2.6x, a closure from 3.3x to 2.9x,
+recursion from 2.7x to 2.3x, a getter and a setter from 3.0x to 2.6x, and the group from 2.6x to 2.5x.
+
+What is left of entering and leaving, a quarter of a plain call that does nothing else: the execution
+context pushed and removed (a third of entering), and after it nothing larger than a twentieth: the frame
+looked up and written, the tables of the code taken and let go of (a count up and a count down), the
+function's executable rooted, the this value taken from the call's Reference, the value stack exchanged
+and emptied.
 
 ### 4. Properties
 
@@ -756,6 +777,9 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   was called with undefined as an argument where it gets none; what it gave back was not checked for
   being an object (a TypeError); and where it threw, it was called a second time by the handler of that
   error. Any iterator, not only an Array's. Upstream; test262 has no test that fails for it. Fixed.
+- `string/index-of` moved by a third again with the build of the shared stacks (2.2 to 2.9 ms, 0.5x to
+  0.7x), and not with the build of the commit before it: the search has not changed since it last did
+  that. Placement, as above.
 - One run of the widget sandbox's tests in hosted mode failed a test that bounds a widget by its layout
   queries: the widget was stopped for 200 ms of continuous execution after 19 queries instead. The machine
   was under a load of ninety at the time; three runs on a quiet machine passed. The limit is wall-clock time.
