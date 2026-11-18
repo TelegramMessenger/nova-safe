@@ -68,6 +68,22 @@ pub(crate) fn reg_exp_create_literal<'a>(
     agent.heap.create(data).bind(gc)
 }
 
+/// The RegExp that an evaluation of a RegularExpressionLiteral returns:
+/// RegExpCreate of the literal's pattern and flags, a new object each time.
+/// `literal` is the RegExp that the literal was compiled to, which no script
+/// sees: the new one takes its pattern and flags, and shares its matcher.
+pub(crate) fn reg_exp_instantiate_literal<'a>(
+    agent: &mut Agent,
+    literal: RegExp,
+    gc: NoGcScope<'a, '_>,
+) -> RegExp<'a> {
+    let data = literal
+        .get_direct_mut(&mut agent.heap.regexps)
+        .of_literal(&agent.heap.strings);
+    agent.heap.data_bytes_since_gc += data.program_bytes();
+    agent.heap.create(data).bind(gc)
+}
+
 /// ### [22.2.3.2 RegExpAlloc ( newTarget )](https://tc39.es/ecma262/#sec-regexpalloc)
 ///
 /// The abstract operation RegExpAlloc takes argument newTarget (a constructor)
@@ -248,7 +264,7 @@ pub(crate) fn reg_exp_initialize<'a>(
         data.original_flags = f;
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
-        data.reg_exp_matcher = Some(Ok(reg_exp_matcher));
+        data.reg_exp_matcher = Some(Ok(std::sync::Arc::new(reg_exp_matcher)));
         data.program_bytes = pattern_bytes.saturating_mul(PROGRAM_BYTES_PER_BYTE);
     }
     agent.heap.data_bytes_since_gc += pattern_bytes.saturating_mul(PROGRAM_BYTES_PER_BYTE);

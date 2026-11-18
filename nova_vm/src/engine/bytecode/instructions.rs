@@ -511,6 +511,10 @@ pub(crate) enum Instruction {
 
     /// Store a copy of the last value from the stack as the result value.
     StoreCopy,
+    /// Replace the RegExp in the result register, which is the one a
+    /// RegularExpressionLiteral was compiled to, with a new RegExp of its
+    /// pattern and flags: what an evaluation of the literal returns.
+    InstantiateRegExpLiteral,
     /// Take N items from the stack and string-concatenate them together.
     StringConcat,
     /// Throw the result value as an exception.
@@ -1906,6 +1910,7 @@ impl Instruction {
         const RESOLVEBINDINGWITHCACHE: u8 = Instruction::ResolveBindingWithCache.as_u8();
         const RESOLVEBINDINGATSITE: u8 = Instruction::ResolveBindingAtSite.as_u8();
         const GETBINDINGATSITE: u8 = Instruction::GetBindingAtSite.as_u8();
+        const INSTANTIATEREGEXPLITERAL: u8 = Instruction::InstantiateRegExpLiteral.as_u8();
         const LOADBINDINGATSITE: u8 = Instruction::LoadBindingAtSite.as_u8();
         const GETVALUEWITHINDEXKEY: u8 = Instruction::GetValueWithIndexKey.as_u8();
         const APPLYBINARYOPERATORWITHCONSTANT: u8 =
@@ -2192,6 +2197,7 @@ impl Instruction {
             RESOLVEBINDINGWITHCACHE => Some(Instruction::ResolveBindingWithCache),
             RESOLVEBINDINGATSITE => Some(Instruction::ResolveBindingAtSite),
             GETBINDINGATSITE => Some(Instruction::GetBindingAtSite),
+            INSTANTIATEREGEXPLITERAL => Some(Instruction::InstantiateRegExpLiteral),
             LOADBINDINGATSITE => Some(Instruction::LoadBindingAtSite),
             GETVALUEWITHINDEXKEY => Some(Instruction::GetValueWithIndexKey),
             APPLYBINARYOPERATORWITHCONSTANT => Some(Instruction::ApplyBinaryOperatorWithConstant),

@@ -4986,3 +4986,108 @@ accessor on a later-added key: threw TypeError"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// RegExp literals and lastIndex. Each evaluation of a literal returns a
+/// RegExp of its own: its lastIndex and its properties are not those of
+/// the evaluation before, in a function called again, a loop, a class
+/// field, a default parameter, a generator. And lastIndex holds any value
+/// it is given (a negative Number, a fraction, a String, an object, a
+/// Symbol), which RegExpBuiltinExec converts when it comes to it. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn regexp_literals_and_last_index_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(regexp_literals_and_last_index)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn regexp_literals_and_last_index() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+(function () {
+var print = function (s) { all.push(s); };
+function show(name, v) { print(name + ": " + v); }
+function make() { return /a/g; }
+var first = make(), second = make();
+show("same object", first === second);
+first.tag = 1; show("own property seen on the next", second.tag);
+function test(s) { return /a/g.test(s); }
+show("test twice", [test("a"), test("a"), test("a")].join());
+function count(s) { var n = 0, rx = /a/g; while (rx.exec(s)) n++; return n; }
+show("count twice", [count("aaa"), count("aaa")].join());
+var objs = []; for (var i = 0; i < 3; i++) objs.push(/x/); show("in a loop", [objs[0] === objs[1], objs[1] === objs[2]].join());
+var arrow = () => /y/y; show("arrow", arrow() === arrow());
+show("literal vs constructor", make() === new RegExp("a", "g"));
+var r = /a/; r.lastIndex = -5; show("negative", r.lastIndex);
+r.lastIndex = 1.5; show("fraction", r.lastIndex);
+r.lastIndex = "7"; show("string", typeof r.lastIndex + r.lastIndex);
+var o = { valueOf: function () { return 2; } }; r.lastIndex = o; show("object", typeof r.lastIndex + (r.lastIndex === o));
+r.lastIndex = undefined; show("undefined", String(r.lastIndex));
+r.lastIndex = 4294967296; show("large", r.lastIndex);
+r.lastIndex = NaN; show("NaN", String(r.lastIndex));
+var g = /a/g; g.lastIndex = -1; show("exec with negative", [g.exec("aa") && g.exec("aa").index, g.lastIndex].join());
+var h = /a/g; h.lastIndex = { valueOf: function () { return 1; } }; show("exec with object", [h.exec("aaa").index, h.lastIndex].join());
+show("descriptor", JSON.stringify(Object.getOwnPropertyDescriptor(/a/, "lastIndex")));
+(function () {
+  var r = [];
+  function sticky(s) { var rx = /a/y; var out = [rx.test(s), rx.lastIndex]; return out.join(":"); }
+  r.push(sticky("aa"), sticky("aa"), sticky("ba"));
+  function globalExec(s) { var rx = /b/g, m = rx.exec(s); return (m ? m.index : -1) + ":" + rx.lastIndex; }
+  r.push(globalExec("abcb"), globalExec("abcb"));
+  var made = [1, 2, 3].map(function () { return /m/g; }); made[0].lastIndex = 5; made[1].extra = true; r.push(made[0] === made[1], made[1].lastIndex, made[2].extra, made[2].lastIndex);
+  function* gen() { for (var i = 0; i < 2; i++) yield /g/; } var g = Array.from(gen()); r.push(g[0] === g[1]);
+  class K { field = /f/; static make() { return /s/i; } } r.push(new K().field === new K().field, K.make() === K.make(), K.make().flags, new K().field.source);
+  function def(rx = /d/g) { return rx; } r.push(def() === def(), def().global);
+  var holder = function () { return { rx: /o/m, list: [/l/, /l/] }; }; var h1 = holder(), h2 = holder(); r.push(h1.rx === h2.rx, h1.list[0] === h1.list[1], h1.list[0] === h2.list[0]);
+  r.push(/a/ === /a/, /a/ == /a/, Object.is(/a/, /a/), typeof /a/, /a/ instanceof RegExp, Object.getPrototypeOf(make()) === RegExp.prototype, make().source, make().flags, String(make()), Object.keys(make()).length, Object.getOwnPropertyNames(make()).join());
+  var seen = new Set(); for (var k = 0; k < 50; k++) seen.add(/x/); r.push(seen.size);
+  var kept = []; for (var n = 0; n < 20000; n++) { var rx = /(\d+)-(\d+)/g; if (n % 4000 === 0) kept.push(rx); rx.lastIndex = n; } r.push(kept.length, kept[1].lastIndex, (kept[4].lastIndex = 0, kept[4].exec("xx 12-34")[2]), kept[0] === kept[1]);
+  var same = make(); r.push(same === same, same.test("a"), same.test("a"), same.lastIndex, make().test("a"), make().lastIndex);
+  print("more: " + r.join());
+})();
+(function () {
+  var r = [], rx = /a/g;
+  function state() { return typeof rx.lastIndex + ":" + String(rx.lastIndex); }
+  var values = [3, 0, -1, 1.5, "2", "x", true, null, undefined, NaN, Infinity, 4294967295, 4294967296, 9007199254740993, 10n];
+  for (var i = 0; i < values.length; i++) { rx.lastIndex = values[i]; var before = state(), m; try { m = rx.exec("aaaa"); m = m ? m.index : "null"; } catch (e) { m = e.constructor.name; } r.push(before + ">" + m + ">" + state()); }
+  var log = [], o = { valueOf: function () { log.push("v"); return 2; }, toString: function () { log.push("s"); return "1"; } }; rx.lastIndex = o; r.push(rx.lastIndex === o, rx.test("aaaa"), state(), log.join(""));
+  var sym = Symbol("i"); rx.lastIndex = sym; try { rx.test("a"); } catch (e) { r.push(e.constructor.name); } r.push(typeof rx.lastIndex);
+  rx.lastIndex = 1; r.push(JSON.stringify(Object.getOwnPropertyDescriptor(rx, "lastIndex")), Object.keys(rx).length, rx.hasOwnProperty("lastIndex"), "lastIndex" in rx);
+  var n = /a/; n.lastIndex = "5"; r.push(n.test("a"), typeof n.lastIndex + n.lastIndex); n.lastIndex = -3; r.push(n.exec("a").index, n.lastIndex);
+  var d = /a/g; Object.defineProperty(d, "lastIndex", { value: "1" }); r.push(typeof d.lastIndex, d.exec("aaa").index, d.lastIndex); Object.defineProperty(d, "lastIndex", { value: -2, writable: false }); r.push(d.lastIndex); try { d.exec("aaa"); } catch (e) { r.push(e.constructor.name); } r.push(d.lastIndex);
+  var s = /a/y; s.lastIndex = 1.9; r.push(s.test("aaa"), s.lastIndex); s.lastIndex = "1"; r.push(s.test("ba"), s.lastIndex);
+  print("lastIndex values: " + r.join());
+})();
+})();
+all.join("\n")"#;
+    let expected = r#"same object: false
+own property seen on the next: undefined
+test twice: true,true,true
+count twice: 3,3
+in a loop: false,false
+arrow: false
+literal vs constructor: false
+negative: -5
+fraction: 1.5
+string: string7
+object: objecttrue
+undefined: undefined
+large: 4294967296
+NaN: NaN
+exec with negative: 1,2
+exec with object: 1,2
+descriptor: {"value":0,"writable":true,"enumerable":false,"configurable":false}
+more: true:1,true:1,false:0,1:2,1:2,false,0,,0,false,false,false,i,f,false,true,false,false,false,false,false,false,object,true,true,a,g,/a/g,0,lastIndex,50,5,4000,34,false,true,true,false,0,true,0
+lastIndex values: number:3>3>number:4,number:0>0>number:1,number:-1>0>number:1,number:1.5>1>number:2,string:2>2>number:3,string:x>0>number:1,boolean:true>1>number:2,object:null>0>number:1,undefined:undefined>0>number:1,number:NaN>0>number:1,number:Infinity>null>number:0,number:4294967295>null>number:0,number:4294967296>null>number:0,number:9007199254740992>null>number:0,bigint:10>TypeError>bigint:10,true,true,number:3,v,TypeError,symbol,{"value":1,"writable":true,"enumerable":false,"configurable":false},0,true,true,true,string5,0,-3,string,1,2,-2,TypeError,-2,true,2,true,2"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
