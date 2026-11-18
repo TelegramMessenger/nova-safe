@@ -3599,6 +3599,17 @@ log("thisCalls", function () {
   var swapped = { m: function () { var v = this.f(); this.f = function () { return "second"; }; return v + this.f(); }, f: function () { return "first"; } }; r.push(swapped.m(), swapped.m());
   return r.join() + "|" + trail;
 });
+log("localReads", function () {
+  var r = [], n = null, u, num = 5, str = "abc", sym = Symbol("s"), big = 3n, fn = function named(a, b) {}, arr = [1, 2], date = new Date(0);
+  try { r.push(n.x); } catch (e) { r.push(e.constructor.name); } try { r.push(u.x); } catch (e) { r.push(e.constructor.name); } try { n.m(); } catch (e) { r.push(e.constructor.name); } try { u.m(); } catch (e) { r.push(e.constructor.name); }
+  r.push(num.x, typeof num.toFixed, str.length, str.x, typeof sym.description, typeof big.toString, fn.name, fn.length, typeof fn.call, fn.x, arr.length, typeof arr.push, arr.x, typeof date.getTime, date.x);
+  try { str.missing(); } catch (e) { r.push(e.constructor.name); } try { num.length.x; } catch (e) { r.push(e.constructor.name); }
+  var calls = "", acc = { get g() { calls += "g"; return this === acc; }, m: function () { calls += "m"; return this === acc; } }, inh = Object.create(acc), px = new Proxy({ real: 1 }, { get: function (t, k, rcv) { calls += "p"; return k === "self" ? rcv === px : t[k]; } });
+  r.push(acc.g, acc.m(), inh.g === false, inh.m() === false, px.real, px.self, px.nope);
+  var o = { a: 1 }; r.push(o.a); o.b = 2; r.push(o.a + o.b); delete o.a; r.push(o.a); Object.defineProperty(o, "b", { get: function () { return "getter"; } }); r.push(o.b); Object.setPrototypeOf(o, { c: "proto" }); r.push(o.c, o.d);
+  function swap(x) { return x.k; } r.push(swap({ k: 1 }), swap({ j: 0, k: 2 }), swap([]), swap("s"), swap(7), swap(function () {}), swap(Object.create({ k: "up" })));
+  return r.map(String).join() + "|" + calls;
+});
 out.join("\n")
 "#;
     let expected = r#"plainAssign0={"a":2,"b":3,"c":5}{"x":2,"y":2}abc
@@ -3628,7 +3639,9 @@ thisInMethods1=3,8,16,undefined,18,20,38,3
 thisKinds0=objecttrue,TypeError,sx,true,undefined,number5.0,6,21,object,2,ReferenceError,base+derived!,base+derived!,12,2,hh,1
 thisKinds1=objecttrue,TypeError,sx,true,undefined,number5.0,6,21,object,2,ReferenceError,base+derived!,base+derived!,12,2,hh,1
 thisCalls0=2,4,sloppynumber,TypeError,firstsecond,secondsecond|abcabcb
-thisCalls1=2,4,sloppynumber,TypeError,firstsecond,secondsecond|abcabcb"#;
+thisCalls1=2,4,sloppynumber,TypeError,firstsecond,secondsecond|abcabcb
+localReads0=TypeError,TypeError,TypeError,TypeError,undefined,function,3,undefined,string,function,named,2,function,undefined,2,function,undefined,function,undefined,TypeError,TypeError,true,true,true,true,1,true,undefined,1,3,undefined,getter,proto,undefined,1,2,undefined,undefined,undefined,undefined,up|gmgmppp
+localReads1=TypeError,TypeError,TypeError,TypeError,undefined,function,3,undefined,string,function,named,2,function,undefined,2,function,undefined,function,undefined,TypeError,TypeError,true,true,true,true,1,true,undefined,1,3,undefined,getter,proto,undefined,1,2,undefined,undefined,undefined,undefined,up|gmgmppp"#;
     let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
         panic!("the checks did not run");
     };

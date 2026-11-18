@@ -804,11 +804,19 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             }
             _ => None,
         };
+        // The stack slot of a local whose property is read, for the
+        // instruction that reads both: it goes after the cache.
+        let mut slot = None;
         if let Some(fused) = fused
             && let Some(access) =
                 self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithIdentifierKey)
         {
             let identifier = self.operand_bytes(access);
+            let of_local = if fused == Instruction::GetPropertyWithCache {
+                Instruction::GetIndexPropertyWithCache
+            } else {
+                Instruction::GetIndexPropertyWithCacheKeepReference
+            };
             if let Some(this) = self.recent_instruction(1, Instruction::ResolveThisBinding) {
                 // `this.x`: the this value is fetched by the same
                 // instruction.
@@ -818,6 +826,22 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 } else {
                     Instruction::GetThisPropertyWithCacheKeepReference
                 });
+            } else if let Some(local) = self.recent_instruction(1, Instruction::GetValueFromIndex) {
+                // `p.x`: the local is read by the same instruction.
+                slot = Some(self.operand_bytes(local));
+                self.drop_recent_instructions(local, 2);
+                self.push_instruction(of_local);
+            } else if let Some(locals) =
+                self.recent_instruction(1, Instruction::LoadFromIndexGetFromIndex)
+            {
+                // The same after another local was pushed, which stays a
+                // push.
+                let pushed = self.operand_bytes(locals);
+                slot = Some([self.instructions[locals + 3], self.instructions[locals + 4]]);
+                self.drop_recent_instructions(locals, 2);
+                self.push_instruction(Instruction::LoadFromIndex);
+                self.instructions.extend_from_slice(&pushed);
+                self.push_instruction(of_local);
             } else {
                 self.drop_recent_instructions(access, 1);
                 self.push_instruction(fused);
@@ -828,6 +852,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         }
         let cache = self.add_cache(cache);
         self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
+        if let Some(slot) = slot {
+            self.instructions.extend_from_slice(&slot);
+            self.instructions.extend_from_slice(&[0, 0]);
+        }
     }
 
     pub(super) fn add_instruction_with_identifier_and_cache(

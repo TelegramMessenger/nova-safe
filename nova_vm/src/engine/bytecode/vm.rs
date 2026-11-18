@@ -1690,6 +1690,23 @@ impl Vm {
                 }
                 vm.result = Some(value);
             }
+            // `p.x` of a local: the stack slot, and its property by the
+            // cache.
+            Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference => {
+                let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
+                let Some(value) = Self::cached_property_value_of(agent, base, code, instr, gc)
+                else {
+                    return Plain::No;
+                };
+                if instr.kind == Instruction::GetIndexPropertyWithCacheKeepReference {
+                    vm.result = Some(base);
+                    Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+                } else {
+                    vm.reference = None;
+                }
+                vm.result = Some(value);
+            }
             // `this.p`: the this value that the call keeps, and its
             // property by the cache.
             Instruction::GetThisPropertyWithCache
@@ -2360,7 +2377,9 @@ impl Vm {
             }
             Instruction::PutPropertyWithCache
             | Instruction::GetThisPropertyWithCache
-            | Instruction::GetThisPropertyWithCacheKeepReference => {
+            | Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference => {
                 // Kept out of this function, whose frame every native call
                 // of a function is on top of.
                 execute_fused_property_instruction(agent, vm, executable, instr, gc)?;
@@ -2461,6 +2480,8 @@ impl Vm {
             | Instruction::GetPropertyWithCacheKeepReference
             | Instruction::GetThisPropertyWithCache
             | Instruction::GetThisPropertyWithCacheKeepReference
+            | Instruction::GetIndexPropertyWithCache
+            | Instruction::GetIndexPropertyWithCacheKeepReference
             | Instruction::PutPropertyWithCache
             | Instruction::PushReferenceAndLoad
             | Instruction::LoadFromIndexStoreConstant

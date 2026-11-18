@@ -137,6 +137,14 @@ pub(crate) enum Instruction {
     /// ResolveThisBinding followed by GetPropertyWithCacheKeepReference:
     /// the function of `this.m()`.
     GetThisPropertyWithCacheKeepReference,
+    /// GetValueFromIndex followed by GetPropertyWithCache: a property of a
+    /// local, `p.x`. The arguments are the identifier and the cache, then
+    /// the stack slot in four bytes more than other instructions have, of
+    /// which the last two are not used.
+    GetIndexPropertyWithCache,
+    /// GetValueFromIndex followed by GetPropertyWithCacheKeepReference: the
+    /// function of `p.m()`.
+    GetIndexPropertyWithCacheKeepReference,
     /// `object.name = value` with the object on the stack and the value as
     /// the result, where the value of the assignment is not used: what
     /// EvaluatePropertyAccessWithIdentifierKey of the object and
@@ -724,6 +732,8 @@ impl Instruction {
             | Self::JumpIfIndexNotStrictlyEqualIndex
             | Self::JumpIfIndexStrictlyEqualConstant
             | Self::JumpIfIndexStrictlyEqualIndex
+            | Self::GetIndexPropertyWithCache
+            | Self::GetIndexPropertyWithCacheKeepReference
             | Self::JumpIfIndexLessThanConstant
             | Self::JumpIfIndexLessThanIndex
             | Self::JumpIfIndexLessThanEqualsConstant
@@ -869,6 +879,8 @@ impl Instruction {
                 | Self::GetPropertyWithCacheKeepReference
                 | Self::GetThisPropertyWithCache
                 | Self::GetThisPropertyWithCacheKeepReference
+                | Self::GetIndexPropertyWithCache
+                | Self::GetIndexPropertyWithCacheKeepReference
                 | Self::PutPropertyWithCache
                 | Self::PutValueWithCache
                 | Self::ResolveBindingWithCache
@@ -906,6 +918,8 @@ impl Instruction {
                 | Self::GetPropertyWithCacheKeepReference
                 | Self::GetThisPropertyWithCache
                 | Self::GetThisPropertyWithCacheKeepReference
+                | Self::GetIndexPropertyWithCache
+                | Self::GetIndexPropertyWithCacheKeepReference
                 | Self::PutPropertyWithCache
                 | Self::MakePrivateReference
                 | Self::MakeSuperPropertyReferenceWithIdentifierKey
@@ -1208,6 +1222,21 @@ impl Instr {
         self.args.two_args()[1] as usize
     }
 
+    /// The third argument of an instruction with four, where it is an index:
+    /// the first two of the four bytes before `ip`, where the next
+    /// instruction is.
+    #[inline(always)]
+    pub(crate) fn wide_third_index(instructions: &[u8], ip: usize) -> usize {
+        let Some(bytes) = ip
+            .checked_sub(4)
+            .and_then(|start| instructions.get(start..ip))
+            .and_then(|bytes| bytes.first_chunk::<2>())
+        else {
+            panic_invalid_instruction()
+        };
+        u16::from_ne_bytes(*bytes) as usize
+    }
+
     /// The jump target of an instruction with four arguments, which is its
     /// last two: the four bytes before `ip`, where the next instruction is.
     #[inline(always)]
@@ -1302,6 +1331,18 @@ impl Instr {
                         Self::print_two_args(agent, self.kind, arg0, arg1, exe, gc)
                     );
                 }
+            }
+            4 if matches!(
+                self.kind,
+                Instruction::GetIndexPropertyWithCache
+                    | Instruction::GetIndexPropertyWithCacheKeepReference
+            ) =>
+            {
+                let [arg0, arg1] = self.args.two_args();
+                let instructions = exe.get_instructions(agent);
+                let slot = Self::wide_third_index(&instructions, ip + 9);
+                let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
+                eprintln!("  {}: {:?}({}, {}, {})", ip, self.kind, slot, key, arg1);
             }
             4 => {
                 let [arg0, arg1] = self.args.two_args();
@@ -1566,6 +1607,9 @@ impl Instruction {
         const GETTHISPROPERTYWITHCACHE: u8 = Instruction::GetThisPropertyWithCache.as_u8();
         const GETTHISPROPERTYWITHCACHEKEEPREFERENCE: u8 =
             Instruction::GetThisPropertyWithCacheKeepReference.as_u8();
+        const GETINDEXPROPERTYWITHCACHE: u8 = Instruction::GetIndexPropertyWithCache.as_u8();
+        const GETINDEXPROPERTYWITHCACHEKEEPREFERENCE: u8 =
+            Instruction::GetIndexPropertyWithCacheKeepReference.as_u8();
         const PUTPROPERTYWITHCACHE: u8 = Instruction::PutPropertyWithCache.as_u8();
         const PUSHREFERENCEANDLOAD: u8 = Instruction::PushReferenceAndLoad.as_u8();
         const POPREFERENCEANDEVALUATECALL: u8 = Instruction::PopReferenceAndEvaluateCall.as_u8();
@@ -1825,6 +1869,10 @@ impl Instruction {
             GETTHISPROPERTYWITHCACHE => Some(Instruction::GetThisPropertyWithCache),
             GETTHISPROPERTYWITHCACHEKEEPREFERENCE => {
                 Some(Instruction::GetThisPropertyWithCacheKeepReference)
+            }
+            GETINDEXPROPERTYWITHCACHE => Some(Instruction::GetIndexPropertyWithCache),
+            GETINDEXPROPERTYWITHCACHEKEEPREFERENCE => {
+                Some(Instruction::GetIndexPropertyWithCacheKeepReference)
             }
             PUTPROPERTYWITHCACHE => Some(Instruction::PutPropertyWithCache),
             PUSHREFERENCEANDLOAD => Some(Instruction::PushReferenceAndLoad),
