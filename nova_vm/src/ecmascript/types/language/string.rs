@@ -296,8 +296,10 @@ impl<'a> String<'a> {
             let joins_surrogate_pair = right.as_wtf8_(agent).initial_trail_surrogate().is_some()
                 && left.get(agent).as_wtf8().final_lead_surrogate().is_some();
             if !joins_surrogate_pair {
-                let added = right.as_wtf8_(agent).as_bytes().to_vec();
-                return agent.heap.alloc_appended(left.unbind(), added).bind(gc);
+                return agent
+                    .heap
+                    .alloc_appended(left.unbind(), right.unbind())
+                    .bind(gc);
             }
         }
         // Two strings that make a short one, as most concatenations do: the

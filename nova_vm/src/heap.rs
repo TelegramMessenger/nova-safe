@@ -532,8 +532,14 @@ impl Heap {
     pub(crate) fn alloc_appended(
         &mut self,
         left: HeapString<'static>,
-        right: Vec<u8>,
+        right: String<'static>,
     ) -> String<'static> {
+        // Read where it is: a copy of what is appended would be allocated
+        // at every step of a loop that builds a text.
+        let right = match &right {
+            String::SmallString(right) => right.as_bytes(),
+            String::String(right) => self.strings[right.get_index()].as_bytes(),
+        };
         let (data, hash) = StringRecord::appended(
             &self.strings[left.get_index()],
             right,

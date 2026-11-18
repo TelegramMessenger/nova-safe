@@ -8255,3 +8255,124 @@ reflect true true 5,x,1"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A text built by `s += x` keeps the last bytes appended to it next to
+/// its pieces until there are enough for a piece: it is the text built any
+/// other way (as a value, as a key, by its code units) for every size of
+/// what is appended against every size of what is kept, two texts that
+/// continue one do not see each other's ends, and a surrogate pair across
+/// what is kept is one code point. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn a_text_appended_to_keeps_its_end_until_it_makes_a_piece() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(appended_texts)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn appended_texts() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function say(name, v) { print(name + ": " + v); }
+function hash(s) { var h = 7; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+function chunkOf(n, seed) { var c = ""; var codes = []; for (var i = 0; i < n; i++) codes.push(97 + ((seed + i * 7) % 26)); return String.fromCharCode.apply(null, codes); }
+// Every chunk size against every boundary: the text built by appending is
+// the text built any other way, as a value, as a key and by its code units.
+(function () {
+  var bad = [], sum = 0, count = 0;
+  var starts = ["12345678", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"];
+  for (var st = 0; st < starts.length; st++) {
+    for (var size = 1; size <= 40; size++) {
+      var s = starts[st] + "", parts = [starts[st]], keyed = {}, map = new Map();
+      // Made by a concatenation, so that what follows appends to it.
+      s = s.slice(0, 4) + s.slice(4);
+      for (var step = 0; step < 12; step++) {
+        var c = chunkOf(size, step + st);
+        s += c; parts.push(c);
+        var other = parts.join("");
+        if (s !== other || s.length !== other.length) bad.push("neq " + st + "/" + size + "/" + step);
+        keyed[s] = step; map.set(s, step);
+        if (keyed[other] !== step || map.get(other) !== step) bad.push("key " + st + "/" + size + "/" + step);
+        if (s.charCodeAt(s.length - 1) !== other.charCodeAt(other.length - 1)) bad.push("last " + st + "/" + size + "/" + step);
+        count++;
+      }
+      sum = (sum + hash(s)) | 0;
+      if (Object.keys(keyed).length !== 12 || map.size !== 12) bad.push("keys " + st + "/" + size);
+    }
+  }
+  say("boundaries", count + " " + sum + " " + (bad.length ? bad.slice(0, 5).join(",") : "ok"));
+})();
+// Two texts that continue the same one: neither sees what the other added.
+(function () {
+  var r = [];
+  for (var held = 0; held <= 34; held += 1) {
+    var base = "the text that both continue " + "x".repeat(3);
+    base += "y".repeat(held).slice(0, held) || "";
+    for (var i = 0; i < held; i++) base += "q";
+    var a = base + "A", b = base + "B", c = base + "a longer piece than what the text keeps of its end", d = base + "A";
+    var a2 = a + "!", b2 = b + "?", base2 = base + "";
+    r.push([a.length - base.length, b.length - base.length, a === d, a === b, a.slice(-2), b.slice(-2), c.slice(-4), a2.slice(-3), b2.slice(-3), base2 === base, base.length, hash(a + b + c)].join("/"));
+  }
+  say("forks", hash(r.join("|")) + " " + r[0] + " " + r[20] + " " + r[34]);
+})();
+// Text outside ASCII and surrogates across what is kept of the end and the pieces.
+(function () {
+  var r = [], units = ["é", "ж", "中", "😀", "\ud83d", "\ude00", "a", "\u0000", "￿", "𐀀", "\udc00\ud800"];
+  for (var u = 0; u < units.length; u++) {
+    for (var pad = 26; pad <= 34; pad++) {
+      var s = "start of it: " + "p".repeat(2);
+      for (var i = 0; i < pad; i++) s += "p";
+      var t = s;
+      for (var k = 0; k < 9; k++) t += units[(u + k) % units.length];
+      var e = s; var all = [s];
+      for (var k = 0; k < 9; k++) all.push(units[(u + k) % units.length]);
+      var other = all.join("");
+      var cps = 0; for (var ch of t) cps++;
+      r.push([t.length, other.length, t === other, cps, t.charCodeAt(t.length - 1), t.codePointAt(s.length), encodeURIComponentSafe(t.slice(-3))].join("/"));
+    }
+  }
+  function encodeURIComponentSafe(x) { try { return encodeURIComponent(x); } catch (e) { return e.constructor.name; } }
+  say("nonascii", r.length + " " + hash(r.join("|")) + " " + r[0] + " " + r[40] + " " + r[98]);
+})();
+// A lead surrogate at the end of what is kept, a trail surrogate appended: one code point.
+(function () {
+  var r = [];
+  for (var pad = 0; pad <= 33; pad++) {
+    var s = "pairs are joined ";
+    for (var i = 0; i < pad; i++) s += "-";
+    var lead = s + "\ud83d", joined = lead + "\ude00", twice = joined + "\ud83d" + "\ude00", viaTemplate = `${s}😀`;
+    r.push([joined.length - s.length, joined === s + "😀", joined === viaTemplate, joined.codePointAt(s.length), twice.length - s.length, [...twice].length - [...s].length, lead.charCodeAt(lead.length - 1)].join("/"));
+  }
+  say("pairs", hash(r.join("|")) + " " + r[0] + " " + r[14] + " " + r[33]);
+})();
+// A long loop of each shape, read at the end and in the middle.
+(function () {
+  var r = [];
+  var a = ""; for (var i = 0; i < 20000; i++) a += "x"; r.push(a.length, a === "x".repeat(20000), hash(a));
+  var b = ""; for (var i = 0; i < 5000; i++) b += "chunk"; r.push(b.length, b === "chunk".repeat(5000), b.indexOf("kc"), b.lastIndexOf("chunk"));
+  var c = ""; for (var i = 0; i < 3000; i++) c += i; r.push(c.length, hash(c), c.slice(0, 12), c.slice(-12));
+  var d = "", lens = []; for (var i = 0; i < 300; i++) { d += "<li>" + i + "</li>"; if (i % 37 === 0) lens.push(d.length, d.charCodeAt(d.length - 2), d.endsWith("</li>")); } r.push(d.length, hash(d), lens.join("."));
+  var e = ""; for (var i = 0; i < 2000; i++) { e += String.fromCharCode(32 + (i * 13) % 2000); } r.push(e.length, hash(e));
+  var f = "", seen = {}; for (var i = 0; i < 400; i++) { f += "k"; seen[f] = i; } r.push(Object.keys(seen).length, seen["k".repeat(400)], seen["k".repeat(33)], seen["k".repeat(32)], seen["k".repeat(8)]);
+  var g = "abcdefgh" + "", h1 = g; for (var i = 0; i < 100; i++) { g += "0123456789012345678901234567890123456789"; } r.push(g.length, hash(g), h1);
+  say("loops", r.join(" "));
+})();
+lines.join("\n")"#;
+    let expected = r#"boundaries: 1440 23587968 ok
+forks: -1679262746 1/1/true/false/xA/xB/ end/xA!/xB?/true/31/-1839904902 1/1/true/false/qA/qB/ end/qA!/qB?/true/71/1645872122 1/1/true/false/qA/qB/ end/qA!/qB?/true/99/-53091142
+nonascii: 99 457680804 51/51/true/49/65535/233/a%00%EF%BF%BF 56/56/true/54/1078/128512/URIError 60/60/true/58/0/56320/URIError
+pairs: -1993167723 2/true/true/128512/4/2/55357 2/true/true/128512/4/2/55357 2/true/true/128512/4/2/55357
+loops: 20000 true -1893346297 25000 true 4 24995 10890 988283121 012345678910 299729982999 3490 -846378057 10.105.true.408.105.true.815.105.true.1234.105.true.1678.105.true.2122.105.true.2566.105.true.3010.105.true.3454.105.true 2000 -1534224913 400 399 32 31 7 4008 1712320347 abcdefgh"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

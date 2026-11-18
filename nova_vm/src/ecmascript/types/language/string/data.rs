@@ -82,13 +82,22 @@ impl Hash for StringBuffer {
 /// the old one's pieces and adds its own, and its bytes are joined into one
 /// buffer the first time something reads them.
 ///
-/// Each piece is at least as long as all the pieces after it together would
-/// need to stay shorter: appending merges the new piece into the one before
-/// it while that one is not longer, so sizes at least double going back, a
-/// text has few pieces, and a byte is copied a logarithmic number of times.
+/// Each piece is at least twice as long as the one after it: appending
+/// takes the piece before into the new one while it is shorter than that, so
+/// a text has no more pieces than its length has bits (which also bounds how
+/// deep dropping them goes), and a byte is copied a logarithmic number of
+/// times.
+///
+/// The end of the text is not in a piece until it is long enough for one
+/// ([`LAST_BYTES`]): most steps of such a loop add a few bytes, which are
+/// then copied next to those of the steps before and allocate no piece.
 #[derive(Debug, Clone)]
 pub(crate) struct AppendedText {
+    /// The text but for its `last` bytes.
     pieces: Arc<Piece>,
+    /// The end of the text: what was appended since the last piece was made.
+    last: [u8; LAST_BYTES],
+    last_len: u8,
     /// Bytes of the whole text.
     len: usize,
     utf16_len: usize,
@@ -136,6 +145,10 @@ impl JoinBudget {
 #[derive(Debug)]
 pub struct TextJoinOverLimit;
 
+/// How many bytes of its end an appended text keeps out of its pieces
+/// ([`AppendedText::last`]).
+const LAST_BYTES: usize = 31;
+
 #[derive(Debug)]
 struct Piece {
     bytes: Box<[u8]>,
@@ -143,24 +156,42 @@ struct Piece {
 }
 
 impl Piece {
-    /// The pieces of a text that ends with `bytes` after `before`, and how
-    /// many bytes that allocated.
-    fn appended(mut before: Option<Arc<Piece>>, mut bytes: Vec<u8>) -> (Arc<Piece>, usize) {
-        let mut allocated = bytes.len() + core::mem::size_of::<Piece>();
-        while let Some(previous) = &before
-            && previous.bytes.len() <= bytes.len()
+    /// The pieces of a text that ends with `first` and then `second` after
+    /// `before`, and how many bytes that allocated. The pieces that the new
+    /// one takes in are found before anything is allocated, so that it is
+    /// allocated once, whatever it takes in.
+    fn appended(before: Option<&Arc<Piece>>, first: &[u8], second: &[u8]) -> (Arc<Piece>, usize) {
+        let mut len = first.len() + second.len();
+        let mut taken = 0usize;
+        let mut kept = before;
+        while let Some(previous) = kept
+            && previous.bytes.len() < len.saturating_mul(2)
         {
-            let mut merged = Vec::with_capacity(previous.bytes.len() + bytes.len());
-            merged.extend_from_slice(&previous.bytes);
-            merged.extend_from_slice(&bytes);
-            allocated += merged.len();
-            bytes = merged;
-            before = previous.before.clone();
+            len += previous.bytes.len();
+            taken += 1;
+            kept = previous.before.as_ref();
         }
+        let mut bytes = Vec::with_capacity(len);
+        // The pieces are linked from the last one back, and few are taken
+        // in: each is walked to, the first of them first.
+        for nth in (0..taken).rev() {
+            let mut piece = before;
+            for _ in 0..nth {
+                piece = piece.and_then(|piece| piece.before.as_ref());
+            }
+            if let Some(piece) = piece {
+                bytes.extend_from_slice(&piece.bytes);
+            }
+        }
+        bytes.extend_from_slice(first);
+        bytes.extend_from_slice(second);
+        debug_assert_eq!(bytes.len(), len);
         let piece = Arc::new(Piece {
             bytes: bytes.into_boxed_slice(),
-            before,
+            before: kept.cloned(),
         });
+        // With the two counts that the piece is shared by.
+        let allocated = len + core::mem::size_of::<Piece>() + 2 * core::mem::size_of::<usize>();
         (piece, allocated)
     }
 }
@@ -196,9 +227,15 @@ impl AppendedText {
                 for bytes in pieces.into_iter().rev() {
                     text.push_wtf8(Wtf8Str::from_wtf8_bytes(bytes));
                 }
+                text.push_wtf8(Wtf8Str::from_wtf8_bytes(self.last()));
                 text
             })
             .as_wtf8()
+    }
+
+    /// The end of the text that is in no piece.
+    fn last(&self) -> &[u8] {
+        &self.last[..usize::from(self.last_len)]
     }
 
     /// The bytes after the hashed blocks of the text: its last `count`,
@@ -207,6 +244,10 @@ impl AppendedText {
         let count = (self.len - self.hash_state.hashed()).min(TEXT_BLOCK - 1);
         let mut tail = [0u8; TEXT_BLOCK];
         let mut missing = count;
+        let last = self.last();
+        let take = missing.min(last.len());
+        tail[missing - take..missing].copy_from_slice(&last[last.len() - take..]);
+        missing -= take;
         let mut piece = Some(&self.pieces);
         while let Some(current) = piece
             && missing > 0
@@ -271,7 +312,7 @@ impl StringRecord {
     /// shares the pieces of `left`, or starts them with a copy of it.
     pub(crate) fn appended(
         left: &StringRecord,
-        right: Vec<u8>,
+        right: &[u8],
         hasher: &RandomState,
         budget: &Arc<JoinBudget>,
     ) -> (StringRecord, u64) {
@@ -284,14 +325,24 @@ impl StringRecord {
             (_, Some(_)) => left.utf16_len(),
             _ => utf16_len_of(left.as_bytes()),
         };
-        let utf16_len = left_utf16_len + utf16_len_of(&right);
+        let utf16_len = left_utf16_len + utf16_len_of(right);
+        let mut last = [0u8; LAST_BYTES];
+        let mut last_len = 0;
         let (pieces, hash, hash_state, fresh_bytes) = match &left.data {
             StringBuffer::Appended(text) => {
                 let (tail, count) = text.tail();
                 let (hash, hash_state) =
-                    RandomState::hash_text_appended(&text.hash_state, &tail[..count], &right);
-                let (pieces, fresh_bytes) = Piece::appended(Some(text.pieces.clone()), right);
-                (pieces, hash, hash_state, fresh_bytes)
+                    RandomState::hash_text_appended(&text.hash_state, &tail[..count], right);
+                let held = text.last();
+                if held.len() + right.len() <= LAST_BYTES {
+                    last_len = held.len() + right.len();
+                    last[..held.len()].copy_from_slice(held);
+                    last[held.len()..last_len].copy_from_slice(right);
+                    (text.pieces.clone(), hash, hash_state, 0)
+                } else {
+                    let (pieces, fresh_bytes) = Piece::appended(Some(&text.pieces), held, right);
+                    (pieces, hash, hash_state, fresh_bytes)
+                }
             }
             _ => {
                 let bytes = left.as_bytes();
@@ -299,15 +350,24 @@ impl StringRecord {
                 let (hash, hash_state) = RandomState::hash_text_appended(
                     &left_state,
                     &bytes[left_state.hashed()..],
-                    &right,
+                    right,
                 );
-                let (first, first_bytes) = Piece::appended(None, bytes.to_vec());
-                let (pieces, fresh_bytes) = Piece::appended(Some(first), right);
-                (pieces, hash, hash_state, first_bytes + fresh_bytes)
+                let (first, first_bytes) = Piece::appended(None, bytes, &[]);
+                if right.len() <= LAST_BYTES {
+                    last_len = right.len();
+                    last[..last_len].copy_from_slice(right);
+                    (first, hash, hash_state, first_bytes)
+                } else {
+                    let (pieces, fresh_bytes) = Piece::appended(Some(&first), &[], right);
+                    (pieces, hash, hash_state, first_bytes + fresh_bytes)
+                }
             }
         };
         let data = StringBuffer::Appended(Box::new(AppendedText {
             pieces,
+            last,
+            // At most LAST_BYTES.
+            last_len: last_len as u8,
             len,
             utf16_len,
             hash_state,
@@ -711,5 +771,73 @@ impl HeapMarkAndSweep for StringRecord {
             mapping: _,
         } = self;
         self.settle();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lengths of the pieces of an appended text, the last one first.
+    fn piece_lengths(record: &StringRecord) -> Vec<usize> {
+        let StringBuffer::Appended(text) = &record.data else {
+            panic!("not an appended text");
+        };
+        let mut lengths = Vec::new();
+        let mut piece = Some(&text.pieces);
+        while let Some(current) = piece {
+            lengths.push(current.bytes.len());
+            piece = current.before.as_ref();
+        }
+        lengths
+    }
+
+    fn appended_in_steps(sizes: impl Iterator<Item = usize>) {
+        let hasher = RandomState::new();
+        let budget = Arc::new(JoinBudget::default());
+        let mut expected = std::string::String::from("the start of the text");
+        let mut text = StringRecord::from_concatenation(Wtf8Buf::from_str(&expected));
+        for (step, size) in sizes.enumerate() {
+            let added: std::string::String = (0..size)
+                .map(|i| char::from(b'a' + ((step + i) % 26) as u8))
+                .collect();
+            let (next, hash) = StringRecord::appended(&text, added.as_bytes(), &hasher, &budget);
+            expected.push_str(&added);
+            assert_eq!(hash, hasher.hash_text(expected.as_bytes()), "step {step}");
+            assert_eq!(next.len(), expected.len());
+            assert_eq!(next.utf16_len(), expected.len());
+            let lengths = piece_lengths(&next);
+            assert!(lengths.len() <= usize::BITS as usize, "step {step}");
+            for pair in lengths.windows(2) {
+                assert!(pair[1] >= 2 * pair[0], "step {step}: {lengths:?}");
+            }
+            // The text before is what it was, whatever was appended to it.
+            if step % 97 == 0 {
+                assert_eq!(
+                    text.as_bytes(),
+                    &expected.as_bytes()[..expected.len() - size]
+                );
+                assert_eq!(next.as_bytes(), expected.as_bytes());
+            }
+            text = next;
+        }
+        assert_eq!(
+            text.table_hash(&hasher),
+            hasher.hash_text(expected.as_bytes())
+        );
+        assert_eq!(text.as_bytes(), expected.as_bytes());
+    }
+
+    #[test]
+    fn an_appended_text_has_few_pieces_whatever_is_appended() {
+        // One byte at a time, and sizes around what a text keeps of its end.
+        appended_in_steps(core::iter::repeat_n(1, 3000));
+        appended_in_steps((0..600).map(|step| LAST_BYTES - 2 + step % 5));
+        appended_in_steps((0..400).map(|step| [1, 70, 3, 31, 32, 200, 5][step % 7]));
+        // Each shorter than the one before: no piece takes in the next one
+        // by being merely longer than it.
+        appended_in_steps((1..=300).rev());
+        // And each longer.
+        appended_in_steps(1..=300);
     }
 }
