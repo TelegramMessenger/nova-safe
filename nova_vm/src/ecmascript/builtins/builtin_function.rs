@@ -207,6 +207,41 @@ pub(crate) fn take_pooled_arguments_vec(
     vec
 }
 
+/// Roots `values` as the arguments list of a call that a `Vm` runs in place:
+/// the list is the last of the Agent's scoped collections, and stays until
+/// [`release_scoped_collections`] cuts them back below it when the call
+/// ends. What [`ArgumentsList::with_scoped`] does for a call that has a
+/// native frame to do it in.
+pub(crate) fn scope_arguments_of_call(
+    agent: &mut Agent,
+    values: Vec<Value<'static>>,
+) -> ScopedArgumentsList<'static> {
+    let collections = agent.stack_ref_collections.get_mut();
+    let index = u32::try_from(collections.len()).expect("Stack reference collections overflowed");
+    collections.push(HeapRootCollection::ArgumentsList(ScopedArgumentsData {
+        values,
+        start: 0,
+    }));
+    ScopedArgumentsList {
+        index,
+        value: PhantomData,
+    }
+}
+
+/// Cuts the Agent's scoped collections back to `depth`. The vector of an
+/// arguments list among those let go of ([`scope_arguments_of_call`]) is
+/// kept for the next call.
+#[inline]
+pub(crate) fn release_scoped_collections(agent: &mut Agent, depth: usize) {
+    while agent.stack_ref_collections.get_mut().len() > depth {
+        if let Some(HeapRootCollection::ArgumentsList(data)) =
+            agent.stack_ref_collections.get_mut().pop()
+        {
+            return_pooled_arguments_vec(agent, data.values);
+        }
+    }
+}
+
 pub(crate) fn return_pooled_arguments_vec(agent: &mut Agent, mut vec: Vec<Value<'static>>) {
     if vec.capacity() == 0
         || vec.capacity() > ARGUMENTS_POOL_MAX_CAPACITY
