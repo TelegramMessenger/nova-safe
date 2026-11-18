@@ -8497,3 +8497,61 @@ fn loops_that_only_call_built_ins_are_interrupted() {
         Ok(Completion::String("6 3 6.5 312".into()))
     );
 }
+
+/// A host function is handed copies of its arguments, and eight of them may
+/// be one long string or one buffer. The copies are asked of the memory
+/// limit together before any is made: a call whose copies the limit has no
+/// room for, whatever a collection frees, throws a RangeError and does not
+/// reach the host.
+#[test]
+fn the_copies_of_host_arguments_are_asked_of_the_memory_limit() {
+    let recorder = Rc::new(Recorder {
+        calls: RefCell::new(Vec::new()),
+        reply: RefCell::new(None),
+        panic_on: None,
+    });
+    let mut engine = Engine::new(
+        EngineOptions {
+            memory_limit: 8 << 20,
+            stack_limit: 0,
+        },
+        Box::new(SharedRecorder(recorder.clone())),
+    )
+    .unwrap();
+    engine
+        .register_function("__h", 1, 0, ArgumentMode::ValuesAndBytes)
+        .unwrap();
+    assert_eq!(
+        engine.evaluate("var s = 'x'.repeat(3 << 19); __h(s); 'called'", false),
+        Ok(Completion::String("called".into()))
+    );
+    assert_eq!(recorder.calls.borrow().len(), 1);
+    for arguments in [
+        "s, s, s, s, s, s, s, s",
+        "b, b, b, b, b, b, b, b",
+        "s, b, s, b, s, b, s, b",
+    ] {
+        let script = format!(
+            "var b = new Uint8Array(3 << 19);
+             try {{ __h({arguments}); 'called' }} catch (e) {{ e.constructor.name }}"
+        );
+        assert_eq!(
+            engine.evaluate(&script, false),
+            Ok(Completion::String("RangeError".into())),
+            "{arguments}"
+        );
+        assert_eq!(recorder.calls.borrow().len(), 1, "{arguments}");
+    }
+    assert_eq!(
+        engine.evaluate(
+            "__h('a', 2, new Uint8Array([7, 8, 9]), s.slice(0, 5000)); 'called'",
+            false
+        ),
+        Ok(Completion::String("called".into()))
+    );
+    let calls = recorder.calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].1.len(), 4);
+    assert_eq!(calls[1].1[0], HostArg::String("a".into()));
+    assert_eq!(calls[1].1[3], HostArg::String(vec![b'x'; 5000]));
+}

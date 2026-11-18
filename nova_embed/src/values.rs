@@ -123,13 +123,18 @@ fn wtf8_lossy(bytes: &[u8]) -> Wtf8Buf {
     buf
 }
 
+/// Bytes of arguments that are copied for a host function without asking
+/// the limit: what any call may take.
+const COPIED_UNASKED: usize = 4096;
+
 fn number_of(agent: &Agent, value: Value) -> Option<f64> {
     Number::try_from(value)
         .ok()
         .map(|number| number.into_f64(agent))
 }
 
-fn typed_array_bytes(agent: &Agent, value: Value) -> Option<HostArg> {
+/// The kind of a TypedArray and the bytes of its elements where they are.
+fn typed_array_view<'a>(agent: &'a Agent, value: Value<'a>) -> Option<(TypedArrayKind, &'a [u8])> {
     let array = TypedArray::try_from(value).ok()?;
     let (kind, element_size) = match array {
         TypedArray::Int8Array(_) => (TypedArrayKind::Int8, 1),
@@ -159,11 +164,25 @@ fn typed_array_bytes(agent: &Agent, value: Value) -> Option<HostArg> {
             offset + available / element_size * element_size
         }
     };
-    let bytes = data.get(offset..end)?;
-    Some(HostArg::Bytes {
+    Some((kind, data.get(offset..end)?))
+}
+
+fn typed_array_bytes(agent: &Agent, value: Value) -> Option<HostArg> {
+    typed_array_view(agent, value).map(|(kind, bytes)| HostArg::Bytes {
         kind,
         bytes: bytes.to_vec(),
     })
+}
+
+/// How many bytes [`host_arg`] copies out of the heap for `value`.
+fn host_arg_bytes(agent: &Agent, value: Value, mode: ArgumentMode) -> usize {
+    if let Ok(string) = JsString::try_from(value) {
+        return string.len(agent);
+    }
+    if mode == ArgumentMode::ValuesAndBytes && number_of(agent, value).is_none() {
+        return typed_array_view(agent, value).map_or(0, |(_, bytes)| bytes.len());
+    }
+    0
 }
 
 fn host_arg(agent: &Agent, value: Value, mode: ArgumentMode) -> HostArg {
@@ -198,6 +217,16 @@ pub(crate) fn dispatch<'gc>(
         return Ok(Value::Undefined);
     };
     let count = args.len().min(MAX_HOST_ARGUMENTS);
+    // The host is handed copies: of up to eight strings or buffers, each as
+    // long as the script made it, and one string or buffer may be all eight.
+    // They are asked of the limit together before any is made, as one
+    // allocation of their size is.
+    let copied = (0..count).fold(0usize, |bytes, index| {
+        bytes.saturating_add(host_arg_bytes(agent, args.get(index), slot.mode))
+    });
+    if copied > COPIED_UNASKED {
+        agent.check_allocation(copied, gc)?;
+    }
     let mut converted = Vec::with_capacity(count);
     for index in 0..count {
         converted.push(host_arg(agent, args.get(index), slot.mode));
