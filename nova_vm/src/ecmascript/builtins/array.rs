@@ -371,12 +371,10 @@ impl<'a> InternalSlots<'a> for Array<'a> {
     }
 
     fn internal_set_extensible(self, agent: &mut Agent, value: bool) {
-        let ArrayHeapDataMut {
-            elements: elems,
-            object_index: backing_object,
-        } = self.get_mut(agent);
-        elems.len_writable = value;
-        if let Some(object_index) = backing_object {
+        // Whether the Array takes new properties is a slot of its backing
+        // object. Its "length" stays as writable as it was: an Array that
+        // is not extensible can still be made shorter, and longer.
+        if let Some(object_index) = self.get_backing_object(agent) {
             object_index.internal_set_extensible(agent, value)
         } else if !value {
             self.create_backing_object(agent)
@@ -496,6 +494,12 @@ impl<'a> InternalMethods<'a> for Array<'a> {
             if index >= length {
                 // g. If index ≥ length and lengthDesc.[[Writable]] is false, return false.
                 if !length_writable {
+                    return TryResult::Continue(false);
+                }
+                // h. Let succeeded be ! OrdinaryDefineOwnProperty(A, P, Desc):
+                // there is no property at an index past the length, and
+                // 2. a. If extensible is false, return false.
+                if !self.internal_extensible(agent) {
                     return TryResult::Continue(false);
                 }
                 if let Err(err) = check_length_growth(agent, self, index.saturating_add(1), gc) {
@@ -979,7 +983,9 @@ fn ordinary_define_own_property_for_array(
         // Hole
 
         // a. If extensible is false, return false.
-        if !elements.writable() {
+        // Whether the Array is extensible, and not whether its "length" is
+        // writable: a hole under a read-only "length" can be filled.
+        if !array.internal_extensible(agent) {
             return false;
         }
 

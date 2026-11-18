@@ -3956,9 +3956,11 @@ impl ArrayPrototype {
             let arg_count = items.len();
             let final_len = u32::try_from(len as u64 + arg_count as u64);
             if let Ok(final_len) = final_len
-                && array.is_trivial(agent)
                 && array.is_dense(agent)
-                && array.length_writable(agent)
+                // The elements made past the old length are made as an
+                // appended one is (Array::appends_plainly): the Array can
+                // grow, and no prototype takes an assignment to an index.
+                && array.appends_plainly(agent)
             {
                 // Fast path: Reserve enough room in the array and set array length.
                 if let Err(err) = array.reserve(agent, arg_count as u32) {
