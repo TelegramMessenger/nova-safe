@@ -5991,3 +5991,112 @@ function made by a class method's caller: object"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `new` of a function or of a class that is not derived, which the
+/// interpreter runs in place where the constructor's code needs no
+/// Function Environment Record: what it gives where the constructor
+/// returns an object, a primitive or nothing; the prototype of the object
+/// as the function's "prototype" is when `new` runs, an object or not;
+/// fields and private fields; arguments of every kind, new.target, arrow
+/// functions that use `this`, derived classes and bound functions, which
+/// go the general way; what is not a constructor; constructors that throw,
+/// at every depth and until the stack is full; and many objects made with
+/// collections between them. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn constructors_run_in_place_keep_the_language_semantics() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(constructors_run_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn constructors_run_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+var print = function (s) { all.push(s); };
+function show(name, v) { print(name + ": " + v); }
+function twice(f) { var out = []; for (var round = 0; round < 3; round++) { try { out.push(f()); } catch (e) { out.push("threw " + e.constructor.name + " " + e.message); } } return out.join("|"); }
+function proto(o) { return Object.getPrototypeOf(o); }
+// What `new` gives: the object made for the constructor, or the object the constructor returns.
+show("results", twice(function () {
+  function Plain(a) { this.a = a; }
+  function ReturnsObject() { this.ignored = 1; return { returned: true }; }
+  function ReturnsPrimitive() { this.kept = 1; return 5; }
+  function ReturnsUndefined() { this.kept = 2; return; }
+  function ReturnsNull() { this.kept = 3; return null; }
+  function ReturnsFunction() { return ReturnsFunction; }
+  function ReturnsArray() { return [1, 2]; }
+  function Empty() {}
+  class K { constructor(a, b) { this.a = a; this.b = b; } sum() { return this.a + this.b; } }
+  class Fields { x = 1; y = this.x + 1; #z = 5; constructor(w) { this.w = w + this.#z; } static make() { return new Fields(10); } }
+  var out = [new Plain(1).a, new ReturnsObject().returned, new ReturnsObject().ignored, new ReturnsPrimitive().kept, new ReturnsUndefined().kept, new ReturnsNull().kept, new ReturnsFunction() === ReturnsFunction, new ReturnsArray().length, Object.keys(new Empty()).length, new K(2, 3).sum(), new K().a, JSON.stringify(new Fields(1)), JSON.stringify(Fields.make())];
+  out.push(new Plain(1) instanceof Plain, proto(new K(1, 2)) === K.prototype, new Plain(1).constructor === Plain, new Plain(1) !== new Plain(1), typeof new Empty(), new K(1, 2) instanceof Object);
+  return out.join();
+}));
+// The prototype of the object: the function's "prototype" as it is when `new` runs.
+show("prototypes", twice(function () {
+  function F() {} var first = new F();
+  F.prototype = { tag: "replaced" }; var second = new F();
+  F.prototype = 5; var third = new F();
+  F.prototype = null; var fourth = new F();
+  function G() {} G.prototype.method = function () { return "method"; };
+  var g = new G(); G.prototype.later = "added later";
+  class Base { hello() { return "base"; } } class Derived extends Base { hello() { return "derived+" + super.hello(); } }
+  var out = [proto(first) === proto(second), second.tag, proto(third) === Object.prototype, proto(fourth) === Object.prototype, g.method(), g.later, new Derived().hello(), proto(new Derived()) === Derived.prototype, new Derived() instanceof Base];
+  var bound = F.bind(null); F.prototype = { tag: "for bound" }; out.push(new bound().tag, new bound() instanceof F);
+  return out.join();
+}));
+// Arguments of every kind, new.target, and constructors that are not run in place.
+show("arguments", twice(function () {
+  function Defaults(a = 1, ...rest) { this.a = a; this.n = rest.length; this.count = arguments.length; }
+  function Target() { this.target = new.target === Target; this.viaCall = new.target === undefined; }
+  function Arrow() { this.get = () => this; }
+  function Pattern({ x, y = x }, [z] = [9]) { this.sum = x + y + z; }
+  class D extends Defaults { constructor(...args) { super(...args); this.derived = true; } }
+  var a = new Defaults(), b = new Defaults(5, 6, 7), t = new Target(), arrow = new Arrow(), p = new Pattern({ x: 1 }), d = new D(3, 4);
+  var out = [a.a, a.n, a.count, b.a, b.n, b.count, t.target, t.viaCall, arrow.get() === arrow, p.sum, d.a, d.n, d.derived, new Defaults(...[1, 2, 3]).n, Reflect.construct(Defaults, [8, 9]).n, Reflect.construct(Target, [], Object).target];
+  var nested = new Defaults(new Defaults(1).a, new Defaults(2, 3).n); out.push(nested.a, nested.n);
+  return out.join();
+}));
+// Errors: what is not a constructor, and constructors that throw.
+show("errors", twice(function () {
+  var out = [], log = [];
+  [() => 1, { }, 5, null, undefined, "s", Math.max, function* () {}, async function () {}, { m() {} }.m, class { static m() {} }.m].forEach(function (target) { try { new target(); out.push("made"); } catch (e) { out.push(e.constructor.name); } });
+  function Thrower(n) { this.n = n; if (n > 2) throw new RangeError("too big " + n); }
+  class StrictClass { constructor() { undeclaredVariable = 1; } }
+  for (var i = 0; i < 6; i++) { try { log.push(new Thrower(i).n); } catch (e) { log.push(e.message); } finally { log.push("f"); } }
+  try { new StrictClass(); } catch (e) { out.push(e.constructor.name); }
+  class C { constructor() { this.x = 1; } } try { C(); } catch (e) { out.push(e.constructor.name); }
+  function Deep(n) { this.child = n ? new Deep(n - 1) : null; this.depth = n; }
+  var deep = new Deep(200), depth = 0; while (deep.child) { deep = deep.child; depth++; } out.push(depth);
+  function Forever() { this.next = new Forever(); } try { new Forever(); } catch (e) { out.push(e.constructor.name); }
+  var sum = 0; for (var k = 0; k < 2000; k++) { var point = new Thrower(k % 3); sum += point.n; } out.push(sum);
+  return out.join() + " " + log.join("");
+}));
+// Many objects, with collections between them, and what they keep.
+show("many", twice(function () {
+  function Node(value, next) { this.value = value; this.next = next; this.label = "node number " + value; }
+  class Counter { static made = 0; constructor() { Counter.made++; this.id = Counter.made; } }
+  var head = null; for (var i = 0; i < 30000; i++) head = new Node(i, i % 100 === 0 ? null : head);
+  var length = 0, last = head; while (last) { length++; last = last.next; }
+  var counters = []; for (var j = 0; j < 500; j++) counters.push(new Counter());
+  return [length, head.label, head.next.value, counters[499].id - counters[0].id, Counter.made % 500].join();
+}));
+all.join("\n")"#;
+    let expected = r#"results: 1,true,,1,2,3,true,2,0,5,,{"x":1,"y":2,"w":6},{"x":1,"y":2,"w":15},true,true,true,true,object,true|1,true,,1,2,3,true,2,0,5,,{"x":1,"y":2,"w":6},{"x":1,"y":2,"w":15},true,true,true,true,object,true|1,true,,1,2,3,true,2,0,5,,{"x":1,"y":2,"w":6},{"x":1,"y":2,"w":15},true,true,true,true,object,true
+prototypes: false,replaced,true,true,method,added later,derived+base,true,true,for bound,true|false,replaced,true,true,method,added later,derived+base,true,true,for bound,true|false,replaced,true,true,method,added later,derived+base,true,true,for bound,true
+arguments: 1,0,0,5,2,3,true,false,true,11,3,1,true,2,1,false,1,1|1,0,0,5,2,3,true,false,true,11,3,1,true,2,1,false,1,1|1,0,0,5,2,3,true,false,true,11,3,1,true,2,1,false,1,1
+errors: TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,ReferenceError,TypeError,200,RangeError,1999 0f1f2ftoo big 3ftoo big 4ftoo big 5f|TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,ReferenceError,TypeError,200,RangeError,1999 0f1f2ftoo big 3ftoo big 4ftoo big 5f|TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,ReferenceError,TypeError,200,RangeError,1999 0f1f2ftoo big 3ftoo big 4ftoo big 5f
+many: 100,node number 29999,29998,499,0|100,node number 29999,29998,499,0|100,node number 29999,29998,499,0"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

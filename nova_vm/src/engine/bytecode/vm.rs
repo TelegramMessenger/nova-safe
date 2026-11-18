@@ -83,6 +83,9 @@ enum Plain {
     /// Not executed and nothing changed: a call of an ECMAScript function,
     /// which the Vm may run itself.
     Call,
+    /// Not executed and nothing changed: `new` of an ECMAScript function,
+    /// which the Vm may run itself.
+    Construct,
     /// Not executed: a read or an assignment of a property that is an
     /// accessor. Its getter or setter is on the stack (under the value
     /// assigned, for a setter) and the object is the result: a call of
@@ -92,6 +95,20 @@ enum Plain {
     /// Not executed and nothing changed: the instruction that ends a
     /// function.
     Return,
+}
+
+/// What the code that a function is run in place for makes of what the
+/// function returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    /// The result of the call.
+    Value,
+    /// Nothing: the function is a setter, run in place of an assignment.
+    Discarded,
+    /// The result of `new`, where it is an object; where it is not, the
+    /// object that was made for the constructor, which waits on top of the
+    /// caller's stack.
+    Constructed,
 }
 
 /// The steps a backward jump or a call counts for in the interrupt countdown:
@@ -155,9 +172,9 @@ struct Frame {
     /// The caller's instructions and tables while the frame is in use: see
     /// [`Running::tables`].
     tables: Option<Rc<CodeTables>>,
-    /// The function that runs from this frame is a setter, called in place
-    /// of an assignment: what it returns is no one's result.
-    discards_result: bool,
+    /// What the caller makes of what the function that runs from this
+    /// frame returns.
+    completion: Completion,
     /// What the Agent's scoped values and scoped collections are cut back
     /// to after each of the caller's instructions.
     stack_depth: usize,
@@ -214,8 +231,8 @@ struct CalledInPlace {
     parameters: Option<usize>,
     /// The environment that the call makes for the function.
     environment: CallEnvironment,
-    /// The call is of a setter: see [`Frame::discards_result`].
-    discards_result: bool,
+    /// See [`Frame::completion`].
+    completion: Completion,
 }
 
 #[derive(Debug)]
@@ -375,7 +392,7 @@ impl HeapMarkAndSweep for VmFrames {
                 exception_handler_stack,
                 executable,
                 tables: _,
-                discards_result: _,
+                completion: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -398,7 +415,7 @@ impl HeapMarkAndSweep for VmFrames {
                 exception_handler_stack,
                 executable,
                 tables: _,
-                discards_result: _,
+                completion: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -790,6 +807,14 @@ impl Vm {
                             break Change::Call(callee, instr);
                         }
                     }
+                    // `new` of a function that this Vm runs itself.
+                    Plain::Construct => {
+                        if let Some((callee, call)) =
+                            self.constructor_called_in_place(agent, instr, gc.nogc())
+                        {
+                            break Change::Call(callee, call);
+                        }
+                    }
                     // The getter or setter of the property that the
                     // instruction reads or assigns, called in place of it.
                     Plain::Accessor => {
@@ -998,8 +1023,85 @@ impl Vm {
             executable,
             parameters: code.stack_parameters.map(usize::from),
             environment: code.call_environment,
-            discards_result: false,
+            completion: Completion::Value,
         })
+    }
+
+    /// The call that `new F(…)` comes to, if this `Vm` runs the constructor
+    /// itself: \[\[Construct]] of a function that is not a derived class
+    /// constructor, with itself as the new target, up to the function's
+    /// code. The object that OrdinaryCreateFromConstructor makes is the
+    /// this value of the call, and waits on the caller's stack, under the
+    /// function and its arguments, for the constructor to return
+    /// ([`Completion::Constructed`]).
+    ///
+    /// Not for a constructor whose code needs a Function Environment
+    /// Record (it reads new.target or super, an arrow function in it uses
+    /// its this, or it has a direct eval): \[\[Construct]] gives that
+    /// record the new target. And not where the function's "prototype" is
+    /// not an object found without running anything: the object's
+    /// prototype is then the realm's, which the general way knows. Nothing
+    /// has changed where this returns None.
+    // Not part of the loop of instructions: few instructions end here.
+    #[inline(never)]
+    fn constructor_called_in_place(
+        &mut self,
+        agent: &mut Agent,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<(CalledInPlace, Instr)> {
+        let count = instr.get_first_index();
+        let at = self.stack.len().checked_sub(count + 1)?;
+        let Value::ECMAScriptFunction(function) = self.stack[at] else {
+            return None;
+        };
+        let data = function.get(agent);
+        let status = data.ecmascript_function.constructor_status;
+        if !status.is_constructor() || status.is_derived_class() {
+            return None;
+        }
+        let executable = data.compiled_bytecode?;
+        if agent.call_depth_exceeded() {
+            return None;
+        }
+        let code = executable.get(agent);
+        if code.call_environment == CallEnvironment::Function {
+            return None;
+        }
+        let parameters = code.stack_parameters.map(usize::from);
+        let environment = code.call_environment;
+        // 3. a. Let thisArgument be ? OrdinaryCreateFromConstructor(newTarget,
+        //       "%Object.prototype%").
+        let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
+        let cache = crate::ecmascript::PropertyLookupCache::new(agent, key);
+        let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
+            crate::ecmascript::try_get(agent, function, key, Some(cache), gc)
+        else {
+            return None;
+        };
+        let prototype = Object::try_from(prototype).ok()?;
+        let object: Value = crate::ecmascript::ordinary_object_create_with_intrinsics(
+            agent,
+            crate::ecmascript::ProtoIntrinsics::Object,
+            Some(prototype),
+            gc,
+        )
+        .into();
+        self.stack.insert(at, object.unbind());
+        self.result = None;
+        // 6. a. Perform OrdinaryCallBindThis(F, calleeContext, thisArgument):
+        // the this value of the call is the base of its Reference.
+        self.reference = Some(Reference::new_property_reference(object, key, false).unbind());
+        Some((
+            CalledInPlace {
+                function,
+                executable,
+                parameters,
+                environment,
+                completion: Completion::Constructed,
+            },
+            Instr::new_with_arg(Instruction::EvaluateCall, count as u16),
+        ))
     }
 
     /// The call that [`Plain::Accessor`] stands for, if this `Vm` runs the
@@ -1021,7 +1123,9 @@ impl Vm {
         if let Some(mut callee) = self.function_called_in_place(agent, call)
             && let Some(object) = self.result.take()
         {
-            callee.discards_result = setter;
+            if setter {
+                callee.completion = Completion::Discarded;
+            }
             // Only the base of this Reference is asked for.
             self.reference = Some(Reference::new_property_reference(
                 object,
@@ -1070,7 +1174,7 @@ impl Vm {
                 exception_handler_stack: Vec::new(),
                 executable: code,
                 tables: None,
-                discards_result: false,
+                completion: Completion::Value,
                 stack_depth: 0,
                 collections_depth: 0,
                 scope_base: 0,
@@ -1120,7 +1224,7 @@ impl Vm {
         frame.ip = ip;
         frame.executable = code;
         frame.tables = Some(caller.tables);
-        frame.discards_result = callee.discards_result;
+        frame.completion = callee.completion;
         frame.stack_depth = caller.stack_depth;
         frame.collections_depth = caller.collections_depth;
         frame.scope_base = caller.scope_base;
@@ -1213,8 +1317,18 @@ impl Vm {
         frame.reference_stack.clear();
         frame.iterator_stack.clear();
         frame.exception_handler_stack.clear();
-        if frame.discards_result {
-            self.result = None;
+        match frame.completion {
+            Completion::Value => {}
+            Completion::Discarded => self.result = None,
+            Completion::Constructed => {
+                // 10. If result is a return completion, then
+                //   a. If result.[[Value]] is an Object, return it.
+                //   b. If kind is base, return thisArgument.
+                let object = self.stack.pop();
+                if !self.result.is_some_and(|value| value.is_object()) {
+                    self.result = object;
+                }
+            }
         }
         if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
             // A stack that grew large is not kept for the next function.
@@ -2098,6 +2212,19 @@ impl Vm {
                     vm.reference = None;
                 }
                 vm.result = Some(value);
+            }
+            // `new F(…)` of an ECMAScript function, which the Vm may run
+            // itself.
+            Instruction::EvaluateNew => {
+                step!(EvaluateNew);
+                let count = instr.get_first_index();
+                if count != IndexType::MAX as usize
+                    && let Some(at) = vm.stack.len().checked_sub(count + 1)
+                    && matches!(vm.stack[at], Value::ECMAScriptFunction(_))
+                {
+                    return Plain::Construct;
+                }
+                return Plain::No;
             }
             // `o.p = v` with `o` on the stack, where the property cache
             // knows its shape and `p` is a writable data property of its
