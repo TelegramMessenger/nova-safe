@@ -8555,3 +8555,89 @@ fn the_copies_of_host_arguments_are_asked_of_the_memory_limit() {
     assert_eq!(calls[1].1[0], HostArg::String("a".into()));
     assert_eq!(calls[1].1[3], HostArg::String(vec![b'x'; 5000]));
 }
+
+/// The text of a Number is written in the native stack, and the digits of
+/// toFixed come of one exact integer where it holds them: String(x), x + "",
+/// a template, toString, toFixed with every count of digits, JSON.stringify,
+/// join and the keys that are integers give, for three thousand Numbers of
+/// every kind, what they gave before. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn the_text_of_a_number_is_made_without_the_heap() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(number_texts)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn number_texts() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function hash(h, s) { for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+function say(name, v) { print(name + ": " + v); }
+var seed = 123456789;
+function rnd() { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0); }
+var values = [0, -0, 1, -1, 7, 10, 99, 100, 1234567, 12345678, -12345678, 4294967295, 4294967296, 2 ** 53 - 1, 2 ** 53, 2 ** 53 + 2, -(2 ** 53), 1e21, 1e20, 999999999999999900000, 1.5, 2.5, -2.5, 0.5, 0.125, 0.375, 1.005, 1.045, 8.345, 0.1 + 0.2, 1 / 3, 2 / 3, 1e-7, 1e-6, 0.000001234, 123.456, 5e-324, 1.7976931348623157e308, 2.2250738585072014e-308, NaN, Infinity, -Infinity, 0.1, 0.01, 0.37, 99.995, 99.985, 1e15 + 0.3, 123456789.123456789, 4503599627370495.5, 4503599627370496.5];
+for (var i = 0; i < 3000; i++) {
+  var a = rnd(), b = rnd();
+  switch (i % 6) {
+    case 0: values.push(a / 1000); break;
+    case 1: values.push((a % 100000) * 0.37); break;
+    case 2: values.push(((a % 100000) | 1) / Math.pow(2, 1 + b % 24)); break;
+    case 3: values.push(a * Math.pow(10, (b % 40) - 20)); break;
+    case 4: values.push(-(a % 1000000) / 100); break;
+    default: values.push(a * b);
+  }
+}
+say("count", values.length);
+var h = 7, lens = 0;
+for (var i = 0; i < values.length; i++) { var x = values[i]; var s = String(x); h = hash(h, s); lens += s.length; if (s !== x + "" || s !== `${x}` || s !== x.toString() || s !== "" + x) say("differs", s); }
+say("String", h + " " + lens);
+h = 7; lens = 0;
+for (var d = 0; d <= 20; d++) for (var i = 0; i < values.length; i += 1 + (d % 3)) { var s = values[i].toFixed(d); h = hash(h, s); lens += s.length; }
+say("toFixed 0..20", h + " " + lens);
+h = 7; lens = 0;
+for (var d = 21; d <= 100; d += 13) for (var i = 0; i < values.length; i += 7) { var s = values[i].toFixed(d); h = hash(h, s); lens += s.length; }
+say("toFixed 21..100", h + " " + lens);
+say("toFixed edges", [(0.5).toFixed(0), (1.5).toFixed(0), (2.5).toFixed(0), (-2.5).toFixed(0), (0.125).toFixed(2), (1.005).toFixed(2), (8.345).toFixed(2), (-0).toFixed(2), (-0.001).toFixed(2), (1e21).toFixed(2), (-1e21).toFixed(3), (2 ** 53).toFixed(1), (2 ** 60).toFixed(3), (123.456).toFixed(), (123.456).toFixed(undefined), (0).toFixed(20), (5e-324).toFixed(20), (NaN).toFixed(2), (Infinity).toFixed(1), (1.45).toFixed("1"), (10).toFixed(1.9)].join(" "));
+say("toFixed errors", [-1, 101, Infinity, NaN, "x"].map(function (d) { try { return (1.5).toFixed(d); } catch (e) { return e.constructor.name; } }).join(" "));
+h = 7;
+for (var i = 0; i < values.length; i += 3) { h = hash(h, JSON.stringify([values[i], { v: values[i + 1] }])); }
+say("JSON", h + " " + JSON.stringify([1, -0, 1.5, 1e21, 1e-7, NaN, Infinity, 12345678, 2 ** 53]));
+h = 7;
+for (var i = 0; i + 4 < values.length; i += 5) h = hash(h, values.slice(i, i + 5).join("|"));
+say("join", h + " " + [1, 2.5, -0, 1e21, 12345678].join() + " " + [0.1, 12345678, -1].toString());
+var keyed = {}; for (var i = 0; i < 400; i++) keyed[values[i]] = i;
+say("keys", Object.keys(keyed).length + " " + hash(7, Object.keys(keyed).join(",")));
+var arr = [5, 6, 7]; arr[1234] = 1; var seen = []; for (var k in arr) seen.push(k + ":" + typeof k); var wide = { 7: 1, 12345678: 2, 4294967294: 3, 4294967295: 4, 9007199254740991: 5 }; for (var k in wide) seen.push(k + ":" + typeof k); say("for-in", seen.join(","));
+say("Object.keys array", Object.keys([1, 2, 3]).join("") + " " + Object.keys({ 10: 1, 9: 2, 12345678: 3, 4294967295: 4, 4294967296: 5 }).join(","));
+say("entries", Object.entries([7, 8]).join(";") + " " + Array.from([4, 5].keys()).join("") + " " + Reflect.ownKeys([1, 2]).join(","));
+say("concat", (1 + "") + (-1 + "") + (12345678 + "") + (0.5 + "x") + ("x" + 1e21) + (1e-7 + "") + (-0 + "") + (2 ** 31 + "") + (-(2 ** 31) + ""));
+say("misc", [(255).toString(16), (0.5).toString(2), (1e21).toString(36).length, (25).toString(10), Number("12345678").toString(), (1234.5678).toPrecision(6), (1234.5678).toExponential(2), parseFloat("1.50").toFixed(1), String(12345678n), String(-0), (-0).toString(), String([-0]), `${-0}`].join(" "));
+lines.join("\n")"#;
+    let expected = r#"count: 3051
+String: 220778072 38084
+toFixed 0..20: -718694196 727628
+toFixed 21..100: -777784167 201103
+toFixed edges: 1 2 3 -3 0.13 1.00 8.35 0.00 -0.00 1e+21 -1e+21 9007199254740992.0 1152921504606846976.000 123 123 0.00000000000000000000 0.00000000000000000000 NaN Infinity 1.4 10.0
+toFixed errors: RangeError RangeError RangeError 2 2
+JSON: 76481623 [1,0,1.5,1e+21,1e-7,null,null,12345678,9007199254740992]
+join: 1147205105 1,2.5,0,1e+21,12345678 0.1,12345678,-1
+keys: 399 -419572706
+for-in: 0:string,1:string,2:string,1234:string,7:string,12345678:string,4294967294:string,4294967295:string,9007199254740991:string
+Object.keys array: 012 9,10,12345678,4294967295,4294967296
+entries: 0,7;1,8 01 0,1,length
+concat: 1-1123456780.5xx1e+211e-702147483648-2147483648
+misc: ff 0.1 14 25 12345678 1234.57 1.23e+3 1.5 12345678 0 0 0 0"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

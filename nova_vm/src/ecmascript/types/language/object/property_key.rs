@@ -122,7 +122,9 @@ impl<'a> PropertyKey<'a> {
     ) -> Primitive<'gc> {
         match self {
             PropertyKey::Integer(small_integer) => {
-                String::from_string(agent, small_integer.into_i64().to_string(), gc).into()
+                crate::ecmascript::i64_text(small_integer.into_i64())
+                    .to_js_string(agent, gc)
+                    .into()
             }
             PropertyKey::SmallString(small_string) => Primitive::SmallString(small_string),
             PropertyKey::String(heap_string) => Primitive::String(heap_string.unbind()),

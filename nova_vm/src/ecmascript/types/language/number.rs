@@ -1253,11 +1253,14 @@ impl<'a> Number<'a> {
         x: Self,
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
+        // The text is written in the native stack and the String made of
+        // it: a short one is the value itself, and nothing is allocated.
         match x {
-            Number::Number(x) => String::from_string(agent, f64_to_js_string(*x.get(agent)), gc),
-            Number::Integer(x) => String::from_string(agent, x.into_i64().to_string(), gc),
-            Number::SmallF64(x) => String::from_string(agent, f64_to_js_string(x.into_f64()), gc),
+            Number::Number(x) => f64_text(*x.get(agent)),
+            Number::Integer(x) => i64_text(x.into_i64()),
+            Number::SmallF64(x) => f64_text(x.into_f64()),
         }
+        .to_js_string(agent, gc)
     }
 
     /// # [ℝ](https://tc39.es/ecma262/#%E2%84%9D)
@@ -1269,6 +1272,24 @@ impl<'a> Number<'a> {
             Self::Number(n) => *n.get(agent),
             Self::Integer(i) => i.into_i64() as f64,
             Self::SmallF64(f) => f.into_f64(),
+        }
+    }
+}
+
+impl<const N: usize> NumberText<N> {
+    /// The String of the text. It is ASCII, so its bytes are the WTF-8 of a
+    /// String as they are, and are not looked through to learn it.
+    pub(crate) fn to_js_string<'gc>(
+        &self,
+        agent: &mut Agent,
+        gc: NoGcScope<'gc, '_>,
+    ) -> String<'gc> {
+        let text = wtf8::Wtf8Str::from_wtf8_bytes(self.as_bytes());
+        // What a SmallString holds: the seven bytes beside a Value's tag.
+        if text.len() <= 7 {
+            small_string::SmallString::from_wtf8(text).into()
+        } else {
+            agent.heap.alloc_wtf8(text).bind(gc)
         }
     }
 }

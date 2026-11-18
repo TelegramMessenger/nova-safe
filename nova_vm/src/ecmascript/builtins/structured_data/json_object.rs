@@ -803,9 +803,11 @@ fn serialize_json_property_value<'a, 'b>(
             let value = Number::try_from(value).unwrap();
             // a. If value is finite, return ! ToString(value).
             if value.is_finite_(agent) {
-                state
-                    .result
-                    .push_str(&crate::ecmascript::f64_to_js_string(value.into_f64_(agent)));
+                let text = match value {
+                    Number::Integer(value) => crate::ecmascript::i64_text(value.into_i64()),
+                    _ => crate::ecmascript::f64_text(value.into_f64_(agent)),
+                };
+                state.result.push_str(text.as_str());
             } else {
                 // b. Return "null".
                 state.result.push_str("null");

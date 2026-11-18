@@ -175,7 +175,11 @@ impl NumberPrototype {
         }
         // 7. Set x to ℝ(x).
         let x = x.into_f64_(agent);
-        let string = crate::ecmascript::f64_to_fixed(x, usize_from_i64(f));
+        let f = usize_from_i64(f);
+        if let Some(text) = crate::ecmascript::f64_fixed_text(x, f) {
+            return Ok(text.to_js_string(agent, gc).into());
+        }
+        let string = crate::ecmascript::f64_to_fixed(x, f);
         Ok(Value::from_string(agent, string, gc))
     }
 

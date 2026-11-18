@@ -516,7 +516,9 @@ impl<'a> ObjectPropertiesIterator<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> Value<'gc> {
         match result {
-            PropertyKey::Integer(int) => Value::from_string(agent, int.into_i64().to_string(), gc),
+            PropertyKey::Integer(int) => crate::ecmascript::i64_text(int.into_i64())
+                .to_js_string(agent, gc)
+                .into(),
             PropertyKey::SmallString(data) => Value::SmallString(data),
             PropertyKey::String(data) => Value::String(data.bind(gc)),
             _ => unreachable!(),
