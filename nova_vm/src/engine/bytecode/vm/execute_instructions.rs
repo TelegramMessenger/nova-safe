@@ -100,6 +100,9 @@ pub(super) fn execute_array_from_stack<'gc>(
     for (slot, element) in array.as_mut_slice(agent).iter_mut().zip(&vm.stack[first..]) {
         *slot = Some(*element);
     }
+    // The elements count for the heap's size as elements defined one by
+    // one do.
+    agent.heap.alloc_counter += count * core::mem::size_of::<Option<Value>>();
     vm.stack.truncate(first);
     vm.result = Some(array.unbind().into());
     Ok(())
