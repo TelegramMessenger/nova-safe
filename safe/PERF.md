@@ -39,18 +39,18 @@ below.
 | prop | 13 | 7.1x | 2.7x |
 | math | 4 | 9.7x | 2.7x |
 | array | 14 | 5.8x | 2.6x |
-| string | 26 | 10.6x | 2.5x |
-| app | 8 | 6.1x | 2.5x |
-| map, set | 4 | 4.6x | 2.4x |
-| loop | 11 | 11.1x | 1.9x |
+| string | 26 | 10.6x | 2.4x |
+| app | 8 | 6.1x | 2.3x |
+| map, set | 4 | 4.6x | 2.3x |
 | regexp | 4 | 2.4x | 1.9x |
-| gc | 3 of 5 | 3.6x | 1.4x |
+| loop | 11 | 11.1x | 1.9x |
+| gc | 3 of 5 | 3.6x | 1.3x |
 | json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.5x |
+| all | 108 | 7.6x | 2.4x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(37x, area 7); after it come generators (6.4x), then calls that bind an arguments object or go through an accessor
-(5-6x). 44 of the 108 cases are above 3x and 30 at or under 2x. One case ran Nova out of memory before
+(38x, area 7); after it come generators (6.4x), then calls that bind an arguments object or go through an accessor
+(5-6x). 43 of the 108 cases are above 3x and 32 at or under 2x. One case ran Nova out of memory before
 (`prop/destructuring`) and none does now. QuickJS runs out of
 its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -366,6 +366,13 @@ with no property under an integer key on it, which is looked at on every call, w
 change to a prototype would have to undo. `array/push-then-pop` went from 6.6x to 3.9x, the canvas command
 buffer from 8.9x to 3.9x, arrays to 2.8x and the app cases from 3.8x to 3.0x.
 
+Looking at the two prototypes' keys on every call was 3-5% of the application cases that push: about fifty
+keys each time.
+Both have intrinsic shapes, and a key is added to such a shape in one place (`ObjectShape::push_key`), which
+now notes on the heap that an integer key was added to one. Until one was, an appended element looks at no
+keys; after, at all of them as before (the note is never taken back, and says nothing of which object).
+`array/push-then-pop` went from 3.6x to 3.0x.
+
 Left: a compound assignment to an element (`a[i] += 1`) and one whose value is used still make a Reference.
 Other built-ins that take a callback or build an Array (`map`, `filter`, `forEach`) run their general steps.
 Float64 elements allocate (area 6).
@@ -420,7 +427,19 @@ pieces and adds one. The appended bytes are counted against the heap limit when 
 when it happens, and a join that would take the heap past the limit ends the script as any allocation there does.
 Appending is linear: 160,000 appends take 24 ms, and the long append cases are 2.5-4.2x (they were 170-300x).
 
-Left: prepending (`s = x + s`, 38x) still copies and hashes the whole string every time. It is rare.
+Sampled over the eight application cases together, a short concatenation was the largest thing to be named:
+two fifths of the canvas command buffer, where each command makes `"rgb(" + r + ",10," + b + ")"`. A String
+and a Number went the general way of `+` (the Vm put aside, both operands made primitives again), and every
+concatenation allocated the text before asking the string table for it. A String and any primitive that
+ToString takes are joined where they stand now (a Symbol and an object still go the general way), and two
+strings that make at most 64 bytes are put together on the native stack and the table asked: the text is
+copied to the heap only where no such string exists. The command buffer went from 3.5x to 2.7x, strings that
+are made and dropped from 4.3x to 3.3x, rows of HTML joined from an array from 4.1x to 3.3x; the application
+cases from 2.5x to 2.3x.
+
+Left: every string made is still hashed for the table, a third of what a short concatenation costs now
+(SipHash, keyed so that a script cannot choose colliding strings). Prepending (`s = x + s`, 38x) still copies
+and hashes the whole string every time; it is rare.
 
 ### 8. Other string work
 
