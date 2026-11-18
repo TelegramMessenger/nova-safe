@@ -5983,3 +5983,91 @@ instanceof: 100100001,110100001,001100000,000101000,000100000,000000000,00000000
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The constructor, the methods, the getters and the setters of a class
+/// are strict mode code in a script that is not: an assignment to a name
+/// that is not declared and a write that fails throw, `this` is not made
+/// an object and is undefined where no object is given, and the functions
+/// made inside them inherit it. Functions outside a class keep the mode of
+/// the code around them. What is expected is what Node prints for the same
+/// script.
+#[test]
+fn class_elements_are_strict_mode_code() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(class_elements_are_strict)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn class_elements_are_strict() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var all = [];
+var print = function (s) { all.push(s); };
+function attempt(name, f) { var v; try { v = f(); } catch (e) { v = e.constructor.name; } print(name + ": " + v); }
+var frozen = Object.freeze({ x: 1 });
+// Constructors, methods, getters, setters and static methods of a class are strict mode code.
+attempt("constructor assigns an undeclared name", function () { class S { constructor() { undeclared1 = 1; } } new S(); return typeof undeclared1; });
+attempt("method assigns an undeclared name", function () { class S { m() { undeclared2 = 1; } } new S().m(); return typeof undeclared2; });
+attempt("static method", function () { class S { static m() { undeclared3 = 1; } } S.m(); return typeof undeclared3; });
+attempt("getter", function () { class S { get p() { undeclared4 = 1; return 1; } } return new S().p; });
+attempt("setter", function () { class S { set p(v) { undeclared5 = v; } } new S().p = 1; return typeof undeclared5; });
+attempt("private method", function () { class S { #m() { undeclared6 = 1; } run() { this.#m(); } } new S().run(); return typeof undeclared6; });
+attempt("generator method", function () { class S { *g() { undeclared7 = 1; yield 1; } } return new S().g().next().value; });
+attempt("async method", function () { class S { async a() { return typeof this; } } return typeof new S().a().then; });
+attempt("derived constructor", function () { class A {} class B extends A { constructor() { super(); undeclared8 = 1; } } new B(); return typeof undeclared8; });
+attempt("class expression", function () { var S = class { m() { undeclared9 = 1; } }; new S().m(); return typeof undeclared9; });
+attempt("constructor with fields", function () { class S { f = 1; constructor() { undeclared10 = 1; } } new S(); return typeof undeclared10; });
+attempt("field initializer", function () { class S { f = (undeclared11 = 1); } new S(); return typeof undeclared11; });
+attempt("this of a detached method", function () { class S { m() { return typeof this; } } var m = new S().m; return m(); });
+attempt("this of a nested function", function () { class S { m() { return (function () { return typeof this; })(); } } return new S().m(); });
+attempt("this of a nested function in a constructor", function () { class S { constructor() { this.t = (function () { return typeof this; })(); } } return new S().t; });
+attempt("this of a method called with a primitive", function () { class S { m() { return typeof this; } } return S.prototype.m.call(5); });
+attempt("write to a frozen object", function () { class S { m() { frozen.x = 2; } } new S().m(); return frozen.x; });
+attempt("write to a getter only", function () { class S { get p() { return 1; } m() { this.p = 2; } } new S().m(); return "no error"; });
+attempt("delete of a fixed property", function () { class S { m() { return delete Object.prototype; } } return new S().m(); });
+attempt("arguments is not tied to parameters", function () { class S { m(a) { arguments[0] = 2; return a; } } return new S().m(1); });
+attempt("nested arrow and function inherit it", function () { class S { m() { return [(() => { undeclared12 = 1; }), function () { undeclared13 = 1; }]; } } var fs = new S().m(), out = []; fs.forEach(function (f) { try { f(); out.push("no error"); } catch (e) { out.push(e.constructor.name); } }); return out.join(); });
+// Functions outside a class keep the mode of the code around them.
+attempt("sloppy function", function () { function f() { undeclared14 = 1; return typeof this; } return f() + typeof undeclared14; });
+attempt("sloppy method of an object literal", function () { var o = { m() { undeclared15 = 1; return typeof this; } }; var m = o.m; return m() + typeof undeclared15; });
+attempt("function with the directive", function () { function f() { "use strict"; undeclared16 = 1; } f(); return "no error"; });
+attempt("function after a class", function () { class S { m() {} } function f() { undeclared17 = 1; return typeof this; } return f(); });
+attempt("function made by a class method's caller", function () { class S { run(f) { return f(); } } return new S().run(function () { undeclared18 = 1; return typeof this; }); });
+all.join("\n")"#;
+    let expected = r#"constructor assigns an undeclared name: ReferenceError
+method assigns an undeclared name: ReferenceError
+static method: ReferenceError
+getter: ReferenceError
+setter: ReferenceError
+private method: ReferenceError
+generator method: ReferenceError
+async method: function
+derived constructor: ReferenceError
+class expression: ReferenceError
+constructor with fields: ReferenceError
+field initializer: ReferenceError
+this of a detached method: undefined
+this of a nested function: undefined
+this of a nested function in a constructor: undefined
+this of a method called with a primitive: number
+write to a frozen object: TypeError
+write to a getter only: TypeError
+delete of a fixed property: TypeError
+arguments is not tied to parameters: 1
+nested arrow and function inherit it: ReferenceError,ReferenceError
+sloppy function: objectnumber
+sloppy method of an object literal: objectnumber
+function with the directive: ReferenceError
+function after a class: object
+function made by a class method's caller: object"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
