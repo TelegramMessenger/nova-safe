@@ -34,25 +34,25 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| call | 14 | 10.4x | 3.2x |
-| typed | 4 | 10.6x | 3.0x |
-| prop | 13 | 7.1x | 2.7x |
-| math | 4 | 9.7x | 2.7x |
-| array | 14 | 5.8x | 2.6x |
-| string | 26 | 10.6x | 2.4x |
+| call | 14 | 10.4x | 3.0x |
+| typed | 4 | 10.6x | 2.8x |
+| prop | 13 | 7.1x | 2.5x |
+| math | 4 | 9.7x | 2.5x |
+| array | 14 | 5.8x | 2.5x |
 | map, set | 4 | 4.6x | 2.3x |
-| app | 8 | 6.1x | 2.3x |
-| loop | 11 | 11.1x | 2.0x |
+| string | 26 | 10.6x | 2.2x |
+| app | 8 | 6.1x | 2.2x |
 | regexp | 4 | 2.4x | 1.7x |
-| gc | 3 of 5 | 3.6x | 1.3x |
-| json | 2 | 1.0x | 1.0x |
-| all | 108 | 7.6x | 2.4x |
+| loop | 11 | 11.1x | 1.5x |
+| gc | 3 of 5 | 3.6x | 1.2x |
+| json | 2 | 1.0x | 0.9x |
+| all | 108 | 7.6x | 2.2x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(38x, area 7); after it come generators (6.2x), then calls that bind an arguments object or go through an accessor
-(5x). 41 of the 108 cases are above 3x and 30 at or under 2x. One case ran Nova out of memory before
-(`prop/destructuring`) and none does now. QuickJS runs out of
-its 8 MB on two cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
+(37x, area 7); after it come generators (6.1x), then calls that bind an arguments object or go through an accessor
+(5x). 35 of the 108 cases are above 3x and 38 at or under 2x, 11 of them at or under QuickJS's time. One case
+ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
+cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
 What is written in Rust or C on both sides is level: JSON, RegExp, `indexOf`, `split`/`join`, `sort`. The gap is in
 running JavaScript itself.
@@ -110,9 +110,9 @@ instructions, and neither do the instructions that only move a value or test it 
 the ones that enter and leave the handler every loop pushes. A loop of strict comparisons went from 3.9x to
 2.5x, testing each character of a string against five literals from 1.5x to 1.1x.
 
-Tried and dropped: giving every plain instruction the length of its own to advance by, so that where the next
-instruction is would not wait for the table of lengths. It made loops 13-32% slower; the table is not what the
-dispatch waits for.
+Tried and dropped at the time: giving every plain instruction the length of its own to advance by, so that
+where the next instruction is would not wait for the table of lengths. It read 13-32% slower on loops then.
+Done again later (below), it is a gain; how the first attempt was written is not recorded.
 
 Counted over the cases that are written like application code, one instruction in five was the skeleton of a
 `for` loop: the jump back, the increment, the two operands of the test, the test with its jump out. A test of a
@@ -167,12 +167,39 @@ twenty-one. The time moved far less than the count this time: 2.47x to 2.46x ove
 2.7x. An instruction that only moved a value cost little beside the dispatch, and the dispatch of the fused
 one remains; what is left to fuse (the last argument and its call, at 2.5% of what runs) will give less still.
 
-Left: about 1 ns an instruction, of which the dispatch is still about half (a quarter of the time of a loop of
-plain calls is the twenty machine instructions between two bytecode instructions: the bounds check, the argument
-count through a table, the jump table). The counts of pairs say what to fuse next: a value pushed and then a
-constant operand and its operator (`x & 7`: three instructions), an operator and the store into a local after
-it, a local and its property (which needs the three operands the wide instructions now have), `while` loops
-with the test at the end. Reach: about 2x on plain loops.
+Then the step itself. Sampled on a loop of property reads it was three tenths of the time, 29 machine
+instructions, and what the samples showed is a processor kept busy, not one waiting: the time of the
+interpreter goes by how many machine instructions it runs, whatever they are. Three changes to the step:
+
+- every arm moves the instruction pointer past its instruction itself, by a length that is a constant of the
+  arm (the instructions of one arm are of one length, which is checked when the engine is compiled), where it
+  was found by a table from the byte just read. One way of writing this kept the place of the instruction
+  alive beside the pointer for the instructions that are not plain, and the pointer went to memory; as written
+  now the arm of everything that is not plain steps by the table itself, and nothing but the pointer is
+  carried from one instruction to the next;
+- an instruction is read as a window of five bytes with one look at how much code is left, where its byte and
+  its arguments had one each; the last instructions of the code, its end, and every instruction when they are
+  printed go the old way, so the flag for printing is not read per instruction;
+- the comparisons that jump, the tests that end a loop and the operators have an arm for each kind, in which
+  the kind is a constant, where one arm served all of a family and asked the kind again what to do.
+
+23 machine instructions are left between two instructions. All cases went from 2.37x to 2.21x, 62 of the 108
+by 3% or more: loops 1.76x to 1.47x, calls 3.18x to 3.00x, properties 2.70x to 2.54x, the application cases
+2.29x to 2.16x.
+
+And what an instruction reads. A small integer or double is seven bytes of a value, and was made a u64 by
+writing a zero and those bytes into an array of eight. The compiler made a vector shuffle of that: a dozen
+instructions and a trip through a vector register for every operand of the arithmetic, every counter and every
+index. Put together from the three pieces that seven bytes are loaded as, with shifts, it is a few
+instructions on registers. An empty loop went from 2.3x to 1.0x, the loops together from 1.97x to 1.76x
+(before the changes to the step, which were measured on top of this).
+
+Left: an integer is still read as three loads and written as four stores (its seven bytes do not make one
+machine word without the byte of the value's kind); a constant, a name, a cache or a binding site is found
+through the heap's table of executables each time, about a dozen machine instructions, and a turn of
+`o.x = o.x + o.y + (o.z & 1)` on a closure variable makes eighteen such fetches in its thirteen instructions;
+the step is 23 instructions of which seven are the jump through the table. The counts of pairs say what
+could still be fused, and the round before showed how little that gives now.
 
 ### 2. Variables that are not locals of the running function
 
@@ -203,6 +230,11 @@ throws in strict code even when evaluating the value binds it), and a compound a
 does not ask the global object for the name once more than the specification does. A loop over a global went
 from 9.1x to 5.2x, and whatever names a built-in gained with it (`math/` 5.5x to 4.2x, a call of `Math.max` 8.3x
 to 5.4x).
+
+The walk from the running Environment Record to the one a site remembers was a function of its own, called
+for every such read, and its result (which kind of record, which one) was taken apart again by its caller; it
+is part of the few functions that read or write at a site now. A loop over a closure variable went from 2.3x
+to 2.2x, one over a global from 3.0x to 2.9x.
 
 Left: a read of a global is about 8 ns against 3 for a closure variable: the way from the running realm to the
 slot is a dozen loads (the realm, the global record, its two halves, the object, its shape, the keys, the
@@ -546,6 +578,10 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 - A value assigned to `lastIndex` that is not an index (negative, a fraction, a string, an object, 2^32 or
   more) was dropped where the RegExp had no other own property: it read back as undefined. A condition was
   the wrong way round. Upstream; 24 tests of test262 failed for it. Fixed.
+- Two cases stayed 7-8% slower over the round that changed the step and the reading of small Numbers
+  (`array/sort-with-comparator` 12.6 to 13.6 ms, `array/join-numbers` 6.1 to 6.5 ms). Built side by side with
+  and without the change to small Numbers, the first is 2.5% apart and the second within what two runs differ
+  by, and both builds spend their time in the same functions. Taken for placement, as above.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
 
