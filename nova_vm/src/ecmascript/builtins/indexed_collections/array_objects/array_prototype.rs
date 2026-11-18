@@ -881,8 +881,12 @@ impl ArrayPrototype {
         ) = (this_value, start, end)
         {
             // Fast path: If the array is trivial (no descriptors) and dense (no
-            // holes) then we can write directly into the backing memory.
-            if array.is_trivial(agent) && array.is_dense(agent) {
+            // holes) then we can write directly into the backing memory. A
+            // hole is written the same way where Set of it comes to making
+            // the element (Array::appends_plainly: the Array can take new
+            // elements, and no prototype has a property under an integer
+            // key that the assignment would go to): `new Array(n).fill(v)`.
+            if array.is_trivial(agent) && (array.is_dense(agent) || array.appends_plainly(agent)) {
                 let len = array.len(agent) as usize;
 
                 let relative_start = if let Value::Integer(start) = start {
@@ -911,7 +915,16 @@ impl ArrayPrototype {
 
                 if final_end > k {
                     let data = array.as_mut_slice(agent);
+                    // An element made in a hole counts for the heap's
+                    // size as one that is defined there does: a script
+                    // that fills large Arrays reaches its memory limit
+                    // by them.
+                    let holes = data[k..final_end]
+                        .iter()
+                        .filter(|slot| slot.is_none())
+                        .count();
                     data[k..final_end].fill(Some(value.unbind()));
+                    agent.heap.alloc_counter += holes * core::mem::size_of::<Option<Value>>();
                 }
                 return Ok(array.unbind().into());
             }
