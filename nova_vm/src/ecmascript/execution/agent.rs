@@ -1195,6 +1195,13 @@ impl Agent {
         ctx.realm = realm.unbind();
     }
 
+    /// Whether any execution context is on the stack: none is while a Realm
+    /// is being created.
+    #[inline]
+    pub(crate) fn has_execution_context(&self) -> bool {
+        !self.execution_context_stack.is_empty()
+    }
+
     /// Internal method to get current Realm's identifier without binding.
     #[inline]
     pub(crate) fn current_realm_id_internal(&self) -> Realm<'static> {
