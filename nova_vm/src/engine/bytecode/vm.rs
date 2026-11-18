@@ -81,6 +81,9 @@ enum Plain {
     /// Not executed and nothing changed: a call of an ECMAScript function,
     /// which the Vm may run itself.
     Call,
+    /// Not executed and nothing changed: the instruction that ends a
+    /// function.
+    Return,
 }
 
 /// The steps a backward jump or a call counts for in the interrupt countdown:
@@ -142,6 +145,10 @@ struct Frame {
     /// while the frame is in use.
     executable: Executable<'static>,
     instructions: Option<Arc<[u8]>>,
+    /// While the frame is not in use, the code of the function that was
+    /// last run from it: the next call from this depth is most often of the
+    /// same function, and takes it back instead of sharing it anew.
+    callee_instructions: Option<Arc<[u8]>>,
     /// What the Agent's scoped values and scoped collections are cut back
     /// to after each of the caller's instructions.
     stack_depth: usize,
@@ -350,6 +357,7 @@ impl HeapMarkAndSweep for VmFrames {
                 exception_handler_stack,
                 executable,
                 instructions: _,
+                callee_instructions: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -363,6 +371,11 @@ impl HeapMarkAndSweep for VmFrames {
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
+        // Code that a frame keeps for a function it ran is not kept past a
+        // collection, which may have ended the function.
+        for frame in &mut self.frames {
+            frame.callee_instructions = None;
+        }
         for frame in &mut self.frames[..self.in_use] {
             let Frame {
                 ip: _,
@@ -372,6 +385,7 @@ impl HeapMarkAndSweep for VmFrames {
                 exception_handler_stack,
                 executable,
                 instructions: _,
+                callee_instructions: _,
                 stack_depth: _,
                 collections_depth: _,
                 scope_base: _,
@@ -743,6 +757,22 @@ impl Vm {
                             break Change::Call(callee, instr);
                         }
                     }
+                    // The end of every call, taken here where nothing is
+                    // out of the ordinary: a termination that is pending
+                    // goes the general way below.
+                    Plain::Return => {
+                        if agent.termination().is_none() {
+                            self.ip = ip;
+                            if print_internals {
+                                Self::print_exiting();
+                            }
+                            if self.depth == 0 {
+                                let result = self.result.unwrap_or(Value::Undefined);
+                                return ExecutionResult::Return(result.bind(gc.into_nogc()));
+                            }
+                            break Change::Return;
+                        }
+                    }
                     Plain::No => {}
                 }
                 self.ip = ip;
@@ -854,14 +884,12 @@ impl Vm {
                     if self.result.is_none() || matches!(change, Change::End) {
                         self.result = Some(Value::Undefined);
                     }
-                    drop(running);
-                    running = self.leave_function(agent, &base_executable, gc.nogc());
+                    running = self.leave_function(agent, &base_executable, running, gc.nogc());
                 }
                 Change::Throw(error) => thrown = Some(error),
                 Change::Terminate => {
                     while self.depth != 0 {
-                        drop(running);
-                        running = self.leave_function(agent, &base_executable, gc.nogc());
+                        running = self.leave_function(agent, &base_executable, running, gc.nogc());
                     }
                     return ExecutionResult::Throw(JsError::new(Value::Undefined));
                 }
@@ -877,8 +905,7 @@ impl Vm {
                         }
                         return ExecutionResult::Throw(error.bind(gc.into_nogc()));
                     }
-                    drop(running);
-                    running = self.leave_function(agent, &base_executable, gc.nogc());
+                    running = self.leave_function(agent, &base_executable, running, gc.nogc());
                     if self.handle_error(agent, error) {
                         break;
                     }
@@ -988,11 +1015,19 @@ impl Vm {
                 exception_handler_stack: Vec::new(),
                 executable: code,
                 instructions: None,
+                callee_instructions: None,
                 stack_depth: 0,
                 collections_depth: 0,
                 scope_base: 0,
             });
         }
+        // The function's code as this frame last ran it, if it is the same
+        // code: the bytecode that both hold is one allocation then.
+        let instructions = agent.vm_frames.frames[agent.vm_frames.in_use]
+            .callee_instructions
+            .take()
+            .filter(|instructions| callee.executable.has_instructions(agent, instructions))
+            .unwrap_or_else(|| callee.executable.get_instructions(agent));
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
         // The arguments go where the function keeps its parameters:
         // undefined for those not given, and those beyond the parameters
@@ -1028,7 +1063,7 @@ impl Vm {
         let executable = callee.executable.scope(agent, gc);
         Running {
             executable,
-            instructions: callee.executable.get_instructions(agent),
+            instructions,
             stack_depth: agent.stack_refs.get_mut().len(),
             collections_depth: agent.stack_ref_collections.get_mut().len(),
             scope_base,
@@ -1039,17 +1074,20 @@ impl Vm {
     /// or threw: its execution context is removed, and its stacks, emptied,
     /// stay in the frame for the next function, while those of the calling
     /// code are the `Vm`'s again. Returns the calling code as the code to
-    /// run; `base` is the executable the `Vm` was started with.
+    /// run; `base` is the executable the `Vm` was started with, `callee` the
+    /// function's code, which the frame keeps for the next call of it.
     fn leave_function<'s>(
         &mut self,
         agent: &mut Agent,
         base: &Scoped<'s, Executable<'static>>,
+        callee: Running,
         gc: NoGcScope<'_, 's>,
     ) -> Running<'s> {
         agent.remove_execution_context();
         self.depth -= 1;
         agent.vm_frames.in_use -= 1;
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        frame.callee_instructions = Some(callee.instructions);
         self.stack.clear();
         self.reference_stack.clear();
         self.iterator_stack.clear();
@@ -1256,6 +1294,7 @@ impl Vm {
     ) -> Plain {
         match instr.kind {
             Instruction::Load => vm.execute_load(),
+            Instruction::Return => return Plain::Return,
             Instruction::LoadCopy => vm.execute_load_copy(),
             Instruction::PutValueToIndex => vm.execute_load_to_index(instr.get_first_index()),
             Instruction::Store => vm.execute_store(),
@@ -1284,22 +1323,30 @@ impl Vm {
                 vm.stack.push(value);
             }
             // An operator with a constant as its right operand: neither
-            // operand goes by the stack.
+            // operand goes by the stack, and the result goes where the
+            // instruction says.
             Instruction::ApplyBinaryOperatorWithConstant => {
                 let Some(left) = vm.result else {
                     return Plain::No;
                 };
                 let right = code.fetch_constant(agent, instr.get_first_index(), gc);
-                let Some(value) = Instruction::fused_operator(instr.get_second_index())
+                let operation = instr.get_second_index();
+                let (_, operator) = Instruction::fused_slot_and_operator(operation);
+                let Some(value) = Instruction::fused_operator(operator)
                     .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
                 else {
                     return Plain::No;
                 };
-                vm.result = Some(value);
+                if Instruction::fused_pushes(operation) {
+                    vm.result = None;
+                    vm.stack.push(value);
+                } else {
+                    vm.result = Some(value);
+                }
             }
             Instruction::ApplyBinaryOperatorToIndexWithConstant => {
-                let (slot, operator) =
-                    Instruction::fused_slot_and_operator(instr.get_first_index());
+                let operation = instr.get_first_index();
+                let (slot, operator) = Instruction::fused_slot_and_operator(operation);
                 let left = vm.stack[slot];
                 let right = code.fetch_constant(agent, instr.get_second_index(), gc);
                 let Some(value) = Instruction::fused_operator(operator)
@@ -1307,7 +1354,35 @@ impl Vm {
                 else {
                     return Plain::No;
                 };
-                vm.result = Some(value);
+                if Instruction::fused_pushes(operation) {
+                    vm.result = None;
+                    vm.stack.push(value);
+                } else {
+                    vm.result = Some(value);
+                }
+            }
+            // An operator on the top of the stack and the result, whose
+            // value replaces the top of the stack or goes to a local.
+            Instruction::ApplyBinaryOperatorAndMove => {
+                let operation = instr.get_first_index();
+                let (slot, operator) = Instruction::fused_slot_and_operator(operation);
+                let (Some(&left), Some(right)) = (vm.stack.last(), vm.result) else {
+                    return Plain::No;
+                };
+                let Some(value) = Instruction::fused_operator(operator)
+                    .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
+                else {
+                    return Plain::No;
+                };
+                vm.result = None;
+                if Instruction::fused_pushes(operation) {
+                    if let Some(top) = vm.stack.last_mut() {
+                        *top = value;
+                    }
+                } else {
+                    vm.stack.pop();
+                    vm.stack[slot] = value;
+                }
             }
             Instruction::StoreConstant => {
                 let constant = code.fetch_constant(agent, instr.get_first_index(), gc);
@@ -1784,6 +1859,16 @@ impl Vm {
                     vm.reference = None;
                 }
                 vm.result = Some(value);
+            }
+            // The function of a method call, pushed with its Reference
+            // before the arguments.
+            Instruction::LoadPropertyWithCachePushReference => {
+                let Some(value) = Self::cached_property_value(agent, vm, code, instr, gc) else {
+                    return Plain::No;
+                };
+                Self::property_reference_with_identifier_key(agent, vm, code, instr, gc);
+                vm.execute_push_reference(agent);
+                vm.stack.push(value);
             }
             // `p.x` of a local: the stack slot, and its property by the
             // cache.
@@ -2619,7 +2704,9 @@ impl Vm {
             | Instruction::PutValueWithExpressionKey
             | Instruction::LoadBindingAtSite
             | Instruction::ApplyBinaryOperatorWithConstant
-            | Instruction::ApplyBinaryOperatorToIndexWithConstant => {
+            | Instruction::ApplyBinaryOperatorToIndexWithConstant
+            | Instruction::ApplyBinaryOperatorAndMove
+            | Instruction::LoadPropertyWithCachePushReference => {
                 execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
             Instruction::PutPropertyWithCache
@@ -2783,6 +2870,8 @@ impl Vm {
             | Instruction::LoadBindingAtSite
             | Instruction::ApplyBinaryOperatorWithConstant
             | Instruction::ApplyBinaryOperatorToIndexWithConstant
+            | Instruction::ApplyBinaryOperatorAndMove
+            | Instruction::LoadPropertyWithCachePushReference
             | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }

@@ -314,7 +314,32 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     return;
                 }
                 if let Some(start) = self.recent_instruction(0, Instruction::PushReference) {
+                    // The function of a method call with its Reference:
+                    // found, kept and pushed by one instruction.
+                    if let Some(property) =
+                        self.recent_instruction(1, Instruction::GetPropertyWithCacheKeepReference)
+                    {
+                        self.instructions[property] =
+                            Instruction::LoadPropertyWithCachePushReference.as_u8();
+                        self.drop_recent_instructions(start, 1);
+                        return;
+                    }
                     self.instructions[start] = Instruction::PushReferenceAndLoad.as_u8();
+                    return;
+                }
+                // The value of an operator, pushed by the operator itself.
+                if let Some(description) = self.recent_fused_operation() {
+                    let operation = self.operand(description);
+                    self.set_operand(description, operation | Instruction::FUSED_PUSHES);
+                    return;
+                }
+                if let Some((start, operator)) = self.recent_operator() {
+                    self.drop_recent_instructions(start, 1);
+                    self.push_instruction(Instruction::ApplyBinaryOperatorAndMove);
+                    self.add_index(
+                        Instruction::fused_slot_with_operator(0, operator)
+                            | Instruction::FUSED_PUSHES,
+                    );
                     return;
                 }
                 // A variable of an enclosing function, pushed.
@@ -326,14 +351,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 // result before the two instructions and none after them,
                 // as with the one that pushes the constant itself.
                 if let Some(start) = self.recent_instruction(0, Instruction::StoreConstant)
-                    && [
-                        Instruction::Load,
-                        Instruction::LoadFromIndex,
-                        Instruction::LoadBindingAtSite,
-                        Instruction::PushReferenceAndLoad,
-                    ]
-                    .into_iter()
-                    .any(|push| self.recent_instruction(1, push).is_some())
+                    && self.recent_leaves_no_result(1)
                 {
                     self.instructions[start] = Instruction::LoadConstant.as_u8();
                     return;
@@ -390,7 +408,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     if self.unpush_recent(1) {
                         self.push_instruction(Instruction::ApplyBinaryOperatorWithConstant);
                         self.instructions.extend_from_slice(&operand);
-                        self.add_index(number);
+                        self.add_index(Instruction::fused_slot_with_operator(0, number));
                         return;
                     }
                     // Two locals pushed before the constant: the second of
@@ -458,6 +476,86 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         [self.instructions[start + 1], self.instructions[start + 2]]
     }
 
+    /// The 16-bit operand at `at`.
+    fn operand(&self, at: usize) -> usize {
+        usize::from(u16::from_ne_bytes([
+            self.instructions[at],
+            self.instructions[at + 1],
+        ]))
+    }
+
+    /// Replaces the 16-bit operand at `at`, with a value that fits one.
+    fn set_operand(&mut self, at: usize, value: usize) {
+        let bytes = (value as u16).to_ne_bytes();
+        self.instructions[at] = bytes[0];
+        self.instructions[at + 1] = bytes[1];
+    }
+
+    /// Whether the `nth` most recent instruction is known to leave no
+    /// result: one that moves the result away (a push of it, a store in a
+    /// local), or the push of a constant after such a one, which does not
+    /// touch it.
+    fn recent_leaves_no_result(&self, nth: usize) -> bool {
+        let mut nth = nth;
+        while self
+            .recent_instruction(nth, Instruction::LoadConstant)
+            .is_some()
+        {
+            nth += 1;
+        }
+        if [
+            Instruction::Load,
+            Instruction::LoadFromIndex,
+            Instruction::LoadBindingAtSite,
+            Instruction::PushReferenceAndLoad,
+            Instruction::LoadPropertyWithCachePushReference,
+            Instruction::PutValueToIndex,
+            Instruction::ApplyBinaryOperatorAndMove,
+        ]
+        .into_iter()
+        .any(|moving| self.recent_instruction(nth, moving).is_some())
+        {
+            return true;
+        }
+        [
+            (Instruction::ApplyBinaryOperatorToIndexWithConstant, 1),
+            (Instruction::ApplyBinaryOperatorWithConstant, 3),
+        ]
+        .into_iter()
+        .any(|(fused, description)| {
+            self.recent_instruction(nth, fused)
+                .is_some_and(|start| Instruction::fused_pushes(self.operand(start + description)))
+        })
+    }
+
+    /// Where the most recent instruction, an operator fused with a constant
+    /// that leaves its value as the result, keeps the description of its
+    /// operation.
+    fn recent_fused_operation(&self) -> Option<usize> {
+        let description = if let Some(start) =
+            self.recent_instruction(0, Instruction::ApplyBinaryOperatorToIndexWithConstant)
+        {
+            start + 1
+        } else {
+            self.recent_instruction(0, Instruction::ApplyBinaryOperatorWithConstant)? + 3
+        };
+        (!Instruction::fused_pushes(self.operand(description))).then_some(description)
+    }
+
+    /// The start of the most recent instruction and the number the fused
+    /// instructions have for it, if it is an arithmetic or bitwise operator
+    /// on its own.
+    fn recent_operator(&self) -> Option<(usize, usize)> {
+        if self.recent_len == 0 {
+            return None;
+        }
+        let start = self.recent[0];
+        let kind = Instruction::try_from(*self.instructions.get(start)?).ok()?;
+        let operator = kind.fused_operator_number()?;
+        self.recent_instruction(0, kind)
+            .map(|start| (start, operator))
+    }
+
     /// Where the `nth` most recent instruction pushes the value that is or
     /// was the result, has it leave the value as the result instead, and
     /// removes the instructions after it: a Load is removed with them, an
@@ -485,6 +583,45 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 self.drop_recent_instructions(self.recent[nth - 1], nth);
                 return true;
             }
+        }
+        // An operator that pushes its value: with a constant, it is told
+        // not to; on its own, it is the operator again.
+        for (fused, description) in [
+            (Instruction::ApplyBinaryOperatorToIndexWithConstant, 1),
+            (Instruction::ApplyBinaryOperatorWithConstant, 3),
+        ] {
+            if let Some(start) = self.recent_instruction(nth, fused) {
+                let operation = self.operand(start + description);
+                if !Instruction::fused_pushes(operation) {
+                    return false;
+                }
+                self.set_operand(start + description, operation & !Instruction::FUSED_PUSHES);
+                self.drop_recent_instructions(self.recent[nth - 1], nth);
+                return true;
+            }
+        }
+        if let Some(start) = self.recent_instruction(nth, Instruction::ApplyBinaryOperatorAndMove) {
+            let operation = self.operand(start + 1);
+            let (_, operator) = Instruction::fused_slot_and_operator(operation);
+            let Some(operator) = Instruction::fused_operator(operator) else {
+                return false;
+            };
+            if !Instruction::fused_pushes(operation) {
+                return false;
+            }
+            self.drop_recent_instructions(start, nth + 1);
+            self.push_instruction(operator);
+            return true;
+        }
+        // The function of a method call, pushed with its Reference: found
+        // and kept by one instruction, its Reference pushed by another.
+        if let Some(start) =
+            self.recent_instruction(nth, Instruction::LoadPropertyWithCachePushReference)
+        {
+            self.instructions[start] = Instruction::GetPropertyWithCacheKeepReference.as_u8();
+            self.drop_recent_instructions(self.recent[nth - 1], nth);
+            self.push_instruction(Instruction::PushReference);
+            return true;
         }
         false
     }
@@ -818,6 +955,16 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             self.drop_recent_instructions(pop, 1);
             self.push_instruction(Instruction::PopReferenceAndEvaluateCall);
             self.add_index(immediate);
+            return;
+        }
+        // An operator whose value goes to a local, as one instruction.
+        if instruction == Instruction::PutValueToIndex
+            && immediate < Instruction::FUSED_SLOTS
+            && let Some((start, operator)) = self.recent_operator()
+        {
+            self.drop_recent_instructions(start, 1);
+            self.push_instruction(Instruction::ApplyBinaryOperatorAndMove);
+            self.add_index(Instruction::fused_slot_with_operator(immediate, operator));
             return;
         }
         // Two locals in a row, as one instruction.

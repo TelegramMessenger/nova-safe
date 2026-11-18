@@ -2207,36 +2207,68 @@ pub(super) fn execute_fused_instruction<'gc>(
             Ok(())
         }
         Instruction::ApplyBinaryOperatorWithConstant
-        | Instruction::ApplyBinaryOperatorToIndexWithConstant => {
-            let (left, constant, operator) =
-                if instr.kind == Instruction::ApplyBinaryOperatorWithConstant {
+        | Instruction::ApplyBinaryOperatorToIndexWithConstant
+        | Instruction::ApplyBinaryOperatorAndMove => {
+            let operation = if instr.kind == Instruction::ApplyBinaryOperatorWithConstant {
+                instr.get_second_index()
+            } else {
+                instr.get_first_index()
+            };
+            let (slot, operator) = Instruction::fused_slot_and_operator(operation);
+            if instr.kind != Instruction::ApplyBinaryOperatorAndMove {
+                let (left, constant) = if instr.kind == Instruction::ApplyBinaryOperatorWithConstant
+                {
                     // Load
-                    (
-                        vm.result.take().unwrap(),
-                        instr.get_first_index(),
-                        instr.get_second_index(),
-                    )
+                    (vm.result.take().unwrap(), instr.get_first_index())
                 } else {
                     // LoadFromIndex
-                    let (slot, operator) =
-                        Instruction::fused_slot_and_operator(instr.get_first_index());
-                    (vm.stack[slot], instr.get_second_index(), operator)
+                    (vm.stack[slot], instr.get_second_index())
                 };
-            vm.stack.push(left);
-            // StoreConstant
-            vm.result = Some(
-                executable
-                    .fetch_constant(agent, constant, gc.nogc())
-                    .unbind(),
-            );
+                vm.stack.push(left);
+                // StoreConstant
+                vm.result = Some(
+                    executable
+                        .fetch_constant(agent, constant, gc.nogc())
+                        .unbind(),
+                );
+            }
             // The operator
             match Instruction::fused_operator(operator) {
                 Some(Instruction::ApplyAdditionBinaryOperator) => {
-                    execute_apply_addition_binary_operator(agent, vm, gc)
+                    execute_apply_addition_binary_operator(agent, vm, gc)?
                 }
-                Some(kind) => execute_apply_binary_operator(agent, vm, kind, gc),
+                Some(kind) => execute_apply_binary_operator(agent, vm, kind, gc)?,
                 None => unreachable!("a fused instruction without its operator"),
             }
+            if Instruction::fused_pushes(operation) {
+                // Load
+                vm.execute_load();
+            } else if instr.kind == Instruction::ApplyBinaryOperatorAndMove {
+                // PutValueToIndex
+                vm.stack[slot] = vm.result.take().unwrap();
+            }
+            Ok(())
+        }
+        Instruction::LoadPropertyWithCachePushReference => {
+            // GetPropertyWithCacheKeepReference:
+            // EvaluatePropertyAccessWithIdentifierKey,
+            // GetValueWithCacheKeepReference
+            execute_evaluate_property_access_with_identifier_key(
+                agent,
+                vm,
+                executable.clone(),
+                instr,
+                gc.nogc(),
+            );
+            let get_value = Instr::new_with_arg(
+                Instruction::GetValueWithCacheKeepReference,
+                instr.get_second_index() as u16,
+            );
+            execute_get_value(agent, vm, executable, get_value, true, true, gc)?;
+            // PushReference, Load
+            vm.execute_push_reference(agent);
+            vm.execute_load();
+            Ok(())
         }
         Instruction::IncrementIndex | Instruction::DecrementIndex => {
             let slot = instr.get_first_index();
