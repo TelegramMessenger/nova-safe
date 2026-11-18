@@ -25,7 +25,7 @@ impl MathObject {
     /// Which of the functions of Math the interpreter may run in place:
     /// those that only compute a Number from Numbers.
     pub(crate) fn direct_builtin(function: RegularFn) -> Option<DirectBuiltin> {
-        let functions: [(RegularFn, DirectBuiltin); 9] = [
+        let functions: [(RegularFn, DirectBuiltin); 12] = [
             (Self::floor, DirectBuiltin::MathFloor),
             (Self::max, DirectBuiltin::MathMax),
             (Self::min, DirectBuiltin::MathMin),
@@ -35,6 +35,9 @@ impl MathObject {
             (Self::ceil, DirectBuiltin::MathCeil),
             (Self::trunc, DirectBuiltin::MathTrunc),
             (Self::sign, DirectBuiltin::MathSign),
+            (Self::sin, DirectBuiltin::MathSin),
+            (Self::cos, DirectBuiltin::MathCos),
+            (Self::pow, DirectBuiltin::MathPow),
         ];
         functions
             .into_iter()
@@ -53,21 +56,18 @@ impl MathObject {
         arguments: &[Value<'gc>],
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
-        if matches!(direct, DirectBuiltin::MathMax | DirectBuiltin::MathMin) {
-            // Integers: the highest or the lowest is one of them.
-            let mut found: Option<i64> = None;
-            for argument in arguments {
-                let Value::Integer(integer) = argument else {
+        match direct {
+            DirectBuiltin::MathMax => return Self::max_of_numbers(agent, arguments, gc),
+            DirectBuiltin::MathMin => return Self::min_of_numbers(agent, arguments, gc),
+            DirectBuiltin::MathPow => {
+                let &[base, exponent, ..] = arguments else {
                     return None;
                 };
-                let integer = integer.into_i64();
-                found = Some(match found {
-                    None => integer,
-                    Some(found) if direct == DirectBuiltin::MathMax => found.max(integer),
-                    Some(found) => found.min(integer),
-                });
+                let base = Number::try_from(base).ok()?;
+                let exponent = Number::try_from(exponent).ok()?;
+                return Some(Self::pow_numbers(agent, base, exponent, gc));
             }
-            return Number::try_from(found?).ok().map(|number| number.into());
+            _ => {}
         }
         let n = Number::try_from(*arguments.first()?).ok()?;
         Some(match direct {
@@ -78,7 +78,12 @@ impl MathObject {
             DirectBuiltin::MathSign => Self::sign_number(agent, n, gc),
             DirectBuiltin::MathSqrt => Self::sqrt_number(agent, n, gc),
             DirectBuiltin::MathTrunc => Self::trunc_number(agent, n, gc),
-            DirectBuiltin::MathMax | DirectBuiltin::MathMin | DirectBuiltin::StringCharCodeAt => {
+            DirectBuiltin::MathSin => Self::sin_number(agent, n, gc),
+            DirectBuiltin::MathCos => Self::cos_number(agent, n, gc),
+            DirectBuiltin::MathMax
+            | DirectBuiltin::MathMin
+            | DirectBuiltin::MathPow
+            | DirectBuiltin::StringCharCodeAt => {
                 return None;
             }
         })
@@ -690,20 +695,26 @@ impl MathObject {
         // 1. Let n be ? ToNumber(x).
         let n = to_number(agent, arguments.get(0), gc.reborrow())
             .unbind()?
-            .into_f64_(agent);
+            .bind(gc.nogc());
+        Ok(Self::cos_number(agent, n.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.cos of a Number.
+    fn cos_number<'gc>(agent: &mut Agent, n: Number<'gc>, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
+        let n = n.into_f64_(agent);
 
         // 2. If n is not finite, return NaN.
         if !n.is_finite() {
-            return Ok(Value::nan());
+            return Value::nan();
         }
 
         // 3. If n is either +0𝔽 or -0𝔽, return 1𝔽.
         if n == 0.0 {
-            return Ok(Value::from(1));
+            return Value::from(1);
         }
 
         // 4. Return an implementation-approximated Number value representing the result of the cosine of ℝ(n).
-        Ok(Value::from_f64(agent, n.cos(), gc.into_nogc()))
+        Value::from_f64(agent, n.cos(), gc)
     }
 
     fn cosh<'gc>(
@@ -1110,6 +1121,10 @@ impl MathObject {
         if arguments.is_empty() {
             return Ok(Value::neg_inf());
         }
+        // Numbers only: nothing is converted, and nothing else runs.
+        if let Some(highest) = Self::max_of_numbers(agent, arguments.as_slice(), gc.nogc()) {
+            return Ok(highest.unbind());
+        }
         // 1. Let coerced be a new empty List.
         // Note: We avoid keeping a list by doing a reduce-like strategy.
 
@@ -1219,6 +1234,10 @@ impl MathObject {
     ) -> JsResult<'gc, Value<'gc>> {
         if arguments.is_empty() {
             return Ok(Value::pos_inf());
+        }
+        // Numbers only: nothing is converted, and nothing else runs.
+        if let Some(lowest) = Self::min_of_numbers(agent, arguments.as_slice(), gc.nogc()) {
+            return Ok(lowest.unbind());
         }
 
         // 1. Let coerced be a new empty List.
@@ -1352,33 +1371,150 @@ impl MathObject {
                 .bind(gc.nogc());
             (base.get(agent).bind(gc.nogc()), exponent)
         };
-        let gc = gc.nogc();
+        let (base, exponent) = (base.unbind(), exponent.unbind());
+        Ok(Self::pow_numbers(agent, base, exponent, gc.into_nogc()))
+    }
+
+    /// Math.pow of two Numbers.
+    fn pow_numbers<'gc>(
+        agent: &mut Agent,
+        base: Number<'gc>,
+        exponent: Number<'gc>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         if let (Number::Integer(base), Number::Integer(exponent)) = (base, exponent) {
             let base = base.into_i64();
             let exponent = exponent.into_i64();
             if let Ok(exponent) = u32::try_from(exponent) {
                 if let Some(result) = base.checked_pow(exponent) {
                     if let Ok(result) = Number::try_from(result) {
-                        return Ok(result.into());
+                        return result.into();
                     } else {
-                        return Ok(Value::from_f64(agent, result as f64, gc).unbind());
+                        return Value::from_f64(agent, result as f64, gc);
                     }
                 } else if let Some(result) = (base as i128).checked_pow(exponent) {
-                    return Ok(Value::from_f64(agent, result as f64, gc).unbind());
+                    return Value::from_f64(agent, result as f64, gc);
                 } else {
-                    return Ok(
-                        Value::from_f64(agent, (base as f64).powf(exponent as f64), gc).unbind(),
-                    );
+                    return Value::from_f64(agent, (base as f64).powf(exponent as f64), gc);
                 }
             } else if let Ok(exponent) = i32::try_from(exponent) {
                 let result = (base as f64).powi(exponent);
-                return Ok(Value::from_f64(agent, result, gc).unbind());
+                return Value::from_f64(agent, result, gc);
             } else {
                 let result = (base as f64).powf(exponent as f64);
-                return Ok(Value::from_f64(agent, result, gc).unbind());
+                return Value::from_f64(agent, result, gc);
             }
         }
-        Ok(Number::exponentiate(agent, base, exponent).unbind().into())
+        Number::exponentiate(agent, base, exponent).bind(gc).into()
+    }
+
+    /// Math.max of arguments that are all Numbers, and there is one: None
+    /// for any other arguments.
+    fn max_of_numbers<'gc>(
+        agent: &mut Agent,
+        arguments: &[Value],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        if arguments.is_empty() {
+            return None;
+        }
+        let mut only_ints = true;
+        let mut contained_nan = false;
+        // 3. Let highest be -∞𝔽.
+        let mut highest_i64 = i64::MIN;
+        let mut highest_f64 = f64::NEG_INFINITY;
+        // 4. For each element number of coerced, do
+        for &argument in arguments {
+            let number = Number::try_from(argument).ok()?;
+            if let Number::Integer(int) = number {
+                // c. If n > highest, set highest to n.
+                highest_i64 = highest_i64.max(int.into_i64());
+            } else {
+                only_ints = false;
+
+                let value = number.into_f64_(agent);
+                if value.is_nan() {
+                    contained_nan = true;
+                } else {
+                    // b. If n is +0𝔽 and highest is -0𝔽, set highest to +0𝔽.
+                    // Note: This is handled automatically as +0 is integer.
+                    // c. If n > highest, set highest to n.
+                    highest_f64 = highest_f64.max(value);
+                }
+            }
+        }
+        // a. If number is NaN, return NaN.
+        if contained_nan {
+            return Some(Value::nan());
+        }
+        // 5. Return highest.
+        if only_ints {
+            Some(Number::try_from(highest_i64).ok()?.into())
+        } else {
+            if highest_i64 != i64::MIN {
+                // b. If n is +0𝔽 and highest is -0𝔽, set highest to +0𝔽.
+                // Note: +0 is an integer and -0 is not, so on a tie the
+                // integer is the answer. `f64::max` may return either of two
+                // zeros (it returns -0 on 32-bit ARM).
+                let highest_int = highest_i64 as f64;
+                if highest_int >= highest_f64 {
+                    highest_f64 = highest_int;
+                }
+            }
+            Some(Number::from_f64(agent, highest_f64, gc).into())
+        }
+    }
+
+    /// Math.min of arguments that are all Numbers, and there is one: None
+    /// for any other arguments.
+    fn min_of_numbers<'gc>(
+        agent: &mut Agent,
+        arguments: &[Value],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        if arguments.is_empty() {
+            return None;
+        }
+        let mut only_ints = true;
+        let mut contained_nan = false;
+        // 3. Let lowest be +∞𝔽.
+        let mut lowest_i64 = i64::MAX;
+        let mut lowest_f64 = f64::INFINITY;
+        // 4. For each element number of coerced, do
+        for &argument in arguments {
+            let number = Number::try_from(argument).ok()?;
+            if let Number::Integer(int) = number {
+                // c. If number < lowest, set lowest to number.
+                lowest_i64 = lowest_i64.min(int.into_i64());
+            } else {
+                only_ints = false;
+
+                let number = number.into_f64_(agent);
+                // a. If number is NaN, return NaN.
+                if number.is_nan() {
+                    contained_nan = true;
+                } else {
+                    // c. If number < lowest, set lowest to number.
+                    lowest_f64 = lowest_f64.min(number);
+                }
+            }
+        }
+        // a. If number is NaN, return NaN.
+        if contained_nan {
+            return Some(Value::nan());
+        }
+        // 5. Return lowest.
+        if only_ints {
+            Some(Number::try_from(lowest_i64).ok()?.into())
+        } else {
+            if lowest_i64 != i64::MAX {
+                // b. If number is -0𝔽 and lowest is +0𝔽, set lowest to -0𝔽.
+                if lowest_f64 != -0.0 || !lowest_f64.is_sign_negative() || lowest_i64 != 0 {
+                    lowest_f64 = lowest_f64.min(lowest_i64 as f64);
+                }
+            }
+            Some(Number::from_f64(agent, lowest_f64, gc).into())
+        }
     }
 
     fn random<'gc>(
@@ -1471,17 +1607,26 @@ impl MathObject {
         let n_number = to_number(agent, arguments.get(0), gc.reborrow())
             .unbind()?
             .bind(gc.nogc());
+        Ok(Self::sin_number(agent, n_number.unbind(), gc.into_nogc()))
+    }
+
+    /// Math.sin of a Number.
+    fn sin_number<'gc>(
+        agent: &mut Agent,
+        n_number: Number<'gc>,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         let n = n_number.into_f64_(agent);
         // 2. If n is one of NaN, +0𝔽, or -0𝔽, return n.
         if n.is_nan() || n == 0.0 {
-            return Ok(n_number.unbind().into());
+            return n_number.into();
         }
         // 3. If n is either +∞𝔽 or -∞𝔽, return NaN.
         if n.is_infinite() {
-            return Ok(Value::nan());
+            return Value::nan();
         }
         // 4. Return an implementation-approximated Number value representing the sine of ℝ(n).
-        Ok(Value::from_f64(agent, n.sin(), gc.into_nogc()))
+        Value::from_f64(agent, n.sin(), gc)
     }
 
     fn sinh<'gc>(

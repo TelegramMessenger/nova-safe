@@ -3159,6 +3159,25 @@ log("inExpressions", function () {
 });
 log("argumentCounts", function () { function f() { return Math.max.apply(Math, arguments); } var big = []; for (var i = 0; i < 300; i++) big.push(i % 97); return [f(1, 2, 3), f(), Math.floor(1.5, 2, 3), Math.max(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), Math.min(...big), Math.max(...big), Math.max(...big, 1.5, "200")].map(show).join(); });
 log("generatorAndAsync", function () { function* g() { var x = yield Math.floor(1.5); yield Math.max(x, 3); yield* [Math.sqrt(81)]; } var it = g(); return [it.next().value, it.next(7).value, it.next().value].join(); });
+log("trigAndPowEqualApplied", function () {
+  var bad = [], n = 0;
+  for (var i = 0; i < nums.length; i++) {
+    var x = nums[i];
+    if (!Object.is(Math.sin(x), Reflect.apply(Math.sin, null, [x]))) bad.push("sin" + show(x));
+    if (!Object.is(Math.cos(x), Reflect.apply(Math.cos, null, [x]))) bad.push("cos" + show(x));
+    for (var j = 0; j < nums.length; j++) { var y = nums[j]; n++; if (!Object.is(Math.pow(x, y), Reflect.apply(Math.pow, null, [x, y]))) bad.push("pow" + show(x) + "," + show(y)); if (!Object.is(Math.max(x, y), Reflect.apply(Math.max, null, [x, y]))) bad.push("max" + show(x) + "," + show(y)); if (!Object.is(Math.min(x, y), Reflect.apply(Math.min, null, [x, y]))) bad.push("min" + show(x) + "," + show(y)); }
+  }
+  for (var a = 0; a < nums.length; a += 5) for (var b = 0; b < nums.length; b += 4) for (var c = 0; c < nums.length; c += 3) { var p = nums[a], q = nums[b], t = nums[c]; n++; if (!Object.is(Math.max(p, q, t), Reflect.apply(Math.max, null, [p, q, t]))) bad.push("max3"); if (!Object.is(Math.min(p, q, t), Reflect.apply(Math.min, null, [p, q, t]))) bad.push("min3"); }
+  return bad.length + "/" + n + ":" + bad.slice(0, 5).join();
+});
+log("floatMinMax", function () { return [Math.max(0.5, 1.5), Math.min(0.5, 1.5), Math.max(-0, 0), Math.max(0, -0), Math.min(-0, 0), Math.min(0, -0), Math.max(-0, -0), Math.min(-0, -0.0), Math.max(1, 2.5, 2), Math.min(3, 2.5, 4), Math.max(0.1, NaN, 5), Math.min(NaN, 0.1), Math.max(-Infinity, -1e308), Math.min(Infinity, 1e308), Math.max(1e21, 9007199254740991), Math.min(-1e21, -9007199254740991), Math.max(0.5, "1.5"), Math.min(0.5, null), Math.max(2.5, undefined), Math.min(0.5, true), Math.max(0, Math.min(1, 0.25)), Math.max(0, Math.min(1, 7.5)), Math.max(0, Math.min(1, -3.5)), Math.pow(2, 10), Math.pow(2, -2), Math.pow(-2, 3), Math.pow(0, 0), Math.pow(NaN, 0), Math.pow(2, 1024), Math.pow(7, 22), Math.pow(-0, -1), Math.pow("3", "2"), Math.pow(2), Math.pow(), Math.sin(0), Math.sin(-0), Math.cos(0), Math.sin("0.5") === Math.sin(0.5), Math.cos()].map(show).join(" "); });
+log("trigConversionsAndPatches", function () {
+  var order = "", o = { valueOf: function () { order += "v"; return 0.5; } }, r = [];
+  r.push(Math.sin(o) === Math.sin(0.5), Math.cos(o) === Math.cos(0.5), Math.pow(o, o) === Math.pow(0.5, 0.5), Math.pow(2, o) === Math.pow(2, 0.5));
+  try { Math.sin(1n); } catch (e) { r.push(e.constructor.name); } try { Math.pow(2, Symbol()); } catch (e) { r.push(e.constructor.name); } try { Math.pow({ valueOf: function () { throw new RangeError("b"); } }, { valueOf: function () { order += "never"; return 1; } }); } catch (e) { r.push(e.constructor.name); }
+  var s = Math.sin, original = Math.pow; Math.pow = function () { return "patched"; }; r.push(Math.pow(2, 3)); Math.pow = original; r.push(Math.pow(2, 3), s(0), (0, Math.cos)(0), Math.sin.call(null, 0), [0, 0].map(Math.cos).join(""));
+  return r.join() + "|" + order;
+});
 out.join("\n")
 "#;
     let expected = r#"direct0=0 0 0 0 0 0 0|-0 -0 -0 -0 0 -0 -0|1 1 1 1 1 1 1|-1 -1 -1 -1 1 NaN -1|2 2 2 2 2 1.4142135623730951 1|7 7 7 7 7 2.6457513110645907 1|0 1 1 0 0.5 0.7071067811865476 1|-1 -0 -0 -0 0.5 NaN -1|0 1 0 0 0.49999999999999994 0.7071067811865475 1|1 2 2 1 1.5 1.224744871391589 1|-2 -1 -1 -1 1.5 NaN -1|2 3 3 2 2.5 1.5811388300841898 1|-3 -2 -2 -2 2.5 NaN -1|0 1 0 0 0.1 0.31622776601683794 1|-1 -0 -0 -0 0.1 NaN -1|0 1 1 0 0.9 0.9486832980505138 1|-1 -0 -1 -0 0.9 NaN -1|0 1 0 0 1e-320 9.99994433575849e-161 1|4 4 4 4 4 2 1|9 9 9 9 9 3 1|2 3 2 2 2.25 1.5 1|1e+21 1e+21 1e+21 1e+21 1e+21 31622776601.683792 1|-1e+21 -1e+21 -1e+21 -1e+21 1e+21 NaN -1|4503599627370495 4503599627370496 4503599627370496 4503599627370495 4503599627370495.5 67108863.99999999 1|9007199254740991 9007199254740991 9007199254740991 9007199254740991 9007199254740991 94906265.62425154 1|-9007199254740991 -9007199254740991 -9007199254740991 -9007199254740991 9007199254740991 NaN -1|9007199254740992 9007199254740992 9007199254740992 9007199254740992 9007199254740992 94906265.62425156 1|4294967296 4294967296 4294967296 4294967296 4294967296 65536 1|2147483647 2147483648 2147483648 2147483647 2147483647.5 46340.95000644678 1|-2147483649 -2147483648 -2147483648 -2147483648 2147483648.5 NaN -1|NaN NaN NaN NaN NaN NaN NaN|Infinity Infinity Infinity Infinity Infinity Infinity 1|-Infinity -Infinity -Infinity -Infinity Infinity NaN -1|123456789 123456790 123456789 123456789 123456789.123 11111.111066090556 1|1e+300 1e+300 1e+300 1e+300 1e+300 1e+150 1|0 1 0 0 5e-324 2.2227587494850775e-162 1
@@ -3182,7 +3201,13 @@ inExpressions1=423,-1,true,Infinity,true,-Infinity,-Infinity,-Infinity,-Infinity
 argumentCounts0=3,-Infinity,1,10,0,96,200
 argumentCounts1=3,-Infinity,1,10,0,96,200
 generatorAndAsync0=1,7,9
-generatorAndAsync1=1,7,9"#;
+generatorAndAsync1=1,7,9
+trigAndPowEqualApplied0=0/2160:
+trigAndPowEqualApplied1=0/2160:
+floatMinMax0=1.5 0.5 0 0 -0 -0 -0 -0 2.5 2.5 NaN NaN -1e+308 1e+308 1e+21 -1e+21 1.5 0 NaN 0.5 0.25 1 0 1024 0.25 -8 1 1 Infinity 3909821048582988300 -Infinity 9 NaN NaN 0 -0 1 boolean:true NaN
+floatMinMax1=1.5 0.5 0 0 -0 -0 -0 -0 2.5 2.5 NaN NaN -1e+308 1e+308 1e+21 -1e+21 1.5 0 NaN 0.5 0.25 1 0 1024 0.25 -8 1 1 Infinity 3909821048582988300 -Infinity 9 NaN NaN 0 -0 1 boolean:true NaN
+trigConversionsAndPatches0=true,true,true,true,TypeError,TypeError,RangeError,patched,8,0,1,0,11|vvvvv
+trigConversionsAndPatches1=true,true,true,true,TypeError,TypeError,RangeError,patched,8,0,1,0,11|vvvvv"#;
     let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
         panic!("the checks did not run");
     };
