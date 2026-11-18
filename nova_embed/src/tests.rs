@@ -8453,3 +8453,47 @@ after: aaab";
         expected
     );
 }
+
+/// A loop of native code whose every step is a call of a built-in function
+/// runs no bytecode: an iterator whose `next` is a built-in bound to its
+/// result, the values of an array-like of a made-up length, the indexes of a
+/// Proxy whose trap is a built-in. Nothing asked the host's interrupt in
+/// them, so the host could not end such a script; every call that native
+/// code makes asks it now, no `catch` keeps it from the host, and the engine
+/// goes on.
+#[test]
+fn loops_that_only_call_built_ins_are_interrupted() {
+    let (mut engine, stop, _) = limited(8 << 20, 0);
+    for script in [
+        "var result = { done: false, value: [1, 2] };
+         var endless = { next: Object.bind(null, result) };
+         endless[Symbol.iterator] = Object.bind(null, endless);
+         new Map(endless); 'returned'",
+        "var made = new Proxy([], { get: Math.abs.bind(null, 2 ** 53 - 1) });
+         Math.sumPrecise(Array.prototype.values.call(made)); 'returned'",
+        "new Set(Array.prototype.values.call({ length: 2 ** 53 - 1 })); 'returned'",
+        "try { new Set(Array.prototype.values.call({ length: 2 ** 53 - 1 })); } catch (e) {}
+         'caught'",
+    ] {
+        stop.set(true);
+        assert_eq!(
+            engine.evaluate(script, false),
+            Err(Error::Interrupted),
+            "{script}"
+        );
+        stop.set(false);
+        assert_eq!(engine.evaluate("1 + 1", false), Ok(Completion::Number(2.0)));
+    }
+    // What such calls return is what it was.
+    assert_eq!(
+        engine.evaluate(
+            "var seen = [];
+             new Map([[1, 'a'], [2, 'b']]).forEach(Array.prototype.push.bind(seen));
+             var bound = new Set(Array.prototype.values.call({ length: 3, 0: 'x', 2: 'z' }));
+             seen.length + ' ' + bound.size + ' ' + Math.sumPrecise([1, 2, 3.5])
+                 + ' ' + [3, 1, 2].sort(Math.min.bind(null, 0)).join('')",
+            false
+        ),
+        Ok(Completion::String("6 3 6.5 312".into()))
+    );
+}

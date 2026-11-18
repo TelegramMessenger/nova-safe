@@ -720,6 +720,8 @@ pub(crate) fn call<'gc>(
             if let Value::Proxy(proxy) = f
                 && proxy.is_callable(agent, gc.nogc())
             {
+                // A step of the native code that calls, as in call_function.
+                agent.poll_interrupt(gc.nogc()).unbind()?;
                 let current_stack_size = agent.stack_refs.borrow().len();
                 let result = proxy.unbind().internal_call(agent, v, arguments_list, gc);
                 agent.stack_refs.borrow_mut().truncate(current_stack_size);
@@ -1316,6 +1318,13 @@ pub(crate) fn create_property_key_list_from_array_like<'a, 'b>(
 }
 
 /// Abstract operation Call specialized for a Function.
+///
+/// A call made by native code is a step of that code: of a loop over the
+/// entries of a Map with a callback, over an iterator with its `next`, over
+/// the indexes of a Proxy with its trap. Where what is called is a built-in
+/// function too (or one bound to its arguments), no bytecode runs in the
+/// loop, so nothing else asks the host's interrupt or the heap limit in it:
+/// each call does.
 pub(crate) fn call_function<'gc>(
     agent: &mut Agent,
     f: Function,
@@ -1323,6 +1332,7 @@ pub(crate) fn call_function<'gc>(
     arguments_list: Option<ArgumentsList>,
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, Value<'gc>> {
+    agent.poll_interrupt(gc.nogc()).unbind()?;
     let f = f.bind(gc.nogc());
     let arguments_list = arguments_list.unwrap_or_default();
     let current_stack_size = agent.stack_refs.borrow().len();
