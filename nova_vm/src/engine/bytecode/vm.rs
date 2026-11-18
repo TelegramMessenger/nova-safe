@@ -19,12 +19,12 @@ use crate::{
         ExceptionType, InternalMethods, InternalSlots, JsError, JsResult, Number, Object,
         OrdinaryObject, Primitive, Promise, PropertyKey, Reference, SmallInteger, String,
         TryGetResult, Value, binding_value_at_site, call_function, get_method, get_this_value,
-        is_callable, is_property_reference, is_same_type, is_strictly_equal, ordinary_has_instance,
-        ordinary_set_own_data_at_offset, prepare_for_call_without_function_environment,
-        reference_is_at_global_site, set_binding_value_at_site, take_pooled_arguments_vec,
-        to_boolean, to_numeric, to_numeric_primitive, to_primitive, to_property_key,
-        to_string_primitive, try_get_object_method, try_resolve_binding_at_site,
-        try_result_into_option_js,
+        is_callable, is_property_reference, is_same_type, is_strictly_equal,
+        ordinary_add_own_data_by_cache, ordinary_has_instance, ordinary_set_own_data_at_offset,
+        prepare_for_call_without_function_environment, reference_is_at_global_site,
+        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
+        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
+        try_get_object_method, try_resolve_binding_at_site, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -1739,9 +1739,15 @@ impl Vm {
                 let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
                     return Plain::No;
                 };
-                if offset.is_unset()
-                    || !ordinary_set_own_data_at_offset(agent, object, offset, value)
-                {
+                if offset.is_unset() {
+                    // Neither the object nor any it inherits from has the
+                    // property: it is added, as most properties of an
+                    // object are.
+                    let key = code.fetch_property_key(agent, instr.get_first_index(), gc);
+                    if !ordinary_add_own_data_by_cache(agent, object, key, value, cache, gc) {
+                        return Plain::No;
+                    }
+                } else if !ordinary_set_own_data_at_offset(agent, object, offset, value) {
                     return Plain::No;
                 }
                 vm.stack.pop();

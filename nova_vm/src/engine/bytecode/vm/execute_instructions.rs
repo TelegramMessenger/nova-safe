@@ -2363,6 +2363,20 @@ pub(super) fn execute_fused_property_instruction<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     if instr.kind == Instruction::PutPropertyWithCache {
+        if let Some(&Value::Object(object)) = vm.stack.last() {
+            // The cache does not know the object's shape yet. What a read
+            // of the property finds is what the assignment goes by (the
+            // object's own property, one it inherits, or none anywhere),
+            // and the lookup of a read leaves that in the cache while
+            // calling nothing: the next assignment to an object of this
+            // shape is made by it, also the one that adds the property.
+            let cache = executable.fetch_cache(agent, instr.get_second_index(), gc.nogc());
+            let shape = object.object_shape(agent);
+            if cache.find_cached_property_offset(agent, shape).is_none() {
+                let key = executable.fetch_property_key(agent, instr.get_first_index(), gc.nogc());
+                let _ = object.try_get(agent, key, object.into(), Some(cache), gc.nogc());
+            }
+        }
         // EvaluatePropertyAccessWithIdentifierKey of the object, with the
         // value kept aside, then PutValueWithCache.
         let value = vm.result.take().unwrap();

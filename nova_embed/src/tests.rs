@@ -3530,6 +3530,32 @@ log("localReads", function () {
   function swap(x) { return x.k; } r.push(swap({ k: 1 }), swap({ j: 0, k: 2 }), swap([]), swap("s"), swap(7), swap(function () {}), swap(Object.create({ k: "up" })));
   return r.map(String).join() + "|" + calls;
 });
+log("addThenPrototypeChanges", function () {
+  function make(v) { var o = {}; o.fresh = v; return o; }
+  var a = make(1), b = make(2), seen = [], r = [];
+  Object.defineProperty(Object.prototype, "fresh", { set: function (v) { seen.push("s" + v); }, get: function () { return "proto"; }, configurable: true });
+  var c = make(3); r.push(a.fresh, b.fresh, c.fresh, Object.keys(c).length);
+  delete Object.prototype.fresh; var d = make(4); r.push(d.fresh, Object.keys(d).length);
+  Object.defineProperty(Object.prototype, "fresh", { value: "ro", writable: false, configurable: true }); var e = make(5); r.push(e.fresh, Object.keys(e).length);
+  function strictMake(v) { "use strict"; var o = {}; try { o.fresh = v; return "added"; } catch (err) { return err.constructor.name; } } r.push(strictMake(6)); delete Object.prototype.fresh; r.push(strictMake(7));
+  var proto = {}; function Ctor(v) { this.k = v; } Ctor.prototype = proto; var x = new Ctor(1);
+  Object.defineProperty(proto, "k", { set: function (v) { seen.push("p" + v); }, configurable: true }); var y = new Ctor(2); r.push(x.k, y.k, Object.keys(y).length);
+  delete proto.k; var z = new Ctor(3); r.push(z.k); Object.setPrototypeOf(proto, { set k(v) { seen.push("g" + v); } }); var w = new Ctor(4); r.push(w.k, Object.keys(w).length);
+  return r.map(String).join() + "|" + seen.join();
+});
+log("addInConstructors", function () {
+  class P { constructor(x, y) { this.x = x; this.y = y; this.sum = this.x + this.y; } } class Q extends P { constructor(x, y, z) { super(x, y); this.z = z; this.x = "over"; } }
+  var ps = []; for (var i = 0; i < 6; i++) ps.push(i % 2 ? new P(i, i * 2) : new Q(i, i * 2, "z" + i));
+  function Old(n) { this.a = n; if (n & 1) this.odd = true; this.b = n * 2; if (n > 2) { this.c = 1; this.d = 2; } }
+  var olds = []; for (var j = 0; j < 5; j++) olds.push(Object.keys(new Old(j)).join(""));
+  function Wide() { for (var k = 0; k < 3; k++) { this.p0 = k; this.p1 = k; this.p2 = k; this.p3 = k; this.p4 = k; this.p5 = k; this.p6 = k; this.p7 = k; this.p8 = k; this.p9 = k; this.p10 = k; this.p11 = k; this.p12 = k; this.p13 = k; this.p14 = k; this.p15 = k; this.p16 = k; this.p17 = k; this.p18 = k; } }
+  var wide = new Wide();
+  function Frozen() { Object.preventExtensions(this); this.late = 1; } function Sealing() { this.first = 1; Object.seal(this); this.second = 2; this.first = 3; }
+  var holder = { set viaSetter(v) { this._v = v; } }; function Inherits() { this.viaSetter = 9; this.own = 1; } Inherits.prototype = holder;
+  var prox = new Proxy({}, { set: function (t, k, v) { t[k] = v + "!"; return true; } }); function IntoProxy(o) { o.added = "a"; return o.added; }
+  function OnArray() { var arr = [1]; arr.tag = "t"; arr.extra = 2; return Object.keys(arr).join(""); } function OnFunction() { var f = function () {}; f.tag = 1; f.other = 2; return Object.keys(f).join(""); }
+  return [ps.map(function (p) { return Object.keys(p).join("") + p.x + p.sum; }).join(), olds.join(), Object.keys(wide).length, wide.p18, Object.keys(new Frozen()).length, Object.keys(new Sealing()).join("") + new Sealing().first, Object.keys(new Inherits()).join(""), new Inherits()._v, IntoProxy(prox), OnArray(), OnFunction()].join("|");
+});
 out.join("\n")
 "#;
     let expected = r#"plainAssign0={"a":2,"b":3,"c":5}{"x":2,"y":2}abc
@@ -3561,7 +3587,11 @@ thisKinds1=objecttrue,TypeError,sx,true,undefined,number5.0,6,21,object,2,Refere
 thisCalls0=2,4,sloppynumber,TypeError,firstsecond,secondsecond|abcabcb
 thisCalls1=2,4,sloppynumber,TypeError,firstsecond,secondsecond|abcabcb
 localReads0=TypeError,TypeError,TypeError,TypeError,undefined,function,3,undefined,string,function,named,2,function,undefined,2,function,undefined,function,undefined,TypeError,TypeError,true,true,true,true,1,true,undefined,1,3,undefined,getter,proto,undefined,1,2,undefined,undefined,undefined,undefined,up|gmgmppp
-localReads1=TypeError,TypeError,TypeError,TypeError,undefined,function,3,undefined,string,function,named,2,function,undefined,2,function,undefined,function,undefined,TypeError,TypeError,true,true,true,true,1,true,undefined,1,3,undefined,getter,proto,undefined,1,2,undefined,undefined,undefined,undefined,up|gmgmppp"#;
+localReads1=TypeError,TypeError,TypeError,TypeError,undefined,function,3,undefined,string,function,named,2,function,undefined,2,function,undefined,function,undefined,TypeError,TypeError,true,true,true,true,1,true,undefined,1,3,undefined,getter,proto,undefined,1,2,undefined,undefined,undefined,undefined,up|gmgmppp
+addThenPrototypeChanges0=1,2,proto,0,4,1,ro,0,TypeError,added,1,undefined,0,3,undefined,0|s3,p2,g4
+addThenPrototypeChanges1=1,2,proto,0,4,1,ro,0,TypeError,added,1,undefined,0,3,undefined,0|s3,p2,g4
+addInConstructors0=xysumzover0,xysum13,xysumzover6,xysum39,xysumzover12,xysum515|ab,aoddb,ab,aoddbcd,abcd|19|2|0|first3|_vown|9|a!|0tagextra|tagother
+addInConstructors1=xysumzover0,xysum13,xysumzover6,xysum39,xysumzover12,xysum515|ab,aoddb,ab,aoddbcd,abcd|19|2|0|first3|_vown|9|a!|0tagextra|tagother"#;
     let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
         panic!("the checks did not run");
     };
@@ -4195,6 +4225,19 @@ t("private onto frozen prototype", function () { var f = Object.freeze({ a: 1 })
 t("private onto frozen array", function () { var f = Object.freeze([1]); new Stamper(f); return Stamper.has(f) + "/" + state(f); });
 t("private then delete on non-extensible", function () { var f = Object.preventExtensions({ a: 1, b: 2 }); new Stamper(f); delete f.a; return Stamper.has(f) + "/" + state(f) + Object.keys(f).join(""); });
 })();
+(function () {
+var print = function (s) { all.push(s); };
+function t(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + e.constructor.name; } print(name + ": " + v); }
+function rd(o) { return o.tag; } function wr(o, v) { o.tag = v; } function has(o) { return Object.prototype.hasOwnProperty.call(o, "tag"); }
+t("add to a prototype itself", function () { var P = {}; var c = Object.create(P), r = []; for (var i = 0; i < 4; i++) { r.push(rd(P), rd(c)); wr(P, i); r.push(rd(P), rd(c), has(P), has(c)); delete P.tag; } return r.map(String).join(); });
+t("add to a prototype then to its child", function () { var P = {}; var r = []; for (var i = 0; i < 4; i++) { var c = Object.create(P); r.push(rd(c)); wr(P, "p" + i); r.push(rd(c)); wr(c, "c" + i); r.push(rd(c), rd(P), Object.keys(c).join("")); delete P.tag; r.push(rd(c)); } return r.map(String).join(); });
+t("add to Object.prototype and others", function () { var r = []; for (var i = 0; i < 3; i++) { r.push(rd({}), rd([]), rd("s"), rd(5)); wr(Object.prototype, i); r.push(rd({}), rd([]), rd("s"), rd(5), rd(Object.prototype)); delete Object.prototype.tag; wr(Array.prototype, "a" + i); r.push(rd([]), rd({})); delete Array.prototype.tag; } return r.map(String).join(); });
+t("add to a class prototype and constructor", function () { class K {} var k = new K(), r = []; for (var i = 0; i < 3; i++) { r.push(rd(k), rd(K)); wr(K.prototype, i); wr(K, "s" + i); r.push(rd(k), rd(K), rd(class extends K {})); delete K.prototype.tag; delete K.tag; } return r.map(String).join(); });
+t("add to a middle of a chain", function () { var a = {}, b = Object.create(a), c = Object.create(b), r = []; for (var i = 0; i < 3; i++) { r.push(rd(c)); wr(b, "b" + i); r.push(rd(c), rd(b), rd(a)); wr(a, "a" + i); r.push(rd(c), rd(a)); delete b.tag; r.push(rd(c)); delete a.tag; r.push(rd(c)); } return r.map(String).join(); });
+t("add to a prototype with a setter above", function () { var seen = []; var top = { set tag(v) { seen.push(v); } }; var P = Object.create(top); Object.create(P); var r = []; for (var i = 0; i < 3; i++) { wr(P, i); r.push(has(P)); } delete top.tag; for (var j = 0; j < 2; j++) { wr(P, "own" + j); r.push(has(P), rd(P)); delete P.tag; } return r.map(String).join() + "|" + seen.join(""); });
+t("add to a non-extensible prototype", function () { var P = { a: 1 }; Object.create(P); Object.preventExtensions(P); var r = []; for (var i = 0; i < 3; i++) { wr(P, i); r.push(has(P), rd(P)); } return r.map(String).join() + Object.keys(P).join(""); });
+t("many properties on a prototype", function () { var P = {}; var c = Object.create(P); for (var i = 0; i < 40; i++) { P["k" + i] = i; } P.tag = "t"; var sum = 0; for (var j = 0; j < 40; j++) sum += c["k" + j]; return sum + rd(c) + Object.keys(P).length; });
+})();
 all.join("\n")"#;
     let expected = r#"typedArrayInChain: plain/undefined/3,plain/undefined/3,plain/undefined/3,plain/undefined/3,NaNInfinityplain/1/3,NaNInfinityplain/1/3,NaNInfinityplain/1/3,0tagother/undefined,0tagother/undefined,0tagother/undefined
 stringAndArrayInChain: tag/2,tag/2,tag/2,lengthtag/5,lengthtag/5,lengthtag/5,tag/3,tag/3,tag/3,TypeError,TypeError,TypeError
@@ -4343,7 +4386,15 @@ private onto non-extensible: true/false,false,false,false
 private onto frozen empty: true/false,true,true,false
 private onto frozen prototype: true/false,true,true,false
 private onto frozen array: true/false,true,true,false
-private then delete on non-extensible: true/false,false,false,falseb"#;
+private then delete on non-extensible: true/false,false,false,falseb
+add to a prototype itself: undefined,undefined,0,0,true,false,undefined,undefined,1,1,true,false,undefined,undefined,2,2,true,false,undefined,undefined,3,3,true,false
+add to a prototype then to its child: undefined,p0,c0,p0,tag,c0,undefined,p1,c1,p1,tag,c1,undefined,p2,c2,p2,tag,c2,undefined,p3,c3,p3,tag,c3
+add to Object.prototype and others: undefined,undefined,undefined,undefined,0,0,0,0,0,a0,undefined,undefined,undefined,undefined,undefined,1,1,1,1,1,a1,undefined,undefined,undefined,undefined,undefined,2,2,2,2,2,a2,undefined
+add to a class prototype and constructor: undefined,undefined,0,s0,s0,undefined,undefined,1,s1,s1,undefined,undefined,2,s2,s2
+add to a middle of a chain: undefined,b0,b0,undefined,b0,a0,a0,undefined,undefined,b1,b1,undefined,b1,a1,a1,undefined,undefined,b2,b2,undefined,b2,a2,a2,undefined
+add to a prototype with a setter above: false,false,false,true,own0,true,own1|012
+add to a non-extensible prototype: false,undefined,false,undefined,false,undefineda
+many properties on a prototype: 780t41"#;
     let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
         panic!("the checks did not run");
     };
