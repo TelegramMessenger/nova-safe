@@ -49,12 +49,13 @@ below.
 | all | 108 | 7.6x | 1.9x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 2.6x, and the worst is now prepending
-(37x, area 7); after it come generators (5.9x), calls that bind an arguments object (4.8x), then typed
-`Float64Array` arithmetic (3.8x). 13 of the 108 cases are above 3x and 53 at or under 2x, 14 of them at or
-under QuickJS's time. Over all cases it is 1.89x: 2.12x before the round of patterns, Array iteration and
+(36x, area 7); after it come calls that bind an arguments object (4.8x), generators (4.1x), then typed
+`Float64Array` arithmetic (3.9x). 12 of the 108 cases are above 3x and 53 at or under 2x, 13 of them at or
+under QuickJS's time. Over all cases it is 1.88x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
-round of what an appended text keeps of its end, and the round of the text of a Number took it here.
+round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
+stepping a generator without a result object took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -616,11 +617,20 @@ instructions the loop runs itself: `for`-`of` over an Array is 1.0x (1.3x), `pro
 Left for Arrays: an array pattern is still run by instructions of its own, an interpreter inside the
 instruction that reads them through the heap (a tenth of `prop/destructuring`).
 
-Left: a generator makes its result object in its own bytecode at every `yield`, the loop still calls `next`
-through the built-in, and the generator's `Vm` and execution context are moved in and out of the generator at
-every step. Stepping a generator directly, with the yielded value handed over without an object, is next. (A
-suspended `Vm` keeps its stacks as vectors now instead of cutting them to size at every `yield`; that removed
-two reallocations a step and changed no measured time.)
+A generator made its result object in its own bytecode at every `yield`, the loop called `next` through the
+built-in to get it, and read "done" and "value" back out of it. `yield value` in a generator that is not
+async is an instruction of its own now (YieldValue) that hands the value over as it is, and whoever resumed
+the generator makes the result object if it wants one: %GeneratorPrototype%.next, `return` and `throw` do,
+with the %Object.prototype% of the generator's realm as its bytecode did; the step of a loop, and the step
+that `Array.from`, the Map and Set constructors and the Promise combinators take, resume the generator
+themselves where its `next` is the original one of the running realm, and take the value. What `yield*`
+passes on is a result object already and is read as any other. A loop over a generator went from 9.9 to
+6.8 ms (5.9x to 4.1x).
+
+Left: the generator's `Vm` and execution context are moved in and out of the generator at every step (a
+sixth of the loop above), and a `yield` leaves the loop of instructions by its slow way. (A suspended `Vm`
+keeps its stacks as vectors now instead of cutting them to size at every `yield`; that removed two
+reallocations a step and changed no measured time.)
 
 ### 6. Numbers
 
