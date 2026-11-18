@@ -36,21 +36,23 @@ below.
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.7x |
 | call | 14 | 10.4x | 2.7x |
-| array | 14 | 5.8x | 2.5x |
 | math | 4 | 9.7x | 2.4x |
-| prop | 13 | 7.1x | 2.3x |
-| map, set | 4 | 4.6x | 2.3x |
+| prop | 13 | 7.1x | 2.2x |
 | string | 26 | 10.6x | 2.2x |
+| array | 14 | 5.8x | 2.1x |
+| map, set | 4 | 4.6x | 2.1x |
 | app | 8 | 6.1x | 2.1x |
-| regexp | 4 | 2.4x | 1.7x |
+| regexp | 4 | 2.4x | 1.6x |
 | loop | 11 | 11.1x | 1.4x |
-| gc | 3 of 5 | 3.6x | 1.2x |
+| gc | 3 of 5 | 3.6x | 1.1x |
 | json | 2 | 1.0x | 1.0x |
 | all | 108 | 7.6x | 2.1x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 4.1x, and the worst is now prepending
-(35x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.9x). 25 of the
-108 cases are above 3x and 40 at or under 2x, 13 of them at or under QuickJS's time. One case
+The worst case was 303x (appending to a string 100,000 times); that one is 3.9x, and the worst is now prepending
+(37x, area 7); after it come generators (6.0x), then calls that bind an arguments object (4.7x). 27 of the
+108 cases are above 3x (eleven of them within a twentieth of it) and 43 at or under 2x, 14 of them at or under
+QuickJS's time. Over all cases it is 2.05x (2.12x before the round of patterns, Array iteration and array
+literals). One case
 ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
 cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
 
@@ -436,6 +438,14 @@ their name, and the inherited method of the running realm is done without the ca
 left of that case is the call of `Array.isArray`. Functions, Arrays and other objects with
 a backing object do not take the short way for their named properties yet.
 
+An object pattern with no default value and no computed key (`var { x, y, meta: { id } } = point`) was run
+by instructions of its own, an interpreter inside the instruction: every property looked up by its key,
+every name resolved by its string, and the keys gathered in a set whether or not a rest element wanted
+them. The compiler had the other way already, for a pattern with a default: `o.p` read by the instruction
+that reads it anywhere, through the property cache of its place, into a stack slot where the name is kept
+in one. Every object pattern is compiled that way now. `prop/destructuring`, an object pattern and an
+array pattern, went from 3.7x to 2.0x with that, and to 1.5x with the array pattern's part (area 5a).
+
 ### 5. Array and typed array elements
 
 `a[i]` was 11-19x through the same Reference path with a generic property key.
@@ -472,6 +482,12 @@ now notes on the heap that an integer key was added to one. Until one was, an ap
 keys; after, at all of them as before (the note is never taken back, and says nothing of which object).
 `array/push-then-pop` went from 3.6x to 3.0x.
 
+An array literal of values (`[i, i + 1, i + 2]`) made an empty Array and defined its elements one by one,
+each through CreateDataPropertyOrThrow by an instruction that may run a script (the `Vm` moved into the
+Agent and back for it), inside an exception handler that pops the Array where an element throws. The
+values go to the stack now, as the arguments of a call do, and one instruction makes the Array of them.
+A literal with a hole or a spread element is made as before. `array/literal-alloc` went from 3.7x to 0.9x.
+
 Left: a compound assignment to an element (`a[i] += 1`) and one whose value is used still make a Reference.
 Other built-ins that take a callback or build an Array (`map`, `filter`, `forEach`) run their general steps.
 Float64 elements allocate (area 6).
@@ -487,6 +503,25 @@ Done: an object made from a list of entries gathers their values on the stack; a
 the original one is stepped directly, as an Array Iterator already was; and the `done` and `value` of a result
 that is an ordinary object with those as plain properties of its own are read from their slots. Iterating a
 string by code point is 3.7x, a Map 2.7x, a generator 7.0x (8.2x).
+
+Iterating an Array is a walk over its elements with no iterator object, and three things around the walk
+cost more than it: the Array's `Symbol.iterator` method was looked for key by key, on the Array and on its
+prototype, as every walk began; "return" was looked for through three prototypes as every walk ended early,
+which a pattern with no more elements than its array always does; and every step left the interpreter,
+moving the `Vm` into the Agent and back. The method is found through the property cache of its name now,
+and so is there being no "return"; a step whose element is a value reads it in place. `for`-`of` over an
+Array went from 1.8x to 1.3x, a literal with spread elements from 2.2x to 1.8x, a call with spread
+arguments from 1.8x to 1.5x, a Map iterated with a pattern for each entry from 2.4x to 1.9x, and the array
+pattern of `prop/destructuring` took that case from 2.0x to 1.5x.
+
+The walk was taken wherever the Array's method was the original one, whatever "next" of
+%ArrayIteratorPrototype% had become; it is taken now only while that is the original too (see the
+defects), which is looked at as each walk begins: two keys compared.
+
+Left for Arrays: the two lookups by name find their cache by hashing the name, every time (a tenth of
+`prop/destructuring`); the start of a walk still leaves the interpreter; the step of `for`-`of` is not
+among the instructions the loop runs without a call; and an array pattern is still run by instructions of
+its own.
 
 Left: a generator makes its result object in its own bytecode at every `yield`, the loop still calls `next`
 through the built-in, and the generator's `Vm` and execution context are moved in and out of the generator at
@@ -668,6 +703,30 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   its prototype, and `x instanceof g.Array` is true for it only because the call of g's
   Function.prototype[Symbol.hasInstance] makes g the running realm while it looks. Upstream. Not fixed;
   the shortcut for instanceof is taken only for the running realm's method because of it.
+- Iterating an Array panicked (the engine died) where a "return" or a "throw" method could be found from
+  an Array Iterator: `Object.prototype.return = function () {}; var [a] = [1, 2];`, or a `break` out of
+  `for`-`of` over an Array after that; and `yield*` over an Array thrown into, after
+  `Array.prototype.throw = …`. Both were left as `todo!()`, and both were looked for on %Array.prototype%,
+  which an Array Iterator does not inherit from, so a "return" put on %ArrayIteratorPrototype% was never
+  called. Upstream; test262 has no test that fails for it. Where one of them has to be looked for with the
+  iterator, the walk is given the Array Iterator object it stands for, at the element it has come to, and
+  goes on as any iteration does. Fixed.
+- A "next" put on %ArrayIteratorPrototype% in place of the original was not called by anything that
+  iterates an Array with the original `Symbol.iterator` method: patterns, `for`-`of`, spread, `yield*`,
+  and the constructors of Set, Map and WeakSet and Object.fromEntries, which read the elements
+  themselves. Upstream; test262 has no test that fails for it. They all ask now whether "next" is the
+  original, as GetIterator would read it. Fixed.
+- Object.fromEntries looked for the iterator method of an Array on %Array.prototype%, not on the Array:
+  one with a `Symbol.iterator` of its own, or of a subclass, was read element by element all the same.
+  Upstream. Fixed.
+- An element of an array pattern with a default value skipped an element of the array where the one it
+  was to read was a hole that a getter of a prototype stands in for, or an accessor:
+  `var [a, b = 0, c] = [1, , 3]` with a getter for 1 on %Array.prototype% gave 1, 3, undefined. The step
+  that runs nothing had moved on before it found that something must run. Upstream. Fixed.
+- A pattern that ends before its iterator does closes the iterator, and did it wrong three ways: "return"
+  was called with undefined as an argument where it gets none; what it gave back was not checked for
+  being an object (a TypeError); and where it threw, it was called a second time by the handler of that
+  error. Any iterator, not only an Array's. Upstream; test262 has no test that fails for it. Fixed.
 - One run of the widget sandbox's tests in hosted mode failed a test that bounds a widget by its layout
   queries: the widget was stopped for 200 ms of continuous execution after 19 queries instead. The machine
   was under a load of ninety at the time; three runs on a quiet machine passed. The limit is wall-clock time.
