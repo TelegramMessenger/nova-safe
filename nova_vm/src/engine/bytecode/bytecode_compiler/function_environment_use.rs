@@ -26,6 +26,11 @@ pub(super) struct FunctionEnvironmentUse {
     /// The function or an arrow function in it refers to `arguments`, or
     /// calls a function named eval.
     pub(super) arguments: bool,
+    /// `arguments` is looked for by name from code that is not the
+    /// function's own: an arrow function in it refers to it, or a function
+    /// named eval is called. The arguments object must then be a binding of
+    /// the function's Environment Record, where a name is found.
+    pub(super) arguments_by_name: bool,
 }
 
 impl FunctionEnvironmentUse {
@@ -118,6 +123,9 @@ impl<'a> Visit<'a> for Finder {
     fn visit_identifier_reference(&mut self, it: &'a ast::IdentifierReference<'a>) {
         if it.name == "arguments" {
             self.found.arguments = true;
+            if self.arrow_depth > 0 {
+                self.found.arguments_by_name = true;
+            }
         }
     }
 
@@ -129,6 +137,7 @@ impl<'a> Visit<'a> for Finder {
         {
             // eval may always refer to arguments.
             self.found.arguments = true;
+            self.found.arguments_by_name = true;
         }
         walk::walk_call_expression(self, it);
     }

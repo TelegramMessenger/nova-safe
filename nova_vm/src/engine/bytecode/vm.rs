@@ -2514,7 +2514,7 @@ impl Vm {
                     };
                     value.unbind()
                 } else {
-                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                    let Some(value) = Self::exotic_element(agent, base, index, gc) else {
                         return Plain::No;
                     };
                     value
@@ -2541,7 +2541,7 @@ impl Vm {
                     };
                     value.unbind()
                 } else {
-                    let Some(value) = Self::typed_array_element(agent, base, index, gc) else {
+                    let Some(value) = Self::exotic_element(agent, base, index, gc) else {
                         return Plain::No;
                     };
                     value
@@ -3001,6 +3001,15 @@ impl Vm {
                 let cache = tables.cache(instr.get_second_index(), gc);
                 object.value_by_cache(agent, cache, gc).unbind()
             }
+            // `arguments.length`: an arguments object has its properties as
+            // the ordinary object it is has them.
+            Value::Arguments(arguments) => {
+                let cache = tables.cache(instr.get_second_index(), gc);
+                arguments
+                    .ordinary_object()
+                    .value_by_cache(agent, cache, gc)
+                    .unbind()
+            }
             Value::Array(array) => {
                 let key = tables.property_key(instr.get_first_index(), gc);
                 if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
@@ -3061,6 +3070,26 @@ impl Vm {
             #[cfg(not(feature = "array-buffer"))]
             _ => None,
         }
+    }
+
+    /// `base[index]` where `base` is an arguments object or a TypedArray:
+    /// `arguments[i]`, the loop of a function that takes any number of
+    /// arguments, reads the argument where the object has it
+    /// ([`UnmappedArguments::argument`](crate::ecmascript::UnmappedArguments)),
+    /// and a TypedArray its element.
+    #[inline]
+    fn exotic_element(
+        agent: &mut Agent,
+        base: Value,
+        index: i64,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        if let Value::Arguments(arguments) = base {
+            return arguments
+                .argument(agent, u32::try_from(index).ok()?)
+                .map(Value::unbind);
+        }
+        Self::typed_array_element(agent, base, index, gc)
     }
 
     /// `a[i]` of a TypedArray, for an index within its length: the element,

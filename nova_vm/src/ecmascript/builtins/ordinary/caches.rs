@@ -35,10 +35,20 @@ pub(crate) struct Caches<'a> {
     /// text. Not a root, and emptied by every collection: a collection
     /// moves keys and caches, and drops the caches nothing else holds.
     recent: [Option<(PropertyKey<'a>, PropertyLookupCache<'a>)>; RECENT_CACHES],
+    /// The Object Shape of an arguments object of so many arguments, with
+    /// the %Object.prototype% it is the shape under. An arguments object is
+    /// made at every call of a function that uses one, and its shape was
+    /// found by one transition for each of its properties, every time. Not
+    /// a root, and emptied by every collection, as `recent` is.
+    arguments_shapes: [Option<(Object<'a>, ObjectShape<'a>)>; ARGUMENTS_SHAPES],
 }
 
 /// How many caches [`Caches::recent`] has places for.
 const RECENT_CACHES: usize = 64;
+
+/// Arguments objects of fewer arguments than this have their shape kept
+/// ([`Caches::arguments_shape`]).
+const ARGUMENTS_SHAPES: usize = 9;
 
 /// The first of the two places of `key` in [`Caches::recent`]; the other
 /// is the one beside it.
@@ -64,6 +74,30 @@ impl<'a> Caches<'a> {
             // property_lookup_cache_stack: Vec::with_capacity(64),
             current_cache_to_populate: None,
             recent: [None; RECENT_CACHES],
+            arguments_shapes: [None; ARGUMENTS_SHAPES],
+        }
+    }
+
+    /// The Object Shape of an arguments object of `len` arguments under
+    /// `prototype`, if one was made since the last collection.
+    #[inline]
+    pub(crate) fn arguments_shape(&self, prototype: Object, len: usize) -> Option<ObjectShape<'a>> {
+        match self.arguments_shapes.get(len) {
+            Some(Some((kept, shape))) if *kept == prototype.unbind() => Some(*shape),
+            _ => None,
+        }
+    }
+
+    /// Keeps `shape` for [`Caches::arguments_shape`].
+    #[inline]
+    pub(crate) fn set_arguments_shape(
+        &mut self,
+        prototype: Object,
+        len: usize,
+        shape: ObjectShape,
+    ) {
+        if let Some(place) = self.arguments_shapes.get_mut(len) {
+            *place = Some((prototype.unbind(), shape.unbind()));
         }
     }
 
@@ -956,6 +990,7 @@ impl HeapMarkAndSweep for Caches<'static> {
             current_cache_to_populate: current_property_lookup_cache,
             // Not a root: emptied when the heap is swept.
             recent: _,
+            arguments_shapes: _,
         } = self;
         // Note: we do not mark the caches in the lookup table; they're weakly
         // held.
@@ -976,9 +1011,11 @@ impl HeapMarkAndSweep for Caches<'static> {
             // property_lookup_cache_stack,
             current_cache_to_populate: current_property_lookup_cache,
             recent,
+            arguments_shapes,
         } = self;
         // Its keys and caches are of the heap before this collection.
         *recent = [None; RECENT_CACHES];
+        *arguments_shapes = [None; ARGUMENTS_SHAPES];
         property_lookup_cache_lookup_table.retain(|(key, cache)| {
             let Some(new_cache) = cache.sweep_weak_reference(compactions) else {
                 return false;

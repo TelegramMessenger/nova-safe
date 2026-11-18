@@ -8766,3 +8766,96 @@ promise combinators take a generator: true,true,true"#;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The arguments object is kept in a stack slot where nothing looks for it
+/// by name, its shape is kept from one call to the next, and
+/// `arguments.length` and `arguments[i]` are read where the object has
+/// them. What a script can tell is as it was: lengths and indexes of every
+/// count of arguments, the descriptors and keys of the object, writes,
+/// deletions and redefinitions, a property it inherits where it has none,
+/// `arguments` assigned to, declared again, found by an arrow function or
+/// by eval, a name `arguments` declared around the function (which is not
+/// its arguments object, whatever the semantic analysis resolves the
+/// reference to), with default and rest parameters, in generators, methods
+/// and constructors, and after the call that made it. What is expected is what
+/// Node prints for the same script.
+#[test]
+fn the_arguments_object_is_what_it_was() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arguments_objects)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arguments_objects() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function say(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e); } print(name + ": " + v); }
+say("length and indexes", function () { function f() { "use strict"; var r = [arguments.length]; for (var i = -1; i <= arguments.length; i++) r.push(String(arguments[i])); r.push(arguments["0"], arguments["length"], arguments[1.5], arguments["x"], arguments[4294967295], arguments[2 ** 32]); return r.join(","); } return [f(), f(1), f("a", undefined, null), f(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)].join(" | "); });
+say("every count", function () { function sum() { "use strict"; var n = 0; for (var i = 0; i < arguments.length; i++) n += arguments[i]; return n + ":" + arguments.length; } var r = []; for (var c = 0; c <= 14; c++) { var a = []; for (var k = 0; k < c; k++) a.push(k + 1); r.push(sum.apply(null, a)); } return r.join(","); });
+say("descriptors", function () { function f() { "use strict"; return arguments; } var a = f(7, 8); var d = Object.getOwnPropertyDescriptor(a, "length"), e = Object.getOwnPropertyDescriptor(a, "0"), it = Object.getOwnPropertyDescriptor(a, Symbol.iterator), c = Object.getOwnPropertyDescriptor(a, "callee"); return [JSON.stringify(d), JSON.stringify(e), it.value === Array.prototype.values, it.enumerable, it.writable, typeof c.get, c.get === c.set, c.enumerable, c.configurable, Reflect.ownKeys(a).map(String).join("/"), Object.keys(a).join(""), Object.prototype.toString.call(a), Object.getPrototypeOf(a) === Object.prototype, Array.isArray(a)].join(" "); });
+say("callee throws when strict", function () { function f() { "use strict"; return arguments.callee; } function g() { "use strict"; arguments.callee = 1; } var r = []; try { f(); r.push("no"); } catch (e) { r.push(e.constructor.name); } try { g(); r.push("no"); } catch (e) { r.push(e.constructor.name); } return r.join(","); });
+say("writes", function () { function f(p) { "use strict"; arguments[0] = "changed"; arguments[5] = "added"; arguments.length = 1; arguments.extra = "x"; return [p, arguments[0], arguments[5], arguments.length, arguments.extra, Object.keys(arguments).join("")].join(","); } return f("orig", "second"); });
+say("parameters are not tied to it", function () { function f(a, b) { "use strict"; a = "A"; arguments[1] = "B"; return [a, b, arguments[0], arguments[1]].join(","); } return f(1, 2); });
+say("deleted and redefined", function () { function f() { "use strict"; var r = []; delete arguments[1]; r.push(arguments[0], String(arguments[1]), arguments[2], arguments.length, 1 in arguments); arguments[1] = "back"; r.push(arguments[0], arguments[1], arguments[2], Object.keys(arguments).join("")); Object.defineProperty(arguments, 0, { get: function () { return "getter"; }, configurable: true }); r.push(arguments[0]); Object.defineProperty(arguments, 2, { value: "frozen", writable: false }); r.push(arguments[2]); delete arguments.length; r.push(String(arguments.length)); return r.join(","); } return f("a", "b", "c"); });
+say("inherited where it has none", function () { function f() { "use strict"; return [String(arguments[3]), String(arguments[0])].join(","); } Object.prototype[3] = "proto3"; try { return f("own") + " " + (function () { "use strict"; delete arguments[0]; Object.prototype[0] = "proto0"; try { return arguments[0]; } finally { delete Object.prototype[0]; } })("x"); } finally { delete Object.prototype[3]; } });
+say("frozen sealed", function () { function f() { "use strict"; Object.freeze(arguments); var r = [arguments[0], arguments.length, Object.isFrozen(arguments)]; try { arguments[0] = 9; } catch (e) { r.push(e.constructor.name); } r.push(arguments[0]); return r.join(","); } return f(1, 2); });
+say("consumers", function () { function f() { "use strict"; var r = []; for (var v of arguments) r.push(v); return [r.join(""), [...arguments].join(""), Array.prototype.slice.call(arguments, 1).join(""), Array.from(arguments).length, JSON.stringify(arguments), Array.prototype.map.call(arguments, function (x) { return x * 2; }).join(""), Math.max.apply(null, arguments), Object.entries(arguments).join(";")].join(" "); } return f(1, 2, 3); });
+say("typeof and friends", function () { function f() { "use strict"; return [typeof arguments, arguments instanceof Object, arguments === arguments, "length" in arguments, arguments.hasOwnProperty("length"), String(arguments), arguments.toString === Object.prototype.toString].join(","); } return f(); });
+say("assigned when not strict", function () { function f() { var before = arguments.length; arguments = [9, 8, 7]; var mid = arguments.length + "/" + arguments[0]; arguments = 5; return [before, mid, arguments, typeof arguments].join(","); } function g() { arguments += "!"; return typeof arguments + arguments.length; } function h() { var a = arguments; a[0] = "via alias"; return arguments[0] + (a === arguments); } return [f(1, 2), g(1), h(1)].join(" | "); });
+say("declared again", function () { function f() { var arguments; return typeof arguments + arguments.length; } function g() { var arguments = "own"; return arguments; } function h(arguments) { return arguments; } function i() { function arguments() {} return typeof arguments; } function j() { let r = arguments.length; { let arguments = "block"; r += arguments; } return r + arguments.length; } function k(a = arguments.length, b = () => arguments[0]) { return a + ":" + b(); } return [f(1, 2), g(1), h("param"), i(1), j(1, 2), k(undefined, undefined), k(undefined, undefined, 3)].join(" | "); });
+say("found by name", function () { function arrow() { "use strict"; var f = () => arguments.length + ":" + arguments[0]; return f("ignored"); } function nested() { "use strict"; return (() => (() => arguments[1])())(); } function ev() { return eval("arguments.length + ':' + arguments[0]"); } function ev2() { var e = eval; return typeof e("typeof arguments"); } function inner() { "use strict"; function own() { return arguments.length; } return own(1, 2, 3) + ":" + arguments.length; } return [arrow("a", "b"), nested(1, "second"), ev("x", "y"), ev2(), inner(1)].join(" | "); });
+say("default rest destructuring", function () { function f(a, b = arguments.length, ...rest) { return [a, b, rest.length, arguments.length, arguments[2]].join(","); } function g({ x }, [y]) { return x + y + arguments.length + arguments[0].x; } return f(1) + " " + f(1, 2, 3, 4) + " " + g({ x: "X" }, ["Y"], 0); });
+say("generators and async", function () { function* gen() { "use strict"; yield arguments.length; yield arguments[1]; arguments[1] = "set"; yield arguments[1]; } async function af() { "use strict"; return arguments.length; } var it = gen("a", "b"), p = af(1, 2); return [it.next().value, it.next().value, it.next().value, p instanceof Promise].join(","); });
+say("methods constructors accessors", function () { class C { constructor() { this.n = arguments.length; this.first = arguments[0]; } m() { return arguments[arguments.length - 1]; } static s() { return arguments.length; } get g() { return arguments.length; } set v(x) { this.sv = arguments.length + ":" + arguments[0]; } } var c = new C("one", 2); c.v = "val"; var o = { m() { return arguments.length; }, f: function () { return arguments[0]; } }; return [c.n, c.first, c.m(1, 2, "last"), C.s(1, 2), c.g, c.sv, o.m(1), o.f("of")].join(","); });
+say("escapes and outlives", function () { function make() { "use strict"; return arguments; } var a = make(1, 2), b = make("x"); a[0] = "changed"; var kept = []; for (var i = 0; i < 300; i++) kept.push(make(i, i + 1, i + 2)); var sum = 0; for (var j = 0; j < kept.length; j++) sum += kept[j][0] + kept[j][2] + kept[j].length; return [a[0], a[1], a.length, b[0], b.length, sum].join(","); });
+say("recursion and nesting", function () { function fact() { "use strict"; return arguments[0] <= 1 ? 1 : arguments[0] * fact(arguments[0] - 1, arguments.length); } function outer() { "use strict"; function inner() { return arguments.length + arguments[0]; } return inner(arguments[1], arguments[0]) + ":" + arguments.length; } return fact(10) + " " + outer("a", "b", "c"); });
+say("apply call bind spread", function () { function f() { "use strict"; return arguments.length + ":" + Array.prototype.join.call(arguments, ""); } var b = f.bind(null, 1, 2); return [f.apply(null, [1, 2, 3]), f.call(null, "a"), b(3), f(...[4, 5], ...[6]), f.apply(null, { length: 2, 0: "x", 1: "y" }), new (function () { this.n = arguments.length; })(1, 2).n].join(" "); });
+say("in a loop many times", function () { function f() { "use strict"; var n = 0; for (var i = 0; i < arguments.length; i++) n += arguments[i]; return n; } var t = 0; for (var i = 0; i < 20000; i++) t += f(i & 3, 1, 2) + f() + f(i & 1); return t; });
+say("holes and odd values", function () { function f() { "use strict"; return [arguments.length, String(arguments[0]), String(arguments[1]), 0 in arguments, 1 in arguments, typeof arguments[2]].join(","); } return f(undefined, null, function () {}) + " " + f.apply(null, [, 1]) + " " + f.apply(null, new Array(2)); });
+say("blocks catch and computed keys", function () { function f() { var r = [arguments.length]; { function arguments() { return "fn"; } r.push(typeof arguments); } return r.join(","); } function g() { try { throw "caught"; } catch (arguments) { var inside = arguments; } return inside + ":" + typeof arguments + arguments.length; } function h() { class C { [(() => arguments[0])()]() { return arguments.length; } } var o = { get [arguments[1]]() { return arguments.length; }, [arguments[0] + "2"]: arguments.length }; return Object.getOwnPropertyNames(C.prototype).join("") + new C().key(1, 2) + o.second + o.key2; } function i() { return (function (a = arguments.length) { return a + ":" + arguments.length; })(undefined, 1, 2) + "/" + arguments.length; } return [f(1), g(1, 2), h("key", "second"), i(9)].join(" | "); });
+say("labels loops closures over other names", function () { function f(n) { "use strict"; var fs = []; for (let i = 0; i < arguments.length; i++) fs.push(function () { return i + n; }); var total = 0; outer: for (var a = 0; a < arguments.length; a++) { for (var b = 0; b < arguments.length; b++) { if (b > a) continue outer; total += arguments[b]; } } return fs.map(function (g) { return g(); }).join("") + ":" + total; } return f(1, 2, 3); });
+say("try finally and switch", function () { function f() { "use strict"; var r = []; try { r.push(arguments[0]); throw arguments; } catch (e) { r.push(e === arguments, e.length); } finally { r.push(arguments.length); } switch (arguments.length) { case 2: r.push("two"); break; default: r.push("other"); } return r.join(","); } return f("x", "y"); });
+say("a name declared outside is not it", function () { function outer() { var arguments = undefined; return (function () { return arguments.length; })() + ":" + (function (a, b, c) { return arguments.length; })(1) + ":" + String(arguments); } function outer2(arguments) { return (function () { return typeof arguments + arguments.length; })(1, 2) + ":" + arguments; } function outer3() { let r = []; { let arguments = "block"; r.push((function () { return typeof arguments + arguments.length; })(1)); r.push(arguments); } return r.join(","); } function outer4() { var arguments = "kept"; (function () { arguments = "inner only"; arguments += "!"; })(); (function () { "use strict"; arguments[0] = 1; })(); return arguments; } function outer5() { const arguments = "const"; return (function () { var n = 0; for (var i = 0; i < arguments.length; i++) n += arguments[i]; return n; })(1, 2, 3) + arguments; } return [outer(1, 2), outer2("param"), outer3(), outer4(), outer5()].join(" | "); });
+var arguments = "of the script";
+say("a name of the script is not it", function () { function f() { return arguments; } function g() { "use strict"; return arguments.length + ":" + typeof arguments; } var a = f(), b = f("q"); return [a === "of the script", typeof a, a.length, b[0], g(1, 2), typeof arguments === "string" || typeof arguments === "object"].join(","); });
+lines.join("\n")"#;
+    let expected = r#"length and indexes: 0,undefined,undefined,,0,,,, | 1,undefined,1,undefined,1,1,,,, | 3,undefined,a,undefined,null,undefined,a,3,,,, | 12,undefined,1,2,3,4,5,6,7,8,9,10,11,12,undefined,1,12,,,,
+every count: 0:0,1:1,3:2,6:3,10:4,15:5,21:6,28:7,36:8,45:9,55:10,66:11,78:12,91:13,105:14
+descriptors: {"value":2,"writable":true,"enumerable":false,"configurable":true} {"value":7,"writable":true,"enumerable":true,"configurable":true} true false true function true false false 0/1/length/callee/Symbol(Symbol.iterator) 01 [object Arguments] true false
+callee throws when strict: TypeError,TypeError
+writes: orig,changed,added,1,x,015extra
+parameters are not tied to it: A,2,1,B
+deleted and redefined: a,undefined,c,3,false,a,back,c,012,getter,frozen,undefined
+inherited where it has none: proto3,own proto0
+frozen sealed: 1,2,true,TypeError,1
+consumers: 123 123 23 3 {"0":1,"1":2,"2":3} 246 3 0,1;1,2;2,3
+typeof and friends: object,true,true,true,true,[object Arguments],true
+assigned when not strict: 2,3/9,5,number | string19 | via aliastrue
+declared again: object2 | own | param | function | 2block2 | 2:undefined | 3:undefined
+found by name: 2:a | second | 2:x | string | 3:1
+default rest destructuring: 1,1,0,1, 1,2,2,4,3 XY3X
+generators and async: 2,b,set,true
+methods constructors accessors: 2,one,last,2,0,1:val,1,of
+escapes and outlives: changed,2,2,x,1,91200
+recursion and nesting: 3628800 2b:3
+apply call bind spread: 3:123 1:a 3:123 3:456 2:xy 2
+in a loop many times: 100000
+holes and odd values: 3,undefined,null,true,true,function 2,undefined,1,true,true,undefined 2,undefined,undefined,true,true,undefined
+blocks catch and computed keys: 1,function | caught:object2 | constructorkey202 | 3:3/1
+labels loops closures over other names: 123:10
+try finally and switch: x,true,2,2,two
+a name declared outside is not it: 0:1:undefined | object2:param | object1,block | kept | 6const
+a name of the script is not it: false,object,0,q,2:object,true"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

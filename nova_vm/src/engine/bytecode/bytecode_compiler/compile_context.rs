@@ -97,7 +97,14 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     control_flow_stack: Vec<ControlFlowStackEntry<'script>>,
     /// Stores a stack of variables on the stack that are accessed by stack
     /// slot.
-    stack_variables: Vec<(oxc_semantic::SymbolId, u32)>,
+    /// The variables that are kept in stack slots, each with its slot. The
+    /// arguments object has no symbol ([`CompileContext::arguments_slot`]).
+    stack_variables: Vec<(Option<oxc_semantic::SymbolId>, u32)>,
+    /// The stack slot of the arguments object of the function being
+    /// compiled, where it is kept in one, with the function's scope:
+    /// nothing finds it by its name then, and a reference to `arguments`
+    /// reads the slot.
+    arguments_slot: Option<(u32, oxc_semantic::ScopeId)>,
     /// GeneratorKind of the currently compiled code.
     ///
     /// This affects generator yield and return behaviour.
@@ -135,6 +142,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             is_call_optional_chain_this: false,
             control_flow_stack: Vec::new(),
             stack_variables: Vec::new(),
+            arguments_slot: None,
             generator_kind: None,
             runtime_strict: false,
             unsupported: None,
@@ -427,8 +435,48 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     pub(super) fn get_variable_stack_index(&self, symbol: oxc_semantic::SymbolId) -> Option<u32> {
         self.stack_variables
             .iter()
-            .find(|(s, _)| *s == symbol)
+            .find(|(s, _)| *s == Some(symbol))
             .map(|(_, i)| *i)
+    }
+
+    /// The stack slot that a reference to `arguments` reads, where the
+    /// arguments object of the function being compiled is kept in one and
+    /// the reference is to it. `declared` is the symbol that the semantic
+    /// analysis resolved the reference to, if any: it knows nothing of the
+    /// arguments object, so a name `arguments` declared outside the
+    /// function (a `var arguments` of the script or of an enclosing
+    /// function) is what it finds for a reference that is to the function's
+    /// own arguments object. Only a declaration inside the function, in a
+    /// block of it, is something else.
+    pub(super) fn arguments_slot(&self, declared: Option<oxc_semantic::SymbolId>) -> Option<u32> {
+        let (slot, function_scope) = self.arguments_slot?;
+        if let Some(symbol) = declared {
+            let scoping = self.scoping();
+            let mut scope = Some(scoping.symbol_scope_id(symbol));
+            while let Some(current) = scope {
+                if current == function_scope {
+                    return None;
+                }
+                scope = scoping.scope_parent_id(current);
+            }
+        }
+        Some(slot)
+    }
+
+    /// Keeps the arguments object of the function whose scope is
+    /// `function_scope`, which is in the result register, in a stack slot of
+    /// its own for the rest of the function.
+    pub(super) fn push_arguments_stack_variable(
+        &mut self,
+        function_scope: oxc_semantic::ScopeId,
+    ) -> StackVariable {
+        self.add_instruction(Instruction::Load);
+        let idx = self.executable.push_stack();
+        self.stack_variables.push((None, idx));
+        self.arguments_slot = Some((idx, function_scope));
+        self.control_flow_stack
+            .push(ControlFlowStackEntry::StackValue);
+        StackVariable
     }
 
     /// Generate a StackValue from thin air to mark an existing value on the
@@ -488,7 +536,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             self.add_instruction_with_constant(Instruction::LoadConstant, Value::Undefined);
         }
         let idx = self.executable.push_stack();
-        self.stack_variables.push((symbol, idx));
+        self.stack_variables.push((Some(symbol), idx));
         self.control_flow_stack
             .push(ControlFlowStackEntry::StackValue);
         StackVariable
@@ -502,7 +550,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         symbol: oxc_semantic::SymbolId,
     ) -> StackVariable {
         let idx = self.executable.push_stack();
-        self.stack_variables.push((symbol, idx));
+        self.stack_variables.push((Some(symbol), idx));
         self.control_flow_stack
             .push(ControlFlowStackEntry::StackValue);
         StackVariable
@@ -513,7 +561,9 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         core::mem::forget(var);
         let entry = self.control_flow_stack.pop();
         debug_assert!(matches!(entry, Some(ControlFlowStackEntry::StackValue)));
-        self.stack_variables.pop().unwrap();
+        if let Some((None, _)) = self.stack_variables.pop() {
+            self.arguments_slot = None;
+        }
         self.executable.pop_stack();
         if self.is_unreachable() {
             // OPTIMISATION: We don't need to add exit handling if this line is

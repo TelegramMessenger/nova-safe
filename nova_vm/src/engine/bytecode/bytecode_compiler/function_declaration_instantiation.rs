@@ -196,6 +196,21 @@ pub(crate) fn instantiation<'s>(
             ctx.scope_contains_direct_eval(func.scope_id()) || environment_use.arguments;
     }
 
+    // The arguments object is a binding named "arguments" of the function's
+    // Environment Record, for whatever looks the name up there. Where
+    // nothing can (no arrow function in the function refers to it, there is
+    // no direct eval, and the function declares nothing of that name that a
+    // reference would resolve to instead), the object is kept in a stack
+    // slot, and a reference to `arguments` in the function's own code reads
+    // the slot. The arguments object is never a mapped one here, so the
+    // parameters are not tied to it either way.
+    let arguments_in_slot = arguments_object_needed
+        && !environment_use.arguments_by_name
+        && !ctx.scope_contains_direct_eval(func.scope_id())
+        && !ctx
+            .scoping()
+            .scope_has_binding(func.scope_id(), Ident::new_const("arguments"));
+
     // 5. Let parameterNames be the BoundNames of formals.
     // 6. If parameterNames has any duplicate entries, let hasDuplicates be
     //    true. Otherwise, let hasDuplicates be false.
@@ -325,8 +340,10 @@ pub(crate) fn instantiation<'s>(
         // in non-strict mode.
         ctx.add_instruction(Instruction::CreateUnmappedArgumentsObject);
 
-        // c. If strict is true, then
-        if strict {
+        if arguments_in_slot {
+            stack_variables.push(ctx.push_arguments_stack_variable(func.scope_id()));
+        } else if strict {
+            // c. If strict is true, then
             // i. Perform ! env.CreateImmutableBinding("arguments", false).
             // ii. NOTE: In strict mode code early errors prevent attempting to
             //     assign to this binding, so its mutability is not observable.
@@ -343,12 +360,14 @@ pub(crate) fn instantiation<'s>(
             );
         }
 
-        // e. Perform ! env.InitializeBinding("arguments", ao).
-        ctx.add_instruction_with_identifier(
-            Instruction::ResolveBinding,
-            BUILTIN_STRING_MEMORY.arguments.to_property_key(),
-        );
-        ctx.add_instruction(Instruction::InitializeReferencedBinding);
+        if !arguments_in_slot {
+            // e. Perform ! env.InitializeBinding("arguments", ao).
+            ctx.add_instruction_with_identifier(
+                Instruction::ResolveBinding,
+                BUILTIN_STRING_MEMORY.arguments.to_property_key(),
+            );
+            ctx.add_instruction(Instruction::InitializeReferencedBinding);
+        }
 
         // f. Let parameterBindings be the list-concatenation of parameterNames
         //    and « "arguments" ».

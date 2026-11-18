@@ -1182,7 +1182,18 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
         let kind = if let Some(id) = self.reference_id.get() {
             let scoping = ctx.scoping();
             let reference = scoping.get_reference(id);
-            if let Some(s) = reference.symbol_id() {
+            if self.name == "arguments"
+                && let Some(stack_slot) = ctx.arguments_slot(reference.symbol_id())
+            {
+                // The arguments object of the function being compiled, kept
+                // in a stack slot that is filled before any of the
+                // function's code runs. The name may be assigned to where
+                // code is not strict.
+                VariableKind::Stack {
+                    stack_slot,
+                    mutable: true,
+                }
+            } else if let Some(s) = reference.symbol_id() {
                 // SymbolId means we might be a global, local, or a stack
                 // variable.
                 let symbol_flags = scoping.symbol_flags(s);
