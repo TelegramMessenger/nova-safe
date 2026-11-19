@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{
@@ -48,6 +49,34 @@ impl Builtin for StringRaw {
 }
 impl StringConstructor {
     /// ### [22.1.1.1 String ( value )](https://tc39.es/ecma262/#sec-string-constructor-string-value)
+    /// Whether `function` is the String constructor, a call of which the
+    /// interpreter may run in place.
+    pub(crate) fn is_constructor(function: crate::ecmascript::ConstructorFn) -> bool {
+        core::ptr::fn_addr_eq(
+            function,
+            Self::constructor as crate::ecmascript::ConstructorFn,
+        )
+    }
+
+    /// `String(value)` of a primitive that is not a Symbol, or of nothing;
+    /// None otherwise.
+    pub(crate) fn call_directly<'gc>(
+        agent: &mut Agent,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        let Some(&value) = arguments.first() else {
+            return Some(String::EMPTY_STRING.into());
+        };
+        let primitive = crate::ecmascript::Primitive::try_from(value).ok()?;
+        if matches!(primitive, crate::ecmascript::Primitive::Symbol(_)) {
+            return None;
+        }
+        crate::ecmascript::to_string_primitive(agent, primitive, gc)
+            .ok()
+            .map(Value::from)
+    }
+
     fn constructor<'gc>(
         agent: &mut Agent,
         _this_value: Value,
@@ -341,7 +370,7 @@ impl StringConstructor {
                 // 6. Let R be the empty String.
                 // The result grows as literals come: `literalCount` is the
                 // script's word only.
-                let mut r = Wtf8Buf::with_capacity((literal_count as usize).min(1024));
+                let mut r = Wtf8Buf::with_capacity(usize_from_i64(literal_count).min(1024));
 
                 // 7. Let nextIndex be 0.
                 // 8. Repeat,

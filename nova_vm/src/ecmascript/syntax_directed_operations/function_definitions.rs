@@ -388,7 +388,9 @@ pub(crate) fn evaluate_generator_body<'gc>(
         ExecutionResult::Throw(err) => {
             return Err(err.unbind().bind(gc.into_nogc()));
         }
-        ExecutionResult::Yield { vm, yielded_value } => {
+        ExecutionResult::Yield {
+            vm, yielded_value, ..
+        } => {
             debug_assert!(yielded_value.is_undefined());
             vm
         }
@@ -405,11 +407,13 @@ pub(crate) fn evaluate_generator_body<'gc>(
         .heap
         .create(GeneratorHeapData {
             object_index: None,
-            generator_state: Some(GeneratorState::SuspendedStart(SuspendedGeneratorState {
-                vm,
-                executable: exe.take(agent),
-                execution_context: agent.running_execution_context().clone(),
-            })),
+            generator_state: Some(GeneratorState::SuspendedStart(Box::new(
+                SuspendedGeneratorState {
+                    vm,
+                    executable: exe.take(agent),
+                    execution_context: Some(agent.running_execution_context().clone()),
+                },
+            ))),
         })
         .bind(gc.nogc());
     ordinary_populate_from_constructor(
@@ -456,7 +460,9 @@ pub(crate) fn evaluate_async_generator_body<'gc>(
         ExecutionResult::Throw(err) => {
             return Err(err.unbind().bind(gc.into_nogc()));
         }
-        ExecutionResult::Yield { vm, yielded_value } => {
+        ExecutionResult::Yield {
+            vm, yielded_value, ..
+        } => {
             debug_assert!(yielded_value.is_undefined());
             vm
         }

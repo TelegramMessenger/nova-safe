@@ -41,8 +41,8 @@ static void host(void *context, uint32_t id, const nova_arg *args, size_t argc, 
     } else if (id == 3) {
         nova_return_null(ret);
     } else if (id == 4) {
-        static const char reason[] = "refused by C";
-        nova_return_range_error(ret, (const uint8_t *)reason, sizeof reason - 1);
+        static const char refusal[] = "too long";
+        nova_return_range_error(ret, (const uint8_t *)refusal, sizeof refusal - 1);
     } else if (id == 5) {
         static const uint8_t lone[] = {'x', 0xED, 0xA0, 0x80};
         nova_return_string(ret, lone, sizeof lone);
@@ -90,6 +90,14 @@ int main(void) {
     assert(eval(engine, "__n() === null ? 1 : 0", &out) == NOVA_OK);
     assert(out.kind == NOVA_VALUE_NUMBER && out.number == 1);
 
+    assert(nova_engine_register(engine, (const uint8_t *)"__r", 3, 4, 0, NOVA_ARGS_VALUES, NULL) == NOVA_OK);
+    assert(eval(engine, "try { __r(); 'returned' } catch (e) { (e instanceof RangeError) + ' ' + e.message }", &out) == NOVA_OK);
+    expect_string(&out, "true too long");
+    nova_result_free(&out);
+    assert(eval(engine, "__r()", &out) == NOVA_EXCEPTION);
+    expect_string(&out, "RangeError: too long");
+    nova_result_free(&out);
+
     assert(eval(engine, "function f(a, b) { return a + b; } globalThis.log = []; Promise.resolve().then(() => log.push('job'));", &out) == NOVA_OK);
     assert(nova_engine_has_pending_job(engine));
     bool ran = false;
@@ -118,14 +126,7 @@ int main(void) {
     assert(nova_engine_set_memory_limit(engine, 16u << 20) == NOVA_OK);
     (void)nova_engine_memory_used(engine);
 
-    assert(nova_engine_register(engine, (const uint8_t *)"__throws", 8, 4, 0, NOVA_ARGS_VALUES, &out) == NOVA_OK);
     assert(nova_engine_register(engine, (const uint8_t *)"__lone", 6, 5, 0, NOVA_ARGS_VALUES, &out) == NOVA_OK);
-    assert(eval(engine, "try { __throws(); 'returned' } catch (e) { e.name + ': ' + e.message }", &out) == NOVA_OK);
-    expect_string(&out, "RangeError: refused by C");
-    nova_result_free(&out);
-    assert(eval(engine, "__throws()", &out) == NOVA_EXCEPTION);
-    expect_string(&out, "RangeError: refused by C");
-    nova_result_free(&out);
     assert(eval(engine, "var s = __lone(); s.length + ':' + s.charCodeAt(1).toString(16)", &out) == NOVA_OK);
     expect_string(&out, "2:d800");
     nova_result_free(&out);

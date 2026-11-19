@@ -10,9 +10,9 @@ use crate::{
         InternalMethods, JsResult, Object, PrimitiveObjectData, PropertyKey, PropertyLookupCache,
         Realm, String, TryError, TryGetResult, Value, builders::OrdinaryObjectBuilder,
         handle_try_get_result, has_own_property, invoke, is_array, is_prototype_of_loop, to_object,
-        to_property_key_complex, to_property_key_simple, try_get,
+        to_property_key_complex, to_property_key_simple, try_get, try_has_own_property,
     },
-    engine::{Bindable, GcScope, Scopable},
+    engine::{Bindable, GcScope, NoGcScope, Scopable},
     heap::{ArenaAccess, IntrinsicFunctionIndexes, WellKnownSymbols},
 };
 
@@ -94,6 +94,32 @@ fn to_property_key_keeping_this<'gc>(
 }
 
 impl ObjectPrototype {
+    /// Whether `function` is Object.prototype.hasOwnProperty, which the
+    /// interpreter may run in place.
+    pub(crate) fn is_has_own_property(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(
+            function,
+            Self::has_own_property as crate::ecmascript::RegularFn,
+        )
+    }
+
+    /// `hasOwnProperty` of an object for a key that is one as it is, where
+    /// the object answers without running anything; None otherwise.
+    pub(crate) fn has_own_property_directly<'gc>(
+        agent: &mut Agent,
+        this: Value<'gc>,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        // No object is made of a primitive here, and no key of an object.
+        let object = Object::try_from(this).ok()?;
+        let key = to_property_key_simple(agent, *arguments.first()?, gc)?;
+        match try_has_own_property(agent, object, key, None, gc) {
+            ControlFlow::Continue(found) => Some(found.into()),
+            ControlFlow::Break(_) => None,
+        }
+    }
+
     fn has_own_property<'gc>(
         agent: &mut Agent,
         this_value: Value,

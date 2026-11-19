@@ -225,7 +225,9 @@ pub(super) fn resume_handle_result(
             async_generator_drain_queue(agent, scoped_generator, gc.reborrow());
             // l. Return undefined.
         }
-        ExecutionResult::Yield { vm, yielded_value } => {
+        ExecutionResult::Yield {
+            vm, yielded_value, ..
+        } => {
             // 27.5.3.7 Yield ( value )
             // If generatorKind is async, return ? AsyncGeneratorYield(? Await(value)).
             // NOTE: Await is performed in the bytecode.

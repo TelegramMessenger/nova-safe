@@ -35,10 +35,20 @@ pub(crate) struct Caches<'a> {
     /// text. Not a root, and emptied by every collection: a collection
     /// moves keys and caches, and drops the caches nothing else holds.
     recent: [Option<(PropertyKey<'a>, PropertyLookupCache<'a>)>; RECENT_CACHES],
+    /// The Object Shape of an arguments object of so many arguments, with
+    /// the %Object.prototype% it is the shape under. An arguments object is
+    /// made at every call of a function that uses one, and its shape was
+    /// found by one transition for each of its properties, every time. Not
+    /// a root, and emptied by every collection, as `recent` is.
+    arguments_shapes: [Option<(Object<'a>, ObjectShape<'a>)>; ARGUMENTS_SHAPES],
 }
 
 /// How many caches [`Caches::recent`] has places for.
 const RECENT_CACHES: usize = 64;
+
+/// Arguments objects of fewer arguments than this have their shape kept
+/// ([`Caches::arguments_shape`]).
+const ARGUMENTS_SHAPES: usize = 9;
 
 /// The first of the two places of `key` in [`Caches::recent`]; the other
 /// is the one beside it.
@@ -64,6 +74,30 @@ impl<'a> Caches<'a> {
             // property_lookup_cache_stack: Vec::with_capacity(64),
             current_cache_to_populate: None,
             recent: [None; RECENT_CACHES],
+            arguments_shapes: [None; ARGUMENTS_SHAPES],
+        }
+    }
+
+    /// The Object Shape of an arguments object of `len` arguments under
+    /// `prototype`, if one was made since the last collection.
+    #[inline]
+    pub(crate) fn arguments_shape(&self, prototype: Object, len: usize) -> Option<ObjectShape<'a>> {
+        match self.arguments_shapes.get(len) {
+            Some(Some((kept, shape))) if *kept == prototype.unbind() => Some(*shape),
+            _ => None,
+        }
+    }
+
+    /// Keeps `shape` for [`Caches::arguments_shape`].
+    #[inline]
+    pub(crate) fn set_arguments_shape(
+        &mut self,
+        prototype: Object,
+        len: usize,
+        shape: ObjectShape,
+    ) {
+        if let Some(place) = self.arguments_shapes.get_mut(len) {
+            *place = Some((prototype.unbind(), shape.unbind()));
         }
     }
 
@@ -94,6 +128,7 @@ impl<'a> Caches<'a> {
         addition_index: u32,
         gc: NoGcScope,
     ) {
+        agent.heap.intrinsic_shape_changes += 1;
         let o = o.unbind();
         let shape = shape.unbind();
         let key = key.unbind();
@@ -220,6 +255,7 @@ impl<'a> Caches<'a> {
         shape: ObjectShape,
         removal_index: u32,
     ) {
+        agent.heap.intrinsic_shape_changes += 1;
         let caches = &mut agent.heap.caches;
         let o = o.unbind();
         let shape = shape.unbind();
@@ -276,6 +312,34 @@ impl<'a> Caches<'a> {
         }
     }
 
+    /// Invalidate property lookup caches where the properties of an
+    /// intrinsic object were moved under its shape: private names were put
+    /// in front of them. Every cache that read a property of the object,
+    /// from the object itself or through a shape that inherits from it,
+    /// has the place the property was at. This happens once for an object
+    /// (a constructor that returns it to a class with private elements), so
+    /// every cache forgets what it found, whatever it was of.
+    pub(crate) fn invalidate_caches_on_intrinsic_shape_properties_moved(agent: &mut Agent) {
+        agent.heap.intrinsic_shape_changes += 1;
+        let caches = &mut agent.heap.caches;
+        for ((s, offset), proto) in caches
+            .property_lookup_caches
+            .iter_mut()
+            .zip(caches.property_lookup_cache_prototypes.iter_mut())
+            .flat_map(|(cache, prototypes)| {
+                cache
+                    .shapes
+                    .iter_mut()
+                    .zip(cache.offsets.iter_mut())
+                    .zip(prototypes.prototypes.iter_mut())
+            })
+        {
+            *s = None;
+            *offset = PropertyOffset(0);
+            *proto = None;
+        }
+    }
+
     /// Invalidate property lookup caches on intrinsic shape prototype change.
     ///
     /// When such a change happens, it means that:
@@ -297,6 +361,7 @@ impl<'a> Caches<'a> {
         new_prototype: Option<Object>,
         gc: NoGcScope,
     ) {
+        agent.heap.intrinsic_shape_changes += 1;
         // Find our invalidated Object's old prototypes.
         let mut prototype_chain = if let Some(proto) = old_prototype {
             let mut protos = vec![proto];
@@ -956,6 +1021,7 @@ impl HeapMarkAndSweep for Caches<'static> {
             current_cache_to_populate: current_property_lookup_cache,
             // Not a root: emptied when the heap is swept.
             recent: _,
+            arguments_shapes: _,
         } = self;
         // Note: we do not mark the caches in the lookup table; they're weakly
         // held.
@@ -976,9 +1042,11 @@ impl HeapMarkAndSweep for Caches<'static> {
             // property_lookup_cache_stack,
             current_cache_to_populate: current_property_lookup_cache,
             recent,
+            arguments_shapes,
         } = self;
         // Its keys and caches are of the heap before this collection.
         *recent = [None; RECENT_CACHES];
+        *arguments_shapes = [None; ARGUMENTS_SHAPES];
         property_lookup_cache_lookup_table.retain(|(key, cache)| {
             let Some(new_cache) = cache.sweep_weak_reference(compactions) else {
                 return false;
@@ -1070,5 +1138,97 @@ impl HeapMarkAndSweep for PropertyLookupCacheRecordPrototypes<'static> {
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let Self { prototypes } = self;
         prototypes.as_mut_slice().sweep_values(compactions);
+    }
+}
+
+/// That `length` of a TypedArray of one kind, in one Realm, is the accessor
+/// of %TypedArray%.prototype, as the last look found it by the property
+/// cache and the accessor it read from that prototype
+/// (`Vm::typed_array_length`), with what the heap counted then of
+/// everything that can make it otherwise.
+///
+/// A TypedArray with no properties of its own and the prototype of its kind
+/// has `length` from a walk of three objects whose shapes are changed in
+/// place: a property added to or removed from one of them, or a prototype
+/// of one changed, is counted
+/// ([`Heap::intrinsic_shape_changes`](crate::heap::Heap)); and the accessor
+/// found is that one until the property is defined again
+/// ([`Heap::descriptor_changes`](crate::heap::Heap)). While neither count
+/// has moved, the walk and the read of the accessor would find what they
+/// found. The Realm is a handle that a collection moves, so what was seen
+/// before one is not looked at after it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TypedArrayLengthSeen<K> {
+    kind: K,
+    realm: crate::ecmascript::Realm<'static>,
+    collections: u64,
+    shape_changes: u64,
+    descriptor_changes: u64,
+}
+
+impl<K: Copy + PartialEq> TypedArrayLengthSeen<K> {
+    /// What is seen now, for TypedArrays of `kind` in the running Realm.
+    pub(crate) fn now(agent: &Agent, kind: K) -> Self {
+        Self {
+            kind,
+            realm: agent.current_realm_id_internal(),
+            collections: agent.heap.collections,
+            shape_changes: agent.heap.intrinsic_shape_changes,
+            descriptor_changes: agent.heap.descriptor_changes,
+        }
+    }
+
+    /// Whether what was seen is what a look now, for TypedArrays of `kind`
+    /// in the running Realm, would see.
+    #[inline]
+    pub(crate) fn holds(self, agent: &Agent, kind: K) -> bool {
+        self.collections == agent.heap.collections
+            && self.shape_changes == agent.heap.intrinsic_shape_changes
+            && self.descriptor_changes == agent.heap.descriptor_changes
+            && self.kind == kind
+            && self.realm == agent.current_realm_id_internal()
+    }
+}
+
+/// The shape of the objects of one kind that have nothing of their own, in
+/// one Realm, as the last look found it (`Vm::inherited_property_value`).
+///
+/// A Map, a RegExp or a Uint8Array with no properties of its own has the
+/// prototype that the running Realm has for its kind, and the shape that
+/// the heap keeps for that prototype: one shape for each prototype, put in
+/// its table once and taken from it by a collection only. So the shape
+/// found for a kind in a Realm is the shape of that kind there until the
+/// next collection, which also moves the handles, and what was seen before
+/// one is not looked at after it. Finding it anew was the prototype asked
+/// of the Realm and the table searched by its hash, at every call of a
+/// method of a Map.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BareShapeSeen<K> {
+    kind: K,
+    realm: crate::ecmascript::Realm<'static>,
+    collections: u64,
+    shape: ObjectShape<'static>,
+}
+
+impl<K: Copy + PartialEq> BareShapeSeen<K> {
+    /// `shape` as what is seen now, for the objects of `kind` in the
+    /// running Realm.
+    pub(crate) fn now(agent: &Agent, kind: K, shape: ObjectShape) -> Self {
+        Self {
+            kind,
+            realm: agent.current_realm_id_internal(),
+            collections: agent.heap.collections,
+            shape: shape.unbind(),
+        }
+    }
+
+    /// The shape seen, if a look now, for the objects of `kind` in the
+    /// running Realm, would find it.
+    #[inline]
+    pub(crate) fn shape(self, agent: &Agent, kind: K) -> Option<ObjectShape<'static>> {
+        (self.collections == agent.heap.collections
+            && self.kind == kind
+            && self.realm == agent.current_realm_id_internal())
+        .then_some(self.shape)
     }
 }

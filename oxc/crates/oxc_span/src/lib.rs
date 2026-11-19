@@ -22,7 +22,9 @@ pub use source_type::{
 pub use span::{GetSpan, GetSpanMut, SPAN, Span};
 
 mod generated {
-    #[cfg(debug_assertions)]
+    // 64-bit only: the recorded 32-bit layouts are upstream's, for its own arena `Vec` (four words). Ours wraps
+    // std's (three words), so they do not hold on a 32-bit target, and nothing here depends on a layout.
+    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
     mod assert_layouts;
     mod derive_dummy;
     #[cfg(feature = "serialize")]

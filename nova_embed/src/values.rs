@@ -11,7 +11,7 @@ use nova_vm::{
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable},
 };
-use wtf8::Wtf8Buf;
+use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{ArgumentMode, Error, MAX_HOST_ARGUMENTS, Shared, hooks, limits};
 
@@ -56,15 +56,16 @@ pub enum HostReturn {
     Undefined,
     Null,
     String(String),
-    /// A string as WTF-8 (see [`HostArg::String`]), so that a lone surrogate
-    /// a script handed out comes back as it was; bytes that are not WTF-8
-    /// become U+FFFD.
-    Wtf8(Vec<u8>),
+    /// A string as bytes: UTF-8, or the WTF-8 of [`HostArg::String`] (a lone
+    /// surrogate as its own 3-byte sequence), so that a string the engine
+    /// handed out comes back unchanged. Any other byte that is not part of a
+    /// UTF-8 sequence becomes U+FFFD.
+    StringBytes(Vec<u8>),
     Number(f64),
     /// A new ArrayBuffer holding a copy of the bytes.
     ArrayBuffer(Vec<u8>),
-    /// The call throws a RangeError with this message, which the script can
-    /// catch like any other.
+    /// The call throws a RangeError with this message, which the script may
+    /// catch: how a host refuses an argument (one that is too long, say).
     RangeError(String),
 }
 
@@ -77,13 +78,63 @@ pub enum Completion {
     Number(f64),
 }
 
+/// A string from bytes a host hands in: UTF-8, or WTF-8 as the engine hands
+/// strings out (a lone surrogate as its own 3-byte sequence). Any other byte
+/// that is not part of a UTF-8 sequence becomes U+FFFD.
+pub(crate) fn string_from_bytes<'gc>(
+    agent: &mut Agent,
+    bytes: &[u8],
+    gc: NoGcScope<'gc, '_>,
+) -> JsString<'gc> {
+    match core::str::from_utf8(bytes) {
+        Ok(text) => JsString::from_str(agent, text, gc),
+        Err(_) => JsString::from_wtf8_buf(agent, wtf8_lossy(bytes), gc),
+    }
+}
+
+fn wtf8_lossy(bytes: &[u8]) -> Wtf8Buf {
+    let mut buf = Wtf8Buf::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let error = match core::str::from_utf8(rest) {
+            Ok(valid) => {
+                buf.push_str(valid);
+                break;
+            }
+            Err(error) => error,
+        };
+        let (valid, after) = rest.split_at(error.valid_up_to());
+        buf.push_str(&String::from_utf8_lossy(valid));
+        if let [0xED, second @ 0xA0..=0xBF, third @ 0x80..=0xBF, ..] = after {
+            // A surrogate as generalized UTF-8; `push` joins a trail
+            // surrogate with a lead one before it, as WTF-8 requires.
+            let code = 0xD000 | (u32::from(second & 0x3F) << 6) | u32::from(third & 0x3F);
+            match CodePoint::from_u32(code) {
+                Some(surrogate) => buf.push(surrogate),
+                None => buf.push_char('\u{FFFD}'),
+            }
+            rest = after.get(3..).unwrap_or(&[]);
+        } else {
+            buf.push_char('\u{FFFD}');
+            let skip = error.error_len().unwrap_or(after.len()).max(1);
+            rest = after.get(skip..).unwrap_or(&[]);
+        }
+    }
+    buf
+}
+
+/// Bytes of arguments that are copied for a host function without asking
+/// the limit: what any call may take.
+const COPIED_UNASKED: usize = 4096;
+
 fn number_of(agent: &Agent, value: Value) -> Option<f64> {
     Number::try_from(value)
         .ok()
         .map(|number| number.into_f64(agent))
 }
 
-fn typed_array_bytes(agent: &Agent, value: Value) -> Option<HostArg> {
+/// The kind of a TypedArray and the bytes of its elements where they are.
+fn typed_array_view<'a>(agent: &'a Agent, value: Value<'a>) -> Option<(TypedArrayKind, &'a [u8])> {
     let array = TypedArray::try_from(value).ok()?;
     let (kind, element_size) = match array {
         TypedArray::Int8Array(_) => (TypedArrayKind::Int8, 1),
@@ -113,11 +164,25 @@ fn typed_array_bytes(agent: &Agent, value: Value) -> Option<HostArg> {
             offset + available / element_size * element_size
         }
     };
-    let bytes = data.get(offset..end)?;
-    Some(HostArg::Bytes {
+    Some((kind, data.get(offset..end)?))
+}
+
+fn typed_array_bytes(agent: &Agent, value: Value) -> Option<HostArg> {
+    typed_array_view(agent, value).map(|(kind, bytes)| HostArg::Bytes {
         kind,
         bytes: bytes.to_vec(),
     })
+}
+
+/// How many bytes [`host_arg`] copies out of the heap for `value`.
+fn host_arg_bytes(agent: &Agent, value: Value, mode: ArgumentMode) -> usize {
+    if let Ok(string) = JsString::try_from(value) {
+        return string.len(agent);
+    }
+    if mode == ArgumentMode::ValuesAndBytes && number_of(agent, value).is_none() {
+        return typed_array_view(agent, value).map_or(0, |(_, bytes)| bytes.len());
+    }
+    0
 }
 
 fn host_arg(agent: &Agent, value: Value, mode: ArgumentMode) -> HostArg {
@@ -152,6 +217,16 @@ pub(crate) fn dispatch<'gc>(
         return Ok(Value::Undefined);
     };
     let count = args.len().min(MAX_HOST_ARGUMENTS);
+    // The host is handed copies: of up to eight strings or buffers, each as
+    // long as the script made it, and one string or buffer may be all eight.
+    // They are asked of the limit together before any is made, as one
+    // allocation of their size is.
+    let copied = (0..count).fold(0usize, |bytes, index| {
+        bytes.saturating_add(host_arg_bytes(agent, args.get(index), slot.mode))
+    });
+    if copied > COPIED_UNASKED {
+        agent.check_allocation(copied, gc)?;
+    }
     let mut converted = Vec::with_capacity(count);
     for index in 0..count {
         converted.push(host_arg(agent, args.get(index), slot.mode));
@@ -169,29 +244,17 @@ fn to_value<'gc>(
         HostReturn::Undefined => Value::Undefined,
         HostReturn::Null => Value::Null,
         HostReturn::String(text) => JsString::from_string(agent, text, gc).into(),
-        HostReturn::Wtf8(bytes) => string_from_wtf8(agent, &bytes, gc).into(),
-        HostReturn::RangeError(message) => {
-            return Err(agent.throw_exception(ExceptionType::RangeError, message, gc));
-        }
+        HostReturn::StringBytes(bytes) => string_from_bytes(agent, &bytes, gc).into(),
         HostReturn::Number(number) => Number::from_f64(agent, number, gc).into(),
         HostReturn::ArrayBuffer(bytes) => {
             let buffer = ArrayBuffer::new(agent, bytes.len(), gc)?;
             buffer.as_mut_slice(agent).copy_from_slice(&bytes);
             buffer.into()
         }
+        HostReturn::RangeError(message) => {
+            return Err(agent.throw_exception(ExceptionType::RangeError, message, gc));
+        }
     })
-}
-
-/// A string from bytes that should be WTF-8 ([`Wtf8Buf::from_bytes_lossy`]).
-pub(crate) fn string_from_wtf8<'gc>(
-    agent: &mut Agent,
-    bytes: &[u8],
-    gc: NoGcScope<'gc, '_>,
-) -> JsString<'gc> {
-    match core::str::from_utf8(bytes) {
-        Ok(text) => JsString::from_str(agent, text, gc),
-        Err(_) => JsString::from_wtf8_buf(agent, Wtf8Buf::from_bytes_lossy(bytes), gc),
-    }
 }
 
 /// `globalThis[name]`; getters run.

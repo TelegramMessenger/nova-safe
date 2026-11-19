@@ -4,7 +4,7 @@
 
 //! An estimate of the bytes the heap holds, for the heap limit.
 
-use core::mem::size_of;
+use core::mem::{size_of, size_of_val};
 
 use super::Heap;
 use crate::ecmascript::{GeneratorState, PropertyKey, Value};
@@ -71,7 +71,7 @@ impl Heap {
             }
         }
         for executable in self.executables.iter() {
-            total += executable.instructions.len()
+            total += executable.instructions.padded().len()
                 + executable.tables.heap_bytes()
                 + vec_bytes(&executable.shapes)
                 + vec_bytes(&executable.function_expressions)
@@ -94,7 +94,7 @@ impl Heap {
                 GeneratorState::SuspendedStart(state) | GeneratorState::SuspendedYield(state),
             ) = &generator.generator_state
             {
-                total += state.vm.heap_bytes();
+                total += state.vm.heap_bytes() + size_of_val(&**state);
             }
         }
         for reaction in self.await_reactions.iter() {
@@ -146,7 +146,7 @@ impl Heap {
             e2pow12, k2pow12, 1usize << 12;
             e2pow16, k2pow16, 1usize << 16;
             e2pow24, k2pow24, 1usize << 24;
-            e2pow32, k2pow32, 1usize << 32;
+            e2pow32, k2pow32, crate::heap::element_array::LARGEST_CLASS_SLOTS;
         }
         total
     }

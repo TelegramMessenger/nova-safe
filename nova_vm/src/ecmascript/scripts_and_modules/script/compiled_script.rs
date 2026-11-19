@@ -49,7 +49,7 @@ use crate::{
 use small_string::SmallString;
 
 use super::{GlobalDeclarations, HostDefined, Script, ScriptRecord};
-use crate::engine::{CallEnvironment, CodeTables, SwitchTable};
+use crate::engine::{Bytecode, CallEnvironment, CodeTables, SwitchTable};
 
 /// Why a script could not be exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,7 +184,7 @@ struct CompiledArrowFunctionExpression {
 
 #[derive(PartialEq)]
 struct CompiledExecutable {
-    instructions: Arc<[u8]>,
+    instructions: Bytecode,
     /// Indices into [`CompiledScript::caches`].
     caches: Box<[u32]>,
     constants: Box<[CompiledValue]>,

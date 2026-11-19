@@ -18,7 +18,9 @@ use crate::{
     heap::HeapIndexHandle,
 };
 use core::ops::{Index, IndexMut};
-use std::collections::{TryReserveError, hash_map::Entry};
+use std::collections::TryReserveError;
+
+pub(crate) use descriptor_table::{DescriptorEntry, DescriptorTable};
 
 /// Shared access to an element storage.
 pub(crate) struct ElementStorageRef<'a, 'gc> {
@@ -36,13 +38,13 @@ impl ElementStorageRef<'_, '_> {
 /// Exclusive access to an element storage.
 pub(crate) struct ElementStorageMut<'a> {
     pub values: &'a mut [Option<Value<'static>>],
-    pub descriptors: Entry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
+    pub descriptors: DescriptorEntry<'a>,
 }
 /// Exclusive access to a full element storage, including uninitialised
 /// elements.
 pub(crate) struct ElementStorageUninit<'a> {
     pub values: &'a mut [Option<Value<'static>>],
-    pub descriptors: Entry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
+    pub descriptors: DescriptorEntry<'a>,
 }
 
 /// Shared access to an object's property storage.
@@ -76,7 +78,7 @@ impl<'a, 'gc> PropertyStorageRef<'a, 'gc> {
 pub(crate) struct PropertyStorageMut<'a, 'gc> {
     pub keys: &'a [PropertyKey<'gc>],
     pub values: &'a mut [Option<Value<'static>>],
-    pub descriptors: Entry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
+    pub descriptors: DescriptorEntry<'a>,
 }
 
 impl<'a, 'gc> PropertyStorageMut<'a, 'gc> {
@@ -302,8 +304,16 @@ impl<'gc> ElementsVector<'gc> {
             }
             true
         } else {
-            // No descriptors, no value: That's a hole.
-            values.iter().all(|e| e.is_some())
+            // No descriptors, no value: That's a hole. Looked for a block of
+            // elements at a time, with no way out inside a block: `shift`
+            // and `splice` ask this of the whole Array at every call, and a
+            // loop that can stop at every element is not one the compiler
+            // makes wide.
+            values.chunks(64).all(|block| {
+                block
+                    .iter()
+                    .fold(true, |dense, value| dense & value.is_some())
+            })
         }
     }
 
@@ -1682,7 +1692,7 @@ impl<const N: usize> IndexMut<PropertyKeyIndex<'_>> for StridedVec<PropertyKey<'
 #[derive(Debug)]
 pub(crate) struct ElementArray<const N: usize> {
     pub values: StridedVec<Option<Value<'static>>, N>,
-    pub descriptors: AHashMap<ElementIndex<'static>, ElementDescriptorMap<'static>>,
+    pub descriptors: DescriptorTable,
 }
 
 /// Element storages with more slots than this keep only the slots in use
@@ -1753,15 +1763,9 @@ impl<const N: usize> ElementArray<N> {
         let Some(slot @ Some(_)) = self.values[index][0..len as usize].get_mut(offset) else {
             return false;
         };
-        // Few storages have descriptors: none is looked for where there is
-        // none at all.
-        if !self.descriptors.is_empty()
-            && self
-                .descriptors
-                .get(&index.unbind())
-                .and_then(|descriptors| descriptors.get(&(offset as u32)))
-                .is_some_and(|descriptor| descriptor.is_writable() != Some(true))
-        {
+        // Few storages have descriptors, and the table knows which without
+        // a search.
+        if self.descriptors.forbids_write(index, offset as u32) {
             return false;
         }
         *slot = Some(value);
@@ -1908,8 +1912,20 @@ pub(crate) type ElementArray2Pow12 = ElementArray<4096>;
 pub(crate) type ElementArray2Pow16 = ElementArray<65536>;
 /// Element arrays of up to 16777216 elements
 pub(crate) type ElementArray2Pow24 = ElementArray<16777216>;
+/// Slots of the largest size class: 2^32. On a 32-bit target, where a `usize`
+/// cannot hold 2^32, it is 2^31, the largest power of two that fits. The
+/// storages of this class are dynamic (they hold only the slots in use), so
+/// this is an upper bound and nothing else, and 2^31 slots of eight bytes
+/// each do not fit a 32-bit address space anyway: an allocation that large
+/// fails before the bound is reached.
+#[cfg(target_pointer_width = "64")]
+pub(crate) const LARGEST_CLASS_SLOTS: usize = 1 << 32;
+#[cfg(not(target_pointer_width = "64"))]
+pub(crate) const LARGEST_CLASS_SLOTS: usize = 1 << (usize::BITS - 1);
+const _LARGEST_CLASS_IS_DYNAMIC: () = assert!(LARGEST_CLASS_SLOTS > DYNAMIC_STORAGE_SLOTS);
+
 /// Element arrays of up to 4294967296 elements
-pub(crate) type ElementArray2Pow32 = ElementArray<4294967296>;
+pub(crate) type ElementArray2Pow32 = ElementArray<LARGEST_CLASS_SLOTS>;
 
 /// The value of a key slot past the keys of every shape using the storage. It
 /// is a Private Name that is never handed out: `Agent::create_private_names`
@@ -2057,7 +2073,7 @@ pub(crate) type PropertyKeyArray2Pow16 = PropertyKeyArray<65536>;
 /// Property key arrays of up to 16777216 elements
 pub(crate) type PropertyKeyArray2Pow24 = PropertyKeyArray<16777216>;
 /// Property key arrays of up to 4294967296 elements
-pub(crate) type PropertyKeyArray2Pow32 = PropertyKeyArray<4294967296>;
+pub(crate) type PropertyKeyArray2Pow32 = PropertyKeyArray<LARGEST_CLASS_SLOTS>;
 
 #[derive(Debug)]
 pub(crate) struct ElementArrays {
@@ -2146,7 +2162,7 @@ impl KeyOffsets {
         key: PropertyKey,
     ) -> Option<usize> {
         if keys.len() < KEY_OFFSETS_MIN_LEN {
-            return keys.iter().position(|k| *k == key);
+            return key.position_in(keys);
         }
         let hasher = &self.hasher;
         let mut storages = self.storages.borrow_mut();
@@ -4810,5 +4826,333 @@ impl AsRef<ElementArrays> for ElementArrays {
 impl AsMut<ElementArrays> for ElementArrays {
     fn as_mut(&mut self) -> &mut ElementArrays {
         self
+    }
+}
+
+/// The descriptors of the element storages of one capacity, and which of
+/// the storages have any.
+mod descriptor_table {
+    use super::{ElementDescriptorMap, ElementIndex};
+    use crate::{engine::Bindable, hashing::AHashMap, heap::HeapIndexHandle};
+    use core::cell::Cell;
+    use std::collections::{
+        TryReserveError,
+        hash_map::{Entry, OccupiedEntry, VacantEntry},
+    };
+
+    type Map = AHashMap<ElementIndex<'static>, ElementDescriptorMap<'static>>;
+
+    /// The descriptors of the element storages of one capacity: for a
+    /// storage that has properties or elements that are not plain data
+    /// (writable, enumerable and configurable), those of its slots that
+    /// are not.
+    ///
+    /// Few storages have any, and every write of a property by its cache
+    /// asks whether the slot it writes has one that forbids the write:
+    /// searching the map for the storage by its hash each time was a
+    /// fifth of an assignment to a global variable in a loop, and a tenth
+    /// of a loop writing the properties of plain objects. So the table
+    /// keeps a bit for every storage that has descriptors (`described`),
+    /// and the slot it last found writable in one that has
+    /// (`writable_seen`).
+    ///
+    /// Both are kept right by this type alone. The map is reached from
+    /// nowhere else: a storage gets its first descriptors through
+    /// [`DescriptorTable::insert`] or a [`VacantDescriptors`], which set
+    /// its bit, and whatever the collector does to the map
+    /// ([`DescriptorTable::rebuild_with`]) is followed by setting the
+    /// bits anew. A bit may stay set for a storage whose descriptors were
+    /// taken away, which costs the search and nothing else. And every way
+    /// to change a descriptor needs the table exclusively, which forgets
+    /// the slot seen.
+    #[derive(Debug, Default)]
+    pub(crate) struct DescriptorTable {
+        map: Map,
+        /// Bit `i` is set if the storage at index `i` has an entry in
+        /// `map`, and may be set if it has none.
+        described: Vec<u64>,
+        /// A storage that has descriptors and a slot of it that none of
+        /// them forbids writing to, as last looked up.
+        writable_seen: Cell<Option<(ElementIndex<'static>, u32)>>,
+    }
+
+    impl DescriptorTable {
+        /// Whether the storage at `index` may have descriptors.
+        #[inline(always)]
+        fn is_described(&self, index: ElementIndex) -> bool {
+            let index = index.get_index();
+            self.described
+                .get(index / 64)
+                .is_some_and(|word| word & (1 << (index % 64)) != 0)
+        }
+
+        fn describe(described: &mut Vec<u64>, index: ElementIndex) {
+            let index = index.get_index();
+            let word = index / 64;
+            if word >= described.len() {
+                described.resize(word + 1, 0);
+            }
+            described[word] |= 1 << (index % 64);
+        }
+
+        /// The descriptors of the storage at `index`, if it has any.
+        #[inline]
+        pub(crate) fn get(&self, index: &ElementIndex) -> Option<&ElementDescriptorMap<'static>> {
+            if !self.is_described(*index) {
+                return None;
+            }
+            self.map.get(&index.unbind())
+        }
+
+        /// Whether the slot at `offset` of the storage at `index` has a
+        /// descriptor that is not one of a writable data property: an
+        /// assignment does not simply write such a slot.
+        #[inline(always)]
+        pub(crate) fn forbids_write(&self, index: ElementIndex, offset: u32) -> bool {
+            if !self.is_described(index) {
+                return false;
+            }
+            self.described_forbids_write(index.unbind(), offset)
+        }
+
+        #[inline]
+        fn described_forbids_write(&self, index: ElementIndex<'static>, offset: u32) -> bool {
+            if self.writable_seen.get() == Some((index, offset)) {
+                return false;
+            }
+            let forbidden = self
+                .map
+                .get(&index)
+                .and_then(|descriptors| descriptors.get(&offset))
+                .is_some_and(|descriptor| descriptor.is_writable() != Some(true));
+            if !forbidden {
+                self.writable_seen.set(Some((index, offset)));
+            }
+            forbidden
+        }
+
+        pub(crate) fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+            self.map.try_reserve(additional)
+        }
+
+        /// Gives the storage at `index` these descriptors; returns the ones
+        /// it had.
+        pub(crate) fn insert(
+            &mut self,
+            index: ElementIndex<'static>,
+            descriptors: ElementDescriptorMap<'static>,
+        ) -> Option<ElementDescriptorMap<'static>> {
+            *self.writable_seen.get_mut() = None;
+            Self::describe(&mut self.described, index);
+            self.map.insert(index, descriptors)
+        }
+
+        /// The place of the descriptors of the storage at `index`, to read,
+        /// change, remove or give it some.
+        #[inline]
+        pub(crate) fn entry(&mut self, index: ElementIndex<'static>) -> DescriptorEntry<'_> {
+            *self.writable_seen.get_mut() = None;
+            match self.map.entry(index) {
+                Entry::Occupied(entry) => DescriptorEntry::Occupied(entry),
+                Entry::Vacant(entry) => DescriptorEntry::Vacant(VacantDescriptors {
+                    entry,
+                    described: &mut self.described,
+                }),
+            }
+        }
+
+        /// Lets `change` do anything to the map (the collector removes the
+        /// storages that are gone and moves the others), and sets the bits
+        /// for what it left.
+        pub(crate) fn rebuild_with(&mut self, change: impl FnOnce(&mut Map)) {
+            *self.writable_seen.get_mut() = None;
+            change(&mut self.map);
+            self.described.clear();
+            for index in self.map.keys() {
+                Self::describe(&mut self.described, *index);
+            }
+        }
+    }
+
+    /// The place of the descriptors of one storage in a
+    /// [`DescriptorTable`], as an entry of a map is: there, or not.
+    pub(crate) enum DescriptorEntry<'a> {
+        Occupied(OccupiedEntry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>),
+        Vacant(VacantDescriptors<'a>),
+    }
+
+    /// The place for the descriptors of a storage that has none.
+    pub(crate) struct VacantDescriptors<'a> {
+        entry: VacantEntry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
+        described: &'a mut Vec<u64>,
+    }
+
+    impl<'a> VacantDescriptors<'a> {
+        pub(crate) fn insert(
+            self,
+            descriptors: ElementDescriptorMap<'static>,
+        ) -> &'a mut ElementDescriptorMap<'static> {
+            DescriptorTable::describe(self.described, *self.entry.key());
+            self.entry.insert(descriptors)
+        }
+    }
+
+    impl<'a> DescriptorEntry<'a> {
+        pub(crate) fn or_insert_with(
+            self,
+            make: impl FnOnce() -> ElementDescriptorMap<'static>,
+        ) -> &'a mut ElementDescriptorMap<'static> {
+            match self {
+                Self::Occupied(entry) => entry.into_mut(),
+                Self::Vacant(entry) => entry.insert(make()),
+            }
+        }
+
+        pub(crate) fn or_insert(
+            self,
+            descriptors: ElementDescriptorMap<'static>,
+        ) -> &'a mut ElementDescriptorMap<'static> {
+            self.or_insert_with(|| descriptors)
+        }
+
+        pub(crate) fn or_default(self) -> &'a mut ElementDescriptorMap<'static> {
+            self.or_insert_with(ElementDescriptorMap::default)
+        }
+
+        /// Gives the storage these descriptors in place of any it had.
+        pub(crate) fn insert_entry(
+            self,
+            descriptors: ElementDescriptorMap<'static>,
+        ) -> OccupiedEntry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>> {
+            match self {
+                Self::Occupied(mut entry) => {
+                    entry.insert(descriptors);
+                    entry
+                }
+                Self::Vacant(entry) => {
+                    DescriptorTable::describe(entry.described, *entry.entry.key());
+                    entry.entry.insert_entry(descriptors)
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{DescriptorEntry, DescriptorTable};
+        use crate::heap::{
+            ElementIndex, HeapIndexHandle,
+            element_array::{ElementDescriptor, ElementDescriptorMap},
+        };
+
+        const READ_ONLY: ElementDescriptor<'static> =
+            ElementDescriptor::ReadOnlyEnumerableConfigurableData;
+        const HIDDEN: ElementDescriptor<'static> =
+            ElementDescriptor::WritableUnenumerableConfigurableData;
+
+        fn at(index: usize) -> ElementIndex<'static> {
+            ElementIndex::from_index(index)
+        }
+
+        fn one(
+            offset: u32,
+            descriptor: ElementDescriptor<'static>,
+        ) -> ElementDescriptorMap<'static> {
+            let mut map = ElementDescriptorMap::default();
+            map.insert(offset, descriptor);
+            map
+        }
+
+        /// What the table answers is what the map in it has: checked after
+        /// every step against a search of the map itself.
+        fn agrees(table: &DescriptorTable, storages: usize, slots: u32) {
+            for index in 0..storages {
+                let found = table.map.get(&at(index));
+                assert_eq!(table.get(&at(index)).is_some(), found.is_some());
+                for offset in 0..slots {
+                    let forbidden = found
+                        .and_then(|descriptors| descriptors.get(&offset))
+                        .is_some_and(|descriptor| descriptor.is_writable() != Some(true));
+                    // Twice: the second answer may come from what the
+                    // first one saw.
+                    assert_eq!(table.forbids_write(at(index), offset), forbidden);
+                    assert_eq!(table.forbids_write(at(index), offset), forbidden);
+                }
+            }
+        }
+
+        #[test]
+        fn a_storage_with_descriptors_is_known_however_it_got_them() {
+            let mut table = DescriptorTable::default();
+            agrees(&table, 300, 4);
+            table.insert(at(3), one(1, READ_ONLY));
+            agrees(&table, 300, 4);
+            let DescriptorEntry::Vacant(vacant) = table.entry(at(200)) else {
+                panic!("the storage has no descriptors yet");
+            };
+            vacant.insert(one(0, READ_ONLY));
+            agrees(&table, 300, 4);
+            table.entry(at(64)).or_default().insert(2, READ_ONLY);
+            table.entry(at(65)).or_insert(one(3, HIDDEN));
+            table
+                .entry(at(127))
+                .or_insert_with(|| one(0, HIDDEN))
+                .insert(1, READ_ONLY);
+            agrees(&table, 300, 4);
+            table.entry(at(128)).insert_entry(one(2, READ_ONLY));
+            table.entry(at(3)).insert_entry(one(0, READ_ONLY));
+            agrees(&table, 300, 4);
+            assert!(!table.forbids_write(at(3), 1));
+            assert!(table.forbids_write(at(3), 0));
+        }
+
+        #[test]
+        fn a_slot_seen_writable_is_looked_at_again_after_a_change() {
+            let mut table = DescriptorTable::default();
+            table.insert(at(5), one(1, HIDDEN));
+            // Seen writable: a slot with no descriptor, and one with a
+            // descriptor of a writable property.
+            assert!(!table.forbids_write(at(5), 0));
+            assert!(!table.forbids_write(at(5), 1));
+            let DescriptorEntry::Occupied(mut entry) = table.entry(at(5)) else {
+                panic!("the storage has descriptors");
+            };
+            entry.get_mut().insert(1, READ_ONLY);
+            assert!(table.forbids_write(at(5), 1));
+            assert!(!table.forbids_write(at(5), 0));
+            table.entry(at(5)).or_default().insert(0, READ_ONLY);
+            assert!(table.forbids_write(at(5), 0));
+            // The descriptors taken away: the bit may stay, the answer is
+            // the map's.
+            let DescriptorEntry::Occupied(entry) = table.entry(at(5)) else {
+                panic!("the storage has descriptors");
+            };
+            entry.remove();
+            agrees(&table, 16, 3);
+            assert!(!table.forbids_write(at(5), 0));
+            table.insert(at(5), one(0, READ_ONLY));
+            assert!(table.forbids_write(at(5), 0));
+            agrees(&table, 16, 3);
+        }
+
+        #[test]
+        fn the_storages_are_known_again_after_the_map_was_changed_at_once() {
+            let mut table = DescriptorTable::default();
+            table.insert(at(9), one(0, READ_ONLY));
+            table.insert(at(70), one(1, READ_ONLY));
+            assert!(!table.forbids_write(at(70), 0));
+            // As the collector does: one storage is gone, one moves to an
+            // index that had no descriptors.
+            table.rebuild_with(|map| {
+                map.remove(&at(9));
+                let moved = map.remove(&at(70)).expect("it was put there");
+                map.insert(at(2), moved);
+            });
+            agrees(&table, 100, 3);
+            assert!(table.forbids_write(at(2), 1));
+            assert!(!table.forbids_write(at(70), 1));
+            assert!(table.get(&at(9)).is_none());
+            assert!(table.get(&at(2)).is_some());
+        }
     }
 }

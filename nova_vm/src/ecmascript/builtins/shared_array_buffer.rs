@@ -4,6 +4,7 @@
 
 mod data;
 
+use crate::width::usize_from_u64;
 pub(crate) use data::*;
 
 use crate::{
@@ -134,7 +135,7 @@ impl<'sab> SharedArrayBuffer<'sab> {
         }
         // Note: new_byte_length is less or equal to max_byte_length which is
         // a usize.
-        let new_byte_length = new_byte_length as usize;
+        let new_byte_length = usize_from_u64(new_byte_length);
         if data_block.grow(new_byte_length) {
             // Success
             Ok(())

@@ -81,7 +81,7 @@ impl Builtin for FunctionPrototypeHasInstance {
 
     const KEY: Option<PropertyKey<'static>> = Some(WellKnownSymbols::HasInstance.to_property_key());
 
-    const LENGTH: u8 = 0;
+    const LENGTH: u8 = 1;
 
     const BEHAVIOUR: Behaviour = Behaviour::Regular(FunctionPrototype::has_instance);
 
@@ -187,7 +187,9 @@ impl FunctionPrototype {
         target = scoped_target.get(agent);
         let mut scoped_f = None;
         // 4. Let L be 0.
-        let mut l = 0;
+        // L is a u64, not a usize: a target's "length" goes up to 2^53 - 1 on a
+        // 32-bit target as well. u64::MAX stands for +∞.
+        let mut l: u64 = 0;
         // 5. Let targetHasLength be ? HasOwnProperty(Target, "length").
         let target_has_length = if let TryResult::Continue(result) = try_has_own_property(
             agent,
@@ -252,13 +254,13 @@ impl FunctionPrototype {
                         // 3. Let argCount be the number of elements in args.
                         let arg_count = args_len;
                         // 4. Set L to max(targetLenAsInt - argCount, 0).
-                        l = 0.max(target_len.into_i64() - arg_count as i64) as usize;
+                        l = 0.max(target_len.into_i64() - arg_count as i64) as u64;
                     }
                     _ => {
                         // i. If targetLen is +∞𝔽, then
                         if target_len.is_pos_infinity_(agent) {
                             // 1. Set L to +∞.
-                            l = usize::MAX;
+                            l = u64::MAX;
                         } else if target_len.is_neg_infinity_(agent) {
                             // ii. Else if targetLen is -∞𝔽, then
                             // 1. Set L to 0.
@@ -272,7 +274,7 @@ impl FunctionPrototype {
                             // 3. Let argCount be the number of elements in args.
                             let arg_count = args_len;
                             // 4. Set L to max(targetLenAsInt - argCount, 0).
-                            l = 0.max(target_len_as_int - arg_count as i64) as usize;
+                            l = 0.max(target_len_as_int - arg_count as i64) as u64;
                         }
                     }
                 }
@@ -283,8 +285,8 @@ impl FunctionPrototype {
         // A length past the heap data's u8, or a bound function whose
         // prototype is not %Function.prototype% (it has a backing object from
         // its creation), keeps "length" as a property of the backing object.
-        if l > usize::from(u8::MAX) || f.get_backing_object(agent).is_some() {
-            let length = if l == usize::MAX {
+        if l > u64::from(u8::MAX) || f.get_backing_object(agent).is_some() {
+            let length = if l == u64::MAX {
                 Number::pos_inf()
             } else {
                 Number::from_f64(agent, l as f64, gc.nogc())
@@ -353,6 +355,13 @@ impl FunctionPrototype {
         // 11. Return F.
 
         Ok(f.unbind().into())
+    }
+
+    /// Whether `function` is Function.prototype.call, which the interpreter
+    /// runs in place where the function called through it is one it runs
+    /// in place.
+    pub(crate) fn is_call(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(function, Self::call as crate::ecmascript::RegularFn)
     }
 
     fn call<'gc>(

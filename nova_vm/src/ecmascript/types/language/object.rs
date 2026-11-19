@@ -394,6 +394,62 @@ arena_vec_access!(
     objects
 );
 
+/// The getter, or the setter, that the property at one place of one object
+/// was last found to have (`OrdinaryObject::getter_by_cache`), with what
+/// the heap counted then of all that can make it another: the property
+/// defined again, or the object's properties moved
+/// ([`Heap::descriptor_changes`](crate::heap::Heap)). The object and the
+/// function are handles that a collection moves, so what was seen before
+/// one is not looked at after it.
+///
+/// Finding the function is finding the object's storage and looking its
+/// descriptors up in two tables, at every read and assignment of an
+/// accessor property: a fifteenth of a loop that does one of each.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AccessorSeen {
+    holder: OrdinaryObject<'static>,
+    slot: u32,
+    function: ECMAScriptFunction<'static>,
+    collections: u64,
+    descriptor_changes: u64,
+}
+
+impl AccessorSeen {
+    /// The getter (or with `setter` the setter) of the property at `slot`
+    /// of `holder`, if it is the one last seen there and still is.
+    #[inline]
+    fn function(
+        agent: &Agent,
+        holder: OrdinaryObject,
+        slot: u32,
+        setter: bool,
+    ) -> Option<ECMAScriptFunction<'static>> {
+        let seen = agent.accessor_seen[usize::from(setter)].get()?;
+        (seen.collections == agent.heap.collections
+            && seen.descriptor_changes == agent.heap.descriptor_changes
+            && seen.slot == slot
+            && seen.holder == holder.unbind())
+        .then_some(seen.function)
+    }
+
+    /// Remembers that `function` is that getter or setter now.
+    fn see(
+        agent: &Agent,
+        holder: OrdinaryObject,
+        slot: u32,
+        setter: bool,
+        function: ECMAScriptFunction,
+    ) {
+        agent.accessor_seen[usize::from(setter)].set(Some(Self {
+            holder: holder.unbind(),
+            slot,
+            function: function.unbind(),
+            collections: agent.heap.collections,
+            descriptor_changes: agent.heap.descriptor_changes,
+        }));
+    }
+}
+
 impl<'a> OrdinaryObject<'a> {
     /// Allocate a a new blank OrdinaryObject and return its reference.
     ///
@@ -507,6 +563,41 @@ impl<'a> OrdinaryObject<'a> {
             data.values_capacity(object_shapes),
             data.len(object_shapes),
         )
+    }
+
+    /// The value of the Object's own data property `key`, found by the key
+    /// among its properties with no descriptor read: None for a key the
+    /// Object does not have itself and for an accessor.
+    #[inline]
+    pub(crate) fn own_data_value(self, agent: &Agent, key: PropertyKey) -> Option<Value<'a>> {
+        let offset = find_key_offset(agent, self, key)?;
+        self.get_elements_values(agent)
+            .get(offset)
+            .copied()
+            .flatten()
+    }
+
+    /// Sets the Object's own data property `key` to `value` where it has
+    /// one that is writable: what OrdinarySet comes to for such a property
+    /// with the Object as the receiver. Returns whether it did; nothing has
+    /// changed where it did not.
+    #[inline]
+    pub(crate) fn set_own_writable_value(
+        self,
+        agent: &mut Agent,
+        key: PropertyKey,
+        value: Value<'static>,
+    ) -> bool {
+        let Some(offset) = find_key_offset(agent, self, key) else {
+            return false;
+        };
+        self.set_writable_value_at(agent, offset, value)
+    }
+
+    /// The Object's shape as it is now, read from its record.
+    #[inline]
+    pub(crate) fn shape_now(self, agent: &Agent) -> ObjectShape<'a> {
+        self.get_direct(&agent.heap.objects).get_shape()
     }
 
     /// The keys of the Object's properties, in the order of its property
@@ -627,9 +718,15 @@ impl<'a> OrdinaryObject<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> Option<ECMAScriptFunction<'gc>> {
         let (holder, slot) = self.place_by_cache(agent, cache)?;
+        if let Some(getter) = AccessorSeen::function(agent, holder, slot, false) {
+            return Some(getter.bind(gc));
+        }
         let descriptor = holder.get_elements_storage(agent).descriptors?.get(&slot)?;
         match descriptor.getter_function(gc)? {
-            Function::ECMAScriptFunction(getter) => Some(getter),
+            Function::ECMAScriptFunction(getter) => {
+                AccessorSeen::see(agent, holder, slot, false, getter);
+                Some(getter)
+            }
             _ => None,
         }
     }
@@ -647,9 +744,15 @@ impl<'a> OrdinaryObject<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> Option<ECMAScriptFunction<'gc>> {
         let (holder, slot) = self.place_by_cache(agent, cache)?;
+        if let Some(setter) = AccessorSeen::function(agent, holder, slot, true) {
+            return Some(setter.bind(gc));
+        }
         let descriptor = holder.get_elements_storage(agent).descriptors?.get(&slot)?;
         match descriptor.setter_function(gc)? {
-            Function::ECMAScriptFunction(setter) => Some(setter),
+            Function::ECMAScriptFunction(setter) => {
+                AccessorSeen::see(agent, holder, slot, true, setter);
+                Some(setter)
+            }
             _ => None,
         }
     }
@@ -874,10 +977,11 @@ impl<'a> OrdinaryObject<'a> {
     }
 
     /// Attempts to make this ordinary Object a copy of some source ordinary
-    /// Object. This only succeeds if the current Object is empty, the
-    /// prototypes of the two Objects match, and all own keys in the source
-    /// Object are enumerable keys (descriptor is enumerable, key is not symbol
-    /// or private), and the source Object contains no getters.
+    /// Object: what CopyDataProperties gives where this Object has no
+    /// properties yet, the prototypes of the two match, and every own
+    /// property of the source is a data property with a String key that is
+    /// writable, enumerable and configurable. This Object then has the
+    /// source's shape and a copy of its values.
     ///
     /// Returns true if the copy succeeded. If the copy does not succeed, no
     /// changes to either object are performed and the function returns false.
@@ -886,12 +990,15 @@ impl<'a> OrdinaryObject<'a> {
             // It's always possible to copy an empty object.
             return true;
         }
-        if !self.is_empty(agent)
+        if self == source
+            || !self.is_empty(agent)
+            || !self.internal_extensible(agent)
             || source.internal_prototype(agent) != self.internal_prototype(agent)
-            || source.object_shape(agent).is_intrinsic(agent)
+            || source.get(agent).get_shape().is_intrinsic(agent)
         {
-            // Our own object is not empty, our prototypes don't match, or the
-            // source object is an intrinsic object; can't perform the copy.
+            // Our own object is not empty or takes no properties, our
+            // prototypes don't match, or the source object is an intrinsic
+            // object; can't perform the copy.
             // Note: for intrinsic objects the problem is that their Object
             // Shape is considered uniquely owned by the intrinsic object
             // itself.
@@ -902,24 +1009,27 @@ impl<'a> OrdinaryObject<'a> {
         let PropertyStorageRef {
             keys, descriptors, ..
         } = source.unbind().get_property_storage(agent);
-        if descriptors.is_some_and(|d| d.iter().any(|(_, d)| !d.is_enumerable() || d.has_getter()))
-            || keys.iter().any(|k| k.is_symbol() || k.is_private_name())
-        {
-            // Found a non-enumerable property, a getter, or a non-enumerable
-            // key. Cannot perform the copy.
+        if descriptors.is_some() || keys.iter().any(|key| !key.is_string()) {
+            // A property that is not a plain data property (an accessor, or
+            // one that is not writable, not enumerable or not configurable:
+            // the copy of it is a plain one, or none), or a key that is not
+            // a String (a Symbol, which is copied after the Strings; an
+            // integer, which is copied before them; a private name, which is
+            // not copied). Cannot perform the copy.
             return false;
         }
-        // All properties in the source object are enumerable, none are
-        // getters, and no key is a symbol or private name: the shape of the
-        // source and the self objects will be identical after this operation.
-        let mut source_shape = self.get(agent).get_shape();
-        // Note: our source object can be frozen but we should not become
-        // frozen just by copying the source properties.
+        // The shape of the source and the self objects will be identical
+        // after this operation.
+        let mut source_shape = source.get(agent).get_shape();
+        // Note: our source object can be non-extensible but we should not
+        // become so just by copying the source properties.
         source_shape.set_extensible(true);
         let elements_vector = agent
             .heap
             .elements
             .shallow_clone(&source.get_elements_vector(agent));
+        agent.heap.alloc_counter +=
+            core::mem::size_of::<Option<Value>>() * elements_vector.len() as usize;
         let data = self.get_mut(agent);
         data.set_shape(source_shape);
         data.set_values(elements_vector.elements_index.unbind());

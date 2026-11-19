@@ -73,7 +73,7 @@ struct State<Position: PositionType> {
 pub enum MatchError {
     /// The search took more steps than `ExecBudget::max_steps`.
     StepLimit,
-    /// The backtracking stack grew past `ExecBudget::max_backtrack_entries`.
+    /// The backtracking stacks grew past `ExecBudget::max_backtrack_entries`.
     StackLimit,
     /// The host's poll asked the search to stop.
     Interrupted,
@@ -88,8 +88,11 @@ pub struct ExecBudget<'p> {
     pub max_steps: u64,
     /// How many steps go between two calls of `poll`.
     pub poll_interval: u64,
-    /// The most entries the backtracking stack may hold (checked every
-    /// `poll_interval` steps).
+    /// The most entries the backtracking stacks may hold together (checked
+    /// every `poll_interval` steps): the one in use and those that the
+    /// lookarounds being matched have set aside. Each entry takes at most
+    /// [`BACKTRACK_ENTRY_BYTES`], and a stack keeps up to as much room spare
+    /// as it uses.
     pub max_backtrack_entries: usize,
     /// Called every `poll_interval` steps; returning true stops the search
     /// with `MatchError::Interrupted`.
@@ -133,11 +136,19 @@ impl ExecBudget<'_> {
     }
 }
 
+/// The most bytes one entry of a backtracking stack takes, for an embedder
+/// that bounds the stacks by their memory.
+pub const BACKTRACK_ENTRY_BYTES: usize = 5 * core::mem::size_of::<usize>();
+
 struct Meter<'a> {
     countdown: u64,
     remaining: u64,
     interval: u64,
     max_bts: usize,
+    /// Entries of the stacks set aside by the lookarounds being matched.
+    /// Each keeps the stack before it until it returns, so a nest of them
+    /// holds as many stacks as it is deep: they count with the one in use.
+    held_bts: usize,
     poll: Option<&'a mut dyn FnMut() -> bool>,
     stopped: Option<MatchError>,
 }
@@ -161,6 +172,7 @@ impl<'a> Meter<'a> {
             remaining: budget.max_steps - countdown,
             interval,
             max_bts: budget.max_backtrack_entries,
+            held_bts: 0,
             poll: budget.poll,
             stopped: None,
         }
@@ -188,7 +200,7 @@ impl<'a> Meter<'a> {
             return false;
         }
         self.remaining -= excess;
-        if bts_len > self.max_bts {
+        if bts_len.saturating_add(self.held_bts) > self.max_bts {
             self.stopped = Some(MatchError::StackLimit);
             return false;
         }
@@ -223,6 +235,9 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
         entry: Input::Position,
         budget: ExecBudget<'a>,
     ) -> Self {
+        const {
+            assert!(core::mem::size_of::<BacktrackInsn<Input>>() <= BACKTRACK_ENTRY_BYTES);
+        }
         Self {
             re,
             bts: vec![BacktrackInsn::Exhausted],
@@ -627,9 +642,13 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
         // TODO: consider using a stack-allocated array.
         let mut saved_bts = vec![BacktrackInsn::Exhausted];
         core::mem::swap(&mut self.bts, &mut saved_bts);
+        // The stack set aside is held until the lookaround returns.
+        let held = saved_bts.len();
+        self.meter.held_bts = self.meter.held_bts.saturating_add(held);
 
         // Enter into the lookaround's instruction stream.
         let matched = self.try_at_pos(*input, ip, pos, Dir::new()).is_some();
+        self.meter.held_bts = self.meter.held_bts.saturating_sub(held);
         if self.meter.stopped.is_some() {
             core::mem::swap(&mut self.bts, &mut saved_bts);
             self.s.groups.splice(range, saved_groups);

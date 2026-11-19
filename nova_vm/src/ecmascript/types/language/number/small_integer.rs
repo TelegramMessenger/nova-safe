@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::{SmallBigInt, number_value};
+use crate::width::usize_from_i64;
 
 /// ### [6.1.6.1 The Number Type](https://tc39.es/ecma262/#sec-ecmascript-language-types-number-type)
 ///
@@ -202,7 +203,7 @@ impl TryFrom<u64> for SmallInteger {
 impl TryFrom<usize> for SmallInteger {
     type Error = ();
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        if value <= (Self::MAX as usize) {
+        if value <= usize_from_i64(Self::MAX) {
             Ok(Self::from_i64_unchecked(value as i64))
         } else {
             Err(())

@@ -41,7 +41,8 @@ use crate::{
     },
     engine::Executable,
     heap::{
-        BaseIndex, ElementDescriptorMap, ElementIndex, Heap, HeapIndexHandle, PropertyKeyIndex,
+        BaseIndex, DescriptorTable, ElementDescriptorMap, ElementIndex, Heap, HeapIndexHandle,
+        PropertyKeyIndex,
     },
 };
 
@@ -2254,40 +2255,43 @@ pub(crate) fn sweep_heap_soa_vector_values<T: SoAble>(
 }
 
 pub(crate) fn sweep_heap_elements_vector_descriptors(
-    descriptors: &mut AHashMap<ElementIndex<'static>, ElementDescriptorMap<'static>>,
+    descriptors: &mut DescriptorTable,
     compactions: &CompactionLists,
     self_compactions: &CompactionList,
     range: &BitRange,
     bits: &[AtomicBits],
 ) {
-    let mut keys_to_remove = Vec::with_capacity(range.len() / 4);
-    let mut keys_to_reassign = Vec::with_capacity(range.len() / 4);
-    for (key, descriptor) in descriptors.iter_mut() {
-        let old_key = *key;
-        if !range.get_bit(old_key.get_index(), bits) {
-            keys_to_remove.push(old_key);
-        } else {
-            for descriptor in descriptor.values_mut() {
-                descriptor.sweep_values(compactions);
-            }
-            let mut new_key = old_key;
-            self_compactions.shift_index(&mut new_key);
-            if new_key != old_key {
-                keys_to_reassign.push((old_key, new_key));
+    // The table sets its bits anew for what is left when this is done.
+    descriptors.rebuild_with(|descriptors| {
+        let mut keys_to_remove = Vec::with_capacity(range.len() / 4);
+        let mut keys_to_reassign = Vec::with_capacity(range.len() / 4);
+        for (key, descriptor) in descriptors.iter_mut() {
+            let old_key = *key;
+            if !range.get_bit(old_key.get_index(), bits) {
+                keys_to_remove.push(old_key);
+            } else {
+                for descriptor in descriptor.values_mut() {
+                    descriptor.sweep_values(compactions);
+                }
+                let mut new_key = old_key;
+                self_compactions.shift_index(&mut new_key);
+                if new_key != old_key {
+                    keys_to_reassign.push((old_key, new_key));
+                }
             }
         }
-    }
-    keys_to_remove.sort();
-    keys_to_reassign.sort();
-    for old_key in keys_to_remove.iter() {
-        descriptors.remove(old_key);
-    }
-    for (old_key, new_key) in keys_to_reassign {
-        let descriptor = descriptors
-            .remove(&old_key)
-            .expect("reassigned descriptor key must exist: it came from iterating descriptors");
-        descriptors.insert(new_key, descriptor);
-    }
+        keys_to_remove.sort();
+        keys_to_reassign.sort();
+        for old_key in keys_to_remove.iter() {
+            descriptors.remove(old_key);
+        }
+        for (old_key, new_key) in keys_to_reassign {
+            let descriptor = descriptors
+                .remove(&old_key)
+                .expect("reassigned descriptor key must exist: it came from iterating descriptors");
+            descriptors.insert(new_key, descriptor);
+        }
+    });
 }
 
 /// Weakly held garbage-collectable reference value.

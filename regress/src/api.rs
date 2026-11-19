@@ -27,7 +27,7 @@ use core::{fmt, iter::FusedIterator, str::FromStr};
 
 pub use parse::Error;
 
-pub use crate::classicalbacktrack::{ExecBudget, MatchError};
+pub use crate::classicalbacktrack::{BACKTRACK_ENTRY_BYTES, ExecBudget, MatchError};
 
 /// Flags used to control regex parsing.
 /// The default flags are case-sensitive, not-multiline, and optimizing.

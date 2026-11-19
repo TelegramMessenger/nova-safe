@@ -609,14 +609,11 @@ pub(crate) fn ordinary_try_has_property<'gc>(
     }
 
     // 1. Let hasOwn be ? O.[[GetOwnProperty]](P).
-    let has_own = backing_object.and_then(|bo| {
-        bo.object_shape(agent)
-            .keys(&agent.heap.object_shapes, &agent.heap.elements)
-            .iter()
-            .enumerate()
-            .find(|(_, p)| *p == &property_key)
-            .map(|(i, _)| i as u32)
-    });
+    // By the table of the shape's keys where they are many: an object
+    // used as a dictionary is asked this of hundreds of keys.
+    let has_own = backing_object
+        .and_then(|bo| crate::ecmascript::find_key_offset(agent, bo, property_key))
+        .map(|offset| offset as u32);
 
     // 2. If hasOwn is not undefined, return true.
     if let Some(offset) = has_own {
@@ -700,13 +697,8 @@ pub(crate) fn ordinary_has_property<'a>(
     let property_key = property_key.bind(gc.nogc());
     // 1. Let hasOwn be ? O.[[GetOwnProperty]](P).
 
-    let has_own = backing_object
-        .object_shape(agent)
-        .keys(&agent.heap.object_shapes, &agent.heap.elements)
-        .iter()
-        .enumerate()
-        .find(|(_, p)| *p == &property_key)
-        .map(|(i, _)| i as u32);
+    let has_own = crate::ecmascript::find_key_offset(agent, backing_object, property_key.unbind())
+        .map(|offset| offset as u32);
 
     // 2. If hasOwn is not undefined, return true.
     if let Some(offset) = has_own {

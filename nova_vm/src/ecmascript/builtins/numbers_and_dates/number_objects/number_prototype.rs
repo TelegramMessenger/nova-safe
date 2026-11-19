@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, ExceptionType, JsResult,
@@ -103,7 +104,7 @@ impl NumberPrototype {
                 gc,
             ));
         }
-        let f = f as usize;
+        let f = usize_from_i64(f);
 
         // 6. Set x to ℝ(x).
         let mut x = x.into_f64_(agent);
@@ -168,14 +169,54 @@ impl NumberPrototype {
                 gc,
             ));
         }
+        Ok(Self::to_fixed_of(agent, x, usize_from_i64(f), gc))
+    }
+
+    /// Whether `function` is Number.prototype.toFixed, which the interpreter
+    /// may run in place.
+    pub(crate) fn is_to_fixed(function: crate::ecmascript::RegularFn) -> bool {
+        core::ptr::fn_addr_eq(function, Self::to_fixed as crate::ecmascript::RegularFn)
+    }
+
+    /// `toFixed` of a Number value with a count of digits that is an
+    /// integer from 0 to 100, or none; None otherwise.
+    pub(crate) fn to_fixed_directly<'gc>(
+        agent: &mut Agent,
+        this: Value<'gc>,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        let x = Number::try_from(this).ok()?;
+        let f = match arguments.first() {
+            None | Some(Value::Undefined) => 0,
+            Some(Value::Integer(f)) => f.into_i64(),
+            _ => return None,
+        };
+        if !(0..=100).contains(&f) {
+            return None;
+        }
+        Some(Self::to_fixed_of(agent, x, usize_from_i64(f), gc))
+    }
+
+    /// Number.prototype.toFixed of a Number and a count of digits from 0 to
+    /// 100.
+    fn to_fixed_of<'gc>(
+        agent: &mut Agent,
+        x: Number<'gc>,
+        f: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         // 6. If x is not finite, return Number::toString(x, 10).
         if !x.is_finite_(agent) {
-            return Ok(Number::to_string_radix_10(agent, x, gc).into());
+            return Number::to_string_radix_10(agent, x, gc).into();
         }
         // 7. Set x to ℝ(x).
         let x = x.into_f64_(agent);
-        let string = crate::ecmascript::f64_to_fixed(x, f as usize);
-        Ok(Value::from_string(agent, string, gc))
+        if let Some(text) = crate::ecmascript::f64_fixed_text(x, f) {
+            return text.to_js_string(agent, gc).into();
+        }
+        let string = crate::ecmascript::f64_to_fixed(x, f);
+        Value::from_string(agent, string, gc)
     }
 
     /// ### [21.1.3.4 Number.prototype.toLocaleString ( \[ reserved1 \[ , reserved2 \] \] )](https://tc39.es/ecma262/#sec-number.prototype.tolocalestring)

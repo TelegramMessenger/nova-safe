@@ -149,6 +149,19 @@ fn for_in_of_body_evaluation<'s, 'gc>(
         None
     };
 
+    // The handler of what the binding and the statement throw, which closes
+    // the iterator, is pushed once for the loop and not in every turn of
+    // it. The step is then under it too, and an error of the step is not
+    // to close the iterator: the step leaves the iterator exhausted where
+    // it throws (see `execute_iterator_step_value`), and closing that is
+    // nothing. A `for await` loop keeps its handler around the turn: its
+    // step is several instructions, with an Await among them.
+    let loop_before_step = match iteration_kind {
+        IterationKind::Enumerate => Some(ctx.enter_loop(label_set.cloned())),
+        IterationKind::Iterate => Some(ctx.enter_iterator(label_set.cloned())),
+        IterationKind::AsyncIterate => None,
+    };
+    let handler_for_loop = loop_before_step.is_some();
     // 6. Repeat,
     let loop_start = ctx.get_jump_index_to_here();
     let jump_to_done = if iteration_kind == IterationKind::AsyncIterate {
@@ -178,10 +191,9 @@ fn for_in_of_body_evaluation<'s, 'gc>(
     // errors thrown above do not close the iterator; the iterator must still
     // be popped!
 
-    let r#loop = match iteration_kind {
-        IterationKind::Enumerate => ctx.enter_loop(label_set.cloned()),
-        IterationKind::Iterate => ctx.enter_iterator(label_set.cloned()),
-        IterationKind::AsyncIterate => ctx.enter_async_iterator(label_set.cloned()),
+    let r#loop = match loop_before_step {
+        Some(entered) => entered,
+        None => ctx.enter_async_iterator(label_set.cloned()),
     };
 
     let mut block_prep: Vec<BlockEnvPrep> = vec![];
@@ -339,8 +351,10 @@ fn for_in_of_body_evaluation<'s, 'gc>(
 
     let continue_target = ctx.get_jump_index_to_here();
 
-    // Note: This is a loop-internal temporary exit.
-    ctx.add_instruction(Instruction::PopExceptionJumpTarget);
+    if !handler_for_loop {
+        // Note: This is a loop-internal temporary exit.
+        ctx.add_instruction(Instruction::PopExceptionJumpTarget);
+    }
 
     // l. Corollary: If LoopContinues(result, labelSet) is true, then
     //    jump to loop start.
@@ -418,6 +432,10 @@ fn for_in_of_body_evaluation<'s, 'gc>(
     // d. Let done be ? IteratorComplete(nextResult).
     // e. If done is true, return V.
     ctx.set_jump_target_here(jump_to_done);
+    if handler_for_loop {
+        // The loop's handler, which a turn does not pop.
+        ctx.add_instruction(Instruction::PopExceptionJumpTarget);
+    }
     ctx.add_instruction(Instruction::Store);
     if let Some(jump_over_return_v) = jump_over_return_v {
         ctx.set_jump_target_here(jump_over_return_v);

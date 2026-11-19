@@ -9,12 +9,12 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, ArrayIterator, ArrayIteratorPrototype,
         AsyncFromSyncIteratorPrototype, BUILTIN_STRING_MEMORY, CollectionIteratorKind,
-        ExceptionType, Function, InternalMethods, IteratorRecord, JsError, JsResult, Object,
-        OrdinaryObject, Promise, PropertyKey, PropertyKeySet, PropertyLookupCache,
-        ScopedArgumentsList, StringIteratorPrototype, TryError, TryGetResult, TryResult, Value,
-        call_function, create_async_from_sync_iterator, create_iter_result_object, get,
-        get_iterator_from_method, get_method, get_object_method, throw_not_callable, to_boolean,
-        try_get,
+        ExceptionType, Function, GeneratorPrototype, GeneratorStep, InternalMethods,
+        IteratorRecord, JsError, JsResult, Object, OrdinaryObject, Promise, PropertyKey,
+        PropertyKeySet, PropertyLookupCache, ScopedArgumentsList, StringIteratorPrototype,
+        TryError, TryGetResult, TryResult, Value, call_function, create_async_from_sync_iterator,
+        create_iter_result_object, get, get_iterator_from_method, get_method, get_object_method,
+        throw_not_callable, to_boolean, try_get,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, ScopeToken, Scoped},
     heap::{ArenaAccessMut, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
@@ -238,6 +238,57 @@ pub(crate) enum VmIteratorRecord<'a> {
     GenericIterator(IteratorRecord<'a>),
     SliceIterator(ScopedArgumentsList<'static>),
     EmptySliceIterator,
+}
+
+/// IteratorStepValue from what the next method returned: the value of an
+/// iterator result that is not done, None for one that is, and a TypeError
+/// for what is not an object.
+pub(super) fn step_value_of_result<'gc>(
+    agent: &mut Agent,
+    result: Value,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, Option<Value<'gc>>> {
+    let result = result.bind(gc.nogc());
+    let Ok(result) = Object::try_from(result) else {
+        return Err(throw_iterator_returned_non_object(agent, gc.into_nogc()));
+    };
+    let result = result.unbind().bind(gc.nogc());
+    // The result object nearly every iterator returns is an ordinary one
+    // with "done" and "value" as plain properties of its own (the one
+    // CreateIteratorResultObject makes, or a literal): \[\[Get]] of
+    // those is the value in the slot.
+    if let Some(done) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.done.into()) {
+        if to_boolean(agent, done) {
+            // The value of a result that is done is not read.
+            return Ok(None);
+        }
+        if let Some(value) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.value.into()) {
+            return Ok(Some(value.unbind().bind(gc.into_nogc())));
+        }
+    }
+    let scoped_result = result.scope(agent, gc.nogc());
+    // 1. Return ToBoolean(? Get(iterResult, "done")).
+    let done = get(
+        agent,
+        result.unbind(),
+        BUILTIN_STRING_MEMORY.done.into(),
+        gc.reborrow(),
+    )
+    .unbind()?
+    .bind(gc.nogc());
+    let done = to_boolean(agent, done);
+    if done {
+        Ok(None)
+    } else {
+        // 1. Return ? Get(iterResult, "value").
+        let value = get(
+            agent,
+            scoped_result.get(agent),
+            BUILTIN_STRING_MEMORY.value.into(),
+            gc,
+        )?;
+        Ok(Some(value))
+    }
 }
 
 impl<'a> VmIteratorRecord<'a> {
@@ -516,7 +567,9 @@ impl<'a> ObjectPropertiesIterator<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> Value<'gc> {
         match result {
-            PropertyKey::Integer(int) => Value::from_string(agent, int.into_i64().to_string(), gc),
+            PropertyKey::Integer(int) => crate::ecmascript::i64_text(int.into_i64())
+                .to_js_string(agent, gc)
+                .into(),
             PropertyKey::SmallString(data) => Value::SmallString(data),
             PropertyKey::String(data) => Value::String(data.bind(gc)),
             _ => unreachable!(),
@@ -951,57 +1004,38 @@ impl<'a> GenericIterator<'a> {
             ));
         }
 
-        let result = call_function(
-            agent,
-            next_method.unbind(),
-            iterator.unbind().into(),
-            None,
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
-        let Ok(result) = Object::try_from(result) else {
-            return Err(throw_iterator_returned_non_object(agent, gc.into_nogc()));
-        };
-        let result = result.unbind().bind(gc.nogc());
-        // The result object nearly every iterator returns is an ordinary one
-        // with "done" and "value" as plain properties of its own (the one
-        // CreateIteratorResultObject makes, or a literal): \[\[Get]] of
-        // those is the value in the slot.
-        if let Some(done) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.done.into()) {
-            if to_boolean(agent, done) {
-                // The value of a result that is done is not read.
-                return Ok(None);
-            }
-            if let Some(value) =
-                own_data_property(agent, result, BUILTIN_STRING_MEMORY.value.into())
+        // The original %GeneratorPrototype%.next on a generator resumes it
+        // and puts what it yielded into an iterator result object, which
+        // this step would take apart again: the generator is resumed here
+        // and what it yielded taken as it is. Only what `yield*` passes on
+        // is a result object already, and is read as any other.
+        let result = if let Object::Generator(generator) = iterator
+            && GeneratorPrototype::is_next(agent, next_method, gc.nogc())
+        {
+            match generator
+                .unbind()
+                .step(agent, gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc())
             {
-                return Ok(Some(value.unbind().bind(gc.into_nogc())));
+                GeneratorStep::Yielded(value) => {
+                    return Ok(Some(value.unbind().bind(gc.into_nogc())));
+                }
+                GeneratorStep::Done => return Ok(None),
+                GeneratorStep::Result(result) => result,
             }
-        }
-        let scoped_result = result.scope(agent, gc.nogc());
-        // 1. Return ToBoolean(? Get(iterResult, "done")).
-        let done = get(
-            agent,
-            result.unbind(),
-            BUILTIN_STRING_MEMORY.done.into(),
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
-        let done = to_boolean(agent, done);
-        if done {
-            Ok(None)
         } else {
-            // 1. Return ? Get(iterResult, "value").
-            let value = get(
+            call_function(
                 agent,
-                scoped_result.get(agent),
-                BUILTIN_STRING_MEMORY.value.into(),
-                gc,
-            )?;
-            Ok(Some(value))
-        }
+                next_method.unbind(),
+                iterator.unbind().into(),
+                None,
+                gc.reborrow(),
+            )
+            .unbind()?
+            .bind(gc.nogc())
+        };
+        step_value_of_result(agent, result.unbind(), gc)
     }
 
     fn throw<'gc>(

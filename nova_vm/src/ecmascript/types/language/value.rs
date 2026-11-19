@@ -394,12 +394,14 @@ pub enum Value<'a> {
     EmbedderObject(EmbedderObject<'a>) = EMBEDDER_OBJECT_DISCRIMINANT,
 }
 
-/// We want to guarantee that all handles to JS values are register sized. This
-/// assert must never be removed or broken.
-const _VALUE_SIZE_IS_WORD: () = assert!(size_of::<Value>() == size_of::<usize>());
-/// We may also want to keep Option<Value> register sized so that eg. holes in
+/// We want to guarantee that all handles to JS values are register sized on a
+/// 64-bit target: one 64-bit word (a tag byte and up to seven bytes of data).
+/// A 32-bit target has the same eight bytes, in two registers. This assert must
+/// never be removed or broken.
+const _VALUE_SIZE_IS_WORD: () = assert!(size_of::<Value>() == size_of::<u64>());
+/// We may also want to keep Option<Value> the same size so that eg. holes in
 /// arrays do not start requiring extra bookkeeping.
-const _OPTIONAL_VALUE_SIZE_IS_WORD: () = assert!(size_of::<Option<Value>>() == size_of::<usize>());
+const _OPTIONAL_VALUE_SIZE_IS_WORD: () = assert!(size_of::<Option<Value>>() == size_of::<u64>());
 
 pub(crate) const UNDEFINED_DISCRIMINANT: u8 = 1;
 pub(crate) const NULL_DISCRIMINANT: u8 = 2;
@@ -888,7 +890,7 @@ impl<'a> Value<'a> {
             }
             Value::String(data) => {
                 // Skip discriminant hashing in strings
-                data.get(arena).data.hash(hasher);
+                data.get(arena).hash_text(hasher);
             }
             Value::SmallString(data) => {
                 data.as_wtf8().hash(hasher);

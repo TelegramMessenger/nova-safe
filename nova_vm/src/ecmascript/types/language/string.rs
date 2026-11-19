@@ -6,6 +6,7 @@ include!(concat!(env!("OUT_DIR"), "/builtin_strings.rs"));
 mod data;
 pub(crate) mod search;
 
+use crate::width::usize_from_i64;
 pub use data::TextJoinOverLimit;
 pub(crate) use data::*;
 
@@ -301,22 +302,43 @@ impl<'a> String<'a> {
                     .bind(gc);
             }
         }
-        // Two strings that make a short one, as most concatenations do: the
-        // text is put together here and the heap asked for it, which copies
-        // it only where it has no such string yet.
-        if let [left, right] = strings {
-            let (left, right) = (left.as_wtf8_(agent), right.as_wtf8_(agent));
-            let len = left.len() + right.len();
-            if (8..=SHORT_CONCATENATION).contains(&len)
-                && !(right.initial_trail_surrogate().is_some()
-                    && left.final_lead_surrogate().is_some())
-            {
-                let mut text = [0u8; SHORT_CONCATENATION];
-                text[..left.len()].copy_from_slice(left.as_bytes());
-                text[left.len()..len].copy_from_slice(right.as_bytes());
+        // Text put before a string that a concatenation made, the step of a
+        // loop that builds text from its end: as above, at the other end.
+        // The left string is not being built, so its text is at hand.
+        if let [left, String::String(right)] = strings
+            && !left.is_empty_string()
+            && right.get(agent).is_being_built()
+        {
+            // As above: the right string's text is joined to learn how it
+            // starts only when a lead surrogate could come before it.
+            let joins_surrogate_pair = left.as_wtf8_(agent).final_lead_surrogate().is_some()
+                && right
+                    .get(agent)
+                    .as_wtf8()
+                    .initial_trail_surrogate()
+                    .is_some();
+            if !joins_surrogate_pair {
                 return agent
                     .heap
-                    .alloc_wtf8(Wtf8Str::from_wtf8_bytes(&text[..len]))
+                    .alloc_prepended(left.unbind(), right.unbind())
+                    .bind(gc);
+            }
+        }
+        // Two strings, as most concatenations are: the heap is asked for
+        // the string of both, whose hash follows from the left one's, and
+        // puts the text together only where it has no such string yet.
+        if let [left, right] = strings
+            && !left.is_empty_string()
+            && !right.is_empty_string()
+        {
+            let (left_text, right_text) = (left.as_wtf8_(agent), right.as_wtf8_(agent));
+            if left_text.len() + right_text.len() > 7
+                && !(right_text.initial_trail_surrogate().is_some()
+                    && left_text.final_lead_surrogate().is_some())
+            {
+                return agent
+                    .heap
+                    .alloc_joined(left.unbind(), right.unbind(), LONG_CONCATENATION)
                     .bind(gc);
             }
         }
@@ -867,8 +889,8 @@ impl<'a> String<'a> {
             })
         } else if let PropertyKey::Integer(index) = property_key {
             let index = index.into_i64();
-            if index >= 0 && (index as usize) < self.utf16_len_(agent) {
-                let ch = self.char_code_at_(agent, index as usize);
+            if index >= 0 && usize_from_i64(index) < self.utf16_len_(agent) {
+                let ch = self.char_code_at_(agent, usize_from_i64(index));
                 Some(PropertyDescriptor {
                     value: Some(SmallString::from_code_point(ch).into()),
                     writable: Some(false),
@@ -896,8 +918,8 @@ impl<'a> String<'a> {
             Some(super::Number::from(smi).into())
         } else if let PropertyKey::Integer(index) = property_key {
             let index = index.into_i64();
-            if index >= 0 && (index as usize) < self.utf16_len_(agent) {
-                let ch = self.char_code_at_(agent, index as usize);
+            if index >= 0 && usize_from_i64(index) < self.utf16_len_(agent) {
+                let ch = self.char_code_at_(agent, usize_from_i64(index));
                 Some(SmallString::from_code_point(ch).into())
             } else {
                 None
@@ -957,7 +979,7 @@ impl<'gc> String<'gc> {
     pub(crate) fn from_str_direct(
         strings: &mut Vec<StringRecord>,
         string_lookup_table: &mut HashTable<HeapString<'static>>,
-        string_hasher: &crate::hashing::RandomState,
+        string_hasher: &crate::hashing::TextHasher,
         alloc_counter: &mut usize,
         str: &str,
         gc: NoGcScope<'gc, '_>,
@@ -970,14 +992,13 @@ impl<'gc> String<'gc> {
             match found {
                 Ok(string) => string,
                 Err(hash) => {
-                    let data = StringRecord::from_str(str);
+                    let data = StringRecord::from_str(str, hash);
                     *alloc_counter += core::mem::size_of::<HeapString>();
-                    String::String(Self::insert_string_with_hash(
+                    String::String(Self::insert_string(
                         strings,
                         string_lookup_table,
                         string_hasher,
                         data,
-                        hash,
                     ))
                     .bind(gc)
                 }
@@ -990,13 +1011,13 @@ impl<'gc> String<'gc> {
     /// The string must not exist in the string lookup table or strings vector;
     /// otherwise the table holds two equal strings and lookups may return
     /// either one.
-    pub(crate) fn insert_string_with_hash(
+    pub(crate) fn insert_string(
         strings: &mut Vec<StringRecord>,
         string_lookup_table: &mut HashTable<HeapString<'static>>,
-        string_hasher: &crate::hashing::RandomState,
+        string_hasher: &crate::hashing::TextHasher,
         data: StringRecord,
-        hash: u64,
     ) -> HeapString<'static> {
+        let hash = data.table_hash(string_hasher);
         strings.push(data);
         let index = BaseIndex::last(strings);
         let s = HeapString(index);
@@ -1006,20 +1027,20 @@ impl<'gc> String<'gc> {
         s
     }
 
-    /// Find existing heap String or return the strings hash.
+    /// Find existing heap String or return the value of the text.
     fn find_equal_string_direct(
         strings: &mut [StringRecord],
         string_lookup_table: &mut HashTable<HeapString<'static>>,
-        string_hasher: &crate::hashing::RandomState,
+        string_hasher: &crate::hashing::TextHasher,
         message: &str,
     ) -> Result<String<'static>, u64> {
         debug_assert!(message.len() > 7);
         let message = Wtf8Str::from_str(message);
-        let hash = string_hasher.hash_text(message.as_bytes());
+        let hash = string_hasher.text(message.as_bytes());
         string_lookup_table
-            .find(hash, |s| {
+            .find(string_hasher.table_hash(hash), |s| {
                 let record = &strings[s.get_index()];
-                record.len() == message.len() && record.as_wtf8() == message
+                record.len() == message.len() && record.text_is(message.as_bytes())
             })
             .map(|&s| s.into())
             .ok_or(hash)
@@ -1086,12 +1107,9 @@ impl Scoped<'_, String<'static>> {
 /// copy and hash whole.
 const LONG_CONCATENATION: usize = 256;
 
-/// The longest text that a concatenation of two strings puts together
-/// before it asks the heap for the string.
-const SHORT_CONCATENATION: usize = 64;
-
-impl<'a> CreateHeapData<(StringRecord, u64), String<'a>> for Heap {
-    fn create(&mut self, (data, hash): (StringRecord, u64)) -> String<'a> {
+impl<'a> CreateHeapData<StringRecord, String<'a>> for Heap {
+    fn create(&mut self, data: StringRecord) -> String<'a> {
+        let hash = data.table_hash(&self.string_hasher);
         self.alloc_counter += core::mem::size_of::<StringRecord>();
         self.data_bytes_since_gc += data.allocated_bytes();
         self.strings.push(data);
@@ -1117,7 +1135,7 @@ impl Heap {
     /// through the lookup table would be another one. The text must not fit
     /// a small string.
     pub(crate) fn alloc_unlisted_str(&mut self, text: &str) -> HeapString<'static> {
-        let data = StringRecord::from_str(text);
+        let data = StringRecord::unlisted(text);
         self.alloc_counter += core::mem::size_of::<StringRecord>();
         self.data_bytes_since_gc += data.len();
         self.strings.push(data);

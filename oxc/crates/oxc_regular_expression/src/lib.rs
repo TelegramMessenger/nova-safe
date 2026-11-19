@@ -8,7 +8,9 @@ mod parser;
 mod surrogate_pair;
 
 mod generated {
-    #[cfg(debug_assertions)]
+    // 64-bit only: the recorded 32-bit layouts are upstream's, for its own arena `Vec` (four words). Ours wraps
+    // std's (three words), so they do not hold on a 32-bit target, and nothing here depends on a layout.
+    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
     mod assert_layouts;
     mod derive_clone_in;
     mod derive_content_eq;

@@ -1151,19 +1151,10 @@ impl<'a> AnyTypedArray<'a> {
     /// TypedArray.
     pub(crate) fn length_value(self, agent: &Agent) -> Value<'static> {
         let this = self;
-        let length = for_any_typed_array!(this, o, {
-            // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, seq-cst).
-            let cached_buffer_byte_length =
-                o.get_cached_buffer_byte_length(agent, crate::ecmascript::Ordering::SeqCst);
-
-            // 5. If IsTypedArrayOutOfBounds(taRecord) is true, return +0𝔽.
-            if o.is_typed_array_out_of_bounds(agent, cached_buffer_byte_length) {
-                return Value::pos_zero();
-            }
-
-            // 6. Let length be TypedArrayLength(taRecord).
-            o.typed_array_length(agent, cached_buffer_byte_length)
-        });
+        // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, seq-cst).
+        // 5. If IsTypedArrayOutOfBounds(taRecord) is true, return +0𝔽.
+        // 6. Let length be TypedArrayLength(taRecord).
+        let length = for_any_typed_array!(this, o, o.length_or_zero(agent), _TA);
         // 7. Return 𝔽(length).
         Value::try_from(length as i64).unwrap()
     }

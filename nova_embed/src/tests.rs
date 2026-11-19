@@ -154,6 +154,44 @@ fn host_functions_receive_their_id_and_owned_arguments() {
     );
 }
 
+/// A class field's initializer runs when an instance is made, after the
+/// function that declared the class has returned: the bindings it reads must
+/// not live in that function's stack slots.
+#[test]
+fn class_fields_read_the_bindings_of_the_enclosing_function() {
+    let (mut engine, _) = engine();
+    let source = r#"
+        var out = [];
+        function a() { let r = 1; return class { x = r; }; }
+        out.push(new (a())().x);
+        function b() { var r = 2; return class { x = r; }; }
+        out.push(new (b())().x);
+        function c(r) { return class { x = r; }; }
+        out.push(new (c(3))().x);
+        function d() { const r = 4; return class { static x = r; }; }
+        out.push(d().x);
+        function e() { class r { v = 5; } return class { x = new r; }; }
+        out.push(new (e())().x.v);
+        function f() { function r() { return 6; } return class { x = r(); }; }
+        out.push(new (f())().x);
+        function g() { for (const r of [7]) { return class { x = r; }; } }
+        out.push(new (g())().x);
+        function h() { let r = 8; return class { [r] = r + 1; }; }
+        out.push(new (h())()[8]);
+        function i() { let r = 10; class K { x = r; } r = 11; return new K().x; }
+        out.push(i());
+        function k() { try { throw 12; } catch (r) { return class { x = { y: [r] }; }; } }
+        out.push(new (k())().x.y[0]);
+        { let r = 13; var M = class { x = r; }; }
+        out.push(new M().x);
+        out.join(' ')
+    "#;
+    assert_eq!(
+        engine.evaluate(source, false),
+        Ok(Completion::String("1 2 3 4 5 6 7 9 11 12 13".into()))
+    );
+}
+
 #[test]
 fn host_functions_return_values() {
     let (mut engine, recorder) = engine();
@@ -177,6 +215,48 @@ fn host_functions_return_values() {
     assert_eq!(
         engine.evaluate("__h() * 2", false),
         Ok(Completion::Number(5.0))
+    );
+    // A lone surrogate comes back as it went out, a pair joins, and a byte
+    // that is no UTF-8 becomes U+FFFD.
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(
+        b"a\xED\xA0\x80b\xED\xA0\xBD\xED\xB8\x80\xFFc".to_vec(),
+    ));
+    assert_eq!(
+        engine.evaluate("__h() === 'a\\ud800b\\ud83d\\ude00\\ufffdc' ? 1 : 0", false),
+        Ok(Completion::Number(1.0))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(b"\xED\xA0\x80".to_vec()));
+    assert_eq!(
+        engine.evaluate("__h() === '\\ud800' ? 1 : 0", false),
+        Ok(Completion::Number(1.0))
+    );
+    assert_eq!(
+        engine.evaluate("function same(a, b) { return a === b && a.length; }", false),
+        Ok(Completion::Undefined)
+    );
+    assert_eq!(
+        engine.call_with_bytes("same", &[b"x\xED\xB0\x80", b"x\xED\xB0\x80"]),
+        Ok(Completion::Number(2.0))
+    );
+    assert_eq!(
+        engine.evaluate("function echo(a) { return a; }", false),
+        Ok(Completion::Undefined)
+    );
+    assert_eq!(
+        engine.call_with_bytes("echo", &[b"\xED\xA0\x80"]),
+        Ok(Completion::String(b"\xED\xA0\x80".to_vec()))
+    );
+    *recorder.reply.borrow_mut() = Some(HostReturn::RangeError("too long".into()));
+    assert_eq!(
+        engine.evaluate(
+            "try { __h(); 'returned' } catch (e) { (e instanceof RangeError) + ' ' + e.message }",
+            false
+        ),
+        Ok(Completion::String("true too long".into()))
+    );
+    assert_eq!(
+        engine.evaluate("__h()", false),
+        Err(Error::Exception("RangeError: too long".into()))
     );
 }
 
@@ -1188,33 +1268,33 @@ fn lone_surrogates_go_back_into_the_engine() {
         .unwrap();
     let lone: &[u8] = b"a\xED\xA0\x80b\xED\xB0\x80";
     assert_eq!(
-        engine.call_wtf8("units", &[lone]),
+        engine.call_with_bytes("units", &[lone]),
         Ok(Completion::String("61 d800 62 dc00".into()))
     );
     assert_eq!(
-        engine.call_wtf8("same", &[lone]),
+        engine.call_with_bytes("same", &[lone]),
         Ok(Completion::String(lone.to_vec()))
     );
     // A lead and a trail encoded apart are the one code point they spell.
     assert_eq!(
-        engine.call_wtf8("same", &[b"\xED\xA0\xBD\xED\xB2\xA9"]),
+        engine.call_with_bytes("same", &[b"\xED\xA0\xBD\xED\xB2\xA9"]),
         Ok(Completion::String("\u{1F4A9}".into()))
     );
     // Bytes that are not WTF-8 are replaced, as before.
     assert_eq!(
-        engine.call_wtf8("units", &[b"a\xFF\xC0\x80"]),
+        engine.call_with_bytes("units", &[b"a\xFF\xC0\x80"]),
         Ok(Completion::String("61 fffd fffd fffd".into()))
     );
     assert_eq!(
         engine.call("units", &["\u{e9}\u{1F4A9}"]),
         Ok(Completion::String("e9 d83d dca9".into()))
     );
-    *recorder.reply.borrow_mut() = Some(HostReturn::Wtf8(lone.to_vec()));
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(lone.to_vec()));
     assert_eq!(
         engine.evaluate("units(__h())", false),
         Ok(Completion::String("61 d800 62 dc00".into()))
     );
-    *recorder.reply.borrow_mut() = Some(HostReturn::Wtf8(b"\xFFok".to_vec()));
+    *recorder.reply.borrow_mut() = Some(HostReturn::StringBytes(b"\xFFok".to_vec()));
     assert_eq!(
         engine.evaluate("units(__h())", false),
         Ok(Completion::String("fffd 6f 6b".into()))
@@ -8295,4 +8375,5231 @@ loops: 20000 true -1893346297 25000 true 4 24995 10890 988283121 012345678910 29
         assert_eq!(found, expected);
     }
     assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// JSON.stringify takes the length of an Array from the value, and a Proxy
+/// of an Array answers any. The text is not given room for all of it at
+/// once (the allocator ended the process where it had none), and the loop
+/// over the elements asks the host's interrupt and the memory limit though
+/// no script runs in it when the Proxy's trap is a built-in function: the
+/// text is refused when the limit has no room for more of it (or the script
+/// ends as out of memory, whichever the limit finds first), and the engine
+/// goes on.
+#[test]
+fn stringify_of_a_length_without_elements_is_bounded() {
+    let (mut engine, stop, _) = limited(8 << 20, 0);
+    let refused = engine.evaluate(
+        "var made = new Proxy([], { get: Math.abs.bind(null, 2 ** 53 - 1) });
+         try { JSON.stringify(made); 'returned' } catch (e) { e.constructor.name }",
+        false,
+    );
+    assert!(
+        refused == Ok(Completion::String("RangeError".into()))
+            || refused == Err(Error::OutOfMemory),
+        "{refused:?}"
+    );
+    assert_eq!(
+        engine.evaluate(
+            "var short = []; short.length = 5; short[2] = 'x';
+             JSON.stringify(short) + JSON.stringify(new Proxy([1, [2]], {}), null, 1).length
+                 + JSON.stringify(new Proxy([], { get: Math.abs.bind(null, 3) }))",
+            false
+        ),
+        Ok(Completion::String(
+            "[null,null,\"x\",null,null]17[3,3,3]".into()
+        ))
+    );
+    stop.set(true);
+    assert_eq!(
+        engine.evaluate("JSON.stringify(made)", false),
+        Err(Error::Interrupted)
+    );
+    stop.set(false);
+    assert_eq!(
+        engine.evaluate("JSON.stringify([1, 'two', [3]])", false),
+        Ok(Completion::String("[1,\"two\",[3]]".into()))
+    );
+}
+
+/// What a RegExp search puts on its backtracking stacks is its own memory,
+/// outside the heap. It is bounded by the room the memory limit leaves, and
+/// the stacks of a nest of lookarounds, each of which keeps the one before
+/// it, are bounded together: a search that would need more is refused as
+/// too complex, and the engine goes on.
+#[test]
+fn a_regexp_search_keeps_its_stacks_within_the_memory_limit() {
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    let script = r#"var s = 'a'.repeat(300000), r = [];
+function t(name, f) { try { r.push(name + ': ' + f()); } catch (e) { r.push(name + ': ' + e.constructor.name + ': ' + e.message); } }
+function nest(k) { return k ? '(a)*(?<=(?=' + nest(k - 1) + ')(a)*)' : '(a)*'; }
+t('short', function () { return /(a)*/.exec('a'.repeat(1000))[0].length; });
+t('long', function () { return /(a)*/.test(s); });
+t('one char at a time', function () { return /a*b?/.exec(s)[0].length; });
+t('nested short', function () { return new RegExp(nest(3)).test('a'.repeat(200)); });
+t('nested long', function () { return new RegExp(nest(3)).test('a'.repeat(20000)); });
+t('after', function () { return /(a)*b?/.exec('aaab')[0]; });
+r.join('\n')"#;
+    let expected = "short: 1000
+long: RangeError: regular expression is too complex to match
+one char at a time: 300000
+nested short: true
+nested long: RangeError: regular expression is too complex to match
+after: aaab";
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    assert_eq!(
+        std::string::String::from_utf8(found).expect("text"),
+        expected
+    );
+}
+
+/// A loop of native code whose every step is a call of a built-in function
+/// runs no bytecode: an iterator whose `next` is a built-in bound to its
+/// result, the values of an array-like of a made-up length, the indexes of a
+/// Proxy whose trap is a built-in. Nothing asked the host's interrupt in
+/// them, so the host could not end such a script; every call that native
+/// code makes asks it now, no `catch` keeps it from the host, and the engine
+/// goes on.
+#[test]
+fn loops_that_only_call_built_ins_are_interrupted() {
+    let (mut engine, stop, _) = limited(8 << 20, 0);
+    for script in [
+        "var result = { done: false, value: [1, 2] };
+         var endless = { next: Object.bind(null, result) };
+         endless[Symbol.iterator] = Object.bind(null, endless);
+         new Map(endless); 'returned'",
+        "var made = new Proxy([], { get: Math.abs.bind(null, 2 ** 53 - 1) });
+         Math.sumPrecise(Array.prototype.values.call(made)); 'returned'",
+        "new Set(Array.prototype.values.call({ length: 2 ** 53 - 1 })); 'returned'",
+        "try { new Set(Array.prototype.values.call({ length: 2 ** 53 - 1 })); } catch (e) {}
+         'caught'",
+    ] {
+        stop.set(true);
+        assert_eq!(
+            engine.evaluate(script, false),
+            Err(Error::Interrupted),
+            "{script}"
+        );
+        stop.set(false);
+        assert_eq!(engine.evaluate("1 + 1", false), Ok(Completion::Number(2.0)));
+    }
+    // What such calls return is what it was.
+    assert_eq!(
+        engine.evaluate(
+            "var seen = [];
+             new Map([[1, 'a'], [2, 'b']]).forEach(Array.prototype.push.bind(seen));
+             var bound = new Set(Array.prototype.values.call({ length: 3, 0: 'x', 2: 'z' }));
+             seen.length + ' ' + bound.size + ' ' + Math.sumPrecise([1, 2, 3.5])
+                 + ' ' + [3, 1, 2].sort(Math.min.bind(null, 0)).join('')",
+            false
+        ),
+        Ok(Completion::String("6 3 6.5 312".into()))
+    );
+}
+
+/// A host function is handed copies of its arguments, and eight of them may
+/// be one long string or one buffer. The copies are asked of the memory
+/// limit together before any is made: a call whose copies the limit has no
+/// room for, whatever a collection frees, throws a RangeError and does not
+/// reach the host.
+#[test]
+fn the_copies_of_host_arguments_are_asked_of_the_memory_limit() {
+    let recorder = Rc::new(Recorder {
+        calls: RefCell::new(Vec::new()),
+        reply: RefCell::new(None),
+        panic_on: None,
+    });
+    let mut engine = Engine::new(
+        EngineOptions {
+            memory_limit: 8 << 20,
+            stack_limit: 0,
+        },
+        Box::new(SharedRecorder(recorder.clone())),
+    )
+    .unwrap();
+    engine
+        .register_function("__h", 1, 0, ArgumentMode::ValuesAndBytes)
+        .unwrap();
+    assert_eq!(
+        engine.evaluate("var s = 'x'.repeat(3 << 19); __h(s); 'called'", false),
+        Ok(Completion::String("called".into()))
+    );
+    assert_eq!(recorder.calls.borrow().len(), 1);
+    for arguments in [
+        "s, s, s, s, s, s, s, s",
+        "b, b, b, b, b, b, b, b",
+        "s, b, s, b, s, b, s, b",
+    ] {
+        let script = format!(
+            "var b = new Uint8Array(3 << 19);
+             try {{ __h({arguments}); 'called' }} catch (e) {{ e.constructor.name }}"
+        );
+        assert_eq!(
+            engine.evaluate(&script, false),
+            Ok(Completion::String("RangeError".into())),
+            "{arguments}"
+        );
+        assert_eq!(recorder.calls.borrow().len(), 1, "{arguments}");
+    }
+    assert_eq!(
+        engine.evaluate(
+            "__h('a', 2, new Uint8Array([7, 8, 9]), s.slice(0, 5000)); 'called'",
+            false
+        ),
+        Ok(Completion::String("called".into()))
+    );
+    let calls = recorder.calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].1.len(), 4);
+    assert_eq!(calls[1].1[0], HostArg::String("a".into()));
+    assert_eq!(calls[1].1[3], HostArg::String(vec![b'x'; 5000]));
+}
+
+/// The text of a Number is written in the native stack, and the digits of
+/// toFixed come of one exact integer where it holds them: String(x), x + "",
+/// a template, toString, toFixed with every count of digits, JSON.stringify,
+/// join and the keys that are integers give, for three thousand Numbers of
+/// every kind, what they gave before. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn the_text_of_a_number_is_made_without_the_heap() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(number_texts)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn number_texts() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function hash(h, s) { for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+function say(name, v) { print(name + ": " + v); }
+var seed = 123456789;
+function rnd() { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0); }
+var values = [0, -0, 1, -1, 7, 10, 99, 100, 1234567, 12345678, -12345678, 4294967295, 4294967296, 2 ** 53 - 1, 2 ** 53, 2 ** 53 + 2, -(2 ** 53), 1e21, 1e20, 999999999999999900000, 1.5, 2.5, -2.5, 0.5, 0.125, 0.375, 1.005, 1.045, 8.345, 0.1 + 0.2, 1 / 3, 2 / 3, 1e-7, 1e-6, 0.000001234, 123.456, 5e-324, 1.7976931348623157e308, 2.2250738585072014e-308, NaN, Infinity, -Infinity, 0.1, 0.01, 0.37, 99.995, 99.985, 1e15 + 0.3, 123456789.123456789, 4503599627370495.5, 4503599627370496.5];
+for (var i = 0; i < 3000; i++) {
+  var a = rnd(), b = rnd();
+  switch (i % 6) {
+    case 0: values.push(a / 1000); break;
+    case 1: values.push((a % 100000) * 0.37); break;
+    case 2: values.push(((a % 100000) | 1) / Math.pow(2, 1 + b % 24)); break;
+    case 3: values.push(a * Math.pow(10, (b % 40) - 20)); break;
+    case 4: values.push(-(a % 1000000) / 100); break;
+    default: values.push(a * b);
+  }
+}
+say("count", values.length);
+var h = 7, lens = 0;
+for (var i = 0; i < values.length; i++) { var x = values[i]; var s = String(x); h = hash(h, s); lens += s.length; if (s !== x + "" || s !== `${x}` || s !== x.toString() || s !== "" + x) say("differs", s); }
+say("String", h + " " + lens);
+h = 7; lens = 0;
+for (var d = 0; d <= 20; d++) for (var i = 0; i < values.length; i += 1 + (d % 3)) { var s = values[i].toFixed(d); h = hash(h, s); lens += s.length; }
+say("toFixed 0..20", h + " " + lens);
+h = 7; lens = 0;
+for (var d = 21; d <= 100; d += 13) for (var i = 0; i < values.length; i += 7) { var s = values[i].toFixed(d); h = hash(h, s); lens += s.length; }
+say("toFixed 21..100", h + " " + lens);
+say("toFixed edges", [(0.5).toFixed(0), (1.5).toFixed(0), (2.5).toFixed(0), (-2.5).toFixed(0), (0.125).toFixed(2), (1.005).toFixed(2), (8.345).toFixed(2), (-0).toFixed(2), (-0.001).toFixed(2), (1e21).toFixed(2), (-1e21).toFixed(3), (2 ** 53).toFixed(1), (2 ** 60).toFixed(3), (123.456).toFixed(), (123.456).toFixed(undefined), (0).toFixed(20), (5e-324).toFixed(20), (NaN).toFixed(2), (Infinity).toFixed(1), (1.45).toFixed("1"), (10).toFixed(1.9)].join(" "));
+say("toFixed errors", [-1, 101, Infinity, NaN, "x"].map(function (d) { try { return (1.5).toFixed(d); } catch (e) { return e.constructor.name; } }).join(" "));
+h = 7;
+for (var i = 0; i < values.length; i += 3) { h = hash(h, JSON.stringify([values[i], { v: values[i + 1] }])); }
+say("JSON", h + " " + JSON.stringify([1, -0, 1.5, 1e21, 1e-7, NaN, Infinity, 12345678, 2 ** 53]));
+h = 7;
+for (var i = 0; i + 4 < values.length; i += 5) h = hash(h, values.slice(i, i + 5).join("|"));
+say("join", h + " " + [1, 2.5, -0, 1e21, 12345678].join() + " " + [0.1, 12345678, -1].toString());
+var keyed = {}; for (var i = 0; i < 400; i++) keyed[values[i]] = i;
+say("keys", Object.keys(keyed).length + " " + hash(7, Object.keys(keyed).join(",")));
+var arr = [5, 6, 7]; arr[1234] = 1; var seen = []; for (var k in arr) seen.push(k + ":" + typeof k); var wide = { 7: 1, 12345678: 2, 4294967294: 3, 4294967295: 4, 9007199254740991: 5 }; for (var k in wide) seen.push(k + ":" + typeof k); say("for-in", seen.join(","));
+say("Object.keys array", Object.keys([1, 2, 3]).join("") + " " + Object.keys({ 10: 1, 9: 2, 12345678: 3, 4294967295: 4, 4294967296: 5 }).join(","));
+say("entries", Object.entries([7, 8]).join(";") + " " + Array.from([4, 5].keys()).join("") + " " + Reflect.ownKeys([1, 2]).join(","));
+say("concat", (1 + "") + (-1 + "") + (12345678 + "") + (0.5 + "x") + ("x" + 1e21) + (1e-7 + "") + (-0 + "") + (2 ** 31 + "") + (-(2 ** 31) + ""));
+say("misc", [(255).toString(16), (0.5).toString(2), (1e21).toString(36).length, (25).toString(10), Number("12345678").toString(), (1234.5678).toPrecision(6), (1234.5678).toExponential(2), parseFloat("1.50").toFixed(1), String(12345678n), String(-0), (-0).toString(), String([-0]), `${-0}`].join(" "));
+lines.join("\n")"#;
+    let expected = r#"count: 3051
+String: 220778072 38084
+toFixed 0..20: -718694196 727628
+toFixed 21..100: -777784167 201103
+toFixed edges: 1 2 3 -3 0.13 1.00 8.35 0.00 -0.00 1e+21 -1e+21 9007199254740992.0 1152921504606846976.000 123 123 0.00000000000000000000 0.00000000000000000000 NaN Infinity 1.4 10.0
+toFixed errors: RangeError RangeError RangeError 2 2
+JSON: 76481623 [1,0,1.5,1e+21,1e-7,null,null,12345678,9007199254740992]
+join: 1147205105 1,2.5,0,1e+21,12345678 0.1,12345678,-1
+keys: 399 -419572706
+for-in: 0:string,1:string,2:string,1234:string,7:string,12345678:string,4294967294:string,4294967295:string,9007199254740991:string
+Object.keys array: 012 9,10,12345678,4294967295,4294967296
+entries: 0,7;1,8 01 0,1,length
+concat: 1-1123456780.5xx1e+211e-702147483648-2147483648
+misc: ff 0.1 14 25 12345678 1234.57 1.23e+3 1.5 12345678 0 0 0 0"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `yield value` hands the value over as it is, and whoever resumed the
+/// generator makes the iterator result object for it if it wants one:
+/// %GeneratorPrototype%.next does, a loop and the built-ins that step an
+/// iterator do not where that `next` is the generator's. What a script can
+/// tell is as it was: the result objects of `next`, `return` and `throw`,
+/// values sent in, `yield*` and the result objects it passes on, a `next`
+/// that was replaced on the object, on the function's prototype or on
+/// %GeneratorPrototype%, a generator that is already running, closing on
+/// `break` and on a throw. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn a_generator_yields_its_value_without_a_result_object() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(generators)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn generators() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function say(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e) + ": " + (e && e.message !== undefined ? e.message : e); } print(name + ": " + v); }
+function show(r) { return r === undefined ? "undefined" : Object.keys(r).join("+") + "=" + String(r.value) + "/" + r.done + "/" + (Object.getPrototypeOf(r) === Object.prototype) + "/" + JSON.stringify(Object.getOwnPropertyDescriptor(r, "value")); }
+function* range(n) { for (var i = 0; i < n; i++) yield i; return "end"; }
+say("for-of", function () { var s = []; for (var v of range(5)) s.push(v); return s.join(","); });
+say("manual next", function () { var g = range(2), a = g.next(), b = g.next(), c = g.next(), d = g.next(); return [show(a), show(b), show(c), show(d), a === b, c === d].join(" | "); });
+say("result objects are fresh and writable", function () { var g = range(3), a = g.next(); a.value = 9; a.extra = 1; var b = g.next(); return a.value + " " + b.value + " " + ("extra" in b) + " " + Object.isExtensible(b) + " " + (a !== b); });
+say("values sent in", function () { function* echo() { var got = []; var x = yield 1; got.push(x); x = yield 2; got.push(x); try { x = yield 3; } finally { got.push("f"); } return got.join(""); } var g = echo(); return [g.next("ignored").value, g.next("a").value, g.next("b").value, show(g.next("c"))].join(" "); });
+say("yield value in a loop is undefined", function () { var got = []; function* g() { got.push(yield 1); got.push(yield 2); } for (var v of g()) {} return got.length + ":" + got.join(","); });
+say("return", function () { var log = []; function* g() { try { yield 1; yield 2; } finally { log.push("cleanup"); yield "from finally"; log.push("after"); } } var it = g(); var a = it.next(), b = it.return("r"), c = it.next(), d = it.next(); return [show(a), show(b), show(c), show(d), log.join(",")].join(" | "); });
+say("return before start and after end", function () { var it = range(3); var a = it.return("early"), b = it.next(); var it2 = range(1); it2.next(); it2.next(); return [show(a), show(b), show(it2.return("late")), show(it2.next())].join(" | "); });
+say("throw", function () { function* g() { var caught = []; for (;;) { try { yield caught.length; } catch (e) { caught.push(e); if (caught.length === 2) return caught.join("+"); } } } var it = g(); return [show(it.next()), show(it.throw("x")), show(it.throw("y")), show(it.next())].join(" | "); });
+say("throw not caught", function () { var it = range(3); it.next(); try { it.throw(new RangeError("out")); } catch (e) { return e.constructor.name + " " + show(it.next()); } });
+say("break calls return", function () { var log = []; function* g() { try { yield 1; yield 2; yield 3; } finally { log.push("closed"); } } for (var v of g()) { log.push(v); if (v === 2) break; } return log.join(","); });
+say("throw in body closes", function () { var log = []; function* g() { try { yield 1; yield 2; } finally { log.push("closed"); } } try { for (var v of g()) { log.push(v); throw new Error("body"); } } catch (e) { log.push(e.message); } return log.join(","); });
+say("continue and labels", function () { var out = []; outer: for (var a of range(3)) { for (var b of range(3)) { if (b === 1) continue outer; out.push(a + "" + b); } } return out.join(","); });
+say("generator throws", function () { function* g() { yield 1; throw new TypeError("inside"); } var it = g(), got = []; try { for (var v of it) got.push(v); } catch (e) { got.push(e.message); } return got.join(",") + " " + show(it.next()); });
+say("exhausted", function () { var it = range(2), n = 0; for (var v of it) n++; for (var w of it) n += 100; return n + " " + show(it.next()); });
+say("delegate to array and generator", function () { function* g() { var r = yield* range(2); yield r; yield* [7, 8]; yield* "ab"; return yield* (function* () { return "inner"; })(); } var out = []; var it = g(), r; while (!(r = it.next()).done) out.push(r.value); return out.join(",") + " " + r.value; });
+say("delegate passes result objects on", function () { var results = [{ value: 1, done: false, tag: "a" }, Object.create({ value: "inherited", done: false }), { get value() { return "getter"; }, get done() { return false; } }, { done: 0, value: "falsy done" }, { done: "yes", value: "end" }]; var i = 0; var inner = { [Symbol.iterator]() { return this; }, next() { return results[i++]; } }; function* g() { return yield* inner; } var it = g(); var a = it.next(), b = it.next(), c = it.next(), d = it.next(), e = it.next(); return [a === results[0], a.tag, b === results[1], b.value, c === results[2], c.value, d === results[3], show(e)].join(" "); });
+say("delegate in a loop reads them", function () { var results = [{ value: 1, done: false }, Object.create({ value: "inherited", done: false }), { get value() { return "getter"; }, get done() { return false; } }, { done: 0, value: "falsy" }, { done: 1 }]; var i = 0; var inner = { [Symbol.iterator]() { return this; }, next() { return results[i++]; } }; function* g() { yield "first"; yield* inner; yield "not reached?"; } var out = []; for (var v of g()) out.push(v); return out.join(","); });
+say("delegate to a non-object result", function () { var inner = { [Symbol.iterator]() { return this; }, next() { return 5; } }; function* g() { yield* inner; } var out = []; try { for (var v of g()) out.push(v); } catch (e) { return e.constructor.name; } return out.join(","); });
+say("delegate return and throw", function () { var log = []; var inner = { [Symbol.iterator]() { return this; }, next(v) { log.push("next:" + v); return { value: 1, done: false }; }, return(v) { log.push("return:" + v); return { value: "ret", done: true }; }, throw(e) { log.push("throw:" + e); return { value: "thrown", done: false }; } }; function* g() { yield* inner; } var it = g(); it.next("a"); it.next("b"); var t = it.throw("t"); var r = it.return("r"); return [log.join(","), show(t), show(r)].join(" | "); });
+say("next replaced on the object", function () { var it = range(3), n = 0; it.next = function () { n++; return n > 2 ? { done: true } : { value: "mine" + n, done: false }; }; var out = []; for (var v of it) out.push(v); return out.join(",") + " " + n; });
+say("next replaced on the function's prototype", function () { function* g() { yield 1; yield 2; } var calls = 0; g.prototype.next = function () { calls++; return calls > 1 ? { done: true } : { value: "proto", done: false }; }; var out = []; for (var v of g()) out.push(v); return out.join(",") + " " + calls; });
+say("next replaced on the generator prototype", function () { var GeneratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf(range(0))), original = GeneratorPrototype.next, calls = 0, out = []; GeneratorPrototype.next = function (v) { calls++; var r = original.call(this, v); if (!r.done) r.value = r.value * 10; return r; }; try { for (var v of range(3)) out.push(v); out.push(String([...range(2)])); } finally { GeneratorPrototype.next = original; } for (var w of range(2)) out.push(w); return out.join(",") + " " + calls; });
+say("another object with the generator's next", function () { var it = range(2); var fake = { next: it.next, [Symbol.iterator]() { return this; } }; try { for (var v of fake) {} return "ran"; } catch (e) { return e.constructor.name; } });
+say("next called on something else", function () { var next = range(1).next; return [1, {}, null].map(function (t) { try { next.call(t); return "ok"; } catch (e) { return e.constructor.name; } }).join(","); });
+say("already running", function () { var it; function* g() { var r = []; try { it.next(); } catch (e) { r.push(e.constructor.name); } try { for (var v of it) r.push("ran"); } catch (e) { r.push(e.constructor.name); } try { it.return(1); } catch (e) { r.push(e.constructor.name); } yield r.join("+"); } it = g(); return it.next().value + " " + show(it.next()); });
+say("spread destructuring from", function () { var [a, b, ...rest] = range(5); var [x, , y = "d"] = range(2); return [[...range(3)].join(""), a, b, rest.join(""), x, y, Array.from(range(4)).join(""), Array.from(range(3), function (v) { return v * 2; }).join(""), Math.max(...range(4)), new Set(range(3)).size, new Map((function* () { yield [1, "a"]; yield [2, "b"]; })()).get(2), Object.fromEntries((function* () { yield ["k", 1]; })()).k].join(" "); });
+say("destructuring closes", function () { var log = []; function* g() { try { yield 1; yield 2; yield 3; } finally { log.push("closed"); } } var [a] = g(); var [b, c, d, e] = g(); return [a, b, c, d, e, log.join(",")].join(" "); });
+say("methods classes arguments", function () { class C { constructor() { this.items = [3, 4]; } *[Symbol.iterator]() { for (var i of this.items) yield i * 2; } static *count(n) { while (n--) yield arguments.length + ":" + n; } } var o = { *g(a, b = a + 1, ...r) { yield a; yield b; yield r.length; yield this === o; } }; return [[...new C()].join(""), [...C.count(2)].join(","), [...o.g(1, undefined, 5, 6)].join(",")].join(" "); });
+say("nested and recursive", function () { function* tree(d) { if (d === 0) { yield "leaf"; return; } for (var v of tree(d - 1)) yield d + v; yield* tree(d - 1); } function* pairs() { for (var a of range(3)) for (var b of range(a)) yield a + "" + b; } return [...tree(3)].length + " " + [...pairs()].join(","); });
+say("closures over loop variables", function () { var fs = []; for (let v of range(3)) fs.push(function () { return v; }); return fs.map(function (f) { return f(); }).join(""); });
+say("infinite with break", function () { function* nat() { var n = 0; for (;;) yield n++; } var sum = 0; for (var v of nat()) { if (v > 1000) break; sum += v; } return sum; });
+say("many generators", function () { var total = 0; for (var i = 0; i < 3000; i++) { for (var v of range(i % 7)) total += v; } var its = []; for (var j = 0; j < 500; j++) { var it = range(3); it.next(); its.push(it); } for (var k = 0; k < its.length; k++) total += its[k].next().value; return total; });
+say("yield in arguments and expressions", function () { function* g() { var a = [yield 1, yield 2]; var o = { k: yield 3 }; return a.join("") + o.k + (yield 4) + `${yield 5}`; } var it = g(), sent = ["", "a", "b", "c", "d", "e"], out = [], r, i = 0; while (!(r = it.next(sent[i++])).done) out.push(r.value); return out.join("") + " " + r.value; });
+say("return value and done result", function () { function* g() { return 5; } function* h() { } var a = g().next(), b = h().next(); return show(a) + " | " + show(b) + " | " + [...g()].length; });
+say("symbol iterator and tags", function () { var it = range(1); return [it[Symbol.iterator]() === it, Object.prototype.toString.call(it), typeof it.next, it.next.name, it.next.length, Object.getOwnPropertyNames(Object.getPrototypeOf(Object.getPrototypeOf(it))).sort().join(",")].join(" "); });
+say("async generator untouched", function () { async function* ag() { yield 1; yield 2; } var it = ag(); var p = it.next(); return (p instanceof Promise) + " " + typeof it[Symbol.asyncIterator]; });
+
+say("native consumers", function () { function* g() { yield 1; yield* [2, 3]; yield* (function* () { yield 4; return "x"; })(); return 9; } return [Array.from(g()).join(""), [...new Set(g())].join(""), new Map((function* () { for (var v of g()) yield [v, v * 2]; })()).get(4), Array.from(g(), function (v, i) { return v + i; }).join(","), Object.fromEntries((function* () { yield* [["a", 1], ["b", 2]]; })()).b, new Uint8Array(g()).join(""), Array.from(new Set(g()).values()).length].join(" "); });
+say("native consumers with their own results", function () { var results = [{ value: 1, done: false }, Object.create({ value: "inherited", done: false }), { get value() { return "getter"; }, get done() { return false; } }, { done: 1 }]; var i = 0; var inner = { [Symbol.iterator]() { return this; }, next() { return results[i++]; } }; function* g() { yield "first"; yield* inner; } return Array.from(g()).join(","); });
+say("native consumers with next replaced", function () { var it = range(3), n = 0; it.next = function () { n++; return n > 2 ? { done: true } : { value: "mine" + n, done: false }; }; var a = Array.from(it).join(","); var GeneratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf(range(0))), original = GeneratorPrototype.next, calls = 0; GeneratorPrototype.next = function (v) { calls++; return original.call(this, v); }; try { var b = Array.from(range(3)).join("") + new Set(range(2)).size; } finally { GeneratorPrototype.next = original; } return a + " " + b + " " + calls; });
+say("native consumer closes on a throw", function () { var log = []; function* g() { try { yield 1; yield 2; yield 3; } finally { log.push("closed"); } } try { Array.from(g(), function (v) { if (v === 2) throw new Error("mapper"); return v; }); } catch (e) { log.push(e.message); } try { new Map(g()); } catch (e) { log.push(e.constructor.name); } return log.join(","); });
+say("native consumer of a running generator", function () { var it; function* g() { var r; try { r = Array.from(it).length; } catch (e) { r = e.constructor.name; } yield r; try { r = new Set(it).size; } catch (e) { r = e.constructor.name; } yield r; } it = g(); return it.next().value + " " + it.next().value + " " + show(it.next()); });
+say("native consumer of a generator that throws", function () { function* g() { yield 1; throw new RangeError("inside"); } var it = g(); try { Array.from(it); return "no"; } catch (e) { return e.message + " " + show(it.next()); } });
+say("promise combinators take a generator", function () { function* g() { yield 1; yield Promise.resolve(2); } var p = Promise.all(g()), q = Promise.race(g()), r = Promise.allSettled(g()); return [p instanceof Promise, q instanceof Promise, r instanceof Promise].join(","); });
+lines.join("\n")"#;
+    let expected = r#"for-of: 0,1,2,3,4
+manual next: value+done=0/false/true/{"value":0,"writable":true,"enumerable":true,"configurable":true} | value+done=1/false/true/{"value":1,"writable":true,"enumerable":true,"configurable":true} | value+done=end/true/true/{"value":"end","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | false | false
+result objects are fresh and writable: 9 1 false true true
+values sent in: 1 2 3 value+done=abf/true/true/{"value":"abf","writable":true,"enumerable":true,"configurable":true}
+yield value in a loop is undefined: 2:,
+return: value+done=1/false/true/{"value":1,"writable":true,"enumerable":true,"configurable":true} | value+done=from finally/false/true/{"value":"from finally","writable":true,"enumerable":true,"configurable":true} | value+done=r/true/true/{"value":"r","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | cleanup,after
+return before start and after end: value+done=early/true/true/{"value":"early","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | value+done=late/true/true/{"value":"late","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+throw: value+done=0/false/true/{"value":0,"writable":true,"enumerable":true,"configurable":true} | value+done=1/false/true/{"value":1,"writable":true,"enumerable":true,"configurable":true} | value+done=x+y/true/true/{"value":"x+y","writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+throw not caught: RangeError value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+break calls return: 1,2,closed
+throw in body closes: 1,closed,body
+continue and labels: 00,10,20
+generator throws: 1,inside value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+exhausted: 2 value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+delegate to array and generator: 0,1,end,7,8,a,b inner
+delegate passes result objects on: true a true inherited true getter true value+done=end/true/true/{"value":"end","writable":true,"enumerable":true,"configurable":true}
+delegate in a loop reads them: first,1,inherited,getter,falsy,not reached?
+delegate to a non-object result: TypeError
+delegate return and throw: next:undefined,next:b,throw:t,return:r | value+done=thrown/false/true/{"value":"thrown","writable":true,"enumerable":true,"configurable":true} | value+done=ret/true/true/{"value":"ret","writable":true,"enumerable":true,"configurable":true}
+next replaced on the object: mine1,mine2 3
+next replaced on the function's prototype: proto 2
+next replaced on the generator prototype: 0,10,20,0,10,0,1 7
+another object with the generator's next: TypeError
+next called on something else: TypeError,TypeError,TypeError
+already running: TypeError+TypeError+TypeError value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+spread destructuring from: 012 0 1 234 0 d 0123 024 3 3 b 1
+destructuring closes: 1 1 2 3  closed,closed
+methods classes arguments: 68 1:1,1:0 1,2,2,true
+nested and recursive: 8 10,20,21
+closures over loop variables: 012
+infinite with break: 500500
+many generators: 15484
+yield in arguments and expressions: 12345 abcde
+return value and done result: value+done=5/true/true/{"value":5,"writable":true,"enumerable":true,"configurable":true} | value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true} | 0
+symbol iterator and tags: true [object Generator] function next 1 constructor,next,return,throw
+async generator untouched: true function
+native consumers: 1234 1234 8 1,3,5,7 2 1234 4
+native consumers with their own results: first,1,inherited,getter
+native consumers with next replaced: mine1,mine2 0122 7
+native consumer closes on a throw: closed,mapper,closed,TypeError
+native consumer of a running generator: TypeError TypeError value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+native consumer of a generator that throws: inside value+done=undefined/true/true/{"writable":true,"enumerable":true,"configurable":true}
+promise combinators take a generator: true,true,true"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The arguments object is kept in a stack slot where nothing looks for it
+/// by name, its shape is kept from one call to the next, and
+/// `arguments.length` and `arguments[i]` are read where the object has
+/// them. What a script can tell is as it was: lengths and indexes of every
+/// count of arguments, the descriptors and keys of the object, writes,
+/// deletions and redefinitions, a property it inherits where it has none,
+/// `arguments` assigned to, declared again, found by an arrow function or
+/// by eval, a name `arguments` declared around the function (which is not
+/// its arguments object, whatever the semantic analysis resolves the
+/// reference to), with default and rest parameters, in generators, methods
+/// and constructors, and after the call that made it. What is expected is what
+/// Node prints for the same script.
+#[test]
+fn the_arguments_object_is_what_it_was() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arguments_objects)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arguments_objects() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function say(name, f) { var v; try { v = f(); } catch (e) { v = "threw " + (e && e.constructor ? e.constructor.name : typeof e); } print(name + ": " + v); }
+say("length and indexes", function () { function f() { "use strict"; var r = [arguments.length]; for (var i = -1; i <= arguments.length; i++) r.push(String(arguments[i])); r.push(arguments["0"], arguments["length"], arguments[1.5], arguments["x"], arguments[4294967295], arguments[2 ** 32]); return r.join(","); } return [f(), f(1), f("a", undefined, null), f(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)].join(" | "); });
+say("every count", function () { function sum() { "use strict"; var n = 0; for (var i = 0; i < arguments.length; i++) n += arguments[i]; return n + ":" + arguments.length; } var r = []; for (var c = 0; c <= 14; c++) { var a = []; for (var k = 0; k < c; k++) a.push(k + 1); r.push(sum.apply(null, a)); } return r.join(","); });
+say("descriptors", function () { function f() { "use strict"; return arguments; } var a = f(7, 8); var d = Object.getOwnPropertyDescriptor(a, "length"), e = Object.getOwnPropertyDescriptor(a, "0"), it = Object.getOwnPropertyDescriptor(a, Symbol.iterator), c = Object.getOwnPropertyDescriptor(a, "callee"); return [JSON.stringify(d), JSON.stringify(e), it.value === Array.prototype.values, it.enumerable, it.writable, typeof c.get, c.get === c.set, c.enumerable, c.configurable, Reflect.ownKeys(a).map(String).join("/"), Object.keys(a).join(""), Object.prototype.toString.call(a), Object.getPrototypeOf(a) === Object.prototype, Array.isArray(a)].join(" "); });
+say("callee throws when strict", function () { function f() { "use strict"; return arguments.callee; } function g() { "use strict"; arguments.callee = 1; } var r = []; try { f(); r.push("no"); } catch (e) { r.push(e.constructor.name); } try { g(); r.push("no"); } catch (e) { r.push(e.constructor.name); } return r.join(","); });
+say("writes", function () { function f(p) { "use strict"; arguments[0] = "changed"; arguments[5] = "added"; arguments.length = 1; arguments.extra = "x"; return [p, arguments[0], arguments[5], arguments.length, arguments.extra, Object.keys(arguments).join("")].join(","); } return f("orig", "second"); });
+say("parameters are not tied to it", function () { function f(a, b) { "use strict"; a = "A"; arguments[1] = "B"; return [a, b, arguments[0], arguments[1]].join(","); } return f(1, 2); });
+say("deleted and redefined", function () { function f() { "use strict"; var r = []; delete arguments[1]; r.push(arguments[0], String(arguments[1]), arguments[2], arguments.length, 1 in arguments); arguments[1] = "back"; r.push(arguments[0], arguments[1], arguments[2], Object.keys(arguments).join("")); Object.defineProperty(arguments, 0, { get: function () { return "getter"; }, configurable: true }); r.push(arguments[0]); Object.defineProperty(arguments, 2, { value: "frozen", writable: false }); r.push(arguments[2]); delete arguments.length; r.push(String(arguments.length)); return r.join(","); } return f("a", "b", "c"); });
+say("inherited where it has none", function () { function f() { "use strict"; return [String(arguments[3]), String(arguments[0])].join(","); } Object.prototype[3] = "proto3"; try { return f("own") + " " + (function () { "use strict"; delete arguments[0]; Object.prototype[0] = "proto0"; try { return arguments[0]; } finally { delete Object.prototype[0]; } })("x"); } finally { delete Object.prototype[3]; } });
+say("frozen sealed", function () { function f() { "use strict"; Object.freeze(arguments); var r = [arguments[0], arguments.length, Object.isFrozen(arguments)]; try { arguments[0] = 9; } catch (e) { r.push(e.constructor.name); } r.push(arguments[0]); return r.join(","); } return f(1, 2); });
+say("consumers", function () { function f() { "use strict"; var r = []; for (var v of arguments) r.push(v); return [r.join(""), [...arguments].join(""), Array.prototype.slice.call(arguments, 1).join(""), Array.from(arguments).length, JSON.stringify(arguments), Array.prototype.map.call(arguments, function (x) { return x * 2; }).join(""), Math.max.apply(null, arguments), Object.entries(arguments).join(";")].join(" "); } return f(1, 2, 3); });
+say("typeof and friends", function () { function f() { "use strict"; return [typeof arguments, arguments instanceof Object, arguments === arguments, "length" in arguments, arguments.hasOwnProperty("length"), String(arguments), arguments.toString === Object.prototype.toString].join(","); } return f(); });
+say("assigned when not strict", function () { function f() { var before = arguments.length; arguments = [9, 8, 7]; var mid = arguments.length + "/" + arguments[0]; arguments = 5; return [before, mid, arguments, typeof arguments].join(","); } function g() { arguments += "!"; return typeof arguments + arguments.length; } function h() { var a = arguments; a[0] = "via alias"; return arguments[0] + (a === arguments); } return [f(1, 2), g(1), h(1)].join(" | "); });
+say("declared again", function () { function f() { var arguments; return typeof arguments + arguments.length; } function g() { var arguments = "own"; return arguments; } function h(arguments) { return arguments; } function i() { function arguments() {} return typeof arguments; } function j() { let r = arguments.length; { let arguments = "block"; r += arguments; } return r + arguments.length; } function k(a = arguments.length, b = () => arguments[0]) { return a + ":" + b(); } return [f(1, 2), g(1), h("param"), i(1), j(1, 2), k(undefined, undefined), k(undefined, undefined, 3)].join(" | "); });
+say("found by name", function () { function arrow() { "use strict"; var f = () => arguments.length + ":" + arguments[0]; return f("ignored"); } function nested() { "use strict"; return (() => (() => arguments[1])())(); } function ev() { return eval("arguments.length + ':' + arguments[0]"); } function ev2() { var e = eval; return typeof e("typeof arguments"); } function inner() { "use strict"; function own() { return arguments.length; } return own(1, 2, 3) + ":" + arguments.length; } return [arrow("a", "b"), nested(1, "second"), ev("x", "y"), ev2(), inner(1)].join(" | "); });
+say("default rest destructuring", function () { function f(a, b = arguments.length, ...rest) { return [a, b, rest.length, arguments.length, arguments[2]].join(","); } function g({ x }, [y]) { return x + y + arguments.length + arguments[0].x; } return f(1) + " " + f(1, 2, 3, 4) + " " + g({ x: "X" }, ["Y"], 0); });
+say("generators and async", function () { function* gen() { "use strict"; yield arguments.length; yield arguments[1]; arguments[1] = "set"; yield arguments[1]; } async function af() { "use strict"; return arguments.length; } var it = gen("a", "b"), p = af(1, 2); return [it.next().value, it.next().value, it.next().value, p instanceof Promise].join(","); });
+say("methods constructors accessors", function () { class C { constructor() { this.n = arguments.length; this.first = arguments[0]; } m() { return arguments[arguments.length - 1]; } static s() { return arguments.length; } get g() { return arguments.length; } set v(x) { this.sv = arguments.length + ":" + arguments[0]; } } var c = new C("one", 2); c.v = "val"; var o = { m() { return arguments.length; }, f: function () { return arguments[0]; } }; return [c.n, c.first, c.m(1, 2, "last"), C.s(1, 2), c.g, c.sv, o.m(1), o.f("of")].join(","); });
+say("escapes and outlives", function () { function make() { "use strict"; return arguments; } var a = make(1, 2), b = make("x"); a[0] = "changed"; var kept = []; for (var i = 0; i < 300; i++) kept.push(make(i, i + 1, i + 2)); var sum = 0; for (var j = 0; j < kept.length; j++) sum += kept[j][0] + kept[j][2] + kept[j].length; return [a[0], a[1], a.length, b[0], b.length, sum].join(","); });
+say("recursion and nesting", function () { function fact() { "use strict"; return arguments[0] <= 1 ? 1 : arguments[0] * fact(arguments[0] - 1, arguments.length); } function outer() { "use strict"; function inner() { return arguments.length + arguments[0]; } return inner(arguments[1], arguments[0]) + ":" + arguments.length; } return fact(10) + " " + outer("a", "b", "c"); });
+say("apply call bind spread", function () { function f() { "use strict"; return arguments.length + ":" + Array.prototype.join.call(arguments, ""); } var b = f.bind(null, 1, 2); return [f.apply(null, [1, 2, 3]), f.call(null, "a"), b(3), f(...[4, 5], ...[6]), f.apply(null, { length: 2, 0: "x", 1: "y" }), new (function () { this.n = arguments.length; })(1, 2).n].join(" "); });
+say("in a loop many times", function () { function f() { "use strict"; var n = 0; for (var i = 0; i < arguments.length; i++) n += arguments[i]; return n; } var t = 0; for (var i = 0; i < 20000; i++) t += f(i & 3, 1, 2) + f() + f(i & 1); return t; });
+say("holes and odd values", function () { function f() { "use strict"; return [arguments.length, String(arguments[0]), String(arguments[1]), 0 in arguments, 1 in arguments, typeof arguments[2]].join(","); } return f(undefined, null, function () {}) + " " + f.apply(null, [, 1]) + " " + f.apply(null, new Array(2)); });
+say("blocks catch and computed keys", function () { function f() { var r = [arguments.length]; { function arguments() { return "fn"; } r.push(typeof arguments); } return r.join(","); } function g() { try { throw "caught"; } catch (arguments) { var inside = arguments; } return inside + ":" + typeof arguments + arguments.length; } function h() { class C { [(() => arguments[0])()]() { return arguments.length; } } var o = { get [arguments[1]]() { return arguments.length; }, [arguments[0] + "2"]: arguments.length }; return Object.getOwnPropertyNames(C.prototype).join("") + new C().key(1, 2) + o.second + o.key2; } function i() { return (function (a = arguments.length) { return a + ":" + arguments.length; })(undefined, 1, 2) + "/" + arguments.length; } return [f(1), g(1, 2), h("key", "second"), i(9)].join(" | "); });
+say("labels loops closures over other names", function () { function f(n) { "use strict"; var fs = []; for (let i = 0; i < arguments.length; i++) fs.push(function () { return i + n; }); var total = 0; outer: for (var a = 0; a < arguments.length; a++) { for (var b = 0; b < arguments.length; b++) { if (b > a) continue outer; total += arguments[b]; } } return fs.map(function (g) { return g(); }).join("") + ":" + total; } return f(1, 2, 3); });
+say("try finally and switch", function () { function f() { "use strict"; var r = []; try { r.push(arguments[0]); throw arguments; } catch (e) { r.push(e === arguments, e.length); } finally { r.push(arguments.length); } switch (arguments.length) { case 2: r.push("two"); break; default: r.push("other"); } return r.join(","); } return f("x", "y"); });
+say("a name declared outside is not it", function () { function outer() { var arguments = undefined; return (function () { return arguments.length; })() + ":" + (function (a, b, c) { return arguments.length; })(1) + ":" + String(arguments); } function outer2(arguments) { return (function () { return typeof arguments + arguments.length; })(1, 2) + ":" + arguments; } function outer3() { let r = []; { let arguments = "block"; r.push((function () { return typeof arguments + arguments.length; })(1)); r.push(arguments); } return r.join(","); } function outer4() { var arguments = "kept"; (function () { arguments = "inner only"; arguments += "!"; })(); (function () { "use strict"; arguments[0] = 1; })(); return arguments; } function outer5() { const arguments = "const"; return (function () { var n = 0; for (var i = 0; i < arguments.length; i++) n += arguments[i]; return n; })(1, 2, 3) + arguments; } return [outer(1, 2), outer2("param"), outer3(), outer4(), outer5()].join(" | "); });
+var arguments = "of the script";
+say("a name of the script is not it", function () { function f() { return arguments; } function g() { "use strict"; return arguments.length + ":" + typeof arguments; } var a = f(), b = f("q"); return [a === "of the script", typeof a, a.length, b[0], g(1, 2), typeof arguments === "string" || typeof arguments === "object"].join(","); });
+lines.join("\n")"#;
+    let expected = r#"length and indexes: 0,undefined,undefined,,0,,,, | 1,undefined,1,undefined,1,1,,,, | 3,undefined,a,undefined,null,undefined,a,3,,,, | 12,undefined,1,2,3,4,5,6,7,8,9,10,11,12,undefined,1,12,,,,
+every count: 0:0,1:1,3:2,6:3,10:4,15:5,21:6,28:7,36:8,45:9,55:10,66:11,78:12,91:13,105:14
+descriptors: {"value":2,"writable":true,"enumerable":false,"configurable":true} {"value":7,"writable":true,"enumerable":true,"configurable":true} true false true function true false false 0/1/length/callee/Symbol(Symbol.iterator) 01 [object Arguments] true false
+callee throws when strict: TypeError,TypeError
+writes: orig,changed,added,1,x,015extra
+parameters are not tied to it: A,2,1,B
+deleted and redefined: a,undefined,c,3,false,a,back,c,012,getter,frozen,undefined
+inherited where it has none: proto3,own proto0
+frozen sealed: 1,2,true,TypeError,1
+consumers: 123 123 23 3 {"0":1,"1":2,"2":3} 246 3 0,1;1,2;2,3
+typeof and friends: object,true,true,true,true,[object Arguments],true
+assigned when not strict: 2,3/9,5,number | string19 | via aliastrue
+declared again: object2 | own | param | function | 2block2 | 2:undefined | 3:undefined
+found by name: 2:a | second | 2:x | string | 3:1
+default rest destructuring: 1,1,0,1, 1,2,2,4,3 XY3X
+generators and async: 2,b,set,true
+methods constructors accessors: 2,one,last,2,0,1:val,1,of
+escapes and outlives: changed,2,2,x,1,91200
+recursion and nesting: 3628800 2b:3
+apply call bind spread: 3:123 1:a 3:123 3:456 2:xy 2
+in a loop many times: 100000
+holes and odd values: 3,undefined,null,true,true,function 2,undefined,1,true,true,undefined 2,undefined,undefined,true,true,undefined
+blocks catch and computed keys: 1,function | caught:object2 | constructorkey202 | 3:3/1
+labels loops closures over other names: 123:10
+try finally and switch: x,true,2,2,two
+a name declared outside is not it: 0:1:undefined | object2:param | object1,block | kept | 6const
+a name of the script is not it: false,object,0,q,2:object,true"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Texts built at their start, at their end and at both: what they are, what
+/// they equal, as keys of objects, Maps and Sets, built again, read between
+/// the steps, and with surrogates that meet where two are put together.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn a_text_built_at_either_end_is_what_it_was() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(texts_built_at_either_end)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn texts_built_at_either_end() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function P() { print(Array.prototype.join.call(arguments, " ")); }
+function sum(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+function show(label, s) { P(label + " " + s.length + " " + sum(s) + " " + JSON.stringify(s.slice(0, 12)) + " " + JSON.stringify(s.slice(-12))); }
+
+// Put before, a little at a time and a lot at a time.
+var s = "";
+for (var i = 0; i < 3000; i++) s = "ab" + s;
+show("ab", s);
+var t = "";
+for (var i = 0; i < 700; i++) t = String.fromCharCode(97 + i % 26) + t;
+show("letters", t);
+var u = "";
+for (var i = 0; i < 300; i++) u = "<row id=\"" + i + "\" class=\"" + (i & 1 ? "odd" : "even") + "\">" + u;
+show("rows", u);
+var v = "";
+for (var i = 0; i < 90; i++) v = "0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".slice(i % 9) + v;
+show("long", v);
+
+// At both ends in turn.
+var w = "";
+for (var i = 0; i < 2000; i++) { w = "<" + w + ">"; if (i % 7 === 0) w = w + i; if (i % 11 === 0) w = i + w; }
+show("both", w);
+var x = "middle of the text that is long enough to be a heap string, and then some more of it so that a concatenation marks it; ".repeat(4);
+for (var i = 0; i < 500; i++) { x = (i % 3 ? "ж" : "中😀") + x; x += (i % 5 ? "é" : "\u{1F600}z"); }
+show("non-ascii", x);
+P(x.codePointAt(0).toString(16), x.codePointAt(x.length - 2).toString(16), x.indexOf("middle"), x.lastIndexOf("it; "));
+
+// The same text however it was put together.
+var a = "", b = "", c = [];
+for (var i = 0; i < 1200; i++) { a = a + "xy"; b = "xy" + b; c.push("xy"); }
+var d = c.join(""), e = "xy".repeat(1200);
+P(a === b, b === d, d === e, a == e, a.length, Object.is(a, b));
+var o = {}; o[a] = 1; o[b] = (o[b] || 0) + 1; o[d] = (o[d] || 0) + 1; o[e] = (o[e] || 0) + 1;
+P(Object.keys(o).length, o[e]);
+var m = new Map(); m.set(a, "a"); m.set(b, "b"); m.set(e, "e");
+P(m.size, m.get(d));
+var st = new Set([a, b, d, e, a + "!", "!" + a]);
+P(st.size, st.has("xy".repeat(1200) + "!"), st.has("!" + "xy".repeat(1200)), st.has("xy".repeat(1199) + "!"));
+P(a < "!" + b, "!" + b < a, a + "!" > b, [b, a + "a", "a" + b, e].sort().map(function (s) { return s.length + s[0] + s[s.length - 1]; }).join(","));
+switch (b) { case e: P("switch found"); break; default: P("switch missed"); }
+
+// Built again: every step makes the string it made before.
+function build(n) { var r = ""; for (var i = 0; i < n; i++) r = (i % 10) + r; return r; }
+var first = build(1500), second = build(1500), third = build(1499);
+P(first === second, first === third, "0" + third === first, first.length, third.length, sum(first) === sum(second));
+function buildBoth(n) { var r = "core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core core"; for (var i = 0; i < n; i++) { r = "(" + r; r = r + ")"; } return r; }
+P(buildBoth(400) === buildBoth(400), buildBoth(400) === "(" + buildBoth(399) + ")", buildBoth(400) === buildBoth(399) + "()", buildBoth(3).length);
+
+// Surrogates at the seam, in both directions.
+var lead = "\uD83D", trail = "\uDE00";
+var body = "the body of a text, long enough that a concatenation marks it for building on: ".repeat(5);
+var p1 = trail + body; p1 = lead + p1;
+P(p1.length, p1.codePointAt(0).toString(16), p1.charCodeAt(1).toString(16), p1.slice(0, 2) === "\u{1F600}", [...p1.slice(0, 3)].length);
+var p2 = body + lead; p2 = p2 + trail;
+P(p2.length, p2.codePointAt(p2.length - 2).toString(16), p2.slice(-2) === "\u{1F600}", [...p2.slice(-3)].length);
+var p3 = trail + body; p3 = "a" + lead + p3;
+P(p3.length, p3.codePointAt(1).toString(16), p3 === "a\u{1F600}" + body);
+var p4 = body; p4 = lead + p4; p4 = trail + p4; p4 = lead + p4;
+P(p4.length, p4.charCodeAt(0).toString(16), p4.codePointAt(0).toString(16), p4.charCodeAt(2).toString(16), encodeURIComponent(p4.slice(0, 2)));
+var p5 = body; for (var i = 0; i < 40; i++) p5 = (i % 2 ? lead : trail) + p5;
+P(p5.length, [...p5].length, p5.codePointAt(0).toString(16), p5.codePointAt(38).toString(16), p5.isWellFormed ? p5.isWellFormed() : "n/a");
+var p6 = body; for (var i = 0; i < 40; i++) p6 = p6 + (i % 2 ? trail : lead);
+P(p6.length, [...p6].length, p6 === body + "\u{1F600}".repeat(20));
+var lone = lead + body + trail; lone = "x" + lone + "y";
+P(lone.length, lone.charCodeAt(1).toString(16), lone.charCodeAt(lone.length - 2).toString(16), JSON.stringify(lone.slice(0, 3)), JSON.stringify(lone.slice(-3)));
+
+// Reading a text between the steps, and going on from what was read.
+var r = "";
+var seen = 0;
+for (var i = 0; i < 900; i++) {
+  r = "k" + (i % 7) + r;
+  if (i % 50 === 49) { seen += r.charCodeAt(i % r.length) + r.indexOf("k3") + (r[r.length - 1] === "0" ? 1 : 0); r += "|"; }
+}
+show("read", r);
+P(seen, r.split("|").length, r.toUpperCase().slice(0, 9), r.replace(/k/g, "").length);
+
+// Empty and short ones, and long ones joined to long ones.
+var q = "0123456789".repeat(40);
+P(("" + q) === q, (q + "") === q, ("" + q + "").length, ("a" + "").length, ("abcd" + "efgh"), ("abcdefg" + "h").length, "abc" + "defgh" === "abcdefgh");
+var big1 = "left side ".repeat(60), big2 = "right side ".repeat(70);
+var joined1 = big1 + big2, joined2 = big1 + big2, joined3 = "left side ".repeat(60) + "right side ".repeat(70);
+P(joined1 === joined2, joined2 === joined3, joined1.length, sum(joined1), joined1 === (big1 + "right side ") + "right side ".repeat(69));
+var keys = {}; keys[big1 + big2] = "found"; P(keys[joined3], (big2 + big1) in keys, joined1.startsWith(big1), joined1.endsWith(big2));
+var tpl = `${big1}${big2}`; P(tpl === joined1, `${"x"}${big1}` === "x" + big1, `${big1}${"x"}`.length);
+var arr = []; for (var i = 0; i < 50; i++) arr.push("key-number-" + i, "key-" + i + "-number", i + "-key-number");
+P(arr.indexOf("key-number-" + 49), arr.indexOf("key-" + 49 + "-number"), arr.indexOf(49 + "-key-number"), new Set(arr).size);
+
+// Numbers and other values put before a text.
+var n = body; n = 12 + n; n = 1.5 + n; n = null + n; n = undefined + n; n = true + n; n = [1, 2] + n; n = { toString: function () { return "obj"; } } + n;
+P(n.slice(0, 40), n.length);
+lines.join("\n")"#;
+    let expected = r#"ab 6000 -521240136 "abababababab" "abababababab"
+letters 700 2046571106 "xwvutsrqponm" "lkjihgfedcba"
+rows 7840 -439368594 "<row id=\"299" "lass=\"even\">"
+long 6120 9577152 "89abcdefghij" "OPQRSTUVWXYZ"
+both 5610 2107141787 "<<<<<<<<1991" ">>>>1995>>>>"
+non-ascii 2010 -690926822 "ж中😀жж中😀жж中" "zéééé😀zéééé"
+436 e9 834 1306
+true true true true 2400 true
+1 4
+1 e
+3 true true false
+false true true 2401ay,2400xy,2400xy,2401xa
+switch found
+true false false 1500 1499 true
+true true false 285
+397 1f600 de00 true 2
+397 1f600 true 2
+398 1f600 true
+398 d83d 1f600 d83d %F0%9F%98%80
+435 415 1f600 1f600 true
+435 415 true
+399 d83d de00 "x\ud83dt" " \ude00y"
+read 1818 -667287910 "k3k2k1k0k6k5" "||||||||||||"
+1033 19 K3K2K1K0K 918
+true true 400 1 abcdefgh 8 true
+true true 1370 734438240 true
+found false true true
+true true 601
+147 148 149 150
+obj1,2trueundefinednull1.512the body of  423"#;
+    let Ok(Completion::String(found)) = engine.evaluate(script, false) else {
+        panic!("the checks did not run");
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Built-in functions that the interpreter runs in place of a call (methods
+/// of String, `push` and `pop`, `Array.isArray`, Map and Set, `hasOwnProperty`,
+/// `call` of such a function, `String` and `Number` called, `toFixed`,
+/// `Math.random`, `Date.now`): every kind of this value and argument at the
+/// same call sites, the functions reached in other ways, replaced, and on
+/// objects that take the call the long way. What is expected is what Node
+/// prints for the same script.
+#[test]
+fn a_function_run_in_place_does_what_its_call_does() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(built_ins_run_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn built_ins_run_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r#"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+function J(v) { return typeof v === "string" ? JSON.stringify(v) : String(v); }
+
+var texts = ["", "a", "hello world", "0123456789abcdefghij", "привет мир", "a😀b😀c", "\uD83Dx\uDE00", "日本語のテキスト、長いもの。もっと長く"];
+var positions = [0, 1, 2, 5, 9, 10, 19, 20, 21, 100, -1, -2, -5, -20, -100];
+
+// slice and substring: one and two integers, in a loop so that the call is the same instruction each time.
+for (var t = 0; t < texts.length; t++) {
+  var s = texts[t], out = [];
+  for (var i = 0; i < positions.length; i++) {
+    var a = positions[i];
+    out.push(J(s.slice(a)), J(s.substring(a)));
+    for (var k = 0; k < positions.length; k += 3) { var b = positions[k]; out.push(J(s.slice(a, b)), J(s.substring(a, b))); }
+  }
+  P("slices", t, out.length, out.join("|").length, out.slice(0, 6).join(" "), out.slice(-3).join(" "));
+  var sum = 0; for (var i = 0; i < out.length; i++) for (var j = 0; j < out[i].length; j++) sum = (sum * 31 + out[i].charCodeAt(j)) | 0;
+  P("sum", t, sum);
+}
+// Other arguments at the same call site.
+var odd = [undefined, null, NaN, 1.5, -1.5, "2", "x", true, Infinity, -Infinity, 2 ** 31, -(2 ** 31), 2 ** 53, { valueOf: function () { return 3; } }, [4], 1e21, -0];
+var s = "0123456789";
+var r = [];
+for (var i = 0; i < odd.length; i++) { r.push(T(function () { return J(s.slice(odd[i])) + J(s.slice(1, odd[i])) + J(s.substring(odd[i])) + J(s.substring(1, odd[i])) + J(s.charAt(odd[i])) + s.charCodeAt(odd[i]); })); }
+P("odd", r.join(" "));
+P("none", J(s.slice()), J(s.substring()), J(s.charAt()), s.charCodeAt(), J(s.slice(undefined, 3)), J(s.substring(undefined, 3)), J(s.slice(2, undefined)), J(s.slice(1, 2, 3)));
+P("symbol", T(function () { return s.slice(Symbol()); }), T(function () { return s.substring(1, Symbol()); }), T(function () { return s.charAt(Symbol()); }), T(function () { return s.slice(1n); }));
+var order = []; var counted = { valueOf: function () { order.push("start"); return 1; } }, counted2 = { valueOf: function () { order.push("end"); return 4; } };
+P("order", s.slice(counted, counted2), s.substring(counted2, counted), order.join(","));
+
+// charAt
+var c = []; for (var t = 0; t < texts.length; t++) for (var i = 0; i < positions.length; i++) c.push(J(texts[t].charAt(positions[i])));
+P("charAt", c.join(""));
+
+// startsWith, endsWith, indexOf, includes
+var needles = ["", "a", "hello", "world", "мир", "😀", "\uDE00", "\uD83D", "9ab", "j", "ij", "长", "о"];
+var w = [];
+for (var t = 0; t < texts.length; t++) for (var n = 0; n < needles.length; n++) {
+  var s = texts[t], q = needles[n];
+  w.push((s.startsWith(q) ? 1 : 0) + (s.endsWith(q) ? 2 : 0) + (s.includes(q) ? 4 : 0), s.indexOf(q));
+  for (var i = 0; i < positions.length; i += 2) { var p = positions[i]; w.push((s.startsWith(q, p) ? 1 : 0) + (s.endsWith(q, p) ? 2 : 0) + (s.includes(q, p) ? 4 : 0), s.indexOf(q, p)); }
+}
+P("search", w.length, w.join("").length, w.slice(0, 40).join(","));
+var ws = 0; for (var i = 0; i < w.length; i++) ws = (ws * 33 + w[i] + 7) | 0; P("search sum", ws);
+var hay = "the quick brown fox";
+P("search odd", T(function () { return hay.startsWith(/the/); }), T(function () { return hay.endsWith(/fox/); }), T(function () { return hay.includes(/quick/); }), hay.indexOf(/quick/), hay.startsWith(), hay.includes(undefined), "undefined!".startsWith(), "null".includes(null), "a1b".indexOf(1), "truefalse".endsWith(false), hay.startsWith("quick", 4.7), hay.startsWith("quick", "4"), hay.endsWith("the", 3.9), hay.indexOf("o", NaN), hay.indexOf("o", Infinity), hay.includes("the", -Infinity), hay.startsWith({ toString: function () { return "the"; } }), hay.indexOf(["quick"]));
+var re = /x/; re[Symbol.match] = false; P("not a regexp", "a/x/b".includes(re), "/x/".startsWith(re));
+
+// Through other ways of calling, and on other this values.
+var sl = String.prototype.slice, f = "abcdef".slice;
+P("ways", sl.call("abcdef", 1, 3), f.call("uvwxyz", -2), "abcdef"["slice"](2), String.prototype.slice.call(12345, 1, 3), String.prototype.charAt.call(true, 1), T(function () { return sl.call(null, 1); }), T(function () { return sl(1); }), String.prototype.startsWith.call(["ab", "c"], "ab,"), new String("wrapped").slice(1, 4), Object("obj").substring(1), String.prototype.indexOf.call({ toString: function () { return "xyz"; } }, "z"), String.prototype.includes.call(404, 0), String.prototype.endsWith.call(404, 4, 1));
+P("apply bind", sl.apply("abcdef", [1, 3]), sl.bind("abcdef", 1)(4), Reflect.apply(sl, "abcdef", [2]), [1, 2, 3].map(String.prototype.charAt, "xyz").join(""), ["ab", "cd"].map(Function.prototype.call, String.prototype.slice).length);
+
+// A function put in the place of one.
+var kept = String.prototype.slice;
+String.prototype.slice = function () { return "replaced:" + this + ":" + arguments.length; };
+P("replaced", "abc".slice(1), "abc".slice(1, 2));
+String.prototype.slice = kept;
+P("restored", "abc".slice(1));
+var own = new String("own"); own.slice = function (a) { return "own" + a; }; P("own", own.slice(1), own.substring(1));
+Object.defineProperty(String.prototype, "charAt", { get: function () { return function () { return "getter"; }; }, configurable: true });
+P("getter", "abc".charAt(1)); delete String.prototype.charAt; P("deleted", T(function () { return "abc".charAt(1); }));
+
+// push and pop
+var a = []; var lens = [];
+for (var i = 0; i < 40; i++) lens.push(a.push(i * 2));
+P("push", lens.join(","), a.length, a[39], a.push(), a.push(1, 2, 3), a.length);
+var popped = []; while (a.length > 30) popped.push(a.pop()); P("pop", popped.join(","), a.length, [].pop(), a.pop.call([7]));
+var holes = [1, , 3]; holes.length = 5; P("holes", holes.pop(), holes.length, holes.pop(), holes.pop(), holes.pop(), holes.length, holes.push("x"), JSON.stringify(holes));
+Array.prototype[2] = "proto"; var h2 = [1, 2, , 4]; h2.length = 3; P("proto hole", h2.pop(), h2.length, h2.push("p"), h2[2]); delete Array.prototype[2];
+var frozen = Object.freeze([1, 2]); P("frozen", T(function () { return frozen.push(3); }), T(function () { return frozen.pop(); }), frozen.length);
+var sealed = Object.seal([1, 2]); P("sealed", T(function () { return sealed.push(3); }), T(function () { return sealed.pop(); }), sealed.length, JSON.stringify(sealed));
+var noext = Object.preventExtensions([1]); P("no extensions", T(function () { return noext.push(2); }), noext.pop(), noext.length);
+var fixed = [1, 2, 3]; Object.defineProperty(fixed, "length", { writable: false }); P("fixed length", T(function () { return fixed.push(4); }), T(function () { return fixed.pop(); }), fixed.length, JSON.stringify(fixed));
+var ro = [1, 2, 3]; Object.defineProperty(ro, 2, { writable: false, configurable: false }); P("read-only last", T(function () { return ro.pop(); }), ro.length, T(function () { return ro.push(4); }), ro.length);
+var acc = [1, 2]; Object.defineProperty(acc, 1, { get: function () { return "got"; }, configurable: true }); P("accessor last", acc.pop(), acc.length, acc.push(9), acc.length);
+var log = []; var noted3 = ""; Object.defineProperty(Array.prototype, 3, { set: function (v) { noted3 += "set " + v + ";"; }, get: function () { return "inherited"; }, configurable: true });
+var arr3 = [0, 1, 2]; var pushed3 = arr3.push("three"), len3 = arr3.length, got3 = arr3[3], own3 = Object.prototype.hasOwnProperty.call(arr3, 3); delete Array.prototype[3]; P("setter in prototype", pushed3, len3, got3, own3, noted3, arr3.length, arr3[3]);
+var noted = ""; Object.defineProperty(Object.prototype, 1, { set: function (v) { noted += "object set " + v + ";"; }, configurable: true });
+var arr4 = [0]; var pushed4 = arr4.push("one"), has4 = 1 in arr4, own4 = Object.prototype.hasOwnProperty.call(arr4, 1); delete Object.prototype[1]; P("setter in Object.prototype", pushed4, arr4.length, has4, own4, noted);
+class Sub extends Array {} var sub = new Sub(); P("subclass", sub.push(1), sub.push(2), sub.pop(), sub.length, sub instanceof Sub);
+var other = []; Object.setPrototypeOf(other, { push: Array.prototype.push, pop: Array.prototype.pop }); P("other prototype", other.push(5), other.pop(), other.length);
+var like = { length: 2, 0: "a", 1: "b" }; P("array-like", Array.prototype.push.call(like, "c"), like.length, like[2], Array.prototype.pop.call(like), like.length, T(function () { return Array.prototype.push.call(null, 1); }), Array.prototype.push.call("str".split(""), "!"));
+var typed = new Uint8Array(2); P("typed", T(function () { return Array.prototype.push.call(typed, 1); }), typed.length);
+var grown = []; for (var i = 0; i < 100000; i++) grown.push(i & 7); var total = 0; while (grown.length) total += grown.pop(); P("many", total, grown.length);
+var pushedSelf = []; pushedSelf.push(pushedSelf); P("self", pushedSelf[0] === pushedSelf, pushedSelf.pop() === pushedSelf, pushedSelf.length);
+var px = new Proxy([], { set: function (t, k, v) { log.push("proxy set " + String(k)); t[k] = v; return true; } }); P("proxy", px.push(1), px.length, log.slice(-2).join(";"));
+
+// Array.isArray
+var args = (function () { return arguments; })(1, 2); var live = new Proxy([], {}), notArr = new Proxy({}, {}), nested = new Proxy(new Proxy([], {}), {});
+var kinds = [[], [1], new Array(3), {}, null, undefined, "str", 1, live, notArr, nested, new Sub(), args, new Uint8Array(1), Array.prototype, { length: 0 }, Object.create(Array.prototype)];
+var ia = []; for (var i = 0; i < kinds.length; i++) ia.push(Array.isArray(kinds[i]) ? 1 : 0); P("isArray", ia.join(""), Array.isArray(), Array.isArray([], 1));
+P("isArray ways", Array.isArray.call(null, []), T(function () { var isa = Array.isArray; return isa([]); }), Array.isArray.call([], 1), [[], 1, live].map(Array.isArray).join(","));
+
+// Map and Set
+var m = new Map(), st = new Set(), ko = {}, ks = Symbol("k");
+var keys = [0, -0, NaN, 1, 1.5, "1", "", "a long key that is a heap string", ko, ks, null, undefined, true, 2 ** 53, 10n, [1]];
+for (var i = 0; i < keys.length; i++) { m.set(keys[i], "v" + i); st.add(keys[i]); }
+var looked = [0, -0, NaN, 0 / 0, 1, 1.0, 1.5, 3 / 2, "1", "", "a long key " + "that is a heap string", ko, {}, ks, Symbol("k"), null, undefined, true, false, 2 ** 53, 2 ** 53 + 1, 10n, 5n + 5n, [1], "missing"];
+var mg = []; for (var i = 0; i < looked.length; i++) mg.push(m.get(looked[i]) + ":" + (m.has(looked[i]) ? 1 : 0) + (st.has(looked[i]) ? 1 : 0));
+P("map", m.size, st.size, mg.join(" "), m.get(), m.has(), st.has());
+P("map ways", Map.prototype.get.call(m, 1), T(function () { return Map.prototype.get.call(st, 1); }), T(function () { return Set.prototype.has.call(m, 1); }), T(function () { return Map.prototype.has.call({}, 1); }), T(function () { var g = m.get; return g(1); }), new (class extends Map {})([[1, "sub"]]).get(1), T(function () { return new WeakMap().get.call(m, 1); }));
+m.delete(1); st.delete(1); P("deleted", m.get(1), m.has(1), st.has(1)); m.clear(); P("cleared", m.get(0), m.has(NaN));
+var mm = new Map(); for (var i = 0; i < 5000; i++) mm.set("key" + i, i); var ms = 0; for (var i = 0; i < 6000; i++) ms += (mm.get("key" + i) || 0) + (mm.has("key" + (i + 1)) ? 1 : 0); P("many keys", ms);
+
+// hasOwnProperty, directly and through call
+var o = { a: 1, 2: "two", [ks]: 3, "long property name here": 4 }; Object.defineProperty(o, "hidden", { value: 1, enumerable: false });
+var names = ["a", "b", 2, "2", 2.0, "02", ks, Symbol("k"), "long property " + "name here", "hidden", "toString", "__proto__", "", undefined, null, NaN, -0, 1.5, true, { toString: function () { return "a"; } }, ["a"]];
+var ho = []; for (var i = 0; i < names.length; i++) ho.push((o.hasOwnProperty(names[i]) ? 1 : 0) + (Object.prototype.hasOwnProperty.call(o, names[i]) ? 2 : 0));
+P("hasOwn", ho.join(""), o.hasOwnProperty(), Object.prototype.hasOwnProperty.call(o));
+var hop = Object.prototype.hasOwnProperty;
+P("hasOwn of", hop.call("str", 0), hop.call("str", 3), hop.call("str", "length"), hop.call([1, , 3], 1), hop.call([1, , 3], 2), hop.call([1], "length"), hop.call(function () {}, "prototype"), hop.call(12, "x"), hop.call(new Uint8Array(2), 1), hop.call(new Uint8Array(2), 2), hop.call(args, "length"), hop.call(args, 1), hop.call(args, 2), T(function () { return hop.call(null, "a"); }), T(function () { return hop.call(undefined, "a"); }), T(function () { return hop("a"); }));
+var trapped = new Proxy({ a: 1 }, { getOwnPropertyDescriptor: function (t, k) { log.push("gopd " + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); } });
+P("hasOwn proxy", trapped.hasOwnProperty("a"), hop.call(trapped, "b"), log.slice(-2).join(";"));
+var throwing = { toString: function () { throw new RangeError("key"); } }; P("hasOwn key throws", T(function () { return o.hasOwnProperty(throwing); }), T(function () { return hop.call(null, throwing); }));
+var nullProto = Object.create(null); nullProto.x = 1; P("no prototype", hop.call(nullProto, "x"), T(function () { return nullProto.hasOwnProperty("x"); }));
+var shadow = { hasOwnProperty: function () { return "shadowed"; } }; P("shadowed", shadow.hasOwnProperty("x"), hop.call(shadow, "hasOwnProperty"));
+
+// call of other functions the same way, and call itself in the place of one
+P("call", Math.max.call(null, 1, 5, 3), Math.floor.call(undefined, 2.7), Array.isArray.call(1, []), "abc".charCodeAt.call("xyz", 1), String.prototype.slice.call.call(String.prototype.slice, "abcdef", 2), Function.prototype.call.call(Math.abs, null, -4), T(function () { return Function.prototype.call.call(1); }), T(function () { var c = Function.prototype.call; return c(); }), Math.max.call(), [].push.call([1, 2], 3), Map.prototype.has.call(new Map([[1, 2]]), 1));
+function plain(x) { return this + ":" + x; } P("call plain", plain.call("t", 1), plain.call.call(plain, "u", 2), Math.abs.call.call(plain, "v", 3));
+var savedCall = Function.prototype.call; Function.prototype.call = function () { return "call replaced"; }; P("call replaced", Math.abs.call(null, -1)); delete Function.prototype.call; P("call deleted", T(function () { return Math.abs.call(null, -1); })); Function.prototype.call = savedCall; P("call back", Math.abs.call(null, -1));
+
+// Math.random and Date.now
+var lo = 1, hi = 0, same = 0, last = -1; for (var i = 0; i < 20000; i++) { var x = Math.random(); if (x < lo) lo = x; if (x > hi) hi = x; if (x === last) same++; last = x; }
+P("random", lo >= 0, hi < 1, lo < 0.01, hi > 0.99, same < 3, typeof Math.random(1, 2), Math.random.call(null) < 1);
+var t0 = Date.now(), t1 = Date.now.call(null), t2 = Date.now(1, 2); P("now", typeof t0, t0 > 1.7e12, t1 >= t0, t2 >= t1, Number.isInteger(t0), Math.abs(new Date().getTime() - t0) < 5000);
+
+// repeat and padding
+var reps = []; var units = ["", "a", "ab", "ж", "😀", "\uD83D", "\uDE00\uD83D", "x\uDE00"];
+for (var u = 0; u < units.length; u++) for (var n = 0; n < 6; n++) { var rr = units[u].repeat(n); reps.push(rr.length + ":" + (rr.length ? rr.charCodeAt(rr.length - 1).toString(16) : "") + ":" + [...rr].length); }
+P("repeat", reps.join(" "));
+P("repeat odd", T(function () { return "a".repeat(-1); }), T(function () { return "a".repeat(Infinity); }), "ab".repeat(2.9), "ab".repeat("2"), J("ab".repeat()), J("ab".repeat(NaN)), J("ab".repeat(null)), "ab".repeat(true), J("".repeat(1e9)), "abc".repeat(1500).length, "0123456789".repeat(410).length, "x".repeat(4096).length, "x".repeat(4097).length, String.prototype.repeat.call(12, 2), T(function () { return String.prototype.repeat.call(null, 2); }), J("ab".repeat({ valueOf: function () { return 2; } })), J("-".repeat(-0)));
+var pads = []; var fills = [undefined, " ", "0", "ab", "", "ж中", "😀", "😀x", "abcdefghij"];
+var lens = [0, 1, 3, 4, 5, 8, 11, -1, 20];
+for (var t = 0; t < 5; t++) for (var f = 0; f < fills.length; f++) for (var l = 0; l < lens.length; l++) {
+  var base = ["", "abc", "12345", "ж😀", "x\uD83D"][t];
+  pads.push(J(base.padStart(lens[l], fills[f])), J(base.padEnd(lens[l], fills[f])));
+}
+var ps = 0; for (var i = 0; i < pads.length; i++) for (var j = 0; j < pads[i].length; j++) ps = (ps * 31 + pads[i].charCodeAt(j)) | 0;
+P("pads", pads.length, ps, pads.slice(20, 28).join(" "), pads.slice(-4).join(" "));
+P("pad odd", J("a".padStart()), J("a".padStart(3)), J("a".padEnd(3, undefined)), J("a".padStart("3", 0)), J("a".padStart(3.9, "xy")), J("a".padEnd(3, null)), J("a".padStart(3, 12)), J("a".padEnd(NaN, "x")), J("a".padStart(-Infinity, "x")), "a".padStart(5000, "ab").length, "a".padEnd(1025, "0").length, "a".padStart(1024, "0").length, T(function () { return "a".padStart(3, Symbol()); }), String.prototype.padStart.call(7, 3, "0"), T(function () { return String.prototype.padEnd.call(undefined, 3); }), J("a".padStart(3, { toString: function () { return "T"; } })));
+var n8 = []; for (var i = 0; i < 2000; i += 37) n8.push(String(i).padStart(8, "0") + "-".repeat(i & 15) + String(i).padEnd(5, ".")); P("pad loop", n8.length, n8.join("").length, n8[3], n8[53]);
+
+// String() and Number() called, and toFixed
+var vals = [0, -0, 1, -1, 1.5, 1e21, 1e-7, 123456789012345680000, NaN, Infinity, -Infinity, 2 ** 53, 0.1 + 0.2, "", "str", " 12 ", "0x1f", "1e3", "abc", "12px", true, false, null, undefined, 10n, -5n, 2n ** 64n];
+var sv = [], nv = [];
+for (var i = 0; i < vals.length; i++) { sv.push(J(String(vals[i]))); nv.push(T(function () { return Number(vals[i]); })); }
+P("String()", sv.join(" ")); P("Number()", nv.join(" "));
+P("String odd", J(String()), String(Symbol("desc")), T(function () { return String(Symbol.iterator); }), String([1, [2, 3]]), String({}), String({ toString: function () { return "ts"; } }), String(function () {}).length > 5, T(function () { return String({ toString: function () { throw new RangeError("x"); } }); }), typeof String(1), typeof new String(1), String.call(null, 5), String(1, 2), new String("n").length, String(new String("w")), String(Object(1n)), String(-0), String([null]), String([undefined, 1]));
+P("Number odd", Number(), T(function () { return Number(Symbol()); }), Number([5]), Number({}), Number({ valueOf: function () { return 7; } }), Number(new Date(5)), typeof Number("1"), typeof new Number(1), Number.call(null, "8"), Number("8", 9), Number("-0") === 0 && 1 / Number("-0"), Number(""), Number("  "), Number("0b101"), Number("0o17"), Number("1_000"), Number("Infinity"), Number("-Infinity"), Number("+5"), Number("5."), Number(".5"), Number("5e"), Number(null), Number([]), Number([1, 2]), Number(false), Number(123n), T(function () { return Number(2n ** 70n); }), Number("  42\n"));
+var kS = String; String = function (v) { return "mine:" + v; }; P("String replaced", String(1)); String = kS; P("String back", String(1));
+var fx = []; var fnum = [0, -0, 1, 1.005, 1.5, 2.5, -1.5, 0.000001, 123.456, 1e21, 1e-10, NaN, Infinity, -Infinity, 0.1 + 0.2, 1234.5678, 5e-324, 1.7976931348623157e308, -0.0000001, 999.9999];
+for (var i = 0; i < fnum.length; i++) fx.push(fnum[i].toFixed(), fnum[i].toFixed(2), fnum[i].toFixed(0), fnum[i].toFixed(7));
+P("toFixed", fx.join(" "));
+P("toFixed odd", (1.5).toFixed(undefined), (1.5).toFixed(null), (1.25).toFixed("1"), (1.25).toFixed(1.9), T(function () { return (1).toFixed(-1); }), T(function () { return (1).toFixed(101); }), (1).toFixed(100).length, T(function () { return (1).toFixed(Infinity); }), (1).toFixed(NaN), T(function () { return Number.prototype.toFixed.call("1", 2); }), Number.prototype.toFixed.call(new Number(2.345), 2), T(function () { return Number.prototype.toFixed.call(null); }), (2 ** 31).toFixed(1), (-(2 ** 31)).toFixed(1), (255).toFixed(2).length, 1.45.toFixed(1), (8.345).toFixed(2), (0.5).toFixed(0), (1.5).toFixed(0), (2.5).toFixed(0), (-2.5).toFixed(0), T(function () { return (1).toFixed(Symbol()); }), (1e21).toFixed(2), (123).toFixed({ valueOf: function () { return 3; } }), T(function () { return (1n).toFixed(1); }));
+var nts = 0; for (var i = 0; i < 3000; i++) nts += String(i).length + (i * 0.37).toFixed(2).length + (i + "").length + Number(String(i * 3)) + Number((i * 0.5).toFixed(1)); P("number loop", nts);
+
+// Map.set and Set.add
+var m2 = new Map(), s2 = new Set();
+var chain = m2.set(1, "a").set(1, "b").set("1", "c").set(NaN, "n").set(-0, "z").set(0, "zero").set(ko, "o").set(undefined, "u").set();
+P("map set", chain === m2, m2.size, m2.get(1), m2.get("1"), m2.get(NaN), m2.get(0), m2.get(-0), m2.get(ko), m2.get(undefined), [...m2.keys()].map(String).join(","), Object.is([...m2.keys()][3], 0));
+var chain2 = s2.add(1).add(1).add("1").add(NaN).add(NaN).add(-0).add(0).add(ko).add().add(undefined);
+P("set add", chain2 === s2, s2.size, [...s2].map(String).join(","), Object.is([...s2][3], 0), s2.has(-0));
+P("set ways", T(function () { return Map.prototype.set.call(s2, 1, 2); }), T(function () { return Set.prototype.add.call(m2, 1); }), T(function () { return Map.prototype.set.call({}, 1, 2); }), Map.prototype.set.call(m2, "via call", 1) === m2, Set.prototype.add.call(s2, "via call") === s2, m2.has("via call"), s2.has("via call"), T(function () { var st = m2.set; return st(1, 2); }), new WeakMap().set(ko, 1).get(ko), T(function () { return new WeakSet().add(1); }));
+var big2 = new Map(), bigs = new Set(); for (var i = 0; i < 20000; i++) { big2.set(i % 7000, i); big2.set("s" + (i % 300), i); bigs.add(i % 5000); bigs.add("t" + (i & 255)); }
+var it = 0; big2.forEach(function (v, k) { it += typeof k === "number" ? v : 1; }); P("many sets", big2.size, bigs.size, it, big2.get(6999), big2.get("s299"), bigs.has(4999), bigs.has(5000));
+var order2 = new Map(); order2.set("b", 1); order2.set("a", 2); order2.delete("b"); order2.set("b", 3); order2.set("a", 4); P("order", [...order2].join(";"));
+var during = new Map([[1, 1]]); var seenKeys = []; for (var e of during) { seenKeys.push(e[0]); if (e[0] < 5) during.set(e[0] + 1, 0); } P("set while iterating", seenKeys.join(","));
+var sdur = new Set([1]); var seenVals = []; sdur.forEach(function (v) { seenVals.push(v); if (v < 5) sdur.add(v + 1); }); P("add while iterating", seenVals.join(","));
+class MyMap extends Map { set(k, v) { return super.set(k, v + "!"); } } var mym = new MyMap(); mym.set(1, "x"); P("subclass set", mym.get(1), new MyMap([[2, "y"]]).get(2));
+var kSet = Map.prototype.set; Map.prototype.set = function (k, v) { return kSet.call(this, k, "patched " + v); }; var pm = new Map(); pm.set(1, "v"); P("patched set", pm.get(1), new Map([[1, "ctor"]]).get(1)); Map.prototype.set = kSet; pm.set(2, "v"); P("unpatched", pm.get(2));
+lines.join("\n")"#;
+    let expected = r#"slices 0 180 539 "" "" "" "" "" "" "" "" ""
+sum 0 943987968
+slices 1 180 605 "a" "a" "" "" "a" "a" "a" "" ""
+sum 1 584186208
+slices 2 180 1290 "hello world" "hello world" "" "" "hello" "hello" "hello world" "hello " ""
+sum 2 688216877
+slices 3 180 1958 "0123456789abcdefghij" "0123456789abcdefghij" "" "" "01234" "01234" "0123456789abcdefghij" "0123456789abcde" ""
+sum 3 722135250
+slices 4 180 1215 "привет мир" "привет мир" "" "" "приве" "приве" "привет мир" "приве" ""
+sum 4 -674004096
+slices 5 180 1256 "a😀b😀c" "a😀b😀c" "" "" "a😀b\ud83d" "a😀b\ud83d" "a😀b😀c" "a\ud83d" ""
+sum 5 1993603517
+slices 6 180 1423 "\ud83dx\ude00" "\ud83dx\ude00" "" "" "\ud83dx\ude00" "\ud83dx\ude00" "\ud83dx\ude00" "" ""
+sum 6 -782697308
+slices 7 180 1899 "日本語のテキスト、長いもの。もっと長く" "日本語のテキスト、長いもの。もっと長く" "" "" "日本語のテ" "日本語のテ" "日本語のテキスト、長いもの。もっと長く" "日本語のテキスト、長いもの。" ""
+sum 7 1399142112
+odd "0123456789""123456789""0123456789""123456789""0"48 "0123456789""""0123456789""0""0"48 "0123456789""""0123456789""0""0"48 "123456789""""123456789""""1"49 "9""12345678""0123456789""0"""NaN "23456789""1""23456789""1""2"50 "0123456789""""0123456789""0""0"48 "123456789""""123456789""""1"49 """123456789""""123456789"""NaN "0123456789""""0123456789""0"""NaN """123456789""""123456789"""NaN "0123456789""""0123456789""0"""NaN """123456789""""123456789"""NaN "3456789""12""3456789""12""3"51 "456789""123""456789""123""4"52 """123456789""""123456789"""NaN "0123456789""""0123456789""0""0"48
+none "0123456789" "0123456789" "0" 48 "012" "012" "23456789" "1"
+symbol threw TypeError threw TypeError threw TypeError threw TypeError
+order 123 123 start,end,end,start
+charAt """""""""""""""""""""""""""""""a""""""""""""""""""""""""""""""h""e""l"" ""l""d""""""""""""""""""""0""1""2""5""9""a""j""""""""""""""""""п""р""и""т""р""""""""""""""""""""""a""\ud83d""\ude00""\ude00""""""""""""""""""""""""\ud83d""x""\ude00""""""""""""""""""""""""""日""本""語""キ""長""い"""""""""""""""""""
+search 1872 2681 7,0,7,0,7,0,7,0,7,0,7,0,7,0,7,0,7,0,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1,0,-1
+search sum -1294898995
+search odd threw TypeError threw TypeError threw TypeError -1 false false true true 1 true true true true 12 -1 true true 4
+not a regexp true true
+ways bc yz cdef 23 r threw TypeError threw TypeError true rap bj 2 true true
+apply bind bc bcd cdef yz 2
+replaced replaced:abc:1 replaced:abc:2
+restored bc
+own own1 wn
+getter getter
+deleted threw TypeError
+push 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40 40 78 40 43 43
+pop 3,2,1,78,76,74,72,70,68,66,64,62,60 30  7
+holes  4  3  1 2 [1,"x"]
+proto hole proto 2 3 p
+frozen threw TypeError threw TypeError 2
+sealed threw TypeError threw TypeError 2 [1,2]
+no extensions threw TypeError 1 0
+fixed length threw TypeError threw TypeError 3 [1,2,null]
+read-only last threw TypeError 3 4 4
+accessor last got 1 2 2
+setter in prototype 4 4 inherited false set three; 4 
+setter in Object.prototype 2 2 true false object set one;
+subclass 1 2 2 1 true
+other prototype 1 5 0
+array-like 3 3 c c 2 threw TypeError 4
+typed threw TypeError 2
+many 350000 0
+self true true 0
+proxy 1 1 proxy set 0;proxy set length
+isArray 11100000101100100 false true
+isArray ways true true false true,false,true
+map 15 15 v1:11 v1:11 v2:11 v2:11 v3:11 v3:11 v4:11 v4:11 v5:11 v6:11 v7:11 v8:11 undefined:00 v9:11 undefined:00 v10:11 v11:11 v12:11 undefined:00 v13:11 v13:11 v14:11 v14:11 undefined:00 undefined:00 v11 true true
+map ways v3 threw TypeError threw TypeError threw TypeError threw TypeError sub threw TypeError
+deleted  false false
+cleared  false
+many keys 12502499
+hasOwn 303330303300000000033 false false
+hasOwn of true false true false true true true false true false true true false threw TypeError threw TypeError threw TypeError
+hasOwn proxy true false gopd a;gopd b
+hasOwn key throws threw RangeError threw RangeError
+no prototype true threw TypeError
+shadowed shadowed true
+call 5 2 true 121 cdef 4 threw TypeError threw TypeError -Infinity 3 true
+call plain t:1 u:2 v:3
+call replaced call replaced
+call deleted threw TypeError
+call back 1
+random true true true true true number true
+now number true true true true true
+repeat 0::0 0::0 0::0 0::0 0::0 0::0 0::0 1:61:1 2:61:2 3:61:3 4:61:4 5:61:5 0::0 2:62:2 4:62:4 6:62:6 8:62:8 10:62:10 0::0 1:436:1 2:436:2 3:436:3 4:436:4 5:436:5 0::0 2:de00:1 4:de00:2 6:de00:3 8:de00:4 10:de00:5 0::0 1:d83d:1 2:d83d:2 3:d83d:3 4:d83d:4 5:d83d:5 0::0 2:d83d:2 4:d83d:3 6:d83d:4 8:d83d:5 10:d83d:6 0::0 2:de00:2 4:de00:4 6:de00:6 8:de00:8 10:de00:10
+repeat odd threw RangeError threw RangeError abab abab "" "" "" ab "" 4500 4100 4096 4097 1212 threw TypeError "abab" ""
+pads 810 331502300 " " " " "   " "   " "    " "    " "     " "     " "x\ud83d" "x\ud83d" "abcdefghijabcdefghx\ud83d" "x\ud83dabcdefghijabcdefgh"
+pad odd "a" "  a" "a  " "00a" "xya" "anu" "12a" "a" "a" 5000 1025 1024 threw TypeError 007 threw TypeError "TTa"
+pad loop 55 1132 00000111---------------111.. 00001961---------1961.
+String() "0" "0" "1" "-1" "1.5" "1e+21" "1e-7" "123456789012345680000" "NaN" "Infinity" "-Infinity" "9007199254740992" "0.30000000000000004" "" "str" " 12 " "0x1f" "1e3" "abc" "12px" "true" "false" "null" "undefined" "10" "-5" "18446744073709551616"
+Number() 0 0 1 -1 1.5 1e+21 1e-7 123456789012345680000 NaN Infinity -Infinity 9007199254740992 0.30000000000000004 0 NaN 12 31 1000 NaN NaN 1 0 0 NaN 10 -5 18446744073709552000
+String odd "" Symbol(desc) Symbol(Symbol.iterator) 1,2,3 [object Object] ts true threw RangeError string object 5 1 1 w 1 0  ,1
+Number odd 0 threw TypeError 5 NaN 7 5 number object 8 8 -Infinity 0 0 5 15 NaN Infinity -Infinity 5 5 0.5 NaN 0 0 NaN 0 123 1.1805916207174113e+21 42
+mine:String replaced mine:mine:1
+String back 1
+toFixed 0 0.00 0 0.0000000 0 0.00 0 0.0000000 1 1.00 1 1.0000000 1 1.00 1 1.0050000 2 1.50 2 1.5000000 3 2.50 3 2.5000000 -2 -1.50 -2 -1.5000000 0 0.00 0 0.0000010 123 123.46 123 123.4560000 1e+21 1e+21 1e+21 1e+21 0 0.00 0 0.0000000 NaN NaN NaN NaN Infinity Infinity Infinity Infinity -Infinity -Infinity -Infinity -Infinity 0 0.30 0 0.3000000 1235 1234.57 1235 1234.5678000 0 0.00 0 0.0000000 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 -0 -0.00 -0 -0.0000001 1000 1000.00 1000 999.9999000
+toFixed odd 2 2 1.3 1.3 threw RangeError threw RangeError 102 threw RangeError 1 threw TypeError 2.35 threw TypeError 2147483648.0 -2147483648.0 6 1.4 8.35 1 2 3 -3 threw TypeError 1e+21 123.000 threw TypeError
+number loop 15784528
+map set true 6 b c n zero zero o  1,1,NaN,0,[object Object],undefined true
+set add true 6 1,1,NaN,0,[object Object],undefined true true
+set ways threw TypeError threw TypeError threw TypeError true true true true threw TypeError 1 threw TypeError
+many sets 7300 5256 115496800 13999 19799 true false
+order a,4;b,3
+set while iterating 1,2,3,4,5
+add while iterating 1,2,3,4,5
+subclass set x! y!
+patched set patched v patched ctor
+unpatched v"#;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Chains of `+` that are compiled as one concatenation, and template
+/// literals: every kind of operand, the order in which operands are
+/// evaluated and made Strings, what happens when one throws, halves of a
+/// surrogate pair that meet between operands, texts that are being built
+/// at either end of a chain, and the results as keys. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn a_chain_of_additions_is_what_the_additions_are() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(chains_of_additions)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn chains_of_additions() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+var log = "";
+function O(name, how) { var o = {}; if (how !== "s") o.valueOf = function () { log += name + ".valueOf;"; return how === "obj" ? {} : "V" + name; }; if (how !== "v") o.toString = function () { log += name + ".toString;"; return "S" + name; }; return o; }
+function E(name, value) { log += "eval " + name + ";"; return value; }
+
+// Every kind of value after a string, and before one.
+var kinds = [0, -0, 1, -1.5, 1e21, 1e-7, NaN, Infinity, true, false, null, undefined, "", "s", 10n, [1, [2, 3]], {}, function f() {}, O("a", "both"), O("b", "s"), O("c", "obj"), new Date(0).getTime(), Object(5), Object("w"), [null], [undefined]];
+var out = [];
+for (var i = 0; i < kinds.length; i++) { var k = kinds[i]; out.push("<" + k + ">", "a" + k + "b" + k, k + "x" + k, k + k + "y" + k + k, `t${1}` + k + "z"); }
+var sum = 0; var joined = out.join("|"); for (var i = 0; i < joined.length; i++) sum = (sum * 31 + joined.charCodeAt(i)) | 0;
+P("kinds", out.length, joined.length, sum, out.slice(0, 10).join(" "), out.slice(75, 80).join(" ")); P("log", log.length, log.slice(0, 120));
+P("symbols", T(function () { return "a" + Symbol("s") + "b"; }), T(function () { return "a" + 1 + Symbol(); }), T(function () { return Symbol() + "a" + 1; }), T(function () { return "a" + Object(Symbol()) + "b"; }), "a" + Symbol("d").toString() + "b", "a" + Symbol("e").description + 1);
+
+// The order of what is evaluated and what is converted.
+log = ""; var r1 = "start" + E("1", O("p", "both")) + E("2", O("q", "both")) + E("3", "lit") + E("4", O("r", "s")); P("order", r1, log);
+log = ""; var r2 = E("1", O("p", "both")) + E("2", "mid") + E("3", O("q", "both")) + E("4", O("r", "both")) + E("5", 5); P("order after a string", r2, log);
+log = ""; var r3 = E("1", 1) + E("2", 2) + "s" + E("3", 3) + E("4", 4) + E("5", O("t", "both")); P("numbers first", r3, log);
+log = ""; var r4 = T(function () { return "a" + E("1", O("u", "both")) + E("2", { valueOf: function () { log += "throws;"; throw new RangeError("v"); } }) + E("3", O("w", "both")) + E("4", 4); }); P("throws midway", r4, log);
+log = ""; var r5 = T(function () { return "a" + E("1", 1) + E("2", Symbol()) + E("3", O("x", "both")); }); P("symbol midway", r5, log);
+log = ""; var tp = { [Symbol.toPrimitive]: function (hint) { log += "hint " + hint + ";"; return hint === "default" ? "D" : "X"; } }; P("toPrimitive", "a" + tp + "b" + tp, `${tp}` + tp + "c", tp + "d" + tp + tp, log);
+log = ""; var bad = { [Symbol.toPrimitive]: function () { return {}; } }, bad2 = { valueOf: function () { return {}; }, toString: function () { return {}; } }; P("no primitive", T(function () { return "a" + bad + "b"; }), T(function () { return "a" + 1 + bad2; }));
+var x = 1; P("assignments", "a" + (x = 2) + x + (x += 3) + x, "b" + x++ + x + ++x + x, x);
+var g = { n: 0, get v() { return ++this.n; } }; P("getters", "g" + g.v + g.v + "-" + g.v + g.v, g.n);
+var d = new Date(0); P("date", typeof ("d" + d + "e"), ("d" + d + 1).length === ("d" + d.toString() + 1).length, "n" + d.getTime() + d.getTime());
+function count() { count.calls++; return count.calls; } count.calls = 0; P("calls", "c" + count() + count() + "," + count() + (count() + count()) + count(), count.calls);
+P("nested", "a" + ("b" + 1 + 2) + (3 + 4) + ("" + 5 + 6) + (7 + "8" + 9), 1 + (2 + "3") + 4 + 5, ("x" + 1) + (2 + 3) + ("y" + 4 + 5), "p" + (1, 2) + (3, "q") + 4);
+P("no string", 1 + 2 + 3, 1 + 2 + 3 + "", "" + 1 + 2 + 3, 1 + "" + 2 + 3, 1 + 2 + "" + 3, true + 1 + null + "!" + undefined + 1, 1n + 2n + "n" + 3n + 4n, T(function () { return 1n + 2 + "s" + 3; }));
+var u; P("typeof and friends", typeof u + 1 + 2, void 0 + "v" + 1 + void 0, !0 + "b" + !1 + 2, -1 + "m" + -2 + +"3", "t" + typeof 1 + typeof "s" + 4);
+var tl = 5; P("templates", `a${tl}` + tl + "b" + `${tl}c`, "x" + `y` + tl + `${tl}${tl}` + 1, `` + tl + tl, `${"q"}` + 1 + 2);
+
+// Halves of a pair that meet between operands.
+var lead = "\uD83D", trail = "\uDE00", empty = "";
+var sp = [lead + trail + "x", "a" + lead + trail, "a" + lead + empty + trail + "b", lead + "" + "" + trail, "long enough to be a heap string " + lead + trail + lead, "q" + trail + lead + trail + lead + "r", "a" + lead + 1 + trail, "" + lead + "" + trail + "", "abcdefgh" + lead + trail + "ijklmnop" + lead + "" + trail];
+var spo = []; for (var i = 0; i < sp.length; i++) spo.push(sp[i].length + ":" + [...sp[i]].length + ":" + sp[i].codePointAt(sp[i].indexOf(lead) < 0 ? 0 : sp[i].indexOf(lead)).toString(16) + ":" + (sp[i].isWellFormed ? sp[i].isWellFormed() : "")); P("pairs", spo.join(" "));
+
+// Short and long results, the same text made in other ways.
+var a1 = "a", n1 = 1;
+P("short", "" + a1 + n1, (a1 + n1 + a1).length, a1 + n1 + a1 + n1 + a1 + n1 + a1, (a1 + n1 + a1 + n1 + a1 + n1 + a1 + n1).length, "abc" + "defg" + "", "abcd" + "efg" + "h", ("" + "" + "").length, "" + "" + "x" + "" + "");
+var id = 7, name = "Item 7", price = "8.75", i5 = 5;
+var row = "<tr class=\"" + (i5 & 1 ? "odd" : "even") + "\"><td>" + id + "</td><td>" + name + "</td><td>" + price + "</td></tr>";
+var row2 = ["<tr class=\"", "odd", "\"><td>", 7, "</td><td>", "Item 7", "</td><td>", "8.75", "</td></tr>"].join("");
+var row3 = `<tr class="${i5 & 1 ? "odd" : "even"}"><td>${id}</td><td>${name}</td><td>${price}</td></tr>`;
+P("rows", row === row2, row === row3, row.length, row.slice(10, 30)); var keyed = {}; keyed[row] = 1; keyed["rgb(" + 1 + "," + 2 + "," + 3 + ")"] = 2; P("keys", keyed[row3], keyed["rgb(1,2,3)"], Object.keys(keyed).length, new Set([row, row2, row3, "rgb(" + 1 + ",2," + 3 + ")", "rgb(1,2,3)"]).size, new Map([["k" + id + "-" + name, 1]]).get("k7-Item 7"));
+var g2 = 0; for (var i = 0; i < 3000; i++) g2 += ("row-" + i + "-" + (i & 15)).length + ("rgb(" + (i & 255) + ",10," + (i % 7) + ")").length; P("garbage", g2);
+
+// A text that is being built, first or in the middle.
+var s = ""; for (var i = 0; i < 2000; i++) s = s + "<" + i + ">" + (i & 1 ? "odd" : "") + ";"; P("built first", s.length, s.slice(0, 20), s.slice(-12));
+var s2 = ""; for (var i = 0; i < 2000; i++) s2 += "<" + i + ">" + (i & 1 ? "odd" : "") + ";"; P("appended chain", s2 === s, s2.length);
+var s3 = ""; for (var i = 0; i < 1500; i++) s3 = "[" + i + "]" + s3 + "."; P("built in the middle", s3.length, s3.slice(0, 16), s3.slice(-6));
+var s4 = ""; for (var i = 0; i < 1500; i++) s4 = "a" + i + s4; P("put before", s4.length, s4.slice(0, 12), s4.slice(-6));
+var s5 = "x".repeat(300); var s6 = s5 + 1 + s5 + 2 + s5; P("long operands", s6.length, s6.indexOf("1"), s6.indexOf("2"), s6 === "x".repeat(300) + "1" + "x".repeat(300) + "2" + "x".repeat(300));
+var acc = ""; for (var i = 0; i < 300; i++) { var piece = "k" + i + "=" + (i * i) + "&"; acc = acc + piece; if (i % 50 === 0) acc = acc + "#" + acc.length + "#"; } P("mixed", acc.length, acc.slice(-24));
+
+// Where the operands are, and what holds the result.
+function concat3(a, b, c) { return a + b + c; } function withLit(a, b) { return "(" + a + ", " + b + ")"; }
+P("functions", concat3(1, 2, 3), concat3("1", 2, 3), concat3(1, "2", 3), concat3(1, 2, "3"), withLit(1, 2), withLit("a", [3]), withLit(withLit(1, 2), withLit(3, 4)));
+var arr = [1, 2, 3]; P("in calls", String("a" + arr[0] + arr[1]), ["a" + 1 + 2, "b" + 3 + 4].join(), ("a" + 1 + 2).length, parseInt("1" + 2 + 3) + 1, ["x"]["" + 0 + ""], { ["k" + 1 + 2]: 3 }.k12);
+var cond = 1; P("conditional", "a" + (cond ? "b" : 2) + (cond && "c") + (cond || "d") + (null ?? "e"), "f" + cond + (cond ? 1 : "g") + cond);
+var obj = { toString: function () { return "T"; } }; var compound = "a"; compound += obj + "b" + obj; var c2 = 1; c2 += "x" + c2 + c2; var c3 = "s"; c3 = c3 + c3 + c3 + 1; P("compound", compound, c2, c3);
+label: for (var i = 0; i < 3; i++) { var lv = "i" + i + (i ? "+" : "") + i; if (i === 2) { P("loop", lv); break label; } }
+P("generators", [...(function* () { var v = "a" + (yield 1) + (yield 2) + "z"; yield v; })()].join(","), (function () { var it = (function* () { return "g" + (yield "one") + "-" + (yield "two"); })(); it.next(); it.next("A"); return it.next("B").value; })());
+P("with catch", (function () { try { return "a" + (function () { throw 1; })() + "b" + 2; } catch (e) { return "caught" + e + 1 + "!"; } finally { log = "f" + 1 + 2; } })(), log);
+
+// Template literals: each substitution is a String before the next is evaluated.
+log = ""; function OT(name) { return { toString: function () { log += name + ".toString;"; return name; }, valueOf: function () { log += name + ".valueOf;"; return "V" + name; } }; }
+var t1 = `${E("1", OT("a"))}-${E("2", OT("b"))}-${E("3", 3)}`; P("template order", t1, log);
+log = ""; P("template symbol", T(function () { return `${E("1", OT("a"))}${E("2", Symbol())}${E("3", OT("c"))}`; }), log);
+log = ""; P("template throws", T(function () { return `${E("1", { toString: function () { log += "throws;"; throw new RangeError("x"); } })}${E("2", 2)}`; }), log);
+log = ""; P("template hint", `${tp}|${d === d ? tp : 0}`, `a${OT("x")}b` + OT("y") + `${OT("z")}`, log);
+var tk = []; for (var i = 0; i < kinds.length; i++) tk.push(T(function () { return `<${kinds[i]}|${kinds[i]}>`; }));
+var tks = tk.join("|"), tsum = 0; for (var i = 0; i < tks.length; i++) tsum = (tsum * 31 + tks.charCodeAt(i)) | 0; P("template kinds", tk.length, tks.length, tsum, tk.slice(0, 8).join(" "));
+P("template shapes", ``, `a`, `${1}`, `${"s"}`, `${1}${2}`, `a${1}`, `${1}b`, `a${`b${`c${1}`}`}`, `${lead}${trail}`.length, `${lead}${""}${trail}x`.codePointAt(0).toString(16), `x${1n}y${null}z${undefined}${true}`, `${[1, 2]}${{}}`, `line
+break${1}`.length);
+function tagged(strings) { var r = strings.raw.join("|"); for (var i = 1; i < arguments.length; i++) r += ":" + typeof arguments[i]; return r; }
+P("tagged", tagged`a${OT("q")}b${1}c`, log.indexOf("q.toString") < 0);
+var built = "seed "; for (var i = 0; i < 1200; i++) built = `${built}${i},`; var built2 = "seed "; for (var i = 0; i < 1200; i++) built2 += `${i},`; P("template built", built.length, built === built2, built.slice(-10));
+var pre = ""; for (var i = 0; i < 1200; i++) pre = `${i};${pre}`; P("template put before", pre.length, pre.slice(0, 14), pre.slice(-6));
+lines.join("\n")"##;
+    let expected = r##"kinds 130 1253 -1942846379 <0> a0b0 0x0 0y00 t10z <0> a0b0 0x0 0y00 t10z <1,2,3> a1,2,3b1,2,3 1,2,3x1,2,3 1,2,31,2,3y1,2,31,2,3 t11,2,3z
+log 420 a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;a.valueOf;b.toString;b.toStrin
+symbols threw TypeError threw TypeError threw TypeError threw TypeError aSymbol(d)b ae1
+order startVpVqlitSr eval 1;p.valueOf;eval 2;q.valueOf;eval 3;eval 4;r.toString;
+order after a string VpmidVqVr5 eval 1;eval 2;p.valueOf;eval 3;q.valueOf;eval 4;r.valueOf;eval 5;
+numbers first 3s34Vt eval 1;eval 2;eval 3;eval 4;eval 5;t.valueOf;
+throws midway threw RangeError eval 1;u.valueOf;eval 2;throws;
+symbol midway threw TypeError eval 1;eval 2;
+toPrimitive aDbD XDc DdDD hint default;hint default;hint string;hint default;hint default;hint default;hint default;
+no primitive threw TypeError threw TypeError
+assignments a2255 b5677 7
+getters g12-34 4
+date string true n00
+calls c12,396 6
+nested ab12756789 12345 x15y45 p2q4
+no string 6 6 123 123 33 2!undefined1 3n34 threw TypeError
+typeof and friends undefined12 undefinedv1undefined truebfalse2 -1m-23 tnumberstring4
+templates a55b5c xy5551 55 q12
+pairs 3:2:1f600:true 3:2:1f600:true 4:3:1f600:true 2:1:1f600:true 35:34:1f600:false 6:5:1f600:false 4:4:d83d:false 2:1:1f600:true 20:18:1f600:true
+short a1 3 a1a1a1a 8 abcdefg abcdefgh 0 x
+rows true true 59 "odd"><td>7</td><td>
+keys 1 2 2 2 1
+garbage 67692
+built first 15890 <0>;<1>odd;<2>;<3>od >;<1999>odd;
+appended chain true 15890
+built in the middle 9390 [1499][1498][149 ......
+put before 6390 a1499a1498a1 a2a1a0
+long operands 902 300 601 true
+mixed 3075 9&k298=88804&k299=89401&
+functions 6 123 123 33 (1, 2) (a, 3) ((1, 2), (3, 4))
+in calls a12 a12,b34 3 124 x 3
+conditional abc1e f111
+compound aTbT 1x11 sss1
+loop i2+2
+generators 1,2,aundefinedundefinedz gA-B
+with catch caught11! f12
+template order a-b-3 eval 1;a.toString;eval 2;b.toString;eval 3;
+template symbol threw TypeError eval 1;a.toString;eval 2;
+template throws threw RangeError eval 1;throws;
+template hint X|X axbVyz hint string;hint string;x.toString;y.valueOf;z.toString;
+template kinds 26 295 -998977338 <0|0> <0|0> <1|1> <-1.5|-1.5> <1e+21|1e+21> <1e-7|1e-7> <NaN|NaN> <Infinity|Infinity>
+template shapes  a 1 s 12 a1 1b abc1 2 1f600 x1ynullzundefinedtrue 1,2[object Object] 11
+tagged a|b|c:object:number true
+template built 4895 true 1198,1199,
+template put before 4890 1199;1198;1197 2;1;0;"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The arithmetic of Numbers: `*`, `/`, `%`, `+` and `-` of every pair of the
+/// values the specification has a step for (NaN, the infinities, the zeros)
+/// and of ordinary ones, of integers whose result is and is not an integer,
+/// in loops, on a Float64Array, of other kinds of values, and as compound
+/// assignments. What is expected is what Node prints for the same script.
+#[test]
+fn the_arithmetic_of_numbers_is_that_of_doubles() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arithmetic_of_numbers)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arithmetic_of_numbers() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function S(v) { return Object.is(v, -0) ? "-0" : String(v); }
+var vals = [NaN, Infinity, -Infinity, 0, -0, 1, -1, 0.5, -0.5, 3, -3, 7.25, 1e21, -1e21, 1e-7, 1.7976931348623157e308, -1.7976931348623157e308, 5e-324, -5e-324, 2 ** 53, 2 ** 53 - 1, -(2 ** 53), 2 ** 31, 2 ** 31 - 1, -(2 ** 31), 2 ** 32, 0.1, 1.0000001, 123456.789, 4503599627370496, 94906267, 3037000500, -94906267];
+var ops = [function (a, b) { return a * b; }, function (a, b) { return a / b; }, function (a, b) { return a % b; }, function (a, b) { return a + b; }, function (a, b) { return a - b; }];
+var names = ["mul", "div", "rem", "add", "sub"];
+for (var o = 0; o < ops.length; o++) {
+  var out = "", sum = 0, kinds = 0;
+  for (var i = 0; i < vals.length; i++) for (var j = 0; j < vals.length; j++) {
+    var r = ops[o](vals[i], vals[j]); var s = S(r); out += s + ","; kinds += Number.isInteger(r) ? 1 : 0;
+  }
+  for (var k = 0; k < out.length; k++) sum = (sum * 31 + out.charCodeAt(k)) | 0;
+  P(names[o], out.length, sum, kinds, out.slice(0, 80));
+}
+// The same in the loop of instructions, with the operands in variables of every kind.
+var acc = "";
+for (var i = 0; i < vals.length; i++) { var a = vals[i], b = vals[(i * 7 + 3) % vals.length], c = vals[(i * 11 + 5) % vals.length]; acc += S(a * b + c) + "|" + S(a / b - c) + "|" + S(a % b * c) + "|" + S((a + b) / (c - a)) + "|" + S(a * a) + "|" + S(a / a) + "|" + S(a % a) + ";"; }
+var asum = 0; for (var k = 0; k < acc.length; k++) asum = (asum * 31 + acc.charCodeAt(k)) | 0; P("mixed", acc.length, asum, acc.slice(0, 100));
+// Integers whose product, quotient or remainder is and is not an integer.
+var ints = [0, 1, -1, 2, 3, 7, -7, 10, 255, 65535, 65536, 94906265, 94906266, 94906267, 2 ** 26, 2 ** 27, 2 ** 31 - 1, 2 ** 31, -(2 ** 31), 2 ** 52, 2 ** 53 - 1, -(2 ** 53 - 1), 3037000499, 3037000500, 9007199254740991];
+var io = "";
+for (var i = 0; i < ints.length; i++) for (var j = 0; j < ints.length; j++) { var x = ints[i], y = ints[j]; io += S(x * y) + "," + S(x / y) + "," + S(x % y) + "," + S(-x * y) + "," + S(x % -y) + "," + S(-x % y) + ";"; }
+var isum = 0; for (var k = 0; k < io.length; k++) isum = (isum * 31 + io.charCodeAt(k)) | 0; P("integers", io.length, isum, io.slice(0, 90));
+P("zeros", S(0 * -1), S(-0 * 0), S(-0 * -0), S(0 / -5), S(-0 / 5), S(5 % -5), S(-5 % 5), S(-0 % 5), S(0 % -5), S(-4 % 2), S(4 % -2), S(-4.5 % 1.5), S(1 / (0 * -1)), S(1 / (-4 % 2)), S(-1 * 0 + 0), S(0 * -3 * -2));
+P("precision", 0.1 * 3, 0.1 + 0.2, 1e21 % 3, 1e21 % 7, 2 ** 53 % 3, 5.5 % 2.5, -5.5 % 2.5, 1e308 * 10, -1e308 * 10, 1e-320 / 1e10, 5e-324 / 2, 5e-324 * 0.5, 1 / 3, 2 / 3, 10 / 3, 0.3 / 0.1, 0.7 * 3, 1.1 * 1.1, 9007199254740993 * 1, 94906267 * 94906267, 3037000500 * 3037000500, 2 ** 53 * 3 / 3);
+var x = 0.5; for (var i = 0; i < 2000; i++) x = x * 1.0000001 + 0.25 / (i + 1); P("loop", x, x.toFixed(6));
+var f = new Float64Array(64); for (var i = 0; i < f.length; i++) f[i] = i * 0.37 - 5; var e = 0; for (var r = 0; r < 20; r++) for (var i = 1; i < f.length; i++) { f[i] = f[i] * 0.99 + f[i - 1] * 0.01 / (r + 1); e += f[i] % 1.5; } P("typed", e, f[10], f[63]);
+P("other kinds", "3" * "4", "8" / 2, "7" % "4", true * 3, null * 5, undefined * 2, [5] * [6], 6 / [2], "a" * 1, 2n * 3n, 7n / 2n, 7n % 3n, -7n % 3n, (function () { try { return 1n * 1; } catch (e) { return e.constructor.name; } })(), (function () { try { return 1n / 0n; } catch (e) { return e.constructor.name; } })(), { valueOf: function () { return 4; } } * 2.5, 9 / { valueOf: function () { return 0; } });
+var m = 3; m *= 1.5; var d = 9; d /= 4; var q = 9.5; q %= 4; var mm = 2 ** 30; mm *= 2 ** 30; var dz = 1; dz /= 0; var rz = 1; rz %= 0; P("compound", m, d, q, mm, dz, rz);
+lines.join("\n")"##;
+    let expected = r##"mul 13302 -240020823 539 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+div 13838 -233543561 373 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+rem 7439 -369496155 574 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+add 13442 -433646109 651 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+sub 13434 -653074813 658 NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,
+mixed 2344 553112274 NaN|NaN|NaN|NaN|NaN|NaN|NaN;-Infinity|-Infinity|NaN|NaN|Infinity|NaN|NaN;-Infinity|-Infinity|NaN|NaN
+integers 36650 -700732694 0,NaN,NaN,-0,NaN,NaN;0,0,0,-0,0,-0;-0,-0,0,0,0,-0;0,0,0,-0,0,-0;0,0,0,-0,0,-0;0,0,0,-0,0,-
+zeros -0 -0 0 -0 -0 0 -0 -0 0 -0 0 -0 -Infinity -Infinity 0 0
+precision 0.30000000000000004 0.30000000000000004 1 6 2 0.5 -0.5 Infinity -Infinity 0 0 0 0.3333333333333333 0.6666666666666666 3.3333333333333335 2.9999999999999996 2.0999999999999996 1.2100000000000002 9007199254740992 9007199515875288 9223372037000250000 9007199254740992
+loop 2.54505098768096 2.545051
+typed 553.8027320157125 -1.1136557966537022 15.514385931320911
+other kinds 12 4 3 3 0 NaN 30 3 NaN 6 3 1 -1 TypeError RangeError 10 Infinity
+compound 4.5 2.25 1.5 1152921504606847000 Infinity NaN"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Object spread and Object.assign, which copy the properties of a plain
+/// object without a list of its keys: sources of every size and kind
+/// (frozen, with accessors, read-only or hidden properties, Symbol and
+/// integer keys, private fields, proxies, primitives), where the spread
+/// stands in the literal, copies that go their own ways, and targets that
+/// take a property as it is and those that do not (fixed, read-only,
+/// setters, proxies). What is expected is what Node prints for the same
+/// script.
+#[test]
+fn a_spread_object_is_a_copy_of_its_own() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(spread_objects)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn spread_objects() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+function D(o) { var out = ""; var keys = Reflect.ownKeys(o); for (var i = 0; i < keys.length; i++) { var d = Object.getOwnPropertyDescriptor(o, keys[i]); out += String(keys[i]) + ":" + ("value" in d ? JSON.stringify(d.value) : "accessor") + (d.writable ? "w" : "-") + (d.enumerable ? "e" : "-") + (d.configurable ? "c" : "-") + " "; } return out + (Object.isExtensible(o) ? "ext" : "fixed") + (Object.getPrototypeOf(o) === Object.prototype ? "" : " proto!"); }
+var sym = Symbol("s"), log = "";
+
+// Plain objects of every size, and what the copy is.
+for (var n = 0; n <= 40; n += n < 6 ? 1 : 7) { var src = {}; for (var k = 0; k < n; k++) src["key" + k] = k * 3; var c = { ...src }; var c2 = { ...src, extra: n }; var c3 = { first: 1, ...src }; P("size", n, Object.keys(c).length, c === src, JSON.stringify(c) === JSON.stringify(src), Object.keys(c2).pop(), Object.keys(c3)[0], c3["key" + (n - 1)], D(c).length); }
+var base = { a: 1, b: "two", c: [3], d: { e: 4 } };
+var copy = { ...base }; P("copy", D(copy), copy.c === base.c, copy.d === base.d);
+copy.a = 10; copy.z = 26; delete copy.b; base.b = "changed"; base.y = 25; P("apart", JSON.stringify(copy), JSON.stringify(base));
+var copy2 = { ...base }; delete base.a; base.a = "again"; P("after delete", JSON.stringify(copy2), JSON.stringify(base), JSON.stringify({ ...base }), Object.keys({ ...base }).join());
+
+// What is and is not a plain data property.
+var frozen = Object.freeze({ f: 1, g: 2 }), sealed = Object.seal({ s: 1 }), fixed = Object.preventExtensions({ p: 1 });
+P("frozen", D({ ...frozen }), D({ ...sealed }), D({ ...fixed }), Object.isFrozen({ ...frozen }), T(function () { var c = { ...frozen }; c.f = 5; c.h = 6; delete c.g; return JSON.stringify(c); }));
+var ro = {}; Object.defineProperty(ro, "r", { value: 1, writable: false, enumerable: true, configurable: true }); Object.defineProperty(ro, "nc", { value: 2, writable: true, enumerable: true, configurable: false }); Object.defineProperty(ro, "hidden", { value: 3, enumerable: false, writable: true, configurable: true }); ro.plain = 4;
+P("attributes", D({ ...ro }), D(ro));
+var acc = { a: 1, get g() { log += "get g;"; return this.a + 1; }, set s(v) { log += "set s;"; }, b: 2 }; log = ""; var ca = { ...acc }; P("accessors", D(ca), log, D(acc).length);
+var order = { b: 1, [sym]: "sym", 2: "two", a: 3, 1: "one", [Symbol.for("t")]: "t" }; P("order", D({ ...order }), Reflect.ownKeys({ ...order }).map(String).join(","));
+var ints = { 10: "a", 2: "b", x: 1, 1: "c" }; P("integers", JSON.stringify({ ...ints }), Object.keys({ ...ints, 0: "z", 5: "y" }).join());
+class K { #priv = 1; pub = 2; static s = 3; get acc() { return 4; } m() { return this.#priv; } } var inst = new K(); var ci = { ...inst }; P("class instance", D(ci), T(function () { return K.prototype.m.call(ci); }), ci instanceof K, ci.m);
+var nullp = Object.create(null); nullp.n = 1; var derived = Object.create({ inherited: 1 }); derived.own = 2; P("prototypes", D({ ...nullp }), D({ ...derived }), ({ ...derived }).inherited, D({ ...Object.create(base) }));
+var protoTarget = { __proto__: { p: 1 }, ...base }; P("target prototype", Object.keys(protoTarget).join(), protoTarget.p, Object.getPrototypeOf(protoTarget) !== Object.prototype);
+
+// Other things spread.
+P("primitives", D({ ..."abc" }), D({ ...123 }), D({ ...null }), D({ ...undefined }), D({ ...true }), D({ ...Symbol() }), D({ ...10n }), D({ ...[1, , 3] }), D({ ...function f(a, b) {} }), D({ ...new String("xy") }).length, D({ ...Math }), D({ ...JSON }), Object.keys({ ...Object.prototype }).length, D({ ...new Map([[1, 2]]) }), D({ ...new Date(0) }), D({ .../re/g }), D({ ...new Error("m") }));
+(function () { P("arguments", D({ ...arguments })); })(7, 8);
+log = ""; var proxy = new Proxy({ a: 1, b: 2, c: 3 }, { ownKeys: function (t) { log += "ownKeys;"; return ["c", "a", "b"]; }, getOwnPropertyDescriptor: function (t, k) { log += "gopd " + String(k) + ";"; return Reflect.getOwnPropertyDescriptor(t, k); }, get: function (t, k) { log += "get " + String(k) + ";"; return t[k] * 10; } }); P("proxy", D({ ...proxy }), log);
+var thrower = { a: 1, get b() { throw new RangeError("b"); }, c: 3 }; P("getter throws", T(function () { return D({ ...thrower }); }));
+var mutating = { a: 1, get b() { delete this.c; this.d = 4; return 2; }, c: 3 }; P("getter changes the source", D({ ...mutating }), Object.keys(mutating).join());
+
+// Where the spread stands in the literal.
+var s1 = { x: 1, y: 2 }, s2 = { y: 20, z: 30 };
+P("places", JSON.stringify({ ...s1, ...s2 }), JSON.stringify({ ...s2, ...s1 }), JSON.stringify({ y: 0, ...s1 }), JSON.stringify({ ...s1, y: 0 }), JSON.stringify({ a: 0, ...s1, b: 9, ...s2, c: 8 }), JSON.stringify({ ...{}, ...s1 }), JSON.stringify({ ...s1, ...{} }), JSON.stringify({ ...s1, ...s1 }), JSON.stringify({ ...{ ...{ ...s1 } } }), JSON.stringify({ ["y"]: 5, ...s1 }), JSON.stringify({ ...s1, get y() { return "getter"; } }), D({ get y() { return 1; }, ...s1 }), D({ ...s1, __proto__: null }).length);
+Object.defineProperty(Object.prototype, "x", { set: function (v) { log += "proto setter;"; }, get: function () { return "proto"; }, configurable: true }); log = ""; var overProto = { ...s1 }; P("setter in the prototype", D(overProto), log, overProto.x); delete Object.prototype.x;
+var self = { me: 1 }; self.self = self; var cs = { ...self }; P("self", cs.self === self, cs.self.self === self, cs !== self);
+
+// Many copies, each going its own way.
+var template = { id: 0, name: "n", tags: null, on: true };
+var made = []; for (var i = 0; i < 300; i++) { var o = { ...template, id: i }; if (i % 3 === 0) o["extra" + (i % 5)] = i; if (i % 4 === 0) delete o.name; if (i % 7 === 0) Object.freeze(o); made.push(o); }
+var sig = 0; for (var i = 0; i < made.length; i++) { var keys = Object.keys(made[i]).join(); for (var j = 0; j < keys.length; j++) sig = (sig * 31 + keys.charCodeAt(j)) | 0; sig = (sig + made[i].id) | 0; }
+P("many", sig, JSON.stringify(template), D(made[0]), D(made[1]), D(made[12]), Object.isFrozen(template), made[299].id);
+var chain = { v: 0 }; for (var i = 0; i < 200; i++) chain = { ...chain, ["k" + i]: i, v: chain.v + 1 }; P("chained", Object.keys(chain).length, chain.v, chain.k199, Object.keys(chain).slice(0, 3).join());
+var last; for (var i = 0; i < 2000; i++) { last = { ...base, e: i }; last = Object.assign({}, last, { f: 1 }); } P("loop", JSON.stringify(last), D(last).length);
+
+// Object.assign and rest, which copy in their own ways.
+var target = { t: 1 }; var ret = Object.assign(target, base, { [sym]: 1 }, null, "ab", acc); P("assign", ret === target, D(target).length, JSON.stringify(target));
+var { a: ra, ...rest } = { a: 1, b: 2, [sym]: 3, 4: 5 }; P("rest", ra, D(rest)); var { ...all } = frozen; P("rest of frozen", D(all));
+function f({ a, ...others }) { return D(others); } P("rest parameter", f({ a: 1, b: 2, c: 3 }), f(acc).length);
+
+// Object.assign: targets that take a property as it is, and those that do not.
+var src = { a: 1, b: 2, c: 3 };
+P("assign plain", D(Object.assign({}, src)), D(Object.assign({ c: 0, z: 9 }, src)), D(Object.assign({}, src, { b: "B", d: 4 }, { a: "A" })), Object.assign(src) === src, D(Object.assign({}, src, src)), JSON.stringify(Object.assign([7, 8], { 1: "x", length: 5 })), Object.keys(Object.assign(function () {}, src)).join(), typeof Object.assign(5, src), D(Object.assign(Object("s"), { z: 1 })).length, T(function () { return Object.assign(null, src); }), T(function () { return Object.assign(undefined, src); }), D(Object.assign({}, null, undefined, 1, true, "ab", sym, src)));
+var same = { p: 1, q: 2 }; P("assign to itself", Object.assign(same, same) === same, D(same)); var child = Object.create(src); P("assign from the prototype", D(Object.assign(child, src)).length > 0, Object.keys(child).join(), child.a, src.a, Object.getPrototypeOf(child) === src);
+function partial(target, source) { var r = T(function () { Object.assign(target, source); return "ok"; }); return r + " " + JSON.stringify(target) + " " + Object.isExtensible(target); }
+P("assign to fixed", partial(Object.freeze({ a: 0 }), src), partial(Object.seal({ a: 0 }), src), partial(Object.preventExtensions({ b: 0 }), src), partial(Object.preventExtensions({ a: 0, b: 0, c: 0 }), src), partial(Object.freeze({}), {}), partial(Object.freeze({}), { x: 1 }));
+var roTarget = { a: 0 }; Object.defineProperty(roTarget, "b", { value: "ro", writable: false, enumerable: true, configurable: true }); P("assign to read-only", partial(roTarget, src), D(roTarget));
+log = ""; var setTarget = { set b(v) { log += "set b=" + v + ";"; }, a: 0 }; P("assign to a setter", partial(setTarget, src), log, D(setTarget));
+log = ""; var protoSet = Object.create({ set b(v) { log += "proto set b=" + v + " on own " + Object.keys(this).join() + ";"; }, get c() { return "only a getter"; } }); P("assign under a setter", partial(protoSet, src), log, D(protoSet).length, Object.keys(protoSet).join());
+var protoRo = Object.create(Object.freeze({ b: "frozen above" })); P("assign under read-only", partial(protoRo, src), Object.keys(protoRo).join(), protoRo.b);
+log = ""; var pTarget = new Proxy({}, { set: function (t, k, v, r) { log += "set " + String(k) + ";"; return Reflect.set(t, k, v, r); }, defineProperty: function (t, k, d) { log += "define " + String(k) + ";"; return Reflect.defineProperty(t, k, d); } }); Object.assign(pTarget, src); P("assign to a proxy", log, JSON.stringify(pTarget));
+var dunder = JSON.parse('{"__proto__": {"injected": 1}, "ok": 2}'); var dt = Object.assign({}, dunder); P("assign __proto__", "ok" in dt, dt.ok, Object.keys({ ...dunder }).join(), ({ ...dunder }).injected, Object.getPrototypeOf({ ...dunder }) === Object.prototype);
+log = ""; var srcGet = { a: 1, get b() { log += "get b;"; return 2; }, c: 3 }; var tSet = { set a(v) { log += "set a;"; }, set c(v) { log += "set c;"; } }; Object.assign(tSet, srcGet); P("assign order", log);
+var srcMut = { a: 1, b: 2, c: 3, d: 4 }; var tMut = { set a(v) { delete srcMut.b; srcMut.e = 5; Object.defineProperty(srcMut, "c", { enumerable: false }); } }; Object.assign(tMut, srcMut); P("setter changes the source", Object.keys(tMut).join(), JSON.stringify(tMut), Object.keys(srcMut).join());
+var srcMut2 = { a: 1, b: 2, c: 3 }; var tMut2 = { x: 0, set b(v) { delete srcMut2.c; } }; Object.assign(tMut2, srcMut2); P("setter in the middle", JSON.stringify(tMut2), Object.keys(tMut2).join());
+P("assign kinds of sources", D(Object.assign({}, order)), D(Object.assign({}, ro)), D(Object.assign({}, frozen)), D(Object.assign({}, inst)), D(Object.assign({}, [1, 2])), D(Object.assign({}, proxy)).length, D(Object.assign({}, derived)), D(Object.assign({}, nullp)), D(Object.assign(Object.create(null), src)), T(function () { return D(Object.assign({}, thrower)); }));
+var shared1 = { ...src }, shared2 = { ...src }; Object.assign(shared1, { d: 4 }); Object.assign(shared2, { a: "changed" }); P("assign to copies", JSON.stringify(shared1), JSON.stringify(shared2), JSON.stringify(src));
+var big = {}; for (var i = 0; i < 300; i++) big["p" + i] = i; var bigCopy = Object.assign({}, big, { p5: "five", extra: true }); P("assign many", Object.keys(bigCopy).length, bigCopy.p5, bigCopy.p299, Object.keys(bigCopy)[5], Object.keys({ ...big, p5: 0 }).length);
+var acc2 = 0; for (var i = 0; i < 3000; i++) { var o1 = Object.assign({}, src, { n: i }); var o2 = Object.assign(o1, { a: i }); acc2 += o2.a + o2.n + Object.keys(o2).length; } P("assign loop", acc2);
+class Cfg { constructor(opts) { Object.assign(this, { size: 1, color: "red" }, opts); } set color(v) { this._color = v + "!"; } get color() { return this._color; } } var cfg = new Cfg({ size: 3, color: "blue", extra: 1 }); P("assign in a constructor", JSON.stringify(cfg), cfg.color, Object.keys(cfg).join());
+lines.join("\n")"##;
+    let expected = r##"size 0 0 false true extra first  3
+size 1 1 false true extra first 0 13
+size 2 2 false true extra first 3 23
+size 3 3 false true extra first 6 33
+size 4 4 false true extra first 9 43
+size 5 5 false true extra first 12 54
+size 6 6 false true extra first 15 65
+size 13 13 false true extra first 36 145
+size 20 20 false true extra first 57 229
+size 27 27 false true extra first 78 313
+size 34 34 false true extra first 99 397
+copy a:1wec b:"two"wec c:[3]wec d:{"e":4}wec ext true true
+apart {"a":10,"c":[3],"d":{"e":4},"z":26} {"a":1,"b":"changed","c":[3],"d":{"e":4},"y":25}
+after delete {"a":1,"b":"changed","c":[3],"d":{"e":4},"y":25} {"b":"changed","c":[3],"d":{"e":4},"y":25,"a":"again"} {"b":"changed","c":[3],"d":{"e":4},"y":25,"a":"again"} b,c,d,y,a
+frozen f:1wec g:2wec ext s:1wec ext p:1wec ext false {"f":5,"h":6}
+attributes r:1wec nc:2wec plain:4wec ext r:1-ec nc:2we- hidden:3w-c plain:4wec ext
+accessors a:1wec g:2wec s:undefinedwec b:2wec ext get g; 45
+order 1:"one"wec 2:"two"wec b:1wec a:3wec Symbol(s):"sym"wec Symbol(t):"t"wec ext 1,2,b,a,Symbol(s),Symbol(t)
+integers {"1":"c","2":"b","10":"a","x":1} 0,1,2,5,10,x
+class instance pub:2wec ext threw TypeError false 
+prototypes n:1wec ext own:2wec ext  ext
+target prototype b,c,d,y,a 1 true
+primitives 0:"a"wec 1:"b"wec 2:"c"wec ext ext ext ext ext ext ext 0:1wec 2:3wec ext ext 21 ext ext 0 ext ext ext ext
+arguments 0:7wec 1:8wec ext
+proxy c:30wec a:10wec b:20wec ext ownKeys;gopd c;get c;gopd a;get a;gopd b;get b;
+getter throws threw RangeError
+getter changes the source a:1wec b:2wec ext a,b,d
+places {"x":1,"y":20,"z":30} {"y":2,"z":30,"x":1} {"y":2,"x":1} {"x":1,"y":0} {"a":0,"x":1,"y":20,"b":9,"z":30,"c":8} {"x":1,"y":2} {"x":1,"y":2} {"x":1,"y":2} {"x":1,"y":2} {"y":2,"x":1} {"x":1,"y":"getter"} y:2wec x:1wec ext 24
+setter in the prototype x:1wec y:2wec ext  1
+self true true true
+many 555476635 {"id":0,"name":"n","tags":null,"on":true} id:0-e- tags:null-e- on:true-e- extra0:0-e- fixed id:1wec name:"n"wec tags:nullwec on:truewec ext id:12wec tags:nullwec on:truewec extra2:12wec ext false 299
+chained 201 200 199 v,k0,k1
+loop {"b":"changed","c":[3],"d":{"e":4},"y":25,"a":"again","e":1999,"f":1} 78
+assign true 109 {"0":"a","1":"b","t":1,"b":2,"c":[3],"d":{"e":4},"y":25,"a":1,"g":2}
+rest 1 4:5wec b:2wec Symbol(s):3wec ext
+rest of frozen f:1wec g:2wec ext
+rest parameter b:2wec c:3wec ext 32
+assign plain a:1wec b:2wec c:3wec ext c:3wec z:9wec a:1wec b:2wec ext a:"A"wec b:"B"wec c:3wec d:4wec ext true a:1wec b:2wec c:3wec ext [7,"x",null,null,null] a,b,c object 38 threw TypeError threw TypeError 0:"a"wec 1:"b"wec a:1wec b:2wec c:3wec ext
+assign to itself true p:1wec q:2wec ext
+assign from the prototype true a,b,c 1 1 true
+assign to fixed threw TypeError {"a":0} false threw TypeError {"a":1} false threw TypeError {"b":0} false ok {"a":1,"b":2,"c":3} false ok {} false threw TypeError {} false
+assign to read-only threw TypeError {"a":1,"b":"ro"} true a:1wec b:"ro"-ec ext
+assign to a setter ok {"a":1,"c":3} true set b=2; b:accessor-ec a:1wec c:3wec ext
+assign under a setter threw TypeError {"a":1} true proto set b=2 on own a; 17 a
+assign under read-only threw TypeError {"a":1} true a frozen above
+assign to a proxy set a;define a;set b;define b;set c;define c; {"a":1,"b":2,"c":3}
+assign __proto__ true 2 __proto__,ok  true
+assign order set a;get b;set c;
+setter changes the source a,d {"d":4} a,d,e
+setter in the middle {"x":0,"a":1} x,b,a
+assign kinds of sources 1:"one"wec 2:"two"wec b:1wec a:3wec Symbol(s):"sym"wec Symbol(t):"t"wec ext r:1wec nc:2wec plain:4wec ext f:1wec g:2wec ext pub:2wec ext 0:1wec 1:2wec ext 27 own:2wec ext n:1wec ext a:1wec b:2wec c:3wec ext proto! threw RangeError
+assign to copies {"a":1,"b":2,"c":3,"d":4} {"a":"changed","b":2,"c":3} {"a":1,"b":2,"c":3}
+assign many 301 five 299 p5 300
+assign loop 9009000
+assign in a constructor {"size":3,"_color":"blue!","extra":1} blue! size,_color,extra"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `in`, hasOwnProperty, reads and deletes on objects with few keys and with
+/// hundreds, which are found by a table of the shape's keys: keys deleted
+/// and put back, a dictionary filled and emptied in rounds, keys inherited,
+/// and other kinds of objects. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn a_key_is_found_in_an_object_of_any_size() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(keys_of_objects)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn keys_of_objects() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+// Objects with few and with many keys: `in`, hasOwnProperty, reads, deletes, and keys that come back.
+var sym = Symbol("s");
+for (var size = 0; size <= 300; size += size < 40 ? 7 : 65) {
+  var d = {}; for (var i = 0; i < size; i++) d["k" + i] = i; d[sym] = 1; d[7] = "seven";
+  var hits = 0, own = 0, sum = 0;
+  for (var i = -3; i < size + 3; i++) { var key = "k" + i; if (key in d) hits++; if (Object.prototype.hasOwnProperty.call(d, key)) own++; sum += d[key] | 0; }
+  P("size", size, hits, own, sum, "toString" in d, "valueOf" in d, sym in d, 7 in d, "7" in d, 8 in d, "k" in d, "" in d, Object.keys(d).length);
+  for (var i = 0; i < size; i += 3) delete d["k" + i];
+  var left = 0; for (var i = 0; i < size; i++) if ("k" + i in d) left++;
+  for (var i = 0; i < size; i += 6) d["k" + i] = -i;
+  var back = 0, order = ""; for (var i = 0; i < size; i++) if ("k" + i in d) back++; var ks = Object.keys(d); order = ks.slice(0, 4).join() + ".." + ks.slice(-3).join();
+  P("after deletes", size, left, back, order, ks.length);
+}
+// A dictionary that is filled, asked and emptied again and again.
+var dict = {}; var n = 0;
+for (var round = 0; round < 4; round++) {
+  for (var i = 0; i < 2000; i++) dict["k" + (i % 500)] = i + round;
+  for (var j = 0; j < 2000; j++) { var key = "k" + (j % 500); if (key in dict) n += dict[key] & 1; if ((j & 7) === 0) delete dict[key]; }
+}
+P("churn", n, Object.keys(dict).length, "k1" in dict, "k0" in dict, "k8" in dict);
+// Keys found above the object, and on other kinds of objects.
+var proto = { inherited: 1 }; for (var i = 0; i < 60; i++) proto["p" + i] = i; var child = Object.create(proto); for (var i = 0; i < 60; i++) child["c" + i] = i;
+var up = 0; for (var i = 0; i < 70; i++) { if ("p" + i in child) up++; if ("c" + i in child) up += 100; if (child.hasOwnProperty("p" + i)) up += 10000; }
+P("inherited", up, "inherited" in child, "missing" in child, delete proto.p5, "p5" in child, delete child.c5, "c5" in child, (child.p5 = 1, "p5" in child), child.hasOwnProperty("p5"));
+var arr = [1, 2, 3]; arr.extra = 1; var fn = function () {}; fn.own = 1; var str = new String("abc"); str.note = 1; var map = new Map(); map.tag = 1;
+P("other objects", 1 in arr, 3 in arr, "length" in arr, "extra" in arr, "push" in arr, "own" in fn, "name" in fn, "call" in fn, 1 in str, 5 in str, "note" in str, "length" in str, "tag" in map, "get" in map, "size" in map);
+var acc = { get g() { return 1; } }; Object.defineProperty(acc, "hidden", { value: 1, enumerable: false }); P("accessors", "g" in acc, "hidden" in acc, acc.hasOwnProperty("g"), Object.keys(acc).join());
+var big = {}; for (var i = 0; i < 100; i++) Object.defineProperty(big, "f" + i, { value: i, enumerable: i % 2 === 0, writable: i % 3 === 0, configurable: true }); var seen = 0; for (var i = 0; i < 110; i++) if ("f" + i in big) seen++; P("defined", seen, Object.keys(big).length, big.f99, (big.f3 = "no", big.f3), (big.f6 = "yes", big.f6));
+var frozen = Object.freeze(Object.assign({}, big, { z: 1 })); P("frozen", "z" in frozen, "f98" in frozen, "f99" in frozen, "zz" in frozen);
+P("throws", (function () { try { return "a" in 5; } catch (e) { return e.constructor.name; } })(), (function () { try { return "a" in null; } catch (e) { return e.constructor.name; } })(), (function () { try { return ({ toString: function () { throw new RangeError("k"); } }) in {}; } catch (e) { return e.constructor.name; } })(), Symbol.iterator in [], sym in Object(sym));
+lines.join("\n")"##;
+    let expected = r##"size 0 0 0 0 true true true true true false false false 1
+after deletes 0 0 0 7..7 1
+size 7 7 7 21 true true true true true false false false 8
+after deletes 7 4 6 7,k1,k2,k4..k5,k0,k6 7
+size 14 14 14 91 true true true true true false false false 15
+after deletes 14 9 12 7,k1,k2,k4..k0,k6,k12 13
+size 21 21 21 210 true true true true true false false false 22
+after deletes 21 14 18 7,k1,k2,k4..k6,k12,k18 19
+size 28 28 28 378 true true true true true false false false 29
+after deletes 28 18 23 7,k1,k2,k4..k12,k18,k24 24
+size 35 35 35 595 true true true true true false false false 36
+after deletes 35 23 29 7,k1,k2,k4..k18,k24,k30 30
+size 42 42 42 861 true true true true true false false false 43
+after deletes 42 28 35 7,k1,k2,k4..k24,k30,k36 36
+size 107 107 107 5671 true true true true true false false false 108
+after deletes 107 71 89 7,k1,k2,k4..k90,k96,k102 90
+size 172 172 172 14706 true true true true true false false false 173
+after deletes 172 114 143 7,k1,k2,k4..k156,k162,k168 144
+size 237 237 237 27966 true true true true true false false false 238
+after deletes 237 158 198 7,k1,k2,k4..k222,k228,k234 199
+churn 3374 375 true false false
+inherited 6060 true false true false true false true true
+other objects true false true true true true true true true false true true true true true
+accessors true true true g
+defined 100 50 99 no yes
+frozen true true false false
+throws TypeError TypeError RangeError true false"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A bound function called as the function it was bound from, in place of
+/// the call, and parameters with defaults and rest parameters bound from
+/// the list of a call's arguments: every kind of this value for a strict
+/// and a sloppy target, the bound function reached in every way, targets
+/// that are not run in place, errors and recursion through a bound
+/// function, and rest parameters of calls with few and with many
+/// arguments. What is expected is what Node prints for the same script.
+#[test]
+fn a_bound_function_is_a_call_of_its_target() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(bound_functions_and_parameters)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn bound_functions_and_parameters() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+var G = (function () { return this; })();
+function sloppy(a, b) { return (this === G ? "global" : typeof this + ":" + String(this && this.tag !== undefined ? this.tag : this)) + "|" + a + "|" + b + "|" + arguments.length; }
+function strict(a, b) { "use strict"; return (this === G ? "global" : this === undefined ? "undefined" : this === null ? "null" : typeof this + ":" + String(this && this.tag !== undefined ? this.tag : this)) + "|" + a + "|" + b + "|" + arguments.length; }
+var thises = [{ tag: "obj" }, undefined, null, 5, "str", true, 10n, [1], function () {}, G];
+var out = [];
+for (var i = 0; i < thises.length; i++) { var bs = sloppy.bind(thises[i]), bt = strict.bind(thises[i]); out.push(bs(1, 2), bt(1, 2), bs(), bt(1, 2, 3, 4)); }
+P("this values", out.join(" ; "));
+// The same call sites, called many times, with the bound function reached in every way.
+var base = { k: 3, tag: "base" }; var f = function (x) { return this.k + x; }.bind(base);
+var total = 0; for (var i = 0; i < 2000; i++) total += f(i & 3); P("loop", total);
+var holder = { f: f, k: 100, get g() { return f; } }; var other = { k: 1000 };
+P("ways", f(1), holder.f(1), holder.g(1), holder["f"](1), f.call(other, 1), f.apply(other, [1]), Reflect.apply(f, other, [1]), (0, holder.f)(1), [1, 2].map(f).join(), f.bind(other)(1), new (function () { return f(1); })() instanceof Object);
+P("with arguments", sloppy.bind(base, "A")("B"), sloppy.bind(base, "A", "B")("C"), strict.bind(base, "A").bind(other, "B")("C"), sloppy.bind(base).bind(other)(1, 2), sloppy.bind()(1), strict.bind()(1));
+// What the target is.
+var arrowThis = { tag: "outer" }; var arrow = (function () { return (x) => typeof this + ":" + this.tag + ":" + x; }).call(arrowThis).bind({ tag: "ignored" });
+class C { constructor(v) { this.v = v; } m() { return this.v; } static s() { return this === C; } }
+function* gen(a) { yield this.tag; yield a; } async function asy(a) { return this.tag + a; }
+P("targets", arrow(1), T(function () { return C.bind(null)(1); }), new (C.bind(null, 7))().v, new (C.bind({ tag: "x" }))(8).m(), C.prototype.m.bind(new C(9))(), C.s.bind(C)(), C.s.bind(null)(), [...gen.bind(base)("a")].join(), typeof asy.bind(base)("z").then, Math.max.bind(null, 5)(1, 9), Array.prototype.join.bind([1, 2])("-"), "abc".slice.bind("abcdef")(2), Object.prototype.hasOwnProperty.bind({ a: 1 })("a"));
+function Ctor(a) { this.a = a; this.who = this instanceof Ctor; } var BCtor = Ctor.bind({ tag: "bound this" }); var made = new BCtor(1); P("constructed", made.a, made.who, made instanceof Ctor, made instanceof BCtor, T(function () { return BCtor(2); }), typeof BCtor.prototype);
+// Parameters bound by instructions, the arguments object, defaults and rest.
+function params(a, b = this.k * 2, ...rest) { return [this.tag, a, b, rest.length, arguments.length].join(); } function args() { return this.tag + ":" + Array.prototype.join.call(arguments); } function pattern({ x }, [y]) { return this.tag + x + y; }
+P("parameters", params.bind(base)(1), params.bind(base)(1, 2, 3, 4), params.bind(base)(), args.bind(base)(1, 2, 3), args.bind(base)(), pattern.bind(base)({ x: 1 }, [2]), T(function () { return pattern.bind(base)(); }));
+// Errors, recursion, and what a call leaves behind.
+function thrower(n) { if (n === 0) throw new RangeError(this.tag); try { return thrower.call(this, n - 1); } finally { thrower.count = (thrower.count || 0) + 1; } }
+P("throws", T(function () { return thrower.bind(base)(3); }), thrower.count, T(function () { try { thrower.bind({ tag: "m" })(0); } catch (e) { return e.message; } }));
+var fact = function (n) { return n <= 1 ? this.one : n * factBound(n - 1); }; var factBound = fact.bind({ one: 1 }); P("recursion", factBound(10), factBound(1));
+var deep = function (n) { return n === 0 ? this.tag : deepBound(n - 1); }; var deepBound = deep.bind(base); P("deep", deepBound(500), T(function () { return deepBound(1e6); }));
+var counter = { n: 0 }; var bump = function (by) { this.n += by; return this; }.bind(counter); bump(1); bump(2); bump(3); P("state", counter.n, bump(0) === counter);
+var mk = function () { var self = this; return function () { return self.tag + ":" + (this === G ? "global" : this.tag); }; }.bind(base); P("closures", mk()(), mk().call({ tag: "inner" }), mk.call(other)());
+P("properties", f.name, f.length, sloppy.bind(base, 1).length, typeof f.prototype, Object.prototype.toString.call(f), f.hasOwnProperty("caller"), sloppy.bind(base).name, (function () {}).bind().name, T(function () { return f.caller; }));
+var rebound = sloppy.bind({ tag: "first" }); var slot = { call: rebound }; var seq = []; for (var i = 0; i < 6; i++) { seq.push((i % 2 ? rebound : strict.bind({ tag: "second" }))(i)); if (i === 3) rebound = sloppy.bind({ tag: "third" }); } P("changing callee", seq.join(" ; "), slot.call(9));
+label: { var early = function (n) { for (var i = 0; i < 10; i++) { if (i === n) return this.tag + i; } return "none"; }.bind(base); P("return from a loop", early(3), early(20)); }
+var getterHolder = { get bound() { return function () { return this.tag; }.bind({ tag: "from getter" }); } }; P("getter", getterHolder.bound(), getterHolder.bound.call(base));
+
+// Rest and default parameters, bound from the list of a call's arguments.
+function rest(...r) { return r.length + ":" + r.join("") + ":" + Array.isArray(r) + ":" + arguments.length; }
+function many(n) { var a = []; for (var i = 0; i < n; i++) a.push(i % 10); return a; }
+var rl = []; for (var n of [0, 1, 2, 15, 16, 17, 18, 40, 300]) rl.push(rest(...many(n)), rest.apply(null, many(n)), rest.call(null, ...many(n)).length); P("rest sizes", rl.join(" "));
+function afterTwo(a, b, ...r) { return [a, b, r.length, r[0], r[r.length - 1]].join(); } P("rest after parameters", afterTwo(), afterTwo(1), afterTwo(1, 2), afterTwo(1, 2, 3), afterTwo(...many(17)), afterTwo(...many(18)), afterTwo(...many(19)));
+var kept = []; function keep(...r) { kept.push(r); r.push("own"); return r; } var k1 = keep(1, 2), k2 = keep(1, 2), k3 = keep(); k1[0] = "changed"; P("rest arrays are their own", JSON.stringify(kept), k1 === kept[0], k1 !== k2, k3.length, Object.getPrototypeOf(k1) === Array.prototype, Object.keys(k2).join(), k2.length);
+var order = ""; function note(v) { order += v + ";"; return v; }
+function defaults(a = note("a"), b = note("b") + a, c = arguments.length, d = b + c, ...r) { return [a, b, c, d, r.length].join(); }
+order = ""; P("defaults", defaults(), order); order = ""; P("defaults given", defaults(1), defaults(1, 2), defaults(undefined, 2), defaults(1, undefined, 3), defaults(null, 0, "", false, 9, 9), order);
+function tdz(a = b, b = 1) { return a + b; } function shadow(a, b = () => a, ...r) { var a = 5; return b() + ":" + a + ":" + r.length; } P("defaults scope", T(function () { return tdz(); }), tdz(1), tdz(1, 2), shadow(1), shadow(1, undefined, 2, 3));
+function throwing(a = (function () { throw new RangeError("default"); })(), ...r) { return "not reached"; } P("default throws", T(function () { return throwing(); }), throwing(1), T(function () { return throwing(undefined, 1, 2); }));
+function restPattern(a, ...[b, c = "C", ...d]) { return [a, b, c, d.length].join(); } function objRest({ x, ...o }, ...r) { return x + Object.keys(o).join() + r.length; } P("patterns", restPattern(1, 2), restPattern(1, 2, 3, 4, 5), restPattern(), objRest({ x: 1, y: 2, z: 3 }, 4, 5));
+var arrowRest = (a = 1, ...r) => a + r.length; var methods = { m(a, b = this.k, ...r) { return a + b + r.length; }, k: 10 }; function* genRest(a = 1, ...r) { yield a; yield r.length; } class WithRest { constructor(a = 2, ...r) { this.v = a + r.length; } static s(...r) { return r.length; } }
+P("kinds of functions", arrowRest(), arrowRest(5, 1, 1), methods.m(1), methods.m(1, 2, 3, 4), [...genRest()].join(), [...genRest(7, 8, 9)].join(), new WithRest().v, new WithRest(1, 2, 3).v, WithRest.s(1, 2), new (function (a = 3, ...r) { this.v = a + r.length; })(undefined, 1).v);
+var restBound = rest.bind(null); var restBound2 = rest.bind(null, "x", "y"); P("rest of bound", restBound(), restBound(1, 2, 3), restBound(...many(20)), restBound2(1), restBound2(...many(16)));
+var total2 = 0; function hot(a, b = 2, ...r) { return a + b + r.length; } for (var i = 0; i < 3000; i++) total2 += hot(i & 3) + hot(1, 2, 3, 4) + hot(1, undefined, ...many(i % 20)); P("loop of calls", total2);
+function lens(a, b = 1, ...r) {} function lens2(...r) {} function lens3(a, b, c = 1, d) {} P("lengths", lens.length, lens2.length, lens3.length, rest.length, defaults.length);
+lines.join("\n")"##;
+    let expected = r##"this values object:obj|1|2|2 ; object:obj|1|2|2 ; object:obj|undefined|undefined|0 ; object:obj|1|2|4 ; global|1|2|2 ; undefined|1|2|2 ; global|undefined|undefined|0 ; undefined|1|2|4 ; global|1|2|2 ; null|1|2|2 ; global|undefined|undefined|0 ; null|1|2|4 ; object:5|1|2|2 ; number:5|1|2|2 ; object:5|undefined|undefined|0 ; number:5|1|2|4 ; object:str|1|2|2 ; string:str|1|2|2 ; object:str|undefined|undefined|0 ; string:str|1|2|4 ; object:true|1|2|2 ; boolean:true|1|2|2 ; object:true|undefined|undefined|0 ; boolean:true|1|2|4 ; object:10|1|2|2 ; bigint:10|1|2|2 ; object:10|undefined|undefined|0 ; bigint:10|1|2|4 ; object:1|1|2|2 ; object:1|1|2|2 ; object:1|undefined|undefined|0 ; object:1|1|2|4 ; function:function () {}|1|2|2 ; function:function () {}|1|2|2 ; function:function () {}|undefined|undefined|0 ; function:function () {}|1|2|4 ; global|1|2|2 ; global|1|2|2 ; global|undefined|undefined|0 ; global|1|2|4
+loop 9000
+ways 4 4 4 4 4 4 4 4 4,5 4 true
+with arguments object:base|A|B|2 object:base|A|B|3 object:base|A|B|3 object:base|1|2|2 global|1|undefined|1 undefined|1|undefined|1
+targets object:outer:1 threw TypeError 7 8 9 true false base,a function 9 1-2 cdef true
+constructed 1 true true true  undefined
+parameters base,1,6,0,1 base,1,2,2,4 base,,6,0,0 base:1,2,3 base: base12 threw TypeError
+throws threw RangeError 3 m
+recursion 3628800 1
+deep base threw RangeError
+state 6 true
+closures base:global base:inner base:global
+properties bound  1 1 undefined [object Function] false bound sloppy bound  threw TypeError
+changing callee object:second|0|undefined|1 ; object:first|1|undefined|1 ; object:second|2|undefined|1 ; object:first|3|undefined|1 ; object:second|4|undefined|1 ; object:third|5|undefined|1 object:first|9|undefined|1
+return from a loop base3 none
+getter from getter from getter
+rest sizes 0::true:0 0::true:0 9 1:0:true:1 1:0:true:1 10 2:01:true:2 2:01:true:2 11 15:012345678901234:true:15 15:012345678901234:true:15 26 16:0123456789012345:true:16 16:0123456789012345:true:16 27 17:01234567890123456:true:17 17:01234567890123456:true:17 28 18:012345678901234567:true:18 18:012345678901234567:true:18 29 40:0123456789012345678901234567890123456789:true:40 40:0123456789012345678901234567890123456789:true:40 51 300:012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789:true:300 300:012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789:true:300 313
+rest after parameters ,,0,, 1,,0,, 1,2,0,, 1,2,1,3,3 0,1,15,2,6 0,1,16,2,7 0,1,17,2,8
+rest arrays are their own [["changed",2,"own"],[1,2,"own"],["own"]] true true 1 true 0,1,2 3
+defaults a,ba,0,ba0,0 a;b;
+defaults given 1,b1,1,b11,0 1,2,2,4,0 a,2,2,4,0 1,b1,3,b13,0 ,0,,false,2 b;a;b;
+defaults scope threw ReferenceError 2 3 1:5:0 1:5:2
+default throws threw RangeError not reached threw RangeError
+patterns 1,2,C,0 1,2,3,2 ,,C,0 1y,z2
+kinds of functions 1 7 11 5 1,0 7,2 2 3 2 4
+rest of bound 0::true:0 3:123:true:3 20:01234567890123456789:true:20 3:xy1:true:3 18:xy0123456789012345:true:18
+loop of calls 63000
+lengths 1 0 2 0 0"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `<`, `<=`, `>` and `>=` of Strings, which the loop of instructions
+/// answers itself: every pair of some fifty texts (prefixes of one another,
+/// code units of every kind, lone surrogates and pairs, long texts that
+/// differ at their end), as values and as conditions; against a sort; of
+/// built texts; and of Strings with values of other kinds, which are
+/// converted. What is expected is what Node prints for the same script.
+#[test]
+fn strings_are_compared_by_their_code_units() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(compared_strings)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn compared_strings() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+var texts = ["", "a", "A", "b", "ab", "abc", "abd", "ab\u0000", "key-number-1", "key-number-10", "key-number-2", "key-number-12345678", "key-number-12345679", "é", "é", "ж", "жз", "中", "쿿", "퟿", "\uD800", "\uDBFF", "\uDC00", "\uDFFF", "", "￿", "\u{10000}", "😀", "\u{10FFFF}", "\uD800a", "a\uD800", "a", "a😀", "a😀b", "a￿b", "a\uDC00", "10", "9", "09", " 9", "1e1", "NaN", "Infinity", "long enough to be a heap string, the same up to here: X", "long enough to be a heap string, the same up to here: Y", "long enough to be a heap string, the same up to here: 😀", "long enough to be a heap string, the same up to here: ￿", "long enough to be a heap string, the same up to here: ", "long enough to be a heap string, the same up to here"];
+var n = texts.length, sig = 0, counts = [0, 0, 0, 0, 0, 0, 0, 0];
+for (var i = 0; i < n; i++) for (var j = 0; j < n; j++) {
+  var a = texts[i], b = texts[j];
+  var lt = a < b, le = a <= b, gt = a > b, ge = a >= b;
+  var bits = (lt ? 1 : 0) | (le ? 2 : 0) | (gt ? 4 : 0) | (ge ? 8 : 0);
+  if (a < b) counts[0]++; if (a <= b) counts[1]++; if (a > b) counts[2]++; if (a >= b) counts[3]++;
+  if (!(a < b)) counts[4]++; while (a > b) { counts[5]++; break; } counts[6] += a < b ? 1 : a > b ? 2 : 0; if (a < b && b > a && !(b <= a) && a !== b) counts[7]++;
+  sig = (sig * 31 + bits) | 0;
+}
+P("pairs", n * n, sig, counts.join(","));
+var sorted = texts.slice().sort(); var byOps = texts.slice().sort(function (x, y) { return x < y ? -1 : x > y ? 1 : 0; });
+var same = true; for (var i = 0; i < n; i++) if (sorted[i] !== byOps[i]) same = false;
+P("sorted", same, sorted.map(function (s) { return s.length ? s.charCodeAt(0).toString(16) + (s.length > 1 ? "+" + s.length : "") : "-"; }).join(" "));
+// Built strings, and strings against other kinds of values.
+var built1 = "", built2 = ""; for (var i = 0; i < 400; i++) { built1 += "ab"; built2 = "ab" + built2; } var built3 = built1 + "!"; var plain = "ab".repeat(400);
+P("built", built1 < built2, built1 <= built2, built1 >= plain, built3 > built1, built1 < built3, plain < built3, built3 <= plain, "abc" < built1, built1 < "abc");
+var others = [0, 1, -1, 10, 9, 1.5, NaN, Infinity, true, false, null, undefined, 10n, [9], [1, 2], {}, { valueOf: function () { return 5; } }, { toString: function () { return "b"; } }];
+var strs = ["", "0", "1", "10", "9", "09", "1.5", "a", "b", "NaN", "Infinity", "true", "null", "5", "[object Object]", "1,2"];
+var mixed = 0; for (var i = 0; i < others.length; i++) for (var j = 0; j < strs.length; j++) { var o = others[i], t = strs[j]; mixed = (mixed * 31 + ((o < t ? 1 : 0) | (o <= t ? 2 : 0) | (o > t ? 4 : 0) | (o >= t ? 8 : 0) | (t < o ? 16 : 0) | (t >= o ? 32 : 0))) | 0; }
+P("mixed", mixed, "10" < "9", 10 < "9", "10" < 9, "b" > "a", "B" > "a", "a" < "a ", "\u{1F600}" < "￿", "￿" < "\u{1F600}", "\uD83D" < "\u{1F600}", "\uDBFF" > "\u{10000}");
+var order = ""; var ox = { valueOf: function () { order += "x;"; return "m"; } }, oy = { valueOf: function () { order += "y;"; return "n"; } }; P("order", ox < oy, oy <= ox, ox > "a", "z" >= oy, order);
+P("throws", (function () { try { return Symbol() < "a"; } catch (e) { return e.constructor.name; } })(), (function () { try { return "a" >= Symbol(); } catch (e) { return e.constructor.name; } })(), (function () { try { return "1" < 2n; } catch (e) { return e.constructor.name; } })(), "x" < 2n, 2n > "1");
+var keys = []; for (var i = 0; i < 300; i++) keys.push("key-number-" + (i * 7919 % 1000)); var hits = 0; for (var r = 0; r < 20; r++) for (var i = 1; i < keys.length; i++) { if (keys[i] < keys[i - 1]) hits++; if (keys[i] >= keys[(i * 3) % 300]) hits += 2; } P("loop", hits, keys.slice().sort().slice(0, 3).join(), Math.max.apply(null, [1, 2]) < "3");
+lines.join("\n")"##;
+    let expected = r##"pairs 2401 -1807075198 1176,1225,1176,1225,1225,1176,3528,1176
+sorted true - 20+2 30+2 31+2 31+3 39 41 49+8 4e+3 61 61+2 61+3 61+3 61+3 61+2 61+3 61+4 61+2 61+2 61+3 62 65+2 6b+12 6b+13 6b+19 6b+19 6b+12 6c+52 6c+54 6c+55 6c+55 6c+56 6c+55 e9 436 436+2 4e2d cfff d7ff d800 d800+2 d800+2 d83d+2 dbff dbff+2 dc00 dfff e000 ffff
+built false true true true true true false false true
+mixed 260892948 true false false true false true true false true true
+order true false true true x;y;y;x;x;y;
+throws TypeError TypeError true false true
+loop 11200 key-number-0,key-number-102,key-number-105 true"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `instanceof`, answered in the loop of instructions for a function with
+/// the inherited @@hasInstance and an object for its "prototype": a table
+/// of values against functions and classes of every kind, in conditions,
+/// targets that are not callable or have no object for a prototype,
+/// methods of their own, prototypes replaced and set, a Proxy on the way
+/// up, long chains, and bound functions. What is expected is what Node
+/// prints for the same script.
+#[test]
+fn instanceof_is_what_the_method_of_functions_says() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(instances_of_functions)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn instances_of_functions() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+function F() {} function G() {} class A {} class B extends A {} class C extends B {} function Old() {} Old.prototype = Object.create(F.prototype);
+var arrow = () => {}; var boundF = F.bind(null); var boundB = B.bind(null); var gen = function* () {}; var asyncF = async function () {};
+var values = [new F(), new G(), new A(), new B(), new C(), new Old(), [], {}, null, undefined, 1, "s", true, Symbol.iterator, 10n, function () {}, Object.create(null), Object.create(F.prototype), Object.create(B.prototype), new Map(), new Error("e"), /re/, new Date(0), F, A, B, F.prototype, B.prototype, gen(), Object.prototype, Function.prototype];
+var targets = [F, G, A, B, C, Old, Object, Function, Array, Map, Error, RegExp, Date, boundF, boundB, gen, Symbol, Promise];
+var rows = [];
+for (var t = 0; t < targets.length; t++) { var row = ""; for (var v = 0; v < values.length; v++) row += values[v] instanceof targets[t] ? "1" : "0"; rows.push(row); }
+P("table", rows.join(" "));
+var jumps = 0; for (var r = 0; r < 50; r++) for (var v = 0; v < values.length; v++) { var x = values[v]; if (x instanceof A) jumps++; if (!(x instanceof F)) jumps += 100; if (x instanceof Object && !(x instanceof Function)) jumps += 10000; } P("in conditions", jumps);
+P("not callable", T(function () { return {} instanceof {}; }), T(function () { return 1 instanceof null; }), T(function () { return {} instanceof undefined; }), T(function () { return {} instanceof 5; }), T(function () { return {} instanceof "s"; }), T(function () { return {} instanceof Object.prototype; }), T(function () { return {} instanceof Math; }));
+P("no prototype", T(function () { return {} instanceof arrow; }), T(function () { return 1 instanceof arrow; }), T(function () { return {} instanceof asyncF; }), T(function () { return {} instanceof Math.max; }), 1 instanceof Math.max, T(function () { return {} instanceof Object.keys; }));
+function Bad() {} Bad.prototype = 5; function Bad2() {} Bad2.prototype = null; function Bad3() {} Bad3.prototype = "str";
+P("prototype that is no object", T(function () { return {} instanceof Bad; }), 1 instanceof Bad, null instanceof Bad, T(function () { return [] instanceof Bad2; }), "s" instanceof Bad3, T(function () { return (function () {}) instanceof Bad3; }));
+var log = "";
+class Custom { static [Symbol.hasInstance](v) { log += "custom(" + typeof v + ");"; return v === 1 ? "truthy" : 0; } } var plain = { [Symbol.hasInstance]: function (v) { log += "plain;"; return true; } }; function WithOwn() {} Object.defineProperty(WithOwn, Symbol.hasInstance, { value: function (v) { log += "own;"; return v !== null; } }); var notMethod = { [Symbol.hasInstance]: 5 }; var undefinedMethod = function () {}; Object.defineProperty(undefinedMethod, Symbol.hasInstance, { value: undefined });
+P("own method", 1 instanceof Custom, {} instanceof Custom, new Custom() instanceof Custom, 1 instanceof plain, null instanceof WithOwn, {} instanceof WithOwn, T(function () { return 1 instanceof notMethod; }), new undefinedMethod() instanceof undefinedMethod, 1 instanceof undefinedMethod, log);
+class Sub extends Custom {} log = ""; P("inherited method", 1 instanceof Sub, new Sub() instanceof Sub, log);
+var kept = Function.prototype[Symbol.hasInstance]; P("the method itself", typeof kept, kept.call(F, new F()), kept.call(F, {}), kept.call({}, {}), kept.call(boundF, new F()), kept.name, kept.length, T(function () { return kept.call(Bad, {}); }), Object.getOwnPropertyDescriptor(Function.prototype, Symbol.hasInstance).writable);
+function Moving() {} var m1 = new Moving(); var before = m1 instanceof Moving; Moving.prototype = {}; var m2 = new Moving(); P("prototype replaced", before, m1 instanceof Moving, m2 instanceof Moving); Object.setPrototypeOf(m1, Moving.prototype); P("prototype set", m1 instanceof Moving, Object.setPrototypeOf(m2, null) instanceof Moving, Object.setPrototypeOf({}, B.prototype) instanceof A);
+log = ""; var seen = new Proxy({}, { getPrototypeOf: function (t) { log += "getPrototypeOf;"; return F.prototype; } }); var callable = new Proxy(F, { get: function (t, k, r) { log += "get " + String(k) + ";"; return Reflect.get(t, k, r); } });
+P("proxies", seen instanceof F, seen instanceof G, log, T(function () { return {} instanceof new Proxy({}, {}); }));
+var deep = {}; for (var i = 0; i < 300; i++) deep = Object.create(deep); var root = Object.getPrototypeOf; function Deep() {} var chainTop = new Deep(); for (var i = 0; i < 300; i++) chainTop = Object.create(chainTop); P("long chains", deep instanceof Object, deep instanceof F, chainTop instanceof Deep, chainTop instanceof Object);
+var getterProto = function () {}; var gcount = 0; var holder = Object.defineProperty(function () {}, "x", { value: 1 }); var viaGetter = { get F() { gcount++; return F; } }; P("target from a getter", new F() instanceof viaGetter.F, {} instanceof viaGetter.F, gcount);
+var total = 0; var list = [new A(), new B(), [], {}, null]; for (var i = 0; i < 4000; i++) { var v = list[i % 5]; if (v instanceof A) total++; if (Array.isArray(v)) total += 2; if (v instanceof (i % 2 ? B : Object)) total += 3; } P("loop", total);
+P("bound", new F() instanceof boundF, {} instanceof boundF, new B() instanceof boundB, new A() instanceof boundB, new (F.bind(null))() instanceof F, T(function () { return {} instanceof arrow.bind(null); }));
+lines.join("\n")"##;
+    let expected = r##"table 1000010000000000010000000000000 0100000000000000000000000000000 0011100000000000001000000001000 0001100000000000001000000000000 0000100000000000000000000000000 0000010000000000000000000000000 1111111100000001011111111111101 0000000000000001000000011100000 0000001000000000000000000000000 0000000000000000000100000000000 0000000000000000000010000000000 0000000000000000000001000000000 0000000000000000000000100000000 1000010000000000010000000000000 0001100000000000001000000000000 0000000000000000000000000000100 0000000000000000000000000000000 0000000000000000000000000000000
+in conditions 9140250
+not callable threw TypeError threw TypeError threw TypeError threw TypeError threw TypeError threw TypeError threw TypeError
+no prototype threw TypeError false threw TypeError threw TypeError false threw TypeError
+prototype that is no object threw TypeError false false threw TypeError false threw TypeError
+own method true false false true false true threw TypeError true false custom(number);custom(object);custom(object);plain;own;own;
+inherited method true false custom(number);custom(object);
+the method itself function true false false true [Symbol.hasInstance] 1 threw TypeError false
+prototype replaced true false true
+prototype set true false true
+proxies true false getPrototypeOf;getPrototypeOf; threw TypeError
+long chains true false true true
+target from a getter true false 2
+loop 9200
+bound true false true false true threw TypeError"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Arrays with a hole at every place around the blocks they are looked
+/// through by for holes (and with none), under `shift`, `unshift`, `splice`,
+/// `pop`, iteration and the copying methods; a hole that the prototype
+/// fills, an accessor among the elements, a queue, and a sparse Array.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn a_hole_is_found_wherever_it_is() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arrays_with_a_hole)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arrays_with_a_hole() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function sig(a) { var h = a.length; for (var i = 0; i < a.length; i++) h = (h * 31 + (i in a ? (a[i] | 0) + 1 : 7919)) | 0; return h; }
+function make(n, hole) { var a = []; for (var i = 0; i < n; i++) a.push(i); if (hole >= 0 && hole < n) delete a[hole]; return a; }
+// A hole at every place around the blocks an Array is looked through by, and none.
+var sizes = [1, 2, 63, 64, 65, 127, 128, 129, 200, 1000], out = [];
+for (var s = 0; s < sizes.length; s++) {
+  var n = sizes[s], places = [-1, 0, 1, 62, 63, 64, 65, 126, 127, 128, n - 2, n - 1];
+  var row = 0;
+  for (var p = 0; p < places.length; p++) {
+    var h = places[p]; if (h >= n) continue;
+    var a = make(n, h); var first = a.shift(); row = (row * 31 + sig(a) + (first === undefined ? 5 : first)) | 0;
+    var b = make(n, h); b.unshift("u"); row = (row * 31 + sig(b)) | 0;
+    var c = make(n, h); var removed = c.splice(1, 2, "x", "y", "z"); row = (row * 31 + sig(c) + removed.length + (0 in removed ? 1 : 0) + (1 in removed ? 2 : 0)) | 0;
+    var d = make(n, h); var count = 0, und = 0; for (var v of d) { count++; if (v === undefined) und++; } row = (row * 31 + count * 3 + und) | 0;
+    var e = make(n, h); var last = e.pop(); e.push("p"); row = (row * 31 + sig(e) + (last === undefined ? 1 : 0)) | 0;
+    var f = make(n, h); var fl = 0; f.forEach(function () { fl++; }); var m = f.map(function (x) { return x; }); var sl = f.slice(0, n); var cc = f.concat(["t"]); var rv = f.slice().reverse(); row = (row * 31 + fl + sig(m) + sig(sl) + sig(cc) + sig(rv) + f.indexOf(undefined) + (f.includes(undefined) ? 3 : 0) + f.join("").length) | 0;
+  }
+  out.push(row);
+}
+P("holes", out.join(" "));
+Array.prototype[64] = "proto"; var withProto = make(130, 64); var sh = withProto.shift(); P("a hole filled by the prototype", sh, withProto[63], withProto[64], 63 in withProto, withProto.hasOwnProperty(63), withProto.length); var wp2 = make(130, 64); wp2.unshift("u"); P("unshift over it", wp2[65], wp2.hasOwnProperty(65), wp2[64]); delete Array.prototype[64];
+var stored = "none"; var acc = make(70, -1); Object.defineProperty(acc, 65, { get: function () { return "getter"; }, set: function (v) { stored = v; }, configurable: true, enumerable: true }); var as = acc.shift(); P("an accessor", as, acc[64], acc[65], stored, acc.length, typeof Object.getOwnPropertyDescriptor(acc, 65).get, typeof Object.getOwnPropertyDescriptor(acc, 64).get, sig(acc.slice(0, 60)));
+var only = make(70, -1); Object.defineProperty(only, 65, { get: function () { return "getter"; }, configurable: true, enumerable: true }); P("a getter alone", (function () { try { only.shift(); return "shifted"; } catch (e) { return e.constructor.name; } })(), only.length, only[0], only[64]);
+var q = []; for (var i = 0; i < 300; i++) q.push(i); var sum = 0; for (var j = 0; j < 300; j++) { sum += q.shift(); q.push(j); if ((j & 31) === 0) { q.splice(10, 2, j, j + 1); q.unshift(0); q.pop(); } } P("queue", sum, q.length, sig(q));
+var sparse = []; sparse[5] = 1; sparse[200] = 2; P("sparse", sparse.shift(), sparse.length, 4 in sparse, 199 in sparse, sparse.unshift(9), 5 in sparse, 200 in sparse, sparse.splice(0, 1).length, sparse.length);
+lines.join("\n")"##;
+    let expected = r##"holes 1158844920 1497012649 994038552 -1522725827 -1609873404 827843427 1211853925 -1108864829 1874544499 1407900115
+a hole filled by the prototype 0 proto 65 true true 129
+unshift over it proto true 63
+an accessor 0 getter getter 66 69 function undefined 1120158170
+a getter alone TypeError 70 1 getter
+queue 41779 300 693587015
+sparse  200 true true 201 true true 1 200"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A generator that a loop or a spread steps is resumed by the `Vm` that
+/// runs the loop, in place of a call of its `next`: what the loop sees is
+/// what `next` gives. The script steps generators that return, throw, catch
+/// their own errors, yield from loops of their own, delegate with `yield*`
+/// (to iterators whose results are read by getters, are not objects, or
+/// throw), step themselves, are stepped by hand between the turns of a
+/// loop, are closed by `break` and by an error of the body with `finally`
+/// blocks that yield or throw, recurse past the depth of calls, and
+/// allocate through collections. What is expected is what Node prints for
+/// the same script. (The generators that delegate to themselves do so a
+/// dozen deep: each `yield*` is a `Vm` of its own on the native stack,
+/// and a build that is not optimised has little of it under this limit.)
+#[test]
+fn a_generator_stepped_in_place_is_what_its_next_gives() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(generators_stepped_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn generators_stepped_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+var log = [];
+function L(x) { log.push(String(x)); }
+function flush(name) { P(name, log.join("|")); log = []; }
+
+// 1. plain loop
+function* range(n) { for (var i = 0; i < n; i++) yield i; }
+var sum = 0; for (var v of range(1000)) sum += v & 7; P("sum", sum);
+var s2 = 0; for (const a of range(4)) for (const b of range(3)) s2 += a * 10 + b; P("nested", s2);
+
+// 2. break runs finally through return()
+function* fin() { try { L("a"); yield 1; L("b"); yield 2; L("c"); yield 3; } finally { L("fin"); } }
+for (var x of fin()) { L("got" + x); if (x == 2) break; }
+flush("break");
+for (var x of fin()) { L("got" + x); }
+flush("whole");
+
+// 3. generator throws: caller catches, generator is completed
+function* thrower() { yield 1; yield 2; throw new Error("boom"); }
+var it = thrower();
+try { for (var x of it) L(x); } catch (e) { L("caught " + e.message); }
+var r = it.next(); L(r.done + "," + r.value);
+flush("throws");
+
+// 4. own handler across yields
+function* own() { for (var i = 0; i < 4; i++) { try { yield i; if (i % 2) throw new Error("odd" + i); L("even" + i); } catch (e) { L("in:" + e.message); yield "c" + i; } finally { L("f" + i); } } }
+for (var x of own()) L("v" + x);
+flush("own");
+
+// 5. yield inside for-of inside a generator
+function* dbl(inner) { for (var x of inner) yield x * 2; }
+for (var x of dbl(dbl(range(5)))) L(x);
+flush("dbl");
+
+// 6. yield* of several kinds
+function* star() { yield* [1, 2]; var r = yield* ret(); L("r=" + r); yield* custom(); yield* "ab"; }
+function* ret() { yield "x"; return "R"; }
+function custom() {
+  var n = 0;
+  var it = { next: function () { n++; L("next" + n); return { get done() { L("done?" + n); return n > 2; }, get value() { L("value?" + n); return "c" + n; } }; } };
+  it[Symbol.iterator] = function () { return it; };
+  return it;
+}
+for (var x of star()) L("s" + x);
+flush("star");
+function* badstar() { yield* { [Symbol.iterator]: function () { return { next: function () { return 7; } }; } }; }
+try { for (var x of badstar()) L(x); } catch (e) { L(e instanceof TypeError); }
+flush("badstar");
+function* throwdone() { yield* { [Symbol.iterator]: function () { return { next: function () { return { get done() { throw new Error("done threw"); } }; } }; } }; }
+var td = throwdone();
+try { for (var x of td) L(x); } catch (e) { L(e.message); }
+L(JSON.stringify(td.next()));
+flush("throwdone");
+function* catchesdone() { try { yield* { [Symbol.iterator]: function () { return { next: function () { return { get done() { throw new Error("inner"); } }; } }; } }; } catch (e) { L("gen saw " + e.message); yield "after"; } }
+try { for (var x of catchesdone()) L(x); } catch (e) { L("loop saw " + e.message); }
+flush("catchesdone");
+
+// 7. a generator stepping itself
+var self;
+function* selfish() { yield 1; try { for (var x of self) L("no" + x); } catch (e) { L(e instanceof TypeError); } yield 2; }
+self = selfish();
+for (var x of self) L("o" + x);
+flush("self");
+
+// 8. next() by hand around a loop
+var it = range(6);
+L(JSON.stringify(it.next()));
+for (var x of it) { L(x); if (x == 3) break; }
+L(JSON.stringify(it.next()));
+var it = range(6);
+for (var x of it) { L(x); if (x == 1) L(JSON.stringify(it.next())); if (x == 3) { L(JSON.stringify(it.return(9))); } }
+L(JSON.stringify(it.next()));
+flush("byhand");
+
+// 9. a called function throws through the generator
+function bad(i) { if (i == 2) throw new RangeError("two"); return i; }
+function* calls() { for (var i = 0; i < 5; i++) yield bad(i); }
+try { for (var x of calls()) L(x); } catch (e) { L(e.name + ":" + e.message); }
+function* calls2() { for (var i = 0; i < 5; i++) { try { yield bad(i); } catch (e) { yield "saved" + i; } } }
+for (var x of calls2()) L(x);
+flush("calls");
+
+// 10. recursion
+function* walk(n) { if (n > 0) { for (var x of walk(n - 1)) yield x; yield n; } }
+var t = 0, c = 0; for (var x of walk(60)) { t += x; c++; } P("walk", t, c);
+function* walk2(n) { if (n > 0) { yield* walk2(n - 1); yield n; } }
+var t = 0; for (var x of walk2(12)) t += x; P("walk2", t);
+function* forever(n) { for (var x of forever(n + 1)) yield x; yield n; }
+try { for (var x of forever(0)) L(x); } catch (e) { L(e instanceof RangeError); }
+flush("forever");
+
+// 11. spreads
+function f3() { var t = 0; for (var i = 0; i < arguments.length; i++) t += arguments[i]; return arguments.length + ":" + t; }
+P("spread", [...range(5)].join(","), f3(...range(4)), [0, ...range(2), ...dbl(range(3)), 9].join(","), Math.max(...range(7)));
+function* spreadthrow() { yield 1; throw new Error("in spread"); }
+try { [...spreadthrow()]; } catch (e) { P("spreadthrow", e.message); }
+try { f3(...spreadthrow()); } catch (e) { P("callspreadthrow", e.message); }
+var o = { m: function () { return this.k + ":" + arguments.length; }, k: "K" };
+P("methodspread", o.m(...range(3)), o["m"](...range(2)));
+
+// 12. this, arguments, closures, methods
+var obj = { base: 10, gen: function* (a, b) { yield this.base + a; yield arguments.length; var k = 0; var add = function () { return ++k; }; yield add() + add(); yield b; } };
+for (var x of obj.gen(1, 2, 3)) L(x);
+class C { constructor() { this.items = [3, 1, 2]; } *[Symbol.iterator]() { for (var i = 0; i < this.items.length; i++) yield this.items[i]; } static *s(n) { while (n--) yield n; } }
+for (var x of new C()) L(x);
+for (var x of C.s(3)) L(x);
+flush("this");
+
+// 13. sent value is undefined, return value is not seen
+function* sent() { var a = yield 1; L("a=" + a); var b = yield 2; L("b=" + b); return 99; }
+for (var x of sent()) L(x);
+flush("sent");
+
+// 14. finally that yields while the loop is left
+function* yfin() { try { yield 1; yield 2; } finally { L("f1"); yield "ignored"; L("never"); } }
+for (var x of yfin()) { L(x); break; }
+var it = yfin();
+for (var x of it) { L(x); break; }
+L(JSON.stringify(it.next()));
+flush("yfin");
+function* yfin2() { try { yield 1; return 5; } finally { yield "late"; L("end"); } }
+for (var x of yfin2()) L(x);
+flush("yfin2");
+
+// 15. the body throws: the generator is closed
+function* closing() { try { yield 1; yield 2; } finally { L("closed"); } }
+try { for (var x of closing()) { L(x); throw new Error("body"); } } catch (e) { L(e.message); }
+function* closing2() { try { yield 1; } finally { throw new Error("from finally"); } }
+try { for (var x of closing2()) { throw new Error("body2"); } } catch (e) { L(e.message); }
+try { for (var x of closing2()) { break; } } catch (e) { L(e.message); }
+flush("closing");
+
+// 16. return() from the body, then the loop goes on
+var it = range(10);
+for (var x of it) { L(x); if (x == 1) it.return(); }
+flush("returned");
+
+// 17. a next of its own
+var it = range(3);
+it.next = function () { L("mine"); return { done: true }; };
+for (var x of it) L(x);
+var it = range(3);
+var real = it.next;
+var count = 0;
+Object.getPrototypeOf(range.prototype).next2 = 1;
+for (var x of it) { L(x); }
+flush("ownnext");
+
+// 18. two generators side by side, labels
+function* letters() { yield "a"; yield "b"; yield "c"; }
+outer: for (var x of range(3)) { for (var y of letters()) { if (y == "b" && x == 1) continue outer; if (y == "c" && x == 2) break outer; L(x + y); } }
+flush("labels");
+
+// 19. errors through several generators with handlers on the way
+function* deep(n) { if (n == 0) { yield "bottom"; throw new Error("deep"); } try { for (var x of deep(n - 1)) yield x; } catch (e) { if (n == 2) { yield "caught at 2"; } else throw e; } finally { L("f" + n); } }
+try { for (var x of deep(4)) L(x); } catch (e) { L("top " + e.message); }
+flush("deep");
+
+// 20. garbage while a generator runs in place
+function* garbage(n) { var keep = []; for (var i = 0; i < n; i++) { var o = { i: i, s: "s" + i, a: [i, i + 1] }; if (i % 1000 == 0) keep.push(o); yield o; } yield keep; }
+var t = 0, last;
+for (var o of garbage(60000)) { last = o; if (o.a) { t += o.a[1] - o.i; var tmp = { p: o.s + "x" }; } }
+P("garbage", t, last.length, last[59].s, last[59].a[1]);
+function* strs(n) { var s = ""; for (var i = 0; i < n; i++) { s += "ab"; yield s.length + [i, i, i].join("").length; } }
+var t = 0; for (var q of strs(20000)) t += q; P("strs", t);
+
+// 21. generator inside functions run in place, and the other way round
+function total(n) { var t = 0; for (var x of range(n)) t += x; return t; }
+function* totals(n) { for (var i = 0; i < n; i++) yield total(i); }
+var t = 0; for (var x of totals(40)) t += x; P("totals", t);
+
+// 22. a generator that is done, or was never started
+var it = range(0); for (var x of it) L("no"); for (var x of it) L("no");
+var it = range(2); for (var x of it) L(x); for (var x of it) L("no");
+flush("done");
+
+// 23. default parameters and destructuring in the generator and in the loop head
+function* pairs(n = 3, { k } = { k: "k" }) { for (var i = 0; i < n; i++) yield [i, k + i]; }
+for (var [i, name] of pairs()) L(i + name);
+for (var { 0: a, length } of pairs(2, { k: "z" })) L(a + ":" + length);
+flush("pairs");
+
+// 24. let per iteration with closures, const, and var in the head
+var fs = []; for (let x of range(3)) fs.push(function () { return x; });
+P("closures", fs.map(function (f) { return f(); }).join(","));
+
+// 25. the Reference of the call is kept across a spread
+var holder = { name: "h", who: function () { return this.name + arguments.length; } };
+P("ref", holder.who(...range(2), ...range(1)), (0, holder.who)(...range(1)) === undefined ? "u" : "d");
+
+// 26. a generator that the loop's own iterator method returns late
+var lazy = { [Symbol.iterator]: function () { L("iter"); return range(2); } };
+for (var x of lazy) L(x);
+flush("lazy");
+
+// 27. typeof and identity of what is yielded
+function* kinds() { yield 1.5; yield "s"; yield null; yield undefined; yield { a: 1 }; yield 2 ** 40; yield -0; yield Symbol.iterator; yield 10n; }
+for (var x of kinds()) L(typeof x + (Object.is(x, -0) ? "-0" : ""));
+flush("kinds");
+
+// 28. generator objects from one function, interleaved
+var g1 = range(3), g2 = range(3);
+for (var x of g1) { L("1:" + x); for (var y of g2) { L("2:" + y); break; } }
+flush("interleaved");
+
+// 29. a throw() by hand on a generator a loop suspended
+function* resist() { while (true) { try { yield 1; } catch (e) { L("resisted " + e); yield 2; } } }
+var it = resist();
+var turns = 0;
+for (var x of it) { L(x); if (++turns > 3) break; if (x == 1) L(JSON.stringify(it.throw("T"))); }
+flush("resist");
+function* resist2() { try { yield 1; yield 2; } finally { L("r2 fin"); } }
+var it = resist2();
+try { for (var x of it) { L(x); it.throw(new Error("thrown by hand")); } } catch (e) { L(e.message); }
+L(JSON.stringify(it.next()));
+flush("resist2");
+lines.join("\n")"##;
+    let expected = r##"sum 3500
+nested 192
+break a|got1|b|got2|fin
+whole a|got1|b|got2|c|got3|fin
+throws 1|2|caught boom|true,undefined
+own v0|even0|f0|v1|in:odd1|vc1|f1|v2|even2|f2|v3|in:odd3|vc3|f3
+dbl 0|4|8|12|16
+star s1|s2|sx|r=R|next1|done?1|done?1|value?1|sc1|next2|done?2|done?2|value?2|sc2|next3|done?3|value?3|sa|sb
+badstar true
+throwdone done threw|{"done":true}
+catchesdone gen saw inner|after
+self o1|true|o2
+byhand {"value":0,"done":false}|1|2|3|{"done":true}|0|1|{"value":2,"done":false}|3|{"value":9,"done":true}|{"done":true}
+calls 0|1|RangeError:two|0|1|saved2|3|4
+walk 1830 60
+walk2 78
+forever true
+spread 0,1,2,3,4 4:6 0,0,1,0,2,4,9 6
+spreadthrow in spread
+callspreadthrow in spread
+methodspread K:3 K:2
+this 11|3|3|2|3|1|2|2|1|0
+sent 1|a=undefined|2|b=undefined
+yfin 1|f1|1|f1|never|{"done":true}
+yfin2 1|late|end
+closing 1|closed|body|body2|from finally
+returned 0|1
+ownnext mine|0|1|2
+labels 0a|0b|0c|1a|2a|2b
+deep bottom|f1|caught at 2|f2|f3|f4
+garbage 60000 60 s59000 59001
+strs 400286670
+totals 9880
+done 0|1
+pairs 0k0|1k1|2k2|0:2|1:2
+closures 0,1,2
+ref h3 d
+lazy iter|0|1
+kinds number|string|object|undefined|object|number|number-0|symbol|bigint
+interleaved 1:0|2:0|1:1|1:2
+resist 1|resisted T|{"value":2,"done":false}|1|resisted T|{"value":2,"done":false}|1|resisted T|{"value":2,"done":false}|1
+resist2 1|r2 fin|thrown by hand|{"done":true}"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The limits hold while a generator runs in place of the step of a loop:
+/// the interrupt ends the script from the loop's body, from the
+/// generator's own loop and from a function the generator calls, with no
+/// `catch` of either run and no `finally` of code that was interrupted; a
+/// generator that was interrupted while it ran is completed (one that was
+/// suspended at that moment stays so); and the heap limit ends a generator
+/// that allocates past it.
+#[test]
+fn the_limits_hold_in_a_generator_stepped_in_place() {
+    let (mut engine, stop, polls) = limited(0, 0);
+    engine
+        .register_function("__stop", 1, 0, ArgumentMode::Values)
+        .unwrap();
+    engine
+        .evaluate(
+            "var ran = []; \
+             function* ones() { for (;;) { try { yield 1; } catch (e) { ran.push('catch'); } } } \
+             function* spins() { yield 1; try { for (;;) {} } finally { ran.push('spin finally'); } } \
+             function spin() { for (;;) {} } \
+             function* calls() { yield 1; try { spin(); } catch (e) { ran.push('call catch'); } } \
+             var a = ones(), b = spins(), c = calls(), d = ones();",
+            false,
+        )
+        .unwrap();
+    let before = polls.get();
+    for script in [
+        "__stop(); for (var x of a) {}",
+        "for (var x of b) { __stop(); }",
+        "for (var x of c) { __stop(); }",
+        "__stop(); try { for (var x of d) { try { [...d]; } catch (e) { ran.push('body catch'); } } } finally { ran.push('body finally'); }",
+        "__stop(); function* inner() { for (;;) { try { yield* ones(); } catch (e) { ran.push('inner catch'); } } } for (var x of inner()) {}",
+    ] {
+        assert_eq!(
+            engine.evaluate(script, false),
+            Err(Error::Interrupted),
+            "{script}"
+        );
+        stop.set(false);
+    }
+    assert!(polls.get() > before);
+    assert_eq!(
+        engine.evaluate(
+            "[ran.join(), b.next().done, c.next().done, typeof a.next().done, typeof d.next().done].join()",
+            false
+        ),
+        Ok(Completion::String(",true,true,boolean,boolean".into()))
+    );
+
+    let (mut engine, _, _) = limited(16 << 20, 0);
+    assert_eq!(
+        engine.evaluate(
+            "function* hoard() { var keep = []; for (;;) { try { keep.push(new Float64Array(1 << 17)); } catch (e) {} yield keep.length; } } \
+             var n = 0; for (var x of hoard()) n = x;",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    engine.collect_garbage().unwrap();
+    assert!(engine.memory_used() < 16 << 20);
+    assert_eq!(
+        engine.evaluate(
+            "function* three() { yield 1; yield 2; yield 3; } var t = 0; for (var x of three()) t += x; t",
+            false
+        ),
+        Ok(Completion::Number(6.0))
+    );
+}
+
+/// A name of the global scope that is a property of the global object is
+/// read and written at the place it was found at for as long as the global
+/// scope is in the state it was found in. The script reads and writes such
+/// names while properties are added to the global object, removed from
+/// among the others (which moves the later ones), made accessors and
+/// values again, made read-only, and while private names are put in front
+/// of them all; across collections; for names that are only written, that
+/// are functions and built-ins, that are missing, and that the global
+/// object inherits. What is expected is what Node prints for the same
+/// script.
+#[test]
+fn a_global_is_read_where_the_global_scope_has_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(globals_at_their_places)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn globals_at_their_places() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) keep.push({ i: i, s: "s" + i, a: [i] }); return keep.length; }
+
+// 1. plain reads and writes in loops
+var counter = 0;
+function bump(n) { for (var i = 0; i < n; i++) counter += i & 3; return counter; }
+P("bump", bump(1000), bump(1000), counter);
+gprop = 5;
+function readProp() { return gprop; }
+function writeProp(v) { gprop = v; }
+P("prop", readProp(), (writeProp(6), readProp()), (gprop++, gprop), (gprop -= 3, readProp()));
+
+// 2. new globals between reads
+function readAll() { return ga + ":" + gb + ":" + gc_ + ":" + counter; }
+globalThis.ga = "a"; globalThis.gb = "b"; globalThis.gc_ = "c";
+var r = readAll();
+for (var i = 0; i < 40; i++) { globalThis["extra" + i] = i; r += "|" + readAll().length; }
+P("added", r, readAll(), extra39);
+
+// 3. a key removed before others: the later ones move
+P("before delete", readAll());
+delete globalThis.ga;
+P("after delete", tryit(readAll), tryit(function () { return gb; }), tryit(function () { return gc_; }), counter, extra0, extra39);
+function readLater() { return gb + gc_ + extra5 + extra39; }
+P("later", readLater());
+delete globalThis.extra0; delete globalThis.extra3;
+P("later2", readLater(), tryit(function () { return extra3; }), typeof extra3, typeof extra4);
+globalThis.ga = "A2";
+P("readded", readAll(), readLater());
+for (var k = 6; k < 30; k++) { delete globalThis["extra" + k]; if (k % 5 == 0) P("deleting", k, readLater(), bump(1), typeof Math.floor, tryit(function () { return globalThis["extra" + k]; })); }
+
+// 4. writes after moves
+function setLater(v) { gc_ = v; extra39 = v + 1; return gc_ + ":" + extra39; }
+P("set", setLater(10), readLater());
+delete globalThis.extra30;
+P("set2", setLater(20), readLater(), globalThis.gc_, globalThis.extra39);
+
+// 5. an accessor in place of a value, and back
+var hits = 0;
+globalThis.acc = 1;
+function readAcc() { return acc; }
+function writeAcc(v) { acc = v; }
+P("acc value", readAcc(), (writeAcc(2), readAcc()));
+Object.defineProperty(globalThis, "acc", { get: function () { hits++; return "got" + hits; }, set: function (v) { hits += 10; }, configurable: true, enumerable: true });
+P("acc getter", readAcc(), readAcc(), (writeAcc(3), hits), readAcc());
+Object.defineProperty(globalThis, "acc", { value: "plain", writable: true, configurable: true, enumerable: true });
+P("acc back", readAcc(), (writeAcc(4), readAcc()), hits);
+
+// 6. not writable
+Object.defineProperty(globalThis, "ro", { value: 1, writable: false, configurable: true, enumerable: true });
+function writeRo(v) { ro = v; return ro; }
+function writeRoStrict(v) { "use strict"; ro = v; return ro; }
+P("ro", writeRo(2), tryit(function () { return writeRoStrict(3); }), ro);
+Object.defineProperty(globalThis, "ro", { writable: true });
+P("rw", writeRo(4), writeRoStrict(5), ro);
+Object.defineProperty(globalThis, "ro", { writable: false });
+P("ro again", writeRo(6), tryit(function () { return writeRoStrict(7); }), ro);
+
+// 7. private names put in front of the keys of the global object
+class Base { constructor(o) { return o; } }
+class Stamp extends Base { #secret = 42; #other = 7; static read(o) { return o.#secret + o.#other; } static has(o) { return #secret in o; } }
+P("before stamp", readLater(), readAll(), bump(1) > 0, readAcc());
+var stamped = tryit(function () { new Stamp(globalThis); return Stamp.read(globalThis) + ":" + Stamp.has(globalThis); });
+P("stamped", stamped, readLater(), readAll(), bump(1) > 0, readAcc(), setLater(30), typeof Math.max, tryit(function () { return ga; }));
+
+// 8. collections between reads
+var before = readLater() + readAll();
+P("churn", churn(60000), readLater() + readAll() === before, bump(10) > 0, (writeProp(77), readProp()), setLater(40));
+function onlyWrite(v) { wo = v; }
+wo = 0;
+for (var j = 0; j < 5; j++) { churn(30000); onlyWrite(j); }
+P("only written", wo);
+
+// 9. functions and built-ins by their global names
+function callee(x) { return x * 2; }
+function caller(n) { var t = 0; for (var i = 0; i < n; i++) t += callee(i) + Math.floor(i / 2); return t; }
+P("calls", caller(100));
+var realMath = Math;
+Math = { floor: function () { return 1000; } };
+P("math replaced", caller(3));
+Math = realMath;
+callee = function (x) { return x; };
+P("callee replaced", caller(100));
+delete globalThis.gb;
+P("after delete", caller(10), tryit(readLater), tryit(readAll));
+
+// 10. undeclared, typeof, strict assignment
+function readMissing() { return nope; }
+function typeofMissing() { return typeof nope; }
+function assignMissingStrict() { "use strict"; nope2 = 1; }
+P("missing", tryit(readMissing), typeofMissing(), tryit(assignMissingStrict), typeof nope2);
+globalThis.nope = "now";
+P("found later", readMissing(), typeofMissing());
+delete globalThis.nope;
+P("gone again", tryit(readMissing), typeofMissing());
+function assignMissing() { nope3 = 9; return nope3; }
+P("made by assignment", assignMissing(), nope3, delete globalThis.nope3, tryit(function () { return nope3; }), assignMissing());
+
+// 11. var and function declarations are not deletable
+var declared = 1; function declaredFn() { return "f"; }
+function readDeclared() { return declared + declaredFn(); }
+P("declared", readDeclared(), delete globalThis.declared, delete globalThis.declaredFn, readDeclared());
+
+// 12. through globalThis and by name, in turn
+function mix(n) { var t = 0; for (var i = 0; i < n; i++) { globalThis.mixed = i; t += mixed; mixed = i + 1; t += globalThis.mixed; } return t; }
+P("mixed", mix(200));
+
+// 13. many moves in a loop that reads
+function spin(n) { var t = 0; for (var i = 0; i < n; i++) { globalThis.tmp = i; t += tmp + counter % 3 + gc_; delete globalThis.tmp; } return t; }
+P("spin", spin(300), typeof tmp);
+
+// 14. prototype of the global object and inherited names
+Object.prototype.inheritedName = "inherited";
+function readInherited() { return inheritedName; }
+P("inherited", readInherited());
+globalThis.inheritedName = "own";
+P("own over inherited", readInherited());
+delete globalThis.inheritedName;
+P("inherited again", readInherited());
+delete Object.prototype.inheritedName;
+P("gone", tryit(readInherited));
+lines.join("\n")"##;
+    let expected = r##"bump 1500 3000 3000
+prop 5 6 7 4
+added a:b:c:3000|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10 a:b:c:3000 39
+before delete a:b:c:3000
+after delete ReferenceError b c 3000 0 39
+later bc539
+later2 bc539 ReferenceError undefined number
+readded A2:b:c:3000 bc539
+deleting 10 bc539 3000 function undefined
+deleting 15 bc539 3000 function undefined
+deleting 20 bc539 3000 function undefined
+deleting 25 bc539 3000 function undefined
+set 10:11 b10511
+set2 20:21 b20521 20 21
+acc value 1 2
+acc getter got1 got2 12 got13
+acc back plain 4 13
+ro 1 TypeError 1
+rw 4 5 5
+ro again 5 TypeError 5
+before stamp b20521 A2:b:20:3000 true 4
+stamped 49:true b20521 A2:b:20:3000 true 4 30:31 function A2
+churn 60000 true true 77 40:41
+only written 4
+calls 12350
+math replaced 3006
+callee replaced 7400
+after delete 65 ReferenceError ReferenceError
+missing ReferenceError undefined ReferenceError undefined
+found later now string
+gone again ReferenceError undefined
+made by assignment 9 9 true ReferenceError 9
+declared 1f false false 1f
+mixed 40000
+spin 57150 undefined
+inherited inherited
+own over inherited own
+inherited again inherited
+gone ReferenceError"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A lexical declaration that a later script adds to the global scope
+/// comes before a property of the global object of the same name: the
+/// functions of an earlier script that read and wrote the property read
+/// and write the declaration from then on. What is expected is what Node
+/// prints for the same three scripts.
+#[test]
+fn a_later_lexical_declaration_comes_before_a_global_property() {
+    let (mut engine, _, _) = limited(64 << 20, 0);
+    engine
+        .evaluate(
+            "var lines = []; function print(line) { lines.push(line); }",
+            false,
+        )
+        .unwrap();
+    for script in [
+        r##"globalThis.y = 1; globalThis.z = 10; globalThis.w = "prop";
+function readY() { return y; }
+function writeY(v) { y = v; }
+function readZ() { return z; }
+function readW() { return w; }
+function loopY(n) { var t = 0; for (var i = 0; i < n; i++) t += y; return t; }
+print("one " + readY() + " " + readZ() + " " + readW() + " " + loopY(100));"##,
+        r##"let y = 2;
+print("two " + readY() + " " + loopY(100) + " " + globalThis.y);
+writeY(3);
+print("two written " + y + " " + globalThis.y + " " + readY() + " " + readZ() + " " + readW());
+globalThis.y = 50;
+print("two prop " + y + " " + readY() + " " + globalThis.y);"##,
+        r##"const z = 20; class w {}
+print("three " + readY() + " " + readZ() + " " + globalThis.z + " " + typeof readW() + " " + loopY(10));
+try { (function () { z = 5; })(); print("assigned"); } catch (e) { print("three " + e.constructor.name); }
+delete globalThis.y;
+print("three deleted " + readY() + " " + typeof globalThis.y + " " + loopY(10));"##,
+    ] {
+        if let Err(error) = engine.evaluate(script, false) {
+            panic!("a script did not run: {error:?}");
+        }
+    }
+    let expected = r##"one 1 10 prop 100
+two 2 200 1
+two written 3 1 3 10 prop
+two prop 3 3 50
+three 3 20 10 function 30
+three TypeError
+three deleted 3 undefined 30"##;
+    let found = match engine.evaluate("lines.join('\\n')", false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    assert_eq!(found, expected);
+}
+
+/// `o[name]` and `o[name] = v` with a String for the key are done in the
+/// loop of instructions where the object is an ordinary one that has the
+/// name as a data property of its own (a writable one, for the
+/// assignment); everything else goes the general way. The script reads and
+/// writes by name: own properties, missing and inherited ones, accessors,
+/// properties made accessors and values again, read-only ones, frozen,
+/// sealed and inextensible objects, names that are the texts of numbers,
+/// the prototype chain with setters and read-only properties on it,
+/// Arrays, Strings, functions, typed arrays, an arguments object, a Proxy,
+/// primitives, classes, an object of two hundred keys with keys deleted,
+/// a dictionary that is added to and deleted from, values and names of
+/// every kind, and the variable of a `for`-`in` loop while the object
+/// changes. What is expected is what Node prints for the same script.
+#[test]
+fn a_property_by_a_string_is_the_property_of_that_name() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_by_strings)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_by_strings() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+function get(o, k) { return o[k]; }
+function put(o, k, v) { o[k] = v; return o[k]; }
+function putStrict(o, k, v) { "use strict"; o[k] = v; return o[k]; }
+function sumKeys(o, keys, n) { var t = 0; for (var i = 0; i < n; i++) t += o[keys[i % keys.length]]; return t; }
+function forIn(o) { var t = ""; for (var k in o) t += k + "=" + o[k] + ";"; return t; }
+
+// 1. own data properties by name
+var o = { alpha: 1, beta: 2, gamma: 3, delta: 4, epsilon: 5, zeta: 6, eta: 7, theta: 8 };
+var keys = Object.keys(o);
+P("sum", sumKeys(o, keys, 1000), forIn(o));
+P("built", get(o, "al" + "pha"), get(o, ["be", "ta"].join("")), get(o, String("gamma")), get(o, "epsilon".slice(0)), get(o, "EPSILON".toLowerCase()));
+P("missing", get(o, "nope"), get(o, ""), get(o, "Alpha"), typeof get(o, "toString"), get(o, "hasOwnProperty") === Object.prototype.hasOwnProperty, get(o, "constructor") === Object);
+
+// 2. writes
+P("put", put(o, "alpha", 10), put(o, "theta", 80), o.alpha, o.theta, put(o, "fresh", 9), Object.keys(o).join(), put(o, "fresh", 10), o.fresh);
+for (var i = 0; i < 200; i++) { var k = keys[i & 7]; o[k] = o[k] + 1; }
+P("loop", forIn(o));
+
+// 3. accessors by name
+var hits = [];
+var acc = { plain: 1, get g() { hits.push("get"); return 5; }, set g(v) { hits.push("set" + v); }, get ro() { return "r"; } };
+P("accessor", get(acc, "g"), put(acc, "g", 3), put(acc, "ro", 4), tryit(function () { return putStrict(acc, "ro", 4); }), hits.join(), get(acc, "plain"));
+Object.defineProperty(acc, "plain", { get: function () { hits.push("late"); return "late"; }, configurable: true });
+P("made accessor", get(acc, "plain"), get(acc, "plain"), hits.length);
+Object.defineProperty(acc, "plain", { value: "again", writable: true, configurable: true, enumerable: true });
+P("made value", get(acc, "plain"), put(acc, "plain", "w"), hits.length);
+
+// 4. not writable, frozen, sealed, not extensible
+var ro = { a: 1, b: 2 };
+Object.defineProperty(ro, "a", { writable: false });
+P("readonly", put(ro, "a", 9), tryit(function () { return putStrict(ro, "a", 9); }), put(ro, "b", 9), ro.a, ro.b);
+var fr = Object.freeze({ a: 1, b: 2 });
+P("frozen", put(fr, "a", 9), tryit(function () { return putStrict(fr, "b", 9); }), put(fr, "c", 3), tryit(function () { return putStrict(fr, "c", 3); }), get(fr, "a"), Object.keys(fr).join());
+var se = Object.seal({ a: 1 });
+P("sealed", put(se, "a", 2), put(se, "z", 3), tryit(function () { return putStrict(se, "z", 3); }), get(se, "a"));
+var ne = Object.preventExtensions({ a: 1 });
+P("not extensible", put(ne, "a", 5), put(ne, "q", 1), tryit(function () { return putStrict(ne, "q", 1); }));
+
+// 5. names that are numbers
+var n = { 0: "zero", 1: "one", "01": "oh-one", "-1": "minus", "1e3": "exp", 4294967295: "max", "9007199254740993": "big", " 1": "space", "1.5": "frac", "-0": "negzero" };
+var names = ["0", "1", "01", "-1", "1e3", "4294967295", "9007199254740993", " 1", "1.5", "-0", "00", "1.0", "+1"];
+var out = []; for (var i = 0; i < names.length; i++) out.push(get(n, names[i]));
+P("numeric names", out.join());
+P("numeric keys", get(n, 0), get(n, 1), get(n, -1), get(n, 1000), get(n, 1.5), get(n, -0), get(n, 4294967295));
+P("numeric put", put(n, "1", "ONE"), n[1], put(n, 1, "uno"), n["1"], put(n, "01", "x"), n["01"], put(n, "5", "five"), n[5], Object.keys(n).length);
+
+// 6. the chain
+var proto = { inherited: "p", shadowed: "p", get viaGetter() { return "pg"; }, set viaSetter(v) { hits.push("proto set " + v); } };
+var child = Object.create(proto); child.own = "c"; child.shadowed = "c";
+P("chain", get(child, "own"), get(child, "inherited"), get(child, "shadowed"), get(child, "viaGetter"), put(child, "viaSetter", 1), hits[hits.length - 1], Object.keys(child).join());
+P("put inherited", put(child, "inherited", "mine"), proto.inherited, Object.keys(child).join());
+delete child.shadowed; delete child.inherited;
+P("deleted", get(child, "shadowed"), get(child, "inherited"), put(child, "shadowed", "c2"), proto.shadowed);
+Object.defineProperty(proto, "locked", { value: 1, writable: false });
+P("inherited readonly", put(child, "locked", 2), tryit(function () { return putStrict(child, "locked", 2); }), Object.keys(child).join());
+var bare = Object.create(null); bare.x = 1; bare["__proto__"] = "own";
+P("bare", get(bare, "x"), get(bare, "__proto__"), get(bare, "toString"), put(bare, "x", 2), put(bare, "__proto__", "own2"), Object.keys(bare).join());
+
+// 7. other kinds of objects under the same instructions
+var arr = [10, 20, 30]; arr.extra = "e";
+P("array", get(arr, "length"), get(arr, "1"), get(arr, "extra"), put(arr, "extra", "E"), put(arr, "0", 11), arr[0], put(arr, "length", 2), arr.length, typeof get(arr, "push"));
+P("string", get("abc", "length"), get("abc", "1"), get("abc", "9"), typeof get("abc", "charAt"), tryit(function () { return putStrict("abc", "x", 1); }));
+function fn(a, b) {} fn.own = "f";
+P("function", get(fn, "name"), get(fn, "length"), get(fn, "own"), put(fn, "own", "g"), typeof get(fn, "prototype"), put(fn, "name", "other"), fn.name);
+var ta = new Uint8Array([1, 2, 3]); ta.tag = "t";
+P("typed", get(ta, "length"), get(ta, "1"), get(ta, "tag"), put(ta, "tag", "T"), put(ta, "0", 300), ta[0], get(ta, "7"), put(ta, "7", 1), ta.length);
+var map = new Map(); map.x = 1;
+P("map", get(map, "x"), put(map, "x", 2), get(map, "size"), typeof get(map, "get"));
+(function () { P("arguments", get(arguments, "length"), get(arguments, "0"), put(arguments, "0", "changed"), arguments[0], get(arguments, "1"), get(arguments, "2")); })("a0", "a1");
+var px = new Proxy({ t: 1 }, { get: function (t, k) { return "trap:" + String(k); }, set: function (t, k, v) { hits.push("trap set " + k); return true; } });
+P("proxy", get(px, "t"), get(px, "anything"), put(px, "t", 5), hits[hits.length - 1]);
+P("primitives", tryit(function () { return get(null, "x"); }), tryit(function () { return get(undefined, "x"); }), tryit(function () { return put(null, "x", 1); }), get(5, "toFixed") === Number.prototype.toFixed, get(true, "valueOf") === Boolean.prototype.valueOf, typeof get(Symbol.iterator, "description"));
+class K { static s = "static"; f = "field"; m() { return "method"; } }
+var inst = new K();
+P("class", get(K, "s"), put(K, "s", "S"), get(inst, "f"), put(inst, "f", "F"), typeof get(inst, "m"), get(K, "name"), get(K, "prototype") === K.prototype);
+
+// 8. many keys: the table of a large shape, and the object changing under the loop
+var big = {}; for (var i = 0; i < 200; i++) big["key" + i] = i;
+var bigKeys = Object.keys(big);
+P("big", sumKeys(big, bigKeys, 2000), get(big, "key199"), get(big, "key200"), put(big, "key100", -100), put(big, "key200", 200), Object.keys(big).length);
+for (var i = 0; i < 200; i += 3) delete big["key" + i];
+var t = 0, miss = 0; for (var i = 0; i < 201; i++) { var v = big["key" + i]; if (v === undefined) miss++; else t += v; }
+P("big after deletes", t, miss, Object.keys(big).length, put(big, "key3", "back"), Object.keys(big)[Object.keys(big).length - 1]);
+var d = {}, total = 0;
+for (var round = 0; round < 5; round++) { for (var i = 0; i < 60; i++) { var name = "n" + ((i * 7 + round) % 40); if (d[name] === undefined) d[name] = 0; d[name] = d[name] + i; if ((i + round) % 11 == 0) delete d[name]; } for (var k in d) total += d[k]; }
+P("churn", total, Object.keys(d).length);
+
+// 9. values of every kind, and keys of every kind of text
+var kinds = { u: undefined, n: null, z: 0, f: 1.5, s: "s", o: {}, a: [], fn: function () {}, sym: Symbol.iterator, big: 10n, nan: NaN };
+var ks = Object.keys(kinds), seen = []; for (var i = 0; i < ks.length; i++) seen.push(typeof kinds[ks[i]]);
+P("kinds", seen.join(), "u" in kinds, get(kinds, "u"), put(kinds, "u", undefined), Object.keys(kinds).length);
+var texts = {}; var tk = ["", "a", "abcdefg", "abcdefgh", "a longer name than fits a small string", "été", "中文", "😀", "\ud800", "with space", "__proto__x", "constructor"];
+for (var i = 0; i < tk.length; i++) texts[tk[i]] = i;
+var back = []; for (var i = 0; i < tk.length; i++) back.push(get(texts, tk[i]), put(texts, tk[i], i * 2));
+P("texts", back.join(), get(texts, "abcdefg" + "h"), get(texts, "a longer name than fits " + "a small string"), get(texts, String.fromCharCode(0xd800)));
+var sym = Symbol("s"), symo = { [sym]: 1, [Symbol.iterator]: 2 };
+P("symbols", get(symo, sym), put(symo, sym, 3), get(symo, Symbol.iterator), get(symo, Symbol("s")));
+var keyObj = { toString: function () { hits.push("toString"); return "alpha"; } };
+P("object key", get(o, keyObj), put(o, keyObj, 500), o.alpha, hits.slice(-2).join());
+P("other keys", get({ true: 1 }, true), get({ null: 2 }, null), get({ undefined: 3 }, undefined), get({ "1.5": 4 }, 1.5), get({ NaN: 5 }, NaN), get({ Infinity: 6 }, 1 / 0));
+
+// 10. the loop variable of for-in while the object changes
+var live = { a: 1, b: 2, c: 3 }, order = "";
+for (var k in live) { order += k + live[k]; if (k == "a") { delete live.b; live.d = 4; } live[k] = live[k] * 10; }
+P("live", order, forIn(live));
+lines.join("\n")"##;
+    let expected = r##"sum 4500 alpha=1;beta=2;gamma=3;delta=4;epsilon=5;zeta=6;eta=7;theta=8;
+built 1 2 3 5 5
+missing undefined undefined undefined function true true
+put 10 80 10 80 9 alpha,beta,gamma,delta,epsilon,zeta,eta,theta,fresh 10 10
+loop alpha=35;beta=27;gamma=28;delta=29;epsilon=30;zeta=31;eta=32;theta=105;fresh=10;
+accessor 5 5 r TypeError get,set3,get 1
+made accessor late late 5
+made value again w 5
+readonly 1 TypeError 9 1 9
+frozen 1 TypeError undefined TypeError 1 a,b
+sealed 2 undefined TypeError 2
+not extensible 5 undefined TypeError
+numeric names zero,one,oh-one,minus,exp,max,big,space,frac,negzero,,,
+numeric keys zero one minus undefined frac zero max
+numeric put ONE ONE uno uno x x five five 11
+chain c p c pg undefined proto set 1 own,shadowed
+put inherited mine p own,shadowed,inherited
+deleted p p c2 p
+inherited readonly 1 TypeError own,shadowed
+bare 1 own undefined 2 own2 x,__proto__
+array 3 20 e E 11 11 2 2 function
+string 3 b undefined function TypeError
+function fn 2 f g object fn fn
+typed 3 2 t T 44 44 undefined undefined 3
+map 1 2 0 function
+arguments 2 a0 changed changed a1 undefined
+proxy trap:t trap:anything trap:t trap set t
+primitives TypeError TypeError TypeError true true string
+class static S field F function K true
+big 199000 199 undefined -100 200 201
+big after deletes 13267 67 134 back key3
+churn 22232 37
+kinds undefined,object,number,number,string,object,object,function,symbol,bigint,number true undefined undefined 11
+texts 0,0,1,2,2,4,3,6,4,8,5,10,6,12,7,14,8,16,9,18,10,20,11,22 6 8 16
+symbols 1 3 2 undefined
+object key 35 500 500 toString,toString
+other keys 1 2 3 4 5 6
+live a1c3 a=10;c=30;d=4;"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A variable of an enclosing function that a function reads in its loops
+/// is read from its Environment Record once in a call and from a stack
+/// slot after, where it has one value for as long as the call lasts. The
+/// script is about where it has not, and must be read each time: a `var`
+/// whose declarator runs again, in a loop or because the generator that
+/// declares it is resumed from inside the reader; a `let` read before it
+/// is initialized, and initialized during the call; a generator that
+/// reads; a variable of a block of the function itself, another in every
+/// turn; variables assigned to by a call, an update, a pattern or the head
+/// of a loop; a direct `eval`; a parameter that is assigned to. And about
+/// where it has: every kind of declaration, closures over different
+/// objects called in turn, recursion, values of every kind (undefined is
+/// never kept), collections while a value is kept, and the stack around
+/// the slots through blocks, `try`, iterators and early exits. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn a_variable_kept_for_a_call_is_the_variable() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(variables_kept_for_a_call)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn variables_kept_for_a_call() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) keep.push({ i: i, s: "s" + i }); return keep.length; }
+
+// 1. every kind of declaration, read in a loop of an inner function
+(function () {
+  var v = { n: 1 }; let l = { n: 2 }; const c = { n: 3 }; function fd() { return 4; } class K { static n = 5; }
+  function reader(p) { var t = 0; for (var i = 0; i < 4; i++) t += v.n + l.n + c.n + fd() + K.n + p.n; return t; }
+  var arrow = (p) => { let t = 0; for (const k of [1, 2, 3]) t += v.n * k + p.n; return t; };
+  var obj = { m() { var t = 0; var i = 0; while (i++ < 3) t += c.n; return t; }, get g() { var t = 0; do { t += l.n; } while (t < 6); return t; } };
+  P("kinds", reader({ n: 6 }), arrow({ n: 1 }), obj.m(), obj.g);
+  try { throw { n: 7 }; } catch (e) { var fromCatch = function () { var t = 0; for (var i = 0; i < 3; i++) t += e.n; return t; }; }
+  P("catch", fromCatch());
+  var named = function self(n) { var t = 0; for (var i = 0; i < 2; i++) t += typeof self === "function" ? 1 : 0; return n ? t + self(n - 1) : t; };
+  P("named", named(3));
+})();
+
+// 2. a var that gets its value later, and again
+(function () {
+  var out = [];
+  function read() { var t = []; for (var i = 0; i < 3; i++) t.push(x); return t.join(); }
+  out.push(read());
+  var x = (out.push("during:" + read()), "first");
+  out.push(read());
+  for (var k = 0; k < 3; k++) { var y = k * 10; out.push(readY()); }
+  function readY() { var t = []; for (var i = 0; i < 2; i++) t.push(y); return t.join(); }
+  for (var k = 0; k < 2; k++) { var z = (out.push("z during:" + readZ()), "z" + k); out.push(readZ()); }
+  function readZ() { var t = []; for (var i = 0; i < 2; i++) t.push(z); return t.join(); }
+  P("var later", out.join(" | "));
+})();
+
+// 3. the temporal dead zone
+(function () {
+  function read() { var t = []; for (var i = 0; i < 2; i++) t.push(l + c); return t.join(); }
+  var before = tryit(read);
+  let l = 1; const c = 2;
+  P("tdz", before, read(), tryit(function () { for (var i = 0; i < 2; i++) late; return "no"; }));
+  let late = 5;
+})();
+
+// 4. a generator that declares the variable is resumed from inside the reader
+(function () {
+  function* outer() { for (var k = 0; k < 4; k++) { var x = yield k; } }
+  var g = outer(); g.next();
+  var out = [];
+  function* declares() {
+    var reader = function (gen) { var seen = []; for (var i = 0; i < 3; i++) { seen.push(w); gen.next("w" + i); } seen.push(w); return seen.join(); };
+    for (;;) { var w = yield reader; }
+  }
+  var d = declares(); var reader = d.next().value;
+  out.push(reader(d));
+  function* lexical() {
+    var reader = function (gen) { var seen = []; for (var i = 0; i < 3; i++) { try { seen.push(c); } catch (e) { seen.push(e.constructor.name); gen.next(); } } return seen.join(); };
+    yield reader;
+    const c = "initialized";
+    yield;
+  }
+  var lg = lexical(); out.push(lg.next().value(lg));
+  P("generator declares", out.join(" | "));
+})();
+
+// 5. a generator and an async function that read
+(function () {
+  var out = [];
+  function* reader() { for (;;) yield x + ":" + c.n; }
+  var gen = reader(); const c = { n: 0 };
+  for (var k = 0; k < 3; k++) { var x = "x" + k; c.n = k; out.push(gen.next().value); }
+  P("generator reads", out.join());
+})();
+
+// 6. a variable of the function's own block, another one in every turn
+(function () {
+  var fs = [], total = 0;
+  for (let i = 0; i < 3; i++) { let v = i * 2; fs.push(function () { var s = 0; for (var j = 0; j < 3; j++) s += v; return s; }); total += v; for (var q = 0; q < 2; q++) total += v; }
+  var each = []; for (var k = 0; k < fs.length; k++) each.push(fs[k]());
+  P("per turn", total, each.join());
+  function own() { var a = []; for (var i = 0; i < 3; i++) { const obj = { i: i }; a.push(function () { return obj.i; }); for (var j = 0; j < 2; j++) a.push(obj.i * 10); } return a.map(function (x) { return typeof x === "function" ? x() : x; }).join(); }
+  P("own block", own());
+})();
+
+// 7. variables that are assigned to, by whatever way
+(function () {
+  var a = 1, b = 1, c = 1, d = 1, e = 1, f = 1;
+  function setA(v) { a = v; } function bump() { b++; } function destr() { [c] = [c + 1]; ({ d } = { d: d + 1 }); } function loop() { for (e of [e + 1]); } function compound() { f += 1; }
+  function read() { var t = []; for (var i = 0; i < 3; i++) { t.push([a, b, c, d, e, f].join("")); setA(a + 1); bump(); destr(); loop(); compound(); } return t.join(); }
+  P("assigned", read(), read());
+  var fn = function () { return 1; };
+  function callIt() { var t = 0; for (var i = 0; i < 3; i++) { t += fn(); if (i == 0) fn = function () { return 10; }; } return t; }
+  P("function assigned", callIt());
+})();
+
+// 8. direct eval
+(function () {
+  var x = 1, y = 1;
+  function ev(code) { return eval(code); }
+  function read() { var t = []; for (var i = 0; i < 3; i++) { t.push(x); if (i == 0) ev("x = 99"); } return t.join(); }
+  P("eval elsewhere", read(), x);
+  function inner() { var t = []; for (var i = 0; i < 3; i++) { t.push(y); if (i == 0) eval("y = 5"); } return t.join(); }
+  P("eval here", inner(), y);
+})();
+
+// 9. parameters, and closures made in a loop
+(function () {
+  function make(o, k) { return function () { var s = 0; for (var i = 0; i < 3; i++) s += o.v * k; return s; }; }
+  var fs = []; for (var i = 1; i <= 3; i++) fs.push(make({ v: i }, 10));
+  P("params", fs.map(function (f) { return f(); }).join());
+  function reassigned(o) { var f = function () { var s = []; for (var i = 0; i < 2; i++) s.push(o.v); return s.join(); }; var first = f(); o = { v: "second" }; return first + "|" + f(); }
+  P("param reassigned", reassigned({ v: "first" }));
+  function rec(n) { var v = n; function inner() { var s = 0; for (var i = 0; i < 2; i++) s += v; return s; } return n ? inner() + "," + rec(n - 1) : String(inner()); }
+  P("recursion", rec(4));
+  function defaults(a) { return function (b = a + 1) { var s = 0; for (var i = 0; i < 2; i++) s += a + b; return s; }; }
+  P("defaults", defaults(1)(), defaults(2)(10));
+})();
+
+// 10. function declarations, and one declared twice
+(function () {
+  function reader() { var t = []; for (var i = 0; i < 2; i++) t.push(typeof dup + ":" + dup()); return t.join(); }
+  var before = reader();
+  function dup() { return 1; }
+  function dup() { return 2; }
+  P("declarations", before, reader());
+})();
+
+// 11. values that are not kept, or are of every kind
+(function () {
+  var u, n = null, z = 0, e = "", f = false, nan = NaN, big = 10n, sym = Symbol.iterator, neg = -0;
+  function read() { var t = []; for (var i = 0; i < 2; i++) t.push(String(u), String(n), z, "[" + e + "]", f, nan, big, typeof sym, Object.is(neg, -0)); return t.join(); }
+  P("values", read());
+  var late;
+  function readLate() { var t = []; for (var i = 0; i < 2; i++) t.push(typeof late); return t.join(); }
+  var first = readLate();
+  var late = { now: 1 };
+  P("undefined then set", first, readLate());
+})();
+
+// 12. operators on the name
+(function () {
+  var o = { m: function () { return this === o; }, v: 1 }; function F() { this.made = true; } function plain() { return this === undefined || this === globalThis; }
+  function read() { var t = []; for (var i = 0; i < 2; i++) t.push(typeof o, typeof missing, o.m(), new F().made, plain(), delete o.none, o instanceof Object, "v" in o, tryit(function () { return delete o; })); return t.join(); }
+  P("operators", read());
+})();
+
+// 13. collections while the value is kept
+(function () {
+  var kept = { list: [1, 2, 3], text: "kept" };
+  function read() { var t = 0; for (var i = 0; i < 6; i++) { t += kept.list.length + kept.text.length; churn(20000); kept.list.push(i); } return t + ":" + kept.list.join(""); }
+  P("collections", read());
+})();
+
+// 14. the stack around the kept slots: blocks, try, iterators, early exits
+(function () {
+  var data = [3, 1, 2], limit = { n: 2 }, names = { a: 1, b: 2 };
+  function exits(mode) {
+    var total = 0;
+    outer: for (var i = 0; i < 4; i++) {
+      let block = i * 2;
+      try {
+        for (const d of data) {
+          const inner = d + block;
+          if (mode == "break" && d == 1) break outer;
+          if (mode == "continue" && d == 1) continue outer;
+          if (mode == "return" && inner > 6) return "returned " + total;
+          if (mode == "throw" && i == 2) throw new Error("thrown " + total);
+          total += inner + limit.n;
+          for (var key in names) total += names[key];
+        }
+      } catch (e) { if (mode == "throw") return e.message + ":" + limit.n; } finally { total += data.length; }
+    }
+    return total;
+  }
+  P("exits", exits("none"), exits("break"), exits("continue"), exits("return"), exits("throw"));
+  function many() { var a = 1, b = 2, c = 3; let d = 4; { let e = 5; for (var i = 0; i < 2; i++) { a += data[0] + limit.n; const f = a; b += f; } c += e; } return [a, b, c, d].join(); }
+  P("many locals", many());
+})();
+
+// 15. more variables than slots
+(function () {
+  var a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8, i2 = 9, j = 10, k = 11;
+  function read() { var t = 0; for (var i = 0; i < 3; i++) t += a + b + c + d + e + f + g + h + i2 + j + k; return t; }
+  P("eleven", read(), read());
+})();
+
+// 16. classes: constructors, fields, a derived class
+(function () {
+  const base = { n: 2 }; var count = 0;
+  class A { field = base.n; constructor() { for (var i = 0; i < 2; i++) count += base.n; } m() { var t = 0; for (var i = 0; i < 3; i++) t += base.n + this.field; return t; } static s() { var t = 0; for (var i = 0; i < 2; i++) t += base.n; return t; } }
+  class B extends A { constructor() { super(); for (var i = 0; i < 2; i++) count += base.n * 10; } }
+  var b = new B();
+  P("classes", count, b.m(), A.s(), new A().field);
+})();
+
+// 17. a lexical variable of a generator, and a var of one, read by an inner function
+(function () {
+  function* gen() { const c = { n: 1 }; var v = 1; var read = function () { var t = []; for (var i = 0; i < 2; i++) t.push(c.n + ":" + v); return t.join(); }; yield read; v = 2; c.n = 2; yield read; }
+  var it = gen(); var r1 = it.next().value; var a = r1(); var r2 = it.next().value; P("generator's own", a, r2());
+})();
+
+// 18. one function, many closures over different objects, called in turn
+(function () {
+  function make(o) { return function (n) { var t = 0; for (var i = 0; i < n; i++) t += o.v; return t; }; }
+  var fs = [make({ v: 1 }), make({ v: 100 }), make({ v: 10000 })], t = 0;
+  for (var r = 0; r < 50; r++) t += fs[r % 3](r % 4);
+  P("closures in turn", t);
+})();
+lines.join("\n")"##;
+    let expected = r##"kinds 84 9 9 6
+catch 21
+named 8
+var later ,, | during:,, | first,first,first | 0,0 | 10,10 | 20,20 | z during:, | z0,z0 | z during:z0,z0 | z1,z1
+tdz ReferenceError 3,3 ReferenceError
+generator declares ,w0,w1,w2 | ReferenceError,initialized,initialized
+generator reads x0:0,x1:1,x2:2
+per turn 18 0,6,12
+own block 0,0,0,1,10,10,2,20,20
+assigned 111111,222222,333333 444444,555555,666666
+function assigned 21
+eval elsewhere 1,99,99 99
+eval here 1,5,5 5
+params 30,60,90
+param reassigned first,first|second,second
+recursion 8,6,4,2,0
+defaults 6 24
+declarations function:2,function:2 function:2,function:2
+values undefined,null,0,[],false,NaN,10,symbol,true,undefined,null,0,[],false,NaN,10,symbol,true
+undefined then set undefined,undefined object,object
+operators object,undefined,true,true,true,true,true,true,false,object,undefined,true,true,true,true,true,true,false
+collections 57:123012345
+exits 132 11 56 returned 54 thrown 54:2
+many locals 11,19,8,4
+eleven 198 198
+classes 44 12 4 2
+generator's own 1:1,1:1 2:2,2:2
+closures in turn 242524"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `new` of a derived class and `super(…)` are run by the `Vm` that runs
+/// the calling code where the constructors are functions of the script:
+/// what is constructed is what \[\[Construct]] and SuperCall construct.
+/// The script makes chains of classes with and without constructors of
+/// their own; has constructors return objects, primitives and nothing,
+/// with and without `super`; uses `this` before `super`, calls `super`
+/// twice, from an arrow function, in `try`, in a loop, in a parameter's
+/// default, and after the constructor has returned; initializes fields of
+/// the parent and of the child in their order, one of them throwing;
+/// reads new.target down a chain and under Reflect.construct; extends an
+/// ordinary function, built-ins, a bound function, null and a function
+/// that returns an object, and changes the parent afterwards; has parents
+/// throw; makes instances in constructors, a chain forty deep and one
+/// without end; and collects garbage under construction. What is expected
+/// is what Node prints for the same script.
+#[test]
+fn a_derived_class_constructs_what_construct_does() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(derived_classes_constructed)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn derived_classes_constructed() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+var log = [];
+function L(x) { log.push(String(x)); }
+function flush(name) { P(name, log.join("|")); log = []; }
+
+// 1. chains of one to three, with and without constructors of their own
+class A { constructor(v) { this.v = v; L("A" + v); } get() { return this.v; } }
+class B extends A { constructor(v) { L("B before"); super(v + 1); L("B after " + this.v); this.b = true; } get() { return super.get() * 2; } }
+class C extends B { constructor(v) { super(v * 10); this.c = this.v + 1; } }
+class D extends C {}
+class E extends D { constructor() { super(...arguments); this.e = arguments.length; } }
+var total = 0; for (var i = 0; i < 3; i++) total += new B(i).get();
+P("B", total, log.length); log = [];
+var c = new C(2), d = new D(3), e = new E(4);
+flush("chain");
+P("made", c.v, c.c, c.b, d.v, d.c, e.v, e.e, c instanceof C, c instanceof A, d instanceof D, Object.getPrototypeOf(e) === E.prototype, c.get(), e.get());
+
+// 2. what a constructor returns
+var other = { other: true };
+class RetObj extends A { constructor() { super(1); return other; } }
+class RetPrim extends A { constructor() { super(1); return 5; } }
+class RetUndef extends A { constructor() { super(1); return undefined; } }
+class RetNoSuper extends A { constructor() { return; } }
+class RetObjNoSuper extends A { constructor() { return other; } }
+class RetNull extends A { constructor() { super(1); return null; } }
+class ParentObj { constructor() { return other; } }
+class OverParentObj extends ParentObj { constructor() { super(); this.mark = "on other"; } }
+class ParentPrim { constructor() { this.p = 1; return 7; } }
+class OverParentPrim extends ParentPrim { constructor() { super(); this.q = this.p + 1; } }
+P("returns", new RetObj() === other, tryit(function () { return new RetPrim(); }), new RetUndef() instanceof RetUndef, tryit(function () { return new RetNoSuper(); }), new RetObjNoSuper() === other, tryit(function () { return new RetNull(); }), new OverParentObj() === other, other.mark, new OverParentPrim().q);
+log = [];
+
+// 3. this before super, super twice, super in odd places
+class Early extends A { constructor() { this.x = 1; super(1); } }
+class Twice extends A { constructor() { super(1); super(2); } }
+class TwiceCaught extends A { constructor() { super(1); try { super(2); } catch (e) { L(e.constructor.name); } this.done = this.v; } }
+class InArrow extends A { constructor() { var call = () => super(3); call(); this.viaArrow = this.v; } }
+class ArrowThis extends A { constructor() { var read = () => this.v; super(4); this.r = read(); } }
+class InTry extends A { constructor() { try { super(5); } finally { L("finally " + this.v); } } }
+class Conditional extends A { constructor(yes) { if (yes) super(6); else return { no: true }; } }
+class InLoop extends A { constructor() { for (var i = 0; i < 1; i++) super(7 + i); } }
+class InDefault extends A { constructor(x = super(8)) { this.viaDefault = x === this; } }
+P("order", tryit(function () { return new Early(); }), tryit(function () { return new Twice(); }), new TwiceCaught().done, new InArrow().viaArrow, new ArrowThis().r, new InTry().v, new Conditional(true).v, new Conditional(false).no, new InLoop().v, tryit(function () { return new InDefault().viaDefault; }));
+flush("order log");
+
+// 4. fields and their order, in the parent, the child, both
+class FBase { a = L("FBase.a") || 1; constructor() { L("FBase ctor " + this.a + " " + this.b); } }
+class FChild extends FBase { b = L("FChild.b sees a=" + this.a) || 2; constructor() { L("FChild before"); super(); L("FChild after " + this.b); } }
+class FGrand extends FChild { c = this.a + this.b; #p = 10; static s = "static"; getP() { return this.#p + this.c; } }
+var fg = new FGrand();
+flush("fields");
+P("field values", fg.a, fg.b, fg.c, fg.getP(), FGrand.s, Object.keys(fg).join());
+class FThrow extends A { f = (function () { throw new RangeError("field"); })(); constructor() { try { super(1); } catch (e) { L("caught " + e.message); } L("this " + tryit(() => this.v)); } }
+P("field throws", tryit(function () { return new FThrow().v; }));
+flush("field throws log");
+
+// 5. new.target
+class NT { constructor() { this.nt = new.target.name; } }
+class NTChild extends NT { constructor() { super(); this.child = new.target.name; } }
+class NTGrand extends NTChild {}
+function Other() {} Other.prototype = { fromOther: true };
+var viaReflect = Reflect.construct(NTChild, [], Other);
+P("new.target", new NT().nt, new NTChild().nt, new NTChild().child, new NTGrand().nt, new NTGrand().child, viaReflect.nt, viaReflect.child, viaReflect.fromOther, viaReflect instanceof NTChild, Object.getPrototypeOf(viaReflect) === Other.prototype);
+function NoProto() {} NoProto.prototype = 5;
+var np = Reflect.construct(NTChild, [], NoProto);
+P("no prototype", Object.getPrototypeOf(np) === Object.prototype, np.nt);
+
+// 6. parents of other kinds
+function Plain(v) { this.plain = v; }
+Plain.prototype.hello = function () { return "hello " + this.plain; };
+class FromPlain extends Plain { constructor() { super("p"); } }
+class FromArray extends Array { constructor() { super(3); this.tag = "arr"; } }
+class FromError extends Error { constructor(m) { super(m); this.name = "Mine"; } }
+class FromMap extends Map { constructor() { super([[1, 2]]); } }
+class FromNull extends null { constructor() { return Object.create(FromNull.prototype); } }
+class FromNullSuper extends null { constructor() { super(); } }
+var bound = A.bind(null, 42); bound.prototype = A.prototype;
+class FromBound extends bound { constructor() { super(); } }
+class FromFunctionReturning extends (function () { return { made: "by function" }; }) { constructor() { super(); this.extra = 1; } }
+log = [];
+P("parents", new FromPlain().hello(), new FromArray().length, new FromArray().tag, Array.isArray(new FromArray()), String(new FromError("m")), new FromMap().get(1), new FromNull() instanceof FromNull, tryit(function () { return new FromNullSuper(); }), new FromBound().v, new FromFunctionReturning().made, new FromFunctionReturning().extra);
+flush("parents log");
+class Changing extends A { constructor() { super(1); } }
+Object.setPrototypeOf(Changing, Plain);
+var ch = new Changing();
+P("parent changed", ch.plain, ch.v, ch instanceof A, typeof ch.hello);
+Object.setPrototypeOf(Changing, function () {}.bind());
+P("parent bound", tryit(function () { return typeof new Changing(); }));
+Object.setPrototypeOf(Changing, Math.max);
+P("parent not a constructor", tryit(function () { return new Changing(); }));
+Object.setPrototypeOf(Changing, null);
+P("parent null", tryit(function () { return new Changing(); }));
+
+// 7. a parent that throws, and errors on the way
+class Thrower { constructor(v) { if (v) throw new RangeError("parent " + v); this.ok = true; } }
+class OverThrower extends Thrower { constructor(v) { try { super(v); } catch (e) { L("child caught " + e.message); super(0); } } }
+class NoCatch extends Thrower { constructor() { super(1); } }
+P("throws", new OverThrower(2).ok, tryit(function () { return new NoCatch(); }), new OverThrower(0).ok);
+flush("throws log");
+
+// 8. constructors that make instances, and deep chains
+class Node { constructor(depth) { this.depth = depth; this.child = depth > 0 ? new Leaf(depth - 1) : null; } }
+class Leaf extends Node { constructor(depth) { super(depth); this.leaf = true; } count() { return 1 + (this.child ? this.child.count() : 0); } }
+P("recursive", new Leaf(30).count());
+var Chain = class { constructor() { this.n = 0; } };
+for (var i = 0; i < 40; i++) Chain = class extends Chain { constructor() { super(); this.n++; } };
+P("deep chain", new Chain().n);
+class Endless extends A { constructor() { super(1); new Endless(); } }
+P("endless", tryit(function () { return new Endless(); }));
+
+// 9. super properties, statics, accessors, generators around the constructors
+class SBase { static make() { return new this(); } get kind() { return "base"; } *items() { yield 1; yield 2; } constructor() { this.made = new.target.name; } }
+class SChild extends SBase { static make() { var o = super.make(); o.viaStatic = true; return o; } get kind() { return "child of " + super.kind; } *items() { yield* super.items(); yield 3; } constructor() { super(); this.kindAtConstruction = this.kind; } }
+var sc = SChild.make();
+P("supers", sc.made, sc.viaStatic, sc.kind, sc.kindAtConstruction, [...sc.items()].join(""));
+
+// 10. collections while objects are under construction
+class Big { constructor(n) { this.data = []; for (var i = 0; i < n; i++) this.data.push({ i: i }); } }
+class Bigger extends Big { constructor(n) { super(n); this.more = this.data.map(function (x) { return x.i * 2; }); } }
+var sum = 0; for (var r = 0; r < 60; r++) { var bb = new Bigger(500); sum += bb.more[499] + bb.data.length; }
+P("garbage", sum);
+
+// 11. called without new, and as a function
+P("without new", tryit(function () { return B(1); }), tryit(function () { return B.call({}, 1); }), tryit(function () { return new (B.bind(null, 5))().v; }));
+
+// 12. derived parents that return other things, and super called late
+class OverRetObj extends RetObj { constructor() { super(); this.viaRet = 1; } }
+class NoSup extends A { constructor() {} }
+class OverNoSup extends NoSup { constructor() { try { super(); } catch (e) { L("no this: " + e.constructor.name); } return { fallback: true }; } }
+class OverRetPrim extends RetPrim { constructor() { try { super(); } catch (e) { L("primitive: " + e.constructor.name); } return { fallback2: true }; } }
+log = [];
+P("derived parents", new OverRetObj() === other, other.viaRet, new OverNoSup().fallback, new OverRetPrim().fallback2);
+flush("derived parents log");
+var late;
+class Late extends A { constructor() { late = () => super(11); return { early: true }; } }
+var early = new Late(); log = [];
+var first = late();
+P("late super", early.early, first.v, first instanceof Late, tryit(late), log.join());
+class Counted extends A { static made = 0; constructor(v) { super(v); Counted.made++; } }
+class CountedMore extends Counted { constructor() { super(5); } }
+var many = 0; for (var i = 0; i < 300; i++) many += new CountedMore().v + new Counted(i & 3).v;
+P("many", many, Counted.made);
+lines.join("\n")"##;
+    let expected = r##"B 12 9
+chain B before|A21|B after 21|B before|A31|B after 31|B before|A41|B after 41
+made 21 22 true 31 32 41 1 true true true true 42 82
+returns true TypeError true ReferenceError true TypeError true on other 2
+order ReferenceError ReferenceError 1 3 4 5 6 true 7 true
+order log A1|A2|A1|A2|ReferenceError|A3|A4|A5|finally 5|A6|A7|A8
+fields FChild before|FBase.a|FBase ctor 1 undefined|FChild.b sees a=1|FChild after 2
+field values 1 2 3 13 static a,b,c
+field throws 1
+field throws log A1|caught field|this 1
+new.target NT NTChild NTChild NTGrand NTGrand Other Other true false true
+no prototype true NoProto
+parents hello p 3 arr true Mine: m 2 true TypeError 42 by function 1
+parents log A42
+parent changed 1 undefined true undefined
+parent bound object
+parent not a constructor TypeError
+parent null TypeError
+throws true RangeError true
+throws log child caught parent 2
+recursive 31
+deep chain 40
+endless RangeError
+supers SChild true child of base child of base 123
+garbage 89880
+without new TypeError TypeError 6
+derived parents true 1 true true
+derived parents log A1|no this: ReferenceError|A1|primitive: TypeError
+late super true 11 true ReferenceError A11,A11
+many 1950 600"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A `for`-`of` loop has one handler for whatever is thrown in it, which
+/// closes the iterator, where it had one pushed and popped in every turn
+/// around the binding and the statement alone. The step is under that
+/// handler now, and an iterator whose step throws is not to be closed:
+/// the step leaves it exhausted. The script has the step throw in each of
+/// its ways (`next` throws, returns no object, `done` or `value` throws)
+/// and looks for the `return` that must not even be asked for; has the
+/// body and the binding throw, break, continue and return, with a
+/// `return` that throws or gives a primitive, and with none; nests loops
+/// with labels, `try` and `finally`; runs loops that throw and are caught
+/// hundreds of times; walks Arrays whose iterator has a `return`,
+/// generators that throw, delegate and are thrown into, and `for`-`in`;
+/// and reads the value of a loop. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn a_loop_closes_its_iterator_when_its_body_ends_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(iterators_closed_by_loops)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn iterators_closed_by_loops() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e && e.constructor === Error ? "Error:" + e.message : e && e.constructor ? e.constructor.name : "thrown:" + String(e); } }
+var log = [];
+function L(x) { log.push(String(x)); }
+function flush(name) { P(name, log.join("|")); log = []; }
+
+// An iterable whose every part can be made to throw, and that logs what is asked of it.
+function make(steps, opts) {
+  opts = opts || {};
+  var i = 0;
+  var it = {
+    next: function () {
+      L("next");
+      var step = steps[i++];
+      if (step === "throw") throw new Error("next threw");
+      if (step === "nonobject") return 5;
+      if (step === "donethrows") return { get done() { throw new Error("done threw"); }, value: 1 };
+      if (step === "valuethrows") return { done: false, get value() { throw new Error("value threw"); } };
+      if (step === undefined) return { done: true, value: "end" };
+      return { done: false, value: step };
+    }
+  };
+  if (!opts.noReturn) {
+    Object.defineProperty(it, "return", { get: function () { L("get return"); return function (v) { L("return"); if (opts.returnThrows) throw new Error("return threw"); return opts.returnValue === undefined ? {} : opts.returnValue; }; } });
+  }
+  var iterable = {}; iterable[Symbol.iterator] = function () { L("iter"); return it; };
+  return iterable;
+}
+
+// 1. the step throws in each of its ways: nothing is closed
+var ways = ["throw", "nonobject", "donethrows", "valuethrows"];
+for (var w = 0; w < ways.length; w++) {
+  L(tryit(function () { for (var x of make([1, ways[w], 3])) L("body " + x); return "finished"; }));
+  flush("step " + ways[w]);
+}
+
+// 2. the body throws, breaks, continues, returns
+L(tryit(function () { for (var x of make([1, 2, 3])) { L("body " + x); if (x == 2) throw new Error("body threw"); } }));
+flush("body throws");
+L(tryit(function () { for (var x of make([1, 2, 3], { returnThrows: true })) { if (x == 2) throw new Error("body threw"); } }));
+flush("body and return throw");
+L(tryit(function () { for (var x of make([1, 2, 3])) { if (x == 2) break; } return "after"; }));
+flush("break");
+L(tryit(function () { for (var x of make([1, 2, 3], { returnThrows: true })) { if (x == 2) break; } return "after"; }));
+flush("break, return throws");
+L(tryit(function () { for (var x of make([1, 2, 3], { returnValue: 7 })) { if (x == 2) break; } return "after"; }));
+flush("break, return gives a primitive");
+L(tryit(function () { for (var x of make([1, 2, 3])) { if (x == 2) continue; L("body " + x); } return "all"; }));
+flush("continue");
+L(tryit(function () { for (var x of make([1, 2, 3])) { if (x == 2) return "returned " + x; } }));
+flush("return");
+L(tryit(function () { for (var x of make([1, 2, 3], { noReturn: true })) { if (x == 2) break; } return "no return method"; }));
+flush("no return");
+L(tryit(function () { for (var x of make([])) L("never"); return "empty"; }));
+flush("empty");
+
+// 3. the binding throws: closed
+L(tryit(function () { for (var [a, b] of make([[1, 2], 5, [3, 4]])) L(a + b); }));
+flush("pattern");
+var target = { set v(x) { if (x == 2) throw new Error("setter threw"); L("set " + x); } };
+L(tryit(function () { for (target.v of make([1, 2, 3])) L("body"); }));
+flush("setter");
+L(tryit(function () { for (const { length } of make(["ab", null, "c"])) L(length); }));
+flush("object pattern");
+L(tryit(function () { "use strict"; for (undeclaredName of make([1, 2])) L("body"); }));
+flush("unresolvable");
+
+// 4. nested loops and labels
+L(tryit(function () { outer: for (var a of make([1, 2])) { for (var b of make([10, 20])) { if (b == 20) continue outer; L(a + b); } } return "done"; }));
+flush("continue outer");
+L(tryit(function () { outer: for (var a of make([1, 2])) { for (var b of make([10, 20])) { if (a == 1 && b == 10) break outer; } } return "done"; }));
+flush("break outer");
+L(tryit(function () { for (var a of make([1, 2])) { for (var b of make([10, "throw"])) L(a + b); } }));
+flush("inner step throws");
+L(tryit(function () { for (var a of make([1, 2])) { try { for (var b of make([10, 20])) { if (b == 20) throw new Error("inner"); } } catch (e) { L("caught " + e.message); } } return "outer went on"; }));
+flush("inner body throws, caught");
+L(tryit(function () { for (var a of make([1, 2])) { try { for (var b of make(["throw"])) L("never"); } catch (e) { L("caught " + e.message); } } return "outer went on"; }));
+flush("inner step throws, caught");
+
+// 5. try and finally in the body
+L(tryit(function () { for (var x of make([1, 2, 3])) { try { if (x == 1) continue; if (x == 2) break; } finally { L("finally " + x); } } return "out"; }));
+flush("finally");
+L(tryit(function () { for (var x of make([1, 2])) { try { throw new Error("t" + x); } catch (e) { L(e.message); } finally { L("f" + x); } } return "out"; }));
+flush("caught in the body");
+L(tryit(function () { for (var x of make([1, 2])) { try { return "from try"; } finally { L("f"); } } }));
+flush("return in try");
+
+// 6. many turns with errors caught inside: nothing piles up
+var caught = 0, turns = 0;
+for (var r = 0; r < 300; r++) { try { for (var x of [1, 2, 3]) { turns++; if (x == 2 && r % 3 == 0) throw new Error("x"); if (x == 3 && r % 5 == 0) break; } } catch (e) { caught++; } }
+P("many", caught, turns);
+function deepTry(n) { var c = 0; for (var i = 0; i < n; i++) { try { for (var k of [1]) { try { for (var m of [1, 2]) { if (m == 2) throw 1; } } finally { c++; } } } catch (e) { c += 10; } } return c; }
+P("nested many", deepTry(200));
+
+// 7. Arrays, with what the Array iterator can be asked
+var ArrayIteratorPrototype = Object.getPrototypeOf([][Symbol.iterator]());
+ArrayIteratorPrototype.return = function () { L("array return"); return {}; };
+var poisoned = [1, 2, 3]; Object.defineProperty(poisoned, 1, { get: function () { throw new Error("element threw"); } });
+L(tryit(function () { for (var x of poisoned) L("body " + x); }));
+flush("array element throws");
+L(tryit(function () { for (var x of [1, 2, 3]) { if (x == 2) throw new Error("body threw"); } }));
+flush("array body throws");
+L(tryit(function () { for (var x of [1, 2, 3]) { if (x == 2) break; } return "broke"; }));
+flush("array break");
+L(tryit(function () { for (var x of [1, 2, 3]) L(x); return "whole"; }));
+flush("array whole");
+delete ArrayIteratorPrototype.return;
+
+// 8. generators
+function* gen(n, bad) { try { for (var i = 0; i < n; i++) { if (i == bad) throw new Error("generator threw"); yield i; } } finally { L("gen finally"); } }
+L(tryit(function () { for (var x of gen(3, 1)) L("body " + x); }));
+flush("generator throws");
+L(tryit(function () { for (var x of gen(3, -1)) { if (x == 1) throw new Error("body threw"); } }));
+flush("generator, body throws");
+L(tryit(function () { for (var x of gen(3, -1)) { if (x == 1) break; } return "broke"; }));
+flush("generator break");
+function* delegating(inner) { yield* inner; }
+L(tryit(function () { for (var x of delegating(make([1, "donethrows"]))) L("body " + x); }));
+flush("delegate, done throws");
+L(tryit(function () { for (var x of delegating(make([1, 2, 3]))) { if (x == 2) break; } return "broke"; }));
+flush("delegate, break");
+function* looping(inner) { for (var x of inner) { L("yielding " + x); yield x; } }
+var lg = looping(make([1, 2, 3])); lg.next(); L(tryit(function () { return JSON.stringify(lg.throw(new Error("thrown in"))); }));
+flush("throw into a generator's loop");
+var lg2 = looping(make([1, 2, 3])); lg2.next(); L(JSON.stringify(lg2.return("r")));
+flush("return into a generator's loop");
+var lg3 = looping(make([1, "throw"])); lg3.next(); L(tryit(function () { return JSON.stringify(lg3.next()); }));
+flush("generator's loop, step throws");
+
+// 9. for-in
+var proto = { inherited: 1 }, obj = Object.create(proto); obj.a = 1; obj.b = 2; obj.c = 3;
+L(tryit(function () { for (var k in obj) { if (k == "b") throw new Error("in body threw"); L(k); } }));
+L(tryit(function () { var s = ""; for (var k in obj) { if (k == "b") continue; if (k == "inherited") break; s += k; } return s; }));
+L(tryit(function () { for (var k in new Proxy({}, { ownKeys: function () { throw new Error("ownKeys threw"); } })) L(k); }));
+L(tryit(function () { outer: for (var k in obj) { for (var j in obj) { if (j == "b") continue outer; L(k + j); } } return "labels"; }));
+L(tryit(function () { var n = 0; for (var r = 0; r < 200; r++) { try { for (var k in obj) { if (k == "c") throw 1; n++; } } catch (e) { n += 100; } } return n; }));
+flush("for-in");
+
+// 10. the value of a loop
+P("values", eval("for (var x of [1, 2, 3]) { x * 2; }"), eval("for (var x of [1, 2, 3]) { if (x == 2) break; x; }"), eval("for (var x of []) { x; }"), eval("7; for (var x of [1]) { }"), eval("for (var k in { a: 1, b: 2 }) { k; }"), eval("for (var x of [1, 2]) { if (x == 1) continue; 'second'; }"));
+
+// 11. closures over the loop variable, and the iterator method looked up once
+var fs = []; for (let x of make([1, 2, 3])) fs.push(function () { return x; });
+P("closures", fs.map(function (f) { return f(); }).join());
+flush("closures log");
+lines.join("\n")"##;
+    let expected = r##"step throw iter|next|body 1|next|Error:next threw
+step nonobject iter|next|body 1|next|TypeError
+step donethrows iter|next|body 1|next|Error:done threw
+step valuethrows iter|next|body 1|next|Error:value threw
+body throws iter|next|body 1|next|body 2|get return|return|Error:body threw
+body and return throw iter|next|next|get return|return|Error:body threw
+break iter|next|next|get return|return|after
+break, return throws iter|next|next|get return|return|Error:return threw
+break, return gives a primitive iter|next|next|get return|return|TypeError
+continue iter|next|body 1|next|next|body 3|next|all
+return iter|next|next|get return|return|returned 2
+no return iter|next|next|no return method
+empty iter|next|empty
+pattern iter|next|3|next|get return|return|TypeError
+setter iter|next|set 1|body|next|get return|return|Error:setter threw
+object pattern iter|next|2|next|get return|return|TypeError
+unresolvable iter|next|get return|return|ReferenceError
+continue outer iter|next|iter|next|11|next|get return|return|next|iter|next|12|next|get return|return|next|done
+break outer iter|next|iter|next|get return|return|get return|return|done
+inner step throws iter|next|iter|next|11|next|get return|return|Error:next threw
+inner body throws, caught iter|next|iter|next|next|get return|return|caught inner|next|iter|next|next|get return|return|caught inner|next|outer went on
+inner step throws, caught iter|next|iter|next|caught next threw|next|iter|next|caught next threw|next|outer went on
+finally iter|next|finally 1|next|finally 2|get return|return|out
+caught in the body iter|next|t1|f1|next|t2|f2|next|out
+return in try iter|next|f|get return|return|from try
+many 100 800
+nested many 2200
+array element throws body 1|Error:element threw
+array body throws array return|Error:body threw
+array break array return|broke
+array whole 1|2|3|whole
+generator throws body 0|gen finally|Error:generator threw
+generator, body throws gen finally|Error:body threw
+generator break gen finally|broke
+delegate, done throws iter|next|body 1|next|Error:done threw
+delegate, break iter|next|next|get return|return|broke
+throw into a generator's loop iter|next|yielding 1|get return|return|Error:thrown in
+return into a generator's loop iter|next|yielding 1|get return|return|{"value":"r","done":true}
+generator's loop, step throws iter|next|yielding 1|next|Error:next threw
+for-in a|Error:in body threw|ac|Error:ownKeys threw|aa|ba|ca|inheriteda|labels|20400
+values 6 undefined undefined undefined b second
+closures 1,2,3
+closures log iter|next|next|next|next"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `target op= value` reads the target with its Reference kept and assigns
+/// through that Reference, which was pushed for as long as the value was
+/// evaluated and popped after. Two ways around the push and the pop: a
+/// value whose code leaves the reference register alone (a literal, a
+/// variable in a stack slot, arithmetic of those) is evaluated with the
+/// Reference in the register; and `p.x op= value` for a `p` in a stack
+/// slot, with any other value, keeps the object on the stack and assigns
+/// as `p.x = …` does. The script assigns with every operator, to
+/// properties by name and by key, of `this`, of locals, of what a call
+/// gives, through accessors, a Proxy, `super` and private names; looks at
+/// the order of what runs and at the object that is assigned to where the
+/// value replaces the local; at what is thrown (no object, a frozen one, a
+/// setter that throws, a `valueOf` that throws, a name in its temporal
+/// dead zone) and at the this value of a call made after it was caught,
+/// which is not the object of the assignment that threw; and at logical
+/// assignment, generators and loops. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn a_compound_assignment_assigns_to_what_it_read() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(compound_assignments)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn compound_assignments() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// this.n += local, in a method, a constructor, an arrow
+var counter = { n: 0, bump: function (by) { this.n += by; return this.n; } };
+P("bump", counter.bump(3), counter.bump(4), counter.n);
+function Acc(start) { this.total = start; }
+Acc.prototype.add = function (v) { this.total += v; this.total -= 1; this.total *= v; return this; };
+P("acc", new Acc(2).add(3).add(2).total);
+// every compound operator with a local on the right
+(function () {
+  var o = { v: 7 }, k = 3;
+  o.v += k; P("+=", o.v); o.v -= k; P("-=", o.v); o.v *= k; P("*=", o.v); o.v /= k; P("/=", o.v);
+  o.v %= k; P("%=", o.v); o.v **= k; P("**=", o.v); o.v <<= k; P("<<=", o.v); o.v >>= k; P(">>=", o.v);
+  o.v >>>= k; P(">>>=", o.v); o.v |= k; P("|=", o.v); o.v ^= k; P("^=", o.v); o.v &= k; P("&=", o.v);
+  var s = { t: "a" }, add = "bc"; s.t += add; s.t += k; P("str", s.t);
+})();
+// computed keys, with the key and the value both locals
+(function () {
+  var a = [1, 2, 3], i = 1, v = 10, key = "name", o = { name: "x" };
+  a[i] += v; a[0] -= v; o[key] += v; P("computed", a.join(), o.name);
+  var log = [];
+  var keyed = { toString: function () { log.push("key"); return "name"; } };
+  o[keyed] += v; P("key by toString", o.name, log.length > 0);
+})();
+// the order of what runs: base, key, get, value, operator, set
+(function () {
+  var log = [];
+  var target = {
+    get x() { log.push("get"); return { valueOf: function () { log.push("valueOf-left"); return 5; } }; },
+    set x(v) { log.push("set " + v); }
+  };
+  function base() { log.push("base"); return target; }
+  var right = { valueOf: function () { log.push("valueOf-right"); return 2; } };
+  base().x += right;
+  base().x -= right;
+  P("order", log.join(","));
+})();
+// the value of the assignment expression, and chains
+(function () {
+  var o = { a: 1, b: 2 }, v = 5, r;
+  r = (o.a += v); P("value", r, o.a);
+  r = o.a += o.b += v; P("chain", r, o.a, o.b);
+  var x = 3; r = (o.a -= x) + (o.b -= x); P("sum", r, o.a, o.b);
+})();
+// a call right after: its this value is not the object assigned to
+(function () {
+  "use strict";
+  var o = { n: 1 }, v = 2;
+  function who() { return this === undefined ? "undefined" : typeof this; }
+  o.n += v; P("this after", who());
+  var m = { n: 1, who: who };
+  m.n += v; P("this of method after", m.who(), m.n);
+})();
+// errors: the base null or undefined, a frozen object, a setter that throws, no setter
+(function () {
+  "use strict";
+  var v = 1, nothing = null, undef;
+  P("null base", kind(function () { nothing.x += v; }));
+  P("undefined base", kind(function () { undef.x += v; }));
+  var frozen = Object.freeze({ x: 1 });
+  P("frozen", kind(function () { frozen.x += v; return frozen.x; }), frozen.x);
+  var getterOnly = { get x() { return 1; } };
+  P("getter only", kind(function () { getterOnly.x += v; }));
+  var thrower = { get x() { return 1; }, set x(value) { throw new RangeError("no"); } };
+  P("setter throws", kind(function () { thrower.x += v; }));
+  var o = { n: 1 };
+  o.n += v; P("after errors", o.n);
+  var sym = Symbol("s");
+  P("symbol", kind(function () { o.n += sym; }), o.n);
+  var big = 10n;
+  P("bigint mix", kind(function () { o.n += big; }), o.n);
+  var b = { n: 5n }; b.n += big; b.n *= big; P("bigint", b.n);
+})();
+(function () {
+  var v = 1, frozen = Object.freeze({ x: 1 });
+  frozen.x += v; P("frozen sloppy", frozen.x);
+  var prim = 5; prim.x += v; P("primitive base", prim, prim.x);
+  var str = "ab"; str.length += v; str[0] += v; P("string base", str, str.length);
+})();
+// the temporal dead zone of the local on the right, and of the target
+(function () {
+  var o = { n: 1 };
+  P("tdz right", kind(function () { o.n += later; let later = 2; }), o.n);
+  P("tdz base", kind(function () { var v = 1; soon.n += v; let soon = { n: 0 }; }));
+})();
+// arguments, parameters, a variable a closure also holds, a const
+(function (p) {
+  var o = { n: 0 };
+  o.n += arguments; P("arguments", typeof o.n, o.n.length);
+  o.n = 0; o.n += arguments.length; o.n += p; P("parameter", o.n);
+  var held = 4; function reader() { return held; }
+  o.n += held; P("held", o.n, reader());
+  const fixed = 6; o.n += fixed; let block = 7; o.n += block; P("const let", o.n);
+})(5, 6);
+// logical assignment with a local on the right
+(function () {
+  var o = { a: 0, b: 1, c: null, d: undefined, e: "" }, v = 9, log = [];
+  o.a ||= v; o.b ||= v; o.c ??= v; o.d ??= v; o.e &&= v; o.b &&= v;
+  P("logical", o.a, o.b, o.c, o.d, JSON.stringify(o.e));
+  var watched = { get x() { log.push("get"); return 0; }, set x(value) { log.push("set " + value); } };
+  watched.x ||= v; watched.x &&= v; watched.x ??= v; P("logical order", log.join(","));
+  var r = (o.a &&= v) + (o.missing ??= v); P("logical value", r, o.missing);
+})();
+// plain assignment with a local on the right: names found by `with` and by eval, properties
+(function () {
+  var v = 42, log = [];
+  var e = eval("var made = 1; made"); made = v; P("eval var", made, e);
+  var o = { set x(value) { log.push("set " + value); } }; o.x = v; o["x"] = v; P("plain", log.join(","));
+  undeclared_global_compound = v; undeclared_global_compound += v; P("global", undeclared_global_compound);
+})();
+// super properties and private names
+class Base { get size() { return this._s || 1; } set size(v) { this._s = v; } }
+class Derived extends Base {
+  #count = 1;
+  grow(by) { super.size += by; this.#count += by; this.#count *= by; return super.size + ":" + this.#count; }
+  static total = 0;
+  static add(v) { Derived.total += v; this.total += v; return this.total; }
+}
+P("super private", new Derived().grow(3), Derived.add(4));
+// update expressions and a compound assignment in a loop
+(function () {
+  var o = { n: 0, m: 0 }, step = 2;
+  for (var i = 0; i < 1000; i++) { o.n += step; o.m -= i; o.n++; --o.m; }
+  P("loop", o.n, o.m);
+})();
+// in a generator and an async function, around a yield
+function* gen(o, v) { o.n += v; var got = yield o.n; o.n += got; yield o.n; }
+(function () { var o = { n: 1 }, g = gen(o, 2); P("generator", g.next().value, g.next(10).value, o.n); })();
+// the target is replaced or changed by the getter while the assignment runs
+(function () {
+  var v = 1, holder = { o: { n: 1 } }, first = holder.o;
+  var tricky = { get n() { holder.o = { n: 100 }; return 5; }, set n(value) { this.stored = value; } };
+  holder.o = tricky; holder.o.n += v; P("replaced", tricky.stored, holder.o.n);
+  var grows = { get n() { this.extra = 1; delete this.gone; return 2; }, set n(value) { this.kept = value; }, gone: 1 };
+  grows.n += v; P("changed shape", grows.kept, grows.extra, "gone" in grows);
+  var proxy = new Proxy({ n: 1 }, { get: function (t, k) { return t[k] * 10; }, set: function (t, k, value) { t[k] = value + 0.5; return true; } });
+  proxy.n += v; P("proxy", proxy.n);
+})();
+// typed arrays and array length
+(function () {
+  var t = new Uint8Array(2), v = 300, a = [1, 2, 3], one = 1, i = 0;
+  t[i] += v; t[1] -= one; a.length -= one; a[a.length] = v; a.length += one;
+  P("typed", t[0], t[1], a.join(), a.length);
+})();
+// a property of a local, with a value that is itself read from properties, calls and other assignments
+(function () {
+  var p = { x: 1, y: 2, vx: 3, vy: 4, n: "s" }, q = { x: 10 }, log = [];
+  p.x += p.vx; p.y -= p.vy; p.vx *= q.x; p.n += p.n; P("props", p.x, p.y, p.vx, p.n);
+  function side() { log.push("call"); p = { x: 100, vx: 1 }; return 5; }
+  var first = p; p.x += side(); P("local replaced by the value", first.x, p.x, log.join());
+  var o = { a: 1 }; o.a += (o = { a: 50 }).a; P("local assigned in the value", o.a);
+  var w = { get v() { log.push("get"); return 1; }, set v(value) { log.push("set " + value); } };
+  log.length = 0; w.v += w.v; w.v -= side(); P("accessors", log.join(","));
+  var und; P("undefined local", kind(function () { und.x += q.x; }));
+  var num = 5; num.x += q.x; P("number local", num);
+  var frozen = Object.freeze({ x: 1 }); frozen.x += q.x; P("frozen local", frozen.x);
+  P("frozen strict", kind(function () { "use strict"; var f = Object.freeze({ x: 1 }); f.x += q.x; }));
+  P("string strict", kind(function () { "use strict"; var s = "ab"; s.length += q.x; }));
+  P("setter this", kind(function () { "use strict"; Object.defineProperty(Number.prototype, "probe", { configurable: true, get: function () { return 1; }, set: function (v) { log.push(typeof this); } }); var n = 5; log.length = 0; n.probe += q.x; delete Number.prototype.probe; return log.join(); }));
+  P("thrown value", kind(function () { var t = { x: 1 }; t.x += (function () { throw new RangeError("r"); })(); }));
+  P("tdz local", kind(function () { late.x += q.x; let late = { x: 1 }; }));
+  var arr = [1, 2]; arr.length += q.x; P("array length", arr.length);
+  (function () { arguments.length += q.x; arguments.extra += q.x; P("arguments", arguments.length, String(arguments.extra)); })(1, 2);
+  var proxied = new Proxy({ x: 1 }, { get: function (t, k) { log.push("pget"); return t[k]; }, set: function (t, k, v) { log.push("pset " + v); t[k] = v; return true; } });
+  log.length = 0; proxied.x += q.x; P("proxy local", log.join(","), proxied.x);
+  var parts = { a: 1, b: 2, c: 3 }; for (var i = 0; i < 300; i++) { parts.a += parts.b; parts.b ^= parts.c; parts.c -= parts.a & 3; }
+  P("loop of properties", parts.a, parts.b, parts.c);
+  var r = (p.x += q.x); P("value used", r, p.x);
+  var chain = { a: 1, b: 2 }; chain.a += chain.b += q.x; P("chained", chain.a, chain.b);
+})();
+function* gen2(o, q) { o.n += yield o.n; o.n *= q.k; yield o.n; }
+(function () { var o = { n: 1 }, g = gen2(o, { k: 3 }); P("generator value", g.next().value, g.next(4).value, o.n); })();
+(function () {
+  var o = { a: 1 }, old = o, other = { a: 7 };
+  o.a += (o = { a: 50 }).a; P("the object read is the object assigned", old.a, o.a);
+  var t = { a: 1 }, was = t; t.a *= (t = other, other.a); P("comma", was.a, t.a, other.a);
+  var u = { a: 2 }, kept = u; u.a -= [u = null, 5][1]; P("made null", kept.a, u);
+})();
+// a value that is arithmetic of locals and literals, and what it runs
+(function () {
+  "use strict";
+  var log = [];
+  function noisy(name, value) { return { valueOf: function () { log.push(name); return value; } }; }
+  var o = { n: 1, s: "a" }, a = 3, b = 4, c = noisy("c", 5), d = noisy("d", 6), t = true, z = 0, nothing = null;
+  o.n += a * b; o.n -= -a; o.n += a + (b - a) * 2; o.n *= (a < b ? a : b); o.n += a || b; o.n -= z && b; o.n += nothing ?? b;
+  o.n += !t; o.n ^= ~a; o.n += +t; o.n <<= a - 2; o.n += a % 2 === 1; o.n += (a > b) | (a != b);
+  P("arithmetic", o.n);
+  o.n += c * d; o.n -= c - d; P("valueOf order", o.n, log.join(","));
+  o.s += a + "-" + b + "-" + t; o.s += a + b; P("strings", o.s);
+  var target = { get n() { log.push("get"); return noisy("left", 1); }, set n(v) { log.push("set " + v); } };
+  log.length = 0; target.n += c + d; target.n *= c; P("get, left, value, set", log.join(","));
+  function who() { return this === undefined ? "undefined" : typeof this; }
+  var bad = { valueOf: function () { throw new RangeError("bad"); } }, sym = Symbol("s");
+  var after = [];
+  try { o.n += a * bad; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  try { o.n += sym; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  try { o.n += 1; o.n += a - late; let late = 1; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  try { target.n += a; nothing.n += a + b; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  var thrower = { get n() { return 1; }, set n(v) { throw new EvalError("set"); } };
+  try { thrower.n += a + b; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  var m = { who: who, n: 1 }; m.n += a * b; after.push(m.who(), m.n);
+  P("this after a throw", after.join(","));
+  var counts = { hits: 0, sum: 0, text: "" };
+  for (var i = 0; i < 500; i++) { counts.hits += i & 1; counts.sum += i * a - b; counts.text += i < 3 ? i : ""; }
+  P("loop of arithmetic", counts.hits, counts.sum, counts.text);
+  o.k = 0; o.k ||= a + b; o.k &&= a * b; o.missing ??= a - b; P("logical arithmetic", o.k, o.missing);
+  (function (x, y) { this.total = 1; this.total += x * y; this.total -= arguments.length; P("this target", this.total); }).call({}, 6, 7);
+})();
+lines.join("\n")"##;
+    let expected = r##"bump 3 7 7
+acc 26
++= 10
+-= 7
+*= 21
+/= 7
+%= 1
+**= 1
+<<= 8
+>>= 1
+>>>= 0
+|= 3
+^= 0
+&= 0
+str abc3
+computed -9,12,3 x10
+key by toString x1010 true
+order base,get,valueOf-left,valueOf-right,set 7,base,get,valueOf-left,valueOf-right,set 3
+value 6 6
+chain 13 13 7
+sum 14 10 4
+this after undefined
+this of method after object 3
+null base TypeError
+undefined base TypeError
+frozen TypeError 1
+getter only TypeError
+setter throws RangeError
+after errors 2
+symbol TypeError 2
+bigint mix TypeError 2
+bigint 150
+frozen sloppy 1
+primitive base 5 undefined
+string base ab 2
+tdz right ReferenceError 1
+tdz base ReferenceError
+arguments string 19
+parameter 7
+held 11 4
+const let 24
+logical 9 9 9 9 ""
+logical order get,set 9,get,get
+logical value 18 9
+eval var 42 1
+plain set 42,set 42
+global 84
+super private 4:12 8
+loop 3000 -500500
+generator 3 13 13
+replaced 6 100
+changed shape 3 1 false
+proxy 115
+typed 44 255 1,2,300, 4
+props 4 -2 30 ss
+local replaced by the value 9 100 call
+local assigned in the value 50
+accessors get,get,set 2,get,call,set -4
+undefined local TypeError
+number local 5
+frozen local 1
+frozen strict TypeError
+string strict TypeError
+setter this ok number
+thrown value RangeError
+tdz local ReferenceError
+array length 12
+arguments 12 NaN
+proxy local pget,pset 11 11
+loop of properties 21083 -2 -510
+value used 110 110
+chained 13 12
+generator value 1 15 15
+the object read is the object assigned 51 50
+comma 7 7 7
+made null -3 null
+arithmetic -136
+valueOf order -105 c,d,c,d
+strings a3-4-true7
+get, left, value, set get,c,d,left,set 12,get,left,c,set 5
+this after a throw RangeError,undefined,TypeError,undefined,ReferenceError,undefined,TypeError,undefined,EvalError,undefined,object,13
+loop of arithmetic 250 372250 012
+logical arithmetic 12 -1
+this target 41"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The instructions of an Executable have a few bytes after them that are
+/// no instruction, so that the loop reads the last instruction of the code
+/// (the Return of nearly every function) as it reads any other. Where the
+/// code ends is where it ended: the script has functions, arrows,
+/// methods, accessors, constructors and generators whose code ends without
+/// a return, after a jump to its end, in a `try`, a `switch` and a labelled
+/// block; reads the value of `eval` and of a function made from text at
+/// the end of their code; calls short functions whose last instruction is
+/// their Return a few thousand times; and has the last instruction throw.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn code_ends_where_its_instructions_end() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(ends_of_code)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn ends_of_code() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+// functions whose code ends in every way: with and without a return, after a jump to the end
+function empty() {}
+function only(x) { if (x) return 1; }
+function loopEnd(n) { for (var i = 0; i < n; i++) { if (i === 3) return i; } }
+function whileEnd(n) { while (n-- > 0) { if (n === 2) break; } }
+function tryEnd(x) { try { if (x) return "t"; } finally { x = 0; } }
+function catchEnd(x) { try { if (x) throw 1; } catch (e) { return "c"; } }
+function switchEnd(x) { switch (x) { case 1: return "one"; case 2: break; default: } }
+function labelEnd(x) { out: { if (x) break out; return "in"; } }
+function exprEnd(x) { x + 1; }
+function lastExpr(x) { x = x * 2; x; }
+function nested(x) { function inner() { if (x) return "i"; } return inner(); }
+var arrow = (x) => x * 2, arrowBlock = (x) => { if (x) return x; }, arrowEmpty = () => {};
+P("fall", empty(), only(0), only(1), loopEnd(2), loopEnd(9), whileEnd(5), tryEnd(0), tryEnd(1), catchEnd(0), catchEnd(1));
+P("more", switchEnd(1), switchEnd(2), switchEnd(3), labelEnd(1), labelEnd(0), exprEnd(1), lastExpr(2), nested(0), nested(1));
+P("arrows", arrow(4), arrowBlock(0), arrowBlock(5), arrowEmpty());
+// short functions called many times, whose last instruction is their Return
+function add(a, b) { return a + b; }
+function id(a) { return a; }
+function zero() { return 0; }
+var total = 0; for (var i = 0; i < 2000; i++) total = add(total, id(i)) + zero();
+P("calls", total);
+// constructors, methods, accessors, generators and async functions that end without a return
+function Ctor(v) { this.v = v; }
+class K { constructor(v) { this.v = v; } get g() { if (this.v) return this.v; } set s(v) { this.v = v; } m() {} static st() {} }
+var k = new K(3); k.s = 7;
+P("class", new Ctor(1).v, k.g, new K(0).g, k.m(), K.st());
+function* g1() { yield 1; }
+function* g2() { yield 1; return 2; }
+function* g3() {}
+function* g4(x) { if (x) { yield x; } }
+var a = g1(), b = g2(), c = g3(), d = g4(0);
+P("generators", JSON.stringify([a.next(), a.next(), b.next(), b.next(), b.next(), c.next(), d.next()]));
+P("spread", [...g1(), ...g2(), ...g3(), ...g4(5)].join());
+// the value of a Script and of eval at the end of their code
+P("eval", eval("1; 2"), eval("if (true) { 3 }"), eval("var q = 1"), eval(""), eval("for (var e = 0; e < 3; e++) e"), eval("L: { 5; break L; }"), eval("try { 6 } finally { 7 }"), eval("switch (1) { case 1: 8 }"));
+P("function ctor", new Function("a", "b", "return a * b")(3, 4), new Function("")(), new Function("a", "if (a) return a")(0));
+// callbacks whose code ends at once
+P("callbacks", [1, 2, 3].map(function (v) { if (v > 1) return v; }).join(), [3, 1, 2].sort(function (x, y) { return x - y; }).join(), [1, 2].forEach(function () {}));
+// a getter and a setter run in place, a bound function, a derived constructor without one of its own
+var o = { get p() { return 9; }, set p(v) { this.q = v; } }; o.p = o.p + 1;
+class D extends K {} function plain() { return this.v; }
+P("in place", o.q, new D(4).v, plain.bind({ v: 5 })(), (function () { return arguments.length; })(1, 2, 3));
+// errors thrown by the last instruction and at the end
+function throwsLast() { throw new RangeError("last"); }
+function tdzLast() { return late; let late; }
+function callsUndefined() { return undefined(); }
+function kindOf(f) { try { return "ok " + f(); } catch (e) { return e.constructor.name; } }
+P("errors", kindOf(throwsLast), kindOf(tdzLast), kindOf(callsUndefined), kindOf(function () { return null.x; }), kindOf(function () { null.x; }));
+// deep recursion that ends by falling off the end
+function down(n) { if (n > 0) down(n - 1); }
+function sumTo(n) { return n === 0 ? 0 : n + sumTo(n - 1); }
+P("recursion", down(500), sumTo(500), kindOf(function forever() { forever(); }));
+lines.join("\n")"##;
+    let expected = r##"fall undefined undefined 1 undefined 3 undefined undefined t undefined c
+more one undefined undefined undefined in undefined undefined undefined i
+arrows 8 undefined 5 undefined
+calls 1999000
+class 1 7 undefined undefined undefined
+generators [{"value":1,"done":false},{"done":true},{"value":1,"done":false},{"value":2,"done":true},{"done":true},{"done":true},{"done":true}]
+spread 1,1,5
+eval 2 3 undefined undefined 2 5 6 8
+function ctor 12 undefined undefined
+callbacks ,2,3 1,2,3 undefined
+in place 10 4 5 3
+errors RangeError ReferenceError TypeError TypeError TypeError
+recursion undefined 125250 RangeError"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `length` of a TypedArray with no properties of its own and the
+/// prototype of its kind is the accessor of %TypedArray%.prototype, and
+/// the loop remembers that it is, for the kind and the Realm, until the
+/// heap counts a change of an object whose shape is changed in place or a
+/// property defined again. The script warms one place that reads `length`
+/// and then makes it something else in every way there is, reading it
+/// from that place after each: a property of the array itself, another
+/// prototype for the array, a property of the kind's prototype (an
+/// accessor, a value, deleted again), the accessor of
+/// %TypedArray%.prototype defined again as another accessor and as a
+/// value, assigned, deleted and found further up, restored; an object and
+/// a Proxy put into the chain and taken out; a subclass with an accessor
+/// of its own; other properties defined again that are none of this;
+/// views of a part of a buffer and of a buffer that is resized under
+/// them; collections in between; and an accessor that restores the
+/// original one while it runs. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn the_length_of_a_typed_array_is_what_its_accessor_gives() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(typed_array_lengths)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn typed_array_lengths() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+var out = [];
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); out.push(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// one place that reads length, of whatever it is given; warmed on TypedArrays
+function len(a) { return a.length; }
+function sumOfLengths(list) { var t = 0; for (var i = 0; i < list.length; i++) { var n = len(list[i]); t += typeof n === "number" ? n : 1000; } return t; }
+function loopTo(a) { var c = 0; for (var i = 0; i < a.length; i++) c++; return c; }
+var TA = Object.getPrototypeOf(Uint8Array.prototype);
+var original = Object.getOwnPropertyDescriptor(TA, "length");
+var u8 = new Uint8Array(5), u8b = new Uint8Array(7), f64 = new Float64Array(3), i16 = new Int16Array(4), big = new BigInt64Array(2);
+function warm() { var t = 0; for (var i = 0; i < 300; i++) t += len(u8) + len(u8b) + len(f64) + len(i16) + len(big) + loopTo(u8); return t; }
+P("warm", warm(), len(u8), len(f64), loopTo(u8b));
+// an own property of one array
+Object.defineProperty(u8, "length", { value: 99, configurable: true });
+P("own data", len(u8), len(u8b), loopTo(u8b), warm());
+Object.defineProperty(u8, "length", { get: function () { return "own getter"; }, configurable: true });
+P("own getter", len(u8), len(u8b));
+delete u8.length;
+P("own deleted", len(u8), len(u8b), warm());
+u8.extra = 1;
+P("own unrelated", len(u8), loopTo(u8));
+// the prototype of one array
+var u8c = new Uint8Array(6);
+P("before", len(u8c));
+Object.setPrototypeOf(u8c, { length: "from object" });
+P("prototype object", len(u8c), len(u8b));
+Object.setPrototypeOf(u8c, null);
+P("prototype null", len(u8c), len(u8b));
+Object.setPrototypeOf(u8c, Uint8Array.prototype);
+P("prototype back", len(u8c), loopTo(u8c));
+Object.setPrototypeOf(u8c, Float64Array.prototype);
+P("prototype of another kind", len(u8c));
+// a property of the kind's prototype
+Object.defineProperty(Uint8Array.prototype, "length", { get: function () { return "kind getter"; }, configurable: true });
+P("kind getter", len(u8), len(u8b), len(f64), len(i16), kind(function () { return loopTo(u8b); }));
+Object.defineProperty(Uint8Array.prototype, "length", { value: 3, configurable: true });
+P("kind data", len(u8b), loopTo(u8b), len(f64));
+delete Uint8Array.prototype.length;
+P("kind deleted", len(u8), len(u8b), len(f64), warm());
+Uint8Array.prototype.unrelated = 1;
+P("kind unrelated", len(u8b), loopTo(u8b));
+delete Uint8Array.prototype.unrelated;
+P("kind unrelated deleted", len(u8b), len(i16));
+// the accessor of %TypedArray%.prototype defined again, and back
+Object.defineProperty(TA, "length", { get: function () { return "new accessor"; }, configurable: true });
+P("accessor replaced", len(u8), len(f64), len(big), sumOfLengths([u8, f64, i16]));
+Object.defineProperty(TA, "length", { get: function () { return this.byteLength * 2; }, configurable: true });
+P("accessor replaced again", len(u8b), len(f64));
+Object.defineProperty(TA, "length", { value: "a value", configurable: true, writable: true });
+P("accessor made data", len(u8b), len(f64), kind(function () { return loopTo(u8b); }));
+TA.length = 4;
+P("data assigned", len(u8b), loopTo(u8b), len(f64));
+Object.defineProperty(TA, "length", original);
+P("accessor restored", len(u8), len(u8b), len(f64), len(i16), len(big), warm());
+// removed, and found further up
+delete TA.length;
+P("accessor deleted", len(u8), len(f64));
+Object.prototype.length = "of Object.prototype";
+P("found further up", len(u8), len(f64), len({}));
+delete Object.prototype.length;
+P("gone", len(u8), len(f64));
+Object.defineProperty(TA, "length", original);
+P("restored again", len(u8), len(f64), warm());
+// the prototype of the kind's prototype
+var between = Object.create(TA, { length: { get: function () { return "between"; }, configurable: true } });
+Object.setPrototypeOf(Uint8Array.prototype, between);
+P("chain longer", len(u8), len(u8b), len(f64));
+delete between.length;
+P("chain longer, nothing in it", len(u8), len(u8b), loopTo(u8));
+between.length = 11;
+P("chain longer, a value", len(u8), len(f64));
+Object.setPrototypeOf(Uint8Array.prototype, TA);
+P("chain back", len(u8), len(u8b), len(f64), warm());
+Object.setPrototypeOf(Float64Array.prototype, Object.prototype);
+P("kind cut off", len(f64), len(u8), kind(function () { return f64.byteLength; }));
+Object.setPrototypeOf(Float64Array.prototype, TA);
+P("kind joined", len(f64), len(u8));
+var proxied = new Proxy(TA, { get: function (t, k, r) { return k === "length" ? "by proxy" : Reflect.get(t, k, r); } });
+Object.setPrototypeOf(Int16Array.prototype, proxied);
+P("proxy in the chain", len(i16), len(u8), len(f64));
+Object.setPrototypeOf(Int16Array.prototype, TA);
+P("proxy gone", len(i16), len(u8), warm());
+// another property defined again somewhere, which is none of this
+var bystander = { get g() { return 1; } };
+Object.defineProperty(bystander, "g", { get: function () { return 2; }, configurable: true });
+Object.defineProperty(TA, "byteLength", Object.getOwnPropertyDescriptor(TA, "byteLength"));
+Object.freeze(bystander);
+P("bystanders", bystander.g, len(u8), len(f64), loopTo(u8b));
+// subclasses, and what is not a TypedArray
+class Mine extends Uint8Array { get length() { return "subclass"; } }
+class Plain extends Uint8Array {}
+var arr = [1, 2, 3], str = "four", obj = { length: "o" }, args = (function () { return arguments; })(1, 2);
+P("others", len(new Mine(3)), len(new Plain(3)), loopTo(new Plain(4)), len(arr), len(str), len(obj), len(args), len(u8), len(function (a, b) {}));
+P("mixed", sumOfLengths([u8, arr, str, obj, f64, new Mine(1), new Plain(2), u8b, args]));
+// the buffer: views of a part, zero length, detached, resized
+var buffer = new ArrayBuffer(16), part = new Uint8Array(buffer, 4, 8), none = new Uint8Array(buffer, 16), words = new Uint32Array(buffer, 8);
+P("views", len(part), len(none), len(words), loopTo(part), loopTo(none));
+if (typeof ArrayBuffer.prototype.resize === "function") {
+  var grows = new ArrayBuffer(8, { maxByteLength: 32 }), tracking = new Uint8Array(grows), fixed = new Uint8Array(grows, 2, 4), tail = new Uint16Array(grows, 4);
+  P("resizable", len(tracking), len(fixed), len(tail), loopTo(tracking));
+  grows.resize(20);
+  P("grown", len(tracking), len(fixed), len(tail), loopTo(tracking));
+  grows.resize(5);
+  P("shrunk out of bounds", len(tracking), len(fixed), len(tail), loopTo(fixed));
+  grows.resize(3);
+  P("shrunk more", len(tracking), len(fixed), len(tail));
+  grows.resize(32);
+  P("grown back", len(tracking), len(fixed), len(tail));
+}
+// through collections, with much made and dropped
+(function () { var keep = []; for (var r = 0; r < 40; r++) { var junk = []; for (var i = 0; i < 2000; i++) junk.push({ i: i, s: "x" + i }); keep.push(len(new Uint8Array(r)) + len(u8) + len(new Float32Array(r + 1))); } P("collections", keep.join(",")); })();
+// a getter that changes things as it is read
+var tricky = new Uint8Array(2), hits = 0;
+Object.defineProperty(TA, "length", { get: function () { hits++; if (hits === 3) Object.defineProperty(TA, "length", original); return "tricky " + hits; }, configurable: true });
+P("changes itself", len(tricky), len(tricky), len(tricky), len(tricky), len(u8), hits);
+P("end", warm(), len(u8), len(f64), len(i16), len(big));
+for (var line = 0; line < out.length; line++) print(out[line]);
+lines.join("\n")"##;
+    let expected = r##"warm 7800 5 3 7
+own data 99 7 7 64200
+own getter own getter 7
+own deleted 5 7 7800
+own unrelated 5 5
+before 6
+prototype object from object 7
+prototype null undefined 7
+prototype back 6 6
+prototype of another kind 6
+kind getter kind getter kind getter 3 4 ok 0
+kind data 3 3 3
+kind deleted 5 7 3 7800
+kind unrelated 7 7
+kind unrelated deleted 7 4
+accessor replaced new accessor new accessor new accessor 3000
+accessor replaced again 14 48
+accessor made data a value a value ok 0
+data assigned 4 4 4
+accessor restored 5 7 3 4 2 7800
+accessor deleted undefined undefined
+found further up of Object.prototype of Object.prototype of Object.prototype
+gone undefined undefined
+restored again 5 3 7800
+chain longer between between 3
+chain longer, nothing in it 5 7 5
+chain longer, a value 5 3
+chain back 5 7 3 7800
+kind cut off undefined 5 ok undefined
+kind joined 3 5
+proxy in the chain by proxy 5 3
+proxy gone 4 5 7800
+bystanders 2 5 3 7
+others subclass 3 4 3 4 o 2 5 2
+mixed 2026
+views 8 0 2 8 0
+resizable 8 4 2 8
+grown 20 4 8 20
+shrunk out of bounds 5 0 0 0
+shrunk more 3 0 0
+grown back 32 4 14
+collections 6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64,66,68,70,72,74,76,78,80,82,84
+changes itself tricky 1 tricky 2 tricky 3 2 5 3
+end 7800 5 3 4 2"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The getter and the setter of an accessor property are read from the
+/// descriptors of the object that has it at every read and assignment,
+/// and the loop remembers the last of each it found, for the object and
+/// the place, until the heap counts a property defined again or an
+/// object's properties moved. The script warms one place that reads a
+/// property and one that assigns it, and then gives the property another
+/// getter, another setter, none, a value and accessors again; removes it
+/// and properties before it, so that another property is at its place;
+/// reads objects of one shape that have accessors of their own; changes
+/// accessors of a class, shadows them and changes prototypes; has private
+/// names put in front of an object's properties; uses accessors that are
+/// no functions of the script and receivers that are no objects; has
+/// accessors replace themselves while they run; freezes, collects and
+/// throws. What is expected is what Node prints for the same script.
+#[test]
+fn an_accessor_is_the_one_the_property_has() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(accessors_of_properties)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn accessors_of_properties() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// one place that reads `v` and one that assigns it, of whatever they are given
+function get(o) { return o.v; }
+function set(o, x) { o.v = x; }
+function both(o, n) { var t = 0; for (var i = 0; i < n; i++) { o.v = o.v + 1; t += o.v; } return t; }
+var log = [];
+var o = { _v: 0, get v() { return this._v; }, set v(x) { this._v = x & 1023; } };
+P("warm", both(o, 300), get(o), o._v);
+// the getter defined again, the setter defined again
+Object.defineProperty(o, "v", { get: function () { return "second getter " + this._v; } });
+P("getter again", get(o), get(o)); set(o, 5); P("setter kept", o._v, get(o));
+Object.defineProperty(o, "v", { set: function (x) { this._v = "second setter " + x; } });
+set(o, 6); P("setter again", o._v, get(o));
+Object.defineProperty(o, "v", { get: undefined });
+P("no getter", get(o)); set(o, 7); P("setter still", o._v);
+Object.defineProperty(o, "v", { set: undefined, get: function () { return "only getter"; } });
+P("no setter", get(o), kind(function () { set(o, 8); return o._v; }), kind(function () { "use strict"; o.v = 9; }));
+// made a value, and an accessor again
+Object.defineProperty(o, "v", { value: "a value", writable: true });
+P("a value", get(o)); set(o, "assigned"); P("assigned", get(o), o._v);
+Object.defineProperty(o, "v", { get: function () { return "accessor again"; }, set: function (x) { log.push("set " + x); } });
+set(o, 1); P("accessor again", get(o), log.join());
+// removed and put back; another property at its place
+delete o.v;
+P("deleted", get(o)); set(o, "plain"); P("plain", get(o), Object.getOwnPropertyDescriptor(o, "v").writable);
+var p = { get a() { return "a"; }, get v() { return "v of p"; }, get z() { return "z"; } };
+function getA(q) { return q.a; } function getZ(q) { return q.z; }
+P("three", getA(p), get(p), getZ(p), getA(p), get(p), getZ(p));
+delete p.a;
+P("first removed", getA(p), get(p), getZ(p), get(p), getZ(p));
+Object.defineProperty(p, "a", { get: function () { return "new a"; }, configurable: true });
+P("first put back", getA(p), get(p), getZ(p));
+delete p.v; Object.defineProperty(p, "v", { get: function () { return "new v"; }, configurable: true });
+P("moved to the end", getA(p), get(p), getZ(p), get(p));
+// objects of one shape with accessors of their own
+function make(n) { return { n: n, get v() { return "own " + this.n; }, set v(x) { this.n = x + n; } }; }
+var m1 = make(1), m2 = make(2), m3 = make(3);
+P("one shape", get(m1), get(m2), get(m3), get(m1), get(m2));
+set(m1, 10); set(m2, 10); set(m3, 10); set(m1, 20);
+P("one shape set", get(m1), get(m2), get(m3));
+// inherited: of a class, of a prototype object, shadowed, the prototype changed
+class K { constructor(n) { this.n = n; } get v() { return "K " + this.n; } set v(x) { this.n = "set " + x; } }
+class L extends K { get v() { return "L " + super.v; } }
+var k1 = new K(1), k2 = new K(2), l1 = new L(3);
+P("class", get(k1), get(k2), get(l1), get(k1)); set(k1, "a"); set(l1, "b"); P("class set", get(k1), kind(function () { return get(l1); }), k2.n);
+Object.defineProperty(K.prototype, "v", { get: function () { return "K again " + this.n; }, configurable: true });
+P("class getter again", get(k1), get(k2), get(l1)); set(k2, "c"); P("class setter gone", k2.n);
+Object.defineProperty(k1, "v", { get: function () { return "shadow"; }, configurable: true });
+P("shadowed", get(k1), get(k2)); delete k1.v; P("unshadowed", get(k1));
+Object.setPrototypeOf(k2, { get v() { return "other prototype"; } });
+P("prototype changed", get(k2), get(k1));
+Object.setPrototypeOf(k2, null); P("no prototype", get(k2));
+// private names put in front of the properties of an object that has accessors
+var target = { get v() { return "target v"; }, get w() { return "target w"; } };
+function getW(q) { return q.w; }
+P("before private", get(target), getW(target), get(target));
+class Base { constructor(x) { return x; } }
+class Stamp extends Base { #a = 1; #b = 2; static has(x) { return #a in x; } get sum() { return this.#a + this.#b; } }
+new Stamp(target);
+P("after private", get(target), getW(target), get(target), Stamp.has(target), Object.keys(target).join());
+// accessors that are not functions of the script, and receivers that are not objects
+var native = {}; Object.defineProperty(native, "v", { get: Math.random.bind(null), set: Array.prototype.push.bind(log), configurable: true });
+P("native", typeof get(native)); set(native, "pushed"); P("native set", log[log.length - 1]);
+Object.defineProperty(Number.prototype, "v", { get: function () { "use strict"; return typeof this + " " + this; }, set: function (x) { "use strict"; log.push(typeof this + "=" + x); }, configurable: true });
+P("number", get(5), get(6)); set(7, "n"); P("number set", log[log.length - 1]); delete Number.prototype.v;
+P("number after", get(5));
+// an accessor that changes what it is, as it runs
+var hits = 0, self = { get v() { hits++; if (hits === 2) Object.defineProperty(self, "v", { get: function () { return "replaced"; } }); return "first " + hits; } };
+P("changes itself", get(self), get(self), get(self), get(self), hits);
+var setter = { set v(x) { Object.defineProperty(setter, "v", { set: function (y) { log.push("later " + y); } }); log.push("first " + x); } };
+set(setter, 1); set(setter, 2); set(setter, 3); P("setter changes itself", log.slice(-3).join());
+// frozen, sealed, and through collections
+Object.freeze(o); Object.seal(p);
+P("frozen", get(o), get(p), kind(function () { set(o, 1); return log[log.length - 1]; }));
+(function () { var all = []; for (var r = 0; r < 30; r++) { var junk = []; for (var i = 0; i < 3000; i++) junk.push({ i: i, s: "x" + i }); var q = make(r); set(q, r); all.push(get(q) + "/" + get(m1)); } P("collections", all.slice(0, 3).join(), all[29]); })();
+// throws, and what follows
+var bad = { get v() { throw new RangeError("get"); }, set v(x) { throw new EvalError("set"); } };
+P("throws", kind(function () { return get(bad); }), kind(function () { set(bad, 1); }), get(m1), kind(function () { return both(bad, 2); }));
+P("end", both(make(0), 100), get(o));
+lines.join("\n")"##;
+    let expected = r##"warm 45150 300 300
+getter again second getter 300 second getter 300
+setter kept 5 second getter 5
+setter again second setter 6 second getter second setter 6
+no getter undefined
+setter still second setter 7
+no setter only getter ok second setter 7 TypeError
+a value a value
+assigned assigned second setter 7
+accessor again accessor again set 1
+deleted undefined
+plain plain true
+three a v of p z a v of p z
+first removed undefined v of p z v of p z
+first put back new a v of p z
+moved to the end new a new v z new v
+one shape own 1 own 2 own 3 own 1 own 2
+one shape set own 21 own 12 own 13
+class K 1 K 2 L K 3 K 1
+class set K set a ok L K 3 2
+class getter again K again set a K again 2 L K again 3
+class setter gone set c
+shadowed shadow K again set c
+unshadowed K again set a
+prototype changed other prototype K again set a
+no prototype undefined
+before private target v target w target v
+after private target v target w target v true v,w
+native number
+native set pushed
+number number 5 number 6
+number set number=n
+number after undefined
+changes itself first 1 first 2 replaced replaced 2
+setter changes itself first 1,later 2,later 3
+frozen plain new v ok later 3
+collections own 0/own 21,own 2/own 21,own 4/own 21 own 58/own 21
+throws RangeError EvalError own 21 RangeError
+end 0own own 010own own own 01010own own own own 0101010own own own own own 010101010own own own own own own 01010101010own own own own own own own 0101010101010own own own own own own own own 010101010101010own own own own own own own own own 01010101010101010own own own own own own own own own own 0101010101010101010own own own own own own own own own own own 010101010101010101010own own own own own own own own own own own own 01010101010101010101010own own own own own own own own own own own own own 0101010101010101010101010own own own own own own own own own own own own own own 010101010101010101010101010own own own own own own own own own own own own own own own 01010101010101010101010101010own own own own own own own own own own own own own own own own 0101010101010101010101010101010own own own own own own own own own own own own own own own own own 010101010101010101010101010101010own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 0101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own own 010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010 plain"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `Array.prototype.join` reads the elements of an Array that are Strings,
+/// Numbers, Booleans, undefined or null where they are, for as long as
+/// there is nothing else, and goes on by Get and ToString from the first
+/// element that is. The script joins Arrays of each kind of element and of
+/// all mixed, with every kind of separator, one that changes the Array
+/// and one that throws among them; Arrays with holes, with and without
+/// prototypes that answer for them; elements whose `toString` replaces,
+/// adds and removes elements before and after itself, throws, or is the
+/// Array again; elements with descriptors and accessors; array-likes,
+/// TypedArrays, subclasses and arguments objects; what calls `join`
+/// (`toString`, a template, `+`); and Arrays whose length was changed.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn an_array_is_joined_as_get_and_to_string_join_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(joined_arrays)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn joined_arrays() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+function J(a, sep) { return "[" + (arguments.length > 1 ? a.join(sep) : a.join()) + "]"; }
+// what the elements are
+P("strings", J(["a", "b", "c"]), J(["a", "b", "c"], ""), J(["a"], "-"), J([], "-"), J(["", "", ""], "+"), J(["only"]));
+P("numbers", J([1, 2, 3]), J([0, -0, 1.5, -2.25, 1e21, 1e-7, NaN, Infinity, -Infinity], " "), J([0.1 + 0.2, 123456789012345680000, 4294967296, -1], "|"));
+P("others", J([true, false, null, undefined, "x"], ","), J([null], "-"), J([undefined, undefined], "-"), J([null, null, null]));
+P("mixed", J(["a", 1, true, null, "b", 2.5, undefined, false, "c"], "/"));
+P("long strings", J(["привет", "мир", "世界", "😀", "a\u0000b"], " "), J(["\ud83d", "\ude00"], ""), J(["\ud83d", "\ude00"], "-").length, J(["\ude00", "\ud83d"], "").length);
+var big = []; for (var i = 0; i < 5000; i++) big.push(i % 7 === 0 ? i : "s" + i);
+P("many", big.join("").length, big.join(", ").length, big.join().slice(0, 40));
+// the separator
+P("separators", J([1, 2, 3], undefined), J([1, 2, 3], null), J([1, 2, 3], 0), J([1, 2, 3], "ab"), J([1, 2, 3], { toString: function () { return "<>"; } }), J([1, 2], true), J([1, 2, 3], ["x", "y"]));
+(function () { var a = ["a", "b", "c"], log = []; var sep = { toString: function () { a.push("pushed"); a[0] = "changed"; log.push("sep"); return "+"; } }; P("separator changes the array", a.join(sep), a.length, log.join()); })();
+(function () { var a = ["a", "b", "c", "d"]; var sep = { toString: function () { a.length = 1; return "+"; } }; P("separator shortens the array", "[" + a.join(sep) + "]", a.length); })();
+P("separator throws", kind(function () { return [1, 2].join({ toString: function () { throw new RangeError("sep"); } }); }), kind(function () { return [1, 2].join(Symbol("s")); }));
+// holes, and what prototypes say of them
+P("holes", J([, "a", , "b", ,]), J([, ,]), J(new Array(4)), J(new Array(3), "-"), J([1, , 3], ""));
+Array.prototype[1] = "proto"; Object.prototype[2] = "objproto";
+P("holes answered", J([, , , "z"]), J(["a", , , "d"], "-"), J(new Array(3), "."));
+delete Array.prototype[1]; delete Object.prototype[2];
+P("holes again", J([, , , "z"]), J(["a", , , "d"], "-"));
+var sparse = []; sparse[5] = "five"; sparse[2] = 2;
+P("sparse", J(sparse), J(sparse, ""));
+// elements that run something
+(function () {
+  var log = [], a = ["a", { toString: function () { log.push("first"); a[2] = "replaced"; a.push("added"); return "obj"; } }, "c", "d"];
+  P("object changes later elements", a.join("-"), a.length, log.join());
+  var b = ["a", "b", { toString: function () { b[0] = "too late"; b.length = 3; return "obj"; } }, "d", "e"];
+  P("object shortens", b.join("-"), b.length, b[0]);
+  var c = ["a", { toString: function () { c.length = 0; return "gone"; } }, "c"];
+  P("object empties", "[" + c.join("-") + "]", c.length);
+  var d = ["x", { valueOf: function () { return "valueOf"; }, toString: undefined }, { toString: function () { return 7; } }, [1, [2, 3]], [], [[]], [null], [undefined, 1]];
+  P("conversions", d.join("|"));
+  var e = [1, { toString: function () { throw new EvalError("in element"); } }, 3];
+  P("element throws", kind(function () { return e.join(); }), kind(function () { return ["a", Symbol("s")].join(); }), kind(function () { return [Symbol.iterator].join(); }));
+  P("bigint", J([1n, 2n, "x", 3], "-"), J(["a", 10n ** 20n]));
+  var cyc = ["a", "b"]; cyc.push(cyc); cyc.push("c");
+  P("cycle", J(cyc), J([cyc, "end"], "+"));
+  var date = new Date(0), re = /x/g, fn = function () {}, wrapped = [new String("boxed"), new Number(5), new Boolean(false)];
+  P("objects", J([re, wrapped, {}], " "), typeof [fn].join(), [date].join().length > 10);
+})();
+// elements with descriptors, frozen, sealed, with accessors
+(function () {
+  var a = ["a", "b", "c"]; Object.defineProperty(a, 1, { get: function () { a[2] = "from getter"; return "got"; }, configurable: true });
+  P("accessor element", a.join("-"));
+  var f = Object.freeze(["f", 1, null, "z"]), s = Object.seal(["s", 2]);
+  P("frozen sealed", J(f), J(s, ""));
+  var n = ["a", "b"]; Object.defineProperty(n, 1, { value: "hidden", enumerable: false });
+  P("not enumerable", J(n));
+  var named = ["a", "b"]; named.extra = "x"; named[-1] = "neg"; named["1.5"] = "frac";
+  P("named properties", J(named), named.length);
+})();
+// other kinds of this value
+P("array-likes", Array.prototype.join.call({ length: 3, 0: "a", 2: "c" }, "-"), Array.prototype.join.call("abc", "."), Array.prototype.join.call({ length: 2 }), Array.prototype.join.call(5), kind(function () { return Array.prototype.join.call(null); }));
+P("typed", J(new Uint8Array([1, 2, 3])), Array.prototype.join.call(new Float64Array([1.5, 2]), "+"), new Int8Array(0).join("-") === "");
+class Sub extends Array {}
+var sub = Sub.from(["s", "u", "b"]); var other = ["a", , "c"]; Object.setPrototypeOf(other, { 1: "from proto", join: Array.prototype.join });
+P("subclass and prototype", J(sub, ""), J(other), sub instanceof Sub);
+(function () { P("arguments", Array.prototype.join.call(arguments, "&")); })("x", 1, null, "y");
+// what calls join
+P("toString", String(["a", 1, null]), ["a", ["b", ["c"]]] + "", `${[1, 2]}`, [].toString() === "", [[]] + "x", [1, 2].toString());
+var over = [1, 2, 3]; over.join = function () { return "own join"; };
+P("own join", String(over), over + "");
+// lengths that change, and long results
+(function () { var a = ["a", "b", "c"]; a.length = 5; P("longer", J(a)); a.length = 2; P("shorter", J(a)); var z = new Array(1000).fill("ab"); P("filled", z.join("").length, z.join("--").length, new Array(1000).join("x").length); })();
+(function () { var parts = []; for (var i = 0; i < 300; i++) { parts.push("<li>"); parts.push(i); parts.push("</li>"); } var html = parts.join(""); P("html", html.length, html.slice(0, 30), html.slice(-12)); })();
+lines.join("\n")"##;
+    let expected = r##"strings [a,b,c] [abc] [a] [] [++] [only]
+numbers [1,2,3] [0 0 1.5 -2.25 1e+21 1e-7 NaN Infinity -Infinity] [0.30000000000000004|123456789012345680000|4294967296|-1]
+others [true,false,,,x] [] [-] [,,]
+mixed [a/1/true//b/2.5//false/c]
+long strings [привет мир 世界 😀 a b] [😀] 5 4
+many 23175 33173 0,s1,s2,s3,s4,s5,s6,7,s8,s9,s10,s11,s12,
+separators [1,2,3] [1null2null3] [10203] [1ab2ab3] [1<>2<>3] [1true2] [1x,y2x,y3]
+separator changes the array changed+b+c 4 sep
+separator shortens the array [a+++] 1
+separator throws RangeError TypeError
+holes [,a,,b,] [,] [,,,] [--] [13]
+holes answered [,proto,objproto,z] [a-proto-objproto-d] [.proto.objproto]
+holes again [,,,z] [a---d]
+sparse [,,2,,,five] [2five]
+object changes later elements a-obj-replaced-d 5 first
+object shortens a-b-obj-- 3 too late
+object empties [a-gone-] 0
+conversions x|valueOf|7|1,2,3||||,1
+element throws EvalError TypeError TypeError
+bigint [1-2-x-3] [a,100000000000000000000]
+cycle [a,b,,c] [a,b,,c+end]
+objects [/x/g boxed,5,false [object Object]] string true
+accessor element a-got-from getter
+frozen sealed [f,1,,z] [s2]
+not enumerable [a,hidden]
+named properties [a,b] 2
+array-likes a--c a.b.c ,  TypeError
+typed [1,2,3] 1.5+2 true
+subclass and prototype [sub] [a,from proto,c] true
+arguments x&1&&y
+toString a,1, a,b,c 1,2 true x 1,2
+own join own join own join
+longer [a,b,c,,]
+shorter [a,b]
+filled 2000 3998 999
+html 3490 <li>0</li><li>1</li><li>2</li> <li>299</li>"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A property of a function is read by the cache of the place that names
+/// it, where every such read took the general way: from the ordinary
+/// object that a function with properties has them in, or, for a function
+/// with none of its own, from what it inherits. The script calls static
+/// methods of built-in constructors and replaces, redefines, deletes and
+/// restores one; reads the name, the length and the prototype of every
+/// kind of function, before and after the function has properties of its
+/// own, and after those were defined again and deleted; keeps counters on
+/// a function; changes, shadows and removes the statics of classes and
+/// replaces a class's parent; reads `call`, `apply` and `bind` of
+/// functions with and without properties, with `Function.prototype.call`
+/// replaced, a property added to and removed from the prototypes above,
+/// an inherited getter, and the prototype of one function changed. What
+/// is expected is what Node prints for the same script.
+#[test]
+fn a_property_of_a_function_is_what_get_finds() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_of_functions)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_of_functions() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// places that read one name of whatever function they are given, and places that call one
+function nameOf(f) { return f.name; }
+function lengthOf(f) { return f.length; }
+function protoOf(f) { return f.prototype; }
+function tagOf(f) { return f.tag; }
+function isArr(v) { return Array.isArray(v); }
+function keysOf(o) { return Object.keys(o).join(); }
+function warm() { var t = 0; for (var i = 0; i < 300; i++) { t += isArr([]) ? 1 : 0; t += isArr({}) ? 1 : 0; t += keysOf({ a: 1, b: 2 }).length; t += String.fromCharCode(65 + (i % 3)).length; t += Number.isInteger(i) ? 1 : 0; t += Math.max(i, 3) > 2 ? 1 : 0; } return t; }
+P("warm", warm(), isArr([1]), isArr("no"), keysOf({ x: 1 }), typeof Date.now(), Number.MAX_SAFE_INTEGER, typeof Symbol.iterator, typeof Promise.resolve, Number.parseFloat === parseFloat);
+// a static method replaced, defined again, deleted, restored
+var original = Array.isArray;
+Array.isArray = function () { return "replaced"; };
+P("replaced", isArr([]), warm() > 0);
+Object.defineProperty(Array, "isArray", { get: function () { return function () { return "from getter"; }; }, configurable: true });
+P("getter", isArr([]), isArr([]));
+delete Array.isArray;
+P("deleted", kind(function () { return isArr([]); }), typeof Array.isArray);
+Function.prototype.isArray = function () { return "inherited by every function"; };
+P("inherited", isArr([]), (function () {}).isArray());
+delete Function.prototype.isArray;
+Object.defineProperty(Array, "isArray", { value: original, writable: true, configurable: true, enumerable: false });
+P("restored", isArr([]), isArr({}), warm());
+// functions of the script: name, length, prototype, properties of their own
+function plain(a, b, c) {}
+var arrow = (x, y) => x, expr = function named(q) {}, anon = (function () { return function () {}; })();
+function* gen() {} async function asy(a) {} class K { constructor(a, b) {} static s() { return "static"; } static get g() { return "static getter"; } m() {} }
+P("names", nameOf(plain), nameOf(arrow), nameOf(expr), JSON.stringify(nameOf(anon)), nameOf(gen), nameOf(asy), nameOf(K), nameOf(K.s), nameOf(K.prototype.m), nameOf(Array.isArray), nameOf(Math.max), nameOf(plain.bind(null)), nameOf(Object.getOwnPropertyDescriptor(K, "g").get));
+P("lengths", lengthOf(plain), lengthOf(arrow), lengthOf(expr), lengthOf(anon), lengthOf(gen), lengthOf(asy), lengthOf(K), lengthOf(K.s), lengthOf(Array.isArray), lengthOf(Math.max), lengthOf(plain.bind(null, 1)), lengthOf(function (a, b = 1, c) {}), lengthOf(function (...r) {}));
+P("prototypes", typeof protoOf(plain), protoOf(arrow), typeof protoOf(expr), typeof protoOf(gen), protoOf(asy), typeof protoOf(K), protoOf(K.s), protoOf(Array.isArray), protoOf(plain.bind(null)), protoOf(plain) === plain.prototype, protoOf(plain).constructor === plain);
+plain.tag = "tagged"; arrow.tag = 1; K.tag = "class tag";
+P("own properties", tagOf(plain), tagOf(arrow), tagOf(expr), tagOf(K), tagOf(Array), nameOf(plain), lengthOf(plain), nameOf(arrow), lengthOf(arrow));
+Object.defineProperty(plain, "name", { value: "renamed" }); Object.defineProperty(plain, "length", { value: 42 });
+P("renamed", nameOf(plain), lengthOf(plain), nameOf(expr), lengthOf(expr));
+delete plain.name; delete plain.length; delete arrow.tag;
+P("deleted own", JSON.stringify(nameOf(plain)), lengthOf(plain), tagOf(arrow), nameOf(arrow));
+Function.prototype.tag = "of Function.prototype";
+P("from Function.prototype", tagOf(expr), tagOf(gen), tagOf(Math.max), tagOf(plain), tagOf(K));
+delete Function.prototype.tag;
+P("gone again", tagOf(expr), tagOf(plain), tagOf(K));
+plain.prototype = { marker: 1 };
+P("prototype replaced", protoOf(plain).marker, new plain().marker, new plain() instanceof plain);
+// counters kept on a function
+function counter() { counter.calls++; counter.total += counter.calls; return counter.calls; }
+counter.calls = 0; counter.total = 0;
+for (var i = 0; i < 500; i++) counter();
+P("counters", counter.calls, counter.total, counter());
+// statics of classes, inherited and changed
+class Base { static make() { return "Base.make"; } static get which() { return "which of " + this.name; } static count = 1; }
+class Derived extends Base { static own() { return "Derived.own"; } }
+function callMake(C) { return C.make(); } function countOf(C) { return C.count; } function whichOf(C) { return C.which; }
+P("statics", callMake(Base), callMake(Derived), countOf(Base), countOf(Derived), whichOf(Base), whichOf(Derived), Derived.own());
+Base.make = function () { return "changed on Base"; }; Base.count = 2;
+P("static changed", callMake(Base), callMake(Derived), countOf(Derived));
+Derived.make = function () { return "shadowed on Derived"; }; Derived.count = 3;
+P("static shadowed", callMake(Base), callMake(Derived), countOf(Base), countOf(Derived));
+delete Derived.make; delete Derived.count;
+P("unshadowed", callMake(Derived), countOf(Derived));
+Object.setPrototypeOf(Derived, { make: function () { return "other parent"; }, count: 9 });
+P("parent replaced", callMake(Derived), countOf(Derived), whichOf(Derived), callMake(Base));
+Object.setPrototypeOf(Derived, Function.prototype);
+P("no parent", kind(function () { return callMake(Derived); }), countOf(Derived));
+// call, apply, bind of functions with and without properties of their own
+function add(a, b) { return (this && this.base || 0) + a + b; }
+function viaCall(f) { return f.call({ base: 10 }, 1, 2); } function viaApply(f) { return f.apply({ base: 20 }, [1, 2]); } function viaBind(f) { return f.bind({ base: 30 }, 1)(2); }
+P("call apply bind", viaCall(add), viaApply(add), viaBind(add), viaCall(Math.max), viaApply(Math.min));
+add.extra = 1;
+P("with a property", viaCall(add), viaApply(add), viaBind(add));
+add.call = function () { return "own call"; };
+P("own call", viaCall(add), viaApply(add), Function.prototype.call.call(add, null, 1, 2));
+delete add.call;
+P("own call deleted", viaCall(add));
+var has = Object.prototype.hasOwnProperty, o = { a: 1 };
+function own(obj, name) { return has.call(obj, name); } function own2(obj, name) { return Object.prototype.hasOwnProperty.call(obj, name); }
+P("hasOwnProperty", own(o, "a"), own(o, "b"), own2(o, "a"), own2(o, "toString"), own2([], "length"), own2(plain, "prototype"), own2(arrow, "prototype"));
+// frozen, and through collections
+Object.freeze(counter); P("frozen", kind(function () { return counter(); }), counter.calls, nameOf(counter));
+(function () { var all = []; for (var r = 0; r < 20; r++) { var junk = []; for (var i = 0; i < 3000; i++) junk.push({ i: i }); var f = function (a, b) {}; f.tag = r; all.push(tagOf(f) + nameOf(f) + lengthOf(f)); } P("collections", all.slice(0, 3).join(), all[19], isArr(junk), keysOf({ k: 1 })); })();
+// what a function with nothing of its own inherits, and that changed
+(function () {
+  function fresh(a) { return a; }
+  var lambda = (a) => a, built = Math.abs;
+  function callOf(f) { return f.call; } function applyOf(f) { return f.apply; } function bindOf(f) { return f.bind; }
+  function ctorOf(f) { return f.constructor; } function strOf(f) { return f.toString; } function hasOf(f) { return f.hasOwnProperty; } function viaOf(f) { return f.viaObject; }
+  function run() { var t = 0; for (var i = 0; i < 200; i++) { t += callOf(fresh) === Function.prototype.call ? 1 : 0; t += applyOf(lambda) === Function.prototype.apply ? 1 : 0; t += bindOf(built) === Function.prototype.bind ? 1 : 0; } return t; }
+  P("inherited", run(), ctorOf(fresh) === Function, ctorOf(built) === Function, strOf(lambda) === Function.prototype.toString, hasOf(fresh) === Object.prototype.hasOwnProperty, viaOf(fresh), viaOf(built));
+  var realCall = Function.prototype.call;
+  Function.prototype.call = function () { return "call replaced"; };
+  P("call replaced", callOf(fresh) === realCall, fresh.call(null, 1), built.call(null, -2), run());
+  Function.prototype.call = realCall;
+  P("call restored", callOf(fresh) === realCall, fresh.call(null, 1), built.call(null, -2), run());
+  Object.prototype.viaObject = "through Object.prototype";
+  P("further up", viaOf(fresh), viaOf(lambda), viaOf(built), viaOf(Array));
+  Function.prototype.viaObject = "nearer";
+  P("nearer", viaOf(fresh), viaOf(built), viaOf(Array), ({}).viaObject);
+  delete Function.prototype.viaObject; delete Object.prototype.viaObject;
+  P("removed", viaOf(fresh), viaOf(built), viaOf(Array));
+  Object.defineProperty(Function.prototype, "viaObject", { get: function () { return "getter of " + this.name; }, configurable: true });
+  P("inherited getter", viaOf(fresh), viaOf(lambda), viaOf(built));
+  delete Function.prototype.viaObject;
+  Object.setPrototypeOf(fresh, { call: function () { return "other prototype"; }, viaObject: 7 });
+  P("prototype of one", fresh.call(null, 1), viaOf(fresh), typeof applyOf(fresh), lambda.call(null, 2), viaOf(lambda), nameOf(fresh), lengthOf(fresh));
+  Object.setPrototypeOf(lambda, null);
+  P("no prototype", callOf(lambda), viaOf(lambda), nameOf(lambda), lengthOf(lambda), kind(function () { return lambda.call(null, 1); }), lambda(3));
+  var gens = [function* () {}, async function () {}, async () => {}, class {}, Math.max, Function.prototype.bind.call(fresh, null), new Function("a", "return a")];
+  P("kinds", gens.map(function (f) { return (callOf(f) === realCall) + "/" + typeof bindOf(f) + "/" + (ctorOf(f) === Function); }).join(" "));
+})();
+P("end", warm(), nameOf(plain), isArr([]));
+lines.join("\n")"##;
+    let expected = r##"warm 2100 true false x number 9007199254740991 symbol function true
+replaced replaced true
+getter from getter from getter
+deleted TypeError undefined
+inherited inherited by every function inherited by every function
+restored true false 2100
+names plain arrow named "" gen asy K s m isArray max bound plain get g
+lengths 3 2 1 0 0 1 2 0 1 2 2 1 0
+prototypes object undefined object object undefined object undefined undefined undefined true true
+own properties tagged 1 undefined class tag undefined plain 3 arrow 2
+renamed renamed 42 named 1
+deleted own "" 0 undefined arrow
+from Function.prototype of Function.prototype of Function.prototype of Function.prototype tagged class tag
+gone again undefined tagged class tag
+prototype replaced 1 1 true
+counters 500 125250 501
+statics Base.make Base.make 1 1 which of Base which of Derived Derived.own
+static changed changed on Base changed on Base 2
+static shadowed changed on Base shadowed on Derived 2 3
+unshadowed changed on Base 2
+parent replaced other parent 9 undefined changed on Base
+no parent TypeError undefined
+call apply bind 13 23 33 2 1
+with a property 13 23 33
+own call own call 23 3
+own call deleted 13
+hasOwnProperty true false true false true true false
+frozen ok 501 501 counter
+collections 0f2,1f2,2f2 19f2 true k
+inherited 600 true true true true undefined undefined
+call replaced false call replaced call replaced 600
+call restored true 1 2 600
+further up through Object.prototype through Object.prototype through Object.prototype through Object.prototype
+nearer nearer nearer nearer through Object.prototype
+removed undefined undefined undefined
+inherited getter getter of fresh getter of lambda getter of abs
+prototype of one other prototype 7 undefined 2 undefined fresh 1
+no prototype undefined undefined lambda 1 TypeError 3
+kinds true/function/false true/function/false true/function/false true/function/true true/function/true false/undefined/false true/function/true
+end 2100  true"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `typeof` of a value is done in the loop of instructions, where every
+/// `typeof` took the general way; a name that may not be bound still
+/// does, with its Reference. The script asks it of every kind of value,
+/// compares what it gives in every way a test does, asks it of
+/// expressions and of names (bound nowhere, bound later, global, in a
+/// temporal dead zone, deleted), and after what leaves something in the
+/// reference register: an assignment through a Reference, one that
+/// threw, a method call. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn typeof_of_a_value_is_its_kind() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(kinds_by_typeof)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn kinds_by_typeof() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// of a value in a local, a parameter, a property, a call, an element
+function T(v) { return typeof v; }
+class K {} function plain() {} function* gen() {} async function asy() {}
+var values = [undefined, null, true, false, 0, -0, 1.5, NaN, Infinity, 10n, "", "s", Symbol("y"), Symbol.iterator, {}, [], plain, K, gen, asy, () => 1, plain.bind(null), Math.max, new K(), new Date(0), /x/, new Map(), new Set(), new WeakMap(), new Error("e"), new Uint8Array(2), new ArrayBuffer(2), Promise.resolve(1), gen(), new Proxy({}, {}), new Proxy(plain, {}), new Proxy(K, {}), Object(1), Object("s"), Object(true), Object(Symbol("b")), Object(1n), Object.create(null), JSON, Math, globalThis, new String("x"), new Number(2), (function () { return arguments; })()];
+var all = []; for (var i = 0; i < values.length; i++) all.push(T(values[i]));
+P("kinds", all.join(" "));
+(function () { var counts = {}; for (var r = 0; r < 50; r++) for (var i = 0; i < values.length; i++) { var t = typeof values[i]; counts[t] = (counts[t] || 0) + 1; } P("counts", Object.keys(counts).sort().map(function (k) { return k + "=" + counts[k]; }).join(" ")); })();
+// compared in every way a test compares it
+(function () {
+  var hits = [0, 0, 0, 0, 0, 0, 0, 0];
+  for (var r = 0; r < 20; r++) for (var i = 0; i < values.length; i++) {
+    var v = values[i];
+    if (typeof v === "number") hits[0]++; else if (typeof v === "string") hits[1]++; else if (typeof v == "function") hits[2]++;
+    if (typeof v !== "object") hits[3]++;
+    if (typeof v != "undefined" && v !== null) hits[4]++;
+    if ("symbol" === typeof v || "bigint" == typeof v) hits[5]++;
+    if (typeof v === typeof values[(i + 1) % values.length]) hits[6]++;
+    hits[7] += (typeof v).length;
+  }
+  P("tests", hits.join(","));
+  var o = { p: 1, f: plain, u: undefined, n: null }, a = [1, "s", plain];
+  P("of expressions", typeof o.p, typeof o.f, typeof o.u, typeof o.n, typeof o.missing, typeof a[0], typeof a[1], typeof a[2], typeof a[9], typeof plain(), typeof new K(), typeof (1 + 1), typeof ("a" + 1), typeof !0, typeof void 0, typeof typeof 1, typeof -"3", typeof (o && o.f), typeof [].length, typeof K.name, typeof this);
+})();
+// of names: bound nowhere, bound later, global, in a temporal dead zone, deleted
+P("names", typeof neverDeclaredAnywhere, typeof laterVar, typeof globalThis, typeof undefined, typeof NaN, typeof Infinity, typeof print, typeof P, typeof K, typeof values);
+var laterVar = 1;
+P("dead zone", kind(function () { return typeof inZone; let inZone = 1; }), kind(function () { return typeof alsoZone; const alsoZone = 1; }), kind(function () { { return typeof hoisted; } var hoisted; }), kind(function () { return typeof fn; function fn() {} }));
+globalThis.madeGlobal = 5; P("global made", typeof madeGlobal, typeof globalThis.madeGlobal); delete globalThis.madeGlobal; P("global deleted", typeof madeGlobal);
+(function () { var log = [], holder = { get scoped() { log.push("get"); return 1; } }; log.push(typeof holder.scoped); P("getter runs", log.join(",")); })();
+(function (param) { P("parameters", typeof param, typeof arguments, typeof arguments[0], typeof arguments[5], (function () { return typeof captured; var captured; })()); })("x");
+// after what leaves something behind: an assignment through a Reference, one that threw, a method call
+(function () {
+  "use strict";
+  var o = { n: 1, s: Symbol("s"), m: function () { return this; } }, v = "text", w = 5;
+  o.n += 1; var after = [typeof v];
+  o.n += w; after.push(typeof v);
+  try { o.s += 1; } catch (e) { after.push(e.constructor.name); } after.push(typeof v);
+  try { o.s += w; } catch (e) { after.push(e.constructor.name); } after.push(typeof w);
+  o.m(); after.push(typeof v);
+  o.n++; after.push(typeof w); --o.n; after.push(typeof o);
+  try { null.x; } catch (e) {} after.push(typeof v);
+  try { undefinedName; } catch (e) {} after.push(typeof v);
+  P("after other things", after.join(","));
+})();
+// in a generator, in a closure, in a loop that changes what it looks at
+function* types(list) { for (var i = 0; i < list.length; i++) yield typeof list[i]; }
+P("generator", [...types([1, "a", null, plain, undefined, 2n])].join(","));
+(function () { var x = 1, seen = []; function look() { return typeof x; } seen.push(look()); x = "s"; seen.push(look()); x = look; seen.push(look()); x = undefined; seen.push(look()); x = null; seen.push(look()); P("closure", seen.join(",")); })();
+(function () { var seen = "", x; for (var i = 0; i < 8; i++) { x = i % 4 === 0 ? i : i % 4 === 1 ? "s" + i : i % 4 === 2 ? [i] : plain; seen += (typeof x)[0]; } P("changing", seen); })();
+P("switch", values.map(function (v) { switch (typeof v) { case "number": return "n"; case "string": return "s"; case "object": return v === null ? "0" : "o"; case "function": return "f"; case "undefined": return "u"; default: return "x"; } }).join(""));
+lines.join("\n")"##;
+    let expected = r##"kinds undefined object boolean boolean number number number number number bigint string string symbol symbol object object function function function function function function function object object object object object object object object object object object object function function object object object object object object object object object object object object
+counts bigint=50 boolean=100 function=450 number=250 object=1350 string=100 symbol=100 undefined=50
+tests 100,40,180,440,940,60,740,6340
+of expressions number function undefined object undefined number string function undefined undefined object number string boolean undefined string number function number string object
+names undefined undefined object undefined number number function function function object
+dead zone ReferenceError ReferenceError ok undefined ok function
+global made number number
+global deleted undefined
+getter runs get,number
+parameters string object string undefined undefined
+after other things string,string,TypeError,string,TypeError,number,string,number,object,string,string
+generator number,string,object,function,undefined,bigint
+closure number,string,function,undefined,object
+changing nsofnsof
+switch u0xxnnnnnxssxxoofffffffooooooooooooffoooooooooooo"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `new` of a function of the script that is run in place starts from an
+/// object made with the function's "prototype" at once, where it was
+/// made with the Realm's %Object.prototype% and given the other after.
+/// The script makes objects from a function whose "prototype" is
+/// replaced, is no object, and is an object of every other kind (a
+/// Proxy and an object with no prototype among them); from classes with
+/// fields, extended, with their chain changed and put back; looks at
+/// the shapes of objects that start alike; at `new.target`, a
+/// constructor that returns something, another new target, bound and
+/// nested constructors, and a constructor that throws. What is expected
+/// is what Node prints for the same script.
+#[test]
+fn new_starts_from_an_object_with_the_prototype() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(objects_that_new_starts_from)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn objects_that_new_starts_from() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+function is(o, F) { return Object.getPrototypeOf(o) === F.prototype; }
+// what `new` of a function of the script starts from
+function F(a) { this.a = a; }
+F.prototype.m = function () { return "m" + this.a; };
+function make(C, n) { var all = []; for (var i = 0; i < n; i++) all.push(new C(i)); return all; }
+var fs = make(F, 200);
+P("plain", is(fs[0], F), is(fs[199], F), fs[3].m(), fs[7] instanceof F, Object.keys(fs[5]).join(), fs[0].constructor === F, Object.getPrototypeOf(Object.getPrototypeOf(fs[1])) === Object.prototype);
+// the prototype replaced, and replaced by what is no object
+var first = F.prototype, second = { m: function () { return "second"; }, marker: 2 };
+F.prototype = second;
+var later = make(F, 3);
+P("replaced", is(later[0], F), Object.getPrototypeOf(later[0]) === second, later[1].m(), later[2].marker, Object.getPrototypeOf(fs[0]) === first, fs[0].m(), later[0] instanceof F, fs[0] instanceof F);
+var notObjects = [1, "s", null, undefined, true, Symbol("p"), 10n];
+P("no object", notObjects.map(function (v) { F.prototype = v; var o = new F(1); return (Object.getPrototypeOf(o) === Object.prototype) + "/" + o.a; }).join(" "));
+// prototypes of other kinds
+function G() { this.g = 1; }
+var kinds = [[], function () {}, new Proxy({ viaProxy: 1 }, {}), Object.create(null), new Map(), /x/, new F(0), Object.freeze({ frozen: 1 }), new Uint8Array(1), Math];
+P("other kinds", kinds.map(function (p) { G.prototype = p; var o = new G(); return (Object.getPrototypeOf(o) === p) + "/" + o.g + "/" + Object.keys(o).join(""); }).join(" "));
+G.prototype = new Proxy({ viaProxy: "seen" }, { get: function (t, k, r) { return k === "trapped" ? "by trap" : Reflect.get(t, k, r); } });
+P("proxy prototype", new G().viaProxy, new G().trapped, new G().g);
+G.prototype = Object.create(null); var bare = new G();
+P("null chain", bare.g, typeof bare.toString, Object.getPrototypeOf(Object.getPrototypeOf(bare)));
+// classes, with fields, extended, and their prototypes changed
+class A { constructor(x) { this.x = x; } get double() { return this.x * 2; } }
+class B extends A { y = 5; constructor(x) { super(x); this.z = x + this.y; } }
+class C extends B {}
+var as = make(A, 50), bs = make(B, 50), cs = make(C, 50);
+P("classes", is(as[1], A), is(bs[1], B), is(cs[1], C), bs[2] instanceof A, cs[3].z, cs[4].double, Object.keys(cs[1]).join(), Object.getPrototypeOf(B.prototype) === A.prototype);
+Object.setPrototypeOf(B.prototype, { double: "detached", extra: 1 });
+P("chain changed", bs[2].double, new B(1).double, new C(1).extra, new B(1) instanceof A, is(new B(1), B));
+Object.setPrototypeOf(B.prototype, A.prototype);
+A.prototype.added = "added later";
+P("chain back", new C(2).double, new B(2).added, bs[0].added, as[0].added);
+// objects that start alike and then differ
+(function () { var a = new F(1), b = new F(2); F.prototype = first; var c = new F(3), d = new F(4); c.extra = 1; d.other = 2; delete c.a; P("shapes", Object.keys(a).join(), Object.keys(c).join(), Object.keys(d).join(), c.m === d.m, typeof a.m, a.marker, c.marker); })();
+// new.target, a constructor that returns something, Reflect.construct with another target
+function T() { this.t = new.target === T; }
+function R(v) { this.r = 1; return v; }
+function H() {} H.prototype = { fromH: true };
+P("returns", new T().t, T.call({}) === undefined, new R({ own: 1 }).own, new R(5).r, new R(null).r, new R(function () {}).r, is(new R(5), R));
+P("another target", Reflect.construct(F, [9], H).fromH, Reflect.construct(F, [9], H).a, Object.getPrototypeOf(Reflect.construct(A, [1], H)) === H.prototype, Reflect.construct(B, [1], H).z, kind(function () { return Reflect.construct(F, [], 5); }));
+// bound and nested, and many at once
+var BoundF = F.bind(null, "bound"); function Outer() { this.inner = new F("in"); this.list = [new F(1), new F(2)]; }
+P("bound nested", new BoundF().a, is(new BoundF(), F), new Outer().inner.m(), new Outer().list[1].a, is(new Outer().list[0], F));
+(function () { var n = 0; for (var i = 0; i < 5000; i++) { var o = new F(i); if (Object.getPrototypeOf(o) === first && o.a === i) n++; } P("many", n); })();
+// an error from the constructor, and what is made after
+function Throws() { this.half = 1; throw new RangeError("ctor"); }
+P("throws", kind(function () { return new Throws(); }), is(new F(1), F), new F(2).m());
+lines.join("\n")"##;
+    let expected = r##"plain true true m3 true a true true
+replaced true true second 2 true m0 true false
+no object true/1 true/1 true/1 true/1 true/1 true/1 true/1
+other kinds true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g
+proxy prototype seen by trap 1
+null chain 1 undefined null
+classes true true true true 8 8 x,y,z true
+chain changed detached detached 1 false true
+chain back 4 added later added later added later
+shapes a extra a,other true undefined undefined undefined
+returns true true 1 1 1 undefined true
+another target true 9 true 6 TypeError
+bound nested bound true min 2 true
+many 5000
+throws RangeError true m2"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A named property of an object that has nothing by a name of its own
+/// kind (a Map, a Set, a RegExp but for "lastIndex", a TypedArray but for
+/// the names that are Numbers, a Date, a Promise, an ArrayBuffer, a
+/// DataView, an iterator, a generator) is read by the property cache of
+/// the instruction, under the shape that is remembered for its kind. The
+/// script calls methods of each kind at one place many times; reads one
+/// name at one place from an object of the kind and from an ordinary
+/// object with the same prototype; replaces a method in the prototype by
+/// another, by an accessor and by nothing, and puts it in
+/// %Object.prototype%; gives the object the name itself, another
+/// prototype and none; extends Map, with private names too; changes the
+/// prototype of %Map.prototype%; reads "lastIndex" where an ordinary
+/// object was read; reads "NaN", "Infinity" and the strings of Numbers
+/// from a TypedArray whose prototypes have them; replaces an accessor by
+/// a value; steps iterators and generators; and goes on through
+/// collections. What is expected is what Node prints for the same script.
+#[test]
+fn a_property_of_an_object_with_none_of_its_own_is_what_get_finds() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_that_objects_inherit)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_that_objects_inherit() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function put(o, k, v) { Object.defineProperty(o, k, { value: v, writable: true, configurable: true }); }
+
+(function () {
+  var m = new Map([[1, "a"], [2, "b"]]), s = new Set([1, 2]), re = /b+/, ta = new Uint8Array([5, 6, 7]);
+  var d = new Date(86400000), ab = new ArrayBuffer(8), dv = new DataView(ab), wm = new WeakMap(), ws = new WeakSet(), k = {};
+  wm.set(k, 9); ws.add(k);
+  var n = 0;
+  for (var i = 0; i < 50; i++) {
+    n += m.get(1 + (i & 1)).length + (s.has(i) ? 1 : 0) + (re.test("abbc") ? 1 : 0);
+    n += ta.indexOf(6) + ta.subarray(1).length + d.getTime() / 86400000 + dv.getUint8(0) + ab.slice(0, 2).byteLength;
+    n += wm.get(k) + (ws.has(k) ? 1 : 0) + (wm.has(m) ? 100 : 0);
+  }
+  P("kinds", n, m.size, s.size, ta.length, ta.byteLength, re.source, re.global, dv.byteLength);
+})();
+
+(function () {
+  function get(o) { return o.get; }
+  function has(o) { return typeof o.has; }
+  var plain = Object.create(Map.prototype), m = new Map();
+  var r = [];
+  for (var i = 0; i < 6; i++) r.push(get(i & 1 ? m : plain) === Map.prototype.get);
+  P("same shape", r.join());
+  P("plain call", T(function () { return plain.get(1); }));
+  var kinds = [new Map(), new Set(), new WeakMap(), new WeakSet(), {}, [], "s", 5];
+  var seen = [];
+  for (var j = 0; j < 24; j++) seen.push(has(kinds[j % kinds.length]));
+  P("has", seen.slice(0, 8).join(), seen.slice(16).join());
+})();
+
+(function () {
+  var m = new Map([[1, "one"]]);
+  function at(k) { return m.get(k); }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(at(1));
+  var original = Map.prototype.get;
+  Map.prototype.get = function (k) { return "mine:" + original.call(this, k); };
+  r.push(at(1));
+  Object.defineProperty(Map.prototype, "get", { get: function () { return function () { return "getter"; }; }, configurable: true });
+  r.push(at(1));
+  delete Map.prototype.get;
+  r.push(T(function () { return at(1); }));
+  Object.prototype.get = function () { return "object's"; };
+  r.push(at(1));
+  delete Object.prototype.get;
+  r.push(T(function () { return at(1); }));
+  put(Map.prototype, "get", original);
+  r.push(at(1));
+  P("prototype changes", r.join());
+})();
+
+(function () {
+  var s = new Set([1]);
+  function extra() { return s.extra; }
+  var r = [];
+  for (var i = 0; i < 3; i++) r.push(extra());
+  Set.prototype.extra = "set's"; r.push(extra());
+  delete Set.prototype.extra; r.push(extra());
+  Object.prototype.extra = "object's"; r.push(extra());
+  s.extra = "own"; r.push(extra());
+  delete s.extra; r.push(extra());
+  delete Object.prototype.extra; r.push(extra());
+  P("absent", r.join());
+})();
+
+(function () {
+  var m = new Map([[1, "one"]]);
+  function at() { return m.get(1); }
+  var r = [at(), at()];
+  m.get = function () { return "own"; }; r.push(at());
+  delete m.get; r.push(at());
+  var other = { get: function () { return "other"; } };
+  Object.setPrototypeOf(m, other); r.push(at());
+  Object.setPrototypeOf(m, null); r.push(T(at));
+  Object.setPrototypeOf(m, Map.prototype); r.push(at());
+  Object.freeze(m); r.push(at());
+  P("own", r.join());
+  class Sub extends Map { get(k) { return "sub:" + super.get(k); } }
+  class Bare extends Map {}
+  class Priv extends Map { #x = 3; x() { return this.#x + this.size; } }
+  var sub = new Sub([[1, "a"]]), bare = new Bare([[1, "b"]]), priv = new Priv([[1, "c"]]);
+  var t = [];
+  function g(o) { return o.get(1); }
+  for (var i = 0; i < 9; i++) t.push(g([sub, bare, priv][i % 3]));
+  P("subclasses", t.join(), priv.x());
+  var parent = Object.getPrototypeOf(Map.prototype);
+  var m2 = new Map();
+  function up() { return m2.up; }
+  var u = [up(), up()];
+  Object.setPrototypeOf(Map.prototype, { up: 7 }); u.push(up());
+  Object.setPrototypeOf(Map.prototype, parent); u.push(up());
+  P("chain", u.join());
+})();
+
+(function () {
+  function last(o) { return o.lastIndex; }
+  var plain = Object.create(RegExp.prototype), re = /a/g, r = [];
+  r.push(last(plain), last(plain), last(re));
+  re.exec("aaa"); r.push(last(re));
+  re.lastIndex = 2; r.push(last(re), last(plain));
+  re.extra = 1; r.push(last(re));
+  re.exec("aaa"); r.push(last(re));
+  function test(o, s) { return o.test(s); }
+  var t = [];
+  for (var i = 0; i < 4; i++) t.push(test(/b/, "abc"), test(re, "aaaa"));
+  t.push(T(function () { return test(plain, "a"); }));
+  P("lastIndex", r.join(), t.join());
+  var sticky = /a/y, c = 0;
+  for (var j = 0; j < 5; j++) { if (sticky.test("aaab")) c += sticky.lastIndex; }
+  P("sticky", c, sticky.lastIndex);
+  var original = RegExp.prototype.test, w = /x/, q = [];
+  function tx() { return w.test("x"); }
+  q.push(tx(), tx());
+  RegExp.prototype.test = function () { return "replaced"; }; q.push(tx());
+  put(RegExp.prototype, "test", original); q.push(tx());
+  w.test = function () { return "own"; }; q.push(tx());
+  P("test", q.join());
+})();
+
+(function () {
+  function nan(o) { return o.NaN; }
+  function inf(o) { return o.Infinity; }
+  function name(o) { return o.Name; }
+  function idx(o) { return o["1.5"] + "/" + o["-0"] + "/" + o["1"] + "/" + o["-1"] + "/" + o["1e3"] + "/" + o["01"]; }
+  var names = ["NaN", "Infinity", "Name", "1.5", "-0", "-1", "1e3", "01"];
+  for (var n = 0; n < names.length; n++) Object.prototype[names[n]] = "p" + n;
+  var plain = Object.create(Uint8Array.prototype), ta = new Uint8Array([4, 5]), f = new Float64Array(2);
+  var r = [];
+  for (var i = 0; i < 2; i++) r.push(nan(plain), nan(ta), inf(plain), inf(f), name(plain), name(ta), idx(plain), idx(ta));
+  for (var n2 = 0; n2 < names.length; n2++) delete Object.prototype[names[n2]];
+  r.push(nan(ta), name(ta), name(plain));
+  P("numeric names", r.join());
+  var ta2 = new Uint16Array(3), big = new Int32Array(4);
+  function len() { return ta2.length + ta2.byteLength + ta2.BYTES_PER_ELEMENT; }
+  function setter(o) { return o.set; }
+  P("typed", len(), len(), ta2.constructor === Uint16Array, setter(ta2) === setter(big), setter(ta2) === setter(plain));
+  ta2.extra = "own"; ta2.fill(3);
+  function ex(o) { return o.extra + ":" + o.join(""); }
+  class Bytes extends Uint8Array { join() { return "sub"; } }
+  P("typed own", ex(ta2), ex(big), ex(new Bytes(2)), ex(ta2));
+  var original = Uint16Array.prototype.join;
+  put(Uint16Array.prototype, "join", function () { return "kind's"; });
+  P("typed kind", ex(ta2), ex(big));
+  delete Uint16Array.prototype.join;
+  P("typed again", ex(ta2), original === undefined);
+})();
+
+(function () {
+  var m = new Map([[1, 2], [3, 4]]);
+  function size() { return m.size; }
+  var r = [size(), size()];
+  var d = Object.getOwnPropertyDescriptor(Map.prototype, "size");
+  Object.defineProperty(Map.prototype, "size", { value: 42, configurable: true }); r.push(size(), size());
+  Object.defineProperty(Map.prototype, "size", d); r.push(size());
+  P("accessor", r.join());
+})();
+
+(function () {
+  function* gen() { yield 1; yield 2; return 3; }
+  var g = gen(), r = [];
+  for (var i = 0; i < 4; i++) { var s = g.next(); r.push(s.value + ":" + s.done); }
+  var it = [7, 8][Symbol.iterator](), mi = new Map([[1, 2]]).entries(), si = new Set([5]).values();
+  function next(o) { var s = o.next(); return s.done ? "done" : String(s.value); }
+  for (var j = 0; j < 3; j++) r.push(next(it), next(mi), next(si));
+  var g2 = gen(); g2.next(); r.push(g2.return(9).value, g2.next().done);
+  gen.prototype.next = function () { return { value: "mine", done: false }; };
+  var g3 = gen(); r.push(next(g3), next(g3));
+  delete gen.prototype.next; r.push(next(g3), next(g3), next(g3), next(g3));
+  P("iterators", r.join());
+})();
+
+(function () {
+  var d = new Date(1000), p = Promise.resolve(1), r = [];
+  function time() { return d.getTime(); }
+  r.push(time(), time());
+  var original = Date.prototype.getTime;
+  Date.prototype.getTime = function () { return -1; }; r.push(time());
+  put(Date.prototype, "getTime", original); r.push(time());
+  function then(o) { return o.then === Promise.prototype.then; }
+  r.push(then(p), then(p), then(Object.create(Promise.prototype)), then({}));
+  var view = new DataView(new ArrayBuffer(4)), v = 0;
+  for (var i = 0; i < 4; i++) { view.setUint8(i, i + 1); v += view.getUint8(i); }
+  P("date and promise", r.join(), v, view.buffer.byteLength);
+})();
+
+(function () {
+  var m = new Map([[1, "x"]]), s = new Set([1]), re = /x/, n = 0;
+  for (var i = 0; i < 200000; i++) {
+    var junk = { a: i, b: [i] };
+    if ((i & 1023) === 0) n += m.get(1).length + (s.has(1) ? 1 : 0) + (re.test("x") ? 1 : 0);
+  }
+  P("collections", n, junk.a);
+})();
+
+out.join("\n")"##;
+    let expected = r##"kinds 902 2 2 3 3 b+ false 8
+same shape true,true,true,true,true,true
+plain call throws TypeError
+has function,function,function,function,undefined,undefined,undefined,undefined function,function,function,function,undefined,undefined,undefined,undefined
+prototype changes one,one,one,one,mine:one,getter,throws TypeError,object's,throws TypeError,one
+absent ,,,set's,,object's,own,object's,
+own one,one,own,one,other,throws TypeError,one,one
+subclasses sub:a,b,c,sub:a,b,c,sub:a,b,c 4
+chain ,,7,
+lastIndex ,,0,1,2,,2,3 true,true,true,false,true,true,true,true,throws TypeError
+sticky 7 1
+test true,true,replaced,true,own
+numeric names p0,,p1,,p2,p2,p3/p4/undefined/p5/p6/p7,undefined/undefined/5/undefined/p6/p7,p0,,p1,,p2,p2,p3/p4/undefined/p5/p6/p7,undefined/undefined/5/undefined/p6/p7,,,
+typed 11 11 true true true
+typed own own:333 undefined:0000 undefined:sub own:333
+typed kind own:kind's undefined:0000
+typed again own:333 false
+accessor 2,2,42,42,2
+iterators 1:false,2:false,3:true,undefined:true,7,1,2,5,8,done,done,done,done,done,9,true,mine,mine,1,2,done,done
+date and promise 1000,1000,-1,1000,true,true,true,false 10 4
+collections 588 199999"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Whether an assignment may simply write a slot is asked of the table of
+/// descriptors, which knows the storages that have any and the slot it
+/// last found writable. The script writes one property at one place while
+/// the property is made read-only, writable, an accessor, a value and
+/// hidden, and the object frozen; writes two objects of one shape, one
+/// with a read-only property, from sloppy and from strict code; writes
+/// the slots of one object in turn around changes to them, and a
+/// read-only property that moved to the slot of a writable one; adds to
+/// global variables that are made read-only, accessors, deleted and made
+/// again; grows an object with a hidden property through the capacities
+/// and removes properties; writes elements and the length of Arrays that
+/// are read-only or frozen; calls methods and accessors of a class; keeps
+/// objects with and without read-only properties over collections that
+/// move them; and enumerates, copies and serializes an object with a
+/// hidden property. What is expected is what Node prints for the same
+/// script.
+#[test]
+fn a_write_asks_the_descriptors_whether_it_may() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(writes_that_descriptors_decide)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn writes_that_descriptors_decide() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+var gCounter = 0;
+gFree = 0;
+
+(function () {
+  var o = { a: 1, b: 2, c: 3, d: 4 };
+  function w(v) { o.b = v; return o.b; }
+  var r = [];
+  for (var i = 0; i < 5; i++) r.push(w(i));
+  Object.defineProperty(o, "b", { writable: false }); r.push(w(10), w(11));
+  Object.defineProperty(o, "b", { writable: true }); r.push(w(12));
+  Object.defineProperty(o, "b", { get: function () { return "got"; }, set: function (v) { this.seen = v; }, configurable: true }); r.push(w(13), o.seen);
+  Object.defineProperty(o, "b", { value: 14, writable: true, enumerable: true, configurable: true }); r.push(w(15));
+  Object.defineProperty(o, "b", { enumerable: false }); r.push(w(16), Object.keys(o).join(""));
+  Object.freeze(o); r.push(w(17), Object.isFrozen(o));
+  P("one slot", r.join());
+})();
+
+(function () {
+  function make() { return { x: 0, y: 0 }; }
+  var plain = make(), ro = make();
+  Object.defineProperty(ro, "x", { writable: false });
+  function w(o, v) { o.x = v; o.y = v; return o.x + ":" + o.y; }
+  var r = [];
+  for (var i = 1; i < 5; i++) r.push(w(plain, i), w(ro, i));
+  P("same shape", r.join());
+  function ws(o, v) { "use strict"; o.x = v; return o.x; }
+  P("strict", ws(plain, 9), T(function () { return ws(ro, 9); }), plain.x, ro.x);
+})();
+
+(function () {
+  var o = { a: 0, b: 0, c: 0 };
+  Object.defineProperty(o, "c", { enumerable: false });
+  function wa(v) { o.a = v; }
+  function wb(v) { o.b = v; }
+  function wc(v) { o.c = v; }
+  var r = [];
+  for (var i = 0; i < 6; i++) { wa(i); wb(i * 2); wc(i * 3); }
+  r.push(o.a, o.b, o.c);
+  wa(100); Object.defineProperty(o, "a", { writable: false }); wa(200); r.push(o.a);
+  wb(100); Object.defineProperty(o, "a", { writable: true }); wa(300); wb(400); r.push(o.a, o.b);
+  wa(1); Object.seal(o); wa(2); r.push(o.a, Object.isSealed(o));
+  wa(3); Object.freeze(o); wa(4); wb(5); wc(6); r.push(o.a, o.b, o.c);
+  P("slot seen", r.join());
+  var m = { a: 1, b: 2, c: 3, d: 4 };
+  Object.defineProperty(m, "c", { writable: false });
+  function mb(v) { m.b = v; }
+  function mc(v) { m.c = v; }
+  for (var j = 0; j < 5; j++) mb(j);
+  delete m.a;
+  mc("changed"); mb("b"); mc("again");
+  P("moved", m.b, m.c, Object.keys(m).join(""), Object.getOwnPropertyDescriptor(m, "c").writable, Object.getOwnPropertyDescriptor(m, "b").writable);
+})();
+
+(function () {
+  function bump() { gFree += 2; return gFree; }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(bump());
+  Object.defineProperty(globalThis, "gFree", { writable: false }); r.push(bump(), bump());
+  Object.defineProperty(globalThis, "gFree", { writable: true }); r.push(bump());
+  Object.defineProperty(globalThis, "gFree", { get: function () { return "getter"; }, set: function (v) { globalThis.gSet = v; }, configurable: true }); r.push(bump(), globalThis.gSet);
+  delete globalThis.gFree; r.push(T(bump));
+  gFree = 5; r.push(bump());
+  P("globals", r.join());
+  var s = [];
+  function bumpVar() { gCounter += 1; return gCounter; }
+  for (var j = 0; j < 4; j++) s.push(bumpVar());
+  Object.defineProperty(globalThis, "gCounter", { writable: false }); s.push(bumpVar(), bumpVar());
+  s.push(T(function () { "use strict"; gCounter = 50; return gCounter; }));
+  s.push(T(function () { Object.defineProperty(globalThis, "gCounter", { writable: true }); return "writable"; }), bumpVar());
+  P("global var", s.join());
+})();
+
+(function () {
+  var o = {};
+  Object.defineProperty(o, "hidden", { value: "h", writable: true, enumerable: false, configurable: true });
+  var r = [];
+  for (var i = 0; i < 40; i++) { o["k" + i] = i; if (i % 9 === 0) { o.hidden = "h" + i; r.push(o.hidden + "/" + Object.keys(o).length); } }
+  Object.defineProperty(o, "k3", { writable: false }); o.k3 = "no"; o.k4 = "yes";
+  delete o.k1; delete o.hidden; o.k3 = "still no"; o.k5 = "moved";
+  r.push(o.k3, o.k4, o.k5, o.hidden, Object.keys(o).length, Object.getOwnPropertyDescriptor(o, "k3").writable, Object.getOwnPropertyDescriptor(o, "k4").writable);
+  P("growth", r.join());
+})();
+
+(function () {
+  var a = [1, 2, 3, 4];
+  function w(i, v) { a[i] = v; return a[i]; }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(w(1, i));
+  Object.defineProperty(a, 1, { writable: false }); r.push(w(1, "x"), w(2, "y"));
+  Object.defineProperty(a, 1, { writable: true }); r.push(w(1, "z"));
+  Object.freeze(a); r.push(w(2, "f"), T(function () { a.push(9); return "pushed"; }), a.length);
+  var b = [1, 2, 3]; Object.defineProperty(b, "length", { writable: false });
+  r.push(T(function () { b.push(4); return "pushed"; }), b.length);
+  var c = [1, 2, 3, 4, 5, 6, 7, 8]; Object.defineProperty(c, 6, { enumerable: false }); c.length = 3; c.push(9);
+  r.push(c.join(""), Object.keys(c).join(""));
+  P("arrays", r.join());
+})();
+
+(function () {
+  class K {
+    constructor(v) { this.v = v; this.w = 0; }
+    step() { this.w += this.v; return this.w; }
+    get twice() { return this.v * 2; }
+    set twice(x) { this.v = x / 2; }
+  }
+  var ks = [];
+  for (var i = 0; i < 50; i++) ks.push(new K(i));
+  var n = 0;
+  for (var j = 0; j < 50; j++) { n += ks[j].step() + ks[j].twice; ks[j].twice = j; }
+  K.prototype.step = function () { return -1; };
+  P("classes", n, ks[10].step(), ks[10].v, Object.keys(ks[10]).join(""), Object.getOwnPropertyNames(K.prototype).join(""));
+  Object.defineProperty(K.prototype, "step", { writable: false }); K.prototype.step = 5; ks[3].step = "own";
+  P("methods", typeof K.prototype.step, typeof ks[3].step, T(function () { "use strict"; ks[4].step = 1; return "set"; }));
+})();
+
+(function () {
+  var keep = [];
+  for (var i = 0; i < 300; i++) { var o = { a: i, b: i, c: i, d: i }; if (i % 3 === 0) Object.defineProperty(o, "b", { writable: false }); keep.push(o); }
+  var junk;
+  for (var g = 0; g < 150000; g++) junk = { p: g, q: [g] };
+  var changed = 0, same = 0;
+  for (var j = 0; j < 300; j++) { keep[j].b = -1; keep[j].c = -2; if (keep[j].b === -1) changed++; else same++; }
+  keep = keep.filter(function (o, i) { return i % 2 === 0; });
+  for (var g2 = 0; g2 < 150000; g2++) junk = { p: g2, q: [g2] };
+  var again = 0, cs = 0;
+  for (var k = 0; k < keep.length; k++) { keep[k].b = -3; if (keep[k].b === -3) again++; cs += keep[k].c; }
+  P("collections", changed, same, again, keep.length, cs, junk.p);
+})();
+
+(function () {
+  var o = { a: 1 };
+  Object.defineProperty(o, "hid", { value: 2, enumerable: false, writable: true });
+  o.z = 3;
+  var copy = Object.assign({}, o), spread = { ...o };
+  var names = [];
+  for (var k in o) names.push(k);
+  o.hid = 20;
+  P("enumeration", Object.keys(copy).join(""), Object.keys(spread).join(""), names.join(""), JSON.stringify(o), o.hid, Object.getOwnPropertyNames(o).join(","), o.propertyIsEnumerable("hid"), Object.entries(o).join("|"));
+  function f(a, b) { "use strict"; arguments[0] = "changed"; arguments.length = 5; return a + ":" + arguments[0] + ":" + arguments.length + ":" + Object.keys(arguments).join(""); }
+  function g() {}
+  g.prototype = { own: 1 }; g.extra = 2;
+  var r = [f(1, 2), T(function () { g.name = "renamed"; return g.name; }), T(function () { "use strict"; g.length = 3; return "set"; }), typeof g.prototype.own, g.extra];
+  P("functions", r.join());
+})();
+
+out.join("\n")"##;
+    let expected = r##"one slot 0,1,2,3,4,4,4,12,got,13,15,16,acdseen,16,true
+same shape 1:1,0:1,2:2,0:2,3:3,0:3,4:4,0:4
+strict 9 throws TypeError 9 0
+slot seen 5,10,15,100,300,400,2,true,3,400,15
+moved b 3 bcd false true
+globals 2,4,6,8,8,8,10,getter,getter2,throws ReferenceError,7
+global var 1,2,3,4,4,4,throws TypeError,throws TypeError,4
+growth h0/1,h9/10,h18/19,h27/28,h36/37,3,yes,moved,,39,false,true
+arrays 0,1,2,3,3,y,z,y,throws TypeError,4,throws TypeError,3,1239,0123
+classes 3675 -1 5 vw constructorsteptwice
+methods function function throws TypeError
+collections 200 100 100 150 -300 149999
+enumeration az az az {"a":1,"z":3} 20 a,hid,z false a,1|z,3
+functions 1:changed:5:01,g,throws TypeError,number,2"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The `+` of a String and a String, or a primitive that is made one
+/// without anything being run, is done where the operators on Numbers are
+/// done. The script appends and prepends to locals, properties and
+/// elements, with constants and with values; adds every kind of primitive
+/// to a String from both sides, and the kinds to each other; adds Symbols
+/// and objects whose conversions are counted or throw; joins the halves of
+/// a surrogate pair in both orders and text outside ASCII; builds long
+/// texts both ways and compares them; and adds Numbers at the edges of
+/// what an integer holds, and BigInts. What is expected is what Node
+/// prints for the same script. Then a text grown by its own addition under
+/// a heap limit is refused as it was: the look at the length of the result
+/// comes before the text is joined here too.
+#[test]
+fn a_string_is_added_as_the_addition_operator_adds_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(strings_that_are_added)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn strings_that_are_added() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function codes(s) { var a = []; for (var i = 0; i < s.length; i++) a.push(s.charCodeAt(i).toString(16)); return a.join("."); }
+
+(function () {
+  var s = "", t = "", u = "", v = "";
+  for (var i = 0; i < 6; i++) { s += "ab"; t = "<" + t; u += i; v = i + v; }
+  P("forms", s, t, u, v, s + t, t + s + u, s.length + t.length);
+  var a = "x", b = "y";
+  a += b; a = a + b; a = b + a; a += a;
+  P("locals", a, a.length, a === "yxyyyxyy");
+})();
+
+(function () {
+  var kinds = [1, -0, 0.5, 1e21, -1e-7, NaN, Infinity, true, false, null, undefined, 10n, -5n, "s", ""];
+  var left = [], right = [], both = [];
+  for (var i = 0; i < kinds.length; i++) {
+    var k = kinds[i];
+    left.push("<" + k); right.push(k + ">");
+    var acc = "="; acc += k; both.push(acc);
+  }
+  P("kinds left", left.join(" "));
+  P("kinds right", right.join(" "));
+  P("kinds append", both.join(" "));
+  var n = [];
+  for (var j = 0; j < kinds.length; j++) for (var m = 0; m < kinds.length; m += 4) n.push(T(function () { return typeof (kinds[j] + kinds[m]) + ":" + (kinds[j] + kinds[m]); }));
+  P("pairs", n.join(" "));
+})();
+
+(function () {
+  var sym = Symbol("q");
+  var r = [];
+  r.push(T(function () { return "a" + sym; }), T(function () { return sym + "a"; }), T(function () { var s = "a"; s += sym; return s; }));
+  var log = [];
+  var o = { toString: function () { log.push("toString"); return "T"; }, valueOf: function () { log.push("valueOf"); return 7; } };
+  var p = { toString: function () { log.push("p"); return "P"; } };
+  var d = new Date(0);
+  r.push("a" + o, o + "a", o + o, "a" + p + o, [1, 2] + "!", "!" + [3], {} + "", "" + function f() {}.name, typeof (d + ""), "" + [] + {}, 1 + "2" + 3, 1 + 2 + "3", "1" - 2 + "3");
+  var s = "s"; s += o; s += p; s += [4, 5]; s += null; s += undefined;
+  r.push(s, log.join());
+  var thrower = { toString: function () { throw new RangeError("no"); } };
+  r.push(T(function () { return "a" + thrower; }), T(function () { var z = "z"; z += thrower; return z; }));
+  P("objects", r.join(" | "));
+})();
+
+(function () {
+  var hi = "\uD83D", lo = "\uDE00", r = [];
+  var pair = hi + lo;
+  r.push(pair.length, codes(pair), pair === "😀", pair.codePointAt(0).toString(16));
+  var s = ""; for (var i = 0; i < 3; i++) { s += hi; s += lo; }
+  r.push(s.length, codes(s), Array.from(s).length);
+  var back = lo + hi; r.push(codes(back), Array.from(back).length, codes(back + lo), Array.from(back + lo).length);
+  var w = "é"; w += "世"; w = "Ж" + w; w += "x"; w += 1; r.push(w, w.length, codes(w));
+  var lone = "a" + hi; lone += "b"; r.push(codes(lone), lone.length, codes(lone + lo), encodeURIComponent("a" + pair));
+  P("surrogates", r.join(" "));
+})();
+
+(function () {
+  var s = "";
+  for (var i = 0; i < 3000; i++) s += "0123456789";
+  var t = "";
+  for (var j = 0; j < 3000; j++) t = "0123456789" + t;
+  var u = "";
+  for (var k = 0; k < 2000; k++) { u += k; u += ","; }
+  var h = 0;
+  for (var c = 0; c < u.length; c += 97) h = (h * 31 + u.charCodeAt(c)) | 0;
+  P("long", s.length, t.length, s === t, s.slice(29990), t.slice(0, 12), u.length, h, u.slice(-12), (s + t).length, (s + t).indexOf("90123456789012"));
+  var parts = []; var acc = "";
+  for (var p = 0; p < 300; p++) { acc += "<td>" + p + "</td>"; if (p % 100 === 99) parts.push(acc.length); }
+  var same = "";
+  for (var q = 0; q < 300; q++) same += "<td>" + q + "</td>";
+  P("rows", parts.join(), acc === same, acc.slice(0, 20), acc.slice(-12));
+})();
+
+(function () {
+  var o = { text: "", n: 0 };
+  for (var i = 0; i < 5; i++) { o.text += "p" + i; o.n += i; o.n += ""; o.n = +o.n; }
+  var a = ["a", 1, "b"];
+  a[0] += a[1]; a[1] += a[2]; a[2] += a[0];
+  var m = new Map([["k", "v"]]);
+  var g = "";
+  function add(x, y) { return x + y; }
+  for (var j = 0; j < 4; j++) g = add(g, j % 2 ? "s" : j);
+  P("places", o.text, o.n, typeof o.n, a.join("|"), m.get("k") + m.size, g, add(1, 2), add("1", 2), add(1, "2"), add(1.5, 2.5), add(null, "x"), add(undefined, 1), add(true, true));
+})();
+
+(function () {
+  var r = [];
+  var x = 2147483647; x += 1; r.push(x);
+  var y = 9007199254740991; y += 2; r.push(y);
+  var z = 0.1; z += 0.2; r.push(z);
+  var w = -0; w += -0; r.push(Object.is(w, -0));
+  var e = 1; e += "e3"; r.push(e, typeof e, +e + 1);
+  var big = 2n; big += 3n; r.push(big, typeof big, T(function () { return 1n + 1; }), T(function () { var q = 1n; q += 1; return q; }), 1n + "1");
+  var cmp = ["a" < "b", "a" + 1 < "a" + 2, "10" + "" < "9" + "", "a" + "b" === "ab", ("a" + 1) == "a1"];
+  r.push(cmp.join());
+  P("numbers", r.join(" "));
+})();
+
+out.join("\n")"##;
+    let expected = r##"forms abababababab <<<<<< 012345 543210 abababababab<<<<<< <<<<<<abababababab012345 18
+locals yxyyyxyy 8 true
+kinds left <1 <0 <0.5 <1e+21 <-1e-7 <NaN <Infinity <true <false <null <undefined <10 <-5 <s <
+kinds right 1> 0> 0.5> 1e+21> -1e-7> NaN> Infinity> true> false> null> undefined> 10> -5> s> >
+kinds append =1 =0 =0.5 =1e+21 =-1e-7 =NaN =Infinity =true =false =null =undefined =10 =-5 =s =
+pairs number:2 number:0.9999999 number:1 throws TypeError number:1 number:-1e-7 number:0 throws TypeError number:1.5 number:0.4999999 number:0.5 throws TypeError number:1e+21 number:1e+21 number:1e+21 throws TypeError number:0.9999999 number:-2e-7 number:-1e-7 throws TypeError number:NaN number:NaN number:NaN throws TypeError number:Infinity number:Infinity number:Infinity throws TypeError number:2 number:0.9999999 number:1 throws TypeError number:1 number:-1e-7 number:0 throws TypeError number:1 number:-1e-7 number:0 throws TypeError number:NaN number:NaN number:NaN throws TypeError throws TypeError throws TypeError throws TypeError bigint:5 throws TypeError throws TypeError throws TypeError bigint:-10 string:s1 string:s-1e-7 string:sfalse string:s-5 string:1 string:-1e-7 string:false string:-5
+objects throws TypeError | throws TypeError | throws TypeError | a7 | 7a | 14 | aP7 | 1,2! | !3 | [object Object] | f | string | [object Object] | 123 | 33 | -13 | s7P4,5nullundefined | valueOf,valueOf,valueOf,valueOf,p,valueOf,valueOf,p | throws RangeError | throws RangeError
+surrogates 2 d83d.de00 true 1f600 6 d83d.de00.d83d.de00.d83d.de00 3 de00.d83d 2 de00.d83d.de00 2 Жé世x1 5 416.e9.4e16.78.31 61.d83d.62 3 61.d83d.62.de00 a%F0%9F%98%80
+long 30000 30000 true 0123456789 012345678901 8890 -801221057 7,1998,1999, 60000 9
+rows 1090,2290,3490 true <td>0</td><td>1</td> <td>299</td>
+places p0p1p2p3p4 10 number a1|1b|ba1 v1 0s2s 3 12 12 4 nullx NaN 2
+numbers 2147483648 9007199254740992 0.30000000000000004 true 1e3 string 1001 5 bigint throws TypeError throws TypeError 11 true,true,true,true,true"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    for grows in [
+        "var s = 'x'.repeat(1 << 16); for (;;) s += s;",
+        "var s = 'x'.repeat(1 << 16); for (;;) s = s + s;",
+        "var piece = 'z'.repeat(1 << 16), t = ''; for (;;) t = piece + t;",
+        "var piece = 'z'.repeat(1 << 16), t = ''; for (;;) t += piece;",
+        "var u = 'u'.repeat(1 << 16); for (;;) { u += 1; u += u; }",
+        "var w = { text: 'w'.repeat(1 << 16) }; for (;;) w.text += w.text;",
+    ] {
+        let (mut engine, _, _) = limited(16 << 20, 0);
+        assert_eq!(
+            engine.evaluate(grows, false),
+            Err(Error::OutOfMemory),
+            "{grows}"
+        );
+        // And the engine is what it was for the next script.
+        engine
+            .evaluate("s = t = u = w = piece = null", false)
+            .unwrap();
+        assert_eq!(
+            engine.evaluate("'still ' + 'alive' + 1", false),
+            Ok(Completion::String("still alive1".into()))
+        );
+    }
 }

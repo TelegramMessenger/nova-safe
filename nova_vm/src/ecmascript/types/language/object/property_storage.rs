@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::{TryReserveError, hash_map::Entry};
+use crate::heap::DescriptorEntry as Entry;
+use std::collections::TryReserveError;
 
 use crate::{
     ecmascript::{
@@ -11,7 +12,7 @@ use crate::{
     },
     engine::{Bindable, NoGcScope},
     heap::{
-        ArenaAccess, ArenaAccessMut, DirectArenaAccess, ElementDescriptorMap, ElementIndex, Heap,
+        ArenaAccess, ArenaAccessMut, DirectArenaAccess, ElementDescriptorMap, Heap,
         KEY_OFFSETS_MIN_LEN,
         {
             ElementDescriptor, ElementStorageMut, ElementStorageUninit, PropertyStorageMut,
@@ -26,13 +27,18 @@ use super::{InternalSlots, Object, OrdinaryObject, PropertyKey};
 #[repr(transparent)]
 pub(crate) struct PropertyStorage<'a>(OrdinaryObject<'a>);
 
-/// The offset of `key` among the keys of `object`'s shape.
+/// The offset of `key` among the keys of `object`'s shape: by a search of
+/// a few keys, and by the table of the shape's keys where they are many.
 #[inline]
-fn find_key_offset(agent: &Agent, object: OrdinaryObject, key: PropertyKey) -> Option<usize> {
+pub(crate) fn find_key_offset(
+    agent: &Agent,
+    object: OrdinaryObject,
+    key: PropertyKey,
+) -> Option<usize> {
     let shape = object.get_direct(&agent.heap.objects).get_shape();
     let keys = shape.keys(&agent.heap.object_shapes, &agent.heap.elements);
     if keys.len() < KEY_OFFSETS_MIN_LEN {
-        return keys.iter().position(|k| *k == key);
+        return key.position_in(keys);
     }
     agent.heap.elements.key_offsets.find(
         shape.keys_capacity(agent),
@@ -42,10 +48,7 @@ fn find_key_offset(agent: &Agent, object: OrdinaryObject, key: PropertyKey) -> O
     )
 }
 
-fn verify_writable(
-    descriptors: Entry<'_, ElementIndex<'static>, ElementDescriptorMap<'static>>,
-    index: u32,
-) -> bool {
+fn verify_writable(descriptors: Entry<'_>, index: u32) -> bool {
     let Entry::Occupied(e) = descriptors else {
         // Note: no descriptors means all values are plain data properties.
         return true;
@@ -131,6 +134,9 @@ impl<'a> PropertyStorage<'a> {
         object: OrdinaryObject,
         private_fields: &[PrivateField],
     ) -> Result<(), TryReserveError> {
+        // The properties the object has are moved, their descriptors with
+        // them: another property is at each place.
+        agent.heap.descriptor_changes += 1;
         let old_len = object.len(agent);
         let new_len = old_len.checked_add(private_fields.len() as u32).unwrap();
         let old_shape = object.object_shape(agent);
@@ -194,6 +200,12 @@ impl<'a> PropertyStorage<'a> {
         let data = object.get_mut(agent);
         data.set_shape(new_shape);
         data.set_values(elements_vector.elements_index.unbind());
+        if old_shape == new_shape && insertion_index != old_len as usize {
+            // The shape did not change: an intrinsic one, changed in place,
+            // with the properties after the private names moved. No
+            // property lookup cache is to find one where it was.
+            Caches::invalidate_caches_on_intrinsic_shape_properties_moved(agent);
+        }
         Ok(())
     }
 
@@ -326,7 +338,7 @@ impl<'a> PropertyStorage<'a> {
             descriptors,
         } = object.get_property_storage(agent);
         let result = if keys.len() < KEY_OFFSETS_MIN_LEN {
-            keys.iter().position(|k| *k == key)
+            key.position_in(keys)
         } else {
             find_key_offset(agent, object, key)
         };
@@ -363,10 +375,16 @@ impl<'a> PropertyStorage<'a> {
                 // Mutating existing property.
                 let value_entry = values.get_mut(index as usize).unwrap();
                 *value_entry = value.unbind();
-                match (descriptors, element_descriptor) {
+                // Whether the property may be another kind of property
+                // after this, or an accessor with other functions: it is
+                // given a descriptor, or one of the object's properties
+                // had one. An object with no descriptor at all has no
+                // accessor to change.
+                let described = match (descriptors, element_descriptor) {
                     (e, Some(element_descriptor)) => {
                         let e = e.or_insert_with(|| ElementDescriptorMap::with_capacity(1));
                         e.insert(index, element_descriptor.unbind());
+                        true
                     }
                     (Entry::Occupied(mut e), None) => {
                         let descs = e.get_mut();
@@ -374,8 +392,12 @@ impl<'a> PropertyStorage<'a> {
                         if descs.is_empty() {
                             e.remove();
                         }
+                        true
                     }
-                    _ => {}
+                    _ => false,
+                };
+                if described {
+                    agent.heap.descriptor_changes += 1;
                 }
                 return Ok(());
             }
@@ -464,6 +486,9 @@ impl<'a> PropertyStorage<'a> {
     ) -> Result<(), TryReserveError> {
         let object = self.0;
 
+        // The properties after the one removed are moved, their
+        // descriptors with them: another property is at each place.
+        agent.heap.descriptor_changes += 1;
         let old_shape = object.object_shape(agent);
         let old_cap = old_shape.values_capacity(agent);
 

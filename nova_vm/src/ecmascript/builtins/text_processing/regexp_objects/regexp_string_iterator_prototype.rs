@@ -139,7 +139,7 @@ impl RegExpStringIteratorPrototype {
             let this_index = to_length(agent, this_index.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
-            let this_index = usize::try_from(this_index).expect("Length value not valid usize");
+            let this_index = u64::try_from(this_index).expect("thisIndex is a length");
             // b. Let nextIndex be AdvanceStringIndex(S, thisIndex, fullUnicode).
             let next_index = advance_string_index(
                 agent,

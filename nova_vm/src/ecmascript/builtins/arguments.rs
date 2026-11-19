@@ -72,7 +72,7 @@ use std::collections::TryReserveError;
 use crate::{
     ecmascript::{
         Agent, BUILTIN_STRING_MEMORY, InternalMethods, InternalSlots, Number, Object, ObjectRecord,
-        OrdinaryObject, Value,
+        OrdinaryObject, PropertyKey, Value,
     },
     engine::{Bindable, HeapRootData, NoGcScope},
     heap::{
@@ -121,13 +121,29 @@ fn create_unmapped_arguments_object_from_slice<'a>(
     let len_value = Number::from(len);
     // 2. Let obj be OrdinaryObjectCreate(%Object.prototype%, « [[ParameterMap]] »).
     let prototype = agent.current_realm_record().intrinsics().object_prototype();
-    let mut shape = ObjectShape::get_shape_for_prototype(agent, Some(prototype.into()));
-    shape = shape.get_child_shape(agent, BUILTIN_STRING_MEMORY.length.to_property_key())?;
-    shape = shape.get_child_shape(agent, BUILTIN_STRING_MEMORY.callee.into())?;
-    shape = shape.get_child_shape(agent, WellKnownSymbols::Iterator.into())?;
-    for index in 0..len {
-        shape = shape.get_child_shape(agent, index.into())?;
-    }
+    // The shape of the last arguments object of this length, or the one
+    // that a transition for each property leads to.
+    let shape = match agent
+        .heap
+        .caches
+        .arguments_shape(prototype.into(), len as usize)
+    {
+        Some(shape) => shape,
+        None => {
+            let mut shape = ObjectShape::get_shape_for_prototype(agent, Some(prototype.into()));
+            shape = shape.get_child_shape(agent, BUILTIN_STRING_MEMORY.length.to_property_key())?;
+            shape = shape.get_child_shape(agent, BUILTIN_STRING_MEMORY.callee.into())?;
+            shape = shape.get_child_shape(agent, WellKnownSymbols::Iterator.into())?;
+            for index in 0..len {
+                shape = shape.get_child_shape(agent, index.into())?;
+            }
+            agent
+                .heap
+                .caches
+                .set_arguments_shape(prototype.into(), len as usize, shape);
+            shape
+        }
+    };
     let obj = OrdinaryObject::create_object_with_shape(agent, shape)
         .expect("Failed to create Arguments object storage");
     let array_prototype_values = agent
@@ -198,6 +214,38 @@ fn create_unmapped_arguments_object_from_slice<'a>(
     // }).
     // 9. Return obj.
     Ok(UnmappedArguments(obj))
+}
+
+/// Properties of an arguments object before those of its arguments, as
+/// [`create_unmapped_arguments_object`] lays them out: "length", "callee",
+/// %Symbol.iterator%.
+const PROPERTIES_BEFORE_ARGUMENTS: usize = 3;
+
+impl<'a> UnmappedArguments<'a> {
+    /// The ordinary object that the arguments object is: all of its
+    /// properties are that object's.
+    #[inline]
+    pub(crate) fn ordinary_object(self) -> OrdinaryObject<'a> {
+        self.0
+    }
+
+    /// The argument at `index`, read where it was put when the object was
+    /// made: there, while the object is as it was made, the property of
+    /// that index is, and what is asked of the place is that it holds the
+    /// index as its key and a value (an accessor has none). None leaves any
+    /// other object to \[\[Get]].
+    #[inline]
+    pub(crate) fn argument(self, agent: &Agent, index: u32) -> Option<Value<'a>> {
+        let place = PROPERTIES_BEFORE_ARGUMENTS + index as usize;
+        if self.0.get_property_keys(agent).get(place) != Some(&PropertyKey::from(index)) {
+            return None;
+        }
+        self.0
+            .get_elements_values(agent)
+            .get(place)
+            .copied()
+            .flatten()
+    }
 }
 
 impl<'a> InternalSlots<'a> for UnmappedArguments<'a> {

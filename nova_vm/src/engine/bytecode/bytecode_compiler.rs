@@ -12,6 +12,7 @@ mod finaliser_stack;
 mod for_in_of_statement;
 mod function_declaration_instantiation;
 mod function_environment_use;
+mod kept_captures;
 mod labelled_statement;
 mod template_literals;
 mod with_statement;
@@ -72,8 +73,14 @@ pub(crate) enum Place<'s, 'gc> {
     /// A variable in an environment that no `with` or direct `eval` can come
     /// between it and this place in the code. Where it was found is
     /// remembered (the BindingSite `site` of the executable), and it is read
-    /// and written there without a Reference.
-    Site { name: String<'gc>, site: IndexType },
+    /// and written there without a Reference. `once`: the stack slot in
+    /// which a read keeps the value for the rest of the call, for a
+    /// variable that has one value that long (see `kept_captures`).
+    Site {
+        name: String<'gc>,
+        site: IndexType,
+        once: Option<IndexType>,
+    },
     /// A name of the global scope, in a Script, that no `with` or direct
     /// `eval` can come between it and this place in the code: as a Site,
     /// with the place remembered in the global scope (among its lexical
@@ -190,12 +197,36 @@ impl<'s, 'gc> Place<'s, 'gc> {
         );
     }
 
+    /// The value of a variable at a site into the result register: read
+    /// where it was found the last time, or, with `once`, taken from the
+    /// stack slot that keeps it for the call once it was read.
+    fn get_site(
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        name: String<'gc>,
+        site: IndexType,
+        once: Option<IndexType>,
+    ) {
+        match once {
+            Some(slot) => ctx.add_instruction_with_identifier_site_and_slot(
+                Instruction::GetBindingAtSiteOnce,
+                name.to_property_key(),
+                site,
+                slot,
+            ),
+            None => ctx.add_instruction_with_identifier_and_site(
+                Instruction::GetBindingAtSite,
+                name.to_property_key(),
+                site,
+            ),
+        }
+    }
+
     fn initialise_referenced_binding_to_undefined(
         &self,
         ctx: &mut CompileContext<'_, '_, 'gc, '_>,
     ) {
         match self {
-            Place::Site { name, site } => {
+            Place::Site { name, site, .. } => {
                 Self::resolve_site(ctx, *name, *site);
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
@@ -230,7 +261,7 @@ impl<'s, 'gc> Place<'s, 'gc> {
         value: ValueOutput,
     ) {
         match self {
-            Place::Site { name, site } => {
+            Place::Site { name, site, .. } => {
                 Self::resolve_site(ctx, *name, *site);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
@@ -289,12 +320,8 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCache, cache);
                 Ok(ValueOutput::Value)
             }
-            Place::Site { name, site } => {
-                ctx.add_instruction_with_identifier_and_site(
-                    Instruction::GetBindingAtSite,
-                    name.to_property_key(),
-                    *site,
-                );
+            Place::Site { name, site, once } => {
+                Self::get_site(ctx, *name, *site, *once);
                 Ok(ValueOutput::Value)
             }
             Place::GlobalSite { name, site, .. } => {
@@ -352,13 +379,9 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCacheKeepReference, cache);
                 Ok(ValueOutput::Value)
             }
-            Self::Site { name, site } => {
+            Self::Site { name, site, once } => {
                 // Like a stack variable, there is no reference to keep.
-                ctx.add_instruction_with_identifier_and_site(
-                    Instruction::GetBindingAtSite,
-                    name.to_property_key(),
-                    *site,
-                );
+                Self::get_site(ctx, *name, *site, *once);
                 Ok(ValueOutput::Value)
             }
             Self::GlobalSite { name, site, .. } => {
@@ -449,7 +472,7 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::PutValueWithCache, cache);
                 Ok(())
             }
-            Self::Site { name, site } => {
+            Self::Site { name, site, .. } => {
                 ctx.add_instruction_with_identifier_and_site(
                     Instruction::PutBindingAtSite,
                     name.to_property_key(),
@@ -522,7 +545,7 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, false);
                 Ok(false.into())
             }
-            Self::Site { name, site } => {
+            Self::Site { name, site, .. } => {
                 Self::resolve_site(ctx, name, site);
                 ctx.add_instruction(Instruction::Delete);
                 Ok(ValueOutput::Value)
@@ -729,7 +752,7 @@ impl<'s, 'gc> PlaceOrValue<'s, 'gc> {
     /// the reference register, for an operator that takes a Reference.
     fn reference_into_register(&self, ctx: &mut CompileContext<'_, '_, 'gc, '_>) {
         match self {
-            PlaceOrValue::Place(Place::Site { name, site }) => {
+            PlaceOrValue::Place(Place::Site { name, site, .. }) => {
                 Place::resolve_site(ctx, *name, *site);
             }
             PlaceOrValue::Place(Place::GlobalSite { name, site, .. }) => {
@@ -875,6 +898,25 @@ fn variable_escapes_scope(
                 panic!("reference in a different scope?")
             };
             scope = s;
+        }
+        // A class field's initializer is a function of its own, run when an
+        // instance (or the class, for a static field) is made, but it has no
+        // scope of its own in the semantic data: the reference sits in the
+        // class scope, with no function scope between it and the
+        // declaration.
+        let mut node = ref_id;
+        while nodes.get_node(node).scope_id() != decl_scope {
+            if matches!(
+                nodes.get_node(node).kind(),
+                oxc_ast::AstKind::PropertyDefinition(_) | oxc_ast::AstKind::AccessorProperty(_)
+            ) {
+                return true;
+            }
+            let parent = nodes.parent_id(node);
+            if parent == node {
+                break;
+            }
+            node = parent;
         }
         // Classes can refer to themselves both during their creation and in
         // field declarations that escape creation time. We need to check for
@@ -1068,8 +1110,10 @@ enum VariableKind {
     /// Stored in an environment, with no `with` and no direct `eval` in any
     /// scope from the reference out to the declaration: the Environment
     /// Records on the way are the same ones, made in the same order, every
-    /// time the reference runs.
-    LocalFixed,
+    /// time the reference runs. `once`: the stack slot in which the
+    /// function being compiled keeps the variable's value once it has read
+    /// it, where it does (see `kept_captures`).
+    LocalFixed { once: Option<IndexType> },
     /// Found in the global scope.
     Global,
     /// Found in the global scope of a Script, with no `with` and no direct
@@ -1108,10 +1152,10 @@ impl VariableKind {
                 );
                 Place::Env { name }
             }
-            VariableKind::LocalFixed => {
+            VariableKind::LocalFixed { once } => {
                 let name = ctx.create_string(name);
                 if let Some(site) = ctx.new_binding_site() {
-                    Place::Site { name, site }
+                    Place::Site { name, site, once }
                 } else {
                     // More sites than an instruction can number.
                     ctx.add_instruction_with_identifier(
@@ -1163,7 +1207,18 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
         let kind = if let Some(id) = self.reference_id.get() {
             let scoping = ctx.scoping();
             let reference = scoping.get_reference(id);
-            if let Some(s) = reference.symbol_id() {
+            if self.name == "arguments"
+                && let Some(stack_slot) = ctx.arguments_slot(reference.symbol_id())
+            {
+                // The arguments object of the function being compiled, kept
+                // in a stack slot that is filled before any of the
+                // function's code runs. The name may be assigned to where
+                // code is not strict.
+                VariableKind::Stack {
+                    stack_slot,
+                    mutable: true,
+                }
+            } else if let Some(s) = reference.symbol_id() {
                 // SymbolId means we might be a global, local, or a stack
                 // variable.
                 let symbol_flags = scoping.symbol_flags(s);
@@ -1238,7 +1293,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                     } else if global_object {
                         VariableKind::Global
                     } else if fixed {
-                        VariableKind::LocalFixed
+                        VariableKind::LocalFixed {
+                            once: ctx.kept_capture_slot(s),
+                        }
                     } else {
                         VariableKind::Local
                     }
@@ -1488,9 +1545,96 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
     }
 }
 
+/// `expression` without the parentheses around it.
+fn unparenthesized<'s>(mut expression: &'s ast::Expression<'s>) -> &'s ast::Expression<'s> {
+    while let ast::Expression::ParenthesizedExpression(inner) = expression {
+        expression = &inner.expression;
+    }
+    expression
+}
+
+/// Whether the expression is a String whatever is evaluated: a literal.
+fn is_string_whatever(expression: &ast::Expression) -> bool {
+    matches!(
+        unparenthesized(expression),
+        ast::Expression::StringLiteral(_) | ast::Expression::TemplateLiteral(_)
+    )
+}
+
+/// Compiles `a + b + ... + z`, from its first operand that is a String
+/// whatever is evaluated, as one concatenation: `"<td>" + id + "</td>"`
+/// makes one String, not one for every `+`. What stands before that operand
+/// is added up as it is written, and ends as a String; each operand after it
+/// is made the String it is there (ToPrimitive, then ToString) before the
+/// next one is evaluated, as the operators make it. None where the
+/// expression is not such a chain, or has too few operands after the String
+/// to save one.
+fn compile_concatenation_chain<'a, 's, 'gc, 'scope>(
+    expression: &'s ast::BinaryExpression<'s>,
+    ctx: &mut CompileContext<'a, 's, 'gc, 'scope>,
+) -> Option<Result<ValueOutput<'gc>, ExpressionError>> {
+    // The additions from the first one on: the operands are the left operand
+    // of the first, and then the right operand of each.
+    let mut additions = vec![expression];
+    let mut first = &expression.left;
+    while let ast::Expression::BinaryExpression(left) = unparenthesized(first)
+        && left.operator == BinaryOperator::Addition
+    {
+        additions.push(left);
+        first = &left.left;
+    }
+    additions.reverse();
+    let string_at = if is_string_whatever(first) {
+        0
+    } else {
+        1 + additions
+            .iter()
+            .position(|addition| is_string_whatever(&addition.right))?
+    };
+    // The additions after the String operand: each takes one more operand.
+    let additions = &additions[string_at..];
+    if additions.len() < 2 {
+        return None;
+    }
+    // What stands before with the String operand: the left operand of the
+    // addition after it.
+    if let Err(err) = additions[0]
+        .left
+        .compile(ctx)
+        .and_then(|r| r.get_value(ctx))
+    {
+        return Some(Err(err));
+    }
+    let mut parts = vec![ctx.load_to_stack()];
+    for addition in additions {
+        if let Err(err) = addition.right.compile(ctx).and_then(|r| r.get_value(ctx)) {
+            for part in parts {
+                part.forget(ctx);
+            }
+            return Some(Err(err));
+        }
+        if !is_string_whatever(&addition.right) {
+            ctx.add_instruction(Instruction::ToStringOperand);
+        }
+        parts.push(ctx.load_to_stack());
+    }
+    let count = parts.len();
+    // Note: ConcatStrings consumes the parts from stack.
+    for part in parts {
+        part.forget(ctx);
+    }
+    ctx.add_instruction_with_immediate(Instruction::ConcatStrings, count);
+    Some(Ok(ValueOutput::Value))
+}
+
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::BinaryExpression<'s> {
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
+        if self.operator == BinaryOperator::Addition
+            && let Some(result) = compile_concatenation_chain(self, ctx)
+        {
+            return result;
+        }
         // 1. Let lref be ? Evaluation of leftOperand.
         let lref = self.left.compile(ctx)?;
         // 2. Let lval be ? GetValue(lref).
@@ -2844,18 +2988,22 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Templa
                         return Err(err);
                     }
                     // 4. Let middle be ? ToString(sub).
-                    // Note: This is done by StringConcat.
+                    // Here, before the next substitution is evaluated: what
+                    // it does to become a String, the next one can see.
+                    if !is_string_whatever(expression) {
+                        ctx.add_instruction(Instruction::ToStringSubstitution);
+                    }
                     parts.push(ctx.load_to_stack());
                 }
                 // 5. Let tail be ? Evaluation of TemplateSpans.
             }
             // 6. Return the string-concatenation of head, middle, and tail.
             let count = parts.len();
-            // Note: StringConcat consumes the parts from stack.
+            // Note: ConcatStrings consumes the parts from stack.
             for part in parts {
                 part.forget(ctx);
             }
-            ctx.add_instruction_with_immediate(Instruction::StringConcat, count);
+            ctx.add_instruction_with_immediate(Instruction::ConcatStrings, count);
             Ok(ValueOutput::Value)
         }
     }
@@ -3104,11 +3252,14 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::YieldE
         // 2. If generatorKind is async, return ? AsyncGeneratorYield(? Await(value)).
         if generator_kind_is_async {
             ctx.add_instruction(Instruction::Await);
+            ctx.add_instruction(Instruction::Yield);
         } else {
             // 3. Otherwise, return ? GeneratorYield(CreateIteratorResultObject(value, false)).
-            compile_create_iterator_result_object(ctx, false);
+            // The value is yielded as it is: the result object is made for
+            // it where the generator was resumed from, if one is wanted
+            // there (%GeneratorPrototype%.next does; a loop does not).
+            ctx.add_instruction(Instruction::YieldValue);
         }
-        ctx.add_instruction(Instruction::Yield);
         // Note: generators can be resumed with a Return instruction. For those
         // cases we need to generate Return handling here.
         let jump_over_return = ctx.add_instruction_with_jump_slot(Instruction::Jump);

@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::Ordering;
+use crate::width::usize_from_u64;
 
 use crate::{
     ecmascript::{
@@ -806,7 +807,7 @@ fn typed_array_constructor<'gc, T: Viewable>(
             let element_length = src_record.typed_array_length(agent);
 
             // 10. Let byteLength be elementSize × elementLength.
-            let byte_length = element_size * element_length;
+            let byte_length = element_size.saturating_mul(element_length);
             let buffer = ArrayBuffer::new(agent, byte_length, gc.nogc())
                 .unbind()?
                 .bind(gc.nogc());
@@ -910,7 +911,7 @@ fn typed_array_constructor<'gc, T: Viewable>(
     allocate_typed_array::<T>(
         agent,
         new_target.unbind(),
-        Some(element_length as usize),
+        Some(usize_from_u64(element_length)),
         gc,
     )
     .map(|typed_array| typed_array.into())

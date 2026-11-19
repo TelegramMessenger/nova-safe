@@ -34,29 +34,68 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.7x |
-| call | 14 | 10.4x | 2.4x |
-| math | 4 | 9.7x | 2.4x |
-| string | 26 | 10.6x | 2.0x |
-| app | 8 | 6.1x | 2.0x |
-| prop | 13 | 7.1x | 2.0x |
-| map, set | 4 | 4.6x | 2.0x |
-| array | 14 | 5.8x | 1.7x |
+| typed | 4 | 10.6x | 1.8x |
+| call | 14 | 10.4x | 1.8x |
+| math | 4 | 9.7x | 1.8x |
+| string | 26 | 10.6x | 1.3x |
+| prop | 13 | 7.1x | 1.4x |
+| map, set | 4 | 4.6x | 1.3x |
+| app | 8 | 6.1x | 1.6x |
+| array | 14 | 5.8x | 1.5x |
 | regexp | 4 | 2.4x | 1.7x |
-| loop | 11 | 11.1x | 1.4x |
-| gc | 3 of 5 | 3.6x | 1.2x |
-| json | 2 | 1.0x | 0.9x |
-| all | 108 | 7.6x | 1.9x |
+| loop | 11 | 11.1x | 1.3x |
+| gc | 3 of 5 | 3.6x | 0.9x |
+| json | 2 | 1.0x | 0.8x |
+| all | 108 | 7.6x | 1.4x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 2.6x, and the worst is now prepending
-(36x, area 7); after it come generators (5.8x), rows of HTML appended to a string (5.2x), then calls that
-bind an arguments object (4.6x). 15 of the 108 cases are above 3x and 53 at or under 2x, 14 of them at or
-under QuickJS's time. Over all cases it is 1.91x: 2.12x before the round of patterns, Array iteration and
+The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
+was the worst after it (38x, area 7), 1.7x. The worst are now the call of a closure and a step of a
+particle animation (2.6-2.8x from one run to the next), the properties of one object read and written
+in a loop and arithmetic on the elements of a `Float64Array` (2.4x). 89 of the 108 cases are at or
+under 2x (a few sit within a few hundredths of 2x and cross it from one run to the next), 19 of them
+at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
-after the round of entering and leaving a function, 1.96x after the round of callbacks, and the round of
-what an appended text keeps of its end took it here. One case
-ran Nova out of memory before (`prop/destructuring`) and none does now. QuickJS runs out of its 8 MB on two
-cases Nova fits (30,000 retained objects, 50,000 closures): Nova's heap is the more compact one.
+after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
+round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
+stepping a generator without a result object took it to 1.88x. The arguments object in a stack slot halved
+one case of the 108 and left the mean where it was, the string hash that follows from the hashes of
+what is concatenated took it to 1.78x, more built-in functions run in place of a call to 1.71x, and
+chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles done as that to 1.67x,
+objects copied by their shape to 1.65x, bound functions and rest parameters run in the loop of
+instructions to 1.64x, holes looked for by blocks, Strings compared in the loop and `instanceof`
+answered there to 1.63x, a generator resumed in the loop of instructions to 1.60x, the names of the
+global object read by the state of the global scope to 1.59x, a property read and written by a
+computed String in the loop of instructions to 1.57x, the variables of enclosing functions kept for a
+call once it has read them to 1.534x, and derived class constructors and `super(…)` run in the loop of
+instructions to 1.527x. One handler around a `for`-`of` loop, where every turn of it pushed and popped
+one, took a fifth off the walk of an Array and left the mean where it was (1.529x, in a run where
+QuickJS's own times were 0.5% lower than in the run before and Nova's 0.3% lower). Compound assignments
+to properties compiled without their Reference pushed and popped took a method that counts on `this`
+from 2.4x to 2.2x and the particle step under 3x, with the mean at 1.526x (these runs shared the
+machine with other builds, and each engine's times read 1% higher than in the run before). A return
+that cuts back only what the function left, and a last instruction read as any other, took 3-8% off
+the calls and the mean to 1.519x. The `length` of a TypedArray remembered to be its accessor took a
+loop over a `Uint8Array` from 2.0x to 1.2x, and the mean to 1.503x; the getter and the setter of a
+property remembered likewise took a tenth off a loop that calls both, with the mean where it was
+(1.505x in that run). An Array of Strings and Numbers joined from where they are took the mean to
+1.488x, and the properties of functions read by their caches to 1.473x. `typeof` done in the loop
+and an object for `new` made with its prototype at once left the mean there (1.48x in a run where
+QuickJS's own times were 0.9% lower). What a Map, a Set, a RegExp and a TypedArray inherit read by
+their caches took it to 1.47x (the run of that round was taken while other work ran on the machine,
+and was repeated from the round's saved library when the machine was quiet), a table of
+descriptors that knows which storages have any to 1.46x, and the `+` of Strings done where the
+operators on Numbers are done to 1.44x.
+
+Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
+engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
+of each block, a counter and a thread-local read): the cases that allocate most pay for it (a linked list
+built and dropped 17% slower, array literals 15%, serializing to JSON 9%, numbers joined 9%; 2% over all
+cases). And texts are compared by their pieces where the string table looks a new one up (area 7), which
+halved the time of the rows of HTML (5.2x to 2.7x) and took a seventh off escaping HTML.
+
+One case ran Nova out of memory before (`prop/destructuring`). With the count, 50,000 closures no longer
+fit the 8 MB that the estimate let them have; they do not fit QuickJS's either, nor do 30,000 retained
+objects, which Nova does hold.
 
 What is written in Rust or C on both sides is level: JSON, RegExp, `indexOf`, `split`/`join`, `sort`. The gap is in
 running JavaScript itself.
@@ -217,6 +256,27 @@ through the table; a property the cache places is read through two calls and a r
 again (area 4). The counts of pairs say what could still be fused, and the round before showed how little
 that gives now.
 
+Counted again over the 36 cases at or over 1.9x (what each executes, by adjacent pairs), the commonest
+pair that could be one is a value fetched and a property of it read by the cache: a variable of an
+enclosing function or a global, then `GetPropertyWithCache` or the function of a method call (`state.x`,
+`Math.floor(…)`; a quarter of the instructions of `prop/get-set-one-shape`, a sixth of those of the
+cases that call `Math`). Tried: the arm that fetches looks at the next instruction and, where it is such
+a read, a function of its own does it at once. That gained nothing where it was for (2% slower) and cost
+the loops and the calls 2-5%: going from one instruction to the next is about 0.7 ns here (the lines of
+the dispatch in the profile, over the instructions of a turn), which the call, the second look at the
+instruction and the tests cost again. And given the loop's tables (three slices, passed by address) or
+its instruction pointer to move, that function made every case 17-34% slower, a `switch` 34%, an addition
+of integers 23%: the loop keeps in memory what it lends. Dropped.
+
+What a turn of those cases costs is the reads themselves. A property the cache places is about 70
+machine instructions (the object, the cache, the shape again for the capacity and the length of its
+storage, a jump by the capacity among twelve vectors, the slot), 2.9 ns, and an assignment 3.4 ns, of
+which 0.9 is the descriptors of the storage looked up in a hash table, whenever any storage of that
+capacity has descriptors. Together they are 43% of `prop/get-set-one-shape` and a third of the particle
+update, where the numbers that do not fit a value and the collector are under 6%. The descriptors are
+handed out as entries of that table in some 170 places of twelve files; knowing without the lookup that
+a storage has none is a change to all of them.
+
 ### 2. Variables that are not locals of the running function
 
 Every read or write of a closure variable, a module-level variable or a global resolved the name at run time:
@@ -252,10 +312,67 @@ for every such read, and its result (which kind of record, which one) was taken 
 is part of the few functions that read or write at a site now. A loop over a closure variable went from 2.3x
 to 2.2x, one over a global from 3.0x to 2.9x.
 
-Left: a read of a global is about 8 ns against 3 for a closure variable: the way from the running realm to the
-slot is a dozen loads (the realm, the global record, its two halves, the object, its shape, the keys, the
-values). `typeof name` still goes through a Reference. The code of a Module and of an `eval` is compiled as
-before, and module variables are resolved the long way.
+A read of a property of the global object was still about 8 ns against 3 for a closure variable: the way
+from the running realm to the slot was a dozen loads, one through the other (the realm, the global record,
+its two halves, the object, its shape, the keys, the values), and a write asked two hash tables on top of
+that whether the property is writable. What the place of a name there depends on is remembered now as one
+state of the global scope (`GlobalScopeSeen`): the realm, its global object and that object's shape; how
+often the keys of an intrinsic object's shape were moved in place, which is what the default global object
+has (a property removed from among the others, private names put in front of them all; a property added
+goes to the end and moves none, so new globals cost nothing); the global lexical record and how many
+declarations it has; and the collection the handles are of. The states seen are numbered, and a site among
+the properties of the global object keeps the number of the state its place was found in, where it kept
+the count of declarations. The place is good while that state is the one seen and the global scope is in
+it still, which six comparisons of values at hand tell, none read through another. When any of it changes
+the next use of a site finds the name the long way under a new number; a name that is only assigned to
+finds its place again then as well, which it had no need to before. `loop/global-variable` went from 2.8x
+to 2.2x, a call of `Math.max` from 2.3x to 2.1x, `math/floor-round-minmax` from 2.1x to 1.9x,
+`math/random-and-date` from 2.2x to 1.9x; `math/` from 2.0x to 1.9x.
+
+The check had been the name at the slot and not the shape because that shape changes in place; the first
+plan of this round compared the shape alone, and the notes above were what said why that is not enough.
+
+As first built the check for a global, short now, was compiled into every read of a closure variable (the
+two are one function, and its global part had become small enough to be made part of it): a call of a
+closure was 4.5% slower and a text appended in a loop 7%, in the two binaries run in turn, with every gate
+passed. The global part is a function of its own, for a tenth of the gain on a global. Three cases that
+read closure variables still read 2-4% slower in the binary of this round than in the one before
+(`app/particles-step`, `array/two-dimensional-grid`, `prop/get-set-one-shape`), with nothing they run
+changed; a build with the new state behind a pointer moved the same cases by -2% to +1%, which is what
+where the code and the Agent's fields lie does. Not followed up.
+
+A read of a variable of an enclosing function stayed five loads, one through the other (the running
+Environment Record, the function's, its declarative one, the bindings, the binding), about 1.6 ns, and a
+tenth to a fifth of every case whose loop names an object, an Array or a function of its surroundings,
+which is how the cases are written and how widget code is. Where such a variable has one value for as
+long as a call lasts, the call reads it from its Environment Record once and keeps it in a stack slot of
+its own: the compiler looks through the loops of a function for the names of variables of enclosing
+functions (up to eight), gives each that qualifies a slot that starts as undefined, and compiles every
+read of it in the function to an instruction that takes the slot's value when it is not undefined and
+otherwise reads the variable where it is and keeps what it read (`GetBindingAtSiteOnce`). Undefined is
+nothing kept: a `var` before its initializer, and a variable that is undefined, are read each time.
+
+It qualifies where nothing can change it during a call of the reader, which is what
+`bytecode_compiler/kept_captures.rs` says at length: the reader is a plain function (a generator's or an
+async function's call goes on after other code has run); the variable is declared outside it (one
+declared in a block of the function itself is another variable in every turn of a loop); nothing assigns
+to it (no reference writes it, and no direct `eval` is anywhere in the declaring scope); and its
+declaration gives it its value once (a `let`, a `const`, a class) or only while no call of the reader
+can be going on (a `var`, a function declaration, a parameter of a plain function: a generator or an
+async function that declares it can be resumed from inside the reader, and its `var`s keep nothing).
+The script written for it goes at each of these, and at the stack around the slots.
+`prop/get-set-one-shape` went from 3.2x to 2.5x, `array/index-read-write` from 2.5x to 2.0x,
+`typed/pixels-rgba` from 2.6x to 2.25x, `typed/float64-math` from 3.3x to 2.9x,
+`prop/dynamic-string-key` from 1.5x to 1.2x, a grid of Arrays from 1.7x to 1.5x; properties together
+from 1.6x to 1.5x, typed arrays from 2.5x to 2.3x, all cases from 1.57x to 1.53x.
+
+Left: `typeof name` still goes through a Reference. The code of a Module and of an `eval` is compiled as
+before, and module variables are resolved the long way. A variable of an enclosing function that is
+read outside a loop, or assigned to anywhere, is read where it is each time (a recursive function's
+calls of itself, `call/recursive-fib`; a counter that closures share). A `let` or `const` of the top level is found
+through the realm at every read (2.0x in a loop). A write of a global asks the descriptors of the global
+object's storage whether the property is writable, two hash lookups: its attributes change with nothing a
+site could see.
 
 ### 3. Calls
 
@@ -295,6 +412,28 @@ value has it from the Reference the call is made through. So are `sin`, `cos` an
 `max` and `min` of any Numbers: those two first try the arguments as Numbers, by one function that the call
 and the instruction share, so that zeros and NaN come out the same either way. Trigonometry in a loop went
 from 3.85x to 3.53x.
+
+A call of any other built-in function still cost several times what the function did: by profile, a loop
+that takes two substrings of a String was a tenth in the substrings and most of the rest in getting to them
+(the arguments copied to a list, the `Vm` put aside for the collector, the execution context, the depth of
+calls counted, the arguments converted). Many functions, for the this value and arguments they are nearly
+always called with, run no script, throw nothing and need no collection, and for those the interpreter now
+does what the call would have done, in place: `slice`, `substring`, `charAt`, `startsWith`, `endsWith`,
+`indexOf`, `includes` of a String with integers and Strings; `repeat`, `padStart` and `padEnd` where the
+text is short; `push` of one value to an Array to which an element is simply appended, and `pop` of its
+last element; `Array.isArray` of anything but a Proxy; `get`, `has` and `set` of a Map, `has` and `add` of
+a Set; `hasOwnProperty` of an object that answers without running anything, for a key that is one as it
+is; `String(x)` and `Number(x)` of a primitive; `toFixed` of a Number; `Math.random` and `Date.now`; and
+`f.call(thisArg, ...)` where `f` is one of these. Each shares its code with the function, which runs it
+after converting what it was given; anything else (another kind of this value or argument, a function put
+in its place, the function reached some other way than by `o.f(...)`) takes the call.
+
+`push` and `pop` in a loop went from 2.9x to 1.8x, `startsWith` and `endsWith` from 2.8x to 1.8x,
+substrings from 2.9x to 1.9x (outside ASCII 3.2x to 2.4x), `Math.random` and `Date.now` from 3.1x to 2.2x,
+a Set from 2.1x to 1.5x, a Map from 2.1-2.4x to 1.6-2.0x, padding and `repeat` from 2.8x to 2.0x, an array
+of strings pushed and joined from 3.3x to 2.4x, Numbers to text from 2.4x to 1.9x, `instanceof` with
+`Array.isArray` from 3.7x to 3.0x, `hasOwnProperty.call` with `in` from 2.8x to 2.3x. All cases went from
+1.78x to 1.71x.
 
 A call of a function still went through half a dozen native frames between the caller's loop of instructions
 and the callee's, each saving and restoring its registers, with the caller's `Vm` moved aside for the collector
@@ -374,7 +513,7 @@ always needing the record; its body says what it needs now. `new` of a class wit
 
 Left there: binding through the iterator instructions is the general way for each parameter, a rest
 parameter allocates its Array, and the arguments object is made in full at every call and kept in an
-Environment Record (4.7x).
+Environment Record (4.7x; it has a stack slot now, below).
 
 Where a call's time was after that, in a closure called 300,000 times (`call/closure`, 3.3x): 53% in the
 loop of instructions, 20% entering the function and 12% leaving it, 15% reading and writing the two
@@ -404,6 +543,126 @@ context pushed and removed (a third of entering), and after it nothing larger th
 looked up and written, the tables of the code taken and let go of (a count up and a count down), the
 function's executable rooted, the this value taken from the call's Reference, the value stack exchanged
 and emptied.
+
+A function that reads `arguments` (`call/arguments-object`, 4.8x) paid for the object three times at
+every call. Its shape was looked up in the realm's table of shapes, key by key. It was put in a Function
+Environment Record that the function had for nothing else, and found there by name. And `arguments[i]` and
+`arguments.length` went the general way of a property of an exotic object.
+
+- The Agent keeps the shape of an arguments object of up to eight arguments, by length and prototype (a
+  table the collector empties, so it holds nothing alive).
+- The object is in a stack slot where nothing but the function's own code can name it: no arrow function
+  in it says `arguments`, there is no direct eval in it, and it declares nothing of that name (a
+  parameter, a var, a function). A reference is the slot's if what the parser resolved it to is not
+  declared inside the function: a `let arguments` in a block is that block's, while an outer
+  `var arguments`, which the parser resolves a function's own `arguments` to, is not what the function
+  sees (test262 has it; the first build of this failed three of its tests on it).
+- A read by index takes the element from its place among the object's properties (three come before the
+  elements, then one per argument in order) if the key at that place is still that index and it holds a
+  value; `length` goes through the instruction's cache as a property of an ordinary object does. An
+  element deleted or redefined, or anything else, goes the general way.
+
+The case went from 4.8x to 2.3x, and calls from 2.4x to 2.2x. What is left in it is the object itself,
+made at every call with a property per argument.
+
+A bound function (`f.bind(o)`) was called the native way: its \[\[Call]] calls the function it was bound
+from, with a `Vm` of its own for that. Its \[\[Call]] is that function's call with another this value;
+where it has no bound arguments and the function is one the `Vm` runs in place, the call instruction
+runs the function in place and gives the call a Reference whose base is the bound this value, which is
+where a call takes its this value from. A bound function with bound arguments, or of any other kind of
+function, takes the call as before. `call/bound-function` went from 2.5x to 1.8x.
+
+A function with a default value or a rest parameter binds its parameters by instructions that step
+through the list of its arguments, and those went the general way of an instruction each: a step of the
+list as of any iterator, a rest parameter's Array made empty and filled a property at a time. Where the
+list is the call's arguments, the step, the Array of what is left (of up to 16 arguments) and the end of
+the list are done in the loop of instructions. `call/rest-and-default` went from 2.7x to 1.7x; calls
+from 2.2x to 2.1x.
+
+Where calls are after that: a plain call and its return take about 14 ns of entering and leaving
+against QuickJS's 14 ns for the whole step of the loop, and no line of the two is above a twentieth of
+the case (the execution context pushed, the frame found and written, the stacks exchanged, the this
+value, the executable rooted). (Every step of a generator took the native way too, until a loop resumed
+it in place: area 5a.)
+
+`new` of a derived class and `super(…)` still started a `Vm` each: `new B(i)` where B extends A was two
+of them, and with a method call after it 320 ns against QuickJS's 113 (`call/class-inheritance-super`,
+2.8x). Both are run in the `Vm` of the calling code now, where the constructors are functions of the
+script. A derived class constructor is entered with its Function Environment Record, which has the new
+target and no this value; when it returns, what it is constructed to is what \[\[Construct]] makes of
+it (the object it returned, else the this value its record has by then, else the errors of steps 10 and
+12, thrown by the calling code once the function is left). `super(…)` finds the parent as SuperCall does
+(the prototype of the function whose record gives `this`, and that record's new target), runs a parent
+that is no derived constructor as `new` of it is run, on an object made from the new target's prototype,
+and a derived one as above; when the parent returns, the rest of SuperCall is done by the function that
+\[\[Construct]]'s way uses too (the this value bound, the instance elements initialized). A built-in
+parent, a bound function, a parent that needs a Function Environment Record without being a derived
+constructor, spread arguments, and a parent that is no constructor go the general way. The case went
+from 2.8x to 2.0x.
+
+That is in the function every instruction runs through, and what the compiler makes of that function
+moved with every way of writing it: `super` as one more arm of the plain instructions made an empty loop
+6% slower; looked for before every instruction that is not plain, the same; with the new target carried
+in what a call hands to its entry, plain loops were as before and plain calls 4-7% slower. As it is,
+`super` is a result of the general way that the loop looks at where it looks at `yield`, the frame
+remembers the constructor's record, and the result is settled where a return examines the frame anyway:
+the loops and the calls are where they were in the whole benchmark (each within 1.5%), and `new` of a
+class that is not derived reads 3% slower in the two binaries run in turn (`call/new-class-instance`,
+1.94x to 2.0x), with nothing in its path changed but one comparison. The same binary run against itself
+moves a plain call by 4% from run to run.
+
+A call and its return by line again: 57% of `call/plain-function` is entering and leaving (the
+execution context made and pushed 8%, the frame and the stacks 17%, what the function is and whether
+it may be run in place 5%, the return 22%), and two things in that were not work.
+
+Leaving cut the Reference stack and the iterator stack back to where the caller had them, and released
+the collections that the function had scoped. Nearly every function leaves all three as it found them,
+and cutting a vector of what has a destructor by nothing still calls for the dropping of the nothing
+that is cut off; the release was a call that compared two lengths. Each is done now only where there
+is something to cut: a twentieth of a plain call.
+
+The Return that ends a function is the last instruction of its code, and the loop reads an instruction
+together with the four bytes after it, in one look at how much code is left: with fewer than four left
+the instruction was read the other, slower way, at every call of nearly every function. The
+instructions of an Executable have four bytes after them now that are no instruction (`Bytecode`). The
+loop reads from the padded bytes; where the code ends, what a listing shows and what anything else
+reads are the instructions without the padding, which is all that the type gives to whoever does not
+ask for the padding by name.
+
+With the two binaries run in turn: a plain call 8.46 to 7.97 ms (2.18x to 2.06x in the full runs), a
+method that three prototypes up has 8% less (2.30x to 2.16x), `new` of a class 6% (2.04x to 1.89x) and
+of a derived one 5% (2.05x to 1.97x), a method 5%, a closure 3-4%, a bound function 6%, the callbacks
+of `map`, `filter` and `find` 5%. The recursion of `fib`, the arguments object and a generator are
+where they were. An empty loop reads 4.6% slower (3.30 to 3.46 ms; 0.98x to 1.02x) and a sum of
+integers 1.8%, by where the loop of instructions landed: neither runs anything that changed, and the
+empty loop reads 3.30 or 3.50 from one run to the next of the binary before. Tried against that: the
+instructions for the slow way of reading taken from the padded bytes instead of from the tables (the
+calls gained half as much, the empty loop the same), and the padded bytes and the instructions as two
+slices in the loop (a `switch` 9% slower).
+
+The object that `new` of a function of the script starts from was made as the general way makes it: an
+object with the Realm's %Object.prototype%, then given the function's "prototype". That is two shapes
+looked up in a table by their prototypes for every object made, and the prototype's own shape seen to
+each time, where the first object made with a prototype sees to it once. It is made with the shape of
+the objects that have that prototype at once, which is the shape the other way arrived at. `new` of a
+class went from 22.9 to 21.7 ms with the two binaries run in turn (`call/new-class-instance`, 1.86x to
+1.84x in runs where QuickJS's own time moved as much), and with `super(…)` 3% less.
+
+`typeof` of a value was an instruction of the general way, every time: the loop left for it, and came
+back with the String. It is done in the loop where the value is in the result register and the
+reference register is empty; `typeof name` of a name that may not be bound comes with its Reference
+and goes as before. A loop of `typeof v === "number"` tests went from 9.7 to 8.0 ms
+(`loop/typeof-and-truthy`, 1.52x to 1.28x), and the plain loops and the calls are where they were:
+this arm, unlike the one for `yield` (the defects), moved nothing.
+
+The call of a closure is the second worst case now (`call/closure`, 2.7x), and nothing single is
+left in it to take out. Its body is eight instructions. Entering the function is a fifth of the time
+in some twenty pieces of 1-2% each (the execution context pushed, the stacks exchanged, the
+arguments put where the parameters are, the code rooted, its tables fetched), leaving it a tenth,
+and the three reads and one write of the variables it closes over 3 ns each (a sixth together): the
+running environment asked of the execution context, the record found by its kind, the binding by its
+place and checked by its name. Less than that is another way of making a call, not a change to this
+one.
 
 ### 4. Properties
 
@@ -463,11 +722,120 @@ result); and the assignment is such a call of the setter, whose result the frame
 getter and a setter went from 4.7x to 2.9x. Reads that keep a Reference for a call that follows
 (`o.getter()`) take the general way still.
 
+Finding the function for that call was a fifth of such a loop: the cache gives the object that has the
+property and its place, and the getter or the setter was then read from that object's descriptors (its
+storage found again, and two tables looked up), at every read and every assignment. The loop remembers
+the last getter and the last setter it found, each with the object and the place (`AccessorSeen`), and
+they are the functions of that place until the heap counts a change of descriptors: a property that an
+object had defined again, or the properties of an object moved (one removed, private names put in
+front), which puts another property at a place. The count is the one that the `length` of a
+TypedArray is remembered by (area 6), and a collection ends what was seen, since it moves the object
+and the function. `prop/getter-setter` went from 15.9 to 14.1 ms with the two binaries run in turn
+(2.37x to 2.08x). An accessor that is no function of the script, and one found with other descriptors
+counted since, go the way they went.
+
 `v instanceof F` looked F[Symbol.hasInstance] up key by key, called the method every function inherits as
 a built-in, and that looked F.prototype up key by key. Both lookups go through the property cache of
 their name, and the inherited method of the running realm is done without the call: 4.4x to 4.0x. What is
 left of that case is the call of `Array.isArray`. Functions, Arrays and other objects with
 a backing object do not take the short way for their named properties yet.
+
+That call was not the call: `Array.isArray` is a property of a function, and the read of a property by
+its cache knew ordinary objects, Arrays, Strings and Numbers. A property of a function took the general
+way of an instruction at every read (the instruction left the loop, a Reference was made, and \[\[Get]]
+went through the function to its ordinary object and looked the cache of the name up in a table on the
+way): a fifth of that case, and of every `Object.keys(…)`, `String.fromCharCode(…)`, `Date.now()`,
+`K.prototype` and `f.call(…)`. A function that has properties has them in an ordinary object, its
+"length" and "name" among them once it has one (a constructor with static methods, a function with a
+"prototype", a class), and a property of the function is what a read of the name from that object
+finds by the cache. A function with no such object has its "length" and its "name", which still go the
+general way, and what it inherits, found by the cache under the shape of the functions that have
+nothing of their own and read from the object that has it (`f.call`, `f.apply`, `f.bind`).
+
+With the two binaries run in turn: `prop/has-own-and-in`, which calls
+`Object.prototype.hasOwnProperty.call(o, name)`, went from 20.6 to 16.1 ms (2.13x to 1.61x),
+`prop/instanceof-and-array-check` from 13.5 to 10.8 ms (2.33x to 1.86x), characters made by
+`String.fromCharCode` and joined from 1.85x to 1.62x, `math/random-and-date` from 2.08x to 1.88x,
+`call/spread-and-apply` 6% less. The calls and the loops are where they were. Appending one
+character a hundred thousand times reads 4% slower by the medians (`string/append-100k-char`, 1.94x
+to 1.98x), with nothing of what it runs changed.
+
+The object that has an inherited property of such a function is read the general way, not by the
+one function that reads a slot of an ordinary object. That function is part of the read of every
+property by its cache for as long as nothing else calls it; called from here as well, it was a call
+there too, and a loop that reads the properties of one object was 5% slower and a method call 3%
+(the same source builds the same binary: it was not chance). Made part of both by force, half of that
+came back; left to its one caller, all of it.
+
+A method of a Map, a Set, a RegExp or a TypedArray was the next read of that kind: `map.get`,
+`set.has`, `regexp.test`, `bytes.set` each took the general way at every call (the instruction left
+the loop, a Reference was made, \[\[Get]] asked for the shape of the object by its prototype in a
+table searched by hash, and found the method by the cache after all): a quarter to a third of the Map
+and Set cases, a tenth of a RegExp tested in a loop. None of these objects has a property by a name
+of its own kind, but for the "lastIndex" of a RegExp and the names of a TypedArray that are the
+strings of Numbers ("NaN" and "Infinity" among them), which are its elements and are never looked for
+in a prototype; those are left to the general way, the second by the first byte of the name.
+\[\[Get]] of one is OrdinaryGet: of the ordinary object that has its properties once it has any (a
+subclass, an object given a property or another prototype), and until then of what it inherits, which
+the cache places under the shape of the objects that have its prototype and nothing else. A Date, a
+Promise, an ArrayBuffer, a DataView, the iterators of Arrays, Maps and Sets, a generator, a WeakMap,
+a WeakSet and a WeakRef are read the same way.
+
+The shape of such an object is the one the heap keeps for the prototype of its kind in the running
+Realm. The table has one shape for a prototype, put there once and taken out by a collection only, so
+the shape last found for a kind in a Realm is remembered (`BareShapeSeen`) until the next collection:
+a quarter of what the change gained on the Map cases.
+
+With the two binaries run in turn: `set/add-has` went from 3.23 to 2.26 ms (1.50x to 1.05x),
+`map/string-keys` from 1.39 to 1.06 ms (1.74x to 1.34x), `map/number-keys` from 4.34 to 3.33 ms
+(1.67x to 1.27x), `typed/set-subarray-copy` from 0.36 to 0.31 ms (2.00x to 1.70x) and
+`regexp/test-simple` from 6.71 to 5.98 ms (1.83x to 1.56x). The loops, the calls and the properties
+of ordinary objects are where they were.
+
+Where the new code and what it remembers are put decided that last sentence, twice. As part of the
+function that reads the properties of functions it made that one 980 bytes longer, the read of a
+property of an ordinary object, which follows it in the binary, moved by as much, and a loop of such
+reads was 3% slower: it is a function of its own. And what it remembers was a field of the agent
+first: the code that makes an engine grew by 12 bytes, the loop of instructions, the same
+instructions otherwise, started 4 bytes later, and `loop/switch` was 9% slower by the best runs and
+15% by the medians. Kept in the heap, the loop of instructions is the same instructions at the same
+places, 364 of its 13,274 reading the agent 24 bytes further on. (This said "byte for byte" at
+first, by the hash in the function's symbol, which does not tell: it is of the function's name and
+type, not of its code. The code of two builds is compared as such since.) Neither
+was a property of the change: both are where this benchmark's binary happens to put things, which
+another build of the engine does not share, and the cases that move so by nothing are to be read
+with that. A function cannot be given an alignment in this toolchain (1.96.1).
+
+Every write of a property by its cache asked whether a descriptor forbids it. The storages of one
+capacity have their descriptors in a map by the storage, and the map was searched by the storage's
+hash at each write, to find, nearly always, that the storage has none: a tenth of a loop writing the
+properties of plain objects, and a fifth of an assignment to a global variable, whose object has
+descriptors, so that the search went on into them. The map is inside a type of its own now
+(`DescriptorTable`), which keeps beside it a bit for every storage that has descriptors, and the slot
+it last found writable in one that has. A write looks at the bit, and so does every reading of a
+storage with its descriptors (`Object.keys`, a spread, `JSON.stringify`, `hasOwnProperty`).
+
+The bits cannot be wrong by an oversight. The map is private to that type: a storage gets its first
+descriptors only through the table's own `insert` or the vacant entry it hands out, both of which set
+the bit, and what the collector does to the map goes through one function that sets the bits anew
+after it. A bit may stay set for a storage whose descriptors were taken away, which costs the search
+and nothing else. The slot last found writable is forgotten by every method that gives the map out
+to be changed, and none changes it otherwise. Unit tests hold the table's answers against a search
+of its own map after each kind of change.
+
+With the two binaries run in turn: an assignment to a global variable in a loop went from 4.79 to
+4.49 ms (`loop/global-variable`, 2.19x to 2.03x), `prop/get-set-one-shape` from 13.9 to 13.5 ms
+(2.53x to 2.40x), `prop/object-spread-assign` and `json/stringify` 3.5% less,
+`app/easing-animation-frame` 5% less, a step of the particles 1-3% less. `loop/switch` reads 1%
+slower by the best runs and 3% by the medians, with the loop of instructions the same instructions
+(537 of its 13,274 reading the agent at another offset: the table is larger than the map it took the
+place of, and what the agent has after it moved) and 2368 bytes further on in the binary.
+
+What is left of a write to a global variable is spread thin: the state of the global scope checked
+by five comparisons over a dozen reads, the object and its shape read, the storage found by its
+capacity, the slot. Of a read, the same and a call for the values of the object (8% of that case and
+of a loop calling `Math.max`), which stays a call: the one function that reads a slot of an ordinary
+object keeps its one caller (above).
 
 Those lookups, "prototype" at every `new` run in place, and the ones a walk over an Array makes (area
 5a) each asked for the property cache of their name, and that was found in a table hashed by the name's
@@ -475,6 +843,13 @@ text under SipHash: a tenth of `prop/destructuring`. The caches given last are r
 keys (64, two places for a key by its identity), and found again by comparing the key; a collection, which
 moves keys and caches, empties that memory. `instanceof` went from 4.0x to 3.6x, `new` of a class from
 2.3x to 2.1x.
+
+The instruction itself still left the loop of instructions for every `instanceof`, to root its operands
+for a method that might be a script. It is answered in the loop now where nothing can run: the target is
+a function, not a bound one, whose @@hasInstance is the inherited method of the running realm; its
+"prototype" is a data property that holds an object; and the chain up from the value has no Proxy in it.
+Anything else, and everything that throws, goes the way it went. 2.9x to 2.6x; the rest of that case is
+the calls around it.
 
 `for`-`in` put every key it met in a set and looked every key up there first, hashing each name twice
 under SipHash, to learn nothing in nearly every loop: the keys of one object are all different, and none
@@ -492,6 +867,78 @@ them. The compiler had the other way already, for a pattern with a default: `o.p
 that reads it anywhere, through the property cache of its place, into a stack slot where the name is kept
 in one. Every object pattern is compiled that way now. `prop/destructuring`, an object pattern and an
 array pattern, went from 3.7x to 2.0x with that, and to 1.5x with the array pattern's part (area 5a).
+
+`{ ...base, e: i }` and `Object.assign({}, last, { f: 1 })` (`prop/object-spread-assign`, 3.2x) each
+went the whole way of the specification for every property: the list of the source's keys, a descriptor
+made of each property, the value read, and the property defined or assigned on the target. There was a
+shorter way for the spread, a copy of the source's shape and values, that never ran (below). A source
+whose properties are all plain data properties under String keys, which is nearly every object that is
+spread, now gives an empty target its shape and a copy of its values: the copy is what the steps make
+(the same keys in the same order, each property writable, enumerable and configurable, the target
+extensible whatever the source is). `Object.assign` assigns the properties of such a source one by one
+with no list of keys and no descriptors, where the target takes each without a setter or a trap; where
+it does not, the steps do all of it from the first key, and what was assigned is assigned again, which
+nothing can see. The case went to 1.9x.
+
+`key in object` looked for the key among the object's own keys one by one, where every other lookup of
+an object with 32 keys or more uses the table of its shape's keys. An object used as a dictionary of 500
+keys, with `in` at every step (`prop/dictionary-churn`, 2.8x), spent a third of its time there; it went
+to 1.8x. Properties together went from 1.9x to 1.8x, all cases from 1.67x to 1.65x.
+
+Tried on the way and not kept: the keys of a small object compared as the 64 bits each is, in place of
+kind by kind and field by field. It read a twelfth slower (`prop/dynamic-string-key`, where a computed
+String key is looked up among eight; a fifth of that case is the search, and it is 2.6x).
+
+That case was not the search, though. `o[name]` with a String for the key, and `o[name] = v`, had no
+short way at all: the instruction that reads an element took only an integer, and everything else made a
+Reference of the object and the key, went through GetValue to \[\[Get]], and there had a property
+descriptor made of the property found (its attributes asked of the descriptors' table) to take the value
+out of; three fifths of the case. For an ordinary object that has the name as a data property of its own
+the read is that property's value, and the assignment sets it where it is writable (what OrdinarySet
+comes to with the object for the receiver): the key is found among the object's keys (a search of a few,
+the table of a large shape) and the value read or written at its place, with no descriptor. A name the
+object does not have itself, an accessor, a property that is not writable, and every other kind of
+object go as before, and give what they gave. A String that is the text of an integer is that integer
+for a key, as everywhere. `prop/dynamic-string-key` went from 2.6x to 1.5x, `prop/dictionary-churn` from
+1.9x to 1.4x, an object used as a dictionary from 1.9x to 1.5x, `for`-`in` with `o[k]` in its body from
+1.05x to 0.86x, an event emitter that keeps its listeners by name from 2.1x to 1.8x; properties together
+from 1.8x to 1.6x.
+
+The instructions are the ones that read and write an element by its index, and as first written the
+String was one more arm of their choice of key: a grid of Arrays read by two indexes was 5% slower and
+an Array read and written by index 2.5%. The integer's way is as it was, and the String is taken where
+that way finds no integer, in functions of their own.
+
+Left: a name the object inherits, and a name it does not have (`undefined`), still go the general way; a
+small cache by shape and key would answer them, and would save the search.
+
+`target op= value` reads the target with its Reference kept and assigns through that Reference. While
+the value was evaluated the Reference was pushed, and popped after, unless the value was a literal:
+`this.n += by` was seven instructions. Two ways around the push and the pop, both in what the compiler
+emits and neither in the loop of instructions.
+
+A value whose code leaves the reference register alone is evaluated with the Reference in the register,
+as a literal was: a variable that the function keeps in a stack slot (one instruction that reads the
+slot, or throws in its temporal dead zone), and the arithmetic, the comparisons and the choices among
+such and literals. Their operators may run code of the script (a `valueOf`), which another `Vm` runs;
+the operator of the compound assignment itself always ran with the Reference in the register. A
+property, a call, a name found elsewhere, an assignment, `in` and `instanceof` in the value keep the
+push and the pop. This is for every target that has a Reference (a property by name or by key, a name
+found by `eval`), and for logical and plain assignment to such. `this.n += by` is five instructions.
+
+`p.x op= value` with any other value, for a `p` in a stack slot and where nothing uses the value of the
+assignment, keeps the object on the value stack as `p.x = value` does: the object is pushed, its
+property read as any other, and one instruction assigns by the cache. The object assigned to is the one
+whose property was read (the slot is read twice with nothing in between, before the value can replace
+the local), and what is read and assigned are \[\[Get]] and \[\[Set]] of that object in the order they
+had. `p.x += p.vx` is six instructions for seven, and makes no Reference.
+
+With the two binaries run in turn, a method that adds its argument to a property of `this`
+(`call/method`) went from 14.7 to 13.9 ms (2.39x to 2.21x) and the particle update, which has two
+`p.x += p.vx` in a step, from 4.47 to 4.34 ms (2.8x). Nothing else moved outside its noise.
+
+Left: `this.x op= this.y` is as many instructions either way and was left; a compound assignment whose
+value is used, and one to an element, still make the Reference.
 
 ### 5. Array and typed array elements
 
@@ -566,6 +1013,11 @@ was added (an Array of a hundred thousand filled holes was 800 KB the memory lim
 next collection; a test of the limit caught it). `array/literal-alloc` is 4% slower for the collections
 that are due sooner.
 
+`shift`, `unshift` and `splice` ask first whether the Array has a hole, of all of it and every time, and
+that was a loop that stops at the first hole: one element, one branch. Asked of blocks of 64 elements
+with no way out inside a block, it is compiled to compare several elements at once, and an Array with a
+hole is still known within the block that has it. `array/shift-unshift-splice` went from 2.3x to 1.4x.
+
 Left: a compound assignment to an element (`a[i] += 1`) and one whose value is used still make a Reference.
 The same methods of typed arrays, `flatMap`, and `forEach` of Map and Set call their callbacks the general
 way; so does every single call from native code (a bound function, `call` and `apply`, a getter reached
@@ -607,11 +1059,75 @@ instructions the loop runs itself: `for`-`of` over an Array is 1.0x (1.3x), `pro
 Left for Arrays: an array pattern is still run by instructions of its own, an interpreter inside the
 instruction that reads them through the heap (a tenth of `prop/destructuring`).
 
-Left: a generator makes its result object in its own bytecode at every `yield`, the loop still calls `next`
-through the built-in, and the generator's `Vm` and execution context are moved in and out of the generator at
-every step. Stepping a generator directly, with the yielded value handed over without an object, is next. (A
-suspended `Vm` keeps its stacks as vectors now instead of cutting them to size at every `yield`; that removed
-two reallocations a step and changed no measured time.)
+A generator made its result object in its own bytecode at every `yield`, the loop called `next` through the
+built-in to get it, and read "done" and "value" back out of it. `yield value` in a generator that is not
+async is an instruction of its own now (YieldValue) that hands the value over as it is, and whoever resumed
+the generator makes the result object if it wants one: %GeneratorPrototype%.next, `return` and `throw` do,
+with the %Object.prototype% of the generator's realm as its bytecode did; the step of a loop, and the step
+that `Array.from`, the Map and Set constructors and the Promise combinators take, resume the generator
+themselves where its `next` is the original one of the running realm, and take the value. What `yield*`
+passes on is a result object already and is read as any other. A loop over a generator went from 9.9 to
+6.8 ms (5.9x to 4.1x).
+
+(A suspended `Vm` keeps its stacks as vectors now instead of cutting them to size at every `yield`; that
+removed two reallocations a step and changed no measured time.)
+
+A step of that loop still started a `Vm` for the generator: its saved stacks moved into a new `Vm`, the
+loop of instructions entered anew with all that its start does (the checks of the stack and of the
+interrupt, the code and its tables looked up), and at the `yield` the `Vm` taken apart again; and the
+generator's state (four stacks, the execution context, about 200 bytes) was moved out of the generator's
+record and back at every step. Seven tenths of the case were that, three tenths the code of the loop and
+of the generator. The step of a `for`-`of` and of a spread (`[...g]`, `f(...g)`) resumes the generator in
+the `Vm` that runs the loop now, as a call runs a function in place (area 3): the calling code is put
+aside in a frame, the generator's own value stack is the `Vm`'s while it runs, what it kept on the other
+three stacks goes above what the caller has there, its execution context is pushed, and its code goes on
+where it yielded. A `yield` does the reverse and its value is the value of the step; a `return`, or an
+error the generator does not handle, completes it and leaves the frame as a function's is left, the
+error going to the caller's handlers. The suspended state is a record of its own that the generator and
+the frame hand to each other, so that nothing in it is copied; `next`, `return` and `throw` called the
+general way keep the same record through their run and move less than they did.
+
+It is taken only where the step would call the original `next` of the running realm on a generator that
+is suspended, and one more call is not one too many. A generator that is running (it steps itself: a
+TypeError) or completed, a `next` of one's own, and every other way of resuming (`next()` by hand,
+`yield*`, a pattern, `Array.from`) go as before, on the same state: a generator can be stepped by a loop
+and by hand in turn. The interrupt is asked and a due collection run at every resume, as at a call.
+`call/generator` went from 6.5 to 3.6 ms (4.2x to 2.2x).
+
+Left: a turn of that loop is 34 ns against QuickJS's 16. About half is the ten instructions that the
+loop and the generator run for it (twelve before the loop had one handler, below; one is the jump that
+follows every `yield`), the rest entering and yielding: the frame, the
+execution context moved to the stack of contexts and back, the code's tables held and let go, its
+executable rooted. Tried and dropped, each measured with the two binaries run in turn: an arm of the
+fast loop for `yield` (1-2% of this case, and `loop/switch` 14% slower: see the defects); the three value
+stacks exchanged with each place read before it is written; the one handler of a `yield` inside a loop
+moved by itself; the generator's executable kept current by the collector in the frame instead of read
+again at each `yield` (none of the three measurable); the jump after a `yield` taken at the resume (5%
+slower).
+
+A `for`-`of` loop pushed a handler after every step and popped it before the next, and a `for`-`in` loop
+did the same. What the binding or the statement throws closes the iterator (its `return` is called), and
+what the step throws must not: the handler was around the one and not the other. A loop has one handler
+now, pushed before its first step and popped where the loop is done, and a step that throws leaves the
+loop's iterator record exhausted before its error goes to that handler: closing an exhausted record
+asks for no `return` and calls nothing. That is done in the three places the step of a loop throws
+from: the general step (`next` throws or gives no object, reading `done` or `value` throws), a
+generator resumed in place that throws, and the read of the result that a `yield*` in it passed on.
+What leaves the statement by `break`, `continue` or `return` finds the same handlers above it as
+before, and `continue` pops none. `for await` keeps its handler around the turn: its step is several
+instructions, with an Await among them. Array patterns and spreads step without a handler, as they did.
+
+Two instructions fewer in every turn: `for`-`of` over an Array went from 1.94 to 1.58 ms (0.97x to
+0.77x), a string walked by code point from 1.15 to 1.09 ms (2.09x to 1.96x), a generator from 3.51 to
+3.40 ms (2.23x to 2.15x), `for`-`in` with `Object.keys` from 2.37 to 2.29 ms.
+
+What it cost: `loop/empty-for`, which runs none of this, is 3% slower in the binary that has it (3.29 to
+3.40 ms with the two binaries run in turn; 0.98x to 1.01x), by where the loop of instructions landed.
+Written with the marking inside the loop of instructions it was 7%, then 3.4% with one of the two
+places moved out; both are functions of their own now, called where the step was called before, and
+the loop of instructions has no new code. No other case moved outside its noise (the ones the full run
+showed 3-5% slower were run again, binary against binary: within 1%, but for the step of the particle
+animation, whose runs overlap and whose best is 4% apart).
 
 ### 6. Numbers
 
@@ -632,6 +1148,96 @@ went from 1.7x to 1.2x, a loop of float arithmetic from 3.7x to 3.1x, integers m
 Left: a double that does not fit the 56-bit inline form is allocated on the heap, so most float arithmetic
 allocates (`math/` 2.8x, `typed/float64-math` 4.1x). The fix is a value layout with inline doubles, which touches
 every `match` on `Value`: large, and after the items above.
+
+The text of a Number was the other half of what a script that shows numbers does. Sampled, `String(i)`,
+`i + ""` and `(i * 0.37).toFixed(2)` had a sixth of their time in std's exact formatting of a float, and the
+rest of the conversion put its text together in the heap: an integer was formatted into a `String`, a double
+into three (what `{:e}` writes, its digits, the result), each then copied into a JavaScript string or thrown
+away for one of seven bytes. The text is written in the native stack now, and a String of up to seven bytes
+is made of it with nothing allocated. `toFixed` takes its digits from one integer where one holds them, for
+|x| under 2^53 and up to 20 fraction digits: x is m * 2^e with e <= 0 there, m * 10^f is under 2^120, and the
+integer nearest to x * 10^f (the larger on a tie, as the specification asks) is that product shifted down and
+rounded by what the shift drops; any other x goes the way it went. The same text goes into `JSON.stringify`
+and `join`, and into the keys that are integers. Both are held to what they replace over some hundred
+thousand Numbers of every kind (`number/text.rs`), and a script of three thousand gives what it gives in
+Node. Numbers joined went from 1.9x to 1.3x, the three conversions from 3.3x to 2.4x, a frame of an easing
+animation (which writes its values with `toFixed`) from 2.9x to 2.1x, template literals from 1.9x to 1.5x,
+`JSON.stringify` from 1.2x to 1.0x, serializing a list of operations from 1.4x to 1.2x.
+
+Left of it: a string of eight bytes or more is looked up in the string table (a tenth of the three
+conversions now), and std's shortest digits of a double are still what `{:e}` writes.
+
+In a loop of float arithmetic (`x = x * 1.0000001 + 0.25 / (i + 1)`, 2.7x) two fifths of the time were
+not the arithmetic but getting to it: the operator found again by its kind in one function, then in a
+second, and `Number::multiply` and `Number::divide` as the specification writes them, a step for each
+special value (NaN, the infinities, the zeros), every step a question that read the operands again from
+the heap. Those steps are the arithmetic of doubles, and so are the steps of `Number::remainder` what `%`
+of two doubles gives: the three are now the operations themselves, as `Number::add` already was, and a
+test holds `*`, `/` and `%` to the steps for every pair of the special values and of ordinary ones. The
+four operators on two Numbers that are not both integers are computed where the instruction finds them,
+and a double becomes a Value without a call. The loop went to 1.9x, trigonometry in a loop from 2.6x to
+2.3x, rounding and clamping from 2.3x to 2.1x.
+
+Reading or writing an element of a TypedArray asked whether the index is valid by the specification's
+operations one after another: whether the buffer is detached, its length, whether the view is out of
+bounds, the length of the view, each reading the view and its buffer again (and one assertion reading
+the buffer a third time). It is one reading of the buffer and one of the view now. Arithmetic over a
+`Float64Array` went from 4.1x to 3.3x, pixels written to a `Uint8ClampedArray` from 2.8x to 2.6x; typed
+arrays from 2.8x to 2.5x, all cases from 1.68x to 1.67x.
+
+`a.length` of a TypedArray, which is in the test of nearly every loop over one, was nearly half of such
+a loop (46% of `typed/uint8-fill-loop`, 13% beside the arithmetic of `typed/float64-math`). At every
+read the shape of the array was asked for by its prototype (a table lookup: an array with no
+properties of its own has no record of them), the property cache searched, the accessor read from
+%TypedArray%.prototype through that object's descriptors (two more lookups) and compared with the one
+the engine made; and then the length was computed by four of the specification's operations, each
+reading the view and its buffer again.
+
+That the property is that accessor is the same for every TypedArray of one kind that has no properties
+of its own and the prototype of its kind, in one Realm, and it stays so until one of two things
+happens, which the heap now counts. An object whose shape is changed in place (the intrinsic objects,
+and every object that is a prototype) has a property added, removed or moved, or is given another
+prototype: counted where the property caches are set right for it. Or a property that an object
+already has is given a descriptor, or loses the one it had, which is the one way an accessor becomes
+another accessor or a value with its shape, key and place unchanged: counted where an existing
+property is overwritten. The loop remembers the kind and the Realm it last found the accessor for,
+with the two counts and the count of collections (`TypedArrayLengthSeen`); while they stand, the
+length is computed at once. An array with a property or a prototype of its own, and any array after a
+change, goes the way it went. The length itself is one reading of the buffer and of the view, as the
+validity of an index was already.
+
+The readings of a view (its length, its buffer, the buffer's length) were functions of their own, and
+an element read or written called four or five of them, each looking the view's record up again; they
+are part of their callers now.
+
+With the two binaries run in turn: `typed/uint8-fill-loop` 34.5 to 20.9 ms (2.04x to 1.18x),
+`typed/float64-math` 16.5 to 13.3 ms (2.97x to 2.41x), `typed/pixels-rgba` 5% less (2.20x to 2.07x);
+typed arrays from 2.3x to 1.85x, all cases from 1.519x to 1.503x. The loops and the calls are where
+they were (each within 1.5%).
+
+Tried: the validity of an index made part of the element read and write by force (it is a function of
+its own that they call). The loops over typed arrays gained nothing more, pixels were 5% slower, and a
+`switch` in a loop, which touches none of it, 8%.
+
+Left for these: a double read from a `Float64Array` or made by an operator becomes a Value through a
+function of some sixty machine instructions (whether it is an integer, whether it fits a Value, else a
+Number of the heap), a fifth of `typed/float64-math`; and an element read goes through three functions
+to its bytes.
+
+Of that function: a double with any bit set in its low byte fits no Value, and is a Number of the heap
+unless it is a whole number among the safe integers, which the conversion to an integer and back
+tells. Those two tests are asked first now, where the function is called (not where an operator of
+the loop has the conversion in line), and what they do not settle goes on as before.
+`typed/float64-math` is 3% faster (2.41x to 2.31x), `math/random-and-date` 3%, arithmetic on doubles
+in a loop 2%, trigonometry 1%. Tried: the whole conversion written as those tests (whole and safe, else
+a low byte of zeros, else the heap), which gives the same Numbers for four million doubles and is
+half as long. In line in the operators of the loop it was slower: trigonometry in a loop by 12%,
+integers mixed with doubles and arithmetic on doubles by 8%.
+
+Left: a double that is not an integer and has more than 45 bits of mantissa is a Number of the heap, one
+allocated for the result of every operator, the intermediate ones too (a tenth of the loop, and the
+collector's sweep of them a twelfth). A Value has seven bytes for what it holds; doubles in a Value
+would take another layout of Value.
 
 ### 7. Building strings
 
@@ -658,10 +1264,17 @@ A piece is also at least twice as long as the one after it now. It only had to b
 with ever shorter strings had as many pieces as steps, and letting go of it went as deep. A text has no more
 pieces than its length has bits.
 
-Rows of HTML appended to one string (5.2x) read 8% faster in the suite and 9% slower by their best run. The
-bytes of a piece are counted as they are allocated now, where each piece a merge went through was counted
-before; the collector therefore runs less often, fewer runs have a collection in them, and the string table
-is larger between two collections, which every lookup of a new string pays for.
+Rows of HTML appended to one string (5.2x then) read 8% faster in the suite and 9% slower by their best run
+after that change, and what was written here took the larger string table between two collections for the
+reason. It was not that. A run of the case builds the text of the run before again, and so does a widget that
+renders what it rendered before: every step makes the string the same step made last time, the string table
+finds it, and to compare the two it joined both, the whole text copied twice for each thing appended. How
+often that happened went by how many of the last run's strings a collection had left in the table, so by
+how often the collector ran. An appended text is compared by its pieces now, with a buffer or with another
+appended text, and nothing is joined for it; texts that continue one text share its pieces, and from where
+both come to the same piece the rest is the same unlooked at, so the step that makes again what it made
+before compares what it added. The rows of HTML went from 0.39 to 0.20 ms (2.7x), escaping HTML a character
+at a time from 1.7x to 1.5x.
 
 Sampled over the eight application cases together, a short concatenation was the largest thing to be named:
 two fifths of the canvas command buffer, where each command makes `"rgb(" + r + ",10," + b + ")"`. A String
@@ -673,14 +1286,85 @@ copied to the heap only where no such string exists. The command buffer went fro
 are made and dropped from 4.3x to 3.3x, rows of HTML joined from an array from 4.1x to 3.3x; the application
 cases from 2.5x to 2.3x.
 
-Left: every string made is still hashed for the table, a third of what a short concatenation costs now
-(SipHash, keyed so that a script cannot choose colliding strings), and looked up in it: an appended text is
-a string like any other, so each step still allocates its record and asks the table. Prepending (`s = x + s`,
-36x) still copies and hashes the whole string every time, 5 KB a step on average in the case measured; it is
-rare.
-A keyed multiply-fold hash would take a fraction of SipHash's time on long strings and was not tried: that a
-script cannot choose colliding strings is what SipHash is there for, and giving it up is not a question of
-speed alone.
+What was left then: every string made was hashed for the table with SipHash, keyed so that a script cannot
+choose colliding strings, and prepending (`s = x + s`, 38x) copied and hashed the whole string every time,
+5 KB a step on average in the case measured. By profile nine tenths of that case were SipHash, and in a
+loop that appends a character a sixth: the bytes since the last 64-byte block hashed again at every step,
+the state of the hash copied, and its four closing rounds.
+
+SipHash was not slow (5 GB/s here). It cannot be continued from the other end, or put together from two
+hashes. The hash of a text is now a polynomial of its bytes at a random point modulo 2^61 - 1
+(`hashing.rs`, `TextHasher`): each byte plus one times a power of the point, taken eight bytes at a time
+from a table of 8 by 256 products and 32 bytes to one reduction. The hash of two texts put together is the
+left one's times the point to the right one's length, plus the right one's; so appending continues from
+the hash of what was there by the bytes added, and putting text before costs one multiplication, where the
+text keeps that power from the step before. Every string's record keeps the hash, so the table never reads
+a text again to grow. The table takes a one-to-one mixing of the hash under a second random key. Two
+different texts have the same hash for at most as many points as the longer has bytes, of 2^61, whatever
+the texts; what was given up against SipHash is in `safe/SECURITY.md`.
+
+A text that is being built keeps pieces at its start as it does at its end, with the same rule for how
+long they are, and its first 31 bytes next to its last: text put before a string that a concatenation made
+shares all of that string, as text appended does, and two built texts are compared side by side, each
+side from its edge inwards until both walks stand at the same piece. And a concatenation of two strings
+has its hash before it has its text, so it asks the table first and copies only where there is no such
+string yet, whatever the length (it was so up to 64 bytes).
+
+Prepending went from 38x to 1.9x (5.6 ms to 0.27 ms). The cases that append: a character at a time 2.6x to
+1.9x, short strings 2.6x to 1.7x, numbers 2.2x to 1.8x, text outside ASCII 1.5x to 1.0x, rows of HTML 2.6x
+to 2.0x, `fromCharCode` 2.3x to 1.9x, escaping HTML a character at a time 1.5x to 1.2x. The group went from
+2.0x to 1.6x, all cases from 1.88x to 1.78x.
+
+One thing on the way: the power of the point for a text's length, found by its bits at every step, was two
+fifths of prepending as first written (2.8x). And an append of a few bytes to a long text asked the
+allocator's count whether they fit, at every step; it is let through as a short string is, and the poll
+holds the heap to the limit.
+
+Left in a step of such a loop: the record of the new text allocated and, where the text was built before,
+dropped again after the table found the old one (an eighth each for the table and the record), and the
+collector's sweep of the records (an eighth).
+
+`"row-" + i + "-" + (i & 15)` made a String at every `+`: three for one that is wanted, each hashed,
+looked up in the table, allocated and collected (`gc/string-garbage`, 3.3x: 210 ns for the expression
+against 63). A chain of additions is now compiled as one concatenation from its first operand that is a
+String whatever is evaluated (a string or template literal): what stands before that operand is added up
+as it is written, each operand after it is made the String it is there (ToPrimitive, then ToString) by an
+instruction of its own before the next operand is evaluated, as the operators make it, and one
+instruction puts the Strings together. Up to 64 bytes they are put together on the native stack and the
+table asked, so the text goes to the heap only where it has no such String yet. A String among them that
+is being built (areas above) is not copied: what stands before it and after it is put together and then
+put before it and appended to it, as the operators did, so a loop that builds a text with such a chain
+still adds to the text. Template literals are compiled the same way, with ToString for each
+substitution.
+
+Short strings made and dropped went from 3.3x to 1.5x, the canvas command buffer (`"rgb(" + r + ",10," +
+b + ")"`) from 2.4x to 1.7x, rows of HTML from 2.1x to 1.5x, template literals from 1.6x to 1.4x; the
+application cases from 1.9x to 1.7x, all cases from 1.71x to 1.68x.
+
+The `+` of two operands still took the general way of an instruction whenever one of them was a
+String: `s += "…"`, `"<td>" + cell`, `text + i`. The loop left, the instruction was read again with
+what it is fused with (the local, the constant), and the operands were asked whether they are Numbers
+before they were joined: a sixth of a loop appending short texts, on top of the appending itself. It
+is done where the operators have their one call for Numbers that are not two integers
+(`Vm::float_operation`). Operands that are not two Numbers are, for `+`, a String and a String or a
+primitive that ToString takes without running anything (a Number, a Boolean, undefined, null, a
+BigInt; not a Symbol, which it throws for): made text and joined as the general way joins them,
+after the same look at the length of the result, which is what holds a text to the limit of a
+string and of the heap. Where that look refuses, and for an object, nothing is done there and the
+general way does as it did.
+
+With the two binaries run in turn: `string/append-100k-char` went from 6.02 to 4.99 ms (1.97x to
+1.63x), `string/append-20k-short` from 1.19 to 1.05 ms (1.79x to 1.52x), text outside ASCII appended
+12% less (1.09x to 0.95x), `string/prepend-5k` 11% less (1.89x to 1.67x), Numbers appended and rows
+of HTML 3% less. The loops, the calls and the properties are within 1.6% of where they were.
+
+That last sentence took three ways of writing it. A call of its own for the Strings, in each arm of
+the loop that has an operator, made the loop of instructions 392 bytes longer, a loop adding
+integers 9% slower and a `switch` 6%. The arms cut down to the integers and the one call, which then
+tells Numbers from the rest itself, made it 1048 bytes shorter, the loop adding integers 3% slower
+and one of doubles 4%. What is kept leaves the arms as they were but for one thing: operands that
+are not Numbers, under an operator that is no comparison, go on to the call that was there, where
+they left at once.
 
 ### 8. Other string work
 
@@ -696,6 +1380,15 @@ case conversion and trimming from 1.7x to 1.3x, the tokenizer from 3.9x to 2.5x;
 Left: the calls themselves, which are native ones (area 3), and interning each result. Searching and splitting
 are level or faster.
 
+`a < b` of two Strings left the loop of instructions for the general comparison, and that decoded both
+texts into UTF-16 code units one code point at a time to compare them. The four comparisons of two
+Strings are answered in the loop now, and the texts are compared as the bytes they are kept as: the
+common beginning is passed over eight bytes at a time, and the first bytes that differ decide when both
+are below 0xED, where the order of WTF-8 bytes is that of code units (it is not only where a surrogate
+pair meets U+E000 and up, and those are decoded as before; a test compares every pair of a set of texts
+around that boundary with the order of their code units). `string/equality-and-compare` went from 2.15x
+to 1.8x, sorting objects by a number and then a name from 1.85x to 1.6x.
+
 Replacing by a RegExp was the one built-in that stood out in the application cases (escaping HTML: a fifth of
 the list that is rendered to HTML). `RegExp.prototype[Symbol.replace]` is written against the RegExp's
 properties: it read `flags` through nine accessors, looked `exec` up for every match, and had each result made
@@ -706,6 +1399,30 @@ is put together from them, a function still being called for each match after al
 a lastIndex that is not a number, named groups and any replaced part of the protocol take the steps as written.
 Replacing with a function went from 1.5x to 0.9x, with a string and a RegExp in turn from 30 to 10 ms (0.5x),
 the rendered list from 2.1x to 1.7x. `match`, `matchAll`, `split` and `search` still go by the properties.
+
+`Array.prototype.join` was the specification's loop for every Array: for each element the separator read
+from its rooted handle, Get of the element by its index through the general way of a property, a
+comparison with the Array, ToString by the general way, and the handle of the Array read three times.
+Where the Array has no element descriptors, its elements that are Strings, Numbers, Booleans, undefined
+or null are read from where they are and appended, for as long as there is nothing else: Get of such an
+element is the element, and ToString of it runs nothing, so that the Array is what it was at the next
+one. A hole (which a prototype may answer for), an object, a Symbol and a BigInt go on from where they
+are by the loop as it was, with the text so far. The host is asked and the length of the text checked at
+every element, as before. `parts.join("")` of the pieces of a text is this path: numbers joined went
+from 4.75 to 3.34 ms (1.36x to 0.96x), a text split and joined from 1.18x to 1.02x, strings pushed and
+joined from 0.83 to 0.74 ms (2.29x to 2.11x; the rest of that case is `push`).
+
+The method of a String or a Number (`s.slice`, `s.charCodeAt`, `n.toFixed`) is found by the cache under
+the shape of the prototype object of its kind, and was then read from that object's storage by three
+general functions; it is the one function that reads a property of an ordinary object by its cache
+now. The cases that call such a method in a loop are 1-4% faster (`string/char-code-at-non-ascii`
+3.7%, `string/slice-non-ascii` 2.3%). As part of every arm that reads a property (it was in line) the
+same change made the calls 1-4% slower by where the loop's code lay; it is a function of its own.
+
+Tried: the method of an Array (`a.push`) found under a remembered shape of the Arrays that have no
+properties of their own, and read from its slot. The case of strings pushed and joined gained
+nothing (what `push` costs is in `push`: whether the Array appends plainly, its storage grown, the
+bytes counted), and a plain call and the properties of one object read 4-6% slower. Dropped.
 
 ### 9. Garbage
 
@@ -847,7 +1564,8 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   themselves. `unshift` took its direct way without asking whether a prototype has a setter under an
   index; it asks as `push` does. Fixed.
 - A Proxy whose target is a function is not accepted where a callback is asked for:
-  `[1].map(new Proxy(function () {}, {}))` throws a TypeError (IsCallable is false for it). Upstream.
+  `[1].map(new Proxy(function () {}, {}))` throws a TypeError (IsCallable is false for it), `new` of
+  one throws and `x instanceof` one is false; `Proxy.revocable` is not there at all. Upstream.
   Not fixed.
 - `Object.isFrozen(Object.preventExtensions([]))` is false here and true in V8, whose "length" for that
   Array is writable all the same. Taken for V8's departure, and left out of the comparison with Node.
@@ -856,6 +1574,94 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   was under a load of ninety at the time; three runs on a quiet machine passed. The limit is wall-clock time.
 - One run of `limits_tests` in fourteen had one failing test (which one was not captured); the thirteen other
   runs, eight of them of that file alone, passed. Its tests end scripts by wall-clock deadlines. Not explained.
+
+- The joins of the texts that the string table compared (area 7) were counted against what may be joined
+  between two collections, and a join past that ends the engine as out of memory. With the estimate the
+  collector ran often enough to hide it. On top of the Android line, which counts what the engine allocates
+  and collects less often for it, the rows of HTML ended the engine on their thirteenth run and the escaping
+  of HTML on its second, with 6 MB in use under a limit of 64 MB: the benchmark found it after the two lines
+  were joined, and no test had. Fixed with the comparison, with a test that runs both under the count.
+- Joining the two lines brought their checks together, and reading the Android line's changes for it found
+  defects in what both share (`safe/SECURITY.md`, "How it was tested"): a process that `JSON.stringify` of a
+  Proxy with a made-up length ended, native loops the interrupt did not reach, a RegExp search's stacks
+  outside the memory limit, a host function's arguments copied without asking it, and DataView bounds that
+  wrapped around on a 32-bit target. Fixed, each with its test.
+- A fix on one line for a function the other had copied does not conflict: the Android line made `Math.max`
+  take +0 over -0 without `f64::max` (which answers -0 on 32-bit ARM), and the copy of that fold which runs
+  `Math.max` in place of a call kept the old line through the rebase. Found by comparing every commit before
+  and after; the copy has the fix.
+
+- A function declared in a block and named `arguments` does not take the place of the arguments object
+  after the block in sloppy code (Annex B.3.3), here or in the build this started from; Node does it.
+  Found by the script written for the arguments object's stack slot. Not fixed.
+
+- The shorter way of an object spread (`{ ...source }` as a copy of the source's shape and values) had
+  never run, here or in the build this started from, and would have made broken objects if it had: it was
+  asked of the source with the source for its argument, so the target was never empty in its eyes; it
+  took the target's shape for the source's; and it let through properties that are not writable or not
+  configurable, whose copies are both. Found by reading it for the profile of the spread. Written again,
+  with a script of fifty-five checks against Node as its test.
+- `Object.prototype.__proto__` is not an accessor here, nor in the build this started from: `in` and a
+  read find `__proto__` on no object, and `Object.assign({}, JSON.parse('{"__proto__": {}}'))` makes an
+  own property of that name where Node sets the prototype. Annex B.2.2.1; not added.
+- `String.prototype.repeat` made each lone surrogate of the text U+FFFD, and did not make a pair of a
+  trail surrogate at the start with a lead surrogate at the end of the copy before; so here and in the
+  build this started from. Found by the script written for the functions run in place; fixed, with that
+  script as its test.
+- A template literal evaluated all of its substitutions and then converted them to Strings, where each is
+  to be converted before the next is evaluated: a `toString` that the next expression can observe ran
+  late, and one that throws did not keep the later substitutions from being evaluated. So here and in the
+  build this started from. Found while reading how concatenation is compiled; fixed with the chains of
+  `+`, which convert each operand in its turn, and tested with them.
+
+- `loop/switch` read 4% slower after the round of the text of a Number (5.5 to 5.75 ms, in seven runs of
+  each binary in turn), which touched nothing it runs: where the loop of instructions lands in the binary
+  moved. It is 0.9x of QuickJS. Not followed up.
+- The length of `Function.prototype[Symbol.hasInstance]` was 0 where it is 1. Upstream, and one of the
+  expected failures of test262; fixed while that method was read for `instanceof`, and the expectation
+  removed.
+- The comparison of Strings, as first written, made the loops that compare no String slower: nested
+  `while` loops by 16%, a sum of integers by 6%, a `switch` and a closure call by 7% each. It was a call
+  put in the branch for "not two Numbers" of two helpers that are compiled into every instruction of
+  arithmetic and comparison, and each copy of them was the worse for it. Every test passed; the table of
+  the whole benchmark showed it, case by case against the round before, and the two binaries run in turn
+  confirmed it. One function out of the loop now has all that is not two integers, and the call for
+  Strings is compiled only into the four comparisons. A change to those helpers is measured on the plain
+  loops first, whatever case it was made for.
+- `with (object) { name }` does not ask the object for the name: a name the object has is read from the
+  scope outside it, here and in the build this started from. And a function declared in a block is not
+  a variable of the function around the block after the block has run (Annex B.3.3): `typeof` of it
+  stays "undefined" there. Both upstream, both seen in the script for the variables kept for a call,
+  where Node gave what the specification says; neither is fixed, and the script leaves them out.
+- Private names put on an intrinsic object moved every property of the object under its shape, which
+  stays the same shape, and no property lookup cache was told: a constructor that returns the object to
+  a class with private fields (`class S extends B { #x }`, `B` returning `globalThis` or
+  `Array.prototype`) left every cached read of that object's properties, its own and those inherited
+  through it, reading what had moved into the place. The script that does it to the global object ended
+  with "not a function" at the next global it called, here and in the build this started from. Upstream;
+  test262 has no test that fails for it. Fixed: every cache forgets what it found when that happens, once
+  for an object. Found by the script written for the globals, which is its test.
+- The same again a round later, by another way: an arm for `yield` among the plain instructions, which
+  no loop but a generator's runs, made `loop/switch` 14% slower and nested `while` loops 4% (the two
+  binaries run in turn; every test passed, and the mean of the benchmark had improved). Nothing those
+  loops run was changed: the compiler laid the loop of instructions out otherwise. Without the arm a
+  `yield` takes the general way of an instruction, which costs a generator 1-2%, and the loops are where
+  they were. In the same binary a plain call reads 4-8% faster than the round before (`call/plain-function`,
+  `call/closure`, `prop/getter-setter`), with nothing in its path changed but that a new frame is made by
+  a function of its own; whether that or the layout did it is not established.
+- A function of its own that an arm of the loop of instructions calls has to be given only what fits
+  registers. One that took the loop's tables (three slices, passed by address), tried for running a
+  property read with the instruction that fetches its object, made every loop and call 17-34% slower,
+  though none ran it: the tables were kept in memory from then on. Given the cache and the key it
+  cost nothing elsewhere, and gained nothing where it was for (area 1).
+- `typeof K` before `class K {}` in the same function gives "undefined" where it is to throw a
+  ReferenceError (the class is in its temporal dead zone), here and in the build this started from;
+  `typeof` of a `let` or a `const` there throws. Seen in the script for `typeof`, which leaves it
+  out. Not changed.
+- `ArrayBuffer.prototype.transfer` is there and throws "not implemented", here and in the build this
+  started from; `o[key] += v` makes a property key of `key` once, where Node does it twice (the
+  specification says once). Seen in the scripts for the length of a TypedArray and for compound
+  assignment, which leave both out. Neither is changed.
 
 ## Checking a change
 

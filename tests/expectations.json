@@ -548,7 +548,6 @@
   "built-ins/Function/internals/Construct/base-ctor-revoked-proxy.js": "FAIL",
   "built-ins/Function/proto-from-ctor-realm-prototype.js": "FAIL",
   "built-ins/Function/proto-from-ctor-realm.js": "FAIL",
-  "built-ins/Function/prototype/Symbol.hasInstance/length.js": "FAIL",
   "built-ins/Function/prototype/apply/argarray-not-object-realm.js": "FAIL",
   "built-ins/Function/prototype/apply/this-not-callable-realm.js": "FAIL",
   "built-ins/Function/prototype/bind/get-fn-realm-recursive.js": "FAIL",

@@ -326,6 +326,19 @@ impl ObjectConstructor {
             }
             // i. Let from be ! ToObject(nextSource).
             let from = to_object(agent, next_source, gc.nogc()).unwrap();
+            // A source that has only plain data properties under String
+            // keys, each of which the target takes without a setter or a
+            // trap: the steps below come to these assignments, in this
+            // order, and need no list of keys and no descriptors for them.
+            // Where the target does not take one so (a setter is to be
+            // called, or the assignment fails and throws), the steps do it
+            // all from the first key: what was assigned is assigned again,
+            // which nothing can see.
+            if let Object::Object(plain) = from
+                && Self::assign_plain_properties(agent, to.get(agent), plain, gc.nogc())
+            {
+                continue;
+            }
             scoped_from.replace(agent, from.unbind());
             // ii. Let keys be ? from.[[OwnPropertyKeys]]().
             let keys = from
@@ -375,6 +388,41 @@ impl ObjectConstructor {
         }
         // 4. Return to.
         Ok(to.get(agent).into())
+    }
+
+    /// Assigns the properties of `from` to `to` as Object.assign does,
+    /// where `from` has only plain data properties under String keys and
+    /// `to` takes each without running anything. False where it does not:
+    /// some may then have been assigned.
+    fn assign_plain_properties(
+        agent: &mut Agent,
+        to: Object,
+        from: OrdinaryObject,
+        gc: crate::engine::NoGcScope,
+    ) -> bool {
+        let storage = from.get_property_storage(agent);
+        if storage.descriptors.is_some() || storage.keys.iter().any(|key| !key.is_string()) {
+            return false;
+        }
+        // The properties as they are now: the target may be the source.
+        let properties: Vec<(PropertyKey, Value)> = storage
+            .keys
+            .iter()
+            .zip(storage.values)
+            .filter_map(|(key, value)| Some((key.unbind(), (*value)?.unbind())))
+            .collect();
+        if properties.len() != storage.keys.len() {
+            return false;
+        }
+        for (key, value) in properties {
+            if !matches!(
+                to.try_set(agent, key, value, to.into(), None, gc),
+                core::ops::ControlFlow::Continue(crate::ecmascript::SetResult::Done)
+            ) {
+                return false;
+            }
+        }
+        true
     }
 
     fn create<'gc>(

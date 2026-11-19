@@ -122,8 +122,12 @@ typedef bool (*nova_interrupt_fn)(void *context);
 /* A new engine with one realm and the standard globals; NULL on failure, with
  * the reason in `error` (may be NULL). `host` is required, `interrupt` may be
  * NULL. Both must stay callable with `context` until nova_engine_free.
- * memory_limit: heap bytes (0: none); a script that goes past it ends with
- * NOVA_OUT_OF_MEMORY. stack_limit: native stack bytes JavaScript may use,
+ * memory_limit: bytes (0: none); a script that goes past it ends with
+ * NOVA_OUT_OF_MEMORY. The bytes are counted by the library's allocator: all
+ * that the engine's allocations hold, its heap with what the heap keeps
+ * spare, its tables, compiled code and the temporaries of the running call
+ * (a script compiled with nova_script_compile is counted on no engine, what
+ * an engine makes of it when it evaluates it is). stack_limit: native stack bytes JavaScript may use,
  * counted from the call into the engine (0: 1 MB); deeper calls throw a
  * catchable RangeError. Leave a quarter of the thread's stack free (about
  * 2.8 KB per JavaScript call level in a release build). The interrupt
@@ -178,7 +182,10 @@ int32_t nova_engine_capture(const nova_engine *engine, const uint8_t *name, size
                             nova_result *out);
 
 /* Calls the captured function `name`, else the global `name`, with string
- * arguments and `this` undefined. NOVA_NOT_A_FUNCTION if it is not one. */
+ * arguments and `this` undefined. NOVA_NOT_A_FUNCTION if it is not one. An
+ * argument is UTF-8, or WTF-8 as nova_arg has it, so a string the engine
+ * handed out goes back in unchanged; any other byte that is not part of a
+ * UTF-8 sequence becomes U+FFFD. */
 int32_t nova_engine_call(const nova_engine *engine, const uint8_t *name, size_t name_len, const nova_str *args,
                          size_t argc, nova_result *out);
 
@@ -190,7 +197,8 @@ bool nova_engine_has_pending_job(const nova_engine *engine);
  * run. */
 int32_t nova_engine_run_job(const nova_engine *engine, bool *ran, nova_result *out);
 
-/* Bytes of the engine's heap in use (0 once dead). */
+/* Bytes the engine's allocations hold right now, as the memory limit counts
+ * them (0 once dead). */
 size_t nova_engine_memory_used(const nova_engine *engine);
 
 /* Sets the memory limit in bytes (0: none). */
@@ -209,13 +217,13 @@ int32_t nova_engine_collect_garbage(const nova_engine *engine);
 void nova_result_free(nova_result *result);
 
 /* Inside a host function callback only, on the `ret` it was given. Strings
- * and bytes are copied. */
+ * and bytes are copied. A string is UTF-8, or WTF-8 as nova_arg has it; any
+ * other byte that is not part of a UTF-8 sequence becomes U+FFFD. */
 void nova_return_null(nova_return *ret);
 void nova_return_number(nova_return *ret, double number);
 void nova_return_string(nova_return *ret, const uint8_t *ptr, size_t len);
 void nova_return_bytes(nova_return *ret, const uint8_t *ptr, size_t len);
-/* The call throws a RangeError with this message, which the script can catch,
- * instead of returning a value. */
+/* The call throws a RangeError with this message, which the script may catch. */
 void nova_return_range_error(nova_return *ret, const uint8_t *ptr, size_t len);
 
 /* Which limits this build enforces. Without NOVA_LIMIT_INTERRUPT a script that

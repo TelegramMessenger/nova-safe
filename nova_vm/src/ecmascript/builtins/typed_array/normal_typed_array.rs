@@ -1398,6 +1398,10 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         }
     }
 
+    // The four below are read at every element read or written, with the
+    // offset above: as functions of their own each looked the view's
+    // record up again, a fifth of what an element access took.
+    #[inline(always)]
     fn array_length(self, agent: &Agent) -> Option<usize> {
         let array_length = self.into_void_array().get(agent).array_length;
         if array_length == TypedArrayArrayLength::heap() {
@@ -1420,10 +1424,12 @@ impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a,
         size_of::<T>()
     }
 
+    #[inline(always)]
     fn viewed_array_buffer(self, agent: &Agent) -> AnyArrayBuffer<'a> {
         self.into_void_array().get(agent).viewed_array_buffer.into()
     }
 
+    #[inline(always)]
     fn get_cached_buffer_byte_length(self, agent: &Agent, _: Ordering) -> CachedBufferByteLength {
         // 1. Let buffer be obj.[[ViewedArrayBuffer]].
         let buffer = self.into_void_array().get(agent).viewed_array_buffer;

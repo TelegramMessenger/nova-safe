@@ -29,7 +29,7 @@ use crate::{
 };
 
 use super::{IndexType, JumpIndex};
-use crate::engine::{CallEnvironment, CodeTables, SwitchTable};
+use crate::engine::{Bytecode, CallEnvironment, CodeTables, SwitchTable};
 
 /// The ThrowError immediate of an executable that stands in for code using
 /// syntax the compiler does not support. Running it panics, as compiling that
@@ -272,7 +272,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             .into_iter()
             .map(|cases| SwitchTable::new(cases, &self.constants))
             .collect();
-        let instructions: std::sync::Arc<[u8]> = self.instructions.into();
+        let instructions = Bytecode::new(self.instructions);
         self.agent.heap.create(ExecutableHeapData {
             tables: CodeTables::new(
                 instructions.clone(),
@@ -349,6 +349,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 // A variable of an enclosing function, pushed.
                 if let Some(start) = self.recent_instruction(0, Instruction::GetBindingAtSite) {
                     self.instructions[start] = Instruction::LoadBindingAtSite.as_u8();
+                    return;
+                }
+                if let Some(start) = self.recent_instruction(0, Instruction::GetBindingAtSiteOnce) {
+                    self.instructions[start] = Instruction::LoadBindingAtSiteOnce.as_u8();
                     return;
                 }
                 // A constant pushed right after another push: there is no
@@ -511,6 +515,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             Instruction::Load,
             Instruction::LoadFromIndex,
             Instruction::LoadBindingAtSite,
+            Instruction::LoadBindingAtSiteOnce,
             Instruction::PushReferenceAndLoad,
             Instruction::LoadPropertyWithCachePushReference,
             Instruction::PutValueToIndex,
@@ -576,6 +581,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             (
                 Instruction::LoadBindingAtSite,
                 Instruction::GetBindingAtSite,
+            ),
+            (
+                Instruction::LoadBindingAtSiteOnce,
+                Instruction::GetBindingAtSiteOnce,
             ),
             (
                 Instruction::PushReferenceAndLoad,
@@ -1160,6 +1169,25 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         let identifier = self.add_identifier(identifier);
         self.add_index_of(identifier, TOO_MANY_NAMES);
         self.instructions.extend_from_slice(&site.to_ne_bytes());
+    }
+
+    /// GetBindingAtSiteOnce: the name, its BindingSite, and the stack slot
+    /// that keeps its value once it was read.
+    pub(super) fn add_instruction_with_identifier_site_and_slot(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        site: IndexType,
+        slot: IndexType,
+    ) {
+        debug_assert_eq!(instruction, Instruction::GetBindingAtSiteOnce);
+        self.push_instruction(instruction);
+        let identifier = self.add_identifier(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
+        self.instructions.extend_from_slice(&site.to_ne_bytes());
+        self.instructions.extend_from_slice(&slot.to_ne_bytes());
+        // The fourth argument, of which nothing is made.
+        self.instructions.extend_from_slice(&[0, 0]);
     }
 
     pub(super) fn add_instruction_with_identifier_and_constant(

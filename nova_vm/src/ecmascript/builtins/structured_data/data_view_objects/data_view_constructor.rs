@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::Ordering;
+use crate::width::usize_from_u64;
 
 use crate::{
     ecmascript::{
@@ -59,9 +60,11 @@ impl DataViewConstructor {
             .scope(agent, gc.nogc());
 
         // 3. Let offset be ? ToIndex(byteOffset).
-        let offset = to_index(agent, byte_offset.unbind(), gc.reborrow())
-            .unbind()?
-            .bind(gc.nogc()) as usize;
+        let offset = usize_from_u64(
+            to_index(agent, byte_offset.unbind(), gc.reborrow())
+                .unbind()?
+                .bind(gc.nogc()),
+        );
 
         // 4. If IsDetachedBuffer(buffer) is true, throw a TypeError exception.
         let buffer = scoped_buffer.get(agent).bind(gc.nogc());
@@ -104,11 +107,13 @@ impl DataViewConstructor {
         } else {
             // 9. Else,
             // a. Let viewByteLength be ? ToIndex(byteLength).
-            let view_byte_length = to_index(agent, byte_length.unbind(), gc.reborrow())
-                .unbind()?
-                .bind(gc.nogc()) as usize;
+            let view_byte_length = usize_from_u64(
+                to_index(agent, byte_length.unbind(), gc.reborrow())
+                    .unbind()?
+                    .bind(gc.nogc()),
+            );
             // b. If offset + viewByteLength > bufferByteLength, throw a RangeError exception.
-            if offset + view_byte_length > buffer_byte_length {
+            if offset.saturating_add(view_byte_length) > buffer_byte_length {
                 return Err(agent.throw_exception_with_static_message(
                     ExceptionType::RangeError,
                     "offset is outside the bounds of the buffer",
@@ -164,7 +169,7 @@ impl DataViewConstructor {
         // 14. If byteLength is not undefined, then
         if let Some(view_byte_length) = view_byte_length {
             // a. If offset + viewByteLength > bufferByteLength, throw a RangeError exception.
-            if offset + view_byte_length > buffer_byte_length {
+            if offset.saturating_add(view_byte_length) > buffer_byte_length {
                 return Err(agent.throw_exception_with_static_message(
                     ExceptionType::RangeError,
                     "offset is outside the bounds of the buffer",

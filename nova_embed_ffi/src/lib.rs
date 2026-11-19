@@ -14,10 +14,16 @@
 //!
 //! The header is `include/nova_engine.h`; its comments are the contract.
 //!
+//! The library's allocator (`meter.rs`) counts the bytes each engine's
+//! allocations hold; the memory limit bounds that count and
+//! `nova_engine_memory_used` returns it.
+//!
 //! Exported symbols carry `#[unsafe(no_mangle)]`: the names are unique (all
 //! start with `nova_`), so no other symbol of the process is replaced.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+
+mod meter;
 
 use core::{
     cell::{Cell, RefCell},
@@ -98,6 +104,9 @@ pub type NovaTimeZoneFn = Option<unsafe extern "C" fn(*mut c_void, i64) -> i32>;
 /// requested from there waits for the outermost call to return.
 pub struct NovaEngine {
     engine: RefCell<Engine>,
+    /// What the engine's allocations are counted on: entered by every call
+    /// that runs the engine.
+    account: Rc<meter::Account>,
     time_zone: Rc<Cell<NovaTimeZoneFn>>,
     free_requested: Cell<bool>,
 }
@@ -106,6 +115,7 @@ struct CHost {
     call: unsafe extern "C" fn(*mut c_void, u32, *const NovaArg, usize, *mut NovaReturn),
     interrupt: NovaInterruptFn,
     time_zone: Rc<Cell<NovaTimeZoneFn>>,
+    account: Rc<meter::Account>,
     context: *mut c_void,
 }
 
@@ -163,6 +173,10 @@ impl Host for CHost {
             Some(interrupt) => unsafe { interrupt(self.context) },
             None => false,
         }
+    }
+
+    fn allocated_bytes(&self) -> Option<usize> {
+        self.account.bytes()
     }
 
     fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
@@ -301,7 +315,9 @@ unsafe fn with_engine(
             )
         };
     };
+    let entered = handle_ref.account.enter();
     let result = catch_unwind(AssertUnwindSafe(|| work(&mut engine)));
+    drop(entered);
     drop(engine);
     let status = match result {
         // SAFETY: forwarded contract.
@@ -346,6 +362,9 @@ pub unsafe extern "C" fn nova_engine_new(
     };
     let time_zone = Rc::new(Cell::new(None));
     let host_time_zone = time_zone.clone();
+    let account = Rc::new(meter::Account::new());
+    let host_account = account.clone();
+    let entered = account.enter();
     let created = catch_unwind(AssertUnwindSafe(|| {
         Engine::new(
             EngineOptions {
@@ -356,16 +375,19 @@ pub unsafe extern "C" fn nova_engine_new(
                 call,
                 interrupt,
                 time_zone: host_time_zone,
+                account: host_account,
                 context,
             }),
         )
     }));
+    drop(entered);
     match created {
         Ok(Ok(engine)) => {
             // SAFETY: forwarded contract.
             unsafe { write_result(error, NOVA_VALUE_UNDEFINED, 0.0, Vec::new()) };
             Box::into_raw(Box::new(NovaEngine {
                 engine: RefCell::new(engine),
+                account,
                 time_zone,
                 free_requested: Cell::new(false),
             }))
@@ -632,7 +654,7 @@ pub unsafe extern "C" fn nova_engine_call(
     unsafe {
         with_engine(handle, out, |engine| {
             let args: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
-            engine.call_wtf8(&name, &args)
+            engine.call_with_bytes(&name, &args)
         })
     }
 }
@@ -830,8 +852,9 @@ pub unsafe extern "C" fn nova_return_number(ret: *mut NovaReturn, number: f64) {
     unsafe { set_return(ret, HostReturn::Number(number)) };
 }
 
-/// The host function returns a string (WTF-8, copied; bytes that are not
-/// become U+FFFD).
+/// The host function returns a string (copied): UTF-8, or WTF-8 as host
+/// function arguments have it (a lone surrogate as its own 3-byte sequence);
+/// any other byte that is not part of a UTF-8 sequence becomes U+FFFD.
 ///
 /// # Safety
 /// As `nova_return_null`; `ptr` readable for `len` bytes.
@@ -843,27 +866,10 @@ pub unsafe extern "C" fn nova_return_string(ret: *mut NovaReturn, ptr: *const u8
     };
     let value = match String::from_utf8(bytes) {
         Ok(text) => HostReturn::String(text),
-        Err(error) => HostReturn::Wtf8(error.into_bytes()),
+        Err(error) => HostReturn::StringBytes(error.into_bytes()),
     };
     // SAFETY: forwarded contract.
     unsafe { set_return(ret, value) };
-}
-
-/// The host function throws a RangeError with this message (UTF-8, copied;
-/// invalid sequences become U+FFFD) instead of returning.
-///
-/// # Safety
-/// As `nova_return_null`; `ptr` readable for `len` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nova_return_range_error(ret: *mut NovaReturn, ptr: *const u8, len: usize) {
-    // SAFETY: forwarded contract.
-    let Some(bytes) = (unsafe { read_bytes(ptr, len) }) else {
-        return;
-    };
-    let message = String::from_utf8(bytes)
-        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
-    // SAFETY: forwarded contract.
-    unsafe { set_return(ret, HostReturn::RangeError(message)) };
 }
 
 /// The host function returns a new ArrayBuffer with a copy of the bytes.
@@ -878,6 +884,23 @@ pub unsafe extern "C" fn nova_return_bytes(ret: *mut NovaReturn, ptr: *const u8,
     };
     // SAFETY: forwarded contract.
     unsafe { set_return(ret, HostReturn::ArrayBuffer(bytes)) };
+}
+
+/// The host function throws a RangeError with this message (UTF-8, copied;
+/// invalid sequences become U+FFFD), which the script may catch.
+///
+/// # Safety
+/// As `nova_return_null`; `ptr` readable for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nova_return_range_error(ret: *mut NovaReturn, ptr: *const u8, len: usize) {
+    // SAFETY: forwarded contract.
+    let Some(bytes) = (unsafe { read_bytes(ptr, len) }) else {
+        return;
+    };
+    let text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    // SAFETY: forwarded contract.
+    unsafe { set_return(ret, HostReturn::RangeError(text)) };
 }
 
 static VERSION: LazyLock<String> = LazyLock::new(|| {

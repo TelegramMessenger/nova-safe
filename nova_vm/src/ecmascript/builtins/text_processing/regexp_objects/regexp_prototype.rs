@@ -4,6 +4,7 @@
 
 use core::ops::ControlFlow;
 
+use crate::width::{usize_from_i64, usize_from_u64};
 use oxc_ast::ast::RegExpFlags;
 use wtf8::Wtf8Buf;
 
@@ -564,7 +565,7 @@ impl RegExpPrototype {
                     let next_index = advance_string_index(
                         agent,
                         s.get(agent),
-                        this_index as usize,
+                        u64::try_from(this_index).expect("thisIndex is a length"),
                         full_unicode,
                     );
                     // c. Perform ? Set(rx, "lastIndex", 𝔽(nextIndex), true).
@@ -871,7 +872,7 @@ impl RegExpPrototype {
                 let this_index = to_length(agent, this_index.unbind(), gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc());
-                let this_index = usize::try_from(this_index).expect("thisIndex not valid usize");
+                let this_index = u64::try_from(this_index).expect("thisIndex is a length");
                 // b. If flags contains "u" or flags contains "v", let
                 //    fullUnicode be true; otherwise let fullUnicode be false.
                 // c. Let nextIndex be AdvanceStringIndex(S, thisIndex, fullUnicode).
@@ -928,12 +929,12 @@ impl RegExpPrototype {
                 .unbind()?
                 .bind(gc.nogc());
             // f. Set position to the result of clamping position between 0 and lengthS.
-            let position = position.into_i64().clamp(0, length_s as i64) as usize;
+            let position = usize_from_i64(position.into_i64().clamp(0, length_s as i64));
             // g. Let captures be a new empty List.
             // The list grows as captures come: `nCaptures` is the length an
             // `exec` written by the script returned.
             let mut captures = Vec::with_capacity(
-                (n_captures as usize).min(1024) + if functional_replace { 3 } else { 0 },
+                usize_from_u64(n_captures).min(1024) + if functional_replace { 3 } else { 0 },
             );
             // h. Let n be 1.
             // i. Repeat, while n ≤ nCaptures,
@@ -1662,13 +1663,18 @@ impl RegExpPrototype {
                 let e = to_length(agent, e.unbind(), gc.reborrow())
                     .unbind()?
                     .bind(gc.nogc()) as u64;
-                let e = usize::try_from(e).unwrap();
+                let e = usize_from_u64(e);
                 // ii. Set e to min(e, size).
                 let e = e.min(size);
                 // iii. If e = p, then
                 if e == p {
                     // 1. Set q to AdvanceStringIndex(S, q, unicodeMatching).
-                    q = advance_string_index(agent, s.get(agent), q, unicode_matching);
+                    q = usize_from_u64(advance_string_index(
+                        agent,
+                        s.get(agent),
+                        q as u64,
+                        unicode_matching,
+                    ));
                 } else {
                     // iv. Else,
                     let s_local = s.get(agent).bind(gc.nogc());
@@ -1727,7 +1733,12 @@ impl RegExpPrototype {
                 }
             } else {
                 // i. Set q to AdvanceStringIndex(S, q, unicodeMatching).
-                q = advance_string_index(agent, s.get(agent), q, unicode_matching);
+                q = usize_from_u64(advance_string_index(
+                    agent,
+                    s.get(agent),
+                    q as u64,
+                    unicode_matching,
+                ));
             }
         }
         let gc = gc.into_nogc();

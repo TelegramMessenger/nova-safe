@@ -74,6 +74,15 @@ pub trait Host {
         let _ = epoch_seconds;
         0
     }
+
+    /// Bytes this engine's allocations hold right now, when the embedder's
+    /// allocator counts them. With it the memory limit bounds these bytes
+    /// and [`Engine::memory_used`] returns them; without it (the default)
+    /// both go by the engine's estimate of its heap, which leaves out what
+    /// the heap's vectors keep spare and the tables beside them.
+    fn allocated_bytes(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Limits fixed when the engine is created.
@@ -403,13 +412,15 @@ impl Engine {
     /// with string arguments and `undefined` as `this`.
     pub fn call(&mut self, name: &str, args: &[&str]) -> Result<Completion, Error> {
         let args: Vec<&[u8]> = args.iter().map(|arg| arg.as_bytes()).collect();
-        self.call_wtf8(name, &args)
+        self.call_with_bytes(name, &args)
     }
 
-    /// [`Engine::call`] with arguments as WTF-8 (see [`HostArg::String`]), so
-    /// that a string a script handed out goes back in with its lone
-    /// surrogates; bytes that are not WTF-8 become U+FFFD.
-    pub fn call_wtf8(&mut self, name: &str, args: &[&[u8]]) -> Result<Completion, Error> {
+    /// As [`Engine::call`], with each argument as bytes: UTF-8, or the WTF-8
+    /// of [`HostArg::String`] and [`Completion::String`], so that a string
+    /// the engine handed out goes back in unchanged (lone surrogates
+    /// included). Any other byte that is not part of a UTF-8 sequence
+    /// becomes U+FFFD.
+    pub fn call_with_bytes(&mut self, name: &str, args: &[&[u8]]) -> Result<Completion, Error> {
         self.enter(|live, shared| {
             let realm = &live.realm;
             let captured = &live.captured;
@@ -431,7 +442,7 @@ impl Engine {
                 let mut arguments: Vec<Value<'static>> = args
                     .iter()
                     .map(|arg| {
-                        values::string_from_wtf8(agent, arg, gc.nogc())
+                        values::string_from_bytes(agent, arg, gc.nogc())
                             .unbind()
                             .into()
                     })
@@ -483,10 +494,14 @@ impl Engine {
         })
     }
 
-    /// Bytes of the engine's heap in use (0 for a dead engine).
+    /// Bytes of the engine's heap in use (0 for a dead engine): the host's
+    /// count ([`Host::allocated_bytes`]) when it keeps one.
     pub fn memory_used(&mut self) -> usize {
         match &mut self.state {
             State::Live(live) => {
+                if let Some(counted) = self.shared.host.allocated_bytes() {
+                    return counted;
+                }
                 catch_unwind(AssertUnwindSafe(|| limits::heap_size(&live.agent))).unwrap_or(0)
             }
             State::Dead(_) => 0,

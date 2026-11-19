@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::Ordering;
+use crate::width::{usize_from_i64, usize_from_u64};
 
 #[cfg(feature = "shared-array-buffer")]
 use crate::ecmascript::{GenericSharedTypedArray, SharedTypedArrayRecord};
@@ -332,40 +333,80 @@ pub(crate) trait TypedArrayAbstractOperations<'ta>: Copy + Sized {
         }
     }
 
+    /// What the `length` accessor of %TypedArray%.prototype returns for O:
+    /// TypedArrayLength of a record of O made now, or 0 where
+    /// IsTypedArrayOutOfBounds of that record (steps 4 to 7 of
+    /// [23.2.3.21](https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.length)),
+    /// from one reading of the buffer and of the view, as
+    /// [`is_valid_integer_index`](Self::is_valid_integer_index) has them.
+    #[inline(always)]
+    fn length_or_zero(self, agent: &Agent) -> usize {
+        // A detached buffer is out of bounds.
+        let cached_buffer_byte_length: CachedBufferByteLength =
+            self.get_cached_buffer_byte_length(agent, Ordering::SeqCst);
+        let Some(buffer_byte_length) = Option::<usize>::from(cached_buffer_byte_length) else {
+            return 0;
+        };
+        let byte_offset = self.byte_offset(agent);
+        let element_size = self.typed_array_element_size();
+        if let Some(array_length) = self.array_length(agent) {
+            // The end of a view of a fixed length is its start and its
+            // length: where that is in the buffer, the start is.
+            if byte_offset + array_length * element_size > buffer_byte_length {
+                0
+            } else {
+                array_length
+            }
+        } else if byte_offset > buffer_byte_length {
+            0
+        } else {
+            (buffer_byte_length - byte_offset) / element_size
+        }
+    }
+
     /// ### [10.4.5.16 IsValidIntegerIndex ( O, index )](https://tc39.es/ecma262/#sec-isvalidintegerindex)
     ///
     /// The abstract operation IsValidIntegerIndex takes arguments O (a TypedArray)
     /// and index (a Number) and returns a Boolean.
+    #[inline]
     fn is_valid_integer_index(self, agent: &Agent, index: i64) -> Option<usize> {
-        // 1. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is true, return false.
-        if self.is_detached(agent) {
-            return None;
-        }
         // 2. If index is not an integral Number, return false.
         // 3. If index is -0𝔽 or index < -0𝔽, return false.
         if index < 0 {
             return None;
         }
-        let index = index as usize;
+        let index = usize_from_i64(index);
+        // 1. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is true, return false.
         // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, unordered).
+        // The byte length the record has of a detached buffer says that it
+        // is: one reading of the buffer for both steps.
         let cached_buffer_byte_length: CachedBufferByteLength =
             self.get_cached_buffer_byte_length(agent, Ordering::Unordered);
-        // make_typed_array_with_buffer_witness_record_specialised(agent, o, Ordering::Unordered);
+        let buffer_byte_length = Option::<usize>::from(cached_buffer_byte_length)?;
         // 5. NOTE: Bounds checking is not a synchronizing operation when O's
         //    backing buffer is a growable SharedArrayBuffer.
         // 6. If IsTypedArrayOutOfBounds(taRecord) is true, return false.
-        if self.is_typed_array_out_of_bounds(agent, cached_buffer_byte_length) {
-            return None;
-        }
         // 7. Let length be TypedArrayLength(taRecord).
-        let length = self.typed_array_length(agent, cached_buffer_byte_length);
-        // 8. If ℝ(index) ≥ length, return false.
-        if index >= length {
-            None
+        // Both from one reading of the offset and the length of the view:
+        // this is asked at every element read or written.
+        let byte_offset = self.byte_offset(agent);
+        let element_size = self.typed_array_element_size();
+        let length = if let Some(array_length) = self.array_length(agent) {
+            // The end of a view of a fixed length is its start and its
+            // length: where that is in the buffer, the start is.
+            if byte_offset + array_length * element_size > buffer_byte_length {
+                return None;
+            }
+            array_length
         } else {
-            // 9. Return true.
-            Some(index)
-        }
+            if byte_offset > buffer_byte_length {
+                return None;
+            }
+            (buffer_byte_length - byte_offset) / element_size
+        };
+        // 8. If ℝ(index) ≥ length, return false.
+        // 9. Return true.
+        (index < length).then_some(index)
     }
 
     /// ### [10.4.5.17 TypedArrayGetElement ( O, index )](https://tc39.es/ecma262/#sec-typedarraygetelement)
@@ -725,13 +766,13 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
         match buffer {
             AnyArrayBuffer::ArrayBuffer(buffer) => {
                 let o = typed_array_create::<T>(agent, o_proto);
-                o.initialise_data(agent, buffer, offset as usize, None);
+                o.initialise_data(agent, buffer, usize_from_u64(offset), None);
                 Ok(o.into())
             }
             #[cfg(feature = "shared-array-buffer")]
             AnyArrayBuffer::SharedArrayBuffer(buffer) => {
                 let o = shared_typed_array_create::<T>(agent, o_proto);
-                o.initialise_data(agent, buffer, offset as usize, None);
+                o.initialise_data(agent, buffer, usize_from_u64(offset), None);
                 Ok(o.into())
             }
         }
@@ -773,7 +814,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
             ));
         };
 
-        let new_byte_length = new_byte_length as usize;
+        let new_byte_length = usize_from_u64(new_byte_length);
         let array_length = new_byte_length / element_size;
         // c. Set O.[[ByteLength]] to newByteLength.
         // d. Set O.[[ArrayLength]] to newByteLength / elementSize.
@@ -785,7 +826,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
                 o.initialise_data(
                     agent,
                     buffer,
-                    offset as usize,
+                    usize_from_u64(offset),
                     Some((new_byte_length, array_length)),
                 );
                 Ok(o.into())
@@ -796,7 +837,7 @@ pub(crate) fn initialize_typed_array_from_array_buffer<'gc, T: Viewable>(
                 o.initialise_data(
                     agent,
                     buffer,
-                    offset as usize,
+                    usize_from_u64(offset),
                     Some((new_byte_length, array_length)),
                 );
                 Ok(o.into())
@@ -867,7 +908,8 @@ pub(crate) fn initialize_typed_array_from_array_like<'a, T: Viewable>(
     let o = o.scope(agent, gc.nogc());
     let scoped_array_like = array_like.scope(agent, gc.nogc());
     // 1. Let len be ? LengthOfArrayLike(arrayLike).
-    let len = length_of_array_like(agent, array_like.unbind(), gc.reborrow()).unbind()? as usize;
+    let len =
+        usize_from_i64(length_of_array_like(agent, array_like.unbind(), gc.reborrow()).unbind()?);
 
     // 2. Perform ? AllocateTypedArrayBuffer(O, len).
     allocate_typed_array_buffer::<T>(agent, o.get(agent), len, gc.nogc()).unbind()?;
@@ -918,7 +960,9 @@ pub(crate) fn allocate_typed_array_buffer<'a, T: Viewable>(
     let element_size = size_of::<T>();
 
     // 3. Let byteLength be elementSize × length.
-    let byte_length = element_size * length;
+    // A product past usize::MAX (a 32-bit target: a length of 2^30 eight-byte
+    // elements) is refused by the allocation below like any too large one.
+    let byte_length = element_size.saturating_mul(length);
 
     // 4. Let data be ? AllocateArrayBuffer(%ArrayBuffer%, byteLength).
     let data = ArrayBuffer::new(agent, byte_length, gc)?;

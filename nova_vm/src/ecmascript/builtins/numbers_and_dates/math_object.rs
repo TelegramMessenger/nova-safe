@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::usize_from_i64;
 use core::f64::consts;
 use std::ops::ControlFlow;
 use xsum::{Xsum, XsumAuto, XsumLarge, XsumSmall, XsumVariant, constants::XSUM_THRESHOLD};
@@ -24,7 +25,8 @@ impl MathObject {
     /// Which of the functions of Math the interpreter may run in place:
     /// those that only compute a Number from Numbers.
     pub(crate) fn direct_builtin(function: RegularFn) -> Option<DirectBuiltin> {
-        let functions: [(RegularFn, DirectBuiltin); 12] = [
+        let functions: [(RegularFn, DirectBuiltin); 13] = [
+            (Self::random, DirectBuiltin::MathRandom),
             (Self::floor, DirectBuiltin::MathFloor),
             (Self::max, DirectBuiltin::MathMax),
             (Self::min, DirectBuiltin::MathMin),
@@ -56,6 +58,10 @@ impl MathObject {
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
         match direct {
+            DirectBuiltin::MathRandom => {
+                let number = agent.next_random_f64();
+                return Some(Value::from_f64(agent, number, gc));
+            }
             DirectBuiltin::MathMax => return Self::max_of_numbers(agent, arguments, gc),
             DirectBuiltin::MathMin => return Self::min_of_numbers(agent, arguments, gc),
             DirectBuiltin::MathPow => {
@@ -79,12 +85,7 @@ impl MathObject {
             DirectBuiltin::MathTrunc => Self::trunc_number(agent, n, gc),
             DirectBuiltin::MathSin => Self::sin_number(agent, n, gc),
             DirectBuiltin::MathCos => Self::cos_number(agent, n, gc),
-            DirectBuiltin::MathMax
-            | DirectBuiltin::MathMin
-            | DirectBuiltin::MathPow
-            | DirectBuiltin::StringCharCodeAt => {
-                return None;
-            }
+            _ => return None,
         })
     }
 }
@@ -1212,8 +1213,13 @@ impl MathObject {
             // the code simpler.
             if highest_i64 != i64::MIN {
                 // b. If n is +0𝔽 and highest is -0𝔽, set highest to +0𝔽.
-                // Note: This happens automatically as +0.max(-0) is +0.
-                highest_f64 = (highest_i64 as f64).max(highest_f64);
+                // Note: +0 is an integer and -0 is not, so on a tie the
+                // integer is the answer. `f64::max` may return either of two
+                // zeros (it returns -0 on 32-bit ARM).
+                let highest_int = highest_i64 as f64;
+                if highest_int >= highest_f64 {
+                    highest_f64 = highest_int;
+                }
             }
             let result = Number::from_f64(agent, highest_f64, gc.nogc());
             Ok(result.unbind().into())
@@ -1447,8 +1453,13 @@ impl MathObject {
         } else {
             if highest_i64 != i64::MIN {
                 // b. If n is +0𝔽 and highest is -0𝔽, set highest to +0𝔽.
-                // Note: This happens automatically as +0.max(-0) is +0.
-                highest_f64 = (highest_i64 as f64).max(highest_f64);
+                // Note: +0 is an integer and -0 is not, so on a tie the
+                // integer is the answer. `f64::max` may return either of two
+                // zeros (it returns -0 on 32-bit ARM).
+                let highest_int = highest_i64 as f64;
+                if highest_int >= highest_f64 {
+                    highest_f64 = highest_int;
+                }
             }
             Some(Number::from_f64(agent, highest_f64, gc).into())
         }
@@ -1847,7 +1858,7 @@ impl MathObject {
         // algorithm's correctness won't be affected, but performance might be.
         let len_estimate: Option<usize> = if let Ok(items) = Object::try_from(items) {
             match try_length_of_array_like(agent, items, gc.nogc()) {
-                ControlFlow::Continue(len) => Some(len as usize),
+                ControlFlow::Continue(len) => Some(usize_from_i64(len)),
                 ControlFlow::Break(_) => None,
             }
         } else {
@@ -1903,7 +1914,7 @@ impl MathObject {
             count += 1;
             // ii. If count ≥ 2**53, then
             // iii. NOTE: The above case is not expected to be reached in practice and is included only so that implementations may rely on inputs being "reasonably sized" without violating this specification.
-            if count >= 1 << 53 {
+            if count as u64 >= 1 << 53 {
                 // 1. Let error be ThrowCompletion(a newly created RangeError object).
                 let error = agent.throw_exception_with_static_message(
                     ExceptionType::RangeError,

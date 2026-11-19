@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::{usize_from_i64, usize_from_u64};
 use std::ops::ControlFlow;
 
 use oxc_allocator::Allocator;
@@ -10,7 +11,7 @@ use oxc_regular_expression::{LiteralParser, Options};
 
 use super::data::{
     COMPILE_PEAK_BYTES_PER_BYTE, MAX_PATTERN_NESTING, PROGRAM_BYTES_PER_BYTE, RegExpExecError,
-    pattern_nesting,
+    backtrack_entries_for, pattern_nesting,
 };
 use crate::{
     ecmascript::{
@@ -531,12 +532,12 @@ pub(crate) fn reg_exp_builtin_exec_prepare<'a>(
         if let Some(last_index) =
             try_result_into_js(try_to_length(agent, last_index, gc.nogc())).unbind()?
         {
-            last_index as usize
+            usize_from_i64(last_index)
         } else {
             let scoped_r = r.scope(agent, gc.nogc());
             let scoped_s = s.scope(agent, gc.nogc());
             let last_index =
-                to_length(agent, last_index.unbind(), gc.reborrow()).unbind()? as usize;
+                usize_from_i64(to_length(agent, last_index.unbind(), gc.reborrow()).unbind()?);
             {
                 s = scoped_s.take(agent).bind(gc.nogc());
                 r = scoped_r.take(agent).bind(gc.nogc());
@@ -661,7 +662,7 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     // 17. Let n be the number of elements in r.[[Captures]].
     let n = full_match.captures.len() + 1;
     // 19. Assert: n < 2**32 - 1.
-    debug_assert!(n < 2usize.pow(32) - 1);
+    debug_assert!((n as u64) < 2u64.pow(32) - 1);
     let has_group_name = !full_match.group_names().is_empty();
     // 20. Let A be ! ArrayCreate(n + 1).
     // Note: we use n because it already contains the full-match group in it.
@@ -928,7 +929,9 @@ pub(crate) fn reg_exp_collect_matches<'a>(
         // RegExpBuiltinExec sets lastIndex to the end of the match, and for
         // an empty match the caller sets it to AdvanceStringIndex of that.
         last_index = if start == end {
-            advance_string_index(agent, s, end, full_unicode)
+            // The end of a match is within S, and what follows it by at most
+            // two is no farther than a length can be.
+            usize_from_u64(advance_string_index(agent, s, end as u64, full_unicode))
         } else {
             end
         };
@@ -967,12 +970,25 @@ fn search(
 ) -> Result<Option<regress::Match>, RegExpExecError> {
     let heap_size = agent.heap_size();
     let collectable = agent.heap.alloc_counter != 0 || agent.heap.data_bytes_since_gc != 0;
+    // What the search may put on its backtracking stacks is what the heap
+    // limit has room for: the poll below sees the heap as it was before.
+    let room = agent
+        .heap_limit()
+        .map(|limit| limit.saturating_sub(heap_size));
+    let backtrack_entries = backtrack_entries_for(room);
     let host_hooks = agent.host_hooks;
     let limits = &mut agent.limits;
     let mut poll = || limits.should_terminate_matcher(host_hooks, heap_size, collectable);
     let data = r.get_direct_mut(&mut agent.heap.regexps);
     let cached_before = data.utf16_input_bytes();
-    let result = data.search(&agent.heap.strings, s, last_index, sticky, &mut poll);
+    let result = data.search(
+        &agent.heap.strings,
+        s,
+        last_index,
+        sticky,
+        backtrack_entries,
+        &mut poll,
+    );
     let grown = data.utf16_input_bytes().saturating_sub(cached_before);
     agent.heap.data_bytes_since_gc += grown;
     result
@@ -998,21 +1014,26 @@ fn throw_exec_error<'a>(
 /// The abstract operation AdvanceStringIndex takes arguments S (a String),
 /// index (a non-negative integer), and unicode (a Boolean) and returns an
 /// integer.
-pub(crate) fn advance_string_index(agent: &Agent, s: String, index: usize, unicode: bool) -> usize {
+///
+/// The index is a `u64`, not a `usize`: it is a `lastIndex` of up to 2^53 - 1
+/// that a script set, on a 32-bit target as well, and the result goes back
+/// into `lastIndex` as it is.
+pub(crate) fn advance_string_index(agent: &Agent, s: String, index: u64, unicode: bool) -> u64 {
     // 1. Assert: index ≤ 2**53 - 1.
-    assert!(index < 2usize.pow(53));
+    assert!(index < 2u64.pow(53));
     // 2. If unicode is false, return index + 1.
     if !unicode {
         return index + 1;
     }
     // 3. Let length be the length of S.
-    let length = s.utf16_len_(agent);
+    let length = s.utf16_len_(agent) as u64;
     // 4. If index + 1 ≥ length, return index + 1.
     if index + 1 >= length {
         return index + 1;
     }
     // 5. Let cp be CodePointAt(S, index).
-    let cp = s.code_point_at_(agent, index);
+    // index is below the length of S here, so it fits a usize.
+    let cp = s.code_point_at_(agent, index as usize);
     // 6. Return index + cp.[[CodeUnitCount]].
     let code = cp.to_u32();
     if (code & !0xFFFF) > 0 {

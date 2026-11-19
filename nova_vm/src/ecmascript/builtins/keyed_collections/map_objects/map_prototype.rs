@@ -297,7 +297,16 @@ impl MapPrototype {
         // 1. Let M be the this value.
         // 2. Perform ? RequireInternalSlot(M, [[MapData]]).
         let m = require_map_data_internal_slot(agent, this_value, gc)?;
+        Ok(Self::get_of(agent, m, key, gc))
+    }
 
+    /// Map.prototype.get of a Map.
+    pub(crate) fn get_of<'gc>(
+        agent: &mut Agent,
+        m: Map,
+        key: Value,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Value<'gc> {
         let Heap {
             bigints,
             numbers,
@@ -325,10 +334,27 @@ impl MapPrototype {
             found_key == key || same_value(&primitive_heap, found_key, key)
         });
         if let Some(index) = found {
-            Ok(values[*index as usize].unwrap().unbind().bind(gc))
+            values[*index as usize].unwrap().unbind().bind(gc)
         } else {
             // 5. Return undefined.
-            Ok(Value::Undefined)
+            Value::Undefined
+        }
+    }
+
+    /// Which of the functions of %Map.prototype% the interpreter may run in
+    /// place: those that only look a key up.
+    pub(crate) fn direct_builtin(
+        function: crate::ecmascript::RegularFn,
+    ) -> Option<crate::ecmascript::DirectBuiltin> {
+        use crate::ecmascript::{DirectBuiltin, RegularFn};
+        if core::ptr::fn_addr_eq(function, Self::get as RegularFn) {
+            Some(DirectBuiltin::MapGet)
+        } else if core::ptr::fn_addr_eq(function, Self::has as RegularFn) {
+            Some(DirectBuiltin::MapHas)
+        } else if core::ptr::fn_addr_eq(function, Self::set as RegularFn) {
+            Some(DirectBuiltin::MapSet)
+        } else {
+            None
         }
     }
 
@@ -344,7 +370,11 @@ impl MapPrototype {
         // 1. Let M be the this value.
         // 2. Perform ? RequireInternalSlot(M, [[MapData]]).
         let m = require_map_data_internal_slot(agent, this_value, gc)?;
+        Ok(Self::has_of(agent, m, key).into())
+    }
 
+    /// Map.prototype.has of a Map.
+    pub(crate) fn has_of(agent: &mut Agent, m: Map, key: Value) -> bool {
         let Heap {
             bigints,
             numbers,
@@ -366,14 +396,13 @@ impl MapPrototype {
 
         // a. If p.[[Key]] is not EMPTY and SameValue(p.[[Key]], key) is true, return true.
         // 5. Return false.
-        let found = map_data
+        map_data
             .find(key_hash, |hash_equal_index| {
                 let found_key = keys[*hash_equal_index as usize].unwrap();
                 // Quick check: Equal keys have the same value.
                 found_key == key || same_value(&primitive_heap, found_key, key)
             })
-            .is_some();
-        Ok(found.into())
+            .is_some()
     }
 
     /// ### [24.1.3.8 Map.prototype.keys ( )](https://tc39.es/ecma262/#sec-map.prototype.keys)
@@ -406,7 +435,13 @@ impl MapPrototype {
         // 1. Let M be the this value.
         // 2. Perform ? RequireInternalSlot(M, [[MapData]]).
         let m = require_map_data_internal_slot(agent, this_value, gc)?;
+        Self::set_of(agent, m, key, value);
+        // 7. Return M.
+        Ok(m.into())
+    }
 
+    /// Map.prototype.set of a Map.
+    pub(crate) fn set_of(agent: &mut Agent, m: Map, key: Value, value: Value) {
         let Heap {
             bigints,
             numbers,
@@ -454,8 +489,6 @@ impl MapPrototype {
             }
         }
         agent.heap.data_bytes_since_gc += MAP_ENTRY_BYTES;
-        // 7. Return M.
-        Ok(m.into())
     }
 
     /// ### [24.1.3.10 get Map.prototype.size](https://tc39.es/ecma262/#sec-get-map.prototype.size)

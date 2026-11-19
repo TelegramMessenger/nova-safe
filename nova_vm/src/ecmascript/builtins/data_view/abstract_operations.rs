@@ -1,4 +1,5 @@
 use crate::ecmascript::Ordering;
+use crate::width::usize_from_u64;
 
 use crate::{
     ecmascript::{
@@ -138,7 +139,7 @@ pub(crate) fn is_view_out_of_bounds(
     let byte_offset_end = if let Some(byte_length) = byte_length {
         // 7. Else,
         // a. Let byteOffsetEnd be byteOffsetStart + view.[[ByteLength]].
-        byte_offset_start + byte_length
+        byte_offset_start.saturating_add(byte_length)
     } else {
         // a. Let byteOffsetEnd be bufferByteLength.
         buffer_byte_length
@@ -180,7 +181,7 @@ pub(crate) fn get_view_value<'gc, T: Viewable>(
     let get_index = if let Some(res) =
         try_result_into_js(try_to_index(agent, request_index, gc.nogc())).unbind()?
     {
-        res as usize
+        usize_from_u64(res)
     } else {
         match get_view_value_scope_slow(agent, view.unbind(), request_index.unbind(), gc.reborrow())
         {
@@ -218,7 +219,9 @@ pub(crate) fn get_view_value<'gc, T: Viewable>(
     let element_size = size_of::<T>();
 
     // 11. If getIndex + elementSize > viewSize, throw a RangeError exception.
-    if get_index + element_size > view_size {
+    // An index that does not fit a usize is usize::MAX here (a 32-bit
+    // target): the sum must not wrap around to a small one.
+    if get_index.saturating_add(element_size) > view_size {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::RangeError,
             "Index out of bounds",
@@ -249,7 +252,7 @@ fn get_view_value_scope_slow<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, (AnyDataView<'gc>, usize)> {
     let scoped_view = view.scope(agent, gc.nogc());
-    let index = to_index(agent, request_index, gc).unbind()? as usize;
+    let index = usize_from_u64(to_index(agent, request_index, gc).unbind()?);
     Ok((scoped_view.take(agent), index))
 }
 
@@ -283,11 +286,11 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
     let get_index = if let Some(res) =
         try_result_into_js(try_to_index(agent, request_index, gc.nogc())).unbind()?
     {
-        res as usize
+        usize_from_u64(res)
     } else {
         let scoped_view = view.scope(agent, gc.nogc());
         let scoped_value = value.scope(agent, gc.nogc());
-        let res = to_index(agent, request_index.unbind(), gc.reborrow()).unbind()? as usize;
+        let res = usize_from_u64(to_index(agent, request_index.unbind(), gc.reborrow()).unbind()?);
         view = scoped_view.get(agent).bind(gc.nogc());
         value = scoped_value.get(agent).bind(gc.nogc());
         res
@@ -346,7 +349,9 @@ pub(crate) fn set_view_value<'gc, T: Viewable>(
     // 12. Let elementSize be the Element Size value specified in Table 69 for Element Type type.
     let element_size = size_of::<T>();
     // 13. If getIndex + elementSize > viewSize, throw a RangeError exception.
-    if get_index + element_size > view_size {
+    // An index that does not fit a usize is usize::MAX here (a 32-bit
+    // target): the sum must not wrap around to a small one.
+    if get_index.saturating_add(element_size) > view_size {
         return Err(agent.throw_exception_with_static_message(
             ExceptionType::RangeError,
             "Index out of bounds",

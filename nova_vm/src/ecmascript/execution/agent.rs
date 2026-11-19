@@ -21,11 +21,11 @@
 
 use crate::hashing::AHashMap;
 
-use crate::ecmascript::GlobalEnvironment;
 #[cfg(feature = "shared-array-buffer")]
 use crate::ecmascript::SharedArrayBuffer;
 #[cfg(feature = "weak-refs")]
 use crate::ecmascript::{FinalizationRegistryCleanupJob, clear_kept_objects};
+use crate::ecmascript::{GlobalEnvironment, GlobalScopeSeen};
 #[cfg(feature = "atomics")]
 use crate::ecmascript::{WaitAsyncJob, WaitAsyncTimeoutJob};
 use crate::{
@@ -383,6 +383,18 @@ pub trait HostHooks: core::fmt::Debug {
     /// Called often: keep it to an atomic load.
     fn check_interrupt(&self) -> bool {
         false
+    }
+
+    /// Bytes the engine's allocations hold right now, when the embedder's
+    /// allocator counts them for this Agent. With it the heap limit
+    /// ([`Agent::set_heap_limit`]) bounds these bytes, which nothing a script
+    /// builds stays out of, instead of the engine's own estimate of its
+    /// heap. The default is `None`: the estimate.
+    ///
+    /// Called at every interrupt poll and after every garbage collection:
+    /// keep it to an atomic load.
+    fn allocated_bytes(&self) -> Option<usize> {
+        None
     }
 
     /// Seconds east of UTC of the host's local time zone at `epoch_seconds`
@@ -949,6 +961,22 @@ pub struct Agent {
     /// The frames of the calls that `Vm`s run in place: see
     /// [`VmFrames`].
     pub(crate) vm_frames: VmFrames,
+    /// The state of the global scope that global variables were last
+    /// found in: see [`GlobalScopeSeen`].
+    pub(crate) global_scope_seen: GlobalScopeSeen,
+    /// The getter and the setter last found for a property: see
+    /// [`AccessorSeen`](crate::ecmascript::AccessorSeen).
+    pub(crate) accessor_seen: [core::cell::Cell<Option<crate::ecmascript::AccessorSeen>>; 2],
+    /// That `length` of a TypedArray is the accessor it was made with, as
+    /// last found: see [`TypedArrayLengthSeen`](crate::ecmascript::TypedArrayLengthSeen).
+    #[cfg(feature = "array-buffer")]
+    pub(crate) typed_array_length_seen: core::cell::Cell<
+        Option<
+            crate::ecmascript::TypedArrayLengthSeen<
+                core::mem::Discriminant<crate::ecmascript::AnyTypedArray<'static>>,
+            >,
+        >,
+    >,
     /// Emptied argument vectors, reused for call arguments.
     pub(crate) arguments_pool: Vec<Vec<Value<'static>>>,
     /// ### \[\[KeptAlive]]
@@ -990,6 +1018,10 @@ impl Agent {
             vm_stack_pool: Vec::new(),
             spare_vm_stacks: SpareVmStacks::default(),
             vm_frames: VmFrames::default(),
+            global_scope_seen: GlobalScopeSeen::default(),
+            accessor_seen: [core::cell::Cell::new(None), core::cell::Cell::new(None)],
+            #[cfg(feature = "array-buffer")]
+            typed_array_length_seen: core::cell::Cell::new(None),
             arguments_pool: Vec::new(),
             #[cfg(feature = "weak-refs")]
             kept_alive: false,
@@ -1786,6 +1818,14 @@ impl HeapMarkAndSweep for Agent {
             math_random_state: _,
             limits: _,
             compile_limit_error: _,
+            // Its handles are of the collection before this one, and are
+            // not read after it: nothing to keep or move.
+            global_scope_seen: _,
+            // Likewise.
+            accessor_seen: _,
+            // Likewise.
+            #[cfg(feature = "array-buffer")]
+                typed_array_length_seen: _,
         } = self;
 
         execution_context_stack.iter().for_each(|ctx| {
@@ -1847,6 +1887,14 @@ impl HeapMarkAndSweep for Agent {
             math_random_state: _,
             limits: _,
             compile_limit_error: _,
+            // Its handles are of the collection before this one, and are
+            // not read after it: nothing to keep or move.
+            global_scope_seen: _,
+            // Likewise.
+            accessor_seen: _,
+            // Likewise.
+            #[cfg(feature = "array-buffer")]
+                typed_array_length_seen: _,
         } = self;
 
         execution_context_stack

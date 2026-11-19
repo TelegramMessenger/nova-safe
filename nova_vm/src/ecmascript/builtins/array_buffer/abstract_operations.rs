@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::ecmascript::Ordering;
+use crate::width::usize_from_u64;
 
 use super::{AnyArrayBuffer, ArrayBuffer, InternalBuffer};
 #[cfg(feature = "shared-array-buffer")]
@@ -74,8 +75,8 @@ pub(crate) fn allocate_array_buffer<'a>(
         //    virtual memory cannot be reserved up front.
         // c. Set obj.[[ArrayBufferMaxByteLength]] to maxByteLength.
         let mut block = create_byte_data_block(agent, max_byte_length, gc)?;
-        block.realloc(byte_length as usize);
-        InternalBuffer::resizable(block, max_byte_length as usize)
+        block.realloc(usize_from_u64(byte_length));
+        InternalBuffer::resizable(block, usize_from_u64(max_byte_length))
     } else {
         InternalBuffer::fixed_length(create_byte_data_block(agent, byte_length, gc)?)
     };

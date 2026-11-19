@@ -52,6 +52,37 @@ impl Builtin for NumberIsSafeInteger {
 }
 
 impl NumberConstructor {
+    /// Whether `function` is the Number constructor, a call of which the
+    /// interpreter may run in place.
+    pub(crate) fn is_constructor(function: crate::ecmascript::ConstructorFn) -> bool {
+        core::ptr::fn_addr_eq(
+            function,
+            Self::constructor as crate::ecmascript::ConstructorFn,
+        )
+    }
+
+    /// `Number(value)` of a Number, a String, a Boolean, undefined or null,
+    /// or of nothing; None otherwise.
+    pub(crate) fn call_directly<'gc>(
+        agent: &mut Agent,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        let Some(&value) = arguments.first() else {
+            return Some(Value::from(0));
+        };
+        let primitive = Primitive::try_from(value).ok()?;
+        if matches!(
+            primitive,
+            Primitive::Symbol(_) | Primitive::BigInt(_) | Primitive::SmallBigInt(_)
+        ) {
+            return None;
+        }
+        crate::ecmascript::to_number_primitive(agent, primitive, gc)
+            .ok()
+            .map(Value::from)
+    }
+
     fn constructor<'gc>(
         agent: &mut Agent,
         _this_value: Value,

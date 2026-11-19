@@ -528,3 +528,157 @@ fn compile_errors_are_reported() {
         assert!(script.is_null());
     }
 }
+
+fn eval(engine: *const NovaEngine, source: &str) -> i32 {
+    let mut out = blank();
+    let status =
+        unsafe { nova_engine_eval(engine, source.as_ptr(), source.len(), false, &mut out) };
+    unsafe { nova_result_free(&mut out) };
+    status
+}
+
+fn quiet_engine(memory_limit: usize) -> *mut NovaEngine {
+    let engine = unsafe {
+        nova_engine_new(
+            memory_limit,
+            0,
+            Some(quiet_host),
+            None,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    assert!(!engine.is_null());
+    engine
+}
+
+#[test]
+fn memory_used_is_what_the_engine_allocated() {
+    let engine = quiet_engine(0);
+    let fresh = unsafe { nova_engine_memory_used(engine) };
+    // A realm with its builtins is some hundred kilobytes.
+    assert!(fresh > 100 << 10, "{fresh}");
+    assert_eq!(
+        eval(engine, "var a = new Uint8Array(4 << 20); a.length"),
+        NOVA_OK
+    );
+    let grown = unsafe { nova_engine_memory_used(engine) };
+    assert!(grown >= fresh + (4 << 20), "{fresh} {grown}");
+    assert_eq!(eval(engine, "a = null"), NOVA_OK);
+    assert_eq!(unsafe { nova_engine_collect_garbage(engine) }, NOVA_OK);
+    let released = unsafe { nova_engine_memory_used(engine) };
+    assert!(released < fresh + (1 << 20), "{fresh} {released}");
+    unsafe { nova_engine_free(engine) };
+}
+
+/// Whatever a script grows, the limit ends it close to the limit's bytes of
+/// real allocations: structures the heap's own estimate leaves out (hash
+/// tables, spare capacity, shapes) among them.
+#[test]
+fn the_memory_limit_bounds_allocated_bytes() {
+    const LIMIT: usize = 16 << 20;
+    let growth = [
+        "var keep = []; for (;;) keep.push({ n: keep.length, s: 'x' + keep.length });",
+        "var keep = {}; for (var i = 0;; i++) keep['key' + i] = i;",
+        "var keep = new Map(); for (var i = 0;; i++) keep.set('k' + i, [i]);",
+        "var keep = new Set(); for (var i = 0;; i++) keep.add({ i });",
+        "var keep = []; for (var i = 0;; i++) { var o = {}; o['p' + i] = 1; o['q' + i] = 2; keep.push(o); }",
+        "var keep = []; for (var i = 0;; i++) { let a = i, b = i + 1; keep.push(() => a + b); }",
+        "var keep = []; for (var i = 0;; i++) keep.push(function named() { return i; }.bind(null, i));",
+        "var keep = []; for (var i = 0;; i++) keep.push(new RegExp('a{' + i + '}b'));",
+        "var keep = []; for (var i = 0;; i++) keep.push(Symbol('s' + i), new Promise(() => {}));",
+        "var keep = 'x'; for (;;) { try { keep = keep + keep + 'y'; } catch (e) {} }",
+        "var keep = []; for (var i = 0;; i++) { try { keep.push(new Float64Array(1 << 16)); } catch (e) {} }",
+        "var keep = []; keep[1e6] = 1; for (var i = 0;; i++) keep[1e6 + i * 7] = i;",
+    ];
+    for source in growth {
+        let engine = quiet_engine(LIMIT);
+        assert_eq!(eval(engine, source), NOVA_OUT_OF_MEMORY, "{source}");
+        let used = unsafe { nova_engine_memory_used(engine) };
+        assert!(used <= LIMIT * 2, "{used} bytes after: {source}");
+        // The engine runs on once the script lets go.
+        assert_eq!(eval(engine, "keep = null"), NOVA_OK, "{source}");
+        assert_eq!(unsafe { nova_engine_collect_garbage(engine) }, NOVA_OK);
+        assert_eq!(eval(engine, "[1, 2, 3].length"), NOVA_OK, "{source}");
+        let used = unsafe { nova_engine_memory_used(engine) };
+        assert!(used < LIMIT / 2, "{used} bytes kept after: {source}");
+        unsafe { nova_engine_free(engine) };
+    }
+}
+
+/// Blocks return their bytes to the engine that allocated them, so engines
+/// that come and go leave nothing on an account for the next one.
+#[test]
+fn accounts_do_not_drift_between_engines() {
+    let mut first = 0;
+    for round in 0..40 {
+        let engine = quiet_engine(0);
+        let fresh = unsafe { nova_engine_memory_used(engine) };
+        if round == 0 {
+            first = fresh;
+        }
+        // The same realm every time: nothing of the engines before it is
+        // on this one's account. (Other tests' engines run at the same
+        // time, on other accounts.)
+        assert!(fresh.abs_diff(first) < 64 << 10, "{first} {fresh}");
+        let mut out = blank();
+        let source = "var a = []; for (var i = 0; i < 20000; i++) a.push('v' + i); a.join(',')";
+        assert_eq!(
+            unsafe { nova_engine_eval(engine, source.as_ptr(), source.len(), false, &mut out) },
+            NOVA_OK
+        );
+        // The result outlives the engine: its bytes leave the account when
+        // it is freed, whoever has the account by then.
+        unsafe { nova_engine_free(engine) };
+        assert!(out.len > 100_000);
+        unsafe { nova_result_free(&mut out) };
+    }
+}
+
+/// A script that builds the same text again, step by step, makes at every
+/// step the string it made the time before, and the string table finds it.
+/// Finding it joined both texts, the whole text copied at every step: with
+/// the memory limit counting what the engine allocates, and collecting less
+/// often for it, the joins of a few runs were more than the limit allows
+/// between two collections, and the engine ended as out of memory with a
+/// few megabytes in use.
+#[test]
+fn a_text_built_again_is_not_out_of_memory() {
+    const LIMIT: usize = 16 << 20;
+    let engine = quiet_engine(LIMIT);
+    assert_eq!(
+        unsafe { nova_engine_set_out_of_memory_fatal(engine, true) },
+        NOVA_OK
+    );
+    let rows = "var rows = [];
+        for (var i = 0; i < 400; i++) rows.push({ id: i, name: 'Item ' + i, price: (i * 1.25).toFixed(2) });
+        function run() {
+            var html = '<table>';
+            for (var i = 0; i < rows.length; i++) {
+                var r = rows[i];
+                html += '<tr class=\"' + (i & 1 ? 'odd' : 'even') + '\"><td>' + r.id + '</td><td>'
+                    + r.name + '</td><td>' + r.price + '</td></tr>';
+            }
+            html += '</table>';
+            return html.length;
+        }";
+    let escape = "var s = '';
+        for (var i = 0; i < 300; i++) s += 'Tom & Jerry <cat> said \"meow\" to a mouse ';
+        function run() {
+            var out = '';
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                out += c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '\"' ? '&quot;' : c;
+            }
+            return out.length;
+        }";
+    for setup in [rows, escape] {
+        assert_eq!(eval(engine, setup), NOVA_OK);
+        for run in 0..40 {
+            assert_eq!(eval(engine, "run()"), NOVA_OK, "run {run}");
+            let used = unsafe { nova_engine_memory_used(engine) };
+            assert!(used < LIMIT, "run {run}: {used} bytes");
+        }
+    }
+    unsafe { nova_engine_free(engine) };
+}

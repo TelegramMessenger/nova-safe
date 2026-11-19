@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::width::{usize_from_i64, usize_from_u64};
 use crate::{
     ecmascript::{
         Agent, AnyArrayBuffer, ArgumentsList, ArrayBuffer, BUILTIN_STRING_MEMORY, Behaviour,
@@ -185,14 +186,14 @@ impl ArrayBufferPrototype {
         let new_byte_length = if let Some(res) =
             try_result_into_js(try_to_index(agent, new_length, gc.nogc())).unbind()?
         {
-            res as usize
+            usize_from_u64(res)
         } else {
             let scoped_o = o.scope(agent, gc.nogc());
             let res = to_index(agent, new_length.unbind(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
             o = scoped_o.get(agent).bind(gc.nogc());
-            res as usize
+            usize_from_u64(res)
         };
         // 5. If IsDetachedBuffer(O) is true, throw a TypeError exception.
         if is_detached_buffer(agent, o) {
@@ -269,10 +270,10 @@ impl ArrayBufferPrototype {
             0
         } else if relative_start.is_negative() {
             // 8. Else if relativeStart < 0, let first be max(len + relativeStart, 0).
-            (len as i64 + relative_start.into_i64()).max(0) as usize
+            usize_from_i64((len as i64 + relative_start.into_i64()).max(0))
         } else {
             // 9. Else, let first be min(relativeStart, len).
-            (relative_start.into_i64() as usize).min(len)
+            usize_from_i64(relative_start.into_i64()).min(len)
         };
 
         // 10. If end is undefined, let relativeEnd be len;
@@ -288,10 +289,10 @@ impl ArrayBufferPrototype {
                 0
             } else if relative_end.is_negative() {
                 // 12. Else if relativeEnd < 0, let final be max(len + relativeEnd, 0).
-                (len as i64 + relative_end.into_i64()).max(0) as usize
+                usize_from_i64((len as i64 + relative_end.into_i64()).max(0))
             } else {
                 // 13. Else, let final be min(relativeEnd, len).
-                (relative_end.into_i64() as usize).min(len)
+                usize_from_i64(relative_end.into_i64()).min(len)
             }
         };
 

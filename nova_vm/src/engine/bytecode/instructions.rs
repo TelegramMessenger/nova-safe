@@ -192,6 +192,11 @@ pub(crate) enum Instruction {
     /// Performs Yield() on the result value, and after resuming, stores the
     /// value passed to `next()` as the result value.
     Yield,
+    /// Yield for `yield value` in a generator that is not async: the result
+    /// value is the value itself, and the iterator result object for it is
+    /// made by whoever resumed the generator, if it wants one. A loop that
+    /// steps the generator takes the value as it is.
+    YieldValue,
     /// Take the result value and the top stack value, compare them using
     /// IsStrictlyEqual() and store the result as the result value.
     IsStrictlyEqual,
@@ -494,6 +499,14 @@ pub(crate) enum Instruction {
     /// GetBindingAtSite followed by Load: the value of such a name, pushed
     /// onto the stack.
     LoadBindingAtSite,
+    /// GetBindingAtSite for a name declared outside the running function
+    /// that nothing assigns to once it is initialized: the value, once
+    /// read, is kept for the rest of the call in a stack slot of the
+    /// function (the third argument, which is undefined while nothing is
+    /// kept), and is read from there after.
+    GetBindingAtSiteOnce,
+    /// GetBindingAtSiteOnce followed by Load.
+    LoadBindingAtSiteOnce,
     /// Set a name whose scope chain no `with` or direct `eval` can change to
     /// the value in the result register: PutValue(ResolveBinding(), value)
     /// with no Reference when the name is where the BindingSite remembers it.
@@ -522,8 +535,16 @@ pub(crate) enum Instruction {
     /// RegularExpressionLiteral was compiled to, with a new RegExp of its
     /// pattern and flags: what an evaluation of the literal returns.
     InstantiateRegExpLiteral,
-    /// Take N items from the stack and string-concatenate them together.
-    StringConcat,
+    /// Take N Strings from the stack and string-concatenate them together:
+    /// the operands of a chain of `+` that starts with a String, or the
+    /// parts of a template literal, each already the String it is there.
+    ConcatStrings,
+    /// Make the result value the String it is as an operand of `+` whose
+    /// other operand is a String: ToPrimitive, then ToString.
+    ToStringOperand,
+    /// Make the result value a String as ToString does: a substitution of a
+    /// template literal.
+    ToStringSubstitution,
     /// Throw the result value as an exception.
     Throw,
     /// Throw a new Error object as an exception with the result value as the
@@ -781,6 +802,8 @@ impl Instruction {
             | Self::JumpIfIndexStrictlyEqualIndex
             | Self::GetIndexPropertyWithCache
             | Self::GetIndexPropertyWithCacheKeepReference
+            | Self::GetBindingAtSiteOnce
+            | Self::LoadBindingAtSiteOnce
             | Self::JumpIfIndexLessThanConstant
             | Self::JumpIfIndexLessThanIndex
             | Self::JumpIfIndexLessThanEqualsConstant
@@ -889,7 +912,7 @@ impl Instruction {
             | Self::PutValueWithCache
             | Self::ResolveBinding
             | Self::StoreConstant
-            | Self::StringConcat
+            | Self::ConcatStrings
             | Self::ThrowError
             | Self::GetValueWithIndexKey
             | Self::ApplyBinaryOperatorAndMove
@@ -984,6 +1007,8 @@ impl Instruction {
                 | Self::ResolveBindingAtSite
                 | Self::GetBindingAtSite
                 | Self::LoadBindingAtSite
+                | Self::GetBindingAtSiteOnce
+                | Self::LoadBindingAtSiteOnce
                 | Self::PutBindingAtSite
                 | Self::ResolveGlobalAtSite
                 | Self::GetGlobalAtSite
@@ -1479,14 +1504,28 @@ impl Instr {
             {
                 let [arg0, arg1] = self.args.two_args();
                 let instructions = exe.get_instructions(agent);
-                let slot = Self::wide_third_index(&instructions, ip + 9);
+                let slot = Self::wide_third_index(instructions.code(), ip + 9);
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
                 eprintln!("  {}: {:?}({}, {}, {})", ip, self.kind, slot, key, arg1);
+            }
+            4 if matches!(
+                self.kind,
+                Instruction::GetBindingAtSiteOnce | Instruction::LoadBindingAtSiteOnce
+            ) =>
+            {
+                let [arg0, arg1] = self.args.two_args();
+                let instructions = exe.get_instructions(agent);
+                let slot = Self::wide_third_index(instructions.code(), ip + 9);
+                let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
+                eprintln!(
+                    "  {}: {:?}({}, {}, kept in {})",
+                    ip, self.kind, key, arg1, slot
+                );
             }
             4 => {
                 let [arg0, arg1] = self.args.two_args();
                 let instructions = exe.get_instructions(agent);
-                let target = Self::wide_jump_target(&instructions, ip + 9);
+                let target = Self::wide_jump_target(instructions.code(), ip + 9);
                 let constant = matches!(self.kind.compared_local(), Some((_, true)))
                     || matches!(self.kind.loop_test(), Some((_, _, true)));
                 let operand = if constant {
@@ -1943,6 +1982,8 @@ impl Instruction {
         const GETBINDINGATSITE: u8 = Instruction::GetBindingAtSite.as_u8();
         const INSTANTIATEREGEXPLITERAL: u8 = Instruction::InstantiateRegExpLiteral.as_u8();
         const LOADBINDINGATSITE: u8 = Instruction::LoadBindingAtSite.as_u8();
+        const GETBINDINGATSITEONCE: u8 = Instruction::GetBindingAtSiteOnce.as_u8();
+        const LOADBINDINGATSITEONCE: u8 = Instruction::LoadBindingAtSiteOnce.as_u8();
         const GETVALUEWITHINDEXKEY: u8 = Instruction::GetValueWithIndexKey.as_u8();
         const APPLYBINARYOPERATORWITHCONSTANT: u8 =
             Instruction::ApplyBinaryOperatorWithConstant.as_u8();
@@ -1963,7 +2004,9 @@ impl Instruction {
         const STORECONSTANT: u8 = Instruction::StoreConstant.as_u8();
         const STORECONSTANTWIDE: u8 = Instruction::StoreConstantWide.as_u8();
         const STOREFROMINDEX: u8 = Instruction::GetValueFromIndex.as_u8();
-        const STRINGCONCAT: u8 = Instruction::StringConcat.as_u8();
+        const CONCATSTRINGS: u8 = Instruction::ConcatStrings.as_u8();
+        const TOSTRINGOPERAND: u8 = Instruction::ToStringOperand.as_u8();
+        const TOSTRINGSUBSTITUTION: u8 = Instruction::ToStringSubstitution.as_u8();
         const THROW: u8 = Instruction::Throw.as_u8();
         const THROWERROR: u8 = Instruction::ThrowError.as_u8();
         const TONUMBER: u8 = Instruction::ToNumber.as_u8();
@@ -1973,6 +2016,7 @@ impl Instruction {
         const TYPEOF: u8 = Instruction::Typeof.as_u8();
         const UNARYMINUS: u8 = Instruction::UnaryMinus.as_u8();
         const YIELD: u8 = Instruction::Yield.as_u8();
+        const YIELDVALUE: u8 = Instruction::YieldValue.as_u8();
         const CREATEIMMUTABLEBINDING: u8 = Instruction::CreateImmutableBinding.as_u8();
         const CREATEMUTABLEBINDING: u8 = Instruction::CreateMutableBinding.as_u8();
         const INITIALIZEREFERENCEDBINDING: u8 = Instruction::InitializeReferencedBinding.as_u8();
@@ -2231,6 +2275,8 @@ impl Instruction {
             GETBINDINGATSITE => Some(Instruction::GetBindingAtSite),
             INSTANTIATEREGEXPLITERAL => Some(Instruction::InstantiateRegExpLiteral),
             LOADBINDINGATSITE => Some(Instruction::LoadBindingAtSite),
+            GETBINDINGATSITEONCE => Some(Instruction::GetBindingAtSiteOnce),
+            LOADBINDINGATSITEONCE => Some(Instruction::LoadBindingAtSiteOnce),
             GETVALUEWITHINDEXKEY => Some(Instruction::GetValueWithIndexKey),
             APPLYBINARYOPERATORWITHCONSTANT => Some(Instruction::ApplyBinaryOperatorWithConstant),
             APPLYBINARYOPERATORTOINDEXWITHCONSTANT => {
@@ -2252,7 +2298,9 @@ impl Instruction {
             STORECONSTANT => Some(Instruction::StoreConstant),
             STORECONSTANTWIDE => Some(Instruction::StoreConstantWide),
             STOREFROMINDEX => Some(Instruction::GetValueFromIndex),
-            STRINGCONCAT => Some(Instruction::StringConcat),
+            CONCATSTRINGS => Some(Instruction::ConcatStrings),
+            TOSTRINGOPERAND => Some(Instruction::ToStringOperand),
+            TOSTRINGSUBSTITUTION => Some(Instruction::ToStringSubstitution),
             THROW => Some(Instruction::Throw),
             THROWERROR => Some(Instruction::ThrowError),
             TONUMBER => Some(Instruction::ToNumber),
@@ -2262,6 +2310,7 @@ impl Instruction {
             TYPEOF => Some(Instruction::Typeof),
             UNARYMINUS => Some(Instruction::UnaryMinus),
             YIELD => Some(Instruction::Yield),
+            YIELDVALUE => Some(Instruction::YieldValue),
             CREATEIMMUTABLEBINDING => Some(Instruction::CreateImmutableBinding),
             CREATEMUTABLEBINDING => Some(Instruction::CreateMutableBinding),
             INITIALIZEREFERENCEDBINDING => Some(Instruction::InitializeReferencedBinding),

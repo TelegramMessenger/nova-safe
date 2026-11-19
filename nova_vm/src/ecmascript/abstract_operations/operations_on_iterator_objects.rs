@@ -6,10 +6,10 @@
 
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, ExceptionType, Function, JsError, JsResult,
-        Object, OrdinaryObject, PropertyKey, Value, call_function, get, get_method,
-        get_object_method, is_callable, to_boolean, try_get_object_method,
-        try_result_into_option_js,
+        Agent, ArgumentsList, BUILTIN_STRING_MEMORY, ExceptionType, Function, GeneratorPrototype,
+        GeneratorStep, JsError, JsResult, Object, OrdinaryObject, PropertyKey, Realm, Value,
+        call_function, get, get_method, get_object_method, is_callable, to_boolean,
+        try_get_object_method, try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, ScopableCollection, ScopedCollection,
@@ -365,8 +365,36 @@ pub(crate) fn iterator_step_value<'a>(
     iterator_record: IteratorRecord,
     mut gc: GcScope<'a, '_>,
 ) -> JsResult<'a, Option<Value<'a>>> {
+    // The original %GeneratorPrototype%.next on a generator resumes it and
+    // puts what it yielded into an iterator result object for this step to
+    // take apart again: the generator is resumed here and what it yielded
+    // taken as it is. What `yield*` passes on is a result object already,
+    // and is read as any other.
+    let stepped = if let Object::Generator(generator) = iterator_record.iterator
+        && GeneratorPrototype::is_next(agent, iterator_record.next_method, gc.nogc())
+    {
+        match generator
+            .step(agent, gc.reborrow())
+            .unbind()?
+            .bind(gc.nogc())
+        {
+            GeneratorStep::Yielded(value) => return Ok(Some(value.unbind().bind(gc.into_nogc()))),
+            GeneratorStep::Done => return Ok(None),
+            GeneratorStep::Result(result) => Some(result.unbind()),
+        }
+    } else {
+        None
+    };
     // 1. Let result be Completion(IteratorNext(iteratorRecord)).
-    let result = iterator_next(agent, iterator_record, None, gc.reborrow());
+    let result = match stepped {
+        Some(result) => Object::try_from(result.bind(gc.nogc())).or(Err(agent
+            .throw_exception_with_static_message(
+                ExceptionType::TypeError,
+                "The iterator result was not an object",
+                gc.nogc(),
+            ))),
+        None => iterator_next(agent, iterator_record, None, gc.reborrow()),
+    };
 
     // 2. If result is a throw completion, then
     let result = match result {
@@ -585,6 +613,20 @@ pub(crate) fn create_iter_result_object<'a>(
     done: bool,
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, OrdinaryObject<'a>> {
+    let realm = agent.current_realm(gc).unbind();
+    create_iter_result_object_in_realm(agent, realm, value, done, gc)
+}
+
+/// [`create_iter_result_object`] with the %Object.prototype% of `realm`: for
+/// a result that is made after the code that asked for it stopped running,
+/// as the one for a generator's `yield` is.
+pub(crate) fn create_iter_result_object_in_realm<'a>(
+    agent: &mut Agent,
+    realm: Realm,
+    value: Value<'a>,
+    done: bool,
+    gc: NoGcScope<'a, '_>,
+) -> JsResult<'a, OrdinaryObject<'a>> {
     // 1. Let obj be OrdinaryObjectCreate(%Object.prototype%).
     // 2. Perform ! CreateDataPropertyOrThrow(obj, "value", value).
     // 3. Perform ! CreateDataPropertyOrThrow(obj, "done", done).
@@ -593,7 +635,7 @@ pub(crate) fn create_iter_result_object<'a>(
         agent,
         Some(
             agent
-                .current_realm_record()
+                .get_realm_record_by_id(realm)
                 .intrinsics()
                 .object_prototype()
                 .into(),
