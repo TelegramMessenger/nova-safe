@@ -35,12 +35,12 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.3x |
-| call | 14 | 10.4x | 1.9x |
+| call | 14 | 10.4x | 1.8x |
 | math | 4 | 9.7x | 1.9x |
 | string | 26 | 10.6x | 1.4x |
 | prop | 13 | 7.1x | 1.5x |
 | map, set | 4 | 4.6x | 1.6x |
-| app | 8 | 6.1x | 1.7x |
+| app | 8 | 6.1x | 1.6x |
 | array | 14 | 5.8x | 1.5x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.3x |
@@ -51,9 +51,8 @@ below.
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst are now arithmetic on the elements of a `Float64Array`
 (3.0x), a step of a particle animation (2.9x), the call of a closure (2.8x) and the properties of one
-object read and written in a loop (2.6x). 81 of the 108 cases are at or under 2x (80 or 81 from one
-run to the next: a few sit within a few hundredths of 2x and cross it), 16 of them at or under
-QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+object read and written in a loop (2.5x). 84 of the 108 cases are at or under 2x (a few sit within a
+few hundredths of 2x and cross it from one run to the next), 15 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -72,7 +71,9 @@ one, took a fifth off the walk of an Array and left the mean where it was (1.529
 QuickJS's own times were 0.5% lower than in the run before and Nova's 0.3% lower). Compound assignments
 to properties compiled without their Reference pushed and popped took a method that counts on `this`
 from 2.4x to 2.2x and the particle step under 3x, with the mean at 1.526x (these runs shared the
-machine with other builds, and each engine's times read 1% higher than in the run before).
+machine with other builds, and each engine's times read 1% higher than in the run before). A return
+that cuts back only what the function left, and a last instruction read as any other, took 3-8% off
+the calls and the mean to 1.519x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -598,6 +599,35 @@ the loops and the calls are where they were in the whole benchmark (each within 
 class that is not derived reads 3% slower in the two binaries run in turn (`call/new-class-instance`,
 1.94x to 2.0x), with nothing in its path changed but one comparison. The same binary run against itself
 moves a plain call by 4% from run to run.
+
+A call and its return by line again: 57% of `call/plain-function` is entering and leaving (the
+execution context made and pushed 8%, the frame and the stacks 17%, what the function is and whether
+it may be run in place 5%, the return 22%), and two things in that were not work.
+
+Leaving cut the Reference stack and the iterator stack back to where the caller had them, and released
+the collections that the function had scoped. Nearly every function leaves all three as it found them,
+and cutting a vector of what has a destructor by nothing still calls for the dropping of the nothing
+that is cut off; the release was a call that compared two lengths. Each is done now only where there
+is something to cut: a twentieth of a plain call.
+
+The Return that ends a function is the last instruction of its code, and the loop reads an instruction
+together with the four bytes after it, in one look at how much code is left: with fewer than four left
+the instruction was read the other, slower way, at every call of nearly every function. The
+instructions of an Executable have four bytes after them now that are no instruction (`Bytecode`). The
+loop reads from the padded bytes; where the code ends, what a listing shows and what anything else
+reads are the instructions without the padding, which is all that the type gives to whoever does not
+ask for the padding by name.
+
+With the two binaries run in turn: a plain call 8.46 to 7.97 ms (2.18x to 2.06x in the full runs), a
+method that three prototypes up has 8% less (2.30x to 2.16x), `new` of a class 6% (2.04x to 1.89x) and
+of a derived one 5% (2.05x to 1.97x), a method 5%, a closure 3-4%, a bound function 6%, the callbacks
+of `map`, `filter` and `find` 5%. The recursion of `fib`, the arguments object and a generator are
+where they were. An empty loop reads 4.6% slower (3.30 to 3.46 ms; 0.98x to 1.02x) and a sum of
+integers 1.8%, by where the loop of instructions landed: neither runs anything that changed, and the
+empty loop reads 3.30 or 3.50 from one run to the next of the binary before. Tried against that: the
+instructions for the slow way of reading taken from the padded bytes instead of from the tables (the
+calls gained half as much, the empty loop the same), and the padded bytes and the instructions as two
+slices in the loop (a `switch` 9% slower).
 
 ### 4. Properties
 
