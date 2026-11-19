@@ -34,15 +34,15 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 1.9x |
+| typed | 4 | 10.6x | 1.8x |
 | call | 14 | 10.4x | 1.8x |
 | math | 4 | 9.7x | 1.8x |
 | string | 26 | 10.6x | 1.4x |
 | prop | 13 | 7.1x | 1.4x |
-| map, set | 4 | 4.6x | 1.6x |
+| map, set | 4 | 4.6x | 1.3x |
 | app | 8 | 6.1x | 1.6x |
 | array | 14 | 5.8x | 1.5x |
-| regexp | 4 | 2.4x | 1.7x |
+| regexp | 4 | 2.4x | 1.6x |
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.9x |
@@ -51,7 +51,7 @@ below.
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst are now a step of a particle animation and the call of
 a closure (2.7x), the properties of one object read and written in a loop (2.5x) and arithmetic on
-the elements of a `Float64Array` (2.3x). 88 of the 108 cases are at or under 2x (a few sit within a
+the elements of a `Float64Array` (2.3x). 90 of the 108 cases are at or under 2x (a few sit within a
 few hundredths of 2x and cross it from one run to the next), 17 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -79,7 +79,10 @@ property remembered likewise took a tenth off a loop that calls both, with the m
 (1.505x in that run). An Array of Strings and Numbers joined from where they are took the mean to
 1.488x, and the properties of functions read by their caches to 1.473x. `typeof` done in the loop
 and an object for `new` made with its prototype at once left the mean there (1.48x in a run where
-QuickJS's own times were 0.9% lower).
+QuickJS's own times were 0.9% lower). What a Map, a Set, a RegExp and a TypedArray inherit read by
+their caches took it to 1.46x, in a run taken while other work ran on the machine (QuickJS's own
+times 4.5% higher than in the run before; the three groups it changed are the ones the table has new
+numbers for).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -752,6 +755,42 @@ property by its cache for as long as nothing else calls it; called from here as 
 there too, and a loop that reads the properties of one object was 5% slower and a method call 3%
 (the same source builds the same binary: it was not chance). Made part of both by force, half of that
 came back; left to its one caller, all of it.
+
+A method of a Map, a Set, a RegExp or a TypedArray was the next read of that kind: `map.get`,
+`set.has`, `regexp.test`, `bytes.set` each took the general way at every call (the instruction left
+the loop, a Reference was made, \[\[Get]] asked for the shape of the object by its prototype in a
+table searched by hash, and found the method by the cache after all): a quarter to a third of the Map
+and Set cases, a tenth of a RegExp tested in a loop. None of these objects has a property by a name
+of its own kind, but for the "lastIndex" of a RegExp and the names of a TypedArray that are the
+strings of Numbers ("NaN" and "Infinity" among them), which are its elements and are never looked for
+in a prototype; those are left to the general way, the second by the first byte of the name.
+\[\[Get]] of one is OrdinaryGet: of the ordinary object that has its properties once it has any (a
+subclass, an object given a property or another prototype), and until then of what it inherits, which
+the cache places under the shape of the objects that have its prototype and nothing else. A Date, a
+Promise, an ArrayBuffer, a DataView, the iterators of Arrays, Maps and Sets, a generator, a WeakMap,
+a WeakSet and a WeakRef are read the same way.
+
+The shape of such an object is the one the heap keeps for the prototype of its kind in the running
+Realm. The table has one shape for a prototype, put there once and taken out by a collection only, so
+the shape last found for a kind in a Realm is remembered (`BareShapeSeen`) until the next collection:
+a quarter of what the change gained on the Map cases.
+
+With the two binaries run in turn: `set/add-has` went from 3.23 to 2.26 ms (1.50x to 1.05x),
+`map/string-keys` from 1.39 to 1.06 ms (1.74x to 1.34x), `map/number-keys` from 4.34 to 3.33 ms
+(1.67x to 1.27x), `typed/set-subarray-copy` from 0.36 to 0.31 ms (2.00x to 1.70x) and
+`regexp/test-simple` from 6.71 to 5.98 ms (1.83x to 1.56x). The loops, the calls and the properties
+of ordinary objects are where they were.
+
+Where the new code and what it remembers are put decided that last sentence, twice. As part of the
+function that reads the properties of functions it made that one 980 bytes longer, the read of a
+property of an ordinary object, which follows it in the binary, moved by as much, and a loop of such
+reads was 3% slower: it is a function of its own. And what it remembers was a field of the agent
+first: the code that makes an engine grew by 12 bytes, the loop of instructions, the same
+instructions otherwise, started 4 bytes later, and `loop/switch` was 9% slower by the best runs and
+15% by the medians. Kept in the heap, the loop of instructions is byte for byte what it was. Neither
+was a property of the change: both are where this benchmark's binary happens to put things, which
+another build of the engine does not share, and the cases that move so by nothing are to be read
+with that. A function cannot be given an alignment in this toolchain (1.96.1).
 
 Those lookups, "prototype" at every `new` run in place, and the ones a walk over an Array makes (area
 5a) each asked for the property cache of their name, and that was found in a table hashed by the name's
