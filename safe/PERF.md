@@ -49,11 +49,10 @@ below.
 | all | 108 | 7.6x | 1.5x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst are now the two cases of arithmetic on doubles, typed
-`Float64Array` elements and a step of a particle animation, which read between 2.9x and 3.2x from one
-run to the next, then the call of a closure (2.9x) and the properties of one object read and written in
-a loop (2.5x). 80 of the 108 cases are at or under 2x in the last run and 81 in the one before (a few
-sit within a few hundredths of 2x and cross it from one run to the next), 15 of them at or under
+was the worst after it (38x, area 7). The worst are now arithmetic on the elements of a `Float64Array`
+(3.0x), a step of a particle animation (2.9x), the call of a closure (2.8x) and the properties of one
+object read and written in a loop (2.6x). 81 of the 108 cases are at or under 2x (80 or 81 from one
+run to the next: a few sit within a few hundredths of 2x and cross it), 16 of them at or under
 QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -70,7 +69,10 @@ computed String in the loop of instructions to 1.57x, the variables of enclosing
 call once it has read them to 1.534x, and derived class constructors and `super(…)` run in the loop of
 instructions to 1.527x. One handler around a `for`-`of` loop, where every turn of it pushed and popped
 one, took a fifth off the walk of an Array and left the mean where it was (1.529x, in a run where
-QuickJS's own times were 0.5% lower than in the run before and Nova's 0.3% lower).
+QuickJS's own times were 0.5% lower than in the run before and Nova's 0.3% lower). Compound assignments
+to properties compiled without their Reference pushed and popped took a method that counts on `this`
+from 2.4x to 2.2x and the particle step under 3x, with the mean at 1.526x (these runs shared the
+machine with other builds, and each engine's times read 1% higher than in the run before).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -241,6 +243,27 @@ machine word without the byte of the value's kind); the step is 23 instructions 
 through the table; a property the cache places is read through two calls and a result that is taken apart
 again (area 4). The counts of pairs say what could still be fused, and the round before showed how little
 that gives now.
+
+Counted again over the 36 cases at or over 1.9x (what each executes, by adjacent pairs), the commonest
+pair that could be one is a value fetched and a property of it read by the cache: a variable of an
+enclosing function or a global, then `GetPropertyWithCache` or the function of a method call (`state.x`,
+`Math.floor(…)`; a quarter of the instructions of `prop/get-set-one-shape`, a sixth of those of the
+cases that call `Math`). Tried: the arm that fetches looks at the next instruction and, where it is such
+a read, a function of its own does it at once. That gained nothing where it was for (2% slower) and cost
+the loops and the calls 2-5%: going from one instruction to the next is about 0.7 ns here (the lines of
+the dispatch in the profile, over the instructions of a turn), which the call, the second look at the
+instruction and the tests cost again. And given the loop's tables (three slices, passed by address) or
+its instruction pointer to move, that function made every case 17-34% slower, a `switch` 34%, an addition
+of integers 23%: the loop keeps in memory what it lends. Dropped.
+
+What a turn of those cases costs is the reads themselves. A property the cache places is about 70
+machine instructions (the object, the cache, the shape again for the capacity and the length of its
+storage, a jump by the capacity among twelve vectors, the slot), 2.9 ns, and an assignment 3.4 ns, of
+which 0.9 is the descriptors of the storage looked up in a hash table, whenever any storage of that
+capacity has descriptors. Together they are 43% of `prop/get-set-one-shape` and a third of the particle
+update, where the numbers that do not fit a value and the collector are under 6%. The descriptors are
+handed out as entries of that table in some 170 places of twelve files; knowing without the lookup that
+a storage has none is a change to all of them.
 
 ### 2. Variables that are not locals of the running function
 
@@ -714,6 +737,34 @@ that way finds no integer, in functions of their own.
 
 Left: a name the object inherits, and a name it does not have (`undefined`), still go the general way; a
 small cache by shape and key would answer them, and would save the search.
+
+`target op= value` reads the target with its Reference kept and assigns through that Reference. While
+the value was evaluated the Reference was pushed, and popped after, unless the value was a literal:
+`this.n += by` was seven instructions. Two ways around the push and the pop, both in what the compiler
+emits and neither in the loop of instructions.
+
+A value whose code leaves the reference register alone is evaluated with the Reference in the register,
+as a literal was: a variable that the function keeps in a stack slot (one instruction that reads the
+slot, or throws in its temporal dead zone), and the arithmetic, the comparisons and the choices among
+such and literals. Their operators may run code of the script (a `valueOf`), which another `Vm` runs;
+the operator of the compound assignment itself always ran with the Reference in the register. A
+property, a call, a name found elsewhere, an assignment, `in` and `instanceof` in the value keep the
+push and the pop. This is for every target that has a Reference (a property by name or by key, a name
+found by `eval`), and for logical and plain assignment to such. `this.n += by` is five instructions.
+
+`p.x op= value` with any other value, for a `p` in a stack slot and where nothing uses the value of the
+assignment, keeps the object on the value stack as `p.x = value` does: the object is pushed, its
+property read as any other, and one instruction assigns by the cache. The object assigned to is the one
+whose property was read (the slot is read twice with nothing in between, before the value can replace
+the local), and what is read and assigned are \[\[Get]] and \[\[Set]] of that object in the order they
+had. `p.x += p.vx` is six instructions for seven, and makes no Reference.
+
+With the two binaries run in turn, a method that adds its argument to a property of `this`
+(`call/method`) went from 14.7 to 13.9 ms (2.39x to 2.21x) and the particle update, which has two
+`p.x += p.vx` in a step, from 4.47 to 4.34 ms (2.8x). Nothing else moved outside its noise.
+
+Left: `this.x op= this.y` is as many instructions either way and was left; a compound assignment whose
+value is used, and one to an element, still make the Reference.
 
 ### 5. Array and typed array elements
 
