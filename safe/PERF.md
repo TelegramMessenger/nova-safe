@@ -36,9 +36,9 @@ below.
 |---|---|---|---|
 | typed | 4 | 10.6x | 1.9x |
 | call | 14 | 10.4x | 1.8x |
-| math | 4 | 9.7x | 1.9x |
+| math | 4 | 9.7x | 1.8x |
 | string | 26 | 10.6x | 1.4x |
-| prop | 13 | 7.1x | 1.5x |
+| prop | 13 | 7.1x | 1.4x |
 | map, set | 4 | 4.6x | 1.6x |
 | app | 8 | 6.1x | 1.6x |
 | array | 14 | 5.8x | 1.5x |
@@ -50,9 +50,9 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst are now a step of a particle animation and the call of
-a closure (2.7x), the properties of one object read and written in a loop (2.5x) and `instanceof`
-with `Array.isArray` (2.3x). 85 of the 108 cases are at or under 2x (a few sit within a few hundredths
-of 2x and cross it from one run to the next), 18 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+a closure (2.7x), the properties of one object read and written in a loop (2.5x) and arithmetic on
+the elements of a `Float64Array` (2.3x). 88 of the 108 cases are at or under 2x (a few sit within a
+few hundredths of 2x and cross it from one run to the next), 17 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -77,7 +77,7 @@ the calls and the mean to 1.519x. The `length` of a TypedArray remembered to be 
 loop over a `Uint8Array` from 2.0x to 1.2x, and the mean to 1.503x; the getter and the setter of a
 property remembered likewise took a tenth off a loop that calls both, with the mean where it was
 (1.505x in that run). An Array of Strings and Numbers joined from where they are took the mean to
-1.488x.
+1.488x, and the properties of functions read by their caches to 1.473x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -708,6 +708,33 @@ a built-in, and that looked F.prototype up key by key. Both lookups go through t
 their name, and the inherited method of the running realm is done without the call: 4.4x to 4.0x. What is
 left of that case is the call of `Array.isArray`. Functions, Arrays and other objects with
 a backing object do not take the short way for their named properties yet.
+
+That call was not the call: `Array.isArray` is a property of a function, and the read of a property by
+its cache knew ordinary objects, Arrays, Strings and Numbers. A property of a function took the general
+way of an instruction at every read (the instruction left the loop, a Reference was made, and \[\[Get]]
+went through the function to its ordinary object and looked the cache of the name up in a table on the
+way): a fifth of that case, and of every `Object.keys(…)`, `String.fromCharCode(…)`, `Date.now()`,
+`K.prototype` and `f.call(…)`. A function that has properties has them in an ordinary object, its
+"length" and "name" among them once it has one (a constructor with static methods, a function with a
+"prototype", a class), and a property of the function is what a read of the name from that object
+finds by the cache. A function with no such object has its "length" and its "name", which still go the
+general way, and what it inherits, found by the cache under the shape of the functions that have
+nothing of their own and read from the object that has it (`f.call`, `f.apply`, `f.bind`).
+
+With the two binaries run in turn: `prop/has-own-and-in`, which calls
+`Object.prototype.hasOwnProperty.call(o, name)`, went from 20.6 to 16.1 ms (2.13x to 1.61x),
+`prop/instanceof-and-array-check` from 13.5 to 10.8 ms (2.33x to 1.86x), characters made by
+`String.fromCharCode` and joined from 1.85x to 1.62x, `math/random-and-date` from 2.08x to 1.88x,
+`call/spread-and-apply` 6% less. The calls and the loops are where they were. Appending one
+character a hundred thousand times reads 4% slower by the medians (`string/append-100k-char`, 1.94x
+to 1.98x), with nothing of what it runs changed.
+
+The object that has an inherited property of such a function is read the general way, not by the
+one function that reads a slot of an ordinary object. That function is part of the read of every
+property by its cache for as long as nothing else calls it; called from here as well, it was a call
+there too, and a loop that reads the properties of one object was 5% slower and a method call 3%
+(the same source builds the same binary: it was not chance). Made part of both by force, half of that
+came back; left to its one caller, all of it.
 
 Those lookups, "prototype" at every `new` run in place, and the ones a walk over an Array makes (area
 5a) each asked for the property cache of their name, and that was found in a table hashed by the name's
