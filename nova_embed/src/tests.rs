@@ -12574,3 +12574,193 @@ html 3490 <li>0</li><li>1</li><li>2</li> <li>299</li>"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A property of a function is read by the cache of the place that names
+/// it, where every such read took the general way: from the ordinary
+/// object that a function with properties has them in, or, for a function
+/// with none of its own, from what it inherits. The script calls static
+/// methods of built-in constructors and replaces, redefines, deletes and
+/// restores one; reads the name, the length and the prototype of every
+/// kind of function, before and after the function has properties of its
+/// own, and after those were defined again and deleted; keeps counters on
+/// a function; changes, shadows and removes the statics of classes and
+/// replaces a class's parent; reads `call`, `apply` and `bind` of
+/// functions with and without properties, with `Function.prototype.call`
+/// replaced, a property added to and removed from the prototypes above,
+/// an inherited getter, and the prototype of one function changed. What
+/// is expected is what Node prints for the same script.
+#[test]
+fn a_property_of_a_function_is_what_get_finds() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_of_functions)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_of_functions() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// places that read one name of whatever function they are given, and places that call one
+function nameOf(f) { return f.name; }
+function lengthOf(f) { return f.length; }
+function protoOf(f) { return f.prototype; }
+function tagOf(f) { return f.tag; }
+function isArr(v) { return Array.isArray(v); }
+function keysOf(o) { return Object.keys(o).join(); }
+function warm() { var t = 0; for (var i = 0; i < 300; i++) { t += isArr([]) ? 1 : 0; t += isArr({}) ? 1 : 0; t += keysOf({ a: 1, b: 2 }).length; t += String.fromCharCode(65 + (i % 3)).length; t += Number.isInteger(i) ? 1 : 0; t += Math.max(i, 3) > 2 ? 1 : 0; } return t; }
+P("warm", warm(), isArr([1]), isArr("no"), keysOf({ x: 1 }), typeof Date.now(), Number.MAX_SAFE_INTEGER, typeof Symbol.iterator, typeof Promise.resolve, Number.parseFloat === parseFloat);
+// a static method replaced, defined again, deleted, restored
+var original = Array.isArray;
+Array.isArray = function () { return "replaced"; };
+P("replaced", isArr([]), warm() > 0);
+Object.defineProperty(Array, "isArray", { get: function () { return function () { return "from getter"; }; }, configurable: true });
+P("getter", isArr([]), isArr([]));
+delete Array.isArray;
+P("deleted", kind(function () { return isArr([]); }), typeof Array.isArray);
+Function.prototype.isArray = function () { return "inherited by every function"; };
+P("inherited", isArr([]), (function () {}).isArray());
+delete Function.prototype.isArray;
+Object.defineProperty(Array, "isArray", { value: original, writable: true, configurable: true, enumerable: false });
+P("restored", isArr([]), isArr({}), warm());
+// functions of the script: name, length, prototype, properties of their own
+function plain(a, b, c) {}
+var arrow = (x, y) => x, expr = function named(q) {}, anon = (function () { return function () {}; })();
+function* gen() {} async function asy(a) {} class K { constructor(a, b) {} static s() { return "static"; } static get g() { return "static getter"; } m() {} }
+P("names", nameOf(plain), nameOf(arrow), nameOf(expr), JSON.stringify(nameOf(anon)), nameOf(gen), nameOf(asy), nameOf(K), nameOf(K.s), nameOf(K.prototype.m), nameOf(Array.isArray), nameOf(Math.max), nameOf(plain.bind(null)), nameOf(Object.getOwnPropertyDescriptor(K, "g").get));
+P("lengths", lengthOf(plain), lengthOf(arrow), lengthOf(expr), lengthOf(anon), lengthOf(gen), lengthOf(asy), lengthOf(K), lengthOf(K.s), lengthOf(Array.isArray), lengthOf(Math.max), lengthOf(plain.bind(null, 1)), lengthOf(function (a, b = 1, c) {}), lengthOf(function (...r) {}));
+P("prototypes", typeof protoOf(plain), protoOf(arrow), typeof protoOf(expr), typeof protoOf(gen), protoOf(asy), typeof protoOf(K), protoOf(K.s), protoOf(Array.isArray), protoOf(plain.bind(null)), protoOf(plain) === plain.prototype, protoOf(plain).constructor === plain);
+plain.tag = "tagged"; arrow.tag = 1; K.tag = "class tag";
+P("own properties", tagOf(plain), tagOf(arrow), tagOf(expr), tagOf(K), tagOf(Array), nameOf(plain), lengthOf(plain), nameOf(arrow), lengthOf(arrow));
+Object.defineProperty(plain, "name", { value: "renamed" }); Object.defineProperty(plain, "length", { value: 42 });
+P("renamed", nameOf(plain), lengthOf(plain), nameOf(expr), lengthOf(expr));
+delete plain.name; delete plain.length; delete arrow.tag;
+P("deleted own", JSON.stringify(nameOf(plain)), lengthOf(plain), tagOf(arrow), nameOf(arrow));
+Function.prototype.tag = "of Function.prototype";
+P("from Function.prototype", tagOf(expr), tagOf(gen), tagOf(Math.max), tagOf(plain), tagOf(K));
+delete Function.prototype.tag;
+P("gone again", tagOf(expr), tagOf(plain), tagOf(K));
+plain.prototype = { marker: 1 };
+P("prototype replaced", protoOf(plain).marker, new plain().marker, new plain() instanceof plain);
+// counters kept on a function
+function counter() { counter.calls++; counter.total += counter.calls; return counter.calls; }
+counter.calls = 0; counter.total = 0;
+for (var i = 0; i < 500; i++) counter();
+P("counters", counter.calls, counter.total, counter());
+// statics of classes, inherited and changed
+class Base { static make() { return "Base.make"; } static get which() { return "which of " + this.name; } static count = 1; }
+class Derived extends Base { static own() { return "Derived.own"; } }
+function callMake(C) { return C.make(); } function countOf(C) { return C.count; } function whichOf(C) { return C.which; }
+P("statics", callMake(Base), callMake(Derived), countOf(Base), countOf(Derived), whichOf(Base), whichOf(Derived), Derived.own());
+Base.make = function () { return "changed on Base"; }; Base.count = 2;
+P("static changed", callMake(Base), callMake(Derived), countOf(Derived));
+Derived.make = function () { return "shadowed on Derived"; }; Derived.count = 3;
+P("static shadowed", callMake(Base), callMake(Derived), countOf(Base), countOf(Derived));
+delete Derived.make; delete Derived.count;
+P("unshadowed", callMake(Derived), countOf(Derived));
+Object.setPrototypeOf(Derived, { make: function () { return "other parent"; }, count: 9 });
+P("parent replaced", callMake(Derived), countOf(Derived), whichOf(Derived), callMake(Base));
+Object.setPrototypeOf(Derived, Function.prototype);
+P("no parent", kind(function () { return callMake(Derived); }), countOf(Derived));
+// call, apply, bind of functions with and without properties of their own
+function add(a, b) { return (this && this.base || 0) + a + b; }
+function viaCall(f) { return f.call({ base: 10 }, 1, 2); } function viaApply(f) { return f.apply({ base: 20 }, [1, 2]); } function viaBind(f) { return f.bind({ base: 30 }, 1)(2); }
+P("call apply bind", viaCall(add), viaApply(add), viaBind(add), viaCall(Math.max), viaApply(Math.min));
+add.extra = 1;
+P("with a property", viaCall(add), viaApply(add), viaBind(add));
+add.call = function () { return "own call"; };
+P("own call", viaCall(add), viaApply(add), Function.prototype.call.call(add, null, 1, 2));
+delete add.call;
+P("own call deleted", viaCall(add));
+var has = Object.prototype.hasOwnProperty, o = { a: 1 };
+function own(obj, name) { return has.call(obj, name); } function own2(obj, name) { return Object.prototype.hasOwnProperty.call(obj, name); }
+P("hasOwnProperty", own(o, "a"), own(o, "b"), own2(o, "a"), own2(o, "toString"), own2([], "length"), own2(plain, "prototype"), own2(arrow, "prototype"));
+// frozen, and through collections
+Object.freeze(counter); P("frozen", kind(function () { return counter(); }), counter.calls, nameOf(counter));
+(function () { var all = []; for (var r = 0; r < 20; r++) { var junk = []; for (var i = 0; i < 3000; i++) junk.push({ i: i }); var f = function (a, b) {}; f.tag = r; all.push(tagOf(f) + nameOf(f) + lengthOf(f)); } P("collections", all.slice(0, 3).join(), all[19], isArr(junk), keysOf({ k: 1 })); })();
+// what a function with nothing of its own inherits, and that changed
+(function () {
+  function fresh(a) { return a; }
+  var lambda = (a) => a, built = Math.abs;
+  function callOf(f) { return f.call; } function applyOf(f) { return f.apply; } function bindOf(f) { return f.bind; }
+  function ctorOf(f) { return f.constructor; } function strOf(f) { return f.toString; } function hasOf(f) { return f.hasOwnProperty; } function viaOf(f) { return f.viaObject; }
+  function run() { var t = 0; for (var i = 0; i < 200; i++) { t += callOf(fresh) === Function.prototype.call ? 1 : 0; t += applyOf(lambda) === Function.prototype.apply ? 1 : 0; t += bindOf(built) === Function.prototype.bind ? 1 : 0; } return t; }
+  P("inherited", run(), ctorOf(fresh) === Function, ctorOf(built) === Function, strOf(lambda) === Function.prototype.toString, hasOf(fresh) === Object.prototype.hasOwnProperty, viaOf(fresh), viaOf(built));
+  var realCall = Function.prototype.call;
+  Function.prototype.call = function () { return "call replaced"; };
+  P("call replaced", callOf(fresh) === realCall, fresh.call(null, 1), built.call(null, -2), run());
+  Function.prototype.call = realCall;
+  P("call restored", callOf(fresh) === realCall, fresh.call(null, 1), built.call(null, -2), run());
+  Object.prototype.viaObject = "through Object.prototype";
+  P("further up", viaOf(fresh), viaOf(lambda), viaOf(built), viaOf(Array));
+  Function.prototype.viaObject = "nearer";
+  P("nearer", viaOf(fresh), viaOf(built), viaOf(Array), ({}).viaObject);
+  delete Function.prototype.viaObject; delete Object.prototype.viaObject;
+  P("removed", viaOf(fresh), viaOf(built), viaOf(Array));
+  Object.defineProperty(Function.prototype, "viaObject", { get: function () { return "getter of " + this.name; }, configurable: true });
+  P("inherited getter", viaOf(fresh), viaOf(lambda), viaOf(built));
+  delete Function.prototype.viaObject;
+  Object.setPrototypeOf(fresh, { call: function () { return "other prototype"; }, viaObject: 7 });
+  P("prototype of one", fresh.call(null, 1), viaOf(fresh), typeof applyOf(fresh), lambda.call(null, 2), viaOf(lambda), nameOf(fresh), lengthOf(fresh));
+  Object.setPrototypeOf(lambda, null);
+  P("no prototype", callOf(lambda), viaOf(lambda), nameOf(lambda), lengthOf(lambda), kind(function () { return lambda.call(null, 1); }), lambda(3));
+  var gens = [function* () {}, async function () {}, async () => {}, class {}, Math.max, Function.prototype.bind.call(fresh, null), new Function("a", "return a")];
+  P("kinds", gens.map(function (f) { return (callOf(f) === realCall) + "/" + typeof bindOf(f) + "/" + (ctorOf(f) === Function); }).join(" "));
+})();
+P("end", warm(), nameOf(plain), isArr([]));
+lines.join("\n")"##;
+    let expected = r##"warm 2100 true false x number 9007199254740991 symbol function true
+replaced replaced true
+getter from getter from getter
+deleted TypeError undefined
+inherited inherited by every function inherited by every function
+restored true false 2100
+names plain arrow named "" gen asy K s m isArray max bound plain get g
+lengths 3 2 1 0 0 1 2 0 1 2 2 1 0
+prototypes object undefined object object undefined object undefined undefined undefined true true
+own properties tagged 1 undefined class tag undefined plain 3 arrow 2
+renamed renamed 42 named 1
+deleted own "" 0 undefined arrow
+from Function.prototype of Function.prototype of Function.prototype of Function.prototype tagged class tag
+gone again undefined tagged class tag
+prototype replaced 1 1 true
+counters 500 125250 501
+statics Base.make Base.make 1 1 which of Base which of Derived Derived.own
+static changed changed on Base changed on Base 2
+static shadowed changed on Base shadowed on Derived 2 3
+unshadowed changed on Base 2
+parent replaced other parent 9 undefined changed on Base
+no parent TypeError undefined
+call apply bind 13 23 33 2 1
+with a property 13 23 33
+own call own call 23 3
+own call deleted 13
+hasOwnProperty true false true false true true false
+frozen ok 501 501 counter
+collections 0f2,1f2,2f2 19f2 true k
+inherited 600 true true true true undefined undefined
+call replaced false call replaced call replaced 600
+call restored true 1 2 600
+further up through Object.prototype through Object.prototype through Object.prototype through Object.prototype
+nearer nearer nearer nearer through Object.prototype
+removed undefined undefined undefined
+inherited getter getter of fresh getter of lambda getter of abs
+prototype of one other prototype 7 undefined 2 undefined fresh 1
+no prototype undefined undefined lambda 1 TypeError 3
+kinds true/function/false true/function/false true/function/false true/function/true true/function/true false/undefined/false true/function/true
+end 2100  true"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

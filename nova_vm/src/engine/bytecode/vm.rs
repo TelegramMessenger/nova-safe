@@ -4161,7 +4161,7 @@ impl Vm {
                 Self::cached_prototype_property_value(agent, prototype, tables, instr, gc)
             }
             #[cfg(feature = "array-buffer")]
-            value => Self::typed_array_length(agent, value, tables, instr, gc),
+            value => Self::exotic_property_value(agent, value, tables, instr, gc),
             #[cfg(not(feature = "array-buffer"))]
             _ => None,
         }
@@ -4330,6 +4330,59 @@ impl Vm {
     #[inline]
     fn set_typed_array_element(_: &mut Agent, _: Value, _: i64, _: Value) -> bool {
         false
+    }
+
+    /// A property of a value that is none of those the arms of
+    /// [`Vm::cached_property_value_of`] are for: of a function, or the
+    /// length of a TypedArray.
+    ///
+    /// A function that has properties has them in an ordinary object, as
+    /// its "length" and "name" are once it has one (a constructor with
+    /// static methods, a function with a "prototype", a class), and a
+    /// property of the function is what a read of the name from that
+    /// object finds by the cache: `Array.isArray`, `Object.keys`,
+    /// `String.fromCharCode`, `Date.now`, `K.prototype`. A function with no
+    /// such object has its "length" and its "name" (which go the general
+    /// way) and what it inherits, found by the cache under the shape of
+    /// the functions that have nothing of their own: `f.call`, `f.apply`,
+    /// `f.bind`. Every such read took the general way of an instruction
+    /// before.
+    #[cfg(feature = "array-buffer")]
+    fn exotic_property_value(
+        agent: &mut Agent,
+        value: Value,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        if let Ok(function) = Function::try_from(value) {
+            let cache = tables.cache(instr.get_second_index(), gc);
+            if let Some(backing) = function.get_backing_object(agent) {
+                return backing.value_by_cache(agent, cache, gc).unbind();
+            }
+            let key = tables.property_key(instr.get_first_index(), gc);
+            if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length)
+                || key == PropertyKey::from(BUILTIN_STRING_MEMORY.name)
+            {
+                return None;
+            }
+            let shape = Object::from(function).object_shape(agent);
+            let (offset, holder) = cache.find_cached_property_offset(agent, shape)?;
+            if offset.is_unset() {
+                return Some(Value::Undefined);
+            }
+            // The object that has the property (%Function.prototype%, or
+            // one above it) is asked the general way: the one function
+            // that reads a slot of an ordinary object is part of the read
+            // of every property by its cache while that is all that calls
+            // it, and with a second caller here a loop that reads the
+            // properties of an object was 5% slower.
+            return match holder?.get_own_property_at_offset(agent, offset, gc) {
+                TryGetResult::Value(value) => Some(value.unbind()),
+                _ => None,
+            };
+        }
+        Self::typed_array_length(agent, value, tables, instr, gc)
     }
 
     /// `a.length` of a TypedArray, where the property cache finds for its
