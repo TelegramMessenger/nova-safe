@@ -59,6 +59,63 @@ embedder can give its linker the same order. And it does not settle a change ins
 still moves everything after it within the function: two builds that differ so are still compared
 on the panel (area 5).
 
+### What an operation costs
+
+A timing says that a case is slow and a profile where its time goes, by function; neither says what one
+call or one property read costs next to the other engine's, and neither can be taken while the machine
+does something else. The instructions a process retires can: `/usr/bin/time -l` reports them (macOS),
+and for one binary and one script they are the same to a few parts in ten thousand from run to run,
+under any load.
+
+```bash
+safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--save now.json] [--against before.json]
+```
+
+It runs the cases of `safe/bench/prices.js` once in each engine, in the runner that `run.py` built.
+Each is a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed
+(one operation more in a turn, or one in place of the cheapest of its kind), so the two processes
+differ by a million times the price of the operation. As of the typed-array round (area 5), in machine
+instructions per operation:
+
+| operation | QuickJS | Nova | |
+| --- | ---: | ---: | --- |
+| call, no argument / one / two | 223 / 265 / 257 | 568 / 652 / 662 | 2.5x |
+| call of a method, of one that reads `this.n`, of an inherited one | 307 / 411 / 322 | 841 / 958 / 882 | 2.3-2.7x |
+| a callee that reads a variable of its maker, in place of its parameter | 2 | 79 | |
+| a callee that assigns one, more | 25 | 143 | |
+| read of a variable of the enclosing function, in place of a local | 2 | 10 | |
+| assignment to one, in place of a local | -2 | 64 | |
+| read of a global, in place of a local | 41 | 156 | 3.8x |
+| assignment to a global, in place of a local | 56 | 366 | 6.6x |
+| property read, own / inherited, in place of a local | 53 / 68 | 145 / 185 | 2.7x |
+| property assignment, in place of a local | 48 | 122 | 2.6x |
+| getter / setter | 328 / 400 | 845 / 816 | 2.6x / 2.0x |
+| integer `+` of two locals, more | 19 | 81 | 4.3x |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 373 | 5.6x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 257 / 253 / 325 | 730 / 617 / 691 | 2.1-2.8x |
+| `Math.max(i, 7)` | 266 | 585 | 2.2x |
+| Array element read / written | 51 / 48 | 134 / 176 | 2.6x / 3.7x |
+| Uint8Array element read / written | 84 / 73 | 201 / 211 | 2.4x / 2.9x |
+| Float64Array element read / written | 106 / 71 | 299 / 208 | 2.8x / 2.9x |
+| `new` of a function / of a class, one field set | 1067 / 1123 | 2204 / 2176 | 2.0x |
+| an object literal of two properties | 739 | 480 | 0.65x |
+| one callback of `forEach` (the whole turn) | 394 | 806 | 2.0x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 1081 | 2.2x |
+| `s.charCodeAt(i)` | 345 | 545 | 1.6x |
+
+Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
+the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
+times its time; a loop that adds integers retires 1.9 times as many and takes the same time), so
+the table of `run.py` still decides what is kept. What the prices say is where a path is long: the
+arithmetic of doubles first (each result a Number of the heap, area 6), then the globals, then the
+calls, which are 570 to 960 instructions where QuickJS has 220 to 410 and are spread thin (entering
+the function 18% of the time of `call/closure`, leaving it 11%, taking up the code that runs next 15%).
+
+Two builds are compared the same way, case by case of the benchmark: the instructions of a process
+over the runs its case reports. A change that makes a path longer shows there exactly, with the machine
+busy, before any timing can be trusted; that is how the loss of the calls in the try at the loop's
+step (area 1) was found, which four placings of the loop had only shown to be real.
+
 ## Where it stands
 
 Nova's time over QuickJS's, geometric mean per group, on an Apple M-series machine (QuickJS fork `fbc91d8`, `-O2`;
@@ -332,6 +389,31 @@ capacity has descriptors. Together they are 43% of `prop/get-set-one-shape` and 
 update, where the numbers that do not fit a value and the collector are under 6%. The descriptors are
 handed out as entries of that table in some 170 places of twelve files; knowing without the lookup that
 a storage has none is a change to all of them.
+
+The step itself was tried shorter, and is as it was. Of its 22 instructions on the way that is always
+taken, one is a jump over the other way: the read of an instruction where the code has less left than
+the five bytes the loop reads at a time, which the compiler had made one with the usual read. With that
+read in a function of its own (never read into the loop, and marked as rare) the step was 21 with
+no jump taken, a `switch` in a loop 12-16% faster over four placings of the loop ("Where a function
+lands") and the other loops 1-2%. Every case that calls was 2-5% slower, at every placing.
+
+The instructions retired (above) said why, which no timing had: a callback ran 3.4% more of them. The
+compiler now read the allocator into the arm that makes one more frame when a call finds none, and
+looked up whose memory it counts (a thread-local of the embedding) where the function starts, at every
+entry, to allocate once in a long while; and it worked out where the scoped collections of the running
+code start (their count times their size, for a truncation that few instructions need) before the loop,
+at every call and every return. Both went away with that rare work in functions of their own, and the
+loop was 139 instructions shorter than before the try. But a function that returns nothing runs off the
+end of its code, which is the read that had been taken out of line: 19 instructions more for every
+callback, setter and constructor (the price list showed it at once: those three, and nothing else that
+calls). With the end of the code asked for in the loop again, in one comparison, the compiler stopped
+reading the entry of a call and a dozen small functions into the loop at all (the loop a sixth smaller,
+every call 50 to 60 instructions longer), and with those marked to be read in always, every call was 90
+longer. Dropped: four forms, four different loops. The loop of instructions is one function of 13,000
+instructions whose every part the compiler decides again for any change to it, and the step cannot be
+shortened by one branch without paying for it somewhere that only a count of instructions finds. What
+would shorten it soundly is an instruction of its own at the end of every code (so that no read is ever
+short, and the loop has one way to read), which is a change to the compiler of the bytecode; not done.
 
 ### 2. Variables that are not locals of the running function
 
