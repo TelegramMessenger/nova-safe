@@ -10,8 +10,9 @@ use crate::{
     ecmascript::{Agent, InternalMethods, Object, PropertyKey, TryResult, Value},
     engine::{Bindable, GcToken, HeapRootData, NoGcScope},
     heap::{
-        AtomicBits, BitRange, CompactionLists, HeapMarkAndSweep, HeapSweepWeakReference,
-        PropertyKeyHeap, WeakReference, WorkQueues, sweep_heap_vector_values,
+        AtomicBits, BitRange, CompactionLists, ElementArrayKey, HeapMarkAndSweep,
+        HeapSweepWeakReference, PropertyKeyHeap, WeakReference, WorkQueues,
+        sweep_heap_vector_values,
     },
 };
 
@@ -599,6 +600,21 @@ impl<'a> PropertyLookupCache<'a> {
         agent: &Agent,
         shape: ObjectShape<'a>,
     ) -> Option<(PropertyOffset, Option<Object<'a>>)> {
+        self.find_cached_place(agent, shape)
+            .map(|(offset, prototype, _)| (offset, prototype))
+    }
+
+    /// As [`PropertyLookupCache::find_cached_property_offset`], with the
+    /// capacity of the storage that the offset is in where the cache knows
+    /// it: for a property of the object's own among its values, under a
+    /// shape that is not an intrinsic object's. It is
+    /// [`ElementArrayKey::Empty`] for every other entry.
+    #[inline]
+    pub(crate) fn find_cached_place(
+        self,
+        agent: &Agent,
+        shape: ObjectShape<'a>,
+    ) -> Option<(PropertyOffset, Option<Object<'a>>, ElementArrayKey)> {
         let caches = &agent.heap.caches;
         // The records of one cache, each of a few shapes, one after another.
         let mut cache = self;
@@ -609,6 +625,18 @@ impl<'a> PropertyLookupCache<'a> {
                 cache = record.next?;
                 continue;
             };
+            // The capacity is believed only of an offset that still is
+            // what it was put in with: an entry may be changed where it is
+            // (see the invalidations above), and none of those makes one of
+            // this kind.
+            if offset.is_own_value() {
+                let capacity = record.capacities[i as usize];
+                debug_assert!(
+                    capacity == ElementArrayKey::Empty
+                        || !shape.is_intrinsic(agent) && capacity == shape.values_capacity(agent)
+                );
+                return Some((offset, None, capacity));
+            }
             let prototype = if !offset.is_unset() && offset.is_prototype_property() {
                 let prototype =
                     caches.property_lookup_cache_prototypes[index].prototypes[i as usize].unwrap();
@@ -619,19 +647,38 @@ impl<'a> PropertyLookupCache<'a> {
                 );
                 None
             };
-            return Some((offset, prototype));
+            return Some((offset, prototype, ElementArrayKey::Empty));
+        }
+    }
+
+    /// The capacity to keep with an entry that places a property among the
+    /// values of an object of `shape`.
+    ///
+    /// The shape decides the capacity of that storage, and the record of a
+    /// shape is never changed: but for the shape of an intrinsic object,
+    /// which is that object's alone and is changed where it is as the
+    /// object gains and loses properties. Of such a shape nothing is kept,
+    /// and the capacity is asked of it at every use.
+    fn capacity_to_keep(agent: &Agent, shape: ObjectShape) -> ElementArrayKey {
+        if shape.is_intrinsic(agent) {
+            return ElementArrayKey::Empty;
+        }
+        match shape.values_capacity(agent) {
+            ElementArrayKey::EmptyIntrinsic => ElementArrayKey::Empty,
+            capacity => capacity,
         }
     }
 
     pub(crate) fn insert_unset(self, agent: &mut Agent, shape: ObjectShape<'a>) {
         debug_assert!(self.find_cached_property_offset(agent, shape).is_none());
         let offset = PropertyOffset::UNSET;
+        let capacity = ElementArrayKey::Empty;
         let caches = &mut agent.heap.caches;
         let mut cache = self;
         let next_to_create = PropertyLookupCache::from_index(caches.property_lookup_caches.len());
         loop {
             let (record, _) = cache.get_record_mut(caches);
-            if record.insert(shape, offset).is_some() {
+            if record.insert(shape, offset, capacity).is_some() {
                 return;
             }
             if let Some(next) = record.next {
@@ -639,9 +686,9 @@ impl<'a> PropertyLookupCache<'a> {
                 continue;
             }
             record.next = Some(next_to_create);
-            caches
-                .property_lookup_caches
-                .push(PropertyLookupCacheRecord::with_shape_and_offset(shape, offset).unbind());
+            caches.property_lookup_caches.push(
+                PropertyLookupCacheRecord::with_shape_and_offset(shape, offset, capacity).unbind(),
+            );
             caches
                 .property_lookup_cache_prototypes
                 .push(PropertyLookupCacheRecordPrototypes::new());
@@ -669,12 +716,13 @@ impl<'a> PropertyLookupCache<'a> {
         let Some(offset) = PropertyOffset::new(index) else {
             return;
         };
+        let capacity = Self::capacity_to_keep(agent, shape);
         let caches = &mut agent.heap.caches;
         let mut cache = self;
         let next_to_create = PropertyLookupCache::from_index(caches.property_lookup_caches.len());
         loop {
             let (record, _) = cache.get_record_mut(caches);
-            if record.insert(shape, offset).is_some() {
+            if record.insert(shape, offset, capacity).is_some() {
                 return;
             }
             if let Some(next) = record.next {
@@ -682,9 +730,9 @@ impl<'a> PropertyLookupCache<'a> {
                 continue;
             }
             record.next = Some(next_to_create);
-            caches
-                .property_lookup_caches
-                .push(PropertyLookupCacheRecord::with_shape_and_offset(shape, offset).unbind());
+            caches.property_lookup_caches.push(
+                PropertyLookupCacheRecord::with_shape_and_offset(shape, offset, capacity).unbind(),
+            );
             caches
                 .property_lookup_cache_prototypes
                 .push(PropertyLookupCacheRecordPrototypes::new());
@@ -706,12 +754,16 @@ impl<'a> PropertyLookupCache<'a> {
         let Some(offset) = PropertyOffset::new(index) else {
             return;
         };
+        let capacity = Self::capacity_to_keep(agent, shape);
         let caches = &mut agent.heap.caches;
         let mut cache = self;
         let next_to_create = PropertyLookupCache::from_index(caches.property_lookup_caches.len());
         loop {
             let (record, _) = cache.get_record_mut(caches);
-            if record.insert_if_not_found(shape, offset).is_some() {
+            if record
+                .insert_if_not_found(shape, offset, capacity)
+                .is_some()
+            {
                 return;
             }
             if let Some(next) = record.next {
@@ -719,9 +771,9 @@ impl<'a> PropertyLookupCache<'a> {
                 continue;
             }
             record.next = Some(next_to_create);
-            caches
-                .property_lookup_caches
-                .push(PropertyLookupCacheRecord::with_shape_and_offset(shape, offset).unbind());
+            caches.property_lookup_caches.push(
+                PropertyLookupCacheRecord::with_shape_and_offset(shape, offset, capacity).unbind(),
+            );
             caches
                 .property_lookup_cache_prototypes
                 .push(PropertyLookupCacheRecordPrototypes::new());
@@ -742,12 +794,13 @@ impl<'a> PropertyLookupCache<'a> {
         let Some(offset) = PropertyOffset::new_prototype(index) else {
             return;
         };
+        let capacity = ElementArrayKey::Empty;
         let caches = &mut agent.heap.caches;
         let mut cache = self;
         let next_to_create = PropertyLookupCache::from_index(caches.property_lookup_caches.len());
         loop {
             let (record, prototypes) = cache.get_record_mut(caches);
-            if let Some(i) = record.insert(shape, offset) {
+            if let Some(i) = record.insert(shape, offset, capacity) {
                 debug_assert!(offset.is_prototype_property());
                 let previous = prototypes.prototypes[i as usize].replace(prototype.unbind());
                 debug_assert!(previous.is_none());
@@ -758,9 +811,9 @@ impl<'a> PropertyLookupCache<'a> {
                 continue;
             }
             record.next = Some(next_to_create);
-            caches
-                .property_lookup_caches
-                .push(PropertyLookupCacheRecord::with_shape_and_offset(shape, offset).unbind());
+            caches.property_lookup_caches.push(
+                PropertyLookupCacheRecord::with_shape_and_offset(shape, offset, capacity).unbind(),
+            );
             caches
                 .property_lookup_cache_prototypes
                 .push(PropertyLookupCacheRecordPrototypes::with_prototype(prototype).unbind());
@@ -830,6 +883,11 @@ const N: usize = 4;
 pub(crate) struct PropertyLookupCacheRecord<'a> {
     shapes: [Option<ObjectShape<'a>>; N],
     offsets: [PropertyOffset; N],
+    /// With each entry, the capacity of the storage its offset is in, where
+    /// that is kept (see [`PropertyLookupCache::capacity_to_keep`]). Written
+    /// whenever an entry is given its shape, and read only for an offset
+    /// among the values of the object itself.
+    capacities: [ElementArrayKey; N],
     next: Option<PropertyLookupCache<'a>>,
 }
 
@@ -838,11 +896,16 @@ impl<'a> PropertyLookupCacheRecord<'a> {
         Self {
             shapes: [None; N],
             offsets: [PropertyOffset(0); N],
+            capacities: [ElementArrayKey::Empty; N],
             next: None,
         }
     }
 
-    fn with_shape_and_offset(shape: ObjectShape<'a>, offset: PropertyOffset) -> Self {
+    fn with_shape_and_offset(
+        shape: ObjectShape<'a>,
+        offset: PropertyOffset,
+        capacity: ElementArrayKey,
+    ) -> Self {
         Self {
             shapes: [Some(shape), None, None, None],
             offsets: [
@@ -850,6 +913,12 @@ impl<'a> PropertyLookupCacheRecord<'a> {
                 PropertyOffset(0),
                 PropertyOffset(0),
                 PropertyOffset(0),
+            ],
+            capacities: [
+                capacity,
+                ElementArrayKey::Empty,
+                ElementArrayKey::Empty,
+                ElementArrayKey::Empty,
             ],
             next: None,
         }
@@ -866,7 +935,12 @@ impl<'a> PropertyLookupCacheRecord<'a> {
 
     /// Insert the given Object Shape and lookup cache index into the property
     /// lookup cache record. Returns false if the record is full.
-    fn insert(&mut self, shape: ObjectShape, offset: PropertyOffset) -> Option<u8> {
+    fn insert(
+        &mut self,
+        shape: ObjectShape,
+        offset: PropertyOffset,
+        capacity: ElementArrayKey,
+    ) -> Option<u8> {
         if let Some((i, slot)) = self
             .shapes
             .iter_mut()
@@ -875,6 +949,7 @@ impl<'a> PropertyLookupCacheRecord<'a> {
         {
             *slot = Some(shape.unbind());
             self.offsets[i] = offset;
+            self.capacities[i] = capacity;
             Some(i as u8)
         } else {
             None
@@ -883,7 +958,12 @@ impl<'a> PropertyLookupCacheRecord<'a> {
 
     /// Insert the given Object Shape and lookup cache index into the property
     /// lookup cache record. Returns false if the record is full.
-    fn insert_if_not_found(&mut self, shape: ObjectShape, offset: PropertyOffset) -> Option<u8> {
+    fn insert_if_not_found(
+        &mut self,
+        shape: ObjectShape,
+        offset: PropertyOffset,
+        capacity: ElementArrayKey,
+    ) -> Option<u8> {
         if let Some((i, slot)) = self
             .shapes
             .iter_mut()
@@ -897,6 +977,7 @@ impl<'a> PropertyLookupCacheRecord<'a> {
             }
             *slot = Some(shape.unbind());
             self.offsets[i] = offset;
+            self.capacities[i] = capacity;
             Some(i as u8)
         } else {
             None
@@ -959,6 +1040,13 @@ impl PropertyOffset {
         } else {
             None
         }
+    }
+
+    /// Returns true if the property was found among the values of the
+    /// object itself: not unset, not in a prototype, not in custom storage.
+    #[inline(always)]
+    pub(crate) const fn is_own_value(self) -> bool {
+        self.0 & !Self::OFFSET_BIT_MASK == 0
     }
 
     /// Returns true if the property was not set on the Object with this
@@ -1112,6 +1200,7 @@ impl HeapMarkAndSweep for PropertyLookupCacheRecord<'static> {
         let Self {
             shapes,
             offsets: _,
+            capacities: _,
             next: next_cache,
         } = self;
         shapes.as_slice().mark_values(queues);
@@ -1122,6 +1211,7 @@ impl HeapMarkAndSweep for PropertyLookupCacheRecord<'static> {
         let Self {
             shapes,
             offsets: _,
+            capacities: _,
             next: next_cache,
         } = self;
         shapes.as_mut_slice().sweep_values(compactions);

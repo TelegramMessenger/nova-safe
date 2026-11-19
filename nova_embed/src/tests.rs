@@ -14442,3 +14442,191 @@ String(keep.length)"##;
         );
     }
 }
+
+/// A property read or written by name through a property cache is the one
+/// \[\[Get]] and \[\[Set]] find, where the cache keeps the capacity of the
+/// storage with the place of the property: in objects of 1 to 5,000
+/// properties under the same places; in one object as it gains and loses
+/// properties, and one used as a dictionary; in objects whose shapes are
+/// their own and change where they are (a prototype, a function, a class,
+/// an Array with properties) as they gain and lose properties, and through
+/// the objects that inherit from them; in frozen, sealed and inextensible
+/// objects, with a read-only property, an accessor, a hidden property and
+/// one that holds undefined, and for values that are not objects; with 40
+/// shapes under one place, with shapes made and dropped while the heap is
+/// collected, and past the last property a cache can place. What is
+/// expected is what Node prints for the same script. Then objects of every
+/// capacity are kept over a collection that moves them and their shapes,
+/// read and written again, all dropped, and made anew.
+#[test]
+fn a_property_is_read_and_written_in_the_storage_its_shape_has() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(cached_slots)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn cached_slots() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function readA(o) { return o.a; }
+function writeA(o, v) { o.a = v; }
+function readZ(o) { return o.z; }
+function writeZ(o, v) { o.z = v; }
+function strictWriteA(o, v) { "use strict"; o.a = v; }
+function bump(o) { o.a += 1; o.z = o.a + o.z; return o.z; }
+
+(function () {
+  var r = [], sum = 0, wrong = 0;
+  // Objects of every size from 1 to 70 properties, and some large ones: `a` first, `z` last.
+  var sizes = []; for (var n = 0; n <= 70; n++) sizes.push(n); sizes.push(254, 255, 256, 257, 300, 1022, 1023, 1024, 1025, 1100, 4094, 4095, 4096, 4097, 5000);
+  var objects = [];
+  for (var s = 0; s < sizes.length; s++) {
+    var o = { a: "a" + sizes[s] };
+    for (var k = 0; k < sizes[s]; k++) o["p" + k] = k;
+    o.z = sizes[s];
+    objects.push(o);
+  }
+  for (var round = 0; round < 3; round++) {
+    for (var i = 0; i < objects.length; i++) {
+      var x = objects[i], size = sizes[i];
+      if (readA(x) !== (round === 0 ? "a" + size : "w" + (round - 1) + "." + size)) wrong++;
+      if (readZ(x) !== size + round * 2) wrong++;
+      writeA(x, "w" + round + "." + size); writeZ(x, readZ(x) + 2);
+      if (size > 3 && x["p" + (size - 1)] !== size - 1) wrong++;
+      sum += readZ(x);
+    }
+  }
+  r.push(wrong, sum, objects[70].a, objects[objects.length - 1].z, Object.keys(objects[5]).join(""));
+  P("sizes", r.join(" "));
+})();
+
+(function () {
+  var r = [], wrong = 0;
+  // One object growing and shrinking under the same places.
+  var o = { a: 0 };
+  for (var i = 0; i < 300; i++) {
+    o["k" + i] = i; o.z = i;
+    writeA(o, i); if (readA(o) !== i || readZ(o) !== i || o["k" + i] !== i) wrong++;
+    if (i % 7 === 0) { delete o.z; if (readZ(o) !== undefined) wrong++; }
+  }
+  r.push(wrong, Object.keys(o).length, readA(o), readZ(o));
+  for (var j = 299; j >= 0; j -= 2) { delete o["k" + j]; writeA(o, -j); if (readA(o) !== -j) wrong++; }
+  r.push(wrong, Object.keys(o).length, readA(o), o.k0, o.k298, o.k299);
+  for (var m = 0; m < 300; m += 2) { delete o["k" + m]; if (readA(o) !== -1 || (o.z !== undefined && readZ(o) !== o.z)) wrong++; }
+  r.push(wrong, Object.keys(o).join(), readA(o));
+  delete o.a; r.push(readA(o), "a" in o); writeA(o, "back"); o.first = 1; r.push(readA(o), Object.keys(o).join());
+  var d = {}; for (var c = 0; c < 2000; c++) { d["x" + (c % 37)] = c; d.a = c; if (c % 3 === 0) delete d["x" + ((c * 7) % 37)]; if (readA(d) !== c) wrong++; bump(d); if (isNaN(d.z) !== (c === 0 ? true : isNaN(d.z))) wrong++; d.z = c; }
+  r.push(wrong, Object.keys(d).length, d.a, d.z);
+  P("one object", r.join(" "));
+})();
+
+(function () {
+  var r = [], wrong = 0;
+  // Objects whose shapes are their own: prototypes, constructors, functions, Arrays with properties.
+  var proto = { a: "proto" };
+  var child = Object.create(proto), grand = Object.create(child);
+  function F() {} F.a = "fn"; F.z = 0;
+  class K { static a = "static"; static z = 0; }
+  var arr = [1, 2, 3]; arr.a = "array"; arr.z = 0;
+  var holders = [proto, F, K, arr];
+  for (var i = 0; i < 80; i++) {
+    for (var h = 0; h < holders.length; h++) {
+      var o = holders[h];
+      o["extra" + i] = i; o.z = i;
+      if (readZ(o) !== i || o["extra" + i] !== i) wrong++;
+      writeA(o, h + ":" + i); if (readA(o) !== h + ":" + i) wrong++;
+    }
+    if (readA(child) !== "0:" + i || readA(grand) !== "0:" + i || readZ(grand) !== i || grand["extra" + i] !== i) wrong++;
+  }
+  r.push(wrong, readA(proto), readA(F), readA(K), readA(arr), arr.length, Object.keys(proto).length, F.name, K.name);
+  // Properties leave them again: the ones behind move up.
+  for (var j = 0; j < 80; j += 3) for (var g = 0; g < holders.length; g++) { delete holders[g]["extra" + j]; if (readZ(holders[g]) !== 79 || readA(holders[g]) !== g + ":79") wrong++; }
+  delete proto.a; r.push(wrong, readA(proto), readA(child), readA(grand), readZ(grand));
+  proto.a = "again"; child.a = "own"; r.push(readA(proto), readA(child), readA(grand));
+  delete child.a; r.push(readA(child), readA(grand), Object.keys(proto).length);
+  writeA(grand, "mine"); r.push(readA(grand), readA(child), grand.hasOwnProperty("a"));
+  delete F.a; delete K.a; delete arr.a; r.push(readA(F), readA(K), readA(arr));
+  Object.prototype.a = "from Object.prototype"; r.push(readA(F), readA(K), readA(arr), readA({}), readA(Object.create(null)));
+  delete Object.prototype.a; r.push(readA(F), readA({}), readA({ a: 0 }));
+  P("own shapes", r.join(" "));
+})();
+
+(function () {
+  var r = [], log = [];
+  var frozen = Object.freeze({ a: 1, b: 2, c: 3 }), sealed = Object.seal({ a: 1, z: 2 }), fixed = Object.preventExtensions({ a: 1, z: 2 });
+  writeA(frozen, 9); writeA(sealed, 9); writeA(fixed, 9); writeZ(frozen, 5); writeZ(fixed, 5);
+  r.push(readA(frozen), readA(sealed), readA(fixed), readZ(frozen), readZ(fixed), T(function () { strictWriteA(frozen, 1); return "set"; }), T(function () { strictWriteA(sealed, 7); return readA(sealed); }));
+  var readOnly = {}; Object.defineProperty(readOnly, "a", { value: "ro", writable: false, enumerable: true, configurable: true }); readOnly.z = 1;
+  writeA(readOnly, "changed"); r.push(readA(readOnly), T(function () { strictWriteA(readOnly, 1); return "set"; }));
+  Object.defineProperty(readOnly, "a", { writable: true }); writeA(readOnly, "now"); r.push(readA(readOnly));
+  var acc = { get a() { log.push("get"); return this._a; }, set a(v) { log.push("set" + v); this._a = v; }, z: 1 };
+  writeA(acc, 5); r.push(readA(acc), readA(acc), log.join());
+  Object.defineProperty(acc, "a", { value: "data", writable: true }); writeA(acc, "plain"); r.push(readA(acc), log.length);
+  Object.defineProperty(acc, "a", { get: function () { return "getter again"; } }); r.push(readA(acc), T(function () { strictWriteA(acc, 1); return "set"; }));
+  var und = { a: undefined, z: null }; r.push(readA(und), readZ(und), "a" in und); writeA(und, 0); r.push(readA(und));
+  var hidden = {}; Object.defineProperty(hidden, "a", { value: 1, writable: true, enumerable: false, configurable: false }); writeA(hidden, 2); r.push(readA(hidden), Object.keys(hidden).length, delete hidden.a, readA(hidden));
+  r.push(readA(5), readA("str"), readA(true), T(function () { return readA(null); }), T(function () { writeA(undefined, 1); }), readA(function () {}), readA([]), readA(new Map()), readA(/x/), readA(Symbol.iterator));
+  writeA(5, 1); writeA("s", 1); r.push(T(function () { strictWriteA(5, 1); return "set"; }));
+  P("kinds", r.join(" "));
+})();
+
+(function () {
+  var r = [], wrong = 0, sum = 0;
+  // Many shapes at one place, `a` at another offset in each.
+  var shapes = [];
+  for (var s = 0; s < 40; s++) { var o = {}; for (var k = 0; k < s; k++) o["s" + s + "_" + k] = k; o.a = s; o.z = -s; shapes.push(o); }
+  for (var round = 0; round < 5; round++) for (var i = 0; i < shapes.length; i++) { if (readA(shapes[i]) !== i + round) wrong++; writeA(shapes[i], i + round + 1); sum += bump(shapes[i]); shapes[i].a -= 1; }
+  r.push(wrong, sum, shapes[39].a, shapes[39].z);
+  // Shapes made and dropped, with what is kept read again after the heap was collected.
+  var kept = [], junk;
+  for (var g = 0; g < 4; g++) {
+    for (var n = 0; n < 3000; n++) { var t = { a: n }; t["g" + g + "n" + (n % 50)] = n; t.z = g; if (n % 100 === 0) kept.push(t); junk = t; }
+    for (var w = 0; w < 30000; w++) junk = { w: w, a: [w] };
+    for (var c = 0; c < kept.length; c++) { if (readA(kept[c]) !== (c % 30) * 100 || readZ(kept[c]) !== (c / 30 | 0)) wrong++; }
+  }
+  r.push(wrong, kept.length, readA(junk).length, readA(kept[119]), Object.keys(kept[119]).join());
+  // Past what a cache can place: more than 8191 properties before the one read.
+  var big = { a: "first" }; for (var b = 0; b < 9000; b++) big["b" + b] = b; big.z = "last";
+  writeA(big, "set"); writeZ(big, "set too"); r.push(readA(big), readZ(big), big.b8190, big.b8191, big.b8999); big.b8191 = "x"; big.b8999 = "y"; r.push(big.b8191, big.b8999, Object.keys(big).length);
+  P("many shapes", r.join(" "));
+})();
+
+out.join("\n")"##;
+    let expected = r##"sizes 0 92181 w2.70 5006 ap0p1p2p3p4z
+one object 0 302 299 299 0 152 -1 0 298  0 a,z -1  false back z,a,first 0 35 2000 1999
+own shapes 0 0:79 1:79 2:79 3:79 3 82 F K 0    79 again own own again again 55 mine again true    from Object.prototype from Object.prototype from Object.prototype from Object.prototype    0
+kinds 1 9 9  5 throws TypeError 7 ro throws TypeError now 5 5 set5,get,get plain 3 getter again throws TypeError   true 0 2 0 false 2    throws TypeError throws TypeError      throws TypeError
+many shapes 0 9800 44 176 0 120 1 2900 a,g3n0,z set set too 8190 8191 8999 x y 9002"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // Kept over a collection: every third is gone, so the storages of the
+    // others move, in every capacity up to 64 slots.
+    let made = r##"var keep = []; function readA(o) { return o.a; } function writeA(o, v) { o.a = v; }
+for (var i = 0; i < 600; i++) { var o = { a: i }; for (var k = 0; k < i % 40; k++) o["p" + k] = k; o.z = i; keep.push(o); readA(o); }
+for (var j = 0; j < 600; j += 3) keep[j] = null;
+String(keep.length)"##;
+    assert_eq!(text(&mut engine, made), "600");
+    engine.collect_garbage().unwrap();
+    let asked = r##"(function () { var wrong = 0, live = 0; for (var i = 0; i < keep.length; i++) { var o = keep[i]; if (!o) continue; live++; if (readA(o) !== i) wrong++; writeA(o, -i); if (o.a !== -i || o.z !== i || (i % 40 > 0 && o["p" + (i % 40 - 1)] !== i % 40 - 1)) wrong++; writeA(o, i); } return live + "," + wrong; })()"##;
+    assert_eq!(text(&mut engine, asked), "400,0");
+    engine.collect_garbage().unwrap();
+    assert_eq!(text(&mut engine, asked), "400,0");
+    // None is left, and the same places serve the objects made next.
+    engine.evaluate("keep = null", false).unwrap();
+    engine.collect_garbage().unwrap();
+    engine.collect_garbage().unwrap();
+    let anew = r##"(function () { var sum = 0; for (var n = 0; n < 70; n++) { var o = { a: n }; for (var k = 0; k < n; k++) o["q" + k] = k; writeA(o, n + 1); sum += readA(o); } return String(sum); })()"##;
+    assert_eq!(text(&mut engine, anew), "2485");
+}

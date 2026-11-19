@@ -658,7 +658,20 @@ impl<'a> OrdinaryObject<'a> {
             ..
         } = &agent.heap;
         let data = self.get_direct(objects);
-        let (offset, prototype) = cache.find_cached_property_offset(agent, data.get_shape())?;
+        let (offset, prototype, capacity) = cache.find_cached_place(agent, data.get_shape())?;
+        if capacity != crate::heap::ElementArrayKey::Empty {
+            // A value of the Object's own, in a storage whose capacity the
+            // cache has kept: the shape's record is not asked for it.
+            debug_assert_eq!(capacity, data.values_capacity(object_shapes));
+            debug_assert!((offset.get_property_offset() as u32) < data.len(object_shapes));
+            return elements
+                .get_slot_value_raw(
+                    data.get_values(),
+                    capacity,
+                    offset.get_property_offset() as usize,
+                )
+                .bind(gc);
+        }
         if offset.is_unset() {
             return Some(Value::Undefined);
         }
@@ -768,10 +781,27 @@ impl<'a> OrdinaryObject<'a> {
         cache: PropertyLookupCache,
         value: Value,
     ) -> CachedSet {
-        let shape = self.get_direct(&agent.heap.objects).get_shape();
-        let Some((offset, None)) = cache.find_cached_property_offset(agent, shape) else {
+        let data = self.get_direct(&agent.heap.objects);
+        let (shape, values) = (data.get_shape(), data.get_values().unbind());
+        let Some((offset, None, capacity)) = cache.find_cached_place(agent, shape) else {
             return CachedSet::Unknown;
         };
+        if capacity != crate::heap::ElementArrayKey::Empty {
+            // As in `value_by_cache`: the capacity of the storage is the
+            // one the cache has kept.
+            debug_assert_eq!(capacity, shape.values_capacity(agent));
+            debug_assert!((offset.get_property_offset() as u32) < shape.len(agent));
+            return if agent.heap.elements.set_writable_slot_raw(
+                values,
+                capacity,
+                offset.get_property_offset() as usize,
+                value.unbind(),
+            ) {
+                CachedSet::Done
+            } else {
+                CachedSet::Unknown
+            };
+        }
         if offset.is_unset() {
             return CachedSet::Absent;
         }

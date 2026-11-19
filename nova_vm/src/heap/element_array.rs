@@ -1501,6 +1501,30 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
         }
     }
 
+    /// As [`StridedVec::get`], without asking whether the storages are
+    /// dynamic where their size says that they are not (only storages of
+    /// more than [`DYNAMIC_STORAGE_SLOTS`] slots are made dynamic): for the
+    /// reads that the property caches do, one of them for every property
+    /// read by name.
+    #[inline]
+    pub(crate) fn get_sized(&self, index: usize) -> Option<&[T]> {
+        if N > DYNAMIC_STORAGE_SLOTS {
+            return self.get(index);
+        }
+        debug_assert!(!self.dynamic);
+        self.data.get(Self::range(index)?)
+    }
+
+    /// As [`StridedVec::get_sized`], as mutable.
+    #[inline]
+    pub(crate) fn get_sized_mut(&mut self, index: usize) -> Option<&mut [T]> {
+        if N > DYNAMIC_STORAGE_SLOTS {
+            return self.get_mut(index);
+        }
+        debug_assert!(!self.dynamic);
+        self.data.get_mut(Self::range(index)?)
+    }
+
     /// Makes the dynamic storage at `index` hold at least `len` slots, the
     /// new ones set to `filler`. Growth is amortised by `Vec`. Does nothing
     /// for a StridedVec that is not dynamic, whose storages have `N` slots.
@@ -1747,6 +1771,42 @@ impl<const N: usize> ElementArray<N> {
             .get(offset)
             .copied()
             .flatten()
+    }
+
+    /// As [`ElementArray::get_value_raw`] for a storage of which only the
+    /// capacity is known: any of its slots, those past what it is used to
+    /// holding none.
+    #[inline]
+    fn get_slot_value_raw(&self, index: ElementIndex, offset: usize) -> Option<Value<'static>> {
+        self.values
+            .get_sized(index.get_index())?
+            .get(offset)
+            .copied()
+            .flatten()
+    }
+
+    /// As [`ElementArray::set_writable_value`] for a storage of which only
+    /// the capacity is known. A slot past what the storage is used to holds
+    /// no value, and so is not written.
+    #[inline]
+    fn set_writable_slot(
+        &mut self,
+        index: ElementIndex,
+        offset: usize,
+        value: Value<'static>,
+    ) -> bool {
+        let Some(slot @ Some(_)) = self
+            .values
+            .get_sized_mut(index.get_index())
+            .and_then(|storage| storage.get_mut(offset))
+        else {
+            return false;
+        };
+        if self.descriptors.forbids_write(index, offset as u32) {
+            return false;
+        }
+        *slot = Some(value);
+        true
     }
 
     /// Sets the slot at `offset` of the storage to `value` where it holds a
@@ -4401,6 +4461,87 @@ impl ElementArrays {
             ElementArrayKey::E16 => e2pow16.get_value_raw(index, len, offset),
             ElementArrayKey::E24 => e2pow24.get_value_raw(index, len, offset),
             ElementArrayKey::E32 => e2pow32.get_value_raw(index, len, offset),
+        }
+    }
+
+    /// The value in the slot at `offset` of the storage at `index` of the
+    /// given capacity, without the length it is used to: see
+    /// [`ElementArray::get_slot_value_raw`].
+    #[inline]
+    pub(crate) fn get_slot_value_raw(
+        &self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        offset: usize,
+    ) -> Option<Value<'static>> {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => None,
+            ElementArrayKey::E1 => e2pow1.get_slot_value_raw(index, offset),
+            ElementArrayKey::E2 => e2pow2.get_slot_value_raw(index, offset),
+            ElementArrayKey::E3 => e2pow3.get_slot_value_raw(index, offset),
+            ElementArrayKey::E4 => e2pow4.get_slot_value_raw(index, offset),
+            ElementArrayKey::E6 => e2pow6.get_slot_value_raw(index, offset),
+            ElementArrayKey::E8 => e2pow8.get_slot_value_raw(index, offset),
+            ElementArrayKey::E10 => e2pow10.get_slot_value_raw(index, offset),
+            ElementArrayKey::E12 => e2pow12.get_slot_value_raw(index, offset),
+            ElementArrayKey::E16 => e2pow16.get_slot_value_raw(index, offset),
+            ElementArrayKey::E24 => e2pow24.get_slot_value_raw(index, offset),
+            ElementArrayKey::E32 => e2pow32.get_slot_value_raw(index, offset),
+        }
+    }
+
+    /// Sets the slot at `offset` of the storage at `index` of the given
+    /// capacity where it is an own writable data property: see
+    /// [`ElementArray::set_writable_slot`].
+    #[inline]
+    pub(crate) fn set_writable_slot_raw(
+        &mut self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        offset: usize,
+        value: Value<'static>,
+    ) -> bool {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => false,
+            ElementArrayKey::E1 => e2pow1.set_writable_slot(index, offset, value),
+            ElementArrayKey::E2 => e2pow2.set_writable_slot(index, offset, value),
+            ElementArrayKey::E3 => e2pow3.set_writable_slot(index, offset, value),
+            ElementArrayKey::E4 => e2pow4.set_writable_slot(index, offset, value),
+            ElementArrayKey::E6 => e2pow6.set_writable_slot(index, offset, value),
+            ElementArrayKey::E8 => e2pow8.set_writable_slot(index, offset, value),
+            ElementArrayKey::E10 => e2pow10.set_writable_slot(index, offset, value),
+            ElementArrayKey::E12 => e2pow12.set_writable_slot(index, offset, value),
+            ElementArrayKey::E16 => e2pow16.set_writable_slot(index, offset, value),
+            ElementArrayKey::E24 => e2pow24.set_writable_slot(index, offset, value),
+            ElementArrayKey::E32 => e2pow32.set_writable_slot(index, offset, value),
         }
     }
 
