@@ -333,10 +333,42 @@ pub(crate) trait TypedArrayAbstractOperations<'ta>: Copy + Sized {
         }
     }
 
+    /// What the `length` accessor of %TypedArray%.prototype returns for O:
+    /// TypedArrayLength of a record of O made now, or 0 where
+    /// IsTypedArrayOutOfBounds of that record (steps 4 to 7 of
+    /// [23.2.3.21](https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.length)),
+    /// from one reading of the buffer and of the view, as
+    /// [`is_valid_integer_index`](Self::is_valid_integer_index) has them.
+    #[inline(always)]
+    fn length_or_zero(self, agent: &Agent) -> usize {
+        // A detached buffer is out of bounds.
+        let cached_buffer_byte_length: CachedBufferByteLength =
+            self.get_cached_buffer_byte_length(agent, Ordering::SeqCst);
+        let Some(buffer_byte_length) = Option::<usize>::from(cached_buffer_byte_length) else {
+            return 0;
+        };
+        let byte_offset = self.byte_offset(agent);
+        let element_size = self.typed_array_element_size();
+        if let Some(array_length) = self.array_length(agent) {
+            // The end of a view of a fixed length is its start and its
+            // length: where that is in the buffer, the start is.
+            if byte_offset + array_length * element_size > buffer_byte_length {
+                0
+            } else {
+                array_length
+            }
+        } else if byte_offset > buffer_byte_length {
+            0
+        } else {
+            (buffer_byte_length - byte_offset) / element_size
+        }
+    }
+
     /// ### [10.4.5.16 IsValidIntegerIndex ( O, index )](https://tc39.es/ecma262/#sec-isvalidintegerindex)
     ///
     /// The abstract operation IsValidIntegerIndex takes arguments O (a TypedArray)
     /// and index (a Number) and returns a Boolean.
+    #[inline]
     fn is_valid_integer_index(self, agent: &Agent, index: i64) -> Option<usize> {
         // 2. If index is not an integral Number, return false.
         // 3. If index is -0𝔽 or index < -0𝔽, return false.

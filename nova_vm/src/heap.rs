@@ -204,6 +204,21 @@ pub(crate) struct Heap {
     /// ([`GlobalScopeSeen`](crate::ecmascript::GlobalScopeSeen)) is good
     /// while this has not changed.
     pub(crate) intrinsic_key_moves: u64,
+    /// How many times an object whose shape is changed in place (an
+    /// intrinsic object, or any object that is the prototype of another)
+    /// has had a property added or removed, its properties moved, or its
+    /// own prototype changed: every time what the property caches found
+    /// through such an object is set right
+    /// ([`Caches`](crate::ecmascript::Caches)). What was found by a walk of
+    /// prototypes and is remembered apart from those caches
+    /// ([`TypedArrayLengthSeen`](crate::ecmascript::TypedArrayLengthSeen))
+    /// is good while this has not changed.
+    pub(crate) intrinsic_shape_changes: u64,
+    /// How many times a property that an object already had was given a
+    /// descriptor, or had the one it had taken away: the one way an
+    /// accessor property becomes another accessor or a data property with
+    /// the shape, the key and the place it had.
+    pub(crate) descriptor_changes: u64,
     /// Bytes of string data, ArrayBuffer data and keyed collection entries
     /// allocated since the last garbage collection, for the heap limit. Not
     /// part of the garbage collector's pacing.
@@ -382,6 +397,8 @@ impl Heap {
             alloc_counter: 0,
             collections: 0,
             intrinsic_key_moves: 0,
+            intrinsic_shape_changes: 0,
+            descriptor_changes: 0,
             data_bytes_since_gc: 0,
             gc_alloc_limit: crate::heap::heap_gc::MIN_GC_ALLOC_LIMIT,
         };

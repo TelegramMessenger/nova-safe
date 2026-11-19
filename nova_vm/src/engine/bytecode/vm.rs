@@ -4352,6 +4352,26 @@ impl Vm {
         if key != PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
             return None;
         }
+        // A TypedArray with no properties of its own and the prototype of
+        // its kind: what `length` is for one such is what it is for all of
+        // that kind in this Realm, until something that the heap counts
+        // changes (see `TypedArrayLengthSeen`). Finding it out anew at
+        // every read was the shape of the array asked for by its
+        // prototype, the cache searched, and the accessor read from the
+        // prototype's storage through its descriptors: 28% of a loop over
+        // a Uint8Array that tests `i < bytes.length`.
+        let kind = array
+            .get_backing_object(agent)
+            .is_none()
+            .then(|| core::mem::discriminant(&array.unbind()));
+        if let Some(kind) = kind
+            && agent
+                .typed_array_length_seen
+                .get()
+                .is_some_and(|seen| seen.holds(agent, kind))
+        {
+            return Some(array.length_value(agent));
+        }
         let cache = tables.cache(instr.get_second_index(), gc);
         let shape = array.object_shape(agent);
         let (offset, Some(prototype)) = cache.find_cached_property_offset(agent, shape)? else {
@@ -4364,7 +4384,17 @@ impl Vm {
         else {
             return None;
         };
-        TypedArrayPrototype::is_length_getter(agent, getter).then(|| array.length_value(agent))
+        if !TypedArrayPrototype::is_length_getter(agent, getter) {
+            return None;
+        }
+        if let Some(kind) = kind {
+            agent
+                .typed_array_length_seen
+                .set(Some(crate::ecmascript::TypedArrayLengthSeen::now(
+                    agent, kind,
+                )));
+        }
+        Some(array.length_value(agent))
     }
 
     /// `++` or `--` of an integer that stays one.

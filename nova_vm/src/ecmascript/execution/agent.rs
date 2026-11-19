@@ -964,6 +964,16 @@ pub struct Agent {
     /// The state of the global scope that global variables were last
     /// found in: see [`GlobalScopeSeen`].
     pub(crate) global_scope_seen: GlobalScopeSeen,
+    /// That `length` of a TypedArray is the accessor it was made with, as
+    /// last found: see [`TypedArrayLengthSeen`](crate::ecmascript::TypedArrayLengthSeen).
+    #[cfg(feature = "array-buffer")]
+    pub(crate) typed_array_length_seen: core::cell::Cell<
+        Option<
+            crate::ecmascript::TypedArrayLengthSeen<
+                core::mem::Discriminant<crate::ecmascript::AnyTypedArray<'static>>,
+            >,
+        >,
+    >,
     /// Emptied argument vectors, reused for call arguments.
     pub(crate) arguments_pool: Vec<Vec<Value<'static>>>,
     /// ### \[\[KeptAlive]]
@@ -1006,6 +1016,8 @@ impl Agent {
             spare_vm_stacks: SpareVmStacks::default(),
             vm_frames: VmFrames::default(),
             global_scope_seen: GlobalScopeSeen::default(),
+            #[cfg(feature = "array-buffer")]
+            typed_array_length_seen: core::cell::Cell::new(None),
             arguments_pool: Vec::new(),
             #[cfg(feature = "weak-refs")]
             kept_alive: false,
@@ -1805,6 +1817,9 @@ impl HeapMarkAndSweep for Agent {
             // Its handles are of the collection before this one, and are
             // not read after it: nothing to keep or move.
             global_scope_seen: _,
+            // Likewise.
+            #[cfg(feature = "array-buffer")]
+                typed_array_length_seen: _,
         } = self;
 
         execution_context_stack.iter().for_each(|ctx| {
@@ -1869,6 +1884,9 @@ impl HeapMarkAndSweep for Agent {
             // Its handles are of the collection before this one, and are
             // not read after it: nothing to keep or move.
             global_scope_seen: _,
+            // Likewise.
+            #[cfg(feature = "array-buffer")]
+                typed_array_length_seen: _,
         } = self;
 
         execution_context_stack

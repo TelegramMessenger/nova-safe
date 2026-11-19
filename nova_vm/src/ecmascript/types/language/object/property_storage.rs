@@ -374,10 +374,16 @@ impl<'a> PropertyStorage<'a> {
                 // Mutating existing property.
                 let value_entry = values.get_mut(index as usize).unwrap();
                 *value_entry = value.unbind();
-                match (descriptors, element_descriptor) {
+                // Whether the property may be another kind of property
+                // after this, or an accessor with other functions: it is
+                // given a descriptor, or one of the object's properties
+                // had one. An object with no descriptor at all has no
+                // accessor to change.
+                let described = match (descriptors, element_descriptor) {
                     (e, Some(element_descriptor)) => {
                         let e = e.or_insert_with(|| ElementDescriptorMap::with_capacity(1));
                         e.insert(index, element_descriptor.unbind());
+                        true
                     }
                     (Entry::Occupied(mut e), None) => {
                         let descs = e.get_mut();
@@ -385,8 +391,12 @@ impl<'a> PropertyStorage<'a> {
                         if descs.is_empty() {
                             e.remove();
                         }
+                        true
                     }
-                    _ => {}
+                    _ => false,
+                };
+                if described {
+                    agent.heap.descriptor_changes += 1;
                 }
                 return Ok(());
             }

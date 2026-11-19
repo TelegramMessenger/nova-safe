@@ -12067,3 +12067,208 @@ recursion undefined 125250 RangeError"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `length` of a TypedArray with no properties of its own and the
+/// prototype of its kind is the accessor of %TypedArray%.prototype, and
+/// the loop remembers that it is, for the kind and the Realm, until the
+/// heap counts a change of an object whose shape is changed in place or a
+/// property defined again. The script warms one place that reads `length`
+/// and then makes it something else in every way there is, reading it
+/// from that place after each: a property of the array itself, another
+/// prototype for the array, a property of the kind's prototype (an
+/// accessor, a value, deleted again), the accessor of
+/// %TypedArray%.prototype defined again as another accessor and as a
+/// value, assigned, deleted and found further up, restored; an object and
+/// a Proxy put into the chain and taken out; a subclass with an accessor
+/// of its own; other properties defined again that are none of this;
+/// views of a part of a buffer and of a buffer that is resized under
+/// them; collections in between; and an accessor that restores the
+/// original one while it runs. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn the_length_of_a_typed_array_is_what_its_accessor_gives() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(typed_array_lengths)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn typed_array_lengths() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+var out = [];
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); out.push(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// one place that reads length, of whatever it is given; warmed on TypedArrays
+function len(a) { return a.length; }
+function sumOfLengths(list) { var t = 0; for (var i = 0; i < list.length; i++) { var n = len(list[i]); t += typeof n === "number" ? n : 1000; } return t; }
+function loopTo(a) { var c = 0; for (var i = 0; i < a.length; i++) c++; return c; }
+var TA = Object.getPrototypeOf(Uint8Array.prototype);
+var original = Object.getOwnPropertyDescriptor(TA, "length");
+var u8 = new Uint8Array(5), u8b = new Uint8Array(7), f64 = new Float64Array(3), i16 = new Int16Array(4), big = new BigInt64Array(2);
+function warm() { var t = 0; for (var i = 0; i < 300; i++) t += len(u8) + len(u8b) + len(f64) + len(i16) + len(big) + loopTo(u8); return t; }
+P("warm", warm(), len(u8), len(f64), loopTo(u8b));
+// an own property of one array
+Object.defineProperty(u8, "length", { value: 99, configurable: true });
+P("own data", len(u8), len(u8b), loopTo(u8b), warm());
+Object.defineProperty(u8, "length", { get: function () { return "own getter"; }, configurable: true });
+P("own getter", len(u8), len(u8b));
+delete u8.length;
+P("own deleted", len(u8), len(u8b), warm());
+u8.extra = 1;
+P("own unrelated", len(u8), loopTo(u8));
+// the prototype of one array
+var u8c = new Uint8Array(6);
+P("before", len(u8c));
+Object.setPrototypeOf(u8c, { length: "from object" });
+P("prototype object", len(u8c), len(u8b));
+Object.setPrototypeOf(u8c, null);
+P("prototype null", len(u8c), len(u8b));
+Object.setPrototypeOf(u8c, Uint8Array.prototype);
+P("prototype back", len(u8c), loopTo(u8c));
+Object.setPrototypeOf(u8c, Float64Array.prototype);
+P("prototype of another kind", len(u8c));
+// a property of the kind's prototype
+Object.defineProperty(Uint8Array.prototype, "length", { get: function () { return "kind getter"; }, configurable: true });
+P("kind getter", len(u8), len(u8b), len(f64), len(i16), kind(function () { return loopTo(u8b); }));
+Object.defineProperty(Uint8Array.prototype, "length", { value: 3, configurable: true });
+P("kind data", len(u8b), loopTo(u8b), len(f64));
+delete Uint8Array.prototype.length;
+P("kind deleted", len(u8), len(u8b), len(f64), warm());
+Uint8Array.prototype.unrelated = 1;
+P("kind unrelated", len(u8b), loopTo(u8b));
+delete Uint8Array.prototype.unrelated;
+P("kind unrelated deleted", len(u8b), len(i16));
+// the accessor of %TypedArray%.prototype defined again, and back
+Object.defineProperty(TA, "length", { get: function () { return "new accessor"; }, configurable: true });
+P("accessor replaced", len(u8), len(f64), len(big), sumOfLengths([u8, f64, i16]));
+Object.defineProperty(TA, "length", { get: function () { return this.byteLength * 2; }, configurable: true });
+P("accessor replaced again", len(u8b), len(f64));
+Object.defineProperty(TA, "length", { value: "a value", configurable: true, writable: true });
+P("accessor made data", len(u8b), len(f64), kind(function () { return loopTo(u8b); }));
+TA.length = 4;
+P("data assigned", len(u8b), loopTo(u8b), len(f64));
+Object.defineProperty(TA, "length", original);
+P("accessor restored", len(u8), len(u8b), len(f64), len(i16), len(big), warm());
+// removed, and found further up
+delete TA.length;
+P("accessor deleted", len(u8), len(f64));
+Object.prototype.length = "of Object.prototype";
+P("found further up", len(u8), len(f64), len({}));
+delete Object.prototype.length;
+P("gone", len(u8), len(f64));
+Object.defineProperty(TA, "length", original);
+P("restored again", len(u8), len(f64), warm());
+// the prototype of the kind's prototype
+var between = Object.create(TA, { length: { get: function () { return "between"; }, configurable: true } });
+Object.setPrototypeOf(Uint8Array.prototype, between);
+P("chain longer", len(u8), len(u8b), len(f64));
+delete between.length;
+P("chain longer, nothing in it", len(u8), len(u8b), loopTo(u8));
+between.length = 11;
+P("chain longer, a value", len(u8), len(f64));
+Object.setPrototypeOf(Uint8Array.prototype, TA);
+P("chain back", len(u8), len(u8b), len(f64), warm());
+Object.setPrototypeOf(Float64Array.prototype, Object.prototype);
+P("kind cut off", len(f64), len(u8), kind(function () { return f64.byteLength; }));
+Object.setPrototypeOf(Float64Array.prototype, TA);
+P("kind joined", len(f64), len(u8));
+var proxied = new Proxy(TA, { get: function (t, k, r) { return k === "length" ? "by proxy" : Reflect.get(t, k, r); } });
+Object.setPrototypeOf(Int16Array.prototype, proxied);
+P("proxy in the chain", len(i16), len(u8), len(f64));
+Object.setPrototypeOf(Int16Array.prototype, TA);
+P("proxy gone", len(i16), len(u8), warm());
+// another property defined again somewhere, which is none of this
+var bystander = { get g() { return 1; } };
+Object.defineProperty(bystander, "g", { get: function () { return 2; }, configurable: true });
+Object.defineProperty(TA, "byteLength", Object.getOwnPropertyDescriptor(TA, "byteLength"));
+Object.freeze(bystander);
+P("bystanders", bystander.g, len(u8), len(f64), loopTo(u8b));
+// subclasses, and what is not a TypedArray
+class Mine extends Uint8Array { get length() { return "subclass"; } }
+class Plain extends Uint8Array {}
+var arr = [1, 2, 3], str = "four", obj = { length: "o" }, args = (function () { return arguments; })(1, 2);
+P("others", len(new Mine(3)), len(new Plain(3)), loopTo(new Plain(4)), len(arr), len(str), len(obj), len(args), len(u8), len(function (a, b) {}));
+P("mixed", sumOfLengths([u8, arr, str, obj, f64, new Mine(1), new Plain(2), u8b, args]));
+// the buffer: views of a part, zero length, detached, resized
+var buffer = new ArrayBuffer(16), part = new Uint8Array(buffer, 4, 8), none = new Uint8Array(buffer, 16), words = new Uint32Array(buffer, 8);
+P("views", len(part), len(none), len(words), loopTo(part), loopTo(none));
+if (typeof ArrayBuffer.prototype.resize === "function") {
+  var grows = new ArrayBuffer(8, { maxByteLength: 32 }), tracking = new Uint8Array(grows), fixed = new Uint8Array(grows, 2, 4), tail = new Uint16Array(grows, 4);
+  P("resizable", len(tracking), len(fixed), len(tail), loopTo(tracking));
+  grows.resize(20);
+  P("grown", len(tracking), len(fixed), len(tail), loopTo(tracking));
+  grows.resize(5);
+  P("shrunk out of bounds", len(tracking), len(fixed), len(tail), loopTo(fixed));
+  grows.resize(3);
+  P("shrunk more", len(tracking), len(fixed), len(tail));
+  grows.resize(32);
+  P("grown back", len(tracking), len(fixed), len(tail));
+}
+// through collections, with much made and dropped
+(function () { var keep = []; for (var r = 0; r < 40; r++) { var junk = []; for (var i = 0; i < 2000; i++) junk.push({ i: i, s: "x" + i }); keep.push(len(new Uint8Array(r)) + len(u8) + len(new Float32Array(r + 1))); } P("collections", keep.join(",")); })();
+// a getter that changes things as it is read
+var tricky = new Uint8Array(2), hits = 0;
+Object.defineProperty(TA, "length", { get: function () { hits++; if (hits === 3) Object.defineProperty(TA, "length", original); return "tricky " + hits; }, configurable: true });
+P("changes itself", len(tricky), len(tricky), len(tricky), len(tricky), len(u8), hits);
+P("end", warm(), len(u8), len(f64), len(i16), len(big));
+for (var line = 0; line < out.length; line++) print(out[line]);
+lines.join("\n")"##;
+    let expected = r##"warm 7800 5 3 7
+own data 99 7 7 64200
+own getter own getter 7
+own deleted 5 7 7800
+own unrelated 5 5
+before 6
+prototype object from object 7
+prototype null undefined 7
+prototype back 6 6
+prototype of another kind 6
+kind getter kind getter kind getter 3 4 ok 0
+kind data 3 3 3
+kind deleted 5 7 3 7800
+kind unrelated 7 7
+kind unrelated deleted 7 4
+accessor replaced new accessor new accessor new accessor 3000
+accessor replaced again 14 48
+accessor made data a value a value ok 0
+data assigned 4 4 4
+accessor restored 5 7 3 4 2 7800
+accessor deleted undefined undefined
+found further up of Object.prototype of Object.prototype of Object.prototype
+gone undefined undefined
+restored again 5 3 7800
+chain longer between between 3
+chain longer, nothing in it 5 7 5
+chain longer, a value 5 3
+chain back 5 7 3 7800
+kind cut off undefined 5 ok undefined
+kind joined 3 5
+proxy in the chain by proxy 5 3
+proxy gone 4 5 7800
+bystanders 2 5 3 7
+others subclass 3 4 3 4 o 2 5 2
+mixed 2026
+views 8 0 2 8 0
+resizable 8 4 2 8
+grown 20 4 8 20
+shrunk out of bounds 5 0 0 0
+shrunk more 3 0 0
+grown back 32 4 14
+collections 6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64,66,68,70,72,74,76,78,80,82,84
+changes itself tricky 1 tricky 2 tricky 3 2 5 3
+end 7800 5 3 4 2"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

@@ -128,6 +128,7 @@ impl<'a> Caches<'a> {
         addition_index: u32,
         gc: NoGcScope,
     ) {
+        agent.heap.intrinsic_shape_changes += 1;
         let o = o.unbind();
         let shape = shape.unbind();
         let key = key.unbind();
@@ -254,6 +255,7 @@ impl<'a> Caches<'a> {
         shape: ObjectShape,
         removal_index: u32,
     ) {
+        agent.heap.intrinsic_shape_changes += 1;
         let caches = &mut agent.heap.caches;
         let o = o.unbind();
         let shape = shape.unbind();
@@ -318,6 +320,7 @@ impl<'a> Caches<'a> {
     /// (a constructor that returns it to a class with private elements), so
     /// every cache forgets what it found, whatever it was of.
     pub(crate) fn invalidate_caches_on_intrinsic_shape_properties_moved(agent: &mut Agent) {
+        agent.heap.intrinsic_shape_changes += 1;
         let caches = &mut agent.heap.caches;
         for ((s, offset), proto) in caches
             .property_lookup_caches
@@ -358,6 +361,7 @@ impl<'a> Caches<'a> {
         new_prototype: Option<Object>,
         gc: NoGcScope,
     ) {
+        agent.heap.intrinsic_shape_changes += 1;
         // Find our invalidated Object's old prototypes.
         let mut prototype_chain = if let Some(proto) = old_prototype {
             let mut protos = vec![proto];
@@ -1134,5 +1138,54 @@ impl HeapMarkAndSweep for PropertyLookupCacheRecordPrototypes<'static> {
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         let Self { prototypes } = self;
         prototypes.as_mut_slice().sweep_values(compactions);
+    }
+}
+
+/// That `length` of a TypedArray of one kind, in one Realm, is the accessor
+/// of %TypedArray%.prototype, as the last look found it by the property
+/// cache and the accessor it read from that prototype
+/// (`Vm::typed_array_length`), with what the heap counted then of
+/// everything that can make it otherwise.
+///
+/// A TypedArray with no properties of its own and the prototype of its kind
+/// has `length` from a walk of three objects whose shapes are changed in
+/// place: a property added to or removed from one of them, or a prototype
+/// of one changed, is counted
+/// ([`Heap::intrinsic_shape_changes`](crate::heap::Heap)); and the accessor
+/// found is that one until the property is defined again
+/// ([`Heap::descriptor_changes`](crate::heap::Heap)). While neither count
+/// has moved, the walk and the read of the accessor would find what they
+/// found. The Realm is a handle that a collection moves, so what was seen
+/// before one is not looked at after it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TypedArrayLengthSeen<K> {
+    kind: K,
+    realm: crate::ecmascript::Realm<'static>,
+    collections: u64,
+    shape_changes: u64,
+    descriptor_changes: u64,
+}
+
+impl<K: Copy + PartialEq> TypedArrayLengthSeen<K> {
+    /// What is seen now, for TypedArrays of `kind` in the running Realm.
+    pub(crate) fn now(agent: &Agent, kind: K) -> Self {
+        Self {
+            kind,
+            realm: agent.current_realm_id_internal(),
+            collections: agent.heap.collections,
+            shape_changes: agent.heap.intrinsic_shape_changes,
+            descriptor_changes: agent.heap.descriptor_changes,
+        }
+    }
+
+    /// Whether what was seen is what a look now, for TypedArrays of `kind`
+    /// in the running Realm, would see.
+    #[inline]
+    pub(crate) fn holds(self, agent: &Agent, kind: K) -> bool {
+        self.collections == agent.heap.collections
+            && self.shape_changes == agent.heap.intrinsic_shape_changes
+            && self.descriptor_changes == agent.heap.descriptor_changes
+            && self.kind == kind
+            && self.realm == agent.current_realm_id_internal()
     }
 }
