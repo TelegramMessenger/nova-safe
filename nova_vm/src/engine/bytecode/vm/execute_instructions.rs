@@ -2019,6 +2019,22 @@ pub(super) fn execute_evaluate_super<'gc>(
         .bind(gc.nogc());
         result.unbind().bind(gc.nogc())
     };
+    let result = result.unbind();
+    finish_super_call(agent, vm, result, gc)
+}
+
+/// What SuperCall does once the parent constructor has returned `result`:
+/// the object is the this value of the constructor that called `super`,
+/// whose instance elements are then initialized, and is the result of the
+/// call. For a `super(…)` whose parent constructor a `Vm` ran itself as
+/// for one that \[\[Construct]] ran.
+pub(super) fn finish_super_call<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    result: Object,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let result = result.bind(gc.nogc());
     // 7. Let thisER be GetThisEnvironment().
     let Environment::Function(this_er) = get_this_environment(agent, gc.nogc()) else {
         return Err(throw_missing_function_environment(agent, gc.into_nogc()));

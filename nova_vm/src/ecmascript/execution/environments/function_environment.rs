@@ -288,6 +288,17 @@ impl<'e> FunctionEnvironment<'e> {
         self.get(agent).this_binding_status
     }
 
+    /// The this value, where one is bound: what GetThisBinding returns
+    /// where it does not throw.
+    pub(crate) fn bound_this_value(self, agent: &Agent) -> Option<Value<'e>> {
+        let env_rec = self.get(agent);
+        if env_rec.this_binding_status == ThisBindingStatus::Initialized {
+            env_rec.this_value
+        } else {
+            None
+        }
+    }
+
     /// ### [9.1.1.3.4 GetThisBinding ( )](https://tc39.es/ecma262/#sec-function-environment-records-getthisbinding)
     /// The GetThisBinding concrete method of a Function Environment Record
     /// envRec takes no arguments and returns either a normal completion

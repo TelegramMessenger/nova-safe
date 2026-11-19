@@ -11183,3 +11183,218 @@ closures in turn 242524"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `new` of a derived class and `super(…)` are run by the `Vm` that runs
+/// the calling code where the constructors are functions of the script:
+/// what is constructed is what \[\[Construct]] and SuperCall construct.
+/// The script makes chains of classes with and without constructors of
+/// their own; has constructors return objects, primitives and nothing,
+/// with and without `super`; uses `this` before `super`, calls `super`
+/// twice, from an arrow function, in `try`, in a loop, in a parameter's
+/// default, and after the constructor has returned; initializes fields of
+/// the parent and of the child in their order, one of them throwing;
+/// reads new.target down a chain and under Reflect.construct; extends an
+/// ordinary function, built-ins, a bound function, null and a function
+/// that returns an object, and changes the parent afterwards; has parents
+/// throw; makes instances in constructors, a chain forty deep and one
+/// without end; and collects garbage under construction. What is expected
+/// is what Node prints for the same script.
+#[test]
+fn a_derived_class_constructs_what_construct_does() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(derived_classes_constructed)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn derived_classes_constructed() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+var log = [];
+function L(x) { log.push(String(x)); }
+function flush(name) { P(name, log.join("|")); log = []; }
+
+// 1. chains of one to three, with and without constructors of their own
+class A { constructor(v) { this.v = v; L("A" + v); } get() { return this.v; } }
+class B extends A { constructor(v) { L("B before"); super(v + 1); L("B after " + this.v); this.b = true; } get() { return super.get() * 2; } }
+class C extends B { constructor(v) { super(v * 10); this.c = this.v + 1; } }
+class D extends C {}
+class E extends D { constructor() { super(...arguments); this.e = arguments.length; } }
+var total = 0; for (var i = 0; i < 3; i++) total += new B(i).get();
+P("B", total, log.length); log = [];
+var c = new C(2), d = new D(3), e = new E(4);
+flush("chain");
+P("made", c.v, c.c, c.b, d.v, d.c, e.v, e.e, c instanceof C, c instanceof A, d instanceof D, Object.getPrototypeOf(e) === E.prototype, c.get(), e.get());
+
+// 2. what a constructor returns
+var other = { other: true };
+class RetObj extends A { constructor() { super(1); return other; } }
+class RetPrim extends A { constructor() { super(1); return 5; } }
+class RetUndef extends A { constructor() { super(1); return undefined; } }
+class RetNoSuper extends A { constructor() { return; } }
+class RetObjNoSuper extends A { constructor() { return other; } }
+class RetNull extends A { constructor() { super(1); return null; } }
+class ParentObj { constructor() { return other; } }
+class OverParentObj extends ParentObj { constructor() { super(); this.mark = "on other"; } }
+class ParentPrim { constructor() { this.p = 1; return 7; } }
+class OverParentPrim extends ParentPrim { constructor() { super(); this.q = this.p + 1; } }
+P("returns", new RetObj() === other, tryit(function () { return new RetPrim(); }), new RetUndef() instanceof RetUndef, tryit(function () { return new RetNoSuper(); }), new RetObjNoSuper() === other, tryit(function () { return new RetNull(); }), new OverParentObj() === other, other.mark, new OverParentPrim().q);
+log = [];
+
+// 3. this before super, super twice, super in odd places
+class Early extends A { constructor() { this.x = 1; super(1); } }
+class Twice extends A { constructor() { super(1); super(2); } }
+class TwiceCaught extends A { constructor() { super(1); try { super(2); } catch (e) { L(e.constructor.name); } this.done = this.v; } }
+class InArrow extends A { constructor() { var call = () => super(3); call(); this.viaArrow = this.v; } }
+class ArrowThis extends A { constructor() { var read = () => this.v; super(4); this.r = read(); } }
+class InTry extends A { constructor() { try { super(5); } finally { L("finally " + this.v); } } }
+class Conditional extends A { constructor(yes) { if (yes) super(6); else return { no: true }; } }
+class InLoop extends A { constructor() { for (var i = 0; i < 1; i++) super(7 + i); } }
+class InDefault extends A { constructor(x = super(8)) { this.viaDefault = x === this; } }
+P("order", tryit(function () { return new Early(); }), tryit(function () { return new Twice(); }), new TwiceCaught().done, new InArrow().viaArrow, new ArrowThis().r, new InTry().v, new Conditional(true).v, new Conditional(false).no, new InLoop().v, tryit(function () { return new InDefault().viaDefault; }));
+flush("order log");
+
+// 4. fields and their order, in the parent, the child, both
+class FBase { a = L("FBase.a") || 1; constructor() { L("FBase ctor " + this.a + " " + this.b); } }
+class FChild extends FBase { b = L("FChild.b sees a=" + this.a) || 2; constructor() { L("FChild before"); super(); L("FChild after " + this.b); } }
+class FGrand extends FChild { c = this.a + this.b; #p = 10; static s = "static"; getP() { return this.#p + this.c; } }
+var fg = new FGrand();
+flush("fields");
+P("field values", fg.a, fg.b, fg.c, fg.getP(), FGrand.s, Object.keys(fg).join());
+class FThrow extends A { f = (function () { throw new RangeError("field"); })(); constructor() { try { super(1); } catch (e) { L("caught " + e.message); } L("this " + tryit(() => this.v)); } }
+P("field throws", tryit(function () { return new FThrow().v; }));
+flush("field throws log");
+
+// 5. new.target
+class NT { constructor() { this.nt = new.target.name; } }
+class NTChild extends NT { constructor() { super(); this.child = new.target.name; } }
+class NTGrand extends NTChild {}
+function Other() {} Other.prototype = { fromOther: true };
+var viaReflect = Reflect.construct(NTChild, [], Other);
+P("new.target", new NT().nt, new NTChild().nt, new NTChild().child, new NTGrand().nt, new NTGrand().child, viaReflect.nt, viaReflect.child, viaReflect.fromOther, viaReflect instanceof NTChild, Object.getPrototypeOf(viaReflect) === Other.prototype);
+function NoProto() {} NoProto.prototype = 5;
+var np = Reflect.construct(NTChild, [], NoProto);
+P("no prototype", Object.getPrototypeOf(np) === Object.prototype, np.nt);
+
+// 6. parents of other kinds
+function Plain(v) { this.plain = v; }
+Plain.prototype.hello = function () { return "hello " + this.plain; };
+class FromPlain extends Plain { constructor() { super("p"); } }
+class FromArray extends Array { constructor() { super(3); this.tag = "arr"; } }
+class FromError extends Error { constructor(m) { super(m); this.name = "Mine"; } }
+class FromMap extends Map { constructor() { super([[1, 2]]); } }
+class FromNull extends null { constructor() { return Object.create(FromNull.prototype); } }
+class FromNullSuper extends null { constructor() { super(); } }
+var bound = A.bind(null, 42); bound.prototype = A.prototype;
+class FromBound extends bound { constructor() { super(); } }
+class FromFunctionReturning extends (function () { return { made: "by function" }; }) { constructor() { super(); this.extra = 1; } }
+log = [];
+P("parents", new FromPlain().hello(), new FromArray().length, new FromArray().tag, Array.isArray(new FromArray()), String(new FromError("m")), new FromMap().get(1), new FromNull() instanceof FromNull, tryit(function () { return new FromNullSuper(); }), new FromBound().v, new FromFunctionReturning().made, new FromFunctionReturning().extra);
+flush("parents log");
+class Changing extends A { constructor() { super(1); } }
+Object.setPrototypeOf(Changing, Plain);
+var ch = new Changing();
+P("parent changed", ch.plain, ch.v, ch instanceof A, typeof ch.hello);
+Object.setPrototypeOf(Changing, function () {}.bind());
+P("parent bound", tryit(function () { return typeof new Changing(); }));
+Object.setPrototypeOf(Changing, Math.max);
+P("parent not a constructor", tryit(function () { return new Changing(); }));
+Object.setPrototypeOf(Changing, null);
+P("parent null", tryit(function () { return new Changing(); }));
+
+// 7. a parent that throws, and errors on the way
+class Thrower { constructor(v) { if (v) throw new RangeError("parent " + v); this.ok = true; } }
+class OverThrower extends Thrower { constructor(v) { try { super(v); } catch (e) { L("child caught " + e.message); super(0); } } }
+class NoCatch extends Thrower { constructor() { super(1); } }
+P("throws", new OverThrower(2).ok, tryit(function () { return new NoCatch(); }), new OverThrower(0).ok);
+flush("throws log");
+
+// 8. constructors that make instances, and deep chains
+class Node { constructor(depth) { this.depth = depth; this.child = depth > 0 ? new Leaf(depth - 1) : null; } }
+class Leaf extends Node { constructor(depth) { super(depth); this.leaf = true; } count() { return 1 + (this.child ? this.child.count() : 0); } }
+P("recursive", new Leaf(30).count());
+var Chain = class { constructor() { this.n = 0; } };
+for (var i = 0; i < 40; i++) Chain = class extends Chain { constructor() { super(); this.n++; } };
+P("deep chain", new Chain().n);
+class Endless extends A { constructor() { super(1); new Endless(); } }
+P("endless", tryit(function () { return new Endless(); }));
+
+// 9. super properties, statics, accessors, generators around the constructors
+class SBase { static make() { return new this(); } get kind() { return "base"; } *items() { yield 1; yield 2; } constructor() { this.made = new.target.name; } }
+class SChild extends SBase { static make() { var o = super.make(); o.viaStatic = true; return o; } get kind() { return "child of " + super.kind; } *items() { yield* super.items(); yield 3; } constructor() { super(); this.kindAtConstruction = this.kind; } }
+var sc = SChild.make();
+P("supers", sc.made, sc.viaStatic, sc.kind, sc.kindAtConstruction, [...sc.items()].join(""));
+
+// 10. collections while objects are under construction
+class Big { constructor(n) { this.data = []; for (var i = 0; i < n; i++) this.data.push({ i: i }); } }
+class Bigger extends Big { constructor(n) { super(n); this.more = this.data.map(function (x) { return x.i * 2; }); } }
+var sum = 0; for (var r = 0; r < 60; r++) { var bb = new Bigger(500); sum += bb.more[499] + bb.data.length; }
+P("garbage", sum);
+
+// 11. called without new, and as a function
+P("without new", tryit(function () { return B(1); }), tryit(function () { return B.call({}, 1); }), tryit(function () { return new (B.bind(null, 5))().v; }));
+
+// 12. derived parents that return other things, and super called late
+class OverRetObj extends RetObj { constructor() { super(); this.viaRet = 1; } }
+class NoSup extends A { constructor() {} }
+class OverNoSup extends NoSup { constructor() { try { super(); } catch (e) { L("no this: " + e.constructor.name); } return { fallback: true }; } }
+class OverRetPrim extends RetPrim { constructor() { try { super(); } catch (e) { L("primitive: " + e.constructor.name); } return { fallback2: true }; } }
+log = [];
+P("derived parents", new OverRetObj() === other, other.viaRet, new OverNoSup().fallback, new OverRetPrim().fallback2);
+flush("derived parents log");
+var late;
+class Late extends A { constructor() { late = () => super(11); return { early: true }; } }
+var early = new Late(); log = [];
+var first = late();
+P("late super", early.early, first.v, first instanceof Late, tryit(late), log.join());
+class Counted extends A { static made = 0; constructor(v) { super(v); Counted.made++; } }
+class CountedMore extends Counted { constructor() { super(5); } }
+var many = 0; for (var i = 0; i < 300; i++) many += new CountedMore().v + new Counted(i & 3).v;
+P("many", many, Counted.made);
+lines.join("\n")"##;
+    let expected = r##"B 12 9
+chain B before|A21|B after 21|B before|A31|B after 31|B before|A41|B after 41
+made 21 22 true 31 32 41 1 true true true true 42 82
+returns true TypeError true ReferenceError true TypeError true on other 2
+order ReferenceError ReferenceError 1 3 4 5 6 true 7 true
+order log A1|A2|A1|A2|ReferenceError|A3|A4|A5|finally 5|A6|A7|A8
+fields FChild before|FBase.a|FBase ctor 1 undefined|FChild.b sees a=1|FChild after 2
+field values 1 2 3 13 static a,b,c
+field throws 1
+field throws log A1|caught field|this 1
+new.target NT NTChild NTChild NTGrand NTGrand Other Other true false true
+no prototype true NoProto
+parents hello p 3 arr true Mine: m 2 true TypeError 42 by function 1
+parents log A42
+parent changed 1 undefined true undefined
+parent bound object
+parent not a constructor TypeError
+parent null TypeError
+throws true RangeError true
+throws log child caught parent 2
+recursive 31
+deep chain 40
+endless RangeError
+supers SChild true child of base child of base 123
+garbage 89880
+without new TypeError TypeError 6
+derived parents true 1 true true
+derived parents log A1|no this: ReferenceError|A1|primitive: TypeError
+late super true 11 true ReferenceError A11,A11
+many 1950 600"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

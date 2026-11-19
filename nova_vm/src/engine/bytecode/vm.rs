@@ -14,17 +14,17 @@ use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayP
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, BigInt, CachedSet,
-        ECMAScriptFunction, Environment, ExceptionType, Function, FunctionPrototype, Generator,
-        GeneratorPrototype, GeneratorState, InternalMethods, InternalSlots, IteratorRecord,
-        JsError, JsResult, Number, Object, OrdinaryObject, Primitive, Promise, PropertyKey,
-        Reference, RegularFn, SmallInteger, String, SuspendedGeneratorState, TryGetResult, Value,
-        binding_value_at_site, call_function, get_method, get_this_value, is_callable,
-        is_property_reference, is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache,
-        ordinary_call_bind_this, ordinary_has_instance,
-        prepare_for_call_without_function_environment, prepare_for_ordinary_call,
-        reference_is_at_global_site, release_scoped_collections, scope_arguments_of_call,
-        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
-        to_numeric_primitive, to_primitive, to_property_key, to_property_key_simple,
+        ECMAScriptFunction, Environment, ExceptionType, Function, FunctionEnvironment,
+        FunctionPrototype, Generator, GeneratorPrototype, GeneratorState, InternalMethods,
+        InternalSlots, IteratorRecord, JsError, JsResult, Number, Object, OrdinaryObject,
+        Primitive, Promise, PropertyKey, Reference, RegularFn, SmallInteger, String,
+        SuspendedGeneratorState, TryGetResult, Value, binding_value_at_site, call_function,
+        get_method, get_this_environment, get_this_value, is_callable, is_property_reference,
+        is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache, ordinary_call_bind_this,
+        ordinary_has_instance, prepare_for_call_without_function_environment,
+        prepare_for_ordinary_call, reference_is_at_global_site, release_scoped_collections,
+        scope_arguments_of_call, set_binding_value_at_site, take_pooled_arguments_vec, to_boolean,
+        to_numeric, to_numeric_primitive, to_primitive, to_property_key, to_property_key_simple,
         to_string_primitive, try_get_object_method_by_cache, try_resolve_binding_at_site,
         try_result_into_option_js,
     },
@@ -79,6 +79,9 @@ enum ContinuationKind {
     Yield,
     YieldValue,
     Await,
+    /// `super(…)`, not executed: the `Vm` may run the parent constructor
+    /// itself, and executes the instruction where it does not.
+    Super,
 }
 
 /// What [`Vm::execute_plain_instruction`] made of an instruction.
@@ -122,6 +125,18 @@ enum Completion {
     /// object that was made for the constructor, which waits on top of the
     /// caller's stack.
     Constructed,
+    /// The result of `new` of a derived class constructor: the object it
+    /// returned, or the this value that a `super(…)` in it bound, which
+    /// its Function Environment Record has ([`Frame::derived`]).
+    ConstructedDerived,
+    /// The result of `super(…)` whose parent is no derived class
+    /// constructor: as [`Completion::Constructed`], and then the this value
+    /// of the constructor that called `super`.
+    SuperConstructed,
+    /// The result of `super(…)` whose parent is a derived class
+    /// constructor: as [`Completion::ConstructedDerived`], and then the
+    /// this value of the constructor that called `super`.
+    SuperConstructedDerived,
     /// The end of an iteration: what ran from the frame is a generator
     /// that a step of the iteration resumed ([`Frame::resumed`]), and it
     /// is done.
@@ -234,6 +249,11 @@ struct Frame {
     /// stack, right under [`Frame::reference_base`], while a generator runs
     /// from this frame: the step of an iteration leaves it as it was.
     reference_kept: bool,
+    /// The Function Environment Record of the derived class constructor
+    /// that runs from this frame, which has the this value that a
+    /// `super(…)` binds: asked for it when the constructor returns. None
+    /// for the frame of anything else.
+    derived: Option<FunctionEnvironment<'static>>,
 }
 
 impl Frame {
@@ -255,6 +275,7 @@ impl Frame {
             kept: None,
             done: 0,
             reference_kept: false,
+            derived: None,
         }
     }
 }
@@ -320,6 +341,22 @@ struct CalledInPlace {
     environment: CallEnvironment,
     /// See [`Frame::completion`].
     completion: Completion,
+}
+
+/// What is left to do in the calling code when a function run in place
+/// for `new` or `super(…)` has returned ([`Vm::leave_function`]).
+enum Settled {
+    /// Nothing: the result is the result.
+    Done,
+    /// The result is the this value of the constructor that called
+    /// `super(…)`.
+    Super,
+    /// A derived class constructor returned what is neither an object nor
+    /// undefined; the value is the result.
+    NotAnObject,
+    /// A derived class constructor returned without a this value: no
+    /// `super(…)` of it had returned.
+    NoThisValue,
 }
 
 #[derive(Debug)]
@@ -673,10 +710,12 @@ impl HeapMarkAndSweep for VmFrames {
                 kept: _,
                 done: _,
                 reference_kept: _,
+                derived,
             } = frame;
             stack.as_slice().mark_values(queues);
             executable.mark_values(queues);
             resumed.mark_values(queues);
+            derived.mark_values(queues);
         }
     }
 
@@ -698,10 +737,12 @@ impl HeapMarkAndSweep for VmFrames {
                 kept: _,
                 done: _,
                 reference_kept: _,
+                derived,
             } = frame;
             stack.as_mut_slice().sweep_values(compactions);
             executable.sweep_values(compactions);
             resumed.sweep_values(compactions);
+            derived.sweep_values(compactions);
         }
     }
 }
@@ -1175,6 +1216,24 @@ impl Vm {
                             break Change::Throw(err.unbind());
                         }
                     }
+                    // `super(…)`: its parent constructor is run by this Vm
+                    // or the instruction is executed now. Seen here,
+                    // among what is rare: looked for among the plain
+                    // instructions, or before every one that is not, it
+                    // moved the loop of instructions.
+                    Ok(ContinuationKind::Super) => {
+                        if let Some((callee, call)) =
+                            self.super_called_in_place(agent, instr, gc.nogc())
+                        {
+                            break Change::Call(callee, call);
+                        }
+                        if let Err(err) =
+                            execute_evaluate_super(agent, self, instr, gc.reborrow()).unbind()
+                            && !self.handle_error(agent, err)
+                        {
+                            break Change::Throw(err);
+                        }
+                    }
                     Ok(kind) => {
                         if self.depth != 0 {
                             // The generator that a step of an iteration
@@ -1258,12 +1317,20 @@ impl Vm {
                     if self.result.is_none() || matches!(change, Change::End) {
                         self.result = Some(Value::Undefined);
                     }
-                    running = self.leave_function(agent, running, true);
+                    let (caller, settled) = self.leave_function(agent, running, true);
+                    running = caller;
+                    if !matches!(settled, Settled::Done) {
+                        // The rest of `new` of a derived class or of
+                        // `super(…)`, in the calling code: its handlers
+                        // have what this throws.
+                        thrown = self.finish_construction(agent, settled, gc.reborrow());
+                        running.code = running.executable.get(agent);
+                    }
                 }
                 Change::Throw(error) => thrown = Some(error),
                 Change::Terminate => {
                     while self.depth != 0 {
-                        running = self.leave_function(agent, running, false);
+                        running = self.leave_function(agent, running, false).0;
                     }
                     return ExecutionResult::Throw(JsError::new(Value::Undefined));
                 }
@@ -1328,7 +1395,7 @@ impl Vm {
                         }
                         return ExecutionResult::Throw(error.bind(gc.into_nogc()));
                     }
-                    running = self.leave_function(agent, running, false);
+                    running = self.leave_function(agent, running, false).0;
                     if self.handle_error(agent, error) {
                         break;
                     }
@@ -1479,7 +1546,7 @@ impl Vm {
         };
         let data = function.get(agent);
         let status = data.ecmascript_function.constructor_status;
-        if !status.is_constructor() || status.is_derived_class() {
+        if !status.is_constructor() {
             return None;
         }
         let executable = data.compiled_bytecode?;
@@ -1487,11 +1554,31 @@ impl Vm {
             return None;
         }
         let code = executable.get(agent);
-        if code.call_environment == CallEnvironment::Function {
-            return None;
-        }
         let parameters = code.stack_parameters.map(usize::from);
         let environment = code.call_environment;
+        if status.is_derived_class() {
+            // 4. Let calleeContext be PrepareForOrdinaryCall(F, newTarget):
+            // no object is made, and the this value is the one a
+            // `super(…)` binds. The function is its own new target.
+            if environment != CallEnvironment::Function {
+                return None;
+            }
+            self.result = None;
+            self.reference = None;
+            return Some((
+                CalledInPlace {
+                    function,
+                    executable,
+                    parameters,
+                    environment,
+                    completion: Completion::ConstructedDerived,
+                },
+                Instr::new_with_arg(Instruction::EvaluateCall, count as u16),
+            ));
+        }
+        if environment == CallEnvironment::Function {
+            return None;
+        }
         // 3. a. Let thisArgument be ? OrdinaryCreateFromConstructor(newTarget,
         //       "%Object.prototype%").
         let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
@@ -1524,6 +1611,233 @@ impl Vm {
             },
             Instr::new_with_arg(Instruction::EvaluateCall, count as u16),
         ))
+    }
+
+    /// The call that `super(…)` comes to, if this `Vm` runs the parent
+    /// constructor itself: the steps of SuperCall up to the parent's code,
+    /// where none of them runs anything. The parent is the prototype of
+    /// the function whose Function Environment Record gives `this` here,
+    /// and the new target is that record's.
+    ///
+    /// A parent that is no derived class constructor is run as `new` of it
+    /// is ([`Vm::constructor_called_in_place`]), with the object made from
+    /// the prototype of the new target, and under the same conditions; one
+    /// that is a derived class constructor is run with the new target and
+    /// no this value. What is left of SuperCall when the parent returns
+    /// (the this value bound, the instance elements initialized) is done
+    /// then ([`Settled::Super`]). A built-in parent, a bound function or a
+    /// Proxy, a parent that is no constructor, and arguments that are
+    /// spread go the general way. Nothing has changed where this returns
+    /// None.
+    // Not part of the loop of instructions: few instructions end here.
+    #[inline(never)]
+    fn super_called_in_place(
+        &mut self,
+        agent: &mut Agent,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<(CalledInPlace, Instr)> {
+        let count = instr.get_first_index();
+        if count == IndexType::MAX as usize {
+            return None;
+        }
+        let at = self.stack.len().checked_sub(count)?;
+        let Environment::Function(this_env) = get_this_environment(agent, gc) else {
+            return None;
+        };
+        // 1. Let newTarget be GetNewTarget().
+        let new_target = Function::try_from(this_env.get_new_target(agent)?).ok()?;
+        // 3. Let func be GetSuperConstructor().
+        let core::ops::ControlFlow::Continue(Some(Object::ECMAScriptFunction(parent))) = this_env
+            .get_function_object(agent)
+            .try_get_prototype_of(agent, gc)
+        else {
+            return None;
+        };
+        // 5. If IsConstructor(func) is false, throw a TypeError exception.
+        let parent = parent.unbind();
+        let data = parent.get(agent);
+        let status = data.ecmascript_function.constructor_status;
+        if !status.is_constructor() {
+            return None;
+        }
+        let executable = data.compiled_bytecode?.unbind();
+        if agent.call_depth_exceeded() {
+            return None;
+        }
+        let code = executable.get(agent);
+        let parameters = code.stack_parameters.map(usize::from);
+        let environment = code.call_environment;
+        let call = Instr::new_with_arg(Instruction::EvaluateCall, count as u16);
+        // 6. Let result be ? Construct(func, argList, newTarget).
+        if status.is_derived_class() {
+            if environment != CallEnvironment::Function {
+                return None;
+            }
+            // The parent under its arguments, where a call has its
+            // function.
+            self.stack.insert(at, parent.unbind().into());
+            self.result = None;
+            self.reference = None;
+            return Some((
+                CalledInPlace {
+                    function: parent.unbind(),
+                    executable,
+                    parameters,
+                    environment,
+                    completion: Completion::SuperConstructedDerived,
+                },
+                call,
+            ));
+        }
+        if environment == CallEnvironment::Function {
+            return None;
+        }
+        // OrdinaryCreateFromConstructor(newTarget, "%Object.prototype%").
+        let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
+        let cache = crate::ecmascript::PropertyLookupCache::new(agent, key);
+        let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
+            crate::ecmascript::try_get(agent, new_target, key, Some(cache), gc)
+        else {
+            return None;
+        };
+        let prototype = Object::try_from(prototype).ok()?;
+        let object: Value = crate::ecmascript::ordinary_object_create_with_intrinsics(
+            agent,
+            crate::ecmascript::ProtoIntrinsics::Object,
+            Some(prototype),
+            gc,
+        )
+        .into();
+        // The object and the parent under the arguments, as `new` of the
+        // parent leaves them.
+        self.stack.insert(at, parent.unbind().into());
+        self.stack.insert(at, object.unbind());
+        self.result = None;
+        self.reference = Some(Reference::new_property_reference(object, key, false).unbind());
+        Some((
+            CalledInPlace {
+                function: parent.unbind(),
+                executable,
+                parameters,
+                environment,
+                completion: Completion::SuperConstructed,
+            },
+            call,
+        ))
+    }
+
+    /// The new target that a derived class constructor is entered with:
+    /// itself for `new` of it; for `super(…)`, the new target of the
+    /// constructor that calls it, which is the running code's still.
+    #[inline(never)]
+    fn derived_new_target<'a>(
+        agent: &Agent,
+        callee: CalledInPlace,
+        gc: NoGcScope<'a, '_>,
+    ) -> Option<Object<'a>> {
+        if callee.completion == Completion::ConstructedDerived {
+            return Some(Object::from(callee.function).bind(gc));
+        }
+        let Environment::Function(this_env) = get_this_environment(agent, gc) else {
+            unreachable!("`super(…)` was seen to have a Function Environment Record")
+        };
+        this_env.get_new_target(agent)
+    }
+
+    /// What a derived class constructor that was run in place and has
+    /// returned is constructed to: \[\[Construct]] steps 10 and 12, with the
+    /// this value asked of the constructor's Function Environment Record
+    /// `environment`. The object is the result; an error that those steps
+    /// throw is left for the calling code to throw ([`Settled`]).
+    #[inline(never)]
+    fn settle_derived(
+        &mut self,
+        agent: &Agent,
+        environment: Option<FunctionEnvironment<'static>>,
+        for_super: bool,
+    ) -> Settled {
+        let returned = self.result.unwrap_or(Value::Undefined);
+        let settled = if for_super {
+            Settled::Super
+        } else {
+            Settled::Done
+        };
+        // 10. a. If result.[[Value]] is an Object, return result.[[Value]].
+        if returned.is_object() {
+            return settled;
+        }
+        // c. If result.[[Value]] is not undefined, throw a TypeError
+        // exception.
+        if !returned.is_undefined() {
+            return Settled::NotAnObject;
+        }
+        // 12. Let thisBinding be ? constructorEnv.GetThisBinding().
+        let Some(this_value) =
+            environment.and_then(|environment| environment.bound_this_value(agent))
+        else {
+            return Settled::NoThisValue;
+        };
+        self.result = Some(this_value.unbind());
+        settled
+    }
+
+    /// What [`Vm::leave_function`] left for the calling code, which is the
+    /// code that runs again: the error of a derived class
+    /// constructor that returned no object, or the rest of SuperCall.
+    /// Returns what was thrown and no handler of the calling code took.
+    #[inline(never)]
+    fn finish_construction(
+        &mut self,
+        agent: &mut Agent,
+        settled: Settled,
+        gc: GcScope,
+    ) -> Option<JsError<'static>> {
+        let error = self
+            .construction_finished(agent, settled, gc)
+            .err()?
+            .unbind();
+        (!self.handle_error(agent, error)).then_some(error)
+    }
+
+    fn construction_finished<'gc>(
+        &mut self,
+        agent: &mut Agent,
+        settled: Settled,
+        mut gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, ()> {
+        match settled {
+            Settled::Done => Ok(()),
+            Settled::Super => {
+                let Some(Ok(result)) = self.result.take().map(Object::try_from) else {
+                    unreachable!("a constructor run in place is constructed to an object")
+                };
+                finish_super_call(agent, self, result, gc)
+            }
+            Settled::NotAnObject => {
+                let value = self.result.take().unwrap_or(Value::Undefined);
+                let message = format!(
+                    "derived class constructor returned invalid value {}",
+                    value
+                        .string_repr(agent, gc.reborrow())
+                        .to_string_lossy_(agent)
+                );
+                let message = String::from_string(agent, message, gc.nogc());
+                Err(agent.throw_exception_with_message(
+                    ExceptionType::TypeError,
+                    message.unbind(),
+                    gc.into_nogc(),
+                ))
+            }
+            Settled::NoThisValue => {
+                self.result = None;
+                Err(agent.throw_exception_with_static_message(
+                    ExceptionType::ReferenceError,
+                    "Uninitialized this binding",
+                    gc.into_nogc(),
+                ))
+            }
+        }
     }
 
     /// The call that [`Plain::Accessor`] stands for, if this `Vm` runs the
@@ -1654,7 +1968,18 @@ impl Vm {
         };
         // PrepareForOrdinaryCall and OrdinaryCallBindThis.
         if callee.environment == CallEnvironment::Function {
-            let context = prepare_for_ordinary_call(agent, callee.function, None, gc);
+            // A derived class constructor is run with its new target and
+            // has no this value until a `super(…)` in it binds one.
+            let derived = matches!(
+                callee.completion,
+                Completion::ConstructedDerived | Completion::SuperConstructedDerived
+            );
+            let new_target = if derived {
+                Self::derived_new_target(agent, callee, gc)
+            } else {
+                None
+            };
+            let context = prepare_for_ordinary_call(agent, callee.function, new_target, gc);
             let Some(Environment::Function(environment)) = context
                 .ecmascript_code
                 .as_ref()
@@ -1662,7 +1987,12 @@ impl Vm {
             else {
                 unreachable!("PrepareForOrdinaryCall made no Function Environment Record")
             };
-            ordinary_call_bind_this(agent, callee.function, environment, this_value, gc);
+            if derived {
+                agent.vm_frames.frames[agent.vm_frames.in_use - 1].derived =
+                    Some(environment.unbind());
+            } else {
+                ordinary_call_bind_this(agent, callee.function, environment, this_value, gc);
+            }
         } else {
             prepare_for_call_without_function_environment(
                 agent,
@@ -1707,7 +2037,7 @@ impl Vm {
         agent: &mut Agent,
         callee: Running,
         returned: bool,
-    ) -> Running<'s> {
+    ) -> (Running<'s>, Settled) {
         agent.remove_execution_context();
         self.depth -= 1;
         agent.vm_frames.in_use -= 1;
@@ -1725,10 +2055,12 @@ impl Vm {
         self.exception_handler_stack.truncate(self.handler_base);
         self.handler_base = frame.handler_base;
         let mut stepped = None;
+        let mut settled = Settled::Done;
+        let mut derived = None;
         match frame.completion {
             Completion::Value => {}
             Completion::Discarded => self.result = None,
-            Completion::Constructed => {
+            Completion::Constructed | Completion::SuperConstructed => {
                 // 10. If result is a return completion, then
                 //   a. If result.[[Value]] is an Object, return it.
                 //   b. If kind is base, return thisArgument.
@@ -1736,6 +2068,15 @@ impl Vm {
                 if !self.result.is_some_and(|value| value.is_object()) {
                     self.result = object;
                 }
+                if frame.completion == Completion::SuperConstructed {
+                    settled = Settled::Super;
+                }
+            }
+            Completion::ConstructedDerived | Completion::SuperConstructedDerived => {
+                derived = Some((
+                    frame.derived.take(),
+                    frame.completion == Completion::SuperConstructedDerived,
+                ));
             }
             Completion::Stepped => {
                 // The generator's value stack stays in the frame for the
@@ -1782,13 +2123,19 @@ impl Vm {
         if let Some((generator, done, reference)) = stepped {
             self.end_resumed_generator(agent, generator, done, reference, returned);
         }
-        Running {
-            executable,
-            code,
-            tables,
-            stack_depth,
-            collections_depth,
+        if returned && let Some((environment, for_super)) = derived {
+            settled = self.settle_derived(agent, environment, for_super);
         }
+        (
+            Running {
+                executable,
+                code,
+                tables,
+                stack_depth,
+                collections_depth,
+            },
+            settled,
+        )
     }
 
     /// What is left to do where a generator that was resumed in place of
@@ -2115,6 +2462,9 @@ impl Vm {
                     yielded_value,
                     plain: matches!(kind, ContinuationKind::YieldValue),
                 })
+            }
+            Ok(ContinuationKind::Super) => {
+                unreachable!("`super(…)` is executed where it is met")
             }
             Ok(ContinuationKind::Await) => {
                 if agent.options.print_internals {
@@ -4673,7 +5023,7 @@ impl Vm {
                 execute_evaluate_call(agent, vm, instr, gc)?
             }
             Instruction::EvaluateNew => execute_evaluate_new(agent, vm, instr, gc)?,
-            Instruction::EvaluateSuper => execute_evaluate_super(agent, vm, instr, gc)?,
+            Instruction::EvaluateSuper => return Ok(ContinuationKind::Super),
             Instruction::MakePrivateReference => {
                 execute_make_private_reference(agent, vm, executable, instr, gc.into_nogc())
             }
