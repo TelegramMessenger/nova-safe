@@ -41,7 +41,7 @@ below.
 | prop | 13 | 7.1x | 1.4x |
 | map, set | 4 | 4.6x | 1.2x |
 | app | 8 | 6.1x | 1.6x |
-| array | 14 | 5.8x | 1.5x |
+| array | 14 | 5.8x | 1.4x |
 | regexp | 4 | 2.4x | 1.5x |
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
@@ -88,7 +88,9 @@ operators on Numbers are done to 1.44x. What a RegExp match gives made without d
 piece took the two RegExp cases that were over 2x under it (the mean read 1.44x again, in a run
 where QuickJS's own times were 2% lower), and an Array's storage looked at once to write an element
 took the loop over the elements of an Array under it (1.45x, QuickJS's times lower again). The step
-of the iterator of a String, a Map or a Set taken without its result took the mean to 1.43x.
+of the iterator of a String, a Map or a Set taken without its result took the mean to 1.43x, and
+less asked at every `push` and at every element of a `join` took the building of a text from pieces
+under 2x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1022,6 +1024,26 @@ that are due sooner.
 that was a loop that stops at the first hole: one element, one branch. Asked of blocks of 64 elements
 with no way out inside a block, it is compiled to compare several elements at once, and an Array with a
 hole is still known within the block that has it. `array/shift-unshift-splice` went from 2.3x to 1.4x.
+
+Whether `push` simply appends (the Array can grow, and no prototype takes an assignment to an index)
+was asked anew at every push, and two of its questions were dear. The Array was asked for its
+prototype, which for an Array with no properties of its own made the realm look up the prototype of
+its kind; and that answer, and the prototype of %Array.prototype%, were compared as objects of any
+kind, a call each. An Array with no properties of its own takes new ones and inherits from the
+realm's %Array.prototype%, so both are asked of the object that has its properties only where it has
+one, and the prototypes are compared as what they are. And a `push` of one element made room for it
+and then put it, which makes room itself. `array/push-then-pop` went from 10.24 to 9.20 ms with the
+two binaries run in turn (1.79x to 1.64x).
+
+`join` of an Array of Strings and Numbers (area 8) held its text to the limits of a string and of
+the heap before every element, and that question goes to the host for what it has counted: a
+twelfth of joining twenty thousand short pieces. It is asked once the text has grown by a page
+since it was last asked, so the text may be that page longer than a limit before it is refused,
+beside the one element it could be longer by before. With the push: `string/array-join-build` went
+from 0.74 to 0.58 ms (2.11x to 1.65x), `array/join-numbers` from 3.50 to 2.94 ms (0.99x to 0.83x),
+`string/split-join` 13% less. On the panel of 34 cases the times are 0.4% lower over all;
+`typed/float64-math` reads 1 to 2.6% slower, by where the loop of instructions landed (the push is
+part of the call arm, and six instructions left it).
 
 `a[i] = v` looked the storage of the Array up three times: for its values with its descriptors, for
 its descriptors, and again to write. A tenth of a loop that reads and writes the elements of one
