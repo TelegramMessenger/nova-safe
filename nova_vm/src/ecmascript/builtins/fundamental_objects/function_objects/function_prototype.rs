@@ -81,7 +81,7 @@ impl Builtin for FunctionPrototypeHasInstance {
 
     const KEY: Option<PropertyKey<'static>> = Some(WellKnownSymbols::HasInstance.to_property_key());
 
-    const LENGTH: u8 = 0;
+    const LENGTH: u8 = 1;
 
     const BEHAVIOUR: Behaviour = Behaviour::Regular(FunctionPrototype::has_instance);
 

@@ -501,9 +501,35 @@ impl<'a> Wtf8Str<'a> {
     /// U+E000..=U+FFFF.
     pub fn cmp_utf16(self, other: Wtf8Str<'_>) -> core::cmp::Ordering {
         let (a, b) = (self.bytes, other.bytes);
-        let common = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+        // What the two start with alike: eight bytes at a time, then by the
+        // byte.
+        let mut common = a
+            .chunks_exact(8)
+            .zip(b.chunks_exact(8))
+            .take_while(|(x, y)| x == y)
+            .count()
+            * 8;
+        common += a[common..]
+            .iter()
+            .zip(&b[common..])
+            .take_while(|(x, y)| x == y)
+            .count();
         if common == a.len() || common == b.len() {
             return a.len().cmp(&b.len());
+        }
+        // The first bytes that differ are at the same place of a code point
+        // in both, since what comes before is the same. Where both are
+        // under 0xED they order the two as their code units do: two
+        // continuation bytes belong to code points with the same lead byte
+        // (both in the Basic Multilingual Plane or both above it, where the
+        // order of code points is that of their code units), and two lead
+        // bytes under 0xED start code points under U+D000, each one code
+        // unit. Only a code point above U+FFFF (lead byte 0xF0 or more)
+        // against one from U+D800 to U+FFFF (0xED with a surrogate, 0xEE,
+        // 0xEF) is ordered otherwise by its code units, the way below.
+        let (x, y) = (a[common], b[common]);
+        if x < 0xED && y < 0xED {
+            return x.cmp(&y);
         }
         let mut start = common;
         while start > 0 && (128u8..192u8).contains(&a[start]) {
@@ -793,6 +819,80 @@ impl Iterator for IllFormedUtf16CodeUnits<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Strings are ordered by their UTF-16 code units, whatever their bytes
+    /// are: every pair of texts made of code units of every kind (ASCII,
+    /// two and three bytes of WTF-8, the last before the surrogates, lone
+    /// lead and trail surrogates, U+E000 to U+FFFF, pairs), alone, after a
+    /// common start of several lengths, and one the start of the other.
+    #[test]
+    fn strings_are_ordered_by_their_code_units() {
+        let units: [&[u16]; 22] = [
+            &[],
+            &[0x00],
+            &[0x41],
+            &[0x7F],
+            &[0x80],
+            &[0x7FF],
+            &[0x800],
+            &[0xCFFF],
+            &[0xD000],
+            &[0xD7FF],
+            &[0xD800],
+            &[0xDBFF],
+            &[0xDC00],
+            &[0xDFFF],
+            &[0xE000],
+            &[0xEFFF],
+            &[0xF000],
+            &[0xFFFF],
+            &[0xD800, 0xDC00],
+            &[0xD83D, 0xDE00],
+            &[0xDBFF, 0xDFFF],
+            &[0xD800, 0x41],
+        ];
+        let starts: [&[u16]; 6] = [
+            &[],
+            &[0x61],
+            &[0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67],
+            &[0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68],
+            &[0x430, 0x4E2D, 0xD83D, 0xDE00, 0x62, 0x62, 0x62, 0x62, 0x62],
+            &[
+                0xFFFF, 0xD7FF, 0x7A, 0x7A, 0x7A, 0x7A, 0x7A, 0x7A, 0x7A, 0x7A, 0x7A, 0x7A,
+            ],
+        ];
+        let ends: [&[u16]; 3] = [&[], &[0x7A], &[0xDC00, 0xFFFF]];
+        let mut texts: Vec<Vec<u16>> = Vec::new();
+        for start in starts {
+            for middle in units {
+                for end in ends {
+                    let mut text = start.to_vec();
+                    text.extend_from_slice(middle);
+                    text.extend_from_slice(end);
+                    texts.push(text);
+                }
+            }
+        }
+        // Each text as its code units again: a lone lead surrogate before a
+        // lone trail one became a pair of them, which is what they are.
+        let texts: Vec<(Wtf8Buf, Vec<u16>)> = texts
+            .iter()
+            .map(|units| {
+                let text = Wtf8Buf::from_ill_formed_utf16(units);
+                let units: Vec<u16> = text.as_wtf8().to_ill_formed_utf16().collect();
+                (text, units)
+            })
+            .collect();
+        for (one, one_units) in &texts {
+            for (other, other_units) in &texts {
+                assert_eq!(
+                    one.as_wtf8().cmp_utf16(other.as_wtf8()),
+                    one_units.cmp(other_units),
+                    "{one_units:x?} {other_units:x?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn surrogates_pair_on_push() {

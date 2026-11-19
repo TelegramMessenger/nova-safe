@@ -2342,6 +2342,20 @@ impl Vm {
                     }
                 }
             }
+            // `v instanceof F` where F is a function with the method every
+            // function inherits and an object for its "prototype", both
+            // found without running anything.
+            Instruction::InstanceofOperator => {
+                step!(InstanceofOperator);
+                let (Some(&value), Some(target)) = (vm.stack.last(), vm.result) else {
+                    return Plain::No;
+                };
+                let Some(found) = Self::ordinary_instance_of(agent, value, target, gc) else {
+                    return Plain::No;
+                };
+                vm.stack.pop();
+                vm.result = Some(found.into());
+            }
             // A parameter with a default value or after one, bound from the
             // list of the call's arguments: the next argument, or undefined
             // where the call gave no more.
@@ -3369,6 +3383,17 @@ impl Vm {
         }
         // Seen here, so that the `+` of two strings is not a call first.
         if !(left.is_number() && right.is_number()) {
+            // A comparison of two Strings is answered; `kind` is known
+            // where this is compiled, so the operators have no such call.
+            if matches!(
+                kind,
+                Instruction::LessThan
+                    | Instruction::LessThanEquals
+                    | Instruction::GreaterThan
+                    | Instruction::GreaterThanEquals
+            ) {
+                return Self::values_compare(agent, kind, left, right).map(|holds| holds.into());
+            }
             return None;
         }
         Self::float_operation(agent, kind, left, right, gc)
@@ -3384,14 +3409,126 @@ impl Vm {
         left: Value,
         right: Value,
     ) -> Option<bool> {
-        // Seen here, so that a comparison of two strings is not a call first.
-        if !(left.is_number() && right.is_number()) {
-            return None;
-        }
-        Self::doubles_compare(agent, comparison, left, right)
+        // One call for whatever is not two integers, which the callers
+        // have seen to: nothing of it is in the loop of instructions.
+        Self::values_compare(agent, comparison, left, right)
     }
 
+    /// Whether `comparison` holds for two Numbers of any kind or for two
+    /// Strings; None for other operands, which are converted first.
     #[inline(never)]
+    fn values_compare(
+        agent: &Agent,
+        comparison: Instruction,
+        left: Value,
+        right: Value,
+    ) -> Option<bool> {
+        if left.is_number() && right.is_number() {
+            return Self::doubles_compare(agent, comparison, left, right);
+        }
+        Self::strings_compare(agent, comparison, left, right)
+    }
+
+    /// `value instanceof target`, where that is OrdinaryHasInstance of a
+    /// function and comes to an answer with nothing run: the target is a
+    /// function (not a bound one) whose @@hasInstance method is the one of
+    /// the running realm's %Function.prototype%, as
+    /// [`instanceof_operator`] looks for it; its "prototype" is a data
+    /// property that holds an object; and no Proxy is met on the way up
+    /// from the value. None for anything else, with nothing changed: the
+    /// general way throws what is to be thrown.
+    #[inline(never)]
+    fn ordinary_instance_of(
+        agent: &mut Agent,
+        value: Value,
+        target: Value,
+        gc: NoGcScope,
+    ) -> Option<bool> {
+        let target = Function::try_from(target).ok()?;
+        if matches!(target, Function::BoundFunction(_)) {
+            return None;
+        }
+        // 2. Let instOfHandler be ? GetMethod(target, @@hasInstance).
+        let core::ops::ControlFlow::Continue(Some(Function::BuiltinFunction(handler))) =
+            try_get_object_method_by_cache(
+                agent,
+                target.into(),
+                WellKnownSymbols::HasInstance.into(),
+                gc,
+            )
+        else {
+            return None;
+        };
+        if !matches!(
+            handler.get(agent).behaviour,
+            Behaviour::Regular(found)
+                if core::ptr::fn_addr_eq(found, FunctionPrototype::has_instance as RegularFn)
+        ) || handler.get(agent).realm != agent.current_realm(gc)
+        {
+            return None;
+        }
+        // OrdinaryHasInstance ( C, O )
+        // 3. If O is not an Object, return false.
+        let Ok(mut object) = Object::try_from(value) else {
+            return Some(false);
+        };
+        // 4. Let P be ? Get(C, "prototype").
+        let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
+        let cache = crate::ecmascript::PropertyLookupCache::new(agent, key);
+        let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
+            crate::ecmascript::try_get(agent, target, key, Some(cache), gc)
+        else {
+            return None;
+        };
+        // 5. If P is not an Object, throw a TypeError exception.
+        let prototype = Object::try_from(prototype).ok()?;
+        // 6. Repeat: an ordinary chain ends, and a Proxy is not asked here.
+        loop {
+            let core::ops::ControlFlow::Continue(next) = object.try_get_prototype_of(agent, gc)
+            else {
+                return None;
+            };
+            let Some(next) = next else {
+                return Some(false);
+            };
+            if next == prototype {
+                return Some(true);
+            }
+            object = next;
+        }
+    }
+
+    /// Whether `comparison` (LessThan or one like it) holds for two Strings,
+    /// which are compared by their code units with nothing converted. None
+    /// for another instruction or other operands.
+    fn strings_compare(
+        agent: &Agent,
+        comparison: Instruction,
+        left: Value,
+        right: Value,
+    ) -> Option<bool> {
+        if !matches!(
+            comparison,
+            Instruction::LessThan
+                | Instruction::LessThanEquals
+                | Instruction::GreaterThan
+                | Instruction::GreaterThanEquals
+        ) {
+            return None;
+        }
+        let (Ok(left), Ok(right)) = (String::try_from(left), String::try_from(right)) else {
+            return None;
+        };
+        let order = left.as_wtf8_(agent).cmp_utf16(right.as_wtf8_(agent));
+        Some(match comparison {
+            Instruction::LessThan => order.is_lt(),
+            Instruction::LessThanEquals => order.is_le(),
+            Instruction::GreaterThan => order.is_gt(),
+            _ => order.is_ge(),
+        })
+    }
+
+    #[inline]
     fn doubles_compare(
         agent: &Agent,
         comparison: Instruction,

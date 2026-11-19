@@ -9903,3 +9903,207 @@ lengths 1 0 2 0 0"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `<`, `<=`, `>` and `>=` of Strings, which the loop of instructions
+/// answers itself: every pair of some fifty texts (prefixes of one another,
+/// code units of every kind, lone surrogates and pairs, long texts that
+/// differ at their end), as values and as conditions; against a sort; of
+/// built texts; and of Strings with values of other kinds, which are
+/// converted. What is expected is what Node prints for the same script.
+#[test]
+fn strings_are_compared_by_their_code_units() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(compared_strings)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn compared_strings() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+var texts = ["", "a", "A", "b", "ab", "abc", "abd", "ab\u0000", "key-number-1", "key-number-10", "key-number-2", "key-number-12345678", "key-number-12345679", "é", "é", "ж", "жз", "中", "쿿", "퟿", "\uD800", "\uDBFF", "\uDC00", "\uDFFF", "", "￿", "\u{10000}", "😀", "\u{10FFFF}", "\uD800a", "a\uD800", "a", "a😀", "a😀b", "a￿b", "a\uDC00", "10", "9", "09", " 9", "1e1", "NaN", "Infinity", "long enough to be a heap string, the same up to here: X", "long enough to be a heap string, the same up to here: Y", "long enough to be a heap string, the same up to here: 😀", "long enough to be a heap string, the same up to here: ￿", "long enough to be a heap string, the same up to here: ", "long enough to be a heap string, the same up to here"];
+var n = texts.length, sig = 0, counts = [0, 0, 0, 0, 0, 0, 0, 0];
+for (var i = 0; i < n; i++) for (var j = 0; j < n; j++) {
+  var a = texts[i], b = texts[j];
+  var lt = a < b, le = a <= b, gt = a > b, ge = a >= b;
+  var bits = (lt ? 1 : 0) | (le ? 2 : 0) | (gt ? 4 : 0) | (ge ? 8 : 0);
+  if (a < b) counts[0]++; if (a <= b) counts[1]++; if (a > b) counts[2]++; if (a >= b) counts[3]++;
+  if (!(a < b)) counts[4]++; while (a > b) { counts[5]++; break; } counts[6] += a < b ? 1 : a > b ? 2 : 0; if (a < b && b > a && !(b <= a) && a !== b) counts[7]++;
+  sig = (sig * 31 + bits) | 0;
+}
+P("pairs", n * n, sig, counts.join(","));
+var sorted = texts.slice().sort(); var byOps = texts.slice().sort(function (x, y) { return x < y ? -1 : x > y ? 1 : 0; });
+var same = true; for (var i = 0; i < n; i++) if (sorted[i] !== byOps[i]) same = false;
+P("sorted", same, sorted.map(function (s) { return s.length ? s.charCodeAt(0).toString(16) + (s.length > 1 ? "+" + s.length : "") : "-"; }).join(" "));
+// Built strings, and strings against other kinds of values.
+var built1 = "", built2 = ""; for (var i = 0; i < 400; i++) { built1 += "ab"; built2 = "ab" + built2; } var built3 = built1 + "!"; var plain = "ab".repeat(400);
+P("built", built1 < built2, built1 <= built2, built1 >= plain, built3 > built1, built1 < built3, plain < built3, built3 <= plain, "abc" < built1, built1 < "abc");
+var others = [0, 1, -1, 10, 9, 1.5, NaN, Infinity, true, false, null, undefined, 10n, [9], [1, 2], {}, { valueOf: function () { return 5; } }, { toString: function () { return "b"; } }];
+var strs = ["", "0", "1", "10", "9", "09", "1.5", "a", "b", "NaN", "Infinity", "true", "null", "5", "[object Object]", "1,2"];
+var mixed = 0; for (var i = 0; i < others.length; i++) for (var j = 0; j < strs.length; j++) { var o = others[i], t = strs[j]; mixed = (mixed * 31 + ((o < t ? 1 : 0) | (o <= t ? 2 : 0) | (o > t ? 4 : 0) | (o >= t ? 8 : 0) | (t < o ? 16 : 0) | (t >= o ? 32 : 0))) | 0; }
+P("mixed", mixed, "10" < "9", 10 < "9", "10" < 9, "b" > "a", "B" > "a", "a" < "a ", "\u{1F600}" < "￿", "￿" < "\u{1F600}", "\uD83D" < "\u{1F600}", "\uDBFF" > "\u{10000}");
+var order = ""; var ox = { valueOf: function () { order += "x;"; return "m"; } }, oy = { valueOf: function () { order += "y;"; return "n"; } }; P("order", ox < oy, oy <= ox, ox > "a", "z" >= oy, order);
+P("throws", (function () { try { return Symbol() < "a"; } catch (e) { return e.constructor.name; } })(), (function () { try { return "a" >= Symbol(); } catch (e) { return e.constructor.name; } })(), (function () { try { return "1" < 2n; } catch (e) { return e.constructor.name; } })(), "x" < 2n, 2n > "1");
+var keys = []; for (var i = 0; i < 300; i++) keys.push("key-number-" + (i * 7919 % 1000)); var hits = 0; for (var r = 0; r < 20; r++) for (var i = 1; i < keys.length; i++) { if (keys[i] < keys[i - 1]) hits++; if (keys[i] >= keys[(i * 3) % 300]) hits += 2; } P("loop", hits, keys.slice().sort().slice(0, 3).join(), Math.max.apply(null, [1, 2]) < "3");
+lines.join("\n")"##;
+    let expected = r##"pairs 2401 -1807075198 1176,1225,1176,1225,1225,1176,3528,1176
+sorted true - 20+2 30+2 31+2 31+3 39 41 49+8 4e+3 61 61+2 61+3 61+3 61+3 61+2 61+3 61+4 61+2 61+2 61+3 62 65+2 6b+12 6b+13 6b+19 6b+19 6b+12 6c+52 6c+54 6c+55 6c+55 6c+56 6c+55 e9 436 436+2 4e2d cfff d7ff d800 d800+2 d800+2 d83d+2 dbff dbff+2 dc00 dfff e000 ffff
+built false true true true true true false false true
+mixed 260892948 true false false true false true true false true true
+order true false true true x;y;y;x;x;y;
+throws TypeError TypeError true false true
+loop 11200 key-number-0,key-number-102,key-number-105 true"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `instanceof`, answered in the loop of instructions for a function with
+/// the inherited @@hasInstance and an object for its "prototype": a table
+/// of values against functions and classes of every kind, in conditions,
+/// targets that are not callable or have no object for a prototype,
+/// methods of their own, prototypes replaced and set, a Proxy on the way
+/// up, long chains, and bound functions. What is expected is what Node
+/// prints for the same script.
+#[test]
+fn instanceof_is_what_the_method_of_functions_says() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(instances_of_functions)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn instances_of_functions() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function T(f) { try { return f(); } catch (e) { return "threw " + (e && e.constructor ? e.constructor.name : typeof e); } }
+function F() {} function G() {} class A {} class B extends A {} class C extends B {} function Old() {} Old.prototype = Object.create(F.prototype);
+var arrow = () => {}; var boundF = F.bind(null); var boundB = B.bind(null); var gen = function* () {}; var asyncF = async function () {};
+var values = [new F(), new G(), new A(), new B(), new C(), new Old(), [], {}, null, undefined, 1, "s", true, Symbol.iterator, 10n, function () {}, Object.create(null), Object.create(F.prototype), Object.create(B.prototype), new Map(), new Error("e"), /re/, new Date(0), F, A, B, F.prototype, B.prototype, gen(), Object.prototype, Function.prototype];
+var targets = [F, G, A, B, C, Old, Object, Function, Array, Map, Error, RegExp, Date, boundF, boundB, gen, Symbol, Promise];
+var rows = [];
+for (var t = 0; t < targets.length; t++) { var row = ""; for (var v = 0; v < values.length; v++) row += values[v] instanceof targets[t] ? "1" : "0"; rows.push(row); }
+P("table", rows.join(" "));
+var jumps = 0; for (var r = 0; r < 50; r++) for (var v = 0; v < values.length; v++) { var x = values[v]; if (x instanceof A) jumps++; if (!(x instanceof F)) jumps += 100; if (x instanceof Object && !(x instanceof Function)) jumps += 10000; } P("in conditions", jumps);
+P("not callable", T(function () { return {} instanceof {}; }), T(function () { return 1 instanceof null; }), T(function () { return {} instanceof undefined; }), T(function () { return {} instanceof 5; }), T(function () { return {} instanceof "s"; }), T(function () { return {} instanceof Object.prototype; }), T(function () { return {} instanceof Math; }));
+P("no prototype", T(function () { return {} instanceof arrow; }), T(function () { return 1 instanceof arrow; }), T(function () { return {} instanceof asyncF; }), T(function () { return {} instanceof Math.max; }), 1 instanceof Math.max, T(function () { return {} instanceof Object.keys; }));
+function Bad() {} Bad.prototype = 5; function Bad2() {} Bad2.prototype = null; function Bad3() {} Bad3.prototype = "str";
+P("prototype that is no object", T(function () { return {} instanceof Bad; }), 1 instanceof Bad, null instanceof Bad, T(function () { return [] instanceof Bad2; }), "s" instanceof Bad3, T(function () { return (function () {}) instanceof Bad3; }));
+var log = "";
+class Custom { static [Symbol.hasInstance](v) { log += "custom(" + typeof v + ");"; return v === 1 ? "truthy" : 0; } } var plain = { [Symbol.hasInstance]: function (v) { log += "plain;"; return true; } }; function WithOwn() {} Object.defineProperty(WithOwn, Symbol.hasInstance, { value: function (v) { log += "own;"; return v !== null; } }); var notMethod = { [Symbol.hasInstance]: 5 }; var undefinedMethod = function () {}; Object.defineProperty(undefinedMethod, Symbol.hasInstance, { value: undefined });
+P("own method", 1 instanceof Custom, {} instanceof Custom, new Custom() instanceof Custom, 1 instanceof plain, null instanceof WithOwn, {} instanceof WithOwn, T(function () { return 1 instanceof notMethod; }), new undefinedMethod() instanceof undefinedMethod, 1 instanceof undefinedMethod, log);
+class Sub extends Custom {} log = ""; P("inherited method", 1 instanceof Sub, new Sub() instanceof Sub, log);
+var kept = Function.prototype[Symbol.hasInstance]; P("the method itself", typeof kept, kept.call(F, new F()), kept.call(F, {}), kept.call({}, {}), kept.call(boundF, new F()), kept.name, kept.length, T(function () { return kept.call(Bad, {}); }), Object.getOwnPropertyDescriptor(Function.prototype, Symbol.hasInstance).writable);
+function Moving() {} var m1 = new Moving(); var before = m1 instanceof Moving; Moving.prototype = {}; var m2 = new Moving(); P("prototype replaced", before, m1 instanceof Moving, m2 instanceof Moving); Object.setPrototypeOf(m1, Moving.prototype); P("prototype set", m1 instanceof Moving, Object.setPrototypeOf(m2, null) instanceof Moving, Object.setPrototypeOf({}, B.prototype) instanceof A);
+log = ""; var seen = new Proxy({}, { getPrototypeOf: function (t) { log += "getPrototypeOf;"; return F.prototype; } }); var callable = new Proxy(F, { get: function (t, k, r) { log += "get " + String(k) + ";"; return Reflect.get(t, k, r); } });
+P("proxies", seen instanceof F, seen instanceof G, log, T(function () { return {} instanceof new Proxy({}, {}); }));
+var deep = {}; for (var i = 0; i < 300; i++) deep = Object.create(deep); var root = Object.getPrototypeOf; function Deep() {} var chainTop = new Deep(); for (var i = 0; i < 300; i++) chainTop = Object.create(chainTop); P("long chains", deep instanceof Object, deep instanceof F, chainTop instanceof Deep, chainTop instanceof Object);
+var getterProto = function () {}; var gcount = 0; var holder = Object.defineProperty(function () {}, "x", { value: 1 }); var viaGetter = { get F() { gcount++; return F; } }; P("target from a getter", new F() instanceof viaGetter.F, {} instanceof viaGetter.F, gcount);
+var total = 0; var list = [new A(), new B(), [], {}, null]; for (var i = 0; i < 4000; i++) { var v = list[i % 5]; if (v instanceof A) total++; if (Array.isArray(v)) total += 2; if (v instanceof (i % 2 ? B : Object)) total += 3; } P("loop", total);
+P("bound", new F() instanceof boundF, {} instanceof boundF, new B() instanceof boundB, new A() instanceof boundB, new (F.bind(null))() instanceof F, T(function () { return {} instanceof arrow.bind(null); }));
+lines.join("\n")"##;
+    let expected = r##"table 1000010000000000010000000000000 0100000000000000000000000000000 0011100000000000001000000001000 0001100000000000001000000000000 0000100000000000000000000000000 0000010000000000000000000000000 1111111100000001011111111111101 0000000000000001000000011100000 0000001000000000000000000000000 0000000000000000000100000000000 0000000000000000000010000000000 0000000000000000000001000000000 0000000000000000000000100000000 1000010000000000010000000000000 0001100000000000001000000000000 0000000000000000000000000000100 0000000000000000000000000000000 0000000000000000000000000000000
+in conditions 9140250
+not callable threw TypeError threw TypeError threw TypeError threw TypeError threw TypeError threw TypeError threw TypeError
+no prototype threw TypeError false threw TypeError threw TypeError false threw TypeError
+prototype that is no object threw TypeError false false threw TypeError false threw TypeError
+own method true false false true false true threw TypeError true false custom(number);custom(object);custom(object);plain;own;own;
+inherited method true false custom(number);custom(object);
+the method itself function true false false true [Symbol.hasInstance] 1 threw TypeError false
+prototype replaced true false true
+prototype set true false true
+proxies true false getPrototypeOf;getPrototypeOf; threw TypeError
+long chains true false true true
+target from a getter true false 2
+loop 9200
+bound true false true false true threw TypeError"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// Arrays with a hole at every place around the blocks they are looked
+/// through by for holes (and with none), under `shift`, `unshift`, `splice`,
+/// `pop`, iteration and the copying methods; a hole that the prototype
+/// fills, an accessor among the elements, a queue, and a sparse Array.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn a_hole_is_found_wherever_it_is() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arrays_with_a_hole)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arrays_with_a_hole() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; line += (i ? " " : "") + (v === undefined || v === null ? "" : String(v)); } print(line); }
+function sig(a) { var h = a.length; for (var i = 0; i < a.length; i++) h = (h * 31 + (i in a ? (a[i] | 0) + 1 : 7919)) | 0; return h; }
+function make(n, hole) { var a = []; for (var i = 0; i < n; i++) a.push(i); if (hole >= 0 && hole < n) delete a[hole]; return a; }
+// A hole at every place around the blocks an Array is looked through by, and none.
+var sizes = [1, 2, 63, 64, 65, 127, 128, 129, 200, 1000], out = [];
+for (var s = 0; s < sizes.length; s++) {
+  var n = sizes[s], places = [-1, 0, 1, 62, 63, 64, 65, 126, 127, 128, n - 2, n - 1];
+  var row = 0;
+  for (var p = 0; p < places.length; p++) {
+    var h = places[p]; if (h >= n) continue;
+    var a = make(n, h); var first = a.shift(); row = (row * 31 + sig(a) + (first === undefined ? 5 : first)) | 0;
+    var b = make(n, h); b.unshift("u"); row = (row * 31 + sig(b)) | 0;
+    var c = make(n, h); var removed = c.splice(1, 2, "x", "y", "z"); row = (row * 31 + sig(c) + removed.length + (0 in removed ? 1 : 0) + (1 in removed ? 2 : 0)) | 0;
+    var d = make(n, h); var count = 0, und = 0; for (var v of d) { count++; if (v === undefined) und++; } row = (row * 31 + count * 3 + und) | 0;
+    var e = make(n, h); var last = e.pop(); e.push("p"); row = (row * 31 + sig(e) + (last === undefined ? 1 : 0)) | 0;
+    var f = make(n, h); var fl = 0; f.forEach(function () { fl++; }); var m = f.map(function (x) { return x; }); var sl = f.slice(0, n); var cc = f.concat(["t"]); var rv = f.slice().reverse(); row = (row * 31 + fl + sig(m) + sig(sl) + sig(cc) + sig(rv) + f.indexOf(undefined) + (f.includes(undefined) ? 3 : 0) + f.join("").length) | 0;
+  }
+  out.push(row);
+}
+P("holes", out.join(" "));
+Array.prototype[64] = "proto"; var withProto = make(130, 64); var sh = withProto.shift(); P("a hole filled by the prototype", sh, withProto[63], withProto[64], 63 in withProto, withProto.hasOwnProperty(63), withProto.length); var wp2 = make(130, 64); wp2.unshift("u"); P("unshift over it", wp2[65], wp2.hasOwnProperty(65), wp2[64]); delete Array.prototype[64];
+var stored = "none"; var acc = make(70, -1); Object.defineProperty(acc, 65, { get: function () { return "getter"; }, set: function (v) { stored = v; }, configurable: true, enumerable: true }); var as = acc.shift(); P("an accessor", as, acc[64], acc[65], stored, acc.length, typeof Object.getOwnPropertyDescriptor(acc, 65).get, typeof Object.getOwnPropertyDescriptor(acc, 64).get, sig(acc.slice(0, 60)));
+var only = make(70, -1); Object.defineProperty(only, 65, { get: function () { return "getter"; }, configurable: true, enumerable: true }); P("a getter alone", (function () { try { only.shift(); return "shifted"; } catch (e) { return e.constructor.name; } })(), only.length, only[0], only[64]);
+var q = []; for (var i = 0; i < 300; i++) q.push(i); var sum = 0; for (var j = 0; j < 300; j++) { sum += q.shift(); q.push(j); if ((j & 31) === 0) { q.splice(10, 2, j, j + 1); q.unshift(0); q.pop(); } } P("queue", sum, q.length, sig(q));
+var sparse = []; sparse[5] = 1; sparse[200] = 2; P("sparse", sparse.shift(), sparse.length, 4 in sparse, 199 in sparse, sparse.unshift(9), 5 in sparse, 200 in sparse, sparse.splice(0, 1).length, sparse.length);
+lines.join("\n")"##;
+    let expected = r##"holes 1158844920 1497012649 994038552 -1522725827 -1609873404 827843427 1211853925 -1108864829 1874544499 1407900115
+a hole filled by the prototype 0 proto 65 true true 129
+unshift over it proto true 63
+an accessor 0 getter getter 66 69 function undefined 1120158170
+a getter alone TypeError 70 1 getter
+queue 41779 300 693587015
+sparse  200 true true 201 true true 1 200"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

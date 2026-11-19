@@ -302,8 +302,16 @@ impl<'gc> ElementsVector<'gc> {
             }
             true
         } else {
-            // No descriptors, no value: That's a hole.
-            values.iter().all(|e| e.is_some())
+            // No descriptors, no value: That's a hole. Looked for a block of
+            // elements at a time, with no way out inside a block: `shift`
+            // and `splice` ask this of the whole Array at every call, and a
+            // loop that can stop at every element is not one the compiler
+            // makes wide.
+            values.chunks(64).all(|block| {
+                block
+                    .iter()
+                    .fold(true, |dense, value| dense & value.is_some())
+            })
         }
     }
 
