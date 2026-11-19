@@ -42,16 +42,16 @@ below.
 | map, set | 4 | 4.6x | 1.3x |
 | app | 8 | 6.1x | 1.6x |
 | array | 14 | 5.8x | 1.5x |
-| regexp | 4 | 2.4x | 1.6x |
+| regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
-| json | 2 | 1.0x | 0.9x |
+| json | 2 | 1.0x | 0.8x |
 | all | 108 | 7.6x | 1.5x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst are now a step of a particle animation and the call of
-a closure (2.7x), the properties of one object read and written in a loop (2.5x) and arithmetic on
-the elements of a `Float64Array` (2.3x). 90 of the 108 cases are at or under 2x (a few sit within a
+a closure (2.7x), the properties of one object read and written in a loop and arithmetic on the
+elements of a `Float64Array` (2.4x). 88 of the 108 cases are at or under 2x (a few sit within a
 few hundredths of 2x and cross it from one run to the next), 17 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -80,9 +80,9 @@ property remembered likewise took a tenth off a loop that calls both, with the m
 1.488x, and the properties of functions read by their caches to 1.473x. `typeof` done in the loop
 and an object for `new` made with its prototype at once left the mean there (1.48x in a run where
 QuickJS's own times were 0.9% lower). What a Map, a Set, a RegExp and a TypedArray inherit read by
-their caches took it to 1.46x, in a run taken while other work ran on the machine (QuickJS's own
-times 4.5% higher than in the run before; the three groups it changed are the ones the table has new
-numbers for).
+their caches took it to 1.47x (the run of that round was taken while other work ran on the machine,
+and was repeated from the round's saved library when the machine was quiet), and a table of
+descriptors that knows which storages have any to 1.46x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -653,6 +653,15 @@ and goes as before. A loop of `typeof v === "number"` tests went from 9.7 to 8.0
 (`loop/typeof-and-truthy`, 1.52x to 1.28x), and the plain loops and the calls are where they were:
 this arm, unlike the one for `yield` (the defects), moved nothing.
 
+The call of a closure is the second worst case now (`call/closure`, 2.7x), and nothing single is
+left in it to take out. Its body is eight instructions. Entering the function is a fifth of the time
+in some twenty pieces of 1-2% each (the execution context pushed, the stacks exchanged, the
+arguments put where the parameters are, the code rooted, its tables fetched), leaving it a tenth,
+and the three reads and one write of the variables it closes over 3 ns each (a sixth together): the
+running environment asked of the execution context, the record found by its kind, the binding by its
+place and checked by its name. Less than that is another way of making a call, not a change to this
+one.
+
 ### 4. Properties
 
 `o.x` was 8-23x: the access built a Reference record and went through the general `[[Get]]` to reach the property
@@ -791,6 +800,36 @@ instructions otherwise, started 4 bytes later, and `loop/switch` was 9% slower b
 was a property of the change: both are where this benchmark's binary happens to put things, which
 another build of the engine does not share, and the cases that move so by nothing are to be read
 with that. A function cannot be given an alignment in this toolchain (1.96.1).
+
+Every write of a property by its cache asked whether a descriptor forbids it. The storages of one
+capacity have their descriptors in a map by the storage, and the map was searched by the storage's
+hash at each write, to find, nearly always, that the storage has none: a tenth of a loop writing the
+properties of plain objects, and a fifth of an assignment to a global variable, whose object has
+descriptors, so that the search went on into them. The map is inside a type of its own now
+(`DescriptorTable`), which keeps beside it a bit for every storage that has descriptors, and the slot
+it last found writable in one that has. A write looks at the bit, and so does every reading of a
+storage with its descriptors (`Object.keys`, a spread, `JSON.stringify`, `hasOwnProperty`).
+
+The bits cannot be wrong by an oversight. The map is private to that type: a storage gets its first
+descriptors only through the table's own `insert` or the vacant entry it hands out, both of which set
+the bit, and what the collector does to the map goes through one function that sets the bits anew
+after it. A bit may stay set for a storage whose descriptors were taken away, which costs the search
+and nothing else. The slot last found writable is forgotten by every method that gives the map out
+to be changed, and none changes it otherwise. Unit tests hold the table's answers against a search
+of its own map after each kind of change.
+
+With the two binaries run in turn: an assignment to a global variable in a loop went from 4.79 to
+4.49 ms (`loop/global-variable`, 2.19x to 2.03x), `prop/get-set-one-shape` from 13.9 to 13.5 ms
+(2.53x to 2.40x), `prop/object-spread-assign` and `json/stringify` 3.5% less,
+`app/easing-animation-frame` 5% less, a step of the particles 1-3% less. `loop/switch` reads 1%
+slower by the best runs and 3% by the medians, with the loop of instructions byte for byte what it
+was and 2368 bytes further on in the binary.
+
+What is left of a write to a global variable is spread thin: the state of the global scope checked
+by five comparisons over a dozen reads, the object and its shape read, the storage found by its
+capacity, the slot. Of a read, the same and a call for the values of the object (8% of that case and
+of a loop calling `Math.max`), which stays a call: the one function that reads a slot of an ordinary
+object keeps its one caller (above).
 
 Those lookups, "prototype" at every `new` run in place, and the ones a walk over an Array makes (area
 5a) each asked for the property cache of their name, and that was found in a table hashed by the name's
