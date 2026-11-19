@@ -217,7 +217,12 @@ pub(crate) struct Heap {
     /// How many times a property that an object already had was given a
     /// descriptor, or had the one it had taken away: the one way an
     /// accessor property becomes another accessor or a data property with
-    /// the shape, the key and the place it had.
+    /// the shape, the key and the place it had. And how many times the
+    /// properties of an object were moved (one removed, private names put
+    /// in front), which puts another property, with its descriptor, at a
+    /// place. While this has not changed, the accessor functions of the
+    /// property at a place of an object are the ones they were
+    /// ([`AccessorSeen`](crate::ecmascript::AccessorSeen)).
     pub(crate) descriptor_changes: u64,
     /// Bytes of string data, ArrayBuffer data and keyed collection entries
     /// allocated since the last garbage collection, for the heap limit. Not

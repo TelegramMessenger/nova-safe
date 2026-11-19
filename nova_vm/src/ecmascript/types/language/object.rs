@@ -394,6 +394,62 @@ arena_vec_access!(
     objects
 );
 
+/// The getter, or the setter, that the property at one place of one object
+/// was last found to have (`OrdinaryObject::getter_by_cache`), with what
+/// the heap counted then of all that can make it another: the property
+/// defined again, or the object's properties moved
+/// ([`Heap::descriptor_changes`](crate::heap::Heap)). The object and the
+/// function are handles that a collection moves, so what was seen before
+/// one is not looked at after it.
+///
+/// Finding the function is finding the object's storage and looking its
+/// descriptors up in two tables, at every read and assignment of an
+/// accessor property: a fifteenth of a loop that does one of each.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AccessorSeen {
+    holder: OrdinaryObject<'static>,
+    slot: u32,
+    function: ECMAScriptFunction<'static>,
+    collections: u64,
+    descriptor_changes: u64,
+}
+
+impl AccessorSeen {
+    /// The getter (or with `setter` the setter) of the property at `slot`
+    /// of `holder`, if it is the one last seen there and still is.
+    #[inline]
+    fn function(
+        agent: &Agent,
+        holder: OrdinaryObject,
+        slot: u32,
+        setter: bool,
+    ) -> Option<ECMAScriptFunction<'static>> {
+        let seen = agent.accessor_seen[usize::from(setter)].get()?;
+        (seen.collections == agent.heap.collections
+            && seen.descriptor_changes == agent.heap.descriptor_changes
+            && seen.slot == slot
+            && seen.holder == holder.unbind())
+        .then_some(seen.function)
+    }
+
+    /// Remembers that `function` is that getter or setter now.
+    fn see(
+        agent: &Agent,
+        holder: OrdinaryObject,
+        slot: u32,
+        setter: bool,
+        function: ECMAScriptFunction,
+    ) {
+        agent.accessor_seen[usize::from(setter)].set(Some(Self {
+            holder: holder.unbind(),
+            slot,
+            function: function.unbind(),
+            collections: agent.heap.collections,
+            descriptor_changes: agent.heap.descriptor_changes,
+        }));
+    }
+}
+
 impl<'a> OrdinaryObject<'a> {
     /// Allocate a a new blank OrdinaryObject and return its reference.
     ///
@@ -662,9 +718,15 @@ impl<'a> OrdinaryObject<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> Option<ECMAScriptFunction<'gc>> {
         let (holder, slot) = self.place_by_cache(agent, cache)?;
+        if let Some(getter) = AccessorSeen::function(agent, holder, slot, false) {
+            return Some(getter.bind(gc));
+        }
         let descriptor = holder.get_elements_storage(agent).descriptors?.get(&slot)?;
         match descriptor.getter_function(gc)? {
-            Function::ECMAScriptFunction(getter) => Some(getter),
+            Function::ECMAScriptFunction(getter) => {
+                AccessorSeen::see(agent, holder, slot, false, getter);
+                Some(getter)
+            }
             _ => None,
         }
     }
@@ -682,9 +744,15 @@ impl<'a> OrdinaryObject<'a> {
         gc: NoGcScope<'gc, '_>,
     ) -> Option<ECMAScriptFunction<'gc>> {
         let (holder, slot) = self.place_by_cache(agent, cache)?;
+        if let Some(setter) = AccessorSeen::function(agent, holder, slot, true) {
+            return Some(setter.bind(gc));
+        }
         let descriptor = holder.get_elements_storage(agent).descriptors?.get(&slot)?;
         match descriptor.setter_function(gc)? {
-            Function::ECMAScriptFunction(setter) => Some(setter),
+            Function::ECMAScriptFunction(setter) => {
+                AccessorSeen::see(agent, holder, slot, true, setter);
+                Some(setter)
+            }
             _ => None,
         }
     }

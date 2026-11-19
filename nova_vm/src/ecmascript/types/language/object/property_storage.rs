@@ -136,6 +136,9 @@ impl<'a> PropertyStorage<'a> {
         object: OrdinaryObject,
         private_fields: &[PrivateField],
     ) -> Result<(), TryReserveError> {
+        // The properties the object has are moved, their descriptors with
+        // them: another property is at each place.
+        agent.heap.descriptor_changes += 1;
         let old_len = object.len(agent);
         let new_len = old_len.checked_add(private_fields.len() as u32).unwrap();
         let old_shape = object.object_shape(agent);
@@ -485,6 +488,9 @@ impl<'a> PropertyStorage<'a> {
     ) -> Result<(), TryReserveError> {
         let object = self.0;
 
+        // The properties after the one removed are moved, their
+        // descriptors with them: another property is at each place.
+        agent.heap.descriptor_changes += 1;
         let old_shape = object.object_shape(agent);
         let old_cap = old_shape.values_capacity(agent);
 

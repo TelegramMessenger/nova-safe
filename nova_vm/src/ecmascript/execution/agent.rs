@@ -964,6 +964,9 @@ pub struct Agent {
     /// The state of the global scope that global variables were last
     /// found in: see [`GlobalScopeSeen`].
     pub(crate) global_scope_seen: GlobalScopeSeen,
+    /// The getter and the setter last found for a property: see
+    /// [`AccessorSeen`](crate::ecmascript::AccessorSeen).
+    pub(crate) accessor_seen: [core::cell::Cell<Option<crate::ecmascript::AccessorSeen>>; 2],
     /// That `length` of a TypedArray is the accessor it was made with, as
     /// last found: see [`TypedArrayLengthSeen`](crate::ecmascript::TypedArrayLengthSeen).
     #[cfg(feature = "array-buffer")]
@@ -1016,6 +1019,7 @@ impl Agent {
             spare_vm_stacks: SpareVmStacks::default(),
             vm_frames: VmFrames::default(),
             global_scope_seen: GlobalScopeSeen::default(),
+            accessor_seen: [core::cell::Cell::new(None), core::cell::Cell::new(None)],
             #[cfg(feature = "array-buffer")]
             typed_array_length_seen: core::cell::Cell::new(None),
             arguments_pool: Vec::new(),
@@ -1818,6 +1822,8 @@ impl HeapMarkAndSweep for Agent {
             // not read after it: nothing to keep or move.
             global_scope_seen: _,
             // Likewise.
+            accessor_seen: _,
+            // Likewise.
             #[cfg(feature = "array-buffer")]
                 typed_array_length_seen: _,
         } = self;
@@ -1884,6 +1890,8 @@ impl HeapMarkAndSweep for Agent {
             // Its handles are of the collection before this one, and are
             // not read after it: nothing to keep or move.
             global_scope_seen: _,
+            // Likewise.
+            accessor_seen: _,
             // Likewise.
             #[cfg(feature = "array-buffer")]
                 typed_array_length_seen: _,

@@ -73,12 +73,43 @@ impl<'a> Number<'a> {
     /// Create a new Number from an f64.
     #[inline]
     pub fn from_f64(agent: &mut Agent, value: f64, gc: NoGcScope<'a, '_>) -> Self {
+        if Self::is_heap_f64(value) {
+            let id = Self::alloc_number(&mut agent.heap, value);
+            return Number::Number(id.unbind().bind(gc));
+        }
         if let Ok(value) = Number::try_from(value) {
             value
         } else {
             let id = Self::alloc_number(&mut agent.heap, value);
             Number::Number(id.unbind().bind(gc))
         }
+    }
+
+    /// Whether `value` is surely a Number of the heap: what nearly every
+    /// result of arithmetic on fractions is, told by two tests where the
+    /// general way ([`Number::try_from`]) asks whether it is finite, whole,
+    /// in the range of the safe integers and not -0 before it asks the
+    /// one thing that says it here.
+    ///
+    /// A double fits a Value only with a low byte of zeros
+    /// ([`SmallF64`]); one that has another low byte is an integer Number
+    /// or a Number of the heap. It is an integer Number where it is whole
+    /// and in the range of the safe integers: the conversion to an integer
+    /// and back gives the double itself only for a whole one (it gives
+    /// another for NaN and for the infinities, which have no such byte
+    /// anyway, and -0 has a low byte of zeros).
+    ///
+    /// The general way written as these tests alone (whole and safe, else
+    /// a low byte of zeros, else the heap) gives the same Numbers and was
+    /// slower where an operator of the loop of instructions has it in
+    /// line: trigonometry in a loop by 12%, arithmetic on doubles by 8%.
+    #[inline(always)]
+    fn is_heap_f64(value: f64) -> bool {
+        if value.to_bits() & 0xFF == 0 {
+            return false;
+        }
+        let whole = value as i64;
+        whole as f64 != value || whole.unsigned_abs() > SmallInteger::MAX as u64
     }
 
     /// Create a new Number from an i64.
@@ -1629,6 +1660,104 @@ mod ieee_tests {
                 assert!(same(x / y, divide_by_steps(x, y)), "{x:?} / {y:?}");
                 assert!(same(x % y, remainder_by_steps(x, y)), "{x:?} % {y:?}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod heap_f64_tests {
+    use super::*;
+
+    /// A double that [`Number::is_heap_f64`] says is a Number of the heap
+    /// is one that the general way makes neither an integer Number nor a
+    /// SmallF64; and of those that the general way makes a Number of the
+    /// heap, only the ones with a low byte of zeros are left to it.
+    #[test]
+    fn a_double_told_to_be_of_the_heap_is() {
+        fn check(value: f64) {
+            let general = Number::try_from(value).is_err();
+            if Number::is_heap_f64(value) {
+                assert!(general, "{value:?} ({:#x}) fits a Value", value.to_bits());
+            } else if general {
+                assert_eq!(
+                    value.to_bits() & 0xFF,
+                    0,
+                    "{value:?} was left to the general way"
+                );
+            }
+        }
+        let safe = SmallInteger::MAX as f64;
+        for value in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            0.1,
+            -0.1,
+            1.5,
+            1e300,
+            -1e300,
+            5e-324,
+            -5e-324,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::MIN,
+            f64::EPSILON,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::NAN,
+            f64::from_bits(0x7ff8_0000_0000_0001),
+            f64::from_bits(0x7ff0_0000_0000_0100),
+            f64::from_bits(0xfff0_0000_0000_00ff),
+            f64::from_bits(0xfff8_0000_0000_0000),
+            f64::from_bits(0x7ff0_0000_0000_0001),
+            safe,
+            -safe,
+            safe + 1.0,
+            -safe - 1.0,
+            safe + 2.0,
+            safe - 1.0,
+            9.223_372_036_854_775_8e18,
+            -9.223_372_036_854_775_8e18,
+            1.844_674_407_370_955_2e19,
+            35_184_372_088_832.0,
+            35_184_372_088_833.0,
+            -35_184_372_088_833.0,
+            4_503_599_627_370_497.0,
+            4_503_599_627_370_496.5,
+            2_251_799_813_685_248.5,
+        ] {
+            check(value);
+        }
+        // Whole numbers around every power of two, and what is beside them.
+        for power in -10..80 {
+            let base = 2f64.powi(power);
+            for delta in [
+                -3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.0, 255.0, 256.0, 257.0,
+            ] {
+                check(base + delta);
+                check(-(base + delta));
+            }
+        }
+        // And patterns of bits from a generator.
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for round in 0..4_000_000u32 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let bits = match round % 4 {
+                0 => state,
+                // A low byte of zeros.
+                1 => state & !0xFF,
+                // Whole numbers of every size.
+                2 => (((state >> 11) as i64 >> (state % 60)) as f64).to_bits(),
+                // Halves and quarters of them.
+                _ => (((state >> 11) as i64 >> (state % 60)) as f64 / 4.0).to_bits(),
+            };
+            check(f64::from_bits(bits));
         }
     }
 }
