@@ -26,6 +26,39 @@ Where the time goes inside the interpreter loop does not show in a profile by fu
 `xctrace record --template 'Time Profiler'` and `xctrace export` give the sampled addresses, and those against the
 disassembly give the time per machine instruction. That is how the loop's own share was found (area 1).
 
+### Where a function lands
+
+A case that runs none of the code a change touched can still move by 3-5%, by where the change left
+the loop of instructions in the binary. Round after round the same few cases did (a step of the
+particles, `loop/switch`, `loop/float-math`), up in one build and down in the next, with `Vm::run`
+the same instructions each time.
+
+It is not where the function starts in a 64-byte cache line. For a try every function was put on a
+multiple of 64 bytes (`-C llvm-args=-align-all-functions=6`; the binary 1.8% larger). The substring
+change of area 8, which none of those cases runs, still read 2.0-3.7% slower on the three with both
+sides built so, and one commit built with and without it was within 1% on nine of ten such cases
+and 2.5% slower on the particles. Not kept.
+
+It is the address itself. With `Vm::run` linked first in both binaries, so that it is at the same
+address in each, the three read -0.9%, -0.2% and +1.7%; with the dozen functions it calls most
+linked in front of it, at the same addresses too, the seven cases looked at are between -1.4% and
++0.8%, which is what two runs of one binary differ by. (No instruction of those functions differs
+between the two builds; what a processor keeps under the address of a branch is presumably what
+does.)
+
+So the benchmark binary has those functions at its start: `safe/bench/order.txt` names them and
+`run.py` gives the linker their order (macOS). A change that leaves them as they are leaves them
+where they are, and what moves in a comparison is what the change did. The loop is last of them, so
+that a change to it moves none of the others, and the interpreter of QuickJS and a dozen functions
+around it are first, so that nothing in Nova moves them. Having them there costs nothing by itself: one commit
+linked both ways reads 0.03% apart on the panel of 34 cases, none of them 2% worse.
+
+This is a property of the benchmark's binary, as the old placing was. A product build has these
+functions wherever its link puts them, a few percent either way on the cases that feel it; an
+embedder can give its linker the same order. And it does not settle a change inside `Vm::run`, which
+still moves everything after it within the function: two builds that differ so are still compared
+on the panel (area 5).
+
 ## Where it stands
 
 Nova's time over QuickJS's, geometric mean per group, on an Apple M-series machine (QuickJS fork `fbc91d8`, `-O2`;
@@ -35,25 +68,26 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 1.8x |
-| call | 14 | 10.4x | 1.8x |
-| math | 4 | 9.7x | 1.8x |
+| call | 14 | 10.4x | 1.7x |
+| math | 4 | 9.7x | 1.9x |
 | string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.4x |
 | map, set | 4 | 4.6x | 1.2x |
-| app | 8 | 6.1x | 1.6x |
+| app | 8 | 6.1x | 1.5x |
 | array | 14 | 5.8x | 1.4x |
-| regexp | 4 | 2.4x | 1.5x |
+| regexp | 4 | 2.4x | 1.4x |
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.8x |
 | all | 108 | 7.6x | 1.4x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
-was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.7x), then a step
-of a particle animation (2.5-2.6x), arithmetic on the elements of a `Float64Array` (2.35x) and the
-properties of one object read and written in a loop (2.3x). 94 of the 108 cases are at or under 2x
-(half a dozen sit within a few hundredths of 2x and cross it from one run to the next), 18 of them
-at or under QuickJS's time. Over all cases it is 1.41x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.65x), then a step
+of a particle animation (2.5x), the sines and square roots of `math/trig-and-sqrt` (2.4x), and the
+properties of one object read and written in a loop and arithmetic on the elements of a
+`Float64Array` (2.3x). 97 of the 108 cases are at or under 2x (half a dozen sit within a few
+hundredths of 2x and cross it from one run to the next), 19 of them at or under QuickJS's time.
+Over all cases it is 1.40x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -97,7 +131,12 @@ tenth, and was repeated from the round's saved library when the machine was quie
 a storage kept with a cached property of the object's own took 7% off the two cases that read and
 write properties most (a step of the particles 2.75x to 2.5-2.6x, the properties of one object
 2.4x to 2.3x) and two more cases under 2x, with the mean at 1.41x (taken the same way: the machine was busy
-when the round's checks ran).
+when the round's checks ran). A substring looked up where it lies and a short text counted for its
+length took the slicing of a text that is not ASCII under 2x, with the mean at 1.40x. From that run
+on the benchmark's binary has the hot functions of both engines at its start ("Where a function
+lands"), which moved QuickJS's own times too: its calls into its built-ins read a tenth faster
+(`math/trig-and-sqrt`, 2.1x to 2.4x with Nova's time where it was), and one run of the whole suite
+still differs from the next by a few percent on single cases of either engine.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -897,7 +936,8 @@ first, by the hash in the function's symbol, which does not tell: it is of the f
 type, not of its code. The code of two builds is compared as such since.) Neither
 was a property of the change: both are where this benchmark's binary happens to put things, which
 another build of the engine does not share, and the cases that move so by nothing are to be read
-with that. A function cannot be given an alignment in this toolchain (1.96.1).
+with that. One function cannot be given an alignment in this toolchain (1.96.1); all of them can,
+which was tried later and was not what moves them ("Where a function lands", above).
 
 Every write of a property by its cache asked whether a descriptor forbids it. The storages of one
 capacity have their descriptors in a map by the storage, and the map was searched by the storage's
@@ -1534,6 +1574,25 @@ case conversion and trimming from 1.7x to 1.3x, the tokenizer from 3.9x to 2.5x;
 
 Left: the calls themselves, which are native ones (area 3), and interning each result. Searching and splitting
 are level or faster.
+
+Interning a substring did more than it had to, twice over. The piece was copied out of its source
+into a buffer of its own, the string table was asked for that text, and where a string had it
+already, which is the common case in a loop over one text, the buffer was thrown away. And the
+length of a piece that is not ASCII was answered by making its table of indices: an allocation of
+eight bytes for every code unit, filled by a walk over the text, for a piece whose length is all
+that is ever asked of it.
+
+- A substring whose bytes lie in its source as they are (no half of a surrogate pair at either end)
+  is looked up in the string table where it lies, and copied only if no string has its text
+  (`Heap::alloc_wtf8_slice`): `slice`, `substring`, `substr`, the pieces of `split`, what a RegExp
+  matched and captured.
+- A text of up to 64 bytes that has no table of indices is counted for its length, in one pass
+  over its bytes. Asked for an index it gets its table as before, and its length is then read from
+  that. A longer text gets the table at once, so that a loop asking a long
+  text for its length at every turn does not count it at every turn.
+
+With the two binaries run in turn: `string/slice-non-ascii` 11-13% less (2.18x of QuickJS to 1.9x),
+`string/split-join` 22% less, `string/slice-substring` 6-8%, `string/code-points-iteration` 5%.
 
 `a < b` of two Strings left the loop of instructions for the general comparison, and that decoded both
 texts into UTF-16 code units one code point at a time to compare them. The four comparisons of two
