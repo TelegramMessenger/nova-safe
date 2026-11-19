@@ -12432,3 +12432,145 @@ end 0own own 010own own own 01010own own own own 0101010own own own own own 0101
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `Array.prototype.join` reads the elements of an Array that are Strings,
+/// Numbers, Booleans, undefined or null where they are, for as long as
+/// there is nothing else, and goes on by Get and ToString from the first
+/// element that is. The script joins Arrays of each kind of element and of
+/// all mixed, with every kind of separator, one that changes the Array
+/// and one that throws among them; Arrays with holes, with and without
+/// prototypes that answer for them; elements whose `toString` replaces,
+/// adds and removes elements before and after itself, throws, or is the
+/// Array again; elements with descriptors and accessors; array-likes,
+/// TypedArrays, subclasses and arguments objects; what calls `join`
+/// (`toString`, a template, `+`); and Arrays whose length was changed.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn an_array_is_joined_as_get_and_to_string_join_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(joined_arrays)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn joined_arrays() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+function J(a, sep) { return "[" + (arguments.length > 1 ? a.join(sep) : a.join()) + "]"; }
+// what the elements are
+P("strings", J(["a", "b", "c"]), J(["a", "b", "c"], ""), J(["a"], "-"), J([], "-"), J(["", "", ""], "+"), J(["only"]));
+P("numbers", J([1, 2, 3]), J([0, -0, 1.5, -2.25, 1e21, 1e-7, NaN, Infinity, -Infinity], " "), J([0.1 + 0.2, 123456789012345680000, 4294967296, -1], "|"));
+P("others", J([true, false, null, undefined, "x"], ","), J([null], "-"), J([undefined, undefined], "-"), J([null, null, null]));
+P("mixed", J(["a", 1, true, null, "b", 2.5, undefined, false, "c"], "/"));
+P("long strings", J(["привет", "мир", "世界", "😀", "a\u0000b"], " "), J(["\ud83d", "\ude00"], ""), J(["\ud83d", "\ude00"], "-").length, J(["\ude00", "\ud83d"], "").length);
+var big = []; for (var i = 0; i < 5000; i++) big.push(i % 7 === 0 ? i : "s" + i);
+P("many", big.join("").length, big.join(", ").length, big.join().slice(0, 40));
+// the separator
+P("separators", J([1, 2, 3], undefined), J([1, 2, 3], null), J([1, 2, 3], 0), J([1, 2, 3], "ab"), J([1, 2, 3], { toString: function () { return "<>"; } }), J([1, 2], true), J([1, 2, 3], ["x", "y"]));
+(function () { var a = ["a", "b", "c"], log = []; var sep = { toString: function () { a.push("pushed"); a[0] = "changed"; log.push("sep"); return "+"; } }; P("separator changes the array", a.join(sep), a.length, log.join()); })();
+(function () { var a = ["a", "b", "c", "d"]; var sep = { toString: function () { a.length = 1; return "+"; } }; P("separator shortens the array", "[" + a.join(sep) + "]", a.length); })();
+P("separator throws", kind(function () { return [1, 2].join({ toString: function () { throw new RangeError("sep"); } }); }), kind(function () { return [1, 2].join(Symbol("s")); }));
+// holes, and what prototypes say of them
+P("holes", J([, "a", , "b", ,]), J([, ,]), J(new Array(4)), J(new Array(3), "-"), J([1, , 3], ""));
+Array.prototype[1] = "proto"; Object.prototype[2] = "objproto";
+P("holes answered", J([, , , "z"]), J(["a", , , "d"], "-"), J(new Array(3), "."));
+delete Array.prototype[1]; delete Object.prototype[2];
+P("holes again", J([, , , "z"]), J(["a", , , "d"], "-"));
+var sparse = []; sparse[5] = "five"; sparse[2] = 2;
+P("sparse", J(sparse), J(sparse, ""));
+// elements that run something
+(function () {
+  var log = [], a = ["a", { toString: function () { log.push("first"); a[2] = "replaced"; a.push("added"); return "obj"; } }, "c", "d"];
+  P("object changes later elements", a.join("-"), a.length, log.join());
+  var b = ["a", "b", { toString: function () { b[0] = "too late"; b.length = 3; return "obj"; } }, "d", "e"];
+  P("object shortens", b.join("-"), b.length, b[0]);
+  var c = ["a", { toString: function () { c.length = 0; return "gone"; } }, "c"];
+  P("object empties", "[" + c.join("-") + "]", c.length);
+  var d = ["x", { valueOf: function () { return "valueOf"; }, toString: undefined }, { toString: function () { return 7; } }, [1, [2, 3]], [], [[]], [null], [undefined, 1]];
+  P("conversions", d.join("|"));
+  var e = [1, { toString: function () { throw new EvalError("in element"); } }, 3];
+  P("element throws", kind(function () { return e.join(); }), kind(function () { return ["a", Symbol("s")].join(); }), kind(function () { return [Symbol.iterator].join(); }));
+  P("bigint", J([1n, 2n, "x", 3], "-"), J(["a", 10n ** 20n]));
+  var cyc = ["a", "b"]; cyc.push(cyc); cyc.push("c");
+  P("cycle", J(cyc), J([cyc, "end"], "+"));
+  var date = new Date(0), re = /x/g, fn = function () {}, wrapped = [new String("boxed"), new Number(5), new Boolean(false)];
+  P("objects", J([re, wrapped, {}], " "), typeof [fn].join(), [date].join().length > 10);
+})();
+// elements with descriptors, frozen, sealed, with accessors
+(function () {
+  var a = ["a", "b", "c"]; Object.defineProperty(a, 1, { get: function () { a[2] = "from getter"; return "got"; }, configurable: true });
+  P("accessor element", a.join("-"));
+  var f = Object.freeze(["f", 1, null, "z"]), s = Object.seal(["s", 2]);
+  P("frozen sealed", J(f), J(s, ""));
+  var n = ["a", "b"]; Object.defineProperty(n, 1, { value: "hidden", enumerable: false });
+  P("not enumerable", J(n));
+  var named = ["a", "b"]; named.extra = "x"; named[-1] = "neg"; named["1.5"] = "frac";
+  P("named properties", J(named), named.length);
+})();
+// other kinds of this value
+P("array-likes", Array.prototype.join.call({ length: 3, 0: "a", 2: "c" }, "-"), Array.prototype.join.call("abc", "."), Array.prototype.join.call({ length: 2 }), Array.prototype.join.call(5), kind(function () { return Array.prototype.join.call(null); }));
+P("typed", J(new Uint8Array([1, 2, 3])), Array.prototype.join.call(new Float64Array([1.5, 2]), "+"), new Int8Array(0).join("-") === "");
+class Sub extends Array {}
+var sub = Sub.from(["s", "u", "b"]); var other = ["a", , "c"]; Object.setPrototypeOf(other, { 1: "from proto", join: Array.prototype.join });
+P("subclass and prototype", J(sub, ""), J(other), sub instanceof Sub);
+(function () { P("arguments", Array.prototype.join.call(arguments, "&")); })("x", 1, null, "y");
+// what calls join
+P("toString", String(["a", 1, null]), ["a", ["b", ["c"]]] + "", `${[1, 2]}`, [].toString() === "", [[]] + "x", [1, 2].toString());
+var over = [1, 2, 3]; over.join = function () { return "own join"; };
+P("own join", String(over), over + "");
+// lengths that change, and long results
+(function () { var a = ["a", "b", "c"]; a.length = 5; P("longer", J(a)); a.length = 2; P("shorter", J(a)); var z = new Array(1000).fill("ab"); P("filled", z.join("").length, z.join("--").length, new Array(1000).join("x").length); })();
+(function () { var parts = []; for (var i = 0; i < 300; i++) { parts.push("<li>"); parts.push(i); parts.push("</li>"); } var html = parts.join(""); P("html", html.length, html.slice(0, 30), html.slice(-12)); })();
+lines.join("\n")"##;
+    let expected = r##"strings [a,b,c] [abc] [a] [] [++] [only]
+numbers [1,2,3] [0 0 1.5 -2.25 1e+21 1e-7 NaN Infinity -Infinity] [0.30000000000000004|123456789012345680000|4294967296|-1]
+others [true,false,,,x] [] [-] [,,]
+mixed [a/1/true//b/2.5//false/c]
+long strings [привет мир 世界 😀 a b] [😀] 5 4
+many 23175 33173 0,s1,s2,s3,s4,s5,s6,7,s8,s9,s10,s11,s12,
+separators [1,2,3] [1null2null3] [10203] [1ab2ab3] [1<>2<>3] [1true2] [1x,y2x,y3]
+separator changes the array changed+b+c 4 sep
+separator shortens the array [a+++] 1
+separator throws RangeError TypeError
+holes [,a,,b,] [,] [,,,] [--] [13]
+holes answered [,proto,objproto,z] [a-proto-objproto-d] [.proto.objproto]
+holes again [,,,z] [a---d]
+sparse [,,2,,,five] [2five]
+object changes later elements a-obj-replaced-d 5 first
+object shortens a-b-obj-- 3 too late
+object empties [a-gone-] 0
+conversions x|valueOf|7|1,2,3||||,1
+element throws EvalError TypeError TypeError
+bigint [1-2-x-3] [a,100000000000000000000]
+cycle [a,b,,c] [a,b,,c+end]
+objects [/x/g boxed,5,false [object Object]] string true
+accessor element a-got-from getter
+frozen sealed [f,1,,z] [s2]
+not enumerable [a,hidden]
+named properties [a,b] 2
+array-likes a--c a.b.c ,  TypeError
+typed [1,2,3] 1.5+2 true
+subclass and prototype [sub] [a,from proto,c] true
+arguments x&1&&y
+toString a,1, a,b,c 1,2 true x 1,2
+own join own join own join
+longer [a,b,c,,]
+shorter [a,b]
+filled 2000 3998 999
+html 3490 <li>0</li><li>1</li><li>2</li> <li>299</li>"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

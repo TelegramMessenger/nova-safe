@@ -1761,9 +1761,48 @@ impl ArrayPrototype {
         // 5. Let R be the empty String.
         let mut r = Wtf8Buf::with_capacity(len.saturating_mul(10).min(1 << 20));
         // 6. Let k be 0.
+        let mut k = 0;
+        // The elements of an Array that are Strings, Numbers, Booleans,
+        // undefined or null, for as long as there is nothing else: Get of
+        // such an element is the element (the Array has it itself, with no
+        // descriptor), and ToString of it runs nothing, so that the Array
+        // is what it was at the next one. `parts.join("")` of the pieces
+        // of a text is this. A hole (which a prototype may answer for), an
+        // object, a Symbol and a BigInt go on below from where they are.
+        if let Object::Array(array) = o.get(agent)
+            && array.is_trivial(agent)
+        {
+            let nogc = gc.nogc();
+            let array = array.bind(nogc);
+            let sep = separator.get(agent).bind(nogc);
+            while k < len {
+                let text = match array.as_slice(agent).get(k).copied().flatten() {
+                    Some(Value::Undefined | Value::Null) => None,
+                    Some(Value::String(text)) => Some(String::String(text)),
+                    Some(Value::SmallString(text)) => Some(String::SmallString(text)),
+                    Some(Value::Boolean(true)) => Some(BUILTIN_STRING_MEMORY.r#true),
+                    Some(Value::Boolean(false)) => Some(BUILTIN_STRING_MEMORY.r#false),
+                    Some(value) => match Number::try_from(value) {
+                        Ok(number) => Some(Number::to_string_radix_10(agent, number, nogc)),
+                        Err(_) => break,
+                    },
+                    None => break,
+                };
+                if k > 0 {
+                    // As below, for every element after the first.
+                    agent.poll_interrupt(nogc).unbind()?;
+                    agent.check_string_length(r.len(), nogc).unbind()?;
+                    r.push_wtf8(sep.as_wtf8_(agent));
+                }
+                if let Some(text) = text {
+                    r.push_wtf8(text.as_wtf8_(agent));
+                }
+                k += 1;
+            }
+        }
         // 7. Repeat, while k < len,
         // b. Let element be ? Get(O, ! ToString(𝔽(k))).
-        {
+        if k == 0 {
             let element = get(agent, o.get(agent), 0.into(), gc.reborrow())
                 .unbind()?
                 .bind(gc.nogc());
@@ -1776,8 +1815,9 @@ impl ArrayPrototype {
                 // ii. Set R to the string-concatenation of R and S.
                 r.push_wtf8(s.as_wtf8_(agent));
             }
+            k = 1;
         }
-        for k in 1..len {
+        for k in k..len {
             agent.poll_interrupt(gc.nogc()).unbind()?;
             agent.check_string_length(r.len(), gc.nogc()).unbind()?;
             // a. If k > 0, set R to the string-concatenation of R and sep.

@@ -4062,7 +4062,10 @@ impl Vm {
     /// `prototype`, the prototype object of its kind in the running realm,
     /// or further up: by the cache, under the shape of `prototype`, where
     /// \[\[Get]] of that object left it.
-    #[inline]
+    // A function of its own: it is reached from every arm that reads a
+    // property by its cache, and as part of each of them the calls read
+    // 1-4% slower for where the loop's code then lay.
+    #[inline(never)]
     fn cached_prototype_property_value(
         agent: &mut Agent,
         prototype: OrdinaryObject<'static>,
@@ -4070,20 +4073,13 @@ impl Vm {
         instr: Instr,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
+        // What a read of that name from the prototype object itself finds
+        // by the cache: the one function that reads a property of an
+        // ordinary object so, where this read the storage of the prototype
+        // by three more general ones at every call of a method of a String
+        // or a Number.
         let cache = tables.cache(instr.get_second_index(), gc);
-        let shape = prototype.object_shape(agent);
-        let (offset, holder) = cache.find_cached_property_offset(agent, shape)?;
-        if offset.is_unset() {
-            return Some(Value::Undefined);
-        }
-        let found = match holder {
-            Some(holder) => holder.get_own_property_at_offset(agent, offset, gc),
-            None => prototype.get_own_property_at_offset(agent, offset, gc),
-        };
-        match found {
-            TryGetResult::Value(value) => Some(value.unbind()),
-            _ => None,
-        }
+        prototype.value_by_cache(agent, cache, gc).unbind()
     }
 
     /// The same for `base`, wherever the instruction has it from.
