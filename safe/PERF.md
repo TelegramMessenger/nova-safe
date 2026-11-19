@@ -36,7 +36,7 @@ below.
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.5x |
 | call | 14 | 10.4x | 2.0x |
-| math | 4 | 9.7x | 2.0x |
+| math | 4 | 9.7x | 1.9x |
 | string | 26 | 10.6x | 1.4x |
 | prop | 13 | 7.1x | 1.8x |
 | map, set | 4 | 4.6x | 1.7x |
@@ -50,9 +50,9 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst is now typed `Float64Array` arithmetic (3.3x), then the
-properties of one object read and written in a loop (3.1x), a step of a particle animation (2.9x) and
-the call of a closure (2.9x). 2 of the 108 cases are above 3x and 76 at or under 2x, 16 of them at or
-under QuickJS's time. Over all cases it is 1.60x: 2.12x before the round of patterns, Array iteration and
+properties of one object read and written in a loop (3.2x), a step of a particle animation (3.1x) and
+the constructor of a derived class (2.9x). 3 of the 108 cases are above 3x and 78 at or under 2x, 16 of
+them at or under QuickJS's time. Over all cases it is 1.59x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -62,7 +62,8 @@ what is concatenated took it to 1.78x, more built-in functions run in place of a
 chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles done as that to 1.67x,
 objects copied by their shape to 1.65x, bound functions and rest parameters run in the loop of
 instructions to 1.64x, holes looked for by blocks, Strings compared in the loop and `instanceof`
-answered there to 1.63x, and a generator resumed in the loop of instructions took it here.
+answered there to 1.63x, a generator resumed in the loop of instructions to 1.60x, and the names of the
+global object read by the state of the global scope took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -269,10 +270,40 @@ for every such read, and its result (which kind of record, which one) was taken 
 is part of the few functions that read or write at a site now. A loop over a closure variable went from 2.3x
 to 2.2x, one over a global from 3.0x to 2.9x.
 
-Left: a read of a global is about 8 ns against 3 for a closure variable: the way from the running realm to the
-slot is a dozen loads (the realm, the global record, its two halves, the object, its shape, the keys, the
-values). `typeof name` still goes through a Reference. The code of a Module and of an `eval` is compiled as
-before, and module variables are resolved the long way.
+A read of a property of the global object was still about 8 ns against 3 for a closure variable: the way
+from the running realm to the slot was a dozen loads, one through the other (the realm, the global record,
+its two halves, the object, its shape, the keys, the values), and a write asked two hash tables on top of
+that whether the property is writable. What the place of a name there depends on is remembered now as one
+state of the global scope (`GlobalScopeSeen`): the realm, its global object and that object's shape; how
+often the keys of an intrinsic object's shape were moved in place, which is what the default global object
+has (a property removed from among the others, private names put in front of them all; a property added
+goes to the end and moves none, so new globals cost nothing); the global lexical record and how many
+declarations it has; and the collection the handles are of. The states seen are numbered, and a site among
+the properties of the global object keeps the number of the state its place was found in, where it kept
+the count of declarations. The place is good while that state is the one seen and the global scope is in
+it still, which six comparisons of values at hand tell, none read through another. When any of it changes
+the next use of a site finds the name the long way under a new number; a name that is only assigned to
+finds its place again then as well, which it had no need to before. `loop/global-variable` went from 2.8x
+to 2.2x, a call of `Math.max` from 2.3x to 2.1x, `math/floor-round-minmax` from 2.1x to 1.9x,
+`math/random-and-date` from 2.2x to 1.9x; `math/` from 2.0x to 1.9x.
+
+The check had been the name at the slot and not the shape because that shape changes in place; the first
+plan of this round compared the shape alone, and the notes above were what said why that is not enough.
+
+As first built the check for a global, short now, was compiled into every read of a closure variable (the
+two are one function, and its global part had become small enough to be made part of it): a call of a
+closure was 4.5% slower and a text appended in a loop 7%, in the two binaries run in turn, with every gate
+passed. The global part is a function of its own, for a tenth of the gain on a global. Three cases that
+read closure variables still read 2-4% slower in the binary of this round than in the one before
+(`app/particles-step`, `array/two-dimensional-grid`, `prop/get-set-one-shape`), with nothing they run
+changed; a build with the new state behind a pointer moved the same cases by -2% to +1%, which is what
+where the code and the Agent's fields lie does. Not followed up.
+
+Left: `typeof name` still goes through a Reference. The code of a Module and of an `eval` is compiled as
+before, and module variables are resolved the long way. A `let` or `const` of the top level is found
+through the realm at every read (2.0x in a loop). A write of a global asks the descriptors of the global
+object's storage whether the property is writable, two hash lookups: its attributes change with nothing a
+site could see.
 
 ### 3. Calls
 
@@ -1167,6 +1198,14 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   confirmed it. One function out of the loop now has all that is not two integers, and the call for
   Strings is compiled only into the four comparisons. A change to those helpers is measured on the plain
   loops first, whatever case it was made for.
+- Private names put on an intrinsic object moved every property of the object under its shape, which
+  stays the same shape, and no property lookup cache was told: a constructor that returns the object to
+  a class with private fields (`class S extends B { #x }`, `B` returning `globalThis` or
+  `Array.prototype`) left every cached read of that object's properties, its own and those inherited
+  through it, reading what had moved into the place. The script that does it to the global object ended
+  with "not a function" at the next global it called, here and in the build this started from. Upstream;
+  test262 has no test that fails for it. Fixed: every cache forgets what it found when that happens, once
+  for an object. Found by the script written for the globals, which is its test.
 - The same again a round later, by another way: an arm for `yield` among the plain instructions, which
   no loop but a generator's runs, made `loop/switch` 14% slower and nested `while` loops 4% (the two
   binaries run in turn; every test passed, and the mean of the benchmark had improved). Nothing those
