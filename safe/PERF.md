@@ -35,7 +35,7 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 2.5x |
-| call | 14 | 10.4x | 2.1x |
+| call | 14 | 10.4x | 2.0x |
 | math | 4 | 9.7x | 2.0x |
 | string | 26 | 10.6x | 1.4x |
 | prop | 13 | 7.1x | 1.8x |
@@ -49,10 +49,10 @@ below.
 | all | 108 | 7.6x | 1.6x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst is now a generator (4.2x), then typed `Float64Array`
-arithmetic (3.3x), the properties of one object read and written in a loop (3.2x) and a step of a
-particle animation (3.1x). 4 of the 108 cases are above 3x and 76 at or under 2x, 15 of them at or under
-QuickJS's time. Over all cases it is 1.63x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7). The worst is now typed `Float64Array` arithmetic (3.3x), then the
+properties of one object read and written in a loop (3.1x), a step of a particle animation (2.9x) and
+the call of a closure (2.9x). 2 of the 108 cases are above 3x and 76 at or under 2x, 16 of them at or
+under QuickJS's time. Over all cases it is 1.60x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -61,8 +61,8 @@ one case of the 108 and left the mean where it was, the string hash that follows
 what is concatenated took it to 1.78x, more built-in functions run in place of a call to 1.71x, and
 chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles done as that to 1.67x,
 objects copied by their shape to 1.65x, bound functions and rest parameters run in the loop of
-instructions to 1.64x, and holes looked for by blocks, Strings compared in the loop and `instanceof`
-answered there took it here.
+instructions to 1.64x, holes looked for by blocks, Strings compared in the loop and `instanceof`
+answered there to 1.63x, and a generator resumed in the loop of instructions took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -482,8 +482,8 @@ from 2.2x to 2.1x.
 Where calls are after that: a plain call and its return take about 14 ns of entering and leaving
 against QuickJS's 14 ns for the whole step of the loop, and no line of the two is above a twentieth of
 the case (the execution context pushed, the frame found and written, the stacks exchanged, the this
-value, the executable rooted). A derived class constructor and `super(...)` take the native way, and so
-does every step of a generator, which enters the loop of instructions anew (4.1x).
+value, the executable rooted). A derived class constructor and `super(...)` take the native way. (Every
+step of a generator did too, until a loop resumed it in place: area 5a.)
 
 ### 4. Properties
 
@@ -730,10 +730,41 @@ themselves where its `next` is the original one of the running realm, and take t
 passes on is a result object already and is read as any other. A loop over a generator went from 9.9 to
 6.8 ms (5.9x to 4.1x).
 
-Left: the generator's `Vm` and execution context are moved in and out of the generator at every step (a
-sixth of the loop above), and a `yield` leaves the loop of instructions by its slow way. (A suspended `Vm`
-keeps its stacks as vectors now instead of cutting them to size at every `yield`; that removed two
-reallocations a step and changed no measured time.)
+(A suspended `Vm` keeps its stacks as vectors now instead of cutting them to size at every `yield`; that
+removed two reallocations a step and changed no measured time.)
+
+A step of that loop still started a `Vm` for the generator: its saved stacks moved into a new `Vm`, the
+loop of instructions entered anew with all that its start does (the checks of the stack and of the
+interrupt, the code and its tables looked up), and at the `yield` the `Vm` taken apart again; and the
+generator's state (four stacks, the execution context, about 200 bytes) was moved out of the generator's
+record and back at every step. Seven tenths of the case were that, three tenths the code of the loop and
+of the generator. The step of a `for`-`of` and of a spread (`[...g]`, `f(...g)`) resumes the generator in
+the `Vm` that runs the loop now, as a call runs a function in place (area 3): the calling code is put
+aside in a frame, the generator's own value stack is the `Vm`'s while it runs, what it kept on the other
+three stacks goes above what the caller has there, its execution context is pushed, and its code goes on
+where it yielded. A `yield` does the reverse and its value is the value of the step; a `return`, or an
+error the generator does not handle, completes it and leaves the frame as a function's is left, the
+error going to the caller's handlers. The suspended state is a record of its own that the generator and
+the frame hand to each other, so that nothing in it is copied; `next`, `return` and `throw` called the
+general way keep the same record through their run and move less than they did.
+
+It is taken only where the step would call the original `next` of the running realm on a generator that
+is suspended, and one more call is not one too many. A generator that is running (it steps itself: a
+TypeError) or completed, a `next` of one's own, and every other way of resuming (`next()` by hand,
+`yield*`, a pattern, `Array.from`) go as before, on the same state: a generator can be stepped by a loop
+and by hand in turn. The interrupt is asked and a due collection run at every resume, as at a call.
+`call/generator` went from 6.5 to 3.6 ms (4.2x to 2.2x).
+
+Left: a turn of that loop is 36 ns against QuickJS's 16. About half is the twelve instructions that the
+loop and the generator run for it (two of them push and pop the handler that closes the iterator if the
+body throws, one is the jump that follows every `yield`), the rest entering and yielding: the frame, the
+execution context moved to the stack of contexts and back, the code's tables held and let go, its
+executable rooted. Tried and dropped, each measured with the two binaries run in turn: an arm of the
+fast loop for `yield` (1-2% of this case, and `loop/switch` 14% slower: see the defects); the three value
+stacks exchanged with each place read before it is written; the one handler of a `yield` inside a loop
+moved by itself; the generator's executable kept current by the collector in the frame instead of read
+again at each `yield` (none of the three measurable); the jump after a `yield` taken at the resume (5%
+slower).
 
 ### 6. Numbers
 
@@ -1136,6 +1167,14 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   confirmed it. One function out of the loop now has all that is not two integers, and the call for
   Strings is compiled only into the four comparisons. A change to those helpers is measured on the plain
   loops first, whatever case it was made for.
+- The same again a round later, by another way: an arm for `yield` among the plain instructions, which
+  no loop but a generator's runs, made `loop/switch` 14% slower and nested `while` loops 4% (the two
+  binaries run in turn; every test passed, and the mean of the benchmark had improved). Nothing those
+  loops run was changed: the compiler laid the loop of instructions out otherwise. Without the arm a
+  `yield` takes the general way of an instruction, which costs a generator 1-2%, and the loops are where
+  they were. In the same binary a plain call reads 4-8% faster than the round before (`call/plain-function`,
+  `call/closure`, `prop/getter-setter`), with nothing in its path changed but that a new frame is made by
+  a function of its own; whether that or the layout did it is not established.
 
 ## Checking a change
 
