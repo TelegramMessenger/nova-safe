@@ -85,8 +85,9 @@ The worst case was 303x (appending to a string 100,000 times); that one is 1.6x,
 was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.65x), then a step
 of a particle animation (2.5x), the sines and square roots of `math/trig-and-sqrt` (2.4x), and the
 properties of one object read and written in a loop and arithmetic on the elements of a
-`Float64Array` (2.3x). 97 of the 108 cases are at or under 2x (half a dozen sit within a few
-hundredths of 2x and cross it from one run to the next), 19 of them at or under QuickJS's time.
+`Float64Array` (2.2-2.3x). 93 to 97 of the 108 cases are at or under 2x from one run to the next (a
+dozen sit within a few hundredths of 2x, on either side of it), 16 to 19 of them at or under
+QuickJS's time.
 Over all cases it is 1.40x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -136,7 +137,10 @@ length took the slicing of a text that is not ASCII under 2x, with the mean at 1
 on the benchmark's binary has the hot functions of both engines at its start ("Where a function
 lands"), which moved QuickJS's own times too: its calls into its built-ins read a tenth faster
 (`math/trig-and-sqrt`, 2.1x to 2.4x with Nova's time where it was), and one run of the whole suite
-still differs from the next by a few percent on single cases of either engine.
+still differs from the next by a few percent on single cases of either engine. What was last found
+of where the elements of a TypedArray are, kept for the next element, took 3-4% off the loops over
+typed arrays (`typed/pixels-rgba` to 2.0x, `typed/float64-math` to 2.2x), with the mean where it was
+(1.40x, in a run where QuickJS's own times read 1.6% lower).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1433,6 +1437,31 @@ Left: a double that is not an integer and has more than 45 bits of mantissa is a
 allocated for the result of every operator, the intermediate ones too (a tenth of the loop, and the
 collector's sweep of them a twelfth). A Value has seven bytes for what it holds; doubles in a Value
 would take another layout of Value.
+
+Where the elements of a TypedArray are was found anew at every element read or written: the record
+of the array asked for its buffer, its offset and its length (each of which may be kept in a table
+beside the record), the buffer for whether it is detached and how long it is, and the bounds of the
+view worked out from those. All of it follows from the record, which is not changed once the array
+is made, and from the length of the buffer in bytes. So what was found is kept, for four arrays at
+once (`TypedArrayViewSeen`, in the heap): the array it is of, the collections that had run, the
+buffer and its length, the offset of the first element and the number of elements. It is good while
+no collection has run since (the handles name what they named) and the buffer is as long as it was;
+a buffer that was resized, or detached, is not, and the view is worked out again. Making an array
+forgets what was kept under its place. Nothing unsafe leans on it, and nothing could: the bytes are
+read and written through the buffer's own checked accessors, and debug builds hold the place of
+every element against IsValidIntegerIndex.
+
+With the two binaries run in turn: `typed/pixels-rgba` 3.4% less, `typed/float64-math` 3.1%,
+`typed/uint8-fill-loop` 2.1%; the panel 0.2% less over all. Less than the fifth of the pixel loop
+that those functions were would suggest: what replaced them still looks at six things kept and at
+the buffer's record, twice, for every element. Each part of what is kept in a cell of its own or all
+of it in one made no difference.
+
+Tried on the way and not kept: the choice between an integer Number and a double that fits a Value,
+made without a branch. Samples of the pixel loop pile up behind the branch on whether a double is
+whole, which is whole at every other pixel there, and that looked like a branch mispredicted half
+of the time. Both made and one chosen, the loop was 4.8% slower with everything else at the same
+addresses: the pile is what waits for the comparison, not a misprediction.
 
 ### 7. Building strings
 
