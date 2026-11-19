@@ -49,12 +49,11 @@ below.
 | all | 108 | 7.6x | 1.4x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
-was the worst after it (38x, area 7), 1.7x. The worst are now the call of a closure and a step of a
-particle animation (2.6-2.8x from one run to the next), the properties of one object read and written
-in a loop and arithmetic on the elements of a `Float64Array` (2.3-2.4x). 94 of the 108 cases were at
-or under 2x in the last run (half a dozen sit within a few hundredths of 2x and cross it from one
-run to the next: 91 in the run before it, when the case that reads `arguments` was still over), 18
-to 20 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.7x), then a step
+of a particle animation (2.5-2.6x), arithmetic on the elements of a `Float64Array` (2.35x) and the
+properties of one object read and written in a loop (2.3x). 94 of the 108 cases are at or under 2x
+(half a dozen sit within a few hundredths of 2x and cross it from one run to the next), 18 of them
+at or under QuickJS's time. Over all cases it is 1.41x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -92,8 +91,13 @@ took the loop over the elements of an Array under it (1.45x, QuickJS's times low
 of the iterator of a String, a Map or a Set taken without its result took the mean to 1.43x, and
 less asked at every `push` and at every element of a `join` took the building of a text from pieces
 under 2x. The descriptors of arguments objects kept once for all of them took the case that reads
-`arguments` under 2x as well (the mean read 1.42x, in a run that shared the machine with another
-build: both engines' times read 2% higher in it, and single cases up to a tenth).
+`arguments` under 2x as well (1.42x, with 92 cases at or under 2x: the run of that round shared the
+machine with another build, in which both engines' times read 2% higher and single cases up to a
+tenth, and was repeated from the round's saved library when the machine was quiet). The capacity of
+a storage kept with a cached property of the object's own took 7% off the two cases that read and
+write properties most (a step of the particles 2.75x to 2.5-2.6x, the properties of one object
+2.4x to 2.3x) and two more cases under 2x, with the mean at 1.41x (taken the same way: the machine was busy
+when the round's checks ran).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -764,6 +768,44 @@ the assignment is another. `o.x = o.x + o.y + (o.z & 1)` went from 3.3x to 3.1x,
 Left: a property read is the cache (up to four shapes compared), then the object's record, its shape's record
 for the capacity of the storage, a jump on that capacity to the arena of that size, and the slot: about eight
 dependent loads where QuickJS has three. The loop of `o.x = o.x + o.y + (o.z & 1)` is 3.2x.
+
+The shape's record is no longer asked where the property is the object's own (it was 13 of the 85
+instructions of such a read, and a load the rest waited for). An entry of a cache that places a
+property among the values of the object keeps the capacity of that storage beside the offset, and the
+read and the write go from the entry to the arena of that capacity. That holds because the shape
+decides the capacity and the record of a shape does not change, with one exception, for which nothing
+is kept:
+
+- The shape of an intrinsic object (an object used as a prototype, a class) is that object's alone
+  and is changed where it is as the object gains and loses properties: the three functions that write
+  the length and the capacity of a shape's record are for such shapes only. A shape that is shared
+  stays shared, since every shape keeps its parent alive, and a cache keeps the shapes it names.
+- A property found in a prototype is read by the prototype's own shape, as before: that shape may
+  change under an entry that stays right.
+- The invalidations change entries where they are (an offset moved down, a property now found
+  nearer), never into an entry of this kind, and the capacity is believed only of an entry whose
+  offset still says that it is one. An entry gets its shape through three functions, each of which
+  writes the capacity with it.
+
+Debug builds hold every use against the shape's record (the capacity, that the shape is not an
+intrinsic object's, the offset under its length), and the engine's tests, the semantics scripts and
+test262 run so. With the exception for intrinsic shapes taken out, in a release build, the embedded
+test of this reads wrong values from a prototype and a class at once.
+
+The length that the shape's record also gave is not needed: a slot past what a storage is used to
+holds no value, which reads as none and leaves the general way, as an accessor does. And whether the
+storages of a capacity are flat or each a vector of its own (those of over 65,536 slots) is asked at
+run time only for the capacities where it can be either.
+
+An own property is about 60 instructions now. With the two binaries run in turn:
+`prop/get-set-one-shape` 13.37 to 12.46 ms (2.42x of QuickJS to 2.25x), a step of the particles 4.18
+to 3.96 ms (2.75x to 2.6x), `call/method` 13.5 to 12.9 ms (2.14x to 2.04x), `prop/four-shapes` 5%
+less, `prop/getter-setter` 4%, `array/index-read-write` 2.5%, `app/easing-animation-frame` 3%. The
+panel of 34 cases reads 0.8% less over all, six of them better by over 2% and none worse
+(`typed/float64-math` read 2.5% slower in it and the same on nine runs each). The semantics script of
+this round is the first the reference build fails: it reads a property deleted from a prototype
+through the objects that inherit it, a defect of the cache invalidation that an earlier round
+repaired; the script is held against Node.
 
 An accessor was a call made the native way. Where the cache of the place knows the shape and the property
 is an accessor, of the object or inherited, whose getter is an ECMAScript function, the read is a call of
