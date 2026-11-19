@@ -344,6 +344,24 @@ impl<'a> Array<'a> {
         elements.get_values_mut(elvec)
     }
 
+    /// `array[index] = value` for an element the Array has as a writable
+    /// data property: the value is put in its slot. Returns whether it
+    /// was; false leaves everything to \[\[Set]] (a hole, an index past
+    /// the length, an accessor, a read-only element).
+    #[inline]
+    pub(crate) fn set_writable_element(
+        self,
+        agent: &mut Agent,
+        index: usize,
+        value: Value,
+    ) -> bool {
+        let elvec = self.get_elements(&agent.heap.arrays);
+        agent
+            .heap
+            .elements
+            .set_writable_element(elvec, index, value.unbind())
+    }
+
     pub(crate) fn get_storage(self, arena: &impl ArrayHeapAccess<'a>) -> ElementStorageRef<'_, 'a> {
         self.get_elements(arena).get_storage(arena)
     }

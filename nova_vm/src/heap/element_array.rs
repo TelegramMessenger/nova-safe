@@ -4445,6 +4445,58 @@ impl ElementArrays {
         }
     }
 
+    /// Sets the element at `index` of the storage of `vector` to `value`
+    /// where the storage has a value there and no descriptor says it is not
+    /// writable: an element that is a writable data property, whose
+    /// assignment is the value put in its slot. Returns whether it did;
+    /// false is a hole, an accessor, a read-only element or an index past
+    /// the length.
+    ///
+    /// The storage is looked up once for the test and the write. An
+    /// assignment to an element of an Array looked it up three times: for
+    /// its values with its descriptors, for its descriptors, and again to
+    /// write.
+    // A function of its own, with the search by capacity written out: the
+    // one for a property of an object ([`Self::set_writable_value_raw`])
+    // is part of that write for as long as nothing else calls it.
+    #[inline(never)]
+    pub(crate) fn set_writable_element(
+        &mut self,
+        vector: &ElementsVector,
+        index: usize,
+        value: Value<'static>,
+    ) -> bool {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        let (storage, len) = (vector.elements_index.unbind(), vector.len());
+        match vector.cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => false,
+            ElementArrayKey::E1 => e2pow1.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E2 => e2pow2.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E3 => e2pow3.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E4 => e2pow4.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E6 => e2pow6.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E8 => e2pow8.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E10 => e2pow10.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E12 => e2pow12.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E16 => e2pow16.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E24 => e2pow24.set_writable_value(storage, len, index, value),
+            ElementArrayKey::E32 => e2pow32.set_writable_value(storage, len, index, value),
+        }
+    }
+
     /// Get exclusive access to the value slots of an elements storage,
     /// without looking up its descriptors.
     ///

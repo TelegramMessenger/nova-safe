@@ -13794,3 +13794,121 @@ many 11940 900 4935 600 299 3060 key5 99999"##;
         Ok(Completion::String("true:4000:12".into()))
     );
 }
+
+/// An assignment to an element of an Array looks the storage up once, for
+/// whether the element is there as a writable data property and to write
+/// it. The script assigns, adds to and increments elements at one place
+/// while an element is hidden, made not configurable, read-only, an
+/// accessor and a value again; in Arrays that are sealed, frozen, not
+/// extensible, or have a read-only length, from sloppy and strict code;
+/// to holes, with a setter where a hole inherits from and without, past
+/// the length, at negative, fractional and String indexes and at the
+/// last index an Array has; in a subclass of Array, an Array with
+/// properties, a long Array and a grid of them; by destructuring, a
+/// `for`-`of` target and the logical assignments; to the elements of an
+/// arguments object; and to Arrays with and without descriptors kept
+/// over collections that move them. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn an_element_is_written_where_it_is_a_writable_value() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(elements_that_are_written)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn elements_that_are_written() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function D(a, k) { var d = Object.getOwnPropertyDescriptor(a, k); return d === undefined ? "none" : ("value" in d ? String(d.value) : "accessor") + ":" + (d.writable ? "w" : "-") + (d.enumerable ? "e" : "-") + (d.configurable ? "c" : "-"); }
+
+(function () {
+  var a = [1, 2, 3, 4];
+  function w(i, v) { a[i] = v; return a[i]; }
+  function add(i, v) { a[i] += v; return a[i]; }
+  function inc(i) { a[i]++; return ++a[i]; }
+  var r = [];
+  for (var k = 0; k < 4; k++) r.push(w(k, k * 10), add(k, 1), inc(k));
+  Object.defineProperty(a, 1, { enumerable: false }); r.push(w(1, "hidden"), add(1, "!"), D(a, 1), Object.keys(a).join(""));
+  Object.defineProperty(a, 2, { configurable: false }); r.push(w(2, "fixed"), D(a, 2), T(function () { delete a[2]; return a.length; }));
+  Object.defineProperty(a, 3, { writable: false }); r.push(w(3, "no"), add(3, 1), D(a, 3), T(function () { "use strict"; a[3] = 1; return "set"; }), T(function () { "use strict"; a[3] += 1; return "set"; }));
+  Object.defineProperty(a, 0, { get: function () { return "got"; }, set: function (v) { this.seen = v; }, configurable: true }); r.push(w(0, "s"), a.seen, add(0, "+"), a.seen, D(a, 0));
+  Object.defineProperty(a, 0, { value: 7, writable: true, enumerable: true, configurable: true }); r.push(w(0, 8), inc(0), D(a, 0));
+  P("descriptors", r.join(" "));
+})();
+
+(function () {
+  var r = [];
+  var sealed = Object.seal([1, 2, 3]); sealed[0] = "s"; sealed[1] += 1; sealed[5] = "out"; r.push(sealed.join(), sealed.length, D(sealed, 0), Object.isSealed(sealed));
+  var frozen = Object.freeze([1, 2, 3]); frozen[0] = "f"; frozen[1]++; r.push(frozen.join(), D(frozen, 0), T(function () { "use strict"; frozen[0] = 1; return "set"; }), T(function () { "use strict"; frozen[1]++; return "set"; }));
+  var closed = Object.preventExtensions([1, 2]); closed[0] = "c"; closed[2] = "no"; closed[1] -= 5; r.push(closed.join(), closed.length, T(function () { "use strict"; closed[2] = 1; return "set"; }));
+  var short = [1, 2, 3]; Object.defineProperty(short, "length", { writable: false }); short[0] = "w"; short[3] = "x"; short[2] *= 2; r.push(short.join(), short.length);
+  P("integrity", r.join(" "));
+})();
+
+(function () {
+  var log = "", r = [], seen = "";
+  Object.defineProperty(Array.prototype, 1, { set: function (v) { log += "proto setter " + v + "/"; }, get: function () { return "from proto"; }, configurable: true });
+  var holes = [0, , 2];
+  function w(a, i, v) { a[i] = v; return a[i]; }
+  seen += w(holes, 0, "a") + " "; seen += w(holes, 1, "b") + " "; seen += (1 in holes) + " "; seen += w(holes, 2, "c") + " "; seen += holes.hasOwnProperty(1) + " ";
+  holes[1] += "!"; seen += holes[1] + " " + log;
+  delete Array.prototype[1];
+  r.push(seen, w(holes, 1, "own now"), 1 in holes, holes.join());
+  var a = [1, 2];
+  r.push(w(a, 2, "appended"), a.length, w(a, 5, "far"), a.length, 3 in a, w(a, -1, "neg"), a.length, Object.keys(a).join(), w(a, 1.5, "frac"), w(a, "1", "str"), a[1], w(a, 4294967295, "max"), a.length, Object.keys(a).length);
+  P("holes and indexes", r.join(" "));
+})();
+
+(function () {
+  var r = [];
+  class Sub extends Array { get first() { return this[0]; } }
+  var sub = new Sub(1, 2, 3); sub[1] = "sub"; sub[0] += 5; sub.extra = 1; sub[2] = "after extra";
+  r.push(sub.join(), sub.first, sub.length, sub instanceof Sub);
+  var withProps = [1, 2]; withProps.name = "n"; withProps[0] = "p"; withProps[1]++; r.push(withProps.join(), withProps.name);
+  var big = []; for (var i = 0; i < 70000; i++) big.push(i);
+  for (var j = 0; j < 70000; j += 7) big[j] = -big[j];
+  var sum = 0; for (var k = 0; k < 70000; k++) sum += big[k]; big[69999] += 1;
+  r.push(sum, big[69993], big[69999], big.length);
+  var grid = []; for (var y = 0; y < 30; y++) { grid.push([]); for (var x = 0; x < 30; x++) grid[y].push(0); }
+  for (var n = 0; n < 5; n++) for (var y2 = 1; y2 < 29; y2++) for (var x2 = 1; x2 < 29; x2++) grid[y2][x2] = (grid[y2 - 1][x2] + grid[y2][x2 - 1] + n + 1) & 255;
+  var gs = 0; for (var y3 = 0; y3 < 30; y3++) for (var x3 = 0; x3 < 30; x3++) gs += grid[y3][x3];
+  r.push(gs, grid[28][28]);
+  var t = [5, 6, 7], list = [10, 20];
+  [t[0], t[1]] = [t[1], t[0]]; for (t[2] of list) { } t[0] ||= "x"; t[1] &&= "y"; t[2] ??= "z";
+  r.push(t.join());
+  var args = (function () { arguments[0] = "arg"; arguments[1] += 1; return arguments[0] + arguments[1] + arguments.length; })(1, 2);
+  r.push(args);
+  P("kinds", r.join(" "));
+})();
+
+(function () {
+  var keep = [];
+  for (var i = 0; i < 200; i++) { var a = [i, i + 1, i + 2]; if (i % 4 === 0) Object.defineProperty(a, 1, { writable: false }); if (i % 4 === 1) Object.defineProperty(a, 1, { enumerable: false }); keep.push(a); }
+  var junk; for (var g = 0; g < 150000; g++) junk = [g, [g]];
+  var written = 0, refused = 0, hidden = 0;
+  for (var j = 0; j < 200; j++) { keep[j][1] = -1; keep[j][2] = -2; if (keep[j][1] === -1) written++; else refused++; if (Object.keys(keep[j]).length === 2) hidden++; }
+  P("collections", written, refused, hidden, keep[5].join(), keep[4].join(), junk[0]);
+})();
+
+out.join("\n")"##;
+    let expected = r##"descriptors 0 1 3 10 11 13 20 21 23 30 31 33 hidden hidden! hidden!:w-c 023 fixed fixed:we- 4 33 33 33:-ec throws TypeError throws TypeError got s got got+ accessor:-ec 8 10 10:wec
+integrity s,3,3 3 s:we- true 1,2,3 1:-e- throws TypeError throws TypeError c,-3 2 throws TypeError w,2,6 3
+holes and indexes a from proto true c false from proto proto setter b/proto setter from proto!/ own now true a,own now,c appended 3 far 6 false neg 6 0,1,2,5,-1 frac str str max 6 7
+kinds 6,sub,after extra 6 3 true p,3 n 1750035000 -69993 70000 70000 97150 83 6,y,20 arg32
+collections 150 50 50 5,-1,-2 4,5,-2 149999"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

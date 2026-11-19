@@ -3629,7 +3629,10 @@ impl Vm {
                 vm.result = Some(value);
             }
             // `a[i] = v` for an element the Array has, as a plain value, or
-            // for a TypedArray and a Number.
+            // for a TypedArray and a Number. (The storage is looked at as
+            // it was here, and once in the arm below: with both arms
+            // changed the loop of instructions was laid out anew all
+            // over, and two of the call cases were 3-4% slower.)
             Instruction::PutValue => {
                 step!(PutValue);
                 let (Some(value), Some((base, index))) = (
@@ -3671,18 +3674,12 @@ impl Vm {
                 };
                 let (base, index) = (*base, index.into_i64());
                 if let Value::Array(array) = base {
-                    let Ok(index) = u32::try_from(index) else {
+                    let Ok(index) = usize::try_from(index) else {
                         return Plain::No;
                     };
-                    let storage = array.get_storage(agent);
-                    if !matches!(storage.values.get(index as usize), Some(Some(_)))
-                        || storage
-                            .descriptors
-                            .is_some_and(|descriptors| descriptors.contains_key(&index))
-                    {
+                    if !array.set_writable_element(agent, index, value) {
                         return Plain::No;
                     }
-                    array.as_mut_slice(agent)[index as usize] = Some(value);
                 } else if !Self::set_typed_array_element(agent, base, index, value) {
                     return Plain::No;
                 }
