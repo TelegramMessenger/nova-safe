@@ -51,9 +51,10 @@ below.
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
 was the worst after it (38x, area 7), 1.7x. The worst are now the call of a closure and a step of a
 particle animation (2.6-2.8x from one run to the next), the properties of one object read and written
-in a loop and arithmetic on the elements of a `Float64Array` (2.4x). 91 of the 108 cases are at or
-under 2x (half a dozen sit within a few hundredths of 2x and cross it from one run to the next), 18
-or 19 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+in a loop and arithmetic on the elements of a `Float64Array` (2.3-2.4x). 94 of the 108 cases were at
+or under 2x in the last run (half a dozen sit within a few hundredths of 2x and cross it from one
+run to the next: 91 in the run before it, when the case that reads `arguments` was still over), 18
+to 20 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -90,7 +91,9 @@ where QuickJS's own times were 2% lower), and an Array's storage looked at once 
 took the loop over the elements of an Array under it (1.45x, QuickJS's times lower again). The step
 of the iterator of a String, a Map or a Set taken without its result took the mean to 1.43x, and
 less asked at every `push` and at every element of a `join` took the building of a text from pieces
-under 2x.
+under 2x. The descriptors of arguments objects kept once for all of them took the case that reads
+`arguments` under 2x as well (the mean read 1.42x, in a run that shared the machine with another
+build: both engines' times read 2% higher in it, and single cases up to a tenth).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -571,6 +574,47 @@ Environment Record that the function had for nothing else, and found there by na
 The case went from 4.8x to 2.3x, and calls from 2.4x to 2.2x. What is left in it is the object itself,
 made at every call with a property per argument.
 
+A fifth of what was left was not the object but its descriptors. `length`, `callee` and the iterator
+of an arguments object are not plain data properties, so every object had a map of three descriptors
+made for it, put into the table of its storage's capacity under the storage, and taken out by the
+collector, which first gathered and sorted the keys of the storages that were gone. The three are the
+same for every arguments object of a realm, so the table of descriptors (`DescriptorTable`, area 4)
+keeps them once:
+
+- `CreateUnmappedArgumentsObject` asks the table to share what it would have made. A storage that
+  shares is marked by a bit and has no entry of its own. Where the table already keeps descriptors
+  and they are not these (another realm's `%ThrowTypeError%`), the object gets its own as before.
+- Anything that is to change the descriptors of a storage gets them through the table's entry for
+  it, and that gives a storage that shares a copy of its own first: one arguments object with its
+  `length` made read-only, its `callee` asked to be redefined, its iterator deleted, or frozen, has
+  its own descriptors from then on, and the others what they had. A write of `length` by a cache,
+  and every reading, sees the kept ones through the same two functions as before.
+- The collector moves the bits as it moves the storages, has the handles in the kept descriptors
+  seen to once, and lets go of them when no storage shares any more. The entries of storages that
+  are gone are dropped where they are, without a list of their keys.
+
+`call/arguments-object` went from 2.2x to 1.7x (26.7 to 20.3 ms with the two binaries run in turn).
+
+How the table holds this mattered more than what it holds. The first form added two fields to it (the
+kept map and a second vector of bits) and gained as much, but there is a table for each of the eleven
+capacities in the heap, and what is laid out after them is read by the loop of instructions: with
+every table larger, `Vm::run` came out six instructions longer and other in 1,500 places, and four
+cases of the panel were 2-4% slower (a plain call, `new` of a class, a callback), six with the lookup
+kept out of line. The form that is in has the two kinds of bits side by side in one boxed slice and
+the kept descriptors behind a pointer, which makes the table the 80 bytes it was: `Vm::run` is the
+same 12,972 instructions (180 of them with other low bits of an address). A type that lies in the
+heap in front of what the loop reads is not to grow.
+
+One case stayed 3% slower in every form, `new` of a class, and it was not the layout. Whatever is to
+write to a storage through its values and descriptors asks the table for the place of its
+descriptors, and the table answered with an entry of its map: the hash of the storage, a search, and
+room reserved for one more, for a storage that nearly never has any; the check for sharing went in
+front of that. The place of a storage with no descriptors is now the test of its bit, and the map is
+searched when descriptors are given to it. `call/new-class-instance` is where it was (21.5 ms in both
+binaries), and the arguments case gained two points more by it. The panel read 0.8% less, with the
+one case it showed worse (a method found on a prototype, +2.2%) at +0.9% over nine runs each, inside
+what the runs spread.
+
 A bound function (`f.bind(o)`) was called the native way: its \[\[Call]] calls the function it was bound
 from, with a `Vm` of its own for that. Its \[\[Call]] is that function's call with another this value;
 where it has no bound arguments and the function is one the `Vm` runs in place, the call instruction
@@ -828,7 +872,9 @@ the bit, and what the collector does to the map goes through one function that s
 after it. A bit may stay set for a storage whose descriptors were taken away, which costs the search
 and nothing else. The slot last found writable is forgotten by every method that gives the map out
 to be changed, and none changes it otherwise. Unit tests hold the table's answers against a search
-of its own map after each kind of change.
+of its own map after each kind of change. (The table also keeps once the descriptors that many
+storages have alike, with a second bit for each storage that has them: area 3, the arguments
+object.)
 
 With the two binaries run in turn: an assignment to a global variable in a loop went from 4.79 to
 4.49 ms (`loop/global-variable`, 2.19x to 2.03x), `prop/get-set-one-shape` from 13.9 to 13.5 ms
