@@ -509,6 +509,35 @@ impl<'a> OrdinaryObject<'a> {
         )
     }
 
+    /// The value of the Object's own data property `key`, found by the key
+    /// among its properties with no descriptor read: None for a key the
+    /// Object does not have itself and for an accessor.
+    #[inline]
+    pub(crate) fn own_data_value(self, agent: &Agent, key: PropertyKey) -> Option<Value<'a>> {
+        let offset = find_key_offset(agent, self, key)?;
+        self.get_elements_values(agent)
+            .get(offset)
+            .copied()
+            .flatten()
+    }
+
+    /// Sets the Object's own data property `key` to `value` where it has
+    /// one that is writable: what OrdinarySet comes to for such a property
+    /// with the Object as the receiver. Returns whether it did; nothing has
+    /// changed where it did not.
+    #[inline]
+    pub(crate) fn set_own_writable_value(
+        self,
+        agent: &mut Agent,
+        key: PropertyKey,
+        value: Value<'static>,
+    ) -> bool {
+        let Some(offset) = find_key_offset(agent, self, key) else {
+            return false;
+        };
+        self.set_writable_value_at(agent, offset, value)
+    }
+
     /// The Object's shape as it is now, read from its record.
     #[inline]
     pub(crate) fn shape_now(self, agent: &Agent) -> ObjectShape<'a> {

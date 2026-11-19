@@ -24,8 +24,9 @@ use crate::{
         prepare_for_call_without_function_environment, prepare_for_ordinary_call,
         reference_is_at_global_site, release_scoped_collections, scope_arguments_of_call,
         set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
-        to_numeric_primitive, to_primitive, to_property_key, to_string_primitive,
-        try_get_object_method_by_cache, try_resolve_binding_at_site, try_result_into_option_js,
+        to_numeric_primitive, to_primitive, to_property_key, to_property_key_simple,
+        to_string_primitive, try_get_object_method_by_cache, try_resolve_binding_at_site,
+        try_result_into_option_js,
     },
     engine::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
@@ -3111,7 +3112,8 @@ impl Vm {
                 step!(GetValueWithExpressionKey);
                 let (Some(&base), Some(Value::Integer(index))) = (vm.stack.last(), vm.result)
                 else {
-                    return Plain::No;
+                    // `o[name]`, a String for the key, or nothing for here.
+                    return Self::named_value_with_expression_key(agent, vm, gc);
                 };
                 let index = index.into_i64();
                 let value = if let Value::Array(array) = base {
@@ -3138,7 +3140,10 @@ impl Vm {
                 let (Some(base), Value::Integer(index)) =
                     (vm.result, vm.stack[instr.get_first_index()])
                 else {
-                    return Plain::No;
+                    // `o[name]`, the name in a local (the variable of a
+                    // `for`-`in` loop over the object, for one), or nothing
+                    // for here.
+                    return Self::named_value_with_index_key(agent, vm, instr, gc);
                 };
                 let index = index.into_i64();
                 let value = if let Value::Array(array) = base {
@@ -3194,7 +3199,9 @@ impl Vm {
                 let (Some(value), [.., base, Value::Integer(index)]) =
                     (vm.result, vm.stack.as_slice())
                 else {
-                    return Plain::No;
+                    // `o[name] = v`, a String for the key, or nothing for
+                    // here.
+                    return Self::set_named_value_with_expression_key(agent, vm, gc);
                 };
                 let (base, index) = (*base, index.into_i64());
                 if let Value::Array(array) = base {
@@ -3715,6 +3722,107 @@ impl Vm {
             #[cfg(not(feature = "array-buffer"))]
             _ => None,
         }
+    }
+
+    /// GetValueWithExpressionKey where the key is not an integer: `o[name]`
+    /// for a String, read as [`Vm::own_named_value`] reads it, with the
+    /// base taken off the stack as the instruction does. Nothing has
+    /// changed where it is not done.
+    // The three of these are not part of the loop of instructions: the
+    // read and the write of an element by its index, which they share
+    // their instructions with, are, and with these in their arms those
+    // were 2-5% slower.
+    #[inline(never)]
+    fn named_value_with_expression_key(agent: &Agent, vm: &mut Vm, gc: NoGcScope) -> Plain {
+        let (Some(&base), Some(name @ (Value::String(_) | Value::SmallString(_)))) =
+            (vm.stack.last(), vm.result)
+        else {
+            return Plain::No;
+        };
+        let Some(value) = Self::own_named_value(agent, base, name, gc) else {
+            return Plain::No;
+        };
+        vm.stack.pop();
+        vm.result = Some(value);
+        Plain::Done
+    }
+
+    /// GetValueWithIndexKey where the local does not hold an integer.
+    #[inline(never)]
+    fn named_value_with_index_key(
+        agent: &Agent,
+        vm: &mut Vm,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Plain {
+        let (Some(base), name @ (Value::String(_) | Value::SmallString(_))) =
+            (vm.result, vm.stack[instr.get_first_index()])
+        else {
+            return Plain::No;
+        };
+        let Some(value) = Self::own_named_value(agent, base, name, gc) else {
+            return Plain::No;
+        };
+        vm.result = Some(value);
+        Plain::Done
+    }
+
+    /// PutValueWithExpressionKey where the key is not an integer.
+    #[inline(never)]
+    fn set_named_value_with_expression_key(agent: &mut Agent, vm: &mut Vm, gc: NoGcScope) -> Plain {
+        let (Some(value), [.., base, name @ (Value::String(_) | Value::SmallString(_))]) =
+            (vm.result, vm.stack.as_slice())
+        else {
+            return Plain::No;
+        };
+        if !Self::set_own_named_value(agent, *base, *name, value, gc) {
+            return Plain::No;
+        }
+        vm.stack.truncate(vm.stack.len() - 2);
+        vm.result = None;
+        Plain::Done
+    }
+
+    /// `base[name]` where `base` is an ordinary object and `name`, a String,
+    /// is the key of one of its own data properties: the value of that.
+    /// None for anything else, with nothing changed: another kind of
+    /// object, a key the object does not have itself (the general way
+    /// looks up the chain), an accessor.
+    #[inline]
+    fn own_named_value(
+        agent: &Agent,
+        base: Value,
+        name: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let Value::Object(object) = base else {
+            return None;
+        };
+        // A String that is the text of an integer is that integer for a key.
+        let key = to_property_key_simple(agent, name, gc)?;
+        object.own_data_value(agent, key).map(Value::unbind)
+    }
+
+    /// `base[name] = value` where `base` is an ordinary object and `name`,
+    /// a String, is the key of one of its own data properties that is
+    /// writable: the property has the value, as OrdinarySet leaves it with
+    /// the object for the receiver. False for anything else, with nothing
+    /// changed.
+    #[inline]
+    fn set_own_named_value(
+        agent: &mut Agent,
+        base: Value,
+        name: Value,
+        value: Value,
+        gc: NoGcScope,
+    ) -> bool {
+        let Value::Object(object) = base else {
+            return false;
+        };
+        let Some(key) = to_property_key_simple(agent, name, gc) else {
+            return false;
+        };
+        object.set_own_writable_value(agent, key.unbind(), value.unbind())
     }
 
     /// `base[index]` where `base` is an arguments object or a TypedArray:

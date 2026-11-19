@@ -10724,3 +10724,188 @@ three deleted 3 undefined 30"##;
     let found = std::string::String::from_utf8(found).expect("text");
     assert_eq!(found, expected);
 }
+
+/// `o[name]` and `o[name] = v` with a String for the key are done in the
+/// loop of instructions where the object is an ordinary one that has the
+/// name as a data property of its own (a writable one, for the
+/// assignment); everything else goes the general way. The script reads and
+/// writes by name: own properties, missing and inherited ones, accessors,
+/// properties made accessors and values again, read-only ones, frozen,
+/// sealed and inextensible objects, names that are the texts of numbers,
+/// the prototype chain with setters and read-only properties on it,
+/// Arrays, Strings, functions, typed arrays, an arguments object, a Proxy,
+/// primitives, classes, an object of two hundred keys with keys deleted,
+/// a dictionary that is added to and deleted from, values and names of
+/// every kind, and the variable of a `for`-`in` loop while the object
+/// changes. What is expected is what Node prints for the same script.
+#[test]
+fn a_property_by_a_string_is_the_property_of_that_name() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_by_strings)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_by_strings() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+function get(o, k) { return o[k]; }
+function put(o, k, v) { o[k] = v; return o[k]; }
+function putStrict(o, k, v) { "use strict"; o[k] = v; return o[k]; }
+function sumKeys(o, keys, n) { var t = 0; for (var i = 0; i < n; i++) t += o[keys[i % keys.length]]; return t; }
+function forIn(o) { var t = ""; for (var k in o) t += k + "=" + o[k] + ";"; return t; }
+
+// 1. own data properties by name
+var o = { alpha: 1, beta: 2, gamma: 3, delta: 4, epsilon: 5, zeta: 6, eta: 7, theta: 8 };
+var keys = Object.keys(o);
+P("sum", sumKeys(o, keys, 1000), forIn(o));
+P("built", get(o, "al" + "pha"), get(o, ["be", "ta"].join("")), get(o, String("gamma")), get(o, "epsilon".slice(0)), get(o, "EPSILON".toLowerCase()));
+P("missing", get(o, "nope"), get(o, ""), get(o, "Alpha"), typeof get(o, "toString"), get(o, "hasOwnProperty") === Object.prototype.hasOwnProperty, get(o, "constructor") === Object);
+
+// 2. writes
+P("put", put(o, "alpha", 10), put(o, "theta", 80), o.alpha, o.theta, put(o, "fresh", 9), Object.keys(o).join(), put(o, "fresh", 10), o.fresh);
+for (var i = 0; i < 200; i++) { var k = keys[i & 7]; o[k] = o[k] + 1; }
+P("loop", forIn(o));
+
+// 3. accessors by name
+var hits = [];
+var acc = { plain: 1, get g() { hits.push("get"); return 5; }, set g(v) { hits.push("set" + v); }, get ro() { return "r"; } };
+P("accessor", get(acc, "g"), put(acc, "g", 3), put(acc, "ro", 4), tryit(function () { return putStrict(acc, "ro", 4); }), hits.join(), get(acc, "plain"));
+Object.defineProperty(acc, "plain", { get: function () { hits.push("late"); return "late"; }, configurable: true });
+P("made accessor", get(acc, "plain"), get(acc, "plain"), hits.length);
+Object.defineProperty(acc, "plain", { value: "again", writable: true, configurable: true, enumerable: true });
+P("made value", get(acc, "plain"), put(acc, "plain", "w"), hits.length);
+
+// 4. not writable, frozen, sealed, not extensible
+var ro = { a: 1, b: 2 };
+Object.defineProperty(ro, "a", { writable: false });
+P("readonly", put(ro, "a", 9), tryit(function () { return putStrict(ro, "a", 9); }), put(ro, "b", 9), ro.a, ro.b);
+var fr = Object.freeze({ a: 1, b: 2 });
+P("frozen", put(fr, "a", 9), tryit(function () { return putStrict(fr, "b", 9); }), put(fr, "c", 3), tryit(function () { return putStrict(fr, "c", 3); }), get(fr, "a"), Object.keys(fr).join());
+var se = Object.seal({ a: 1 });
+P("sealed", put(se, "a", 2), put(se, "z", 3), tryit(function () { return putStrict(se, "z", 3); }), get(se, "a"));
+var ne = Object.preventExtensions({ a: 1 });
+P("not extensible", put(ne, "a", 5), put(ne, "q", 1), tryit(function () { return putStrict(ne, "q", 1); }));
+
+// 5. names that are numbers
+var n = { 0: "zero", 1: "one", "01": "oh-one", "-1": "minus", "1e3": "exp", 4294967295: "max", "9007199254740993": "big", " 1": "space", "1.5": "frac", "-0": "negzero" };
+var names = ["0", "1", "01", "-1", "1e3", "4294967295", "9007199254740993", " 1", "1.5", "-0", "00", "1.0", "+1"];
+var out = []; for (var i = 0; i < names.length; i++) out.push(get(n, names[i]));
+P("numeric names", out.join());
+P("numeric keys", get(n, 0), get(n, 1), get(n, -1), get(n, 1000), get(n, 1.5), get(n, -0), get(n, 4294967295));
+P("numeric put", put(n, "1", "ONE"), n[1], put(n, 1, "uno"), n["1"], put(n, "01", "x"), n["01"], put(n, "5", "five"), n[5], Object.keys(n).length);
+
+// 6. the chain
+var proto = { inherited: "p", shadowed: "p", get viaGetter() { return "pg"; }, set viaSetter(v) { hits.push("proto set " + v); } };
+var child = Object.create(proto); child.own = "c"; child.shadowed = "c";
+P("chain", get(child, "own"), get(child, "inherited"), get(child, "shadowed"), get(child, "viaGetter"), put(child, "viaSetter", 1), hits[hits.length - 1], Object.keys(child).join());
+P("put inherited", put(child, "inherited", "mine"), proto.inherited, Object.keys(child).join());
+delete child.shadowed; delete child.inherited;
+P("deleted", get(child, "shadowed"), get(child, "inherited"), put(child, "shadowed", "c2"), proto.shadowed);
+Object.defineProperty(proto, "locked", { value: 1, writable: false });
+P("inherited readonly", put(child, "locked", 2), tryit(function () { return putStrict(child, "locked", 2); }), Object.keys(child).join());
+var bare = Object.create(null); bare.x = 1; bare["__proto__"] = "own";
+P("bare", get(bare, "x"), get(bare, "__proto__"), get(bare, "toString"), put(bare, "x", 2), put(bare, "__proto__", "own2"), Object.keys(bare).join());
+
+// 7. other kinds of objects under the same instructions
+var arr = [10, 20, 30]; arr.extra = "e";
+P("array", get(arr, "length"), get(arr, "1"), get(arr, "extra"), put(arr, "extra", "E"), put(arr, "0", 11), arr[0], put(arr, "length", 2), arr.length, typeof get(arr, "push"));
+P("string", get("abc", "length"), get("abc", "1"), get("abc", "9"), typeof get("abc", "charAt"), tryit(function () { return putStrict("abc", "x", 1); }));
+function fn(a, b) {} fn.own = "f";
+P("function", get(fn, "name"), get(fn, "length"), get(fn, "own"), put(fn, "own", "g"), typeof get(fn, "prototype"), put(fn, "name", "other"), fn.name);
+var ta = new Uint8Array([1, 2, 3]); ta.tag = "t";
+P("typed", get(ta, "length"), get(ta, "1"), get(ta, "tag"), put(ta, "tag", "T"), put(ta, "0", 300), ta[0], get(ta, "7"), put(ta, "7", 1), ta.length);
+var map = new Map(); map.x = 1;
+P("map", get(map, "x"), put(map, "x", 2), get(map, "size"), typeof get(map, "get"));
+(function () { P("arguments", get(arguments, "length"), get(arguments, "0"), put(arguments, "0", "changed"), arguments[0], get(arguments, "1"), get(arguments, "2")); })("a0", "a1");
+var px = new Proxy({ t: 1 }, { get: function (t, k) { return "trap:" + String(k); }, set: function (t, k, v) { hits.push("trap set " + k); return true; } });
+P("proxy", get(px, "t"), get(px, "anything"), put(px, "t", 5), hits[hits.length - 1]);
+P("primitives", tryit(function () { return get(null, "x"); }), tryit(function () { return get(undefined, "x"); }), tryit(function () { return put(null, "x", 1); }), get(5, "toFixed") === Number.prototype.toFixed, get(true, "valueOf") === Boolean.prototype.valueOf, typeof get(Symbol.iterator, "description"));
+class K { static s = "static"; f = "field"; m() { return "method"; } }
+var inst = new K();
+P("class", get(K, "s"), put(K, "s", "S"), get(inst, "f"), put(inst, "f", "F"), typeof get(inst, "m"), get(K, "name"), get(K, "prototype") === K.prototype);
+
+// 8. many keys: the table of a large shape, and the object changing under the loop
+var big = {}; for (var i = 0; i < 200; i++) big["key" + i] = i;
+var bigKeys = Object.keys(big);
+P("big", sumKeys(big, bigKeys, 2000), get(big, "key199"), get(big, "key200"), put(big, "key100", -100), put(big, "key200", 200), Object.keys(big).length);
+for (var i = 0; i < 200; i += 3) delete big["key" + i];
+var t = 0, miss = 0; for (var i = 0; i < 201; i++) { var v = big["key" + i]; if (v === undefined) miss++; else t += v; }
+P("big after deletes", t, miss, Object.keys(big).length, put(big, "key3", "back"), Object.keys(big)[Object.keys(big).length - 1]);
+var d = {}, total = 0;
+for (var round = 0; round < 5; round++) { for (var i = 0; i < 60; i++) { var name = "n" + ((i * 7 + round) % 40); if (d[name] === undefined) d[name] = 0; d[name] = d[name] + i; if ((i + round) % 11 == 0) delete d[name]; } for (var k in d) total += d[k]; }
+P("churn", total, Object.keys(d).length);
+
+// 9. values of every kind, and keys of every kind of text
+var kinds = { u: undefined, n: null, z: 0, f: 1.5, s: "s", o: {}, a: [], fn: function () {}, sym: Symbol.iterator, big: 10n, nan: NaN };
+var ks = Object.keys(kinds), seen = []; for (var i = 0; i < ks.length; i++) seen.push(typeof kinds[ks[i]]);
+P("kinds", seen.join(), "u" in kinds, get(kinds, "u"), put(kinds, "u", undefined), Object.keys(kinds).length);
+var texts = {}; var tk = ["", "a", "abcdefg", "abcdefgh", "a longer name than fits a small string", "été", "中文", "😀", "\ud800", "with space", "__proto__x", "constructor"];
+for (var i = 0; i < tk.length; i++) texts[tk[i]] = i;
+var back = []; for (var i = 0; i < tk.length; i++) back.push(get(texts, tk[i]), put(texts, tk[i], i * 2));
+P("texts", back.join(), get(texts, "abcdefg" + "h"), get(texts, "a longer name than fits " + "a small string"), get(texts, String.fromCharCode(0xd800)));
+var sym = Symbol("s"), symo = { [sym]: 1, [Symbol.iterator]: 2 };
+P("symbols", get(symo, sym), put(symo, sym, 3), get(symo, Symbol.iterator), get(symo, Symbol("s")));
+var keyObj = { toString: function () { hits.push("toString"); return "alpha"; } };
+P("object key", get(o, keyObj), put(o, keyObj, 500), o.alpha, hits.slice(-2).join());
+P("other keys", get({ true: 1 }, true), get({ null: 2 }, null), get({ undefined: 3 }, undefined), get({ "1.5": 4 }, 1.5), get({ NaN: 5 }, NaN), get({ Infinity: 6 }, 1 / 0));
+
+// 10. the loop variable of for-in while the object changes
+var live = { a: 1, b: 2, c: 3 }, order = "";
+for (var k in live) { order += k + live[k]; if (k == "a") { delete live.b; live.d = 4; } live[k] = live[k] * 10; }
+P("live", order, forIn(live));
+lines.join("\n")"##;
+    let expected = r##"sum 4500 alpha=1;beta=2;gamma=3;delta=4;epsilon=5;zeta=6;eta=7;theta=8;
+built 1 2 3 5 5
+missing undefined undefined undefined function true true
+put 10 80 10 80 9 alpha,beta,gamma,delta,epsilon,zeta,eta,theta,fresh 10 10
+loop alpha=35;beta=27;gamma=28;delta=29;epsilon=30;zeta=31;eta=32;theta=105;fresh=10;
+accessor 5 5 r TypeError get,set3,get 1
+made accessor late late 5
+made value again w 5
+readonly 1 TypeError 9 1 9
+frozen 1 TypeError undefined TypeError 1 a,b
+sealed 2 undefined TypeError 2
+not extensible 5 undefined TypeError
+numeric names zero,one,oh-one,minus,exp,max,big,space,frac,negzero,,,
+numeric keys zero one minus undefined frac zero max
+numeric put ONE ONE uno uno x x five five 11
+chain c p c pg undefined proto set 1 own,shadowed
+put inherited mine p own,shadowed,inherited
+deleted p p c2 p
+inherited readonly 1 TypeError own,shadowed
+bare 1 own undefined 2 own2 x,__proto__
+array 3 20 e E 11 11 2 2 function
+string 3 b undefined function TypeError
+function fn 2 f g object fn fn
+typed 3 2 t T 44 44 undefined undefined 3
+map 1 2 0 function
+arguments 2 a0 changed changed a1 undefined
+proxy trap:t trap:anything trap:t trap set t
+primitives TypeError TypeError TypeError true true string
+class static S field F function K true
+big 199000 199 undefined -100 200 201
+big after deletes 13267 67 134 back key3
+churn 22232 37
+kinds undefined,object,number,number,string,object,object,function,symbol,bigint,number true undefined undefined 11
+texts 0,0,1,2,2,4,3,6,4,8,5,10,6,12,7,14,8,16,9,18,10,20,11,22 6 8 16
+symbols 1 3 2 undefined
+object key 35 500 500 toString,toString
+other keys 1 2 3 4 5 6
+live a1c3 a=10;c=30;d=4;"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
