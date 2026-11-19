@@ -39,7 +39,7 @@ below.
 | math | 4 | 9.7x | 1.8x |
 | string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.4x |
-| map, set | 4 | 4.6x | 1.3x |
+| map, set | 4 | 4.6x | 1.2x |
 | app | 8 | 6.1x | 1.6x |
 | array | 14 | 5.8x | 1.5x |
 | regexp | 4 | 2.4x | 1.5x |
@@ -51,7 +51,7 @@ below.
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
 was the worst after it (38x, area 7), 1.7x. The worst are now the call of a closure and a step of a
 particle animation (2.6-2.8x from one run to the next), the properties of one object read and written
-in a loop and arithmetic on the elements of a `Float64Array` (2.4x). 89 of the 108 cases are at or
+in a loop and arithmetic on the elements of a `Float64Array` (2.4x). 91 of the 108 cases are at or
 under 2x (half a dozen sit within a few hundredths of 2x and cross it from one run to the next), 18
 or 19 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
@@ -87,7 +87,8 @@ descriptors that knows which storages have any to 1.46x, and the `+` of Strings 
 operators on Numbers are done to 1.44x. What a RegExp match gives made without defining it piece by
 piece took the two RegExp cases that were over 2x under it (the mean read 1.44x again, in a run
 where QuickJS's own times were 2% lower), and an Array's storage looked at once to write an element
-took the loop over the elements of an Array under it (1.45x, QuickJS's times lower again).
+took the loop over the elements of an Array under it (1.45x, QuickJS's times lower again). The step
+of the iterator of a String, a Map or a Set taken without its result took the mean to 1.43x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1155,6 +1156,23 @@ places moved out; both are functions of their own now, called where the step was
 the loop of instructions has no new code. No other case moved outside its noise (the ones the full run
 showed 3-5% slower were run again, binary against binary: within 1%, but for the step of the particle
 animation, whose runs overlap and whose best is 4% apart).
+
+A `for`-`of` over a String, a Map or a Set still left the loop of instructions at every step, for the
+general way of the step instruction. That put the `Vm` aside for a call first, and then: for a String
+Iterator with its original next took the step after all, and for the iterators of a Map and of a Set
+called next and took apart the iterator result it made, the "done" and "value" of a new object for
+each entry. The step is taken where that instruction is, before the `Vm` is put aside, as it is for
+an Array and for the properties of `for`-`in`. The next of a Map Iterator and of a Set Iterator is its
+step, which gives the entry, in an iterator result, and the instruction asks for the step where the
+iterator has that next; one whose next a script replaced (in the prototype before the iteration
+began, or on the iterator) goes the general way. `map/iterate` went from 15.83 to 11.30 ms with the
+two binaries run in turn (1.63x to 1.19x), `string/code-points-iteration` from 1.05 to 0.81 ms
+(1.92x to 1.49x).
+
+Nothing of the loop of instructions is changed by this: the step is in the function the loop leaves
+for, which costs it one leaving and no more, and the loop is the same code. No other case moved
+(the five that the full run showed 3-5% slower are within 1.6% binary against binary). A step in the
+loop itself would save that leaving and re-roll everything else (area 5).
 
 ### 6. Numbers
 
