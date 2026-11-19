@@ -37,7 +37,7 @@ below.
 | typed | 4 | 10.6x | 1.8x |
 | call | 14 | 10.4x | 1.8x |
 | math | 4 | 9.7x | 1.8x |
-| string | 26 | 10.6x | 1.4x |
+| string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.4x |
 | map, set | 4 | 4.6x | 1.3x |
 | app | 8 | 6.1x | 1.6x |
@@ -46,13 +46,14 @@ below.
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.8x |
-| all | 108 | 7.6x | 1.5x |
+| all | 108 | 7.6x | 1.4x |
 
-The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst are now a step of a particle animation and the call of
-a closure (2.7x), the properties of one object read and written in a loop and arithmetic on the
-elements of a `Float64Array` (2.4x). 88 of the 108 cases are at or under 2x (a few sit within a
-few hundredths of 2x and cross it from one run to the next), 17 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
+was the worst after it (38x, area 7), 1.7x. The worst are now the call of a closure and a step of a
+particle animation (2.6-2.8x from one run to the next), the properties of one object read and written
+in a loop and arithmetic on the elements of a `Float64Array` (2.4x). 89 of the 108 cases are at or
+under 2x (a few sit within a few hundredths of 2x and cross it from one run to the next), 19 of them
+at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -81,8 +82,9 @@ property remembered likewise took a tenth off a loop that calls both, with the m
 and an object for `new` made with its prototype at once left the mean there (1.48x in a run where
 QuickJS's own times were 0.9% lower). What a Map, a Set, a RegExp and a TypedArray inherit read by
 their caches took it to 1.47x (the run of that round was taken while other work ran on the machine,
-and was repeated from the round's saved library when the machine was quiet), and a table of
-descriptors that knows which storages have any to 1.46x.
+and was repeated from the round's saved library when the machine was quiet), a table of
+descriptors that knows which storages have any to 1.46x, and the `+` of Strings done where the
+operators on Numbers are done to 1.44x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -796,7 +798,10 @@ property of an ordinary object, which follows it in the binary, moved by as much
 reads was 3% slower: it is a function of its own. And what it remembers was a field of the agent
 first: the code that makes an engine grew by 12 bytes, the loop of instructions, the same
 instructions otherwise, started 4 bytes later, and `loop/switch` was 9% slower by the best runs and
-15% by the medians. Kept in the heap, the loop of instructions is byte for byte what it was. Neither
+15% by the medians. Kept in the heap, the loop of instructions is the same instructions at the same
+places, 364 of its 13,274 reading the agent 24 bytes further on. (This said "byte for byte" at
+first, by the hash in the function's symbol, which does not tell: it is of the function's name and
+type, not of its code. The code of two builds is compared as such since.) Neither
 was a property of the change: both are where this benchmark's binary happens to put things, which
 another build of the engine does not share, and the cases that move so by nothing are to be read
 with that. A function cannot be given an alignment in this toolchain (1.96.1).
@@ -822,8 +827,9 @@ With the two binaries run in turn: an assignment to a global variable in a loop 
 4.49 ms (`loop/global-variable`, 2.19x to 2.03x), `prop/get-set-one-shape` from 13.9 to 13.5 ms
 (2.53x to 2.40x), `prop/object-spread-assign` and `json/stringify` 3.5% less,
 `app/easing-animation-frame` 5% less, a step of the particles 1-3% less. `loop/switch` reads 1%
-slower by the best runs and 3% by the medians, with the loop of instructions byte for byte what it
-was and 2368 bytes further on in the binary.
+slower by the best runs and 3% by the medians, with the loop of instructions the same instructions
+(537 of its 13,274 reading the agent at another offset: the table is larger than the map it took the
+place of, and what the agent has after it moved) and 2368 bytes further on in the binary.
 
 What is left of a write to a global variable is spread thin: the state of the global scope checked
 by five comparisons over a dozen reads, the object and its shape read, the storage found by its
@@ -1334,6 +1340,31 @@ substitution.
 Short strings made and dropped went from 3.3x to 1.5x, the canvas command buffer (`"rgb(" + r + ",10," +
 b + ")"`) from 2.4x to 1.7x, rows of HTML from 2.1x to 1.5x, template literals from 1.6x to 1.4x; the
 application cases from 1.9x to 1.7x, all cases from 1.71x to 1.68x.
+
+The `+` of two operands still took the general way of an instruction whenever one of them was a
+String: `s += "…"`, `"<td>" + cell`, `text + i`. The loop left, the instruction was read again with
+what it is fused with (the local, the constant), and the operands were asked whether they are Numbers
+before they were joined: a sixth of a loop appending short texts, on top of the appending itself. It
+is done where the operators have their one call for Numbers that are not two integers
+(`Vm::float_operation`). Operands that are not two Numbers are, for `+`, a String and a String or a
+primitive that ToString takes without running anything (a Number, a Boolean, undefined, null, a
+BigInt; not a Symbol, which it throws for): made text and joined as the general way joins them,
+after the same look at the length of the result, which is what holds a text to the limit of a
+string and of the heap. Where that look refuses, and for an object, nothing is done there and the
+general way does as it did.
+
+With the two binaries run in turn: `string/append-100k-char` went from 6.02 to 4.99 ms (1.97x to
+1.63x), `string/append-20k-short` from 1.19 to 1.05 ms (1.79x to 1.52x), text outside ASCII appended
+12% less (1.09x to 0.95x), `string/prepend-5k` 11% less (1.89x to 1.67x), Numbers appended and rows
+of HTML 3% less. The loops, the calls and the properties are within 1.6% of where they were.
+
+That last sentence took three ways of writing it. A call of its own for the Strings, in each arm of
+the loop that has an operator, made the loop of instructions 392 bytes longer, a loop adding
+integers 9% slower and a `switch` 6%. The arms cut down to the integers and the one call, which then
+tells Numbers from the rest itself, made it 1048 bytes shorter, the loop adding integers 3% slower
+and one of doubles 4%. What is kept leaves the arms as they were but for one thing: operands that
+are not Numbers, under an operator that is no comparison, go on to the call that was there, where
+they left at once.
 
 ### 8. Other string work
 
