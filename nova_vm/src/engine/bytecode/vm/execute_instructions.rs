@@ -590,7 +590,7 @@ pub(super) fn execute_apply_addition_binary_operator<'gc>(
 
 /// The operands of a `+` as primitives, where one is a String and the other
 /// a primitive that ToString converts: not a Symbol, which it throws for.
-fn string_and_primitive<'a>(
+pub(super) fn string_and_primitive<'a>(
     lval: Value<'a>,
     rval: Value<'a>,
 ) -> Option<(Primitive<'a>, Primitive<'a>)> {

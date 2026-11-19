@@ -4598,8 +4598,8 @@ impl Vm {
         self.finish_operation(value)
     }
 
-    /// What a comparison or an arithmetic operator gives for two Numbers,
-    /// which no conversion that could run a script comes into: in place for
+    /// What a comparison or an arithmetic operator gives for two operands
+    /// that no conversion that could run a script comes into: in place for
     /// two integers whose result is a Boolean or an integer again.
     #[inline(always)]
     fn number_operation(
@@ -4614,7 +4614,6 @@ impl Vm {
         {
             return Some(value);
         }
-        // Seen here, so that the `+` of two strings is not a call first.
         if !(left.is_number() && right.is_number()) {
             // A comparison of two Strings is answered; `kind` is known
             // where this is compiled, so the operators have no such call.
@@ -4627,9 +4626,43 @@ impl Vm {
             ) {
                 return Self::values_compare(agent, kind, left, right).map(|holds| holds.into());
             }
-            return None;
+            // The `+` of a String goes on to the call below, which every
+            // operator has for its Numbers: one more call here, in every
+            // arm that has an operator, moved the loops that add integers.
         }
         Self::float_operation(agent, kind, left, right, gc)
+    }
+
+    /// `left + right` where one operand is a String and the other a String,
+    /// or a primitive that ToString takes without running anything (a
+    /// Number, a Boolean, undefined, null, a BigInt; not a Symbol, which it
+    /// throws for): the two texts joined, as the instruction of the general
+    /// way joins them, after the same look at the length of the result.
+    /// None for other operands, and where that look refuses the text: the
+    /// general way then finds the same and throws.
+    ///
+    /// Every `s += "…"` and `"<td>" + cell` took the general way before: the
+    /// loop left, the instruction was read again with what it is fused
+    /// with, and the operands were asked whether they are Numbers first. A
+    /// sixth of a loop appending short texts.
+    #[inline(never)]
+    fn values_added(
+        agent: &mut Agent,
+        left: Value,
+        right: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let (left, right) = match (String::try_from(left), String::try_from(right)) {
+            (Ok(left), Ok(right)) => (left.bind(gc), right.bind(gc)),
+            _ => {
+                let (left, right) = string_and_primitive(left, right)?;
+                let left = to_string_primitive(agent, left.bind(gc), gc).ok()?;
+                let right = to_string_primitive(agent, right.bind(gc), gc).ok()?;
+                (left, right)
+            }
+        };
+        agent.check_concat_length(left, right, gc).ok()?;
+        Some(String::concat(agent, [left, right], gc).unbind().into())
     }
 
     /// Whether `comparison` (LessThan or one like it) holds for two Numbers
@@ -4780,12 +4813,14 @@ impl Vm {
         })
     }
 
-    /// The comparisons and the operators on two Numbers of any kind. A
+    /// The comparisons and the operators on two Numbers of any kind, and
+    /// what is done here for operands that are not two Numbers. A
     /// comparison is of two doubles, where one that is NaN compares as
     /// false; an operator is what the Number type defines for it. A result
-    /// that is a double too wide for a Value is a Number of the heap: the
-    /// one thing a plain instruction allocates, and no collection is due
-    /// before the loop looks for one again.
+    /// that is a double too wide for a Value is a Number of the heap, and
+    /// the `+` of two Strings is a String of it: what a plain instruction
+    /// allocates, and no collection is due before the loop looks for one
+    /// again.
     #[inline(never)]
     fn float_operation(
         agent: &mut Agent,
@@ -4795,7 +4830,20 @@ impl Vm {
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         let (Ok(left), Ok(right)) = (Number::try_from(left), Number::try_from(right)) else {
-            return None;
+            // Not two Numbers: a comparison of two Strings is answered, and
+            // the `+` of a String and a String or another primitive.
+            return match kind {
+                Instruction::LessThan
+                | Instruction::LessThanEquals
+                | Instruction::GreaterThan
+                | Instruction::GreaterThanEquals => {
+                    Self::values_compare(agent, kind, left, right).map(|holds| holds.into())
+                }
+                Instruction::ApplyAdditionBinaryOperator => {
+                    Self::values_added(agent, left, right, gc)
+                }
+                _ => None,
+            };
         };
         let (left, right) = (left.bind(gc), right.bind(gc));
         let value: Value = match kind {

@@ -13431,3 +13431,175 @@ functions 1:changed:5:01,g,throws TypeError,number,2"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The `+` of a String and a String, or a primitive that is made one
+/// without anything being run, is done where the operators on Numbers are
+/// done. The script appends and prepends to locals, properties and
+/// elements, with constants and with values; adds every kind of primitive
+/// to a String from both sides, and the kinds to each other; adds Symbols
+/// and objects whose conversions are counted or throw; joins the halves of
+/// a surrogate pair in both orders and text outside ASCII; builds long
+/// texts both ways and compares them; and adds Numbers at the edges of
+/// what an integer holds, and BigInts. What is expected is what Node
+/// prints for the same script. Then a text grown by its own addition under
+/// a heap limit is refused as it was: the look at the length of the result
+/// comes before the text is joined here too.
+#[test]
+fn a_string_is_added_as_the_addition_operator_adds_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(strings_that_are_added)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn strings_that_are_added() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function codes(s) { var a = []; for (var i = 0; i < s.length; i++) a.push(s.charCodeAt(i).toString(16)); return a.join("."); }
+
+(function () {
+  var s = "", t = "", u = "", v = "";
+  for (var i = 0; i < 6; i++) { s += "ab"; t = "<" + t; u += i; v = i + v; }
+  P("forms", s, t, u, v, s + t, t + s + u, s.length + t.length);
+  var a = "x", b = "y";
+  a += b; a = a + b; a = b + a; a += a;
+  P("locals", a, a.length, a === "yxyyyxyy");
+})();
+
+(function () {
+  var kinds = [1, -0, 0.5, 1e21, -1e-7, NaN, Infinity, true, false, null, undefined, 10n, -5n, "s", ""];
+  var left = [], right = [], both = [];
+  for (var i = 0; i < kinds.length; i++) {
+    var k = kinds[i];
+    left.push("<" + k); right.push(k + ">");
+    var acc = "="; acc += k; both.push(acc);
+  }
+  P("kinds left", left.join(" "));
+  P("kinds right", right.join(" "));
+  P("kinds append", both.join(" "));
+  var n = [];
+  for (var j = 0; j < kinds.length; j++) for (var m = 0; m < kinds.length; m += 4) n.push(T(function () { return typeof (kinds[j] + kinds[m]) + ":" + (kinds[j] + kinds[m]); }));
+  P("pairs", n.join(" "));
+})();
+
+(function () {
+  var sym = Symbol("q");
+  var r = [];
+  r.push(T(function () { return "a" + sym; }), T(function () { return sym + "a"; }), T(function () { var s = "a"; s += sym; return s; }));
+  var log = [];
+  var o = { toString: function () { log.push("toString"); return "T"; }, valueOf: function () { log.push("valueOf"); return 7; } };
+  var p = { toString: function () { log.push("p"); return "P"; } };
+  var d = new Date(0);
+  r.push("a" + o, o + "a", o + o, "a" + p + o, [1, 2] + "!", "!" + [3], {} + "", "" + function f() {}.name, typeof (d + ""), "" + [] + {}, 1 + "2" + 3, 1 + 2 + "3", "1" - 2 + "3");
+  var s = "s"; s += o; s += p; s += [4, 5]; s += null; s += undefined;
+  r.push(s, log.join());
+  var thrower = { toString: function () { throw new RangeError("no"); } };
+  r.push(T(function () { return "a" + thrower; }), T(function () { var z = "z"; z += thrower; return z; }));
+  P("objects", r.join(" | "));
+})();
+
+(function () {
+  var hi = "\uD83D", lo = "\uDE00", r = [];
+  var pair = hi + lo;
+  r.push(pair.length, codes(pair), pair === "😀", pair.codePointAt(0).toString(16));
+  var s = ""; for (var i = 0; i < 3; i++) { s += hi; s += lo; }
+  r.push(s.length, codes(s), Array.from(s).length);
+  var back = lo + hi; r.push(codes(back), Array.from(back).length, codes(back + lo), Array.from(back + lo).length);
+  var w = "é"; w += "世"; w = "Ж" + w; w += "x"; w += 1; r.push(w, w.length, codes(w));
+  var lone = "a" + hi; lone += "b"; r.push(codes(lone), lone.length, codes(lone + lo), encodeURIComponent("a" + pair));
+  P("surrogates", r.join(" "));
+})();
+
+(function () {
+  var s = "";
+  for (var i = 0; i < 3000; i++) s += "0123456789";
+  var t = "";
+  for (var j = 0; j < 3000; j++) t = "0123456789" + t;
+  var u = "";
+  for (var k = 0; k < 2000; k++) { u += k; u += ","; }
+  var h = 0;
+  for (var c = 0; c < u.length; c += 97) h = (h * 31 + u.charCodeAt(c)) | 0;
+  P("long", s.length, t.length, s === t, s.slice(29990), t.slice(0, 12), u.length, h, u.slice(-12), (s + t).length, (s + t).indexOf("90123456789012"));
+  var parts = []; var acc = "";
+  for (var p = 0; p < 300; p++) { acc += "<td>" + p + "</td>"; if (p % 100 === 99) parts.push(acc.length); }
+  var same = "";
+  for (var q = 0; q < 300; q++) same += "<td>" + q + "</td>";
+  P("rows", parts.join(), acc === same, acc.slice(0, 20), acc.slice(-12));
+})();
+
+(function () {
+  var o = { text: "", n: 0 };
+  for (var i = 0; i < 5; i++) { o.text += "p" + i; o.n += i; o.n += ""; o.n = +o.n; }
+  var a = ["a", 1, "b"];
+  a[0] += a[1]; a[1] += a[2]; a[2] += a[0];
+  var m = new Map([["k", "v"]]);
+  var g = "";
+  function add(x, y) { return x + y; }
+  for (var j = 0; j < 4; j++) g = add(g, j % 2 ? "s" : j);
+  P("places", o.text, o.n, typeof o.n, a.join("|"), m.get("k") + m.size, g, add(1, 2), add("1", 2), add(1, "2"), add(1.5, 2.5), add(null, "x"), add(undefined, 1), add(true, true));
+})();
+
+(function () {
+  var r = [];
+  var x = 2147483647; x += 1; r.push(x);
+  var y = 9007199254740991; y += 2; r.push(y);
+  var z = 0.1; z += 0.2; r.push(z);
+  var w = -0; w += -0; r.push(Object.is(w, -0));
+  var e = 1; e += "e3"; r.push(e, typeof e, +e + 1);
+  var big = 2n; big += 3n; r.push(big, typeof big, T(function () { return 1n + 1; }), T(function () { var q = 1n; q += 1; return q; }), 1n + "1");
+  var cmp = ["a" < "b", "a" + 1 < "a" + 2, "10" + "" < "9" + "", "a" + "b" === "ab", ("a" + 1) == "a1"];
+  r.push(cmp.join());
+  P("numbers", r.join(" "));
+})();
+
+out.join("\n")"##;
+    let expected = r##"forms abababababab <<<<<< 012345 543210 abababababab<<<<<< <<<<<<abababababab012345 18
+locals yxyyyxyy 8 true
+kinds left <1 <0 <0.5 <1e+21 <-1e-7 <NaN <Infinity <true <false <null <undefined <10 <-5 <s <
+kinds right 1> 0> 0.5> 1e+21> -1e-7> NaN> Infinity> true> false> null> undefined> 10> -5> s> >
+kinds append =1 =0 =0.5 =1e+21 =-1e-7 =NaN =Infinity =true =false =null =undefined =10 =-5 =s =
+pairs number:2 number:0.9999999 number:1 throws TypeError number:1 number:-1e-7 number:0 throws TypeError number:1.5 number:0.4999999 number:0.5 throws TypeError number:1e+21 number:1e+21 number:1e+21 throws TypeError number:0.9999999 number:-2e-7 number:-1e-7 throws TypeError number:NaN number:NaN number:NaN throws TypeError number:Infinity number:Infinity number:Infinity throws TypeError number:2 number:0.9999999 number:1 throws TypeError number:1 number:-1e-7 number:0 throws TypeError number:1 number:-1e-7 number:0 throws TypeError number:NaN number:NaN number:NaN throws TypeError throws TypeError throws TypeError throws TypeError bigint:5 throws TypeError throws TypeError throws TypeError bigint:-10 string:s1 string:s-1e-7 string:sfalse string:s-5 string:1 string:-1e-7 string:false string:-5
+objects throws TypeError | throws TypeError | throws TypeError | a7 | 7a | 14 | aP7 | 1,2! | !3 | [object Object] | f | string | [object Object] | 123 | 33 | -13 | s7P4,5nullundefined | valueOf,valueOf,valueOf,valueOf,p,valueOf,valueOf,p | throws RangeError | throws RangeError
+surrogates 2 d83d.de00 true 1f600 6 d83d.de00.d83d.de00.d83d.de00 3 de00.d83d 2 de00.d83d.de00 2 Жé世x1 5 416.e9.4e16.78.31 61.d83d.62 3 61.d83d.62.de00 a%F0%9F%98%80
+long 30000 30000 true 0123456789 012345678901 8890 -801221057 7,1998,1999, 60000 9
+rows 1090,2290,3490 true <td>0</td><td>1</td> <td>299</td>
+places p0p1p2p3p4 10 number a1|1b|ba1 v1 0s2s 3 12 12 4 nullx NaN 2
+numbers 2147483648 9007199254740992 0.30000000000000004 true 1e3 string 1001 5 bigint throws TypeError throws TypeError 11 true,true,true,true,true"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    for grows in [
+        "var s = 'x'.repeat(1 << 16); for (;;) s += s;",
+        "var s = 'x'.repeat(1 << 16); for (;;) s = s + s;",
+        "var piece = 'z'.repeat(1 << 16), t = ''; for (;;) t = piece + t;",
+        "var piece = 'z'.repeat(1 << 16), t = ''; for (;;) t += piece;",
+        "var u = 'u'.repeat(1 << 16); for (;;) { u += 1; u += u; }",
+        "var w = { text: 'w'.repeat(1 << 16) }; for (;;) w.text += w.text;",
+    ] {
+        let (mut engine, _, _) = limited(16 << 20, 0);
+        assert_eq!(
+            engine.evaluate(grows, false),
+            Err(Error::OutOfMemory),
+            "{grows}"
+        );
+        // And the engine is what it was for the next script.
+        engine
+            .evaluate("s = t = u = w = piece = null", false)
+            .unwrap();
+        assert_eq!(
+            engine.evaluate("'still ' + 'alive' + 1", false),
+            Ok(Completion::String("still alive1".into()))
+        );
+    }
+}
