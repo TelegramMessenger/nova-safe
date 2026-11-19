@@ -49,10 +49,11 @@ below.
 | all | 108 | 7.6x | 1.5x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst is now typed `Float64Array` arithmetic (2.9x), then a
-step of a particle animation (2.9x), the constructor of a derived class (2.8x) and the call of a closure
-(2.8x). None of the 108 cases is above 3x, and 82 are at or under 2x, 17 of them at or under QuickJS's
-time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7). The worst are now the two cases of arithmetic on doubles, typed
+`Float64Array` elements and a step of a particle animation, which read between 2.9x and 3.2x from one
+run to the next, then the call of a closure (2.9x) and the properties of one object read and written in
+a loop (2.5x). 81 of the 108 cases are at or under 2x, 16 of them at or under QuickJS's time. Over all
+cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -64,8 +65,9 @@ objects copied by their shape to 1.65x, bound functions and rest parameters run 
 instructions to 1.64x, holes looked for by blocks, Strings compared in the loop and `instanceof`
 answered there to 1.63x, a generator resumed in the loop of instructions to 1.60x, the names of the
 global object read by the state of the global scope to 1.59x, a property read and written by a
-computed String in the loop of instructions to 1.57x, and the variables of enclosing functions kept
-for a call once it has read them took it here.
+computed String in the loop of instructions to 1.57x, the variables of enclosing functions kept for a
+call once it has read them to 1.534x, and derived class constructors and `super(…)` run in the loop of
+instructions took it here (1.527x).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -542,8 +544,34 @@ from 2.2x to 2.1x.
 Where calls are after that: a plain call and its return take about 14 ns of entering and leaving
 against QuickJS's 14 ns for the whole step of the loop, and no line of the two is above a twentieth of
 the case (the execution context pushed, the frame found and written, the stacks exchanged, the this
-value, the executable rooted). A derived class constructor and `super(...)` take the native way. (Every
-step of a generator did too, until a loop resumed it in place: area 5a.)
+value, the executable rooted). (Every step of a generator took the native way too, until a loop resumed
+it in place: area 5a.)
+
+`new` of a derived class and `super(…)` still started a `Vm` each: `new B(i)` where B extends A was two
+of them, and with a method call after it 320 ns against QuickJS's 113 (`call/class-inheritance-super`,
+2.8x). Both are run in the `Vm` of the calling code now, where the constructors are functions of the
+script. A derived class constructor is entered with its Function Environment Record, which has the new
+target and no this value; when it returns, what it is constructed to is what \[\[Construct]] makes of
+it (the object it returned, else the this value its record has by then, else the errors of steps 10 and
+12, thrown by the calling code once the function is left). `super(…)` finds the parent as SuperCall does
+(the prototype of the function whose record gives `this`, and that record's new target), runs a parent
+that is no derived constructor as `new` of it is run, on an object made from the new target's prototype,
+and a derived one as above; when the parent returns, the rest of SuperCall is done by the function that
+\[\[Construct]]'s way uses too (the this value bound, the instance elements initialized). A built-in
+parent, a bound function, a parent that needs a Function Environment Record without being a derived
+constructor, spread arguments, and a parent that is no constructor go the general way. The case went
+from 2.8x to 2.0x.
+
+That is in the function every instruction runs through, and what the compiler makes of that function
+moved with every way of writing it: `super` as one more arm of the plain instructions made an empty loop
+6% slower; looked for before every instruction that is not plain, the same; with the new target carried
+in what a call hands to its entry, plain loops were as before and plain calls 4-7% slower. As it is,
+`super` is a result of the general way that the loop looks at where it looks at `yield`, the frame
+remembers the constructor's record, and the result is settled where a return examines the frame anyway:
+the loops and the calls are where they were in the whole benchmark (each within 1.5%), and `new` of a
+class that is not derived reads 3% slower in the two binaries run in turn (`call/new-class-instance`,
+1.94x to 2.0x), with nothing in its path changed but one comparison. The same binary run against itself
+moves a plain call by 4% from run to run.
 
 ### 4. Properties
 
