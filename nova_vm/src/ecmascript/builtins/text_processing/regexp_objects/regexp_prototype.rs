@@ -16,9 +16,10 @@ use crate::{
         Value, advance_string_index, array_create, builders::OrdinaryObjectBuilder, call_function,
         construct, create_reg_exp_string_iterator, get, get_substitution, is_callable,
         length_of_array_like, push_flag_letters, reg_exp_builtin_exec, reg_exp_builtin_test,
-        reg_exp_collect_matches, reg_exp_exec, reg_exp_test, require_internal_slot_reg_exp,
-        same_value, set, species_constructor, to_boolean, to_integer_or_infinity, to_length,
-        to_object, to_string, to_uint32, try_create_data_property_or_throw, try_get, unwrap_try,
+        reg_exp_collect_matches, reg_exp_each_match, reg_exp_exec, reg_exp_test,
+        require_internal_slot_reg_exp, same_value, set, species_constructor, to_boolean,
+        to_integer_or_infinity, to_length, to_object, to_string, to_uint32,
+        try_create_data_property_or_throw, try_get, unwrap_try,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
     heap::{ArenaAccess, IntrinsicFunctionIndexes, WellKnownSymbols},
@@ -474,6 +475,14 @@ impl RegExpPrototype {
         let s = to_string(agent, string.unbind(), gc.reborrow())
             .unbind()?
             .scope(agent, gc.nogc());
+        // The steps from here by the RegExp's internal slots, where what
+        // they read through its properties is what those say and its flags
+        // have "g".
+        let matched =
+            Self::match_by_slots(agent, rx.get(agent), s.get(agent), gc.nogc()).unbind()?;
+        if let Some(matched) = matched {
+            return Ok(matched.bind(gc.into_nogc()));
+        }
         // 4. Let flags be ? ToString(? Get(rx, "flags")).
         let flags = get(
             agent,
@@ -1170,6 +1179,61 @@ impl RegExpPrototype {
             }
         }
         Some(r)
+    }
+
+    /// Step 6 of RegExp.prototype\[%Symbol.match%] for a RegExp with the
+    /// built-in protocol ([`Self::built_in_protocol`]) whose flags have "g":
+    /// RegExpExec is RegExpBuiltinExec, and what the step reads from each
+    /// result is its "0", the text matched. So the matches are collected as
+    /// ranges, as for %Symbol.replace%, and the Array is made of the texts
+    /// of the ranges, with no result made an Array of. The lastIndex of the
+    /// RegExp is 0 at the end, as the RegExpBuiltinExec that finds no more
+    /// leaves it. `None` where the steps have to be taken as written
+    /// (another protocol, no "g", a sticky RegExp, a lastIndex that is not
+    /// a number, named groups); nothing a script could tell from them has
+    /// happened then.
+    fn match_by_slots<'gc>(
+        agent: &mut Agent,
+        rx: Object,
+        s: String,
+        gc: NoGcScope<'gc, '_>,
+    ) -> JsResult<'gc, Option<Value<'gc>>> {
+        let (rx, s) = (rx.bind(gc), s.bind(gc));
+        let Some(r) = Self::built_in_protocol(agent, rx, gc) else {
+            return Ok(None);
+        };
+        // 5. If flags does not contain "g", RegExpExec once: as written.
+        if (r.original_flags(agent) & RegExpFlags::G).bits() == 0 {
+            return Ok(None);
+        }
+        // 6. b. to e., with every matchStr made as its match is found: a
+        // list of the matches first would be several times what the Array
+        // of their texts takes, and a text matched at very many places
+        // would be refused for it where it was not.
+        let mut texts: Vec<Value> = Vec::new();
+        let collected = reg_exp_each_match(agent, r, s, gc, |agent, found| {
+            if texts.len() % 4096 == 4095 {
+                agent.check_heap_limit(texts.len() * core::mem::size_of::<Value>(), gc)?;
+            }
+            texts.push(
+                s.utf16_substring(agent, found.start(), found.end(), gc)
+                    .into(),
+            );
+            Ok(())
+        })?;
+        if collected.is_none() {
+            return Ok(None);
+        }
+        // e. ii. 1. If n = 0, return null.
+        if texts.is_empty() {
+            return Ok(Some(Value::Null));
+        }
+        // c. Let A be ! ArrayCreate(0), and every matchStr put in it.
+        let a = array_create(agent, texts.len(), texts.len(), None, gc)?;
+        for (slot, text) in a.as_mut_slice(agent).iter_mut().zip(&texts) {
+            *slot = Some(text.unbind());
+        }
+        Ok(Some(a.into()))
     }
 
     /// Steps 7 to 17 of RegExp.prototype\[%Symbol.replace%] for a RegExp

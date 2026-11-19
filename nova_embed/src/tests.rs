@@ -13603,3 +13603,194 @@ numbers 2147483648 9007199254740992 0.30000000000000004 true 1e3 string 1001 5 b
         );
     }
 }
+
+/// The result of RegExpBuiltinExec where no capture has a name is made at
+/// once, and `match` with a RegExp of the built-in protocol whose flags
+/// have "g" collects its matches without a result for each. The script
+/// looks at a result as a script can: its elements, "index", "input" and
+/// "groups", their order and their descriptors, as an Array, enumerated,
+/// spread, copied, changed and frozen; at results with captures that did
+/// not take part, with named groups, of global and sticky RegExps and
+/// their lastIndex, also one that is read-only or an object; at `match`
+/// with and without "g", with empty matches in and outside the BMP, a
+/// sticky RegExp, named groups, a String for a RegExp; at RegExps whose
+/// `exec`, `flags`, `global` or %Symbol.match% a script replaced, and
+/// subclasses; with setters put where the results get their properties,
+/// which defining a property does not call; at `split`, `matchAll`,
+/// `replace`, `test` and `search`; and at many results over collections.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn a_match_is_what_reg_exp_builtin_exec_makes() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(results_of_matching)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn results_of_matching() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function J(v) { return JSON.stringify(v); }
+function show(m) { return m === null ? "null" : J([m.length, m.index, m.input, m.groups === undefined ? "u" : J(m.groups)]) + J(Array.prototype.slice.call(m)); }
+
+(function () {
+  var m = /(\w+)=(\w+)?;/.exec("a=; key=value;");
+  var d = Object.getOwnPropertyDescriptors(m);
+  P("result", show(m), Object.keys(m).join(), Object.getOwnPropertyNames(m).join(), 2 in m, m[2] === undefined, m.hasOwnProperty("groups"), Array.isArray(m), m instanceof Array, Object.getPrototypeOf(m) === Array.prototype);
+  P("descriptors", Object.keys(d).map(function (k) { var x = d[k]; return k + ":" + (x.writable ? "w" : "-") + (x.enumerable ? "e" : "-") + (x.configurable ? "c" : "-"); }).join(" "));
+  var names = []; for (var k in m) names.push(k);
+  var [whole, first, second = "dflt"] = m;
+  P("uses", names.join(), whole, first, second, m.map(String).join("|"), [...m].length, m.join("+"), J(Object.entries(m)), J(Object.assign({}, m)));
+  m.push("more"); m.index = 99; m.extra = 1; delete m.input; m.length = 2;
+  Object.defineProperty(m, "groups", { value: "g", enumerable: false });
+  P("changed", m.length, m.join(), m.index, m.input, m.groups, Object.keys(m).join(), Object.isExtensible(m), Object.isFrozen(Object.freeze(m)), T(function () { "use strict"; m[0] = 1; return "set"; }));
+  var none = /x/.exec("abc"), empty = /(?:)/.exec(""), opt = /(a)|(b)/.exec("b"), nested = /((a)(b)?)c/.exec("zac");
+  P("more", show(none), show(empty), show(opt), show(nested));
+})();
+
+(function () {
+  var re = /(\d)(\d)?/g, s = "12 3 45", r = [];
+  var m;
+  while ((m = re.exec(s))) r.push(show(m) + "@" + re.lastIndex);
+  r.push(re.lastIndex);
+  var st = /a/y; r.push(show(st.exec("aab")), st.lastIndex, show(st.exec("aab")), st.lastIndex, show(st.exec("aab")), st.lastIndex);
+  var named = /(?<year>\d{4})-(?<month>\d\d)?/.exec("on 2024- there");
+  r.push(show(named), named.groups.year, named.groups.month, Object.getPrototypeOf(named.groups), Object.keys(named.groups).join());
+  var ng = /a/; ng.lastIndex = 5; r.push(show(ng.exec("a")), ng.lastIndex);
+  var frozen = /a/g; Object.defineProperty(frozen, "lastIndex", { writable: false });
+  r.push(T(function () { return show(frozen.exec("a")); }), T(function () { return frozen.exec("b"); }), T(function () { return "aa".match(frozen); }));
+  var log = [];
+  var odd = /a/g; odd.lastIndex = { valueOf: function () { log.push("valueOf"); return 1; } };
+  r.push(show(odd.exec("aaa")), odd.lastIndex, log.join());
+  P("lastIndex", r.join(" "));
+})();
+
+(function () {
+  var r = [];
+  r.push(J("k1=v1; k2=v2; k3=;".match(/\w+=\w*/g)), "none".match(/\d/g), J("aXbXc".match(/x*/gi)), J("ab".match(/(?:)/g)), J("😀a".match(/(?:)/gu)), J("😀a".match(/(?:)/g).length));
+  var g = /\d+/g; g.lastIndex = 3; var all = "1 22 333".match(g); r.push(J(all), g.lastIndex, Array.isArray(all), Object.keys(all).join(), all.index, all.input, all.hasOwnProperty("index"));
+  var gy = /a/gy; r.push(J("aaba".match(gy)), gy.lastIndex, J("baa".match(gy)));
+  var gn = /(?<d>\d)/g; r.push(J("a1b2".match(gn)), gn.lastIndex);
+  var caps = /(a)(b)?/g; r.push(J("ab a".match(caps)));
+  r.push(J("abc".match(/b/)), "abc".match(/b/).index, J("abc".match("b")), J("a.c".match(".")), J(String.prototype.match.call(1232, /2/g)), J("x".match()), J("undefined".match()));
+  P("match", r.join(" "));
+})();
+
+(function () {
+  var r = [], log = [];
+  var own = /a/g; own.exec = function (s) { log.push("own exec@" + this.lastIndex); return null; };
+  r.push("aaa".match(own));
+  var fake = /a/g, calls = 0;
+  fake.exec = function (s) { calls++; if (calls > 3) return null; this.lastIndex = calls; return { 0: { toString: function () { log.push("toString" + calls); return "T" + calls; } }, index: 0 }; };
+  r.push(J("zzzz".match(fake)));
+  var bad = /a/g; bad.exec = function () { return 5; };
+  r.push(T(function () { return "a".match(bad); }));
+  var originalExec = RegExp.prototype.exec;
+  RegExp.prototype.exec = function (s) { log.push("proto exec"); return originalExec.call(this, s); };
+  r.push(J("a1a2".match(/a\d/g)), J(/a(\d)/.exec("a7").slice()));
+  Object.defineProperty(RegExp.prototype, "exec", { value: originalExec, writable: true, configurable: true });
+  var flagged = /a/g; Object.defineProperty(flagged, "flags", { get: function () { log.push("flags"); return "i"; } });
+  r.push(J("aba".match(flagged)), flagged.lastIndex, J("aba".match(flagged)), flagged.lastIndex);
+  var globalGetter = Object.getOwnPropertyDescriptor(RegExp.prototype, "global");
+  Object.defineProperty(RegExp.prototype, "global", { get: function () { log.push("global"); return false; }, configurable: true });
+  r.push(J("aba".match(/a/g)));
+  Object.defineProperty(RegExp.prototype, "global", globalGetter);
+  class Sub extends RegExp { exec(s) { log.push("sub exec"); return super.exec(s); } }
+  class Plain extends RegExp {}
+  r.push(J("a-a".match(new Sub("a", "g"))), J("a-a".match(new Plain("a", "g"))), J(new Plain("(a)").exec("ba")));
+  var sym = /a/g; sym[Symbol.match] = function (s) { return "custom:" + s; };
+  r.push("aa".match(sym));
+  P("protocol", r.join(" "), "|", log.join());
+})();
+
+(function () {
+  var log = [], r = [];
+  Object.defineProperty(Array.prototype, "0", { set: function (v) { log.push("element setter"); }, get: function () { return "inherited"; }, configurable: true });
+  Object.defineProperty(Array.prototype, "index", { set: function (v) { log.push("index setter"); }, configurable: true });
+  Object.defineProperty(Object.prototype, "groups", { set: function (v) { log.push("groups setter"); }, configurable: true });
+  var m = /(a)/.exec("xa"), all = "aa".match(/a/g);
+  var seen = [m[0], m[1], m.index, m.hasOwnProperty("index"), m.hasOwnProperty("groups"), all[0], all.length];
+  delete Array.prototype[0]; delete Array.prototype.index; delete Object.prototype.groups;
+  r.push(seen.join(), log.length);
+  var parts = "one, two;three".split(/\s*([,;])\s*/);
+  var it = "a1b22".matchAll(/[a-z](\d+)/g), ms = [];
+  for (var x of it) ms.push(show(x));
+  r.push(J(parts), ms.join(""), "a-b".replace(/(\w)-(\w)/, function (w, a, b, i, s) { return b + a + i + s.length; }), J("x1y2".replace(/\d/g, "#")), /b/.test("abc"), "abc".search(/c/));
+  P("defines", r.join(" "));
+})();
+
+(function () {
+  var text = "";
+  for (var i = 0; i < 300; i++) text += "key" + i + "=value" + i + "; ";
+  var n = 0, count = 0, re = /(\w+)=(\w+);/g, m, last;
+  for (var round = 0; round < 3; round++) { re.lastIndex = 0; while ((m = re.exec(text))) { n += m[1].length + m[2].length; count++; last = m; } }
+  var all = text.match(/\d+/g), keep = [];
+  for (var k = 0; k < 10; k++) keep.push(text.match(/key\d+/g));
+  var junk; for (var g = 0; g < 100000; g++) junk = { p: g, q: [g] };
+  var sum = 0; for (var j = 0; j < keep.length; j++) sum += keep[j].length + keep[j][299].length;
+  P("many", n, count, show(last).length, all.length, all[599], sum, keep[7][5], junk.p);
+})();
+
+out.join("\n")"##;
+    let expected = r##"result [3,0,"a=; key=value;","u"]["a=;","a",null] 0,1,2,index,input,groups 0,1,2,length,index,input,groups true true true true true true
+descriptors 0:wec 1:wec 2:wec length:w-- index:wec input:wec groups:wec
+uses 0,1,2,index,input,groups a=; a dflt a=;|a|undefined 3 a=;+a+ [["0","a=;"],["1","a"],["2",null],["index",0],["input","a=; key=value;"],["groups",null]] {"0":"a=;","1":"a","index":0,"input":"a=; key=value;"}
+changed 2 a=;,a 99 undefined g 0,1,index,extra true true throws TypeError
+more null [1,0,"","u"][""] [3,0,"b","u"]["b",null,"b"] [4,1,"zac","u"]["ac","a","a",null]
+lastIndex [3,0,"12 3 45","u"]["12","1","2"]@2 [3,3,"12 3 45","u"]["3","3",null]@4 [3,5,"12 3 45","u"]["45","4","5"]@7 0 [1,0,"aab","u"]["a"] 1 [1,1,"aab","u"]["a"] 2 null 0 [3,3,"on 2024- there","{\"year\":\"2024\"}"]["2024-","2024",null] 2024   year,month [1,0,"a","u"]["a"] 5 throws TypeError throws TypeError throws TypeError [1,1,"aaa","u"]["a"] 2 valueOf
+match ["k1=v1","k2=v2","k3="]  ["","X","","X","",""] ["","",""] ["","",""] 4 ["1","22","333"] 0 true 0,1,2   false ["a","a"] 0 null ["1","2"] 0 ["ab","a"] ["b"] 1 ["b"] ["a"] ["2","2"] [""] [""]
+protocol  ["T1","T2","T3"] throws TypeError ["a1","a2"] ["a7","7"] ["a"] 1 ["a"] 3 ["a"] ["a","a"] ["a","a"] ["a","a"] custom:aa | own exec@0,toString1,toString2,toString3,proto exec,proto exec,proto exec,proto exec,flags,flags,global,sub exec,sub exec,sub exec
+defines a,a,1,true,true,a,2 0 ["one",",","two",";","three"] [2,0,"a1b22","u"]["a1","1"][2,2,"a1b22","u"]["b22","22"] ba03 "x#y#" true 2
+many 11940 900 4935 600 299 3060 key5 99999"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // Matches kept in a heap that is nearly full: what they make is held
+    // to the limit as it was, and what does not fit ends the script. (The
+    // heap is filled by other means first, and the matches are of one
+    // character each: a search is slow where it is not optimized.)
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    assert_eq!(
+        engine.evaluate(
+            "var s = 'x'.repeat(4000); var first = s.match(/x/g); first.length + ':' + first[3999]",
+            false
+        ),
+        Ok(Completion::String("4000:x".into()))
+    );
+    assert_eq!(
+        engine.evaluate(
+            "var pad = []; for (;;) pad.push(new Array(16384).fill(1.5));",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    assert_eq!(
+        engine.evaluate(
+            "pad.length -= 4; var keep = [], done = 0; for (var n = 1; ; n++) { keep.push(s.match(/x/g)); done = n; }",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    engine
+        .evaluate("keep.length = 1; pad = null", false)
+        .unwrap();
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        engine.evaluate(
+            "(done > 0) + ':' + keep[0].length + ':' + 'a1b2'.match(/\\d/g).join('')",
+            false
+        ),
+        Ok(Completion::String("true:4000:12".into()))
+    );
+}

@@ -15,16 +15,16 @@ use super::data::{
 };
 use crate::{
     ecmascript::{
-        Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, ExceptionType, Function, JsResult,
-        Number, Object, PropertyKey, PropertyLookupCache, ProtoIntrinsics, RegExp, RegExpHeapData,
-        RegExpLastIndex, String, TryError, TryGetResult, Value, array_create, call_function,
-        handle_try_get_result, is_callable, ordinary_create_from_constructor,
-        ordinary_object_create_null, throw_set_error, to_length, to_string,
-        try_create_data_property_or_throw, try_get, try_result_into_js, try_to_length, unwrap_try,
-        unwrap_try_get_value,
+        Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, ExceptionType, Function, InternalSlots,
+        JsResult, Number, Object, OrdinaryObject, PropertyKey, PropertyLookupCache,
+        ProtoIntrinsics, RegExp, RegExpHeapData, RegExpLastIndex, String, TryError, TryGetResult,
+        Value, array_create, call_function, handle_try_get_result, is_callable,
+        ordinary_create_from_constructor, ordinary_object_create_null, throw_set_error, to_length,
+        to_string, try_create_data_property_or_throw, try_get, try_result_into_js, try_to_length,
+        unwrap_try, unwrap_try_get_value,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable, Scoped},
-    heap::{ArenaAccessMut, CreateHeapData, DirectArenaAccessMut},
+    heap::{ArenaAccessMut, CreateHeapData, DirectArenaAccessMut, ObjectEntry},
 };
 
 /// ### [22.2.3.1 RegExpCreate ( P, F )](https://tc39.es/ecma262/#sec-regexpcreate)
@@ -669,6 +669,40 @@ pub(crate) fn reg_exp_builtin_exec<'a>(
     let a = array_create(agent, n, n, None, gc)?;
     // 21. Assert: The mathematical value of A's "length" property is n + 1.
     debug_assert_eq!(a.len(agent) as usize, n);
+    if !has_group_name {
+        // What steps 22 to 34 make of A where no capture has a name, made
+        // at once: the captures are the elements of a new Array, and
+        // "index", "input" and "groups" are the properties, in that order,
+        // of the ordinary object that has an Array's properties, which is
+        // made with the three where the steps make it empty for the first
+        // and add each through \[\[DefineOwnProperty]]. A third of a loop
+        // over the matches of a RegExp was those definitions.
+        for i in 0..n {
+            let captured_value: Value = match full_match.group(i) {
+                Some(range) => s.utf16_substring(agent, range.start, range.end, gc).into(),
+                None => Value::Undefined,
+            };
+            a.as_mut_slice(agent)[i] = Some(captured_value.unbind());
+        }
+        let prototype = agent.current_realm_record().intrinsics().array_prototype();
+        let input = String::from_static_str(agent, "input", gc).to_property_key();
+        let groups = String::from_static_str(agent, "groups", gc).to_property_key();
+        let properties = OrdinaryObject::create_object(
+            agent,
+            Some(prototype.into()),
+            &[
+                ObjectEntry::new_data_entry(
+                    BUILTIN_STRING_MEMORY.index.to_property_key(),
+                    Number::try_from(last_index).unwrap().into(),
+                ),
+                ObjectEntry::new_data_entry(input, s.into()),
+                ObjectEntry::new_data_entry(groups, Value::Undefined),
+            ],
+        )
+        .expect("Should perform GC here");
+        a.unbind().set_backing_object(agent, properties.unbind());
+        return Ok(Some(a));
+    }
     // 22. Perform ! CreateDataPropertyOrThrow(A, "index", 𝔽(lastIndex)).
     unwrap_try(try_create_data_property_or_throw(
         agent,
@@ -864,6 +898,35 @@ pub(crate) fn reg_exp_collect_matches<'a>(
     s: String,
     gc: NoGcScope<'a, '_>,
 ) -> JsResult<'a, Option<Vec<MatchRange>>> {
+    let mut matches = Vec::new();
+    let collected = reg_exp_each_match(agent, r, s, gc, |agent, found| {
+        if matches.len() % 4096 == 4095 {
+            agent.check_heap_limit(matches.len() * core::mem::size_of::<MatchRange>(), gc)?;
+        }
+        matches.push(MatchRange {
+            start: found.start(),
+            end: found.end(),
+            captures: (1..=found.captures.len())
+                .map(|group| found.group(group))
+                .collect(),
+        });
+        Ok(())
+    })?;
+    Ok(collected.map(|()| matches))
+}
+
+/// The loop of [`reg_exp_collect_matches`], with each match given to `each`
+/// as it is found: for what makes of the matches something other than their
+/// ranges (the texts, for RegExp.prototype\[%Symbol.match%]) and has no use
+/// for a list of them first. `None` as there, before `each` was given
+/// anything.
+pub(crate) fn reg_exp_each_match<'a>(
+    agent: &mut Agent,
+    r: RegExp,
+    s: String,
+    gc: NoGcScope<'a, '_>,
+    mut each: impl FnMut(&mut Agent, &regress::Match) -> JsResult<'a, ()>,
+) -> JsResult<'a, Option<()>> {
     let r = r.bind(gc);
     let s = s.bind(gc);
     let flags = r.original_flags(agent);
@@ -886,14 +949,10 @@ pub(crate) fn reg_exp_collect_matches<'a>(
         return Err(agent.throw_exception(ExceptionType::SyntaxError, message, gc));
     };
     let length = s.utf16_len_(agent);
-    let mut matches = Vec::new();
     // Where the next RegExpBuiltinExec starts: its lastIndex.
     let mut last_index = 0;
     loop {
         agent.poll_interrupt(gc)?;
-        if matches.len() % 4096 == 4095 {
-            agent.check_heap_limit(matches.len() * core::mem::size_of::<MatchRange>(), gc)?;
-        }
         // 13. a. If lastIndex > length, return null.
         if last_index > length {
             break;
@@ -912,17 +971,11 @@ pub(crate) fn reg_exp_collect_matches<'a>(
             break;
         };
         if !found.group_names().is_empty() {
-            // Before anything was collected: every match has the names.
+            // Before anything was given: every match has the names.
             return Ok(None);
         }
         let (start, end) = (found.start(), found.end());
-        matches.push(MatchRange {
-            start,
-            end,
-            captures: (1..=found.captures.len())
-                .map(|group| found.group(group))
-                .collect(),
-        });
+        each(agent, &found)?;
         if !global {
             break;
         }
@@ -936,7 +989,7 @@ pub(crate) fn reg_exp_collect_matches<'a>(
             end
         };
     }
-    Ok(Some(matches))
+    Ok(Some(()))
 }
 
 /// Set(R, "lastIndex", value, true) for RegExpBuiltinExec: a TypeError when
