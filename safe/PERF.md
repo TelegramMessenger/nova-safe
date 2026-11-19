@@ -34,7 +34,7 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.3x |
+| typed | 4 | 10.6x | 1.9x |
 | call | 14 | 10.4x | 1.8x |
 | math | 4 | 9.7x | 1.9x |
 | string | 26 | 10.6x | 1.4x |
@@ -49,10 +49,10 @@ below.
 | all | 108 | 7.6x | 1.5x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst are now arithmetic on the elements of a `Float64Array`
-(3.0x), a step of a particle animation (2.9x), the call of a closure (2.8x) and the properties of one
-object read and written in a loop (2.5x). 84 of the 108 cases are at or under 2x (a few sit within a
-few hundredths of 2x and cross it from one run to the next), 15 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7). The worst are now a step of a particle animation and the call of
+a closure (2.7x), the properties of one object read and written in a loop (2.5x) and arithmetic on the
+elements of a `Float64Array` (2.4x). 85 of the 108 cases are at or under 2x (a few sit within a few
+hundredths of 2x and cross it from one run to the next), 15 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -73,7 +73,8 @@ to properties compiled without their Reference pushed and popped took a method t
 from 2.4x to 2.2x and the particle step under 3x, with the mean at 1.526x (these runs shared the
 machine with other builds, and each engine's times read 1% higher than in the run before). A return
 that cuts back only what the function left, and a last instruction read as any other, took 3-8% off
-the calls and the mean to 1.519x.
+the calls and the mean to 1.519x. The `length` of a TypedArray remembered to be its accessor took a
+loop over a `Uint8Array` from 2.0x to 1.2x, and the mean to 1.503x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1041,6 +1042,45 @@ the buffer a third time). It is one reading of the buffer and one of the view no
 `Float64Array` went from 4.1x to 3.3x, pixels written to a `Uint8ClampedArray` from 2.8x to 2.6x; typed
 arrays from 2.8x to 2.5x, all cases from 1.68x to 1.67x.
 
+`a.length` of a TypedArray, which is in the test of nearly every loop over one, was nearly half of such
+a loop (46% of `typed/uint8-fill-loop`, 13% beside the arithmetic of `typed/float64-math`). At every
+read the shape of the array was asked for by its prototype (a table lookup: an array with no
+properties of its own has no record of them), the property cache searched, the accessor read from
+%TypedArray%.prototype through that object's descriptors (two more lookups) and compared with the one
+the engine made; and then the length was computed by four of the specification's operations, each
+reading the view and its buffer again.
+
+That the property is that accessor is the same for every TypedArray of one kind that has no properties
+of its own and the prototype of its kind, in one Realm, and it stays so until one of two things
+happens, which the heap now counts. An object whose shape is changed in place (the intrinsic objects,
+and every object that is a prototype) has a property added, removed or moved, or is given another
+prototype: counted where the property caches are set right for it. Or a property that an object
+already has is given a descriptor, or loses the one it had, which is the one way an accessor becomes
+another accessor or a value with its shape, key and place unchanged: counted where an existing
+property is overwritten. The loop remembers the kind and the Realm it last found the accessor for,
+with the two counts and the count of collections (`TypedArrayLengthSeen`); while they stand, the
+length is computed at once. An array with a property or a prototype of its own, and any array after a
+change, goes the way it went. The length itself is one reading of the buffer and of the view, as the
+validity of an index was already.
+
+The readings of a view (its length, its buffer, the buffer's length) were functions of their own, and
+an element read or written called four or five of them, each looking the view's record up again; they
+are part of their callers now.
+
+With the two binaries run in turn: `typed/uint8-fill-loop` 34.5 to 20.9 ms (2.04x to 1.18x),
+`typed/float64-math` 16.5 to 13.3 ms (2.97x to 2.41x), `typed/pixels-rgba` 5% less (2.20x to 2.07x);
+typed arrays from 2.3x to 1.85x, all cases from 1.519x to 1.503x. The loops and the calls are where
+they were (each within 1.5%).
+
+Tried: the validity of an index made part of the element read and write by force (it is a function of
+its own that they call). The loops over typed arrays gained nothing more, pixels were 5% slower, and a
+`switch` in a loop, which touches none of it, 8%.
+
+Left for these: a double read from a `Float64Array` or made by an operator becomes a Value through a
+function of some sixty machine instructions (whether it is an integer, whether it fits a Value, else a
+Number of the heap), a fifth of `typed/float64-math`; and an element read goes through three functions
+to its bytes.
+
 Left: a double that is not an integer and has more than 45 bits of mantissa is a Number of the heap, one
 allocated for the result of every operator, the intermediate ones too (a tenth of the loop, and the
 collector's sweep of them a twelfth). A Value has seven bytes for what it holds; doubles in a Value
@@ -1407,6 +1447,15 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   they were. In the same binary a plain call reads 4-8% faster than the round before (`call/plain-function`,
   `call/closure`, `prop/getter-setter`), with nothing in its path changed but that a new frame is made by
   a function of its own; whether that or the layout did it is not established.
+- A function of its own that an arm of the loop of instructions calls has to be given only what fits
+  registers. One that took the loop's tables (three slices, passed by address), tried for running a
+  property read with the instruction that fetches its object, made every loop and call 17-34% slower,
+  though none ran it: the tables were kept in memory from then on. Given the cache and the key it
+  cost nothing elsewhere, and gained nothing where it was for (area 1).
+- `ArrayBuffer.prototype.transfer` is there and throws "not implemented", here and in the build this
+  started from; `o[key] += v` makes a property key of `key` once, where Node does it twice (the
+  specification says once). Seen in the scripts for the length of a TypedArray and for compound
+  assignment, which leave both out. Neither is changed.
 
 ## Checking a change
 
