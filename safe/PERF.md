@@ -50,9 +50,9 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst are now a step of a particle animation and the call of
-a closure (2.7x), the properties of one object read and written in a loop (2.5x) and slices of a
-string that is not ASCII (2.4x). 84 or 85 of the 108 cases are at or under 2x (a few sit within a few
-hundredths of 2x and cross it from one run to the next), 16 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+a closure (2.7x), the properties of one object read and written in a loop (2.5x) and `instanceof`
+with `Array.isArray` (2.3x). 85 of the 108 cases are at or under 2x (a few sit within a few hundredths
+of 2x and cross it from one run to the next), 18 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -76,7 +76,8 @@ that cuts back only what the function left, and a last instruction read as any o
 the calls and the mean to 1.519x. The `length` of a TypedArray remembered to be its accessor took a
 loop over a `Uint8Array` from 2.0x to 1.2x, and the mean to 1.503x; the getter and the setter of a
 property remembered likewise took a tenth off a loop that calls both, with the mean where it was
-(1.505x in that run).
+(1.505x in that run). An Array of Strings and Numbers joined from where they are took the mean to
+1.488x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1245,6 +1246,30 @@ is put together from them, a function still being called for each match after al
 a lastIndex that is not a number, named groups and any replaced part of the protocol take the steps as written.
 Replacing with a function went from 1.5x to 0.9x, with a string and a RegExp in turn from 30 to 10 ms (0.5x),
 the rendered list from 2.1x to 1.7x. `match`, `matchAll`, `split` and `search` still go by the properties.
+
+`Array.prototype.join` was the specification's loop for every Array: for each element the separator read
+from its rooted handle, Get of the element by its index through the general way of a property, a
+comparison with the Array, ToString by the general way, and the handle of the Array read three times.
+Where the Array has no element descriptors, its elements that are Strings, Numbers, Booleans, undefined
+or null are read from where they are and appended, for as long as there is nothing else: Get of such an
+element is the element, and ToString of it runs nothing, so that the Array is what it was at the next
+one. A hole (which a prototype may answer for), an object, a Symbol and a BigInt go on from where they
+are by the loop as it was, with the text so far. The host is asked and the length of the text checked at
+every element, as before. `parts.join("")` of the pieces of a text is this path: numbers joined went
+from 4.75 to 3.34 ms (1.36x to 0.96x), a text split and joined from 1.18x to 1.02x, strings pushed and
+joined from 0.83 to 0.74 ms (2.29x to 2.11x; the rest of that case is `push`).
+
+The method of a String or a Number (`s.slice`, `s.charCodeAt`, `n.toFixed`) is found by the cache under
+the shape of the prototype object of its kind, and was then read from that object's storage by three
+general functions; it is the one function that reads a property of an ordinary object by its cache
+now. The cases that call such a method in a loop are 1-4% faster (`string/char-code-at-non-ascii`
+3.7%, `string/slice-non-ascii` 2.3%). As part of every arm that reads a property (it was in line) the
+same change made the calls 1-4% slower by where the loop's code lay; it is a function of its own.
+
+Tried: the method of an Array (`a.push`) found under a remembered shape of the Arrays that have no
+properties of their own, and read from its slot. The case of strings pushed and joined gained
+nothing (what `push` costs is in `push`: whether the Array appends plainly, its storage grown, the
+bytes counted), and a plain call and the properties of one object read 4-6% slower. Dropped.
 
 ### 9. Garbage
 
