@@ -4401,7 +4401,109 @@ impl Vm {
                 _ => None,
             };
         }
-        Self::typed_array_length(agent, value, tables, instr, gc)
+        if let Some(length) = Self::typed_array_length(agent, value, tables, instr, gc) {
+            return Some(length);
+        }
+        Self::inherited_property_value(agent, value, tables, instr, gc)
+    }
+
+    /// A named property of an object whose kind gives it nothing by a name
+    /// of its own: a Map, a Set, a Date, a Promise, an ArrayBuffer, a
+    /// DataView, an iterator, a generator; a RegExp but for its "lastIndex",
+    /// and a TypedArray but for the names that are the strings of Numbers,
+    /// which are its elements. \[\[Get]] of any of these is OrdinaryGet: of
+    /// the ordinary object that has its properties once it has any, and
+    /// until then of nothing but what it inherits, which the cache places
+    /// under the shape of the objects that have its prototype and nothing
+    /// else. `map.get`, `set.has`, `regexp.test`, `bytes.set`, `date.getTime`
+    /// and `promise.then` are found so; each took the general way of an
+    /// instruction before, to the same place of the same cache.
+    #[cfg(feature = "array-buffer")]
+    #[inline(never)]
+    fn inherited_property_value(
+        agent: &mut Agent,
+        value: Value,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let key = tables.property_key(instr.get_first_index(), gc);
+        if !matches!(key, PropertyKey::String(_) | PropertyKey::SmallString(_)) {
+            return None;
+        }
+        // The object, and the ordinary one that has its properties if it
+        // has any: asked of its kind, which is known here.
+        macro_rules! bare {
+            ($object:ident) => {
+                (Object::from($object), $object.get_backing_object(agent))
+            };
+        }
+        let (object, backing) = match value {
+            Value::Map(o) => bare!(o),
+            Value::Promise(o) => bare!(o),
+            Value::ArrayBuffer(o) => bare!(o),
+            Value::DataView(o) => bare!(o),
+            Value::ArrayIterator(o) => bare!(o),
+            Value::Generator(o) => bare!(o),
+            #[cfg(feature = "set")]
+            Value::Set(o) => bare!(o),
+            #[cfg(feature = "set")]
+            Value::SetIterator(o) => bare!(o),
+            #[cfg(feature = "set")]
+            Value::MapIterator(o) => bare!(o),
+            #[cfg(feature = "date")]
+            Value::Date(o) => bare!(o),
+            #[cfg(feature = "weak-refs")]
+            Value::WeakMap(o) => bare!(o),
+            #[cfg(feature = "weak-refs")]
+            Value::WeakSet(o) => bare!(o),
+            #[cfg(feature = "weak-refs")]
+            Value::WeakRef(o) => bare!(o),
+            #[cfg(feature = "regexp")]
+            Value::RegExp(o) => {
+                if key == PropertyKey::from(BUILTIN_STRING_MEMORY.lastIndex) {
+                    return None;
+                }
+                bare!(o)
+            }
+            _ => {
+                let array = AnyTypedArray::try_from(value).ok()?;
+                // The string of a Number starts with a digit, a minus sign,
+                // "Infinity" or "NaN", and a name that starts so may be an
+                // element, which is never looked for in a prototype.
+                let name = String::try_from(key.into_value_unchecked()).ok()?;
+                if matches!(
+                    name.as_wtf8_(agent).as_bytes().first(),
+                    None | Some(b'0'..=b'9' | b'-' | b'I' | b'N')
+                ) {
+                    return None;
+                }
+                bare!(array)
+            }
+        };
+        let cache = tables.cache(instr.get_second_index(), gc);
+        if let Some(backing) = backing {
+            return backing.value_by_cache(agent, cache, gc).unbind();
+        }
+        let kind = core::mem::discriminant(&value.unbind());
+        let seen = agent.heap.bare_shape_seen.get();
+        let shape = match seen.and_then(|seen| seen.shape(agent, kind)) {
+            Some(shape) => shape,
+            None => {
+                let shape = object.object_shape(agent);
+                let seen = crate::ecmascript::BareShapeSeen::now(agent, kind, shape);
+                agent.heap.bare_shape_seen.set(Some(seen));
+                shape
+            }
+        };
+        let (offset, holder) = cache.find_cached_property_offset(agent, shape)?;
+        if offset.is_unset() {
+            return Some(Value::Undefined);
+        }
+        match holder?.get_own_property_at_offset(agent, offset, gc) {
+            TryGetResult::Value(value) => Some(value.unbind()),
+            _ => None,
+        }
     }
 
     /// `a.length` of a TypedArray, where the property cache finds for its

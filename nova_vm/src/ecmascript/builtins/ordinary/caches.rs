@@ -1189,3 +1189,46 @@ impl<K: Copy + PartialEq> TypedArrayLengthSeen<K> {
             && self.realm == agent.current_realm_id_internal()
     }
 }
+
+/// The shape of the objects of one kind that have nothing of their own, in
+/// one Realm, as the last look found it (`Vm::inherited_property_value`).
+///
+/// A Map, a RegExp or a Uint8Array with no properties of its own has the
+/// prototype that the running Realm has for its kind, and the shape that
+/// the heap keeps for that prototype: one shape for each prototype, put in
+/// its table once and taken from it by a collection only. So the shape
+/// found for a kind in a Realm is the shape of that kind there until the
+/// next collection, which also moves the handles, and what was seen before
+/// one is not looked at after it. Finding it anew was the prototype asked
+/// of the Realm and the table searched by its hash, at every call of a
+/// method of a Map.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BareShapeSeen<K> {
+    kind: K,
+    realm: crate::ecmascript::Realm<'static>,
+    collections: u64,
+    shape: ObjectShape<'static>,
+}
+
+impl<K: Copy + PartialEq> BareShapeSeen<K> {
+    /// `shape` as what is seen now, for the objects of `kind` in the
+    /// running Realm.
+    pub(crate) fn now(agent: &Agent, kind: K, shape: ObjectShape) -> Self {
+        Self {
+            kind,
+            realm: agent.current_realm_id_internal(),
+            collections: agent.heap.collections,
+            shape: shape.unbind(),
+        }
+    }
+
+    /// The shape seen, if a look now, for the objects of `kind` in the
+    /// running Realm, would find it.
+    #[inline]
+    pub(crate) fn shape(self, agent: &Agent, kind: K) -> Option<ObjectShape<'static>> {
+        (self.collections == agent.heap.collections
+            && self.kind == kind
+            && self.realm == agent.current_realm_id_internal())
+        .then_some(self.shape)
+    }
+}

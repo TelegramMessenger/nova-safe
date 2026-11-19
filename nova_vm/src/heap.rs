@@ -214,6 +214,17 @@ pub(crate) struct Heap {
     /// ([`TypedArrayLengthSeen`](crate::ecmascript::TypedArrayLengthSeen))
     /// is good while this has not changed.
     pub(crate) intrinsic_shape_changes: u64,
+    /// The shape last found for the objects of one kind that have nothing
+    /// of their own: see [`BareShapeSeen`](crate::ecmascript::BareShapeSeen).
+    /// Its handles are of the collection it counted, and are not read
+    /// after another.
+    pub(crate) bare_shape_seen: core::cell::Cell<
+        Option<
+            crate::ecmascript::BareShapeSeen<
+                core::mem::Discriminant<crate::ecmascript::Value<'static>>,
+            >,
+        >,
+    >,
     /// How many times a property that an object already had was given a
     /// descriptor, or had the one it had taken away: the one way an
     /// accessor property becomes another accessor or a data property with
@@ -403,6 +414,7 @@ impl Heap {
             collections: 0,
             intrinsic_key_moves: 0,
             intrinsic_shape_changes: 0,
+            bare_shape_seen: core::cell::Cell::new(None),
             descriptor_changes: 0,
             data_bytes_since_gc: 0,
             gc_alloc_limit: crate::heap::heap_gc::MIN_GC_ALLOC_LIMIT,

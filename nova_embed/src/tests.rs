@@ -12970,3 +12970,261 @@ throws RangeError true m2"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A named property of an object that has nothing by a name of its own
+/// kind (a Map, a Set, a RegExp but for "lastIndex", a TypedArray but for
+/// the names that are Numbers, a Date, a Promise, an ArrayBuffer, a
+/// DataView, an iterator, a generator) is read by the property cache of
+/// the instruction, under the shape that is remembered for its kind. The
+/// script calls methods of each kind at one place many times; reads one
+/// name at one place from an object of the kind and from an ordinary
+/// object with the same prototype; replaces a method in the prototype by
+/// another, by an accessor and by nothing, and puts it in
+/// %Object.prototype%; gives the object the name itself, another
+/// prototype and none; extends Map, with private names too; changes the
+/// prototype of %Map.prototype%; reads "lastIndex" where an ordinary
+/// object was read; reads "NaN", "Infinity" and the strings of Numbers
+/// from a TypedArray whose prototypes have them; replaces an accessor by
+/// a value; steps iterators and generators; and goes on through
+/// collections. What is expected is what Node prints for the same script.
+#[test]
+fn a_property_of_an_object_with_none_of_its_own_is_what_get_finds() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_that_objects_inherit)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_that_objects_inherit() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function put(o, k, v) { Object.defineProperty(o, k, { value: v, writable: true, configurable: true }); }
+
+(function () {
+  var m = new Map([[1, "a"], [2, "b"]]), s = new Set([1, 2]), re = /b+/, ta = new Uint8Array([5, 6, 7]);
+  var d = new Date(86400000), ab = new ArrayBuffer(8), dv = new DataView(ab), wm = new WeakMap(), ws = new WeakSet(), k = {};
+  wm.set(k, 9); ws.add(k);
+  var n = 0;
+  for (var i = 0; i < 50; i++) {
+    n += m.get(1 + (i & 1)).length + (s.has(i) ? 1 : 0) + (re.test("abbc") ? 1 : 0);
+    n += ta.indexOf(6) + ta.subarray(1).length + d.getTime() / 86400000 + dv.getUint8(0) + ab.slice(0, 2).byteLength;
+    n += wm.get(k) + (ws.has(k) ? 1 : 0) + (wm.has(m) ? 100 : 0);
+  }
+  P("kinds", n, m.size, s.size, ta.length, ta.byteLength, re.source, re.global, dv.byteLength);
+})();
+
+(function () {
+  function get(o) { return o.get; }
+  function has(o) { return typeof o.has; }
+  var plain = Object.create(Map.prototype), m = new Map();
+  var r = [];
+  for (var i = 0; i < 6; i++) r.push(get(i & 1 ? m : plain) === Map.prototype.get);
+  P("same shape", r.join());
+  P("plain call", T(function () { return plain.get(1); }));
+  var kinds = [new Map(), new Set(), new WeakMap(), new WeakSet(), {}, [], "s", 5];
+  var seen = [];
+  for (var j = 0; j < 24; j++) seen.push(has(kinds[j % kinds.length]));
+  P("has", seen.slice(0, 8).join(), seen.slice(16).join());
+})();
+
+(function () {
+  var m = new Map([[1, "one"]]);
+  function at(k) { return m.get(k); }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(at(1));
+  var original = Map.prototype.get;
+  Map.prototype.get = function (k) { return "mine:" + original.call(this, k); };
+  r.push(at(1));
+  Object.defineProperty(Map.prototype, "get", { get: function () { return function () { return "getter"; }; }, configurable: true });
+  r.push(at(1));
+  delete Map.prototype.get;
+  r.push(T(function () { return at(1); }));
+  Object.prototype.get = function () { return "object's"; };
+  r.push(at(1));
+  delete Object.prototype.get;
+  r.push(T(function () { return at(1); }));
+  put(Map.prototype, "get", original);
+  r.push(at(1));
+  P("prototype changes", r.join());
+})();
+
+(function () {
+  var s = new Set([1]);
+  function extra() { return s.extra; }
+  var r = [];
+  for (var i = 0; i < 3; i++) r.push(extra());
+  Set.prototype.extra = "set's"; r.push(extra());
+  delete Set.prototype.extra; r.push(extra());
+  Object.prototype.extra = "object's"; r.push(extra());
+  s.extra = "own"; r.push(extra());
+  delete s.extra; r.push(extra());
+  delete Object.prototype.extra; r.push(extra());
+  P("absent", r.join());
+})();
+
+(function () {
+  var m = new Map([[1, "one"]]);
+  function at() { return m.get(1); }
+  var r = [at(), at()];
+  m.get = function () { return "own"; }; r.push(at());
+  delete m.get; r.push(at());
+  var other = { get: function () { return "other"; } };
+  Object.setPrototypeOf(m, other); r.push(at());
+  Object.setPrototypeOf(m, null); r.push(T(at));
+  Object.setPrototypeOf(m, Map.prototype); r.push(at());
+  Object.freeze(m); r.push(at());
+  P("own", r.join());
+  class Sub extends Map { get(k) { return "sub:" + super.get(k); } }
+  class Bare extends Map {}
+  class Priv extends Map { #x = 3; x() { return this.#x + this.size; } }
+  var sub = new Sub([[1, "a"]]), bare = new Bare([[1, "b"]]), priv = new Priv([[1, "c"]]);
+  var t = [];
+  function g(o) { return o.get(1); }
+  for (var i = 0; i < 9; i++) t.push(g([sub, bare, priv][i % 3]));
+  P("subclasses", t.join(), priv.x());
+  var parent = Object.getPrototypeOf(Map.prototype);
+  var m2 = new Map();
+  function up() { return m2.up; }
+  var u = [up(), up()];
+  Object.setPrototypeOf(Map.prototype, { up: 7 }); u.push(up());
+  Object.setPrototypeOf(Map.prototype, parent); u.push(up());
+  P("chain", u.join());
+})();
+
+(function () {
+  function last(o) { return o.lastIndex; }
+  var plain = Object.create(RegExp.prototype), re = /a/g, r = [];
+  r.push(last(plain), last(plain), last(re));
+  re.exec("aaa"); r.push(last(re));
+  re.lastIndex = 2; r.push(last(re), last(plain));
+  re.extra = 1; r.push(last(re));
+  re.exec("aaa"); r.push(last(re));
+  function test(o, s) { return o.test(s); }
+  var t = [];
+  for (var i = 0; i < 4; i++) t.push(test(/b/, "abc"), test(re, "aaaa"));
+  t.push(T(function () { return test(plain, "a"); }));
+  P("lastIndex", r.join(), t.join());
+  var sticky = /a/y, c = 0;
+  for (var j = 0; j < 5; j++) { if (sticky.test("aaab")) c += sticky.lastIndex; }
+  P("sticky", c, sticky.lastIndex);
+  var original = RegExp.prototype.test, w = /x/, q = [];
+  function tx() { return w.test("x"); }
+  q.push(tx(), tx());
+  RegExp.prototype.test = function () { return "replaced"; }; q.push(tx());
+  put(RegExp.prototype, "test", original); q.push(tx());
+  w.test = function () { return "own"; }; q.push(tx());
+  P("test", q.join());
+})();
+
+(function () {
+  function nan(o) { return o.NaN; }
+  function inf(o) { return o.Infinity; }
+  function name(o) { return o.Name; }
+  function idx(o) { return o["1.5"] + "/" + o["-0"] + "/" + o["1"] + "/" + o["-1"] + "/" + o["1e3"] + "/" + o["01"]; }
+  var names = ["NaN", "Infinity", "Name", "1.5", "-0", "-1", "1e3", "01"];
+  for (var n = 0; n < names.length; n++) Object.prototype[names[n]] = "p" + n;
+  var plain = Object.create(Uint8Array.prototype), ta = new Uint8Array([4, 5]), f = new Float64Array(2);
+  var r = [];
+  for (var i = 0; i < 2; i++) r.push(nan(plain), nan(ta), inf(plain), inf(f), name(plain), name(ta), idx(plain), idx(ta));
+  for (var n2 = 0; n2 < names.length; n2++) delete Object.prototype[names[n2]];
+  r.push(nan(ta), name(ta), name(plain));
+  P("numeric names", r.join());
+  var ta2 = new Uint16Array(3), big = new Int32Array(4);
+  function len() { return ta2.length + ta2.byteLength + ta2.BYTES_PER_ELEMENT; }
+  function setter(o) { return o.set; }
+  P("typed", len(), len(), ta2.constructor === Uint16Array, setter(ta2) === setter(big), setter(ta2) === setter(plain));
+  ta2.extra = "own"; ta2.fill(3);
+  function ex(o) { return o.extra + ":" + o.join(""); }
+  class Bytes extends Uint8Array { join() { return "sub"; } }
+  P("typed own", ex(ta2), ex(big), ex(new Bytes(2)), ex(ta2));
+  var original = Uint16Array.prototype.join;
+  put(Uint16Array.prototype, "join", function () { return "kind's"; });
+  P("typed kind", ex(ta2), ex(big));
+  delete Uint16Array.prototype.join;
+  P("typed again", ex(ta2), original === undefined);
+})();
+
+(function () {
+  var m = new Map([[1, 2], [3, 4]]);
+  function size() { return m.size; }
+  var r = [size(), size()];
+  var d = Object.getOwnPropertyDescriptor(Map.prototype, "size");
+  Object.defineProperty(Map.prototype, "size", { value: 42, configurable: true }); r.push(size(), size());
+  Object.defineProperty(Map.prototype, "size", d); r.push(size());
+  P("accessor", r.join());
+})();
+
+(function () {
+  function* gen() { yield 1; yield 2; return 3; }
+  var g = gen(), r = [];
+  for (var i = 0; i < 4; i++) { var s = g.next(); r.push(s.value + ":" + s.done); }
+  var it = [7, 8][Symbol.iterator](), mi = new Map([[1, 2]]).entries(), si = new Set([5]).values();
+  function next(o) { var s = o.next(); return s.done ? "done" : String(s.value); }
+  for (var j = 0; j < 3; j++) r.push(next(it), next(mi), next(si));
+  var g2 = gen(); g2.next(); r.push(g2.return(9).value, g2.next().done);
+  gen.prototype.next = function () { return { value: "mine", done: false }; };
+  var g3 = gen(); r.push(next(g3), next(g3));
+  delete gen.prototype.next; r.push(next(g3), next(g3), next(g3), next(g3));
+  P("iterators", r.join());
+})();
+
+(function () {
+  var d = new Date(1000), p = Promise.resolve(1), r = [];
+  function time() { return d.getTime(); }
+  r.push(time(), time());
+  var original = Date.prototype.getTime;
+  Date.prototype.getTime = function () { return -1; }; r.push(time());
+  put(Date.prototype, "getTime", original); r.push(time());
+  function then(o) { return o.then === Promise.prototype.then; }
+  r.push(then(p), then(p), then(Object.create(Promise.prototype)), then({}));
+  var view = new DataView(new ArrayBuffer(4)), v = 0;
+  for (var i = 0; i < 4; i++) { view.setUint8(i, i + 1); v += view.getUint8(i); }
+  P("date and promise", r.join(), v, view.buffer.byteLength);
+})();
+
+(function () {
+  var m = new Map([[1, "x"]]), s = new Set([1]), re = /x/, n = 0;
+  for (var i = 0; i < 200000; i++) {
+    var junk = { a: i, b: [i] };
+    if ((i & 1023) === 0) n += m.get(1).length + (s.has(1) ? 1 : 0) + (re.test("x") ? 1 : 0);
+  }
+  P("collections", n, junk.a);
+})();
+
+out.join("\n")"##;
+    let expected = r##"kinds 902 2 2 3 3 b+ false 8
+same shape true,true,true,true,true,true
+plain call throws TypeError
+has function,function,function,function,undefined,undefined,undefined,undefined function,function,function,function,undefined,undefined,undefined,undefined
+prototype changes one,one,one,one,mine:one,getter,throws TypeError,object's,throws TypeError,one
+absent ,,,set's,,object's,own,object's,
+own one,one,own,one,other,throws TypeError,one,one
+subclasses sub:a,b,c,sub:a,b,c,sub:a,b,c 4
+chain ,,7,
+lastIndex ,,0,1,2,,2,3 true,true,true,false,true,true,true,true,throws TypeError
+sticky 7 1
+test true,true,replaced,true,own
+numeric names p0,,p1,,p2,p2,p3/p4/undefined/p5/p6/p7,undefined/undefined/5/undefined/p6/p7,p0,,p1,,p2,p2,p3/p4/undefined/p5/p6/p7,undefined/undefined/5/undefined/p6/p7,,,
+typed 11 11 true true true
+typed own own:333 undefined:0000 undefined:sub own:333
+typed kind own:kind's undefined:0000
+typed again own:333 false
+accessor 2,2,42,42,2
+iterators 1:false,2:false,3:true,undefined:true,7,1,2,5,8,done,done,done,done,done,9,true,mine,mine,1,2,done,done
+date and promise 1000,1000,-1,1000,true,true,true,false 10 4
+collections 588 199999"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
