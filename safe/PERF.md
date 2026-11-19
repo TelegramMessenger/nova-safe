@@ -41,7 +41,7 @@ below.
 | prop | 13 | 7.1x | 1.8x |
 | map, set | 4 | 4.6x | 1.7x |
 | app | 8 | 6.1x | 1.7x |
-| array | 14 | 5.8x | 1.7x |
+| array | 14 | 5.8x | 1.6x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
@@ -49,10 +49,10 @@ below.
 | all | 108 | 7.6x | 1.6x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst is now a generator (4.1x), then typed `Float64Array`
-arithmetic (3.3x), a step of a particle animation (3.2x) and the properties of one object read and
-written in a loop (3.2x). 4 of the 108 cases are above 3x and 74 at or under 2x, 15 of them at or under
-QuickJS's time. Over all cases it is 1.64x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7). The worst is now a generator (4.2x), then typed `Float64Array`
+arithmetic (3.3x), the properties of one object read and written in a loop (3.2x) and a step of a
+particle animation (3.1x). 4 of the 108 cases are above 3x and 76 at or under 2x, 15 of them at or under
+QuickJS's time. Over all cases it is 1.63x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -60,8 +60,9 @@ stepping a generator without a result object took it to 1.88x. The arguments obj
 one case of the 108 and left the mean where it was, the string hash that follows from the hashes of
 what is concatenated took it to 1.78x, more built-in functions run in place of a call to 1.71x, and
 chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles done as that to 1.67x,
-objects copied by their shape to 1.65x, and bound functions and rest parameters run in the loop of
-instructions took it here.
+objects copied by their shape to 1.65x, bound functions and rest parameters run in the loop of
+instructions to 1.64x, and holes looked for by blocks, Strings compared in the loop and `instanceof`
+answered there took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -555,6 +556,13 @@ keys (64, two places for a key by its identity), and found again by comparing th
 moves keys and caches, empties that memory. `instanceof` went from 4.0x to 3.6x, `new` of a class from
 2.3x to 2.1x.
 
+The instruction itself still left the loop of instructions for every `instanceof`, to root its operands
+for a method that might be a script. It is answered in the loop now where nothing can run: the target is
+a function, not a bound one, whose @@hasInstance is the inherited method of the running realm; its
+"prototype" is a data property that holds an object; and the chain up from the value has no Proxy in it.
+Anything else, and everything that throws, goes the way it went. 2.9x to 2.6x; the rest of that case is
+the calls around it.
+
 `for`-`in` put every key it met in a set and looked every key up there first, hashing each name twice
 under SipHash, to learn nothing in nearly every loop: the keys of one object are all different, and none
 was met before the first object's. The set is asked now only for an enumerable property of an object
@@ -665,6 +673,11 @@ over holes counts them, and so does the instruction that makes an array literal,
 was added (an Array of a hundred thousand filled holes was 800 KB the memory limit did not see until the
 next collection; a test of the limit caught it). `array/literal-alloc` is 4% slower for the collections
 that are due sooner.
+
+`shift`, `unshift` and `splice` ask first whether the Array has a hole, of all of it and every time, and
+that was a loop that stops at the first hole: one element, one branch. Asked of blocks of 64 elements
+with no way out inside a block, it is compiled to compare several elements at once, and an Array with a
+hole is still known within the block that has it. `array/shift-unshift-splice` went from 2.3x to 1.4x.
 
 Left: a compound assignment to an element (`a[i] += 1`) and one whose value is used still make a Reference.
 The same methods of typed arrays, `flatMap`, and `forEach` of Map and Set call their callbacks the general
@@ -899,6 +912,15 @@ case conversion and trimming from 1.7x to 1.3x, the tokenizer from 3.9x to 2.5x;
 Left: the calls themselves, which are native ones (area 3), and interning each result. Searching and splitting
 are level or faster.
 
+`a < b` of two Strings left the loop of instructions for the general comparison, and that decoded both
+texts into UTF-16 code units one code point at a time to compare them. The four comparisons of two
+Strings are answered in the loop now, and the texts are compared as the bytes they are kept as: the
+common beginning is passed over eight bytes at a time, and the first bytes that differ decide when both
+are below 0xED, where the order of WTF-8 bytes is that of code units (it is not only where a surrogate
+pair meets U+E000 and up, and those are decoded as before; a test compares every pair of a set of texts
+around that boundary with the order of their code units). `string/equality-and-compare` went from 2.15x
+to 1.8x, sorting objects by a number and then a name from 1.85x to 1.6x.
+
 Replacing by a RegExp was the one built-in that stood out in the application cases (escaping HTML: a fifth of
 the list that is rendered to HTML). `RegExp.prototype[Symbol.replace]` is written against the RegExp's
 properties: it read `flags` through nine accessors, looked `exec` up for every match, and had each result made
@@ -1050,7 +1072,8 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   themselves. `unshift` took its direct way without asking whether a prototype has a setter under an
   index; it asks as `push` does. Fixed.
 - A Proxy whose target is a function is not accepted where a callback is asked for:
-  `[1].map(new Proxy(function () {}, {}))` throws a TypeError (IsCallable is false for it). Upstream.
+  `[1].map(new Proxy(function () {}, {}))` throws a TypeError (IsCallable is false for it), `new` of
+  one throws and `x instanceof` one is false; `Proxy.revocable` is not there at all. Upstream.
   Not fixed.
 - `Object.isFrozen(Object.preventExtensions([]))` is false here and true in V8, whose "length" for that
   Array is writable all the same. Taken for V8's departure, and left out of the comparison with Node.
@@ -1102,6 +1125,17 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
 - `loop/switch` read 4% slower after the round of the text of a Number (5.5 to 5.75 ms, in seven runs of
   each binary in turn), which touched nothing it runs: where the loop of instructions lands in the binary
   moved. It is 0.9x of QuickJS. Not followed up.
+- The length of `Function.prototype[Symbol.hasInstance]` was 0 where it is 1. Upstream, and one of the
+  expected failures of test262; fixed while that method was read for `instanceof`, and the expectation
+  removed.
+- The comparison of Strings, as first written, made the loops that compare no String slower: nested
+  `while` loops by 16%, a sum of integers by 6%, a `switch` and a closure call by 7% each. It was a call
+  put in the branch for "not two Numbers" of two helpers that are compiled into every instruction of
+  arithmetic and comparison, and each copy of them was the worse for it. Every test passed; the table of
+  the whole benchmark showed it, case by case against the round before, and the two binaries run in turn
+  confirmed it. One function out of the loop now has all that is not two integers, and the call for
+  Strings is compiled only into the four comparisons. A change to those helpers is measured on the plain
+  loops first, whatever case it was made for.
 
 ## Checking a change
 
