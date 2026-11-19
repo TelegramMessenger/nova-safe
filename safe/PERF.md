@@ -77,7 +77,9 @@ the calls and the mean to 1.519x. The `length` of a TypedArray remembered to be 
 loop over a `Uint8Array` from 2.0x to 1.2x, and the mean to 1.503x; the getter and the setter of a
 property remembered likewise took a tenth off a loop that calls both, with the mean where it was
 (1.505x in that run). An Array of Strings and Numbers joined from where they are took the mean to
-1.488x, and the properties of functions read by their caches to 1.473x.
+1.488x, and the properties of functions read by their caches to 1.473x. `typeof` done in the loop
+and an object for `new` made with its prototype at once left the mean there (1.48x in a run where
+QuickJS's own times were 0.9% lower).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -632,6 +634,21 @@ empty loop reads 3.30 or 3.50 from one run to the next of the binary before. Tri
 instructions for the slow way of reading taken from the padded bytes instead of from the tables (the
 calls gained half as much, the empty loop the same), and the padded bytes and the instructions as two
 slices in the loop (a `switch` 9% slower).
+
+The object that `new` of a function of the script starts from was made as the general way makes it: an
+object with the Realm's %Object.prototype%, then given the function's "prototype". That is two shapes
+looked up in a table by their prototypes for every object made, and the prototype's own shape seen to
+each time, where the first object made with a prototype sees to it once. It is made with the shape of
+the objects that have that prototype at once, which is the shape the other way arrived at. `new` of a
+class went from 22.9 to 21.7 ms with the two binaries run in turn (`call/new-class-instance`, 1.86x to
+1.84x in runs where QuickJS's own time moved as much), and with `super(…)` 3% less.
+
+`typeof` of a value was an instruction of the general way, every time: the loop left for it, and came
+back with the String. It is done in the loop where the value is in the result register and the
+reference register is empty; `typeof name` of a name that may not be bound comes with its Reference
+and goes as before. A loop of `typeof v === "number"` tests went from 9.7 to 8.0 ms
+(`loop/typeof-and-truthy`, 1.52x to 1.28x), and the plain loops and the calls are where they were:
+this arm, unlike the one for `yield` (the defects), moved nothing.
 
 ### 4. Properties
 
@@ -1528,6 +1545,10 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   property read with the instruction that fetches its object, made every loop and call 17-34% slower,
   though none ran it: the tables were kept in memory from then on. Given the cache and the key it
   cost nothing elsewhere, and gained nothing where it was for (area 1).
+- `typeof K` before `class K {}` in the same function gives "undefined" where it is to throw a
+  ReferenceError (the class is in its temporal dead zone), here and in the build this started from;
+  `typeof` of a `let` or a `const` there throws. Seen in the script for `typeof`, which leaves it
+  out. Not changed.
 - `ArrayBuffer.prototype.transfer` is there and throws "not implemented", here and in the build this
   started from; `o[key] += v` makes a property key of `key` once, where Node does it twice (the
   specification says once). Seen in the scripts for the length of a TypedArray and for compound
