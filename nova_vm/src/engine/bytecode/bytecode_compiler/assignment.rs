@@ -21,6 +21,98 @@ use crate::engine::{
     },
 };
 
+/// Whether the code that evaluates `expression` leaves the reference register
+/// as it finds it, so that the Reference of an assignment's target can wait
+/// in the register while the value is evaluated and need not be pushed
+/// before and popped after. `this.n += by` with a parameter `by` is five
+/// instructions and not seven.
+///
+/// That is: a literal; the name of a variable that the function keeps in a
+/// stack slot, which is one instruction that reads the slot (or throws,
+/// where the name is in its temporal dead zone); and the arithmetic, the
+/// comparisons and the choices among such. An operator may run code of the
+/// script (a `valueOf`), which another `Vm` runs, as it may where the
+/// operator of a compound assignment itself runs with the Reference in the
+/// register, after a literal as much as after anything.
+///
+/// Not a property, a call, a name found elsewhere, an assignment, `in` or
+/// `instanceof`: those use the register, or enter a function in place.
+fn leaves_reference_register<'s>(
+    ctx: &CompileContext<'_, 's, '_, '_>,
+    expression: &ast::Expression<'s>,
+) -> bool {
+    match expression {
+        ast::Expression::ParenthesizedExpression(inner) => {
+            leaves_reference_register(ctx, &inner.expression)
+        }
+        ast::Expression::BinaryExpression(binary) => {
+            !matches!(
+                binary.operator,
+                ast::BinaryOperator::In | ast::BinaryOperator::Instanceof
+            ) && leaves_reference_register(ctx, &binary.left)
+                && leaves_reference_register(ctx, &binary.right)
+        }
+        ast::Expression::UnaryExpression(unary) => {
+            matches!(
+                unary.operator,
+                ast::UnaryOperator::UnaryNegation
+                    | ast::UnaryOperator::UnaryPlus
+                    | ast::UnaryOperator::LogicalNot
+                    | ast::UnaryOperator::BitwiseNot
+            ) && leaves_reference_register(ctx, &unary.argument)
+        }
+        ast::Expression::LogicalExpression(logical) => {
+            leaves_reference_register(ctx, &logical.left)
+                && leaves_reference_register(ctx, &logical.right)
+        }
+        ast::Expression::ConditionalExpression(conditional) => {
+            leaves_reference_register(ctx, &conditional.test)
+                && leaves_reference_register(ctx, &conditional.consequent)
+                && leaves_reference_register(ctx, &conditional.alternate)
+        }
+        _ => expression.is_literal() || is_stack_variable(ctx, expression),
+    }
+}
+
+/// Whether `expression` is the name of a variable that the function keeps in
+/// a stack slot: as the name is compiled (`IdentifierReference`), the
+/// arguments object in its slot, or a variable with a stack slot.
+fn is_stack_variable<'s>(
+    ctx: &CompileContext<'_, 's, '_, '_>,
+    expression: &ast::Expression<'s>,
+) -> bool {
+    let ast::Expression::Identifier(identifier) = expression else {
+        return false;
+    };
+    let Some(reference) = identifier.reference_id.get() else {
+        return false;
+    };
+    let symbol = ctx.scoping().get_reference(reference).symbol_id();
+    (identifier.name == "arguments" && ctx.arguments_slot(symbol).is_some())
+        || symbol.is_some_and(|symbol| ctx.get_variable_stack_index(symbol).is_some())
+}
+
+/// The instruction of the operator of a compound assignment.
+fn compound_operator_instruction(operator: ast::BinaryOperator) -> Instruction {
+    match operator {
+        ast::BinaryOperator::Addition => Instruction::ApplyAdditionBinaryOperator,
+        ast::BinaryOperator::Subtraction => Instruction::ApplySubtractionBinaryOperator,
+        ast::BinaryOperator::Multiplication => Instruction::ApplyMultiplicationBinaryOperator,
+        ast::BinaryOperator::Division => Instruction::ApplyDivisionBinaryOperator,
+        ast::BinaryOperator::Remainder => Instruction::ApplyRemainderBinaryOperator,
+        ast::BinaryOperator::Exponential => Instruction::ApplyExponentialBinaryOperator,
+        ast::BinaryOperator::ShiftLeft => Instruction::ApplyShiftLeftBinaryOperator,
+        ast::BinaryOperator::ShiftRight => Instruction::ApplyShiftRightBinaryOperator,
+        ast::BinaryOperator::ShiftRightZeroFill => {
+            Instruction::ApplyShiftRightZeroFillBinaryOperator
+        }
+        ast::BinaryOperator::BitwiseOR => Instruction::ApplyBitwiseORBinaryOperator,
+        ast::BinaryOperator::BitwiseXOR => Instruction::ApplyBitwiseXORBinaryOperator,
+        ast::BinaryOperator::BitwiseAnd => Instruction::ApplyBitwiseAndBinaryOperator,
+        _ => unreachable!(),
+    }
+}
+
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::AssignmentExpression<'s> {
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
@@ -95,6 +187,55 @@ fn compile_named_assignment<'s, 'gc>(
     Ok(rval)
 }
 
+/// `p.name op= value` with the object kept on the stack, for a `p` that the
+/// function keeps in a stack slot and a value whose code does not leave the
+/// reference register alone (`p.x += p.vx`): the Reference way reads the
+/// property with its Reference kept, pushes the Reference for as long as
+/// the value is evaluated, pops it, and assigns through it. Here the object
+/// is pushed, its property read as any other, and the assignment made as
+/// `p.name = …` is: one instruction fewer, and no Reference made, pushed and
+/// popped.
+///
+/// The object that is assigned to is the one whose property was read: the
+/// slot is read twice with nothing in between. What is read and what is
+/// assigned are \[\[Get]] and \[\[Set]] of the same object and name, in the
+/// order of the Reference way: the object, the property's value, the
+/// value, the operator, the assignment.
+fn compile_named_compound_assignment<'s, 'gc>(
+    this: &'s ast::AssignmentExpression<'s>,
+    target: &'s ast::StaticMemberExpression<'s>,
+    name: String<'gc>,
+    ctx: &mut CompileContext<'_, 's, 'gc, '_>,
+) -> Result<ValueOutput<'gc>, ExpressionError> {
+    // 1. Let lref be ? Evaluation of LeftHandSideExpression: its object.
+    target.object.compile(ctx)?.get_value(ctx)?;
+    ctx.add_instruction(Instruction::Load);
+    let object_on_stack = ctx.mark_stack_value();
+    // 2. Let lval be ? GetValue(lref).
+    if let Err(err) = target.compile(ctx).and_then(|place| place.get_value(ctx)) {
+        object_on_stack.forget(ctx);
+        return Err(err);
+    }
+    let lval_copy = ctx.load_to_stack();
+    // 3. Let rref be ? Evaluation of AssignmentExpression.
+    // 4. Let rval be ? GetValue(rref).
+    if let Err(err) = this.right.compile(ctx).and_then(|r| r.get_value(ctx)) {
+        lval_copy.forget(ctx);
+        object_on_stack.forget(ctx);
+        return Err(err);
+    }
+    // 7. Let r be ? ApplyStringOrNumericBinaryOperator(lval, opText, rval).
+    lval_copy.forget(ctx);
+    ctx.add_instruction(compound_operator_instruction(
+        this.operator.to_binary_operator().unwrap(),
+    ));
+    // 8. Perform ? PutValue(lref, r).
+    object_on_stack.forget(ctx);
+    let cache = ctx.create_property_lookup_cache(name.to_property_key());
+    ctx.add_instruction_with_identifier_and_cache(Instruction::PutPropertyWithCache, name, cache);
+    Ok(ValueOutput::Value)
+}
+
 /// With `keep_value` false the value of a plain or compound assignment is not
 /// left in the result register: the caller discards it.
 pub(super) fn compile_assignment_expression<'s, 'gc>(
@@ -127,6 +268,24 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
             let name = ctx.create_string(target.property.name.as_str());
             if ctx.property_name_fits(name.to_property_key()) {
                 return compile_named_assignment(target, name, &this.right, ctx);
+            }
+        }
+        // `p.x += p.vx` likewise, for a local `p`: see
+        // `compile_named_compound_assignment`. With a value that leaves the
+        // reference register alone, the Reference way has no push and no
+        // pop, and is the shorter one.
+        if !keep_value
+            && !this.operator.is_assign()
+            && this.operator.to_logical_operator().is_none()
+            && let ast::AssignmentTarget::StaticMemberExpression(target) = &this.left
+            && !target.optional
+            && is_stack_variable(ctx, &target.object)
+            && !leaves_reference_register(ctx, &this.right)
+            && ctx.optional_chains.is_none()
+        {
+            let name = ctx.create_string(target.property.name.as_str());
+            if ctx.property_name_fits(name.to_property_key()) {
+                return compile_named_compound_assignment(this, target, name, ctx);
             }
         }
         let mut do_named_evaluation = false;
@@ -204,7 +363,8 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
         let lref = lref.assignment_target(ctx, !this.operator.is_assign());
 
         if this.operator.is_assign() {
-            let push_reference = lref.has_reference() && !this.right.is_literal();
+            let push_reference =
+                lref.has_reference() && !leaves_reference_register(ctx, &this.right);
 
             if push_reference {
                 ctx.add_instruction(Instruction::PushReference);
@@ -235,7 +395,8 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
         } else if let Some(operator) = this.operator.to_logical_operator() {
             // 2. Let lval be ? GetValue(lref).
             lref.get_value_keep_reference(ctx)?;
-            let push_reference = lref.has_reference() && !this.right.is_literal();
+            let push_reference =
+                lref.has_reference() && !leaves_reference_register(ctx, &this.right);
             if push_reference {
                 ctx.add_instruction(Instruction::PushReference);
             }
@@ -345,7 +506,8 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
             // 2. let lval be ? GetValue(lref).
             let _lval = lref.get_value_keep_reference(ctx)?;
             let lval_copy = ctx.load_to_stack();
-            let do_push_reference = lref.has_reference() && !this.right.is_literal();
+            let do_push_reference =
+                lref.has_reference() && !leaves_reference_register(ctx, &this.right);
             if do_push_reference {
                 ctx.add_instruction(Instruction::PushReference);
             }
@@ -363,25 +525,7 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
             // 6. Let opText be the sequence of Unicode code points associated with assignmentOpText in the following table:
             let op_text = this.operator.to_binary_operator().unwrap();
             // 7. Let r be ? ApplyStringOrNumericBinaryOperator(lval, opText, rval).
-            let op_text = match op_text {
-                ast::BinaryOperator::Addition => Instruction::ApplyAdditionBinaryOperator,
-                ast::BinaryOperator::Subtraction => Instruction::ApplySubtractionBinaryOperator,
-                ast::BinaryOperator::Multiplication => {
-                    Instruction::ApplyMultiplicationBinaryOperator
-                }
-                ast::BinaryOperator::Division => Instruction::ApplyDivisionBinaryOperator,
-                ast::BinaryOperator::Remainder => Instruction::ApplyRemainderBinaryOperator,
-                ast::BinaryOperator::Exponential => Instruction::ApplyExponentialBinaryOperator,
-                ast::BinaryOperator::ShiftLeft => Instruction::ApplyShiftLeftBinaryOperator,
-                ast::BinaryOperator::ShiftRight => Instruction::ApplyShiftRightBinaryOperator,
-                ast::BinaryOperator::ShiftRightZeroFill => {
-                    Instruction::ApplyShiftRightZeroFillBinaryOperator
-                }
-                ast::BinaryOperator::BitwiseOR => Instruction::ApplyBitwiseORBinaryOperator,
-                ast::BinaryOperator::BitwiseXOR => Instruction::ApplyBitwiseXORBinaryOperator,
-                ast::BinaryOperator::BitwiseAnd => Instruction::ApplyBitwiseAndBinaryOperator,
-                _ => unreachable!(),
-            };
+            let op_text = compound_operator_instruction(op_text);
             // Consumed by instruction.
             lval_copy.forget(ctx);
             ctx.add_instruction(op_text);

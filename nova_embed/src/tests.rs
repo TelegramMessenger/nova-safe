@@ -11627,3 +11627,339 @@ closures log iter|next|next|next|next"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `target op= value` reads the target with its Reference kept and assigns
+/// through that Reference, which was pushed for as long as the value was
+/// evaluated and popped after. Two ways around the push and the pop: a
+/// value whose code leaves the reference register alone (a literal, a
+/// variable in a stack slot, arithmetic of those) is evaluated with the
+/// Reference in the register; and `p.x op= value` for a `p` in a stack
+/// slot, with any other value, keeps the object on the stack and assigns
+/// as `p.x = …` does. The script assigns with every operator, to
+/// properties by name and by key, of `this`, of locals, of what a call
+/// gives, through accessors, a Proxy, `super` and private names; looks at
+/// the order of what runs and at the object that is assigned to where the
+/// value replaces the local; at what is thrown (no object, a frozen one, a
+/// setter that throws, a `valueOf` that throws, a name in its temporal
+/// dead zone) and at the this value of a call made after it was caught,
+/// which is not the object of the assignment that threw; and at logical
+/// assignment, generators and loops. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn a_compound_assignment_assigns_to_what_it_read() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(compound_assignments)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn compound_assignments() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// this.n += local, in a method, a constructor, an arrow
+var counter = { n: 0, bump: function (by) { this.n += by; return this.n; } };
+P("bump", counter.bump(3), counter.bump(4), counter.n);
+function Acc(start) { this.total = start; }
+Acc.prototype.add = function (v) { this.total += v; this.total -= 1; this.total *= v; return this; };
+P("acc", new Acc(2).add(3).add(2).total);
+// every compound operator with a local on the right
+(function () {
+  var o = { v: 7 }, k = 3;
+  o.v += k; P("+=", o.v); o.v -= k; P("-=", o.v); o.v *= k; P("*=", o.v); o.v /= k; P("/=", o.v);
+  o.v %= k; P("%=", o.v); o.v **= k; P("**=", o.v); o.v <<= k; P("<<=", o.v); o.v >>= k; P(">>=", o.v);
+  o.v >>>= k; P(">>>=", o.v); o.v |= k; P("|=", o.v); o.v ^= k; P("^=", o.v); o.v &= k; P("&=", o.v);
+  var s = { t: "a" }, add = "bc"; s.t += add; s.t += k; P("str", s.t);
+})();
+// computed keys, with the key and the value both locals
+(function () {
+  var a = [1, 2, 3], i = 1, v = 10, key = "name", o = { name: "x" };
+  a[i] += v; a[0] -= v; o[key] += v; P("computed", a.join(), o.name);
+  var log = [];
+  var keyed = { toString: function () { log.push("key"); return "name"; } };
+  o[keyed] += v; P("key by toString", o.name, log.length > 0);
+})();
+// the order of what runs: base, key, get, value, operator, set
+(function () {
+  var log = [];
+  var target = {
+    get x() { log.push("get"); return { valueOf: function () { log.push("valueOf-left"); return 5; } }; },
+    set x(v) { log.push("set " + v); }
+  };
+  function base() { log.push("base"); return target; }
+  var right = { valueOf: function () { log.push("valueOf-right"); return 2; } };
+  base().x += right;
+  base().x -= right;
+  P("order", log.join(","));
+})();
+// the value of the assignment expression, and chains
+(function () {
+  var o = { a: 1, b: 2 }, v = 5, r;
+  r = (o.a += v); P("value", r, o.a);
+  r = o.a += o.b += v; P("chain", r, o.a, o.b);
+  var x = 3; r = (o.a -= x) + (o.b -= x); P("sum", r, o.a, o.b);
+})();
+// a call right after: its this value is not the object assigned to
+(function () {
+  "use strict";
+  var o = { n: 1 }, v = 2;
+  function who() { return this === undefined ? "undefined" : typeof this; }
+  o.n += v; P("this after", who());
+  var m = { n: 1, who: who };
+  m.n += v; P("this of method after", m.who(), m.n);
+})();
+// errors: the base null or undefined, a frozen object, a setter that throws, no setter
+(function () {
+  "use strict";
+  var v = 1, nothing = null, undef;
+  P("null base", kind(function () { nothing.x += v; }));
+  P("undefined base", kind(function () { undef.x += v; }));
+  var frozen = Object.freeze({ x: 1 });
+  P("frozen", kind(function () { frozen.x += v; return frozen.x; }), frozen.x);
+  var getterOnly = { get x() { return 1; } };
+  P("getter only", kind(function () { getterOnly.x += v; }));
+  var thrower = { get x() { return 1; }, set x(value) { throw new RangeError("no"); } };
+  P("setter throws", kind(function () { thrower.x += v; }));
+  var o = { n: 1 };
+  o.n += v; P("after errors", o.n);
+  var sym = Symbol("s");
+  P("symbol", kind(function () { o.n += sym; }), o.n);
+  var big = 10n;
+  P("bigint mix", kind(function () { o.n += big; }), o.n);
+  var b = { n: 5n }; b.n += big; b.n *= big; P("bigint", b.n);
+})();
+(function () {
+  var v = 1, frozen = Object.freeze({ x: 1 });
+  frozen.x += v; P("frozen sloppy", frozen.x);
+  var prim = 5; prim.x += v; P("primitive base", prim, prim.x);
+  var str = "ab"; str.length += v; str[0] += v; P("string base", str, str.length);
+})();
+// the temporal dead zone of the local on the right, and of the target
+(function () {
+  var o = { n: 1 };
+  P("tdz right", kind(function () { o.n += later; let later = 2; }), o.n);
+  P("tdz base", kind(function () { var v = 1; soon.n += v; let soon = { n: 0 }; }));
+})();
+// arguments, parameters, a variable a closure also holds, a const
+(function (p) {
+  var o = { n: 0 };
+  o.n += arguments; P("arguments", typeof o.n, o.n.length);
+  o.n = 0; o.n += arguments.length; o.n += p; P("parameter", o.n);
+  var held = 4; function reader() { return held; }
+  o.n += held; P("held", o.n, reader());
+  const fixed = 6; o.n += fixed; let block = 7; o.n += block; P("const let", o.n);
+})(5, 6);
+// logical assignment with a local on the right
+(function () {
+  var o = { a: 0, b: 1, c: null, d: undefined, e: "" }, v = 9, log = [];
+  o.a ||= v; o.b ||= v; o.c ??= v; o.d ??= v; o.e &&= v; o.b &&= v;
+  P("logical", o.a, o.b, o.c, o.d, JSON.stringify(o.e));
+  var watched = { get x() { log.push("get"); return 0; }, set x(value) { log.push("set " + value); } };
+  watched.x ||= v; watched.x &&= v; watched.x ??= v; P("logical order", log.join(","));
+  var r = (o.a &&= v) + (o.missing ??= v); P("logical value", r, o.missing);
+})();
+// plain assignment with a local on the right: names found by `with` and by eval, properties
+(function () {
+  var v = 42, log = [];
+  var e = eval("var made = 1; made"); made = v; P("eval var", made, e);
+  var o = { set x(value) { log.push("set " + value); } }; o.x = v; o["x"] = v; P("plain", log.join(","));
+  undeclared_global_compound = v; undeclared_global_compound += v; P("global", undeclared_global_compound);
+})();
+// super properties and private names
+class Base { get size() { return this._s || 1; } set size(v) { this._s = v; } }
+class Derived extends Base {
+  #count = 1;
+  grow(by) { super.size += by; this.#count += by; this.#count *= by; return super.size + ":" + this.#count; }
+  static total = 0;
+  static add(v) { Derived.total += v; this.total += v; return this.total; }
+}
+P("super private", new Derived().grow(3), Derived.add(4));
+// update expressions and a compound assignment in a loop
+(function () {
+  var o = { n: 0, m: 0 }, step = 2;
+  for (var i = 0; i < 1000; i++) { o.n += step; o.m -= i; o.n++; --o.m; }
+  P("loop", o.n, o.m);
+})();
+// in a generator and an async function, around a yield
+function* gen(o, v) { o.n += v; var got = yield o.n; o.n += got; yield o.n; }
+(function () { var o = { n: 1 }, g = gen(o, 2); P("generator", g.next().value, g.next(10).value, o.n); })();
+// the target is replaced or changed by the getter while the assignment runs
+(function () {
+  var v = 1, holder = { o: { n: 1 } }, first = holder.o;
+  var tricky = { get n() { holder.o = { n: 100 }; return 5; }, set n(value) { this.stored = value; } };
+  holder.o = tricky; holder.o.n += v; P("replaced", tricky.stored, holder.o.n);
+  var grows = { get n() { this.extra = 1; delete this.gone; return 2; }, set n(value) { this.kept = value; }, gone: 1 };
+  grows.n += v; P("changed shape", grows.kept, grows.extra, "gone" in grows);
+  var proxy = new Proxy({ n: 1 }, { get: function (t, k) { return t[k] * 10; }, set: function (t, k, value) { t[k] = value + 0.5; return true; } });
+  proxy.n += v; P("proxy", proxy.n);
+})();
+// typed arrays and array length
+(function () {
+  var t = new Uint8Array(2), v = 300, a = [1, 2, 3], one = 1, i = 0;
+  t[i] += v; t[1] -= one; a.length -= one; a[a.length] = v; a.length += one;
+  P("typed", t[0], t[1], a.join(), a.length);
+})();
+// a property of a local, with a value that is itself read from properties, calls and other assignments
+(function () {
+  var p = { x: 1, y: 2, vx: 3, vy: 4, n: "s" }, q = { x: 10 }, log = [];
+  p.x += p.vx; p.y -= p.vy; p.vx *= q.x; p.n += p.n; P("props", p.x, p.y, p.vx, p.n);
+  function side() { log.push("call"); p = { x: 100, vx: 1 }; return 5; }
+  var first = p; p.x += side(); P("local replaced by the value", first.x, p.x, log.join());
+  var o = { a: 1 }; o.a += (o = { a: 50 }).a; P("local assigned in the value", o.a);
+  var w = { get v() { log.push("get"); return 1; }, set v(value) { log.push("set " + value); } };
+  log.length = 0; w.v += w.v; w.v -= side(); P("accessors", log.join(","));
+  var und; P("undefined local", kind(function () { und.x += q.x; }));
+  var num = 5; num.x += q.x; P("number local", num);
+  var frozen = Object.freeze({ x: 1 }); frozen.x += q.x; P("frozen local", frozen.x);
+  P("frozen strict", kind(function () { "use strict"; var f = Object.freeze({ x: 1 }); f.x += q.x; }));
+  P("string strict", kind(function () { "use strict"; var s = "ab"; s.length += q.x; }));
+  P("setter this", kind(function () { "use strict"; Object.defineProperty(Number.prototype, "probe", { configurable: true, get: function () { return 1; }, set: function (v) { log.push(typeof this); } }); var n = 5; log.length = 0; n.probe += q.x; delete Number.prototype.probe; return log.join(); }));
+  P("thrown value", kind(function () { var t = { x: 1 }; t.x += (function () { throw new RangeError("r"); })(); }));
+  P("tdz local", kind(function () { late.x += q.x; let late = { x: 1 }; }));
+  var arr = [1, 2]; arr.length += q.x; P("array length", arr.length);
+  (function () { arguments.length += q.x; arguments.extra += q.x; P("arguments", arguments.length, String(arguments.extra)); })(1, 2);
+  var proxied = new Proxy({ x: 1 }, { get: function (t, k) { log.push("pget"); return t[k]; }, set: function (t, k, v) { log.push("pset " + v); t[k] = v; return true; } });
+  log.length = 0; proxied.x += q.x; P("proxy local", log.join(","), proxied.x);
+  var parts = { a: 1, b: 2, c: 3 }; for (var i = 0; i < 300; i++) { parts.a += parts.b; parts.b ^= parts.c; parts.c -= parts.a & 3; }
+  P("loop of properties", parts.a, parts.b, parts.c);
+  var r = (p.x += q.x); P("value used", r, p.x);
+  var chain = { a: 1, b: 2 }; chain.a += chain.b += q.x; P("chained", chain.a, chain.b);
+})();
+function* gen2(o, q) { o.n += yield o.n; o.n *= q.k; yield o.n; }
+(function () { var o = { n: 1 }, g = gen2(o, { k: 3 }); P("generator value", g.next().value, g.next(4).value, o.n); })();
+(function () {
+  var o = { a: 1 }, old = o, other = { a: 7 };
+  o.a += (o = { a: 50 }).a; P("the object read is the object assigned", old.a, o.a);
+  var t = { a: 1 }, was = t; t.a *= (t = other, other.a); P("comma", was.a, t.a, other.a);
+  var u = { a: 2 }, kept = u; u.a -= [u = null, 5][1]; P("made null", kept.a, u);
+})();
+// a value that is arithmetic of locals and literals, and what it runs
+(function () {
+  "use strict";
+  var log = [];
+  function noisy(name, value) { return { valueOf: function () { log.push(name); return value; } }; }
+  var o = { n: 1, s: "a" }, a = 3, b = 4, c = noisy("c", 5), d = noisy("d", 6), t = true, z = 0, nothing = null;
+  o.n += a * b; o.n -= -a; o.n += a + (b - a) * 2; o.n *= (a < b ? a : b); o.n += a || b; o.n -= z && b; o.n += nothing ?? b;
+  o.n += !t; o.n ^= ~a; o.n += +t; o.n <<= a - 2; o.n += a % 2 === 1; o.n += (a > b) | (a != b);
+  P("arithmetic", o.n);
+  o.n += c * d; o.n -= c - d; P("valueOf order", o.n, log.join(","));
+  o.s += a + "-" + b + "-" + t; o.s += a + b; P("strings", o.s);
+  var target = { get n() { log.push("get"); return noisy("left", 1); }, set n(v) { log.push("set " + v); } };
+  log.length = 0; target.n += c + d; target.n *= c; P("get, left, value, set", log.join(","));
+  function who() { return this === undefined ? "undefined" : typeof this; }
+  var bad = { valueOf: function () { throw new RangeError("bad"); } }, sym = Symbol("s");
+  var after = [];
+  try { o.n += a * bad; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  try { o.n += sym; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  try { o.n += 1; o.n += a - late; let late = 1; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  try { target.n += a; nothing.n += a + b; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  var thrower = { get n() { return 1; }, set n(v) { throw new EvalError("set"); } };
+  try { thrower.n += a + b; } catch (e) { after.push(e.constructor.name); } after.push(who());
+  var m = { who: who, n: 1 }; m.n += a * b; after.push(m.who(), m.n);
+  P("this after a throw", after.join(","));
+  var counts = { hits: 0, sum: 0, text: "" };
+  for (var i = 0; i < 500; i++) { counts.hits += i & 1; counts.sum += i * a - b; counts.text += i < 3 ? i : ""; }
+  P("loop of arithmetic", counts.hits, counts.sum, counts.text);
+  o.k = 0; o.k ||= a + b; o.k &&= a * b; o.missing ??= a - b; P("logical arithmetic", o.k, o.missing);
+  (function (x, y) { this.total = 1; this.total += x * y; this.total -= arguments.length; P("this target", this.total); }).call({}, 6, 7);
+})();
+lines.join("\n")"##;
+    let expected = r##"bump 3 7 7
+acc 26
++= 10
+-= 7
+*= 21
+/= 7
+%= 1
+**= 1
+<<= 8
+>>= 1
+>>>= 0
+|= 3
+^= 0
+&= 0
+str abc3
+computed -9,12,3 x10
+key by toString x1010 true
+order base,get,valueOf-left,valueOf-right,set 7,base,get,valueOf-left,valueOf-right,set 3
+value 6 6
+chain 13 13 7
+sum 14 10 4
+this after undefined
+this of method after object 3
+null base TypeError
+undefined base TypeError
+frozen TypeError 1
+getter only TypeError
+setter throws RangeError
+after errors 2
+symbol TypeError 2
+bigint mix TypeError 2
+bigint 150
+frozen sloppy 1
+primitive base 5 undefined
+string base ab 2
+tdz right ReferenceError 1
+tdz base ReferenceError
+arguments string 19
+parameter 7
+held 11 4
+const let 24
+logical 9 9 9 9 ""
+logical order get,set 9,get,get
+logical value 18 9
+eval var 42 1
+plain set 42,set 42
+global 84
+super private 4:12 8
+loop 3000 -500500
+generator 3 13 13
+replaced 6 100
+changed shape 3 1 false
+proxy 115
+typed 44 255 1,2,300, 4
+props 4 -2 30 ss
+local replaced by the value 9 100 call
+local assigned in the value 50
+accessors get,get,set 2,get,call,set -4
+undefined local TypeError
+number local 5
+frozen local 1
+frozen strict TypeError
+string strict TypeError
+setter this ok number
+thrown value RangeError
+tdz local ReferenceError
+array length 12
+arguments 12 NaN
+proxy local pget,pset 11 11
+loop of properties 21083 -2 -510
+value used 110 110
+chained 13 12
+generator value 1 15 15
+the object read is the object assigned 51 50
+comma 7 7 7
+made null -3 null
+arithmetic -136
+valueOf order -105 c,d,c,d
+strings a3-4-true7
+get, left, value, set get,c,d,left,set 12,get,left,c,set 5
+this after a throw RangeError,undefined,TypeError,undefined,ReferenceError,undefined,TypeError,undefined,EvalError,undefined,object,13
+loop of arithmetic 250 372250 012
+logical arithmetic 12 -1
+this target 41"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
