@@ -42,7 +42,7 @@ below.
 | map, set | 4 | 4.6x | 1.3x |
 | app | 8 | 6.1x | 1.6x |
 | array | 14 | 5.8x | 1.5x |
-| regexp | 4 | 2.4x | 1.7x |
+| regexp | 4 | 2.4x | 1.5x |
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.8x |
@@ -52,8 +52,8 @@ The worst case was 303x (appending to a string 100,000 times); that one is 1.6x,
 was the worst after it (38x, area 7), 1.7x. The worst are now the call of a closure and a step of a
 particle animation (2.6-2.8x from one run to the next), the properties of one object read and written
 in a loop and arithmetic on the elements of a `Float64Array` (2.4x). 89 of the 108 cases are at or
-under 2x (a few sit within a few hundredths of 2x and cross it from one run to the next), 19 of them
-at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+under 2x (half a dozen sit within a few hundredths of 2x and cross it from one run to the next), 18
+or 19 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -84,7 +84,9 @@ QuickJS's own times were 0.9% lower). What a Map, a Set, a RegExp and a TypedArr
 their caches took it to 1.47x (the run of that round was taken while other work ran on the machine,
 and was repeated from the round's saved library when the machine was quiet), a table of
 descriptors that knows which storages have any to 1.46x, and the `+` of Strings done where the
-operators on Numbers are done to 1.44x.
+operators on Numbers are done to 1.44x. What a RegExp match gives made without defining it piece by
+piece took the two RegExp cases that were over 2x under it (the mean read 1.44x again, in a run
+where QuickJS's own times were 2% lower).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -799,7 +801,8 @@ reads was 3% slower: it is a function of its own. And what it remembers was a fi
 first: the code that makes an engine grew by 12 bytes, the loop of instructions, the same
 instructions otherwise, started 4 bytes later, and `loop/switch` was 9% slower by the best runs and
 15% by the medians. Kept in the heap, the loop of instructions is the same instructions at the same
-places, 364 of its 13,274 reading the agent 24 bytes further on. (This said "byte for byte" at
+places, 275 of its 13,274 reading the agent 24 bytes further on (and 89 more with other low bits of
+an address, which move with the code). (This said "byte for byte" at
 first, by the hash in the function's symbol, which does not tell: it is of the function's name and
 type, not of its code. The code of two builds is compared as such since.) Neither
 was a property of the change: both are where this benchmark's binary happens to put things, which
@@ -828,7 +831,7 @@ With the two binaries run in turn: an assignment to a global variable in a loop 
 (2.53x to 2.40x), `prop/object-spread-assign` and `json/stringify` 3.5% less,
 `app/easing-animation-frame` 5% less, a step of the particles 1-3% less. `loop/switch` reads 1%
 slower by the best runs and 3% by the medians, with the loop of instructions the same instructions
-(537 of its 13,274 reading the agent at another offset: the table is larger than the map it took the
+(356 of its 13,274 reading the agent at another offset: the table is larger than the map it took the
 place of, and what the agent has after it moved) and 2368 bytes further on in the binary.
 
 What is left of a write to a global variable is spread thin: the state of the global scope checked
@@ -1399,6 +1402,29 @@ is put together from them, a function still being called for each match after al
 a lastIndex that is not a number, named groups and any replaced part of the protocol take the steps as written.
 Replacing with a function went from 1.5x to 0.9x, with a string and a RegExp in turn from 30 to 10 ms (0.5x),
 the rendered list from 2.1x to 1.7x. `match`, `matchAll`, `split` and `search` still go by the properties.
+
+`match` with "g" among the flags goes the same way since: for a RegExp with that built-in protocol the
+matches are found by the matcher alone and the Array is made of their texts, where RegExpExec made a
+result at every match for its "0" to be read. The loop that collected the ranges for `replace` gives
+each match to its caller for this, so the texts are kept as they are found: a list of ranges first
+would be several times what the Array takes, and a text matched at very many places would be refused
+under a heap limit where it was not.
+
+And a result of RegExpBuiltinExec, which every `exec`, every `match` without "g", `matchAll` and
+`split` still make, was an Array given "index", "input", "groups" and each capture through
+\[\[DefineOwnProperty]], one at a time: a third of a loop over the matches of a RegExp. Where no
+capture has a name it is made at once: the captures are the elements of the new Array, and the three
+properties, in that order, are what the ordinary object that has an Array's properties is made with,
+where the steps made it empty for the first and added each. A setter put where those properties
+would be inherited from is not called either way: they are defined, not assigned.
+
+With the two binaries run in turn: `regexp/exec-groups-global` went from 1.28 to 1.02 ms (2.21x to
+1.87x), `regexp/split-and-match` from 7.93 to 6.10 ms (2.18x to 1.75x); the loops, the calls and the
+properties are within 1.6%, `loop/switch` 2.3% slower with the loop of instructions the same code
+132 bytes further on. A hundred thousand matches of one character in one text take 6 ms by `match`
+and 26 ms by a loop of `exec`, where the build this started from took 29 and 46, and Node takes
+under 1 and 4: what is left is in each search before the matcher runs (the heap measured for the
+limit, the room for its stacks worked out, the text looked at) and in the call of `exec`.
 
 `Array.prototype.join` was the specification's loop for every Array: for each element the separator read
 from its rooted handle, Get of the element by its index through the general way of a property, a
