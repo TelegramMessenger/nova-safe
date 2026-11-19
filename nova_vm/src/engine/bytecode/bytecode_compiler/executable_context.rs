@@ -29,7 +29,7 @@ use crate::{
 };
 
 use super::{IndexType, JumpIndex};
-use crate::engine::{CallEnvironment, CodeTables, SwitchTable};
+use crate::engine::{Bytecode, CallEnvironment, CodeTables, SwitchTable};
 
 /// The ThrowError immediate of an executable that stands in for code using
 /// syntax the compiler does not support. Running it panics, as compiling that
@@ -272,7 +272,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             .into_iter()
             .map(|cases| SwitchTable::new(cases, &self.constants))
             .collect();
-        let instructions: std::sync::Arc<[u8]> = self.instructions.into();
+        let instructions = Bytecode::new(self.instructions);
         self.agent.heap.create(ExecutableHeapData {
             tables: CodeTables::new(
                 instructions.clone(),

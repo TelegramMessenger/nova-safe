@@ -1504,7 +1504,7 @@ impl Instr {
             {
                 let [arg0, arg1] = self.args.two_args();
                 let instructions = exe.get_instructions(agent);
-                let slot = Self::wide_third_index(&instructions, ip + 9);
+                let slot = Self::wide_third_index(instructions.code(), ip + 9);
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
                 eprintln!("  {}: {:?}({}, {}, {})", ip, self.kind, slot, key, arg1);
             }
@@ -1515,7 +1515,7 @@ impl Instr {
             {
                 let [arg0, arg1] = self.args.two_args();
                 let instructions = exe.get_instructions(agent);
-                let slot = Self::wide_third_index(&instructions, ip + 9);
+                let slot = Self::wide_third_index(instructions.code(), ip + 9);
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
                 eprintln!(
                     "  {}: {:?}({}, {}, kept in {})",
@@ -1525,7 +1525,7 @@ impl Instr {
             4 => {
                 let [arg0, arg1] = self.args.two_args();
                 let instructions = exe.get_instructions(agent);
-                let target = Self::wide_jump_target(&instructions, ip + 9);
+                let target = Self::wide_jump_target(instructions.code(), ip + 9);
                 let constant = matches!(self.kind.compared_local(), Some((_, true)))
                     || matches!(self.kind.loop_test(), Some((_, _, true)));
                 let operand = if constant {

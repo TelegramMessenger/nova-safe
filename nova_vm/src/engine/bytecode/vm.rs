@@ -959,7 +959,7 @@ impl Vm {
 
         eprintln!("Instructions:");
         let instructions = executable.get_instructions(agent);
-        let iter = InstructionIter::new(&instructions);
+        let iter = InstructionIter::new(instructions.code());
         for (ip, instr) in iter {
             instr.debug_print(agent, ip, executable.clone(), gc);
         }
@@ -1086,10 +1086,14 @@ impl Vm {
             let mut collections = agent.heap.collections;
             // The code as the loop reads an instruction from it with one
             // look at how much is left: an instruction and the four bytes
-            // after it. None of it when the instructions are printed, so
-            // that every one of them goes the other way, where the last
-            // instructions of the code and its end go.
-            let instructions = code_tables.instructions();
+            // after it, which the padding after the code gives its last
+            // instruction too (the Return of a function). None of it when
+            // the instructions are printed, so that every one of them goes
+            // the other way, where the end of the code goes. The
+            // instructions are read where they are from the same slice,
+            // each at or before the place of the next one, so that the
+            // loop has one slice at hand and not two.
+            let instructions = code_tables.padded();
             let windows: &[u8] = if print_internals { &[] } else { instructions };
             // The tables as three slices, which stay what they are while
             // this code runs: a collection rewrites their entries in place.
@@ -1101,7 +1105,9 @@ impl Vm {
                     Instr::in_window(window)
                 } else {
                     let mut next = ip;
-                    let Some(instr) = Instr::consume_instruction(instructions, &mut next) else {
+                    let Some(instr) =
+                        Instr::consume_instruction(code_tables.instructions(), &mut next)
+                    else {
                         break Change::End;
                     };
                     if print_internals {
@@ -2050,8 +2056,16 @@ impl Vm {
         // stacks (it returned out of a loop, or threw) is cut off.
         core::mem::swap(&mut self.stack, &mut frame.stack);
         frame.stack.clear();
-        self.reference_stack.truncate(frame.reference_base);
-        self.iterator_stack.truncate(frame.iterator_base);
+        // Most functions leave nothing on these two: cutting a vector of
+        // what has a destructor calls for the dropping of the nothing that
+        // is cut off, which was a twentieth of a plain call's time with the
+        // release below.
+        if self.reference_stack.len() > frame.reference_base {
+            self.reference_stack.truncate(frame.reference_base);
+        }
+        if self.iterator_stack.len() > frame.iterator_base {
+            self.iterator_stack.truncate(frame.iterator_base);
+        }
         self.exception_handler_stack.truncate(self.handler_base);
         self.handler_base = frame.handler_base;
         let mut stepped = None;
@@ -2119,7 +2133,9 @@ impl Vm {
         }
         agent.stack_refs.get_mut().truncate(stack_depth);
         debug_assert_eq!(executable.get(agent), code);
-        release_scoped_collections(agent, collections_depth);
+        if agent.stack_ref_collections.get_mut().len() > collections_depth {
+            release_scoped_collections(agent, collections_depth);
+        }
         if let Some((generator, done, reference)) = stepped {
             self.end_resumed_generator(agent, generator, done, reference, returned);
         }

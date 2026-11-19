@@ -2364,7 +2364,7 @@ pub(super) fn execute_fused_instruction<'gc>(
             let Some((step, comparison, constant)) = kind.loop_test() else {
                 unreachable!()
             };
-            let target = Instr::wide_jump_target(&executable.get_instructions(agent), vm.ip);
+            let target = Instr::wide_jump_target(executable.get_instructions(agent).code(), vm.ip);
             let slot = instr.get_first_index();
             if step != 0 {
                 // IncrementIndex or DecrementIndex: GetValueFromIndex,
@@ -2410,7 +2410,7 @@ pub(super) fn execute_fused_instruction<'gc>(
             let Some((comparison, constant)) = kind.compared_local() else {
                 unreachable!()
             };
-            let target = Instr::wide_jump_target(&executable.get_instructions(agent), vm.ip);
+            let target = Instr::wide_jump_target(executable.get_instructions(agent).code(), vm.ip);
             // LoadFromIndexStoreConstant or LoadFromIndexGetFromIndex
             let left = vm.stack[instr.get_first_index()];
             vm.stack.push(left);
@@ -2561,7 +2561,7 @@ pub(super) fn execute_fused_property_instruction<'gc>(
     ) {
         // GetValueFromIndex: the plain way found the property not to be
         // one the cache places.
-        let slot = Instr::wide_third_index(&executable.get_instructions(agent), vm.ip);
+        let slot = Instr::wide_third_index(executable.get_instructions(agent).code(), vm.ip);
         vm.result = Some(vm.stack[slot]);
     } else {
         // ResolveThisBinding, where the call does not keep the this value

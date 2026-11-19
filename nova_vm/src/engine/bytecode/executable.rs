@@ -108,9 +108,49 @@ const EXECUTABLE_OPTION_SIZE_IS_U32: () =
 ///
 /// - This is inspired by and/or copied from Kiesel engine:
 ///   Copyright (c) 2023-2024 Linus Groh
+/// The instructions of an Executable, shared by whoever runs them, and a few
+/// bytes after them that are no instruction ([`Bytecode::PADDING`]).
+///
+/// The loop of a `Vm` reads an instruction with the four bytes after it in
+/// one look ([`Bytecode::padded`]), and went another, slower way for an
+/// instruction that has fewer than four bytes of code after it: the Return
+/// that ends nearly every function. The padding gives that one its four
+/// bytes. It is not code: the instructions, where the code ends, and what
+/// a jump or a listing may reach are [`Bytecode::code`], and nothing but
+/// that look reads the padding.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Bytecode(Arc<[u8]>);
+
+impl Bytecode {
+    /// The bytes after the instructions: as many as the loop reads beyond
+    /// the first byte of an instruction.
+    const PADDING: usize = 4;
+
+    pub(crate) fn new(mut instructions: Vec<u8>) -> Self {
+        instructions.extend_from_slice(&[0; Self::PADDING]);
+        Self(instructions.into())
+    }
+
+    /// The instructions.
+    #[inline(always)]
+    pub(crate) fn code(&self) -> &[u8] {
+        match self.0.split_last_chunk::<{ Self::PADDING }>() {
+            Some((code, _)) => code,
+            None => &[],
+        }
+    }
+
+    /// The instructions and the padding after them, for reading an
+    /// instruction with the four bytes that follow it.
+    #[inline(always)]
+    pub(crate) fn padded(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, Bindable)]
 pub(crate) struct ExecutableHeapData<'a> {
-    pub(crate) instructions: Arc<[u8]>,
+    pub(crate) instructions: Bytecode,
     /// The constants, the property caches and the binding sites: see
     /// [`CodeTables`]. A copy of this data shares them, and is only to be
     /// read: two Executables in the heap with one set of tables would have
@@ -159,7 +199,7 @@ pub(crate) struct ExecutableHeapData<'a> {
 #[derive(Debug)]
 pub(crate) struct CodeTables {
     /// The bytecode itself, which the Executable holds too.
-    instructions: Arc<[u8]>,
+    instructions: Bytecode,
     constants: Box<[Cell<Value<'static>>]>,
     caches: Box<[Cell<PropertyLookupCache<'static>>]>,
     binding_sites: Box<[Cell<BindingSite>]>,
@@ -169,7 +209,7 @@ impl CodeTables {
     /// The tables of a new Executable, with `binding_sites` places that
     /// have found nothing yet.
     pub(crate) fn new(
-        instructions: Arc<[u8]>,
+        instructions: Bytecode,
         constants: Vec<Value<'static>>,
         caches: Vec<PropertyLookupCache<'static>>,
         binding_sites: usize,
@@ -186,7 +226,13 @@ impl CodeTables {
 
     #[inline(always)]
     pub(crate) fn instructions(&self) -> &[u8] {
-        &self.instructions
+        self.instructions.code()
+    }
+
+    /// The instructions with the padding after them: see [`Bytecode`].
+    #[inline(always)]
+    pub(crate) fn padded(&self) -> &[u8] {
+        self.instructions.padded()
     }
 
     /// The tables as the loop of a `Vm` keeps them at hand.
@@ -498,18 +544,18 @@ impl<'gc> Executable<'gc> {
     /// The bytecode, shared: a running VM holds its own reference, so the
     /// bytecode outlives the Executable if that is dropped while it runs.
     #[inline]
-    pub(super) fn get_instructions(self, agent: &Agent) -> Arc<[u8]> {
+    pub(super) fn get_instructions(self, agent: &Agent) -> Bytecode {
         self.get(agent).instructions.clone()
     }
 
     #[inline]
     fn peek_instruction_byte(self, agent: &Agent, ip: usize) -> Option<u8> {
-        self.get(agent).instructions.get(ip).copied()
+        self.get(agent).instructions.code().get(ip).copied()
     }
 
     #[inline]
     fn get_instruction(self, agent: &Agent, ip: &mut usize) -> Option<Instr> {
-        Instr::consume_instruction(&self.get(agent).instructions, ip)
+        Instr::consume_instruction(self.get(agent).instructions.code(), ip)
     }
 
     /// The tables of this Executable, shared: see [`CodeTables`].
@@ -656,7 +702,7 @@ impl<'gc> Executable<'gc> {
 
 impl Scoped<'_, Executable<'static>> {
     #[inline]
-    pub(super) fn get_instructions(&self, agent: &Agent) -> Arc<[u8]> {
+    pub(super) fn get_instructions(&self, agent: &Agent) -> Bytecode {
         self.get(agent).get_instructions(agent)
     }
 

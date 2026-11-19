@@ -657,7 +657,7 @@ fn create_name_and_id<'a>(agent: &'a Agent, f: ECMAScriptFunction<'a>) -> (Cow<'
     let id = f
         .get(agent)
         .compiled_bytecode
-        .map_or(0, |b| b.get(agent).instructions.as_ptr() as u64);
+        .map_or(0, |b| b.get(agent).instructions.code().as_ptr() as u64);
     let name = f.get_name(agent).to_string_lossy_(agent);
     (name, id)
 }

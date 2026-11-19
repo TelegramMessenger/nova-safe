@@ -71,7 +71,7 @@ impl Heap {
             }
         }
         for executable in self.executables.iter() {
-            total += executable.instructions.len()
+            total += executable.instructions.padded().len()
                 + executable.tables.heap_bytes()
                 + vec_bytes(&executable.shapes)
                 + vec_bytes(&executable.function_expressions)

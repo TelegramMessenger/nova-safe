@@ -11963,3 +11963,107 @@ this target 41"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// The instructions of an Executable have a few bytes after them that are
+/// no instruction, so that the loop reads the last instruction of the code
+/// (the Return of nearly every function) as it reads any other. Where the
+/// code ends is where it ended: the script has functions, arrows,
+/// methods, accessors, constructors and generators whose code ends without
+/// a return, after a jump to its end, in a `try`, a `switch` and a labelled
+/// block; reads the value of `eval` and of a function made from text at
+/// the end of their code; calls short functions whose last instruction is
+/// their Return a few thousand times; and has the last instruction throw.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn code_ends_where_its_instructions_end() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(ends_of_code)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn ends_of_code() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+// functions whose code ends in every way: with and without a return, after a jump to the end
+function empty() {}
+function only(x) { if (x) return 1; }
+function loopEnd(n) { for (var i = 0; i < n; i++) { if (i === 3) return i; } }
+function whileEnd(n) { while (n-- > 0) { if (n === 2) break; } }
+function tryEnd(x) { try { if (x) return "t"; } finally { x = 0; } }
+function catchEnd(x) { try { if (x) throw 1; } catch (e) { return "c"; } }
+function switchEnd(x) { switch (x) { case 1: return "one"; case 2: break; default: } }
+function labelEnd(x) { out: { if (x) break out; return "in"; } }
+function exprEnd(x) { x + 1; }
+function lastExpr(x) { x = x * 2; x; }
+function nested(x) { function inner() { if (x) return "i"; } return inner(); }
+var arrow = (x) => x * 2, arrowBlock = (x) => { if (x) return x; }, arrowEmpty = () => {};
+P("fall", empty(), only(0), only(1), loopEnd(2), loopEnd(9), whileEnd(5), tryEnd(0), tryEnd(1), catchEnd(0), catchEnd(1));
+P("more", switchEnd(1), switchEnd(2), switchEnd(3), labelEnd(1), labelEnd(0), exprEnd(1), lastExpr(2), nested(0), nested(1));
+P("arrows", arrow(4), arrowBlock(0), arrowBlock(5), arrowEmpty());
+// short functions called many times, whose last instruction is their Return
+function add(a, b) { return a + b; }
+function id(a) { return a; }
+function zero() { return 0; }
+var total = 0; for (var i = 0; i < 2000; i++) total = add(total, id(i)) + zero();
+P("calls", total);
+// constructors, methods, accessors, generators and async functions that end without a return
+function Ctor(v) { this.v = v; }
+class K { constructor(v) { this.v = v; } get g() { if (this.v) return this.v; } set s(v) { this.v = v; } m() {} static st() {} }
+var k = new K(3); k.s = 7;
+P("class", new Ctor(1).v, k.g, new K(0).g, k.m(), K.st());
+function* g1() { yield 1; }
+function* g2() { yield 1; return 2; }
+function* g3() {}
+function* g4(x) { if (x) { yield x; } }
+var a = g1(), b = g2(), c = g3(), d = g4(0);
+P("generators", JSON.stringify([a.next(), a.next(), b.next(), b.next(), b.next(), c.next(), d.next()]));
+P("spread", [...g1(), ...g2(), ...g3(), ...g4(5)].join());
+// the value of a Script and of eval at the end of their code
+P("eval", eval("1; 2"), eval("if (true) { 3 }"), eval("var q = 1"), eval(""), eval("for (var e = 0; e < 3; e++) e"), eval("L: { 5; break L; }"), eval("try { 6 } finally { 7 }"), eval("switch (1) { case 1: 8 }"));
+P("function ctor", new Function("a", "b", "return a * b")(3, 4), new Function("")(), new Function("a", "if (a) return a")(0));
+// callbacks whose code ends at once
+P("callbacks", [1, 2, 3].map(function (v) { if (v > 1) return v; }).join(), [3, 1, 2].sort(function (x, y) { return x - y; }).join(), [1, 2].forEach(function () {}));
+// a getter and a setter run in place, a bound function, a derived constructor without one of its own
+var o = { get p() { return 9; }, set p(v) { this.q = v; } }; o.p = o.p + 1;
+class D extends K {} function plain() { return this.v; }
+P("in place", o.q, new D(4).v, plain.bind({ v: 5 })(), (function () { return arguments.length; })(1, 2, 3));
+// errors thrown by the last instruction and at the end
+function throwsLast() { throw new RangeError("last"); }
+function tdzLast() { return late; let late; }
+function callsUndefined() { return undefined(); }
+function kindOf(f) { try { return "ok " + f(); } catch (e) { return e.constructor.name; } }
+P("errors", kindOf(throwsLast), kindOf(tdzLast), kindOf(callsUndefined), kindOf(function () { return null.x; }), kindOf(function () { null.x; }));
+// deep recursion that ends by falling off the end
+function down(n) { if (n > 0) down(n - 1); }
+function sumTo(n) { return n === 0 ? 0 : n + sumTo(n - 1); }
+P("recursion", down(500), sumTo(500), kindOf(function forever() { forever(); }));
+lines.join("\n")"##;
+    let expected = r##"fall undefined undefined 1 undefined 3 undefined undefined t undefined c
+more one undefined undefined undefined in undefined undefined undefined i
+arrows 8 undefined 5 undefined
+calls 1999000
+class 1 7 undefined undefined undefined
+generators [{"value":1,"done":false},{"done":true},{"value":1,"done":false},{"value":2,"done":true},{"done":true},{"done":true},{"done":true}]
+spread 1,1,5
+eval 2 3 undefined undefined 2 5 6 8
+function ctor 12 undefined undefined
+callbacks ,2,3 1,2,3 undefined
+in place 10 4 5 3
+errors RangeError ReferenceError TypeError TypeError TypeError
+recursion undefined 125250 RangeError"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
