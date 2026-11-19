@@ -1775,6 +1775,12 @@ impl ArrayPrototype {
             let nogc = gc.nogc();
             let array = array.bind(nogc);
             let sep = separator.get(agent).bind(nogc);
+            // The length of R when it was last held to the limits of a
+            // string and of the heap. That is asked again once R has grown
+            // by a page since, not at every element: the question goes to
+            // the host for what it has counted, and was a twelfth of
+            // joining twenty thousand short pieces.
+            let mut checked = 0;
             while k < len {
                 let text = match array.as_slice(agent).get(k).copied().flatten() {
                     Some(Value::Undefined | Value::Null) => None,
@@ -1791,7 +1797,10 @@ impl ArrayPrototype {
                 if k > 0 {
                     // As below, for every element after the first.
                     agent.poll_interrupt(nogc).unbind()?;
-                    agent.check_string_length(r.len(), nogc).unbind()?;
+                    if r.len() - checked >= 4096 {
+                        agent.check_string_length(r.len(), nogc).unbind()?;
+                        checked = r.len();
+                    }
                     r.push_wtf8(sep.as_wtf8_(agent));
                 }
                 if let Some(text) = text {
@@ -2157,9 +2166,11 @@ impl ArrayPrototype {
                 return None;
             }
             let length = array.len(agent).checked_add(1)?;
-            if length == u32::MAX || array.reserve(agent, 1).is_err() {
+            if length == u32::MAX {
                 return None;
             }
+            // Room is made where the element is put, if there is none:
+            // nothing is changed where that fails.
             array.push(agent, item.unbind()).ok()?;
             return Some(Value::from(length));
         }

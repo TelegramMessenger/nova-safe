@@ -203,15 +203,24 @@ impl<'a> Array<'a> {
     /// intrinsic shape, as both have, was given an integer key: the heap
     /// notes that where such a key is added.
     pub(crate) fn appends_plainly(self, agent: &Agent) -> bool {
-        if !self.is_trivial(agent)
-            || !self.length_writable(agent)
-            || !self.internal_extensible(agent)
-        {
+        if !self.is_trivial(agent) || !self.length_writable(agent) {
             return false;
         }
         let intrinsics = agent.current_realm_record().intrinsics();
         let array_prototype = intrinsics.array_prototype();
-        if self.internal_prototype(agent) != Some(array_prototype.into()) {
+        // An Array with no properties of its own takes new ones and
+        // inherits from the realm's %Array.prototype%: both are asked of
+        // the object that has its properties, where it has one. (Asked of
+        // the Array each time, the realm was asked for the prototype of
+        // its kind and two objects of any kind were compared, at every
+        // `push`.)
+        if let Some(properties) = self.get_backing_object(agent)
+            && !(properties.internal_extensible(agent)
+                && matches!(
+                    properties.internal_prototype(agent),
+                    Some(Object::Array(prototype)) if prototype == array_prototype
+                ))
+        {
             return false;
         }
         // %Array.prototype% is an Array: its elements, and its other
@@ -221,8 +230,10 @@ impl<'a> Array<'a> {
         }
         let array_prototype = intrinsics.array_prototype_backing_object();
         let object_prototype = intrinsics.object_prototype();
-        if array_prototype.internal_prototype(agent) != Some(object_prototype.into())
-            || object_prototype.internal_prototype(agent).is_some()
+        if !matches!(
+            array_prototype.internal_prototype(agent),
+            Some(Object::Object(prototype)) if prototype == object_prototype
+        ) || object_prototype.internal_prototype(agent).is_some()
         {
             return false;
         }

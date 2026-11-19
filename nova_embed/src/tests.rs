@@ -14054,3 +14054,148 @@ more a/b/1/2/3,4 40554270 9! 3000 3000 15 x 1 y2 1 dflt"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Whether `push` simply appends is asked of the Array and of the two
+/// prototypes it inherits from, and `join` holds its text to the limits
+/// once for every page it has grown by. The script pushes to plain
+/// Arrays, to ones with properties and with holes, to Arrays that are not
+/// extensible, frozen, sealed or of a read-only length, with hidden and
+/// read-only elements; with a setter, a read-only property and an element
+/// at the index in %Array.prototype% and in %Object.prototype%; with an
+/// object put between the two; in a subclass with a setter, an Array with
+/// no prototype, with another, and with a Proxy for one; and joins long
+/// Arrays of pieces, of Numbers and of every kind of value, with
+/// separators in and outside ASCII, nested and containing itself. What is
+/// expected is what Node prints for the same script. Then pieces that
+/// together are more than the heap may hold are joined, which ends the
+/// script as it did.
+#[test]
+fn a_push_appends_where_nothing_takes_the_index() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(pushes_and_joins)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn pushes_and_joins() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out[out.length] = a.join(" "); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+
+(function () {
+  var a = [], r = "";
+  for (var i = 0; i < 40; i++) r += a.push(i * 2) + (i % 10 === 9 ? ";" : ",");
+  var b = [1]; b.own = "x"; var c = [1]; c.length = 3;
+  r += " " + b.push(2) + b.own + b.length + " " + c.push("z") + ":" + c.join("|") + " " + [].push() + " " + [].push(1, 2, 3) + " " + a.length + " " + a[39];
+  var d = []; d.push(d.push("first"), d.length); r += " " + d.join();
+  var o = { length: 2 }; r += " " + Array.prototype.push.call(o, "p") + o[2] + o.length + " " + T(function () { return Array.prototype.push.call("str", 1); });
+  P("plain", r);
+})();
+
+(function () {
+  var r = "";
+  var closed = Object.preventExtensions([1, 2]); r += T(function () { return closed.push(3); }) + " " + closed.length;
+  var frozen = Object.freeze([1]); r += " " + T(function () { return frozen.push(2); }) + " " + frozen.length;
+  var sealed = Object.seal([1]); r += " " + T(function () { return sealed.push(2); }) + " " + sealed.length;
+  var fixed = [1, 2]; Object.defineProperty(fixed, "length", { writable: false }); r += " " + T(function () { return fixed.push(3); }) + " " + fixed.length + (2 in fixed);
+  var hidden = [1, 2]; Object.defineProperty(hidden, 0, { enumerable: false }); r += " " + hidden.push(3) + Object.keys(hidden).join("");
+  var readOnly = [1, 2]; Object.defineProperty(readOnly, 1, { writable: false }); r += " " + readOnly.push(3) + readOnly.join("");
+  var holes = [1, , 3]; r += " " + holes.push(4) + (1 in holes) + holes.length;
+  P("limits", r);
+})();
+
+(function () {
+  var log = "", r = "";
+  Object.defineProperty(Array.prototype, 2, { set: function (v) { log += "A" + v; }, get: function () { return "a"; }, configurable: true });
+  var a = [0, 1]; r += a.push("x") + ":" + a.length + ":" + a.hasOwnProperty(2) + ":" + a[2] + " "; r += a.push("y") + ":" + a[3] + " ";
+  delete Array.prototype[2];
+  Object.defineProperty(Object.prototype, 1, { set: function (v) { log += "O" + v; }, configurable: true });
+  var b = [0]; r += b.push("p") + ":" + b.hasOwnProperty(1) + " "; var c2 = []; c2[0] = "direct"; c2[1] = "assigned"; r += c2.hasOwnProperty(1) + ":" + c2.length + " ";
+  delete Object.prototype[1];
+  Object.defineProperty(Object.prototype, 1, { value: "ro", writable: false, configurable: true });
+  var c = [0]; r += T(function () { return c.push("q"); }) + ":" + c.length + ":" + c.hasOwnProperty(1) + " ";
+  delete Object.prototype[1];
+  Array.prototype[1] = "inherited"; var d = [0]; r += d.push("own") + ":" + d[1] + ":" + d.hasOwnProperty(1) + " "; Array.prototype.length = 0;
+  var e = [0]; r += e.push("after") + ":" + e[1];
+  P("prototypes", r, "|", log);
+})();
+
+(function () {
+  var log = "", r = "";
+  var objectProto = Object.getPrototypeOf(Array.prototype);
+  var between = Object.create(objectProto, { 1: { set: function (v) { log += "B" + v; }, configurable: true } });
+  Object.setPrototypeOf(Array.prototype, between);
+  var a = [0]; r += a.push("m") + ":" + a.hasOwnProperty(1) + " ";
+  Object.setPrototypeOf(Array.prototype, objectProto);
+  var b = [0]; r += b.push("n") + ":" + b.hasOwnProperty(1) + " ";
+  class Sub extends Array { }
+  Object.defineProperty(Sub.prototype, 1, { set: function (v) { log += "S" + v; }, configurable: true });
+  var s = new Sub(); s.push("zero"); r += s.push("one") + ":" + s.length + ":" + s.hasOwnProperty(1) + " ";
+  var orphan = [0]; Object.setPrototypeOf(orphan, null); r += Array.prototype.push.call(orphan, "o") + ":" + orphan[1] + " ";
+  var adopted = [0]; Object.setPrototypeOf(adopted, { 1: "from parent", push: Array.prototype.push }); r += adopted.push("mine") + ":" + adopted[1] + " ";
+  var viaProxy = [0]; Object.setPrototypeOf(viaProxy, new Proxy(Array.prototype, { set: function (t, k, v, rcv) { log += "P" + String(k); return Reflect.set(t, k, v, rcv); } })); r += viaProxy.push("x") + ":" + viaProxy[1];
+  P("chains", r, "|", log);
+})();
+
+(function () {
+  var r = "";
+  var parts = []; for (var i = 0; i < 3000; i++) parts.push("chunk" + (i % 7));
+  var joined = parts.join(""), dashed = parts.join("--");
+  r += joined.length + ":" + dashed.length + ":" + joined.slice(-12) + ":" + dashed.slice(0, 16);
+  var mixed = [1, "a", null, undefined, true, 2.5, -0, NaN, 1e21, false, "", "z"]; r += " " + mixed.join() + " " + mixed.join("") + " " + mixed.join("·");
+  var nested = [1, [2, [3, 4]], "x", { toString: function () { return "obj"; } }, , 5n]; r += " " + nested.join("+");
+  var self = [1, 2]; self.push(self); r += " " + self.join("/") + " " + [].join("x") + "|" + [null].join("x") + "|" + [undefined, null].join("x");
+  var nums = []; for (var n = 0; n < 2000; n++) nums.push(n * 1.5); var js = nums.join(","); r += " " + js.length + ":" + js.slice(0, 14) + ":" + js.slice(-13);
+  var wide = []; for (var w = 0; w < 500; w++) wide.push("中😀"); r += " " + wide.join("é").length;
+  P("joins", r);
+  var keep = [], junk;
+  for (var g = 0; g < 400; g++) { var arr = []; for (var k = 0; k < 60; k++) arr.push(k + g); keep.push(arr); junk = { g: g, a: [g] }; }
+  var sum = 0; for (var h = 0; h < keep.length; h++) { sum += keep[h].length + keep[h][59]; keep[h].push("tail"); }
+  P("many", sum, keep[399].join("").length, keep[0].pop(), keep[0].pop(), keep[0].length, junk.g);
+})();
+
+out.join("\n")"##;
+    let expected = r##"plain 1,2,3,4,5,6,7,8,9,10;11,12,13,14,15,16,17,18,19,20;21,22,23,24,25,26,27,28,29,30;31,32,33,34,35,36,37,38,39,40; 2x2 4:1|||z 0 3 40 78 first,1,1 3p3 throws TypeError
+limits throws TypeError 2 throws TypeError 1 throws TypeError 1 throws TypeError 2false 312 3123 4false4
+prototypes 3:3:false:a 4:y 2:false false:1 throws TypeError:1:false 2:own:true 2:after | AxOpOassigned
+chains 2:false 2:true 2:2:false 2:o 2:mine 2:x | BmSoneP1
+joins 18000:23998:chunk2chunk3:chunk0--chunk1-- 1,a,,,true,2.5,0,NaN,1e+21,false,,z 1atrue2.50NaN1e+21falsez 1·a···true·2.5·0·NaN·1e+21·false··z 1+2,3,4+x+obj++5 1/2/ ||x 11258:0,1.5,3,4.5,6,:5,2997,2998.5 1999
+many 127400 184 tail 59 59 399"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // Pieces of a hundred bytes, 200,000 of them: 20 MB of text under a
+    // limit of 8, with and without a separator, and short pieces with a
+    // long one.
+    for joins in [
+        "var parts = [], piece = 'x'.repeat(100); for (var i = 0; i < 200000; i++) parts.push(piece); parts.join('').length",
+        "var parts = [], piece = 'y'.repeat(100); for (var i = 0; i < 200000; i++) parts.push(piece); parts.join(', ').length",
+        "var parts = []; for (var i = 0; i < 20000; i++) parts.push('z'); parts.join('-'.repeat(1000)).length",
+    ] {
+        let (mut engine, _, _) = limited(8 << 20, 0);
+        assert_eq!(
+            engine.evaluate(joins, false),
+            Err(Error::OutOfMemory),
+            "{joins}"
+        );
+        engine.evaluate("parts = piece = null", false).unwrap();
+        engine.collect_garbage().unwrap();
+        assert_eq!(
+            engine.evaluate(
+                "var p = []; p.push('a', 1); p.push(null); p.join('+')",
+                false
+            ),
+            Ok(Completion::String("a+1+".into()))
+        );
+    }
+}
