@@ -34,25 +34,25 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 2.5x |
-| call | 14 | 10.4x | 2.0x |
+| typed | 4 | 10.6x | 2.3x |
+| call | 14 | 10.4x | 1.9x |
 | math | 4 | 9.7x | 1.9x |
 | string | 26 | 10.6x | 1.4x |
-| prop | 13 | 7.1x | 1.6x |
-| map, set | 4 | 4.6x | 1.7x |
+| prop | 13 | 7.1x | 1.5x |
+| map, set | 4 | 4.6x | 1.6x |
 | app | 8 | 6.1x | 1.7x |
-| array | 14 | 5.8x | 1.6x |
+| array | 14 | 5.8x | 1.5x |
 | regexp | 4 | 2.4x | 1.7x |
 | loop | 11 | 11.1x | 1.3x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.9x |
-| all | 108 | 7.6x | 1.6x |
+| all | 108 | 7.6x | 1.5x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
-was the worst after it (38x, area 7). The worst is now typed `Float64Array` arithmetic (3.3x), then the
-properties of one object read and written in a loop (3.2x), a step of a particle animation (3.0x) and
-the constructor of a derived class (2.9x). 3 of the 108 cases are above 3x and 79 at or under 2x, 15 of
-them at or under QuickJS's time. Over all cases it is 1.57x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7). The worst is now typed `Float64Array` arithmetic (2.9x), then a
+step of a particle animation (2.9x), the constructor of a derived class (2.8x) and the call of a closure
+(2.8x). None of the 108 cases is above 3x, and 82 are at or under 2x, 17 of them at or under QuickJS's
+time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -63,8 +63,9 @@ chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles 
 objects copied by their shape to 1.65x, bound functions and rest parameters run in the loop of
 instructions to 1.64x, holes looked for by blocks, Strings compared in the loop and `instanceof`
 answered there to 1.63x, a generator resumed in the loop of instructions to 1.60x, the names of the
-global object read by the state of the global scope to 1.59x, and a property read and written by a
-computed String in the loop of instructions took it here.
+global object read by the state of the global scope to 1.59x, a property read and written by a
+computed String in the loop of instructions to 1.57x, and the variables of enclosing functions kept
+for a call once it has read them took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -300,8 +301,35 @@ read closure variables still read 2-4% slower in the binary of this round than i
 changed; a build with the new state behind a pointer moved the same cases by -2% to +1%, which is what
 where the code and the Agent's fields lie does. Not followed up.
 
+A read of a variable of an enclosing function stayed five loads, one through the other (the running
+Environment Record, the function's, its declarative one, the bindings, the binding), about 1.6 ns, and a
+tenth to a fifth of every case whose loop names an object, an Array or a function of its surroundings,
+which is how the cases are written and how widget code is. Where such a variable has one value for as
+long as a call lasts, the call reads it from its Environment Record once and keeps it in a stack slot of
+its own: the compiler looks through the loops of a function for the names of variables of enclosing
+functions (up to eight), gives each that qualifies a slot that starts as undefined, and compiles every
+read of it in the function to an instruction that takes the slot's value when it is not undefined and
+otherwise reads the variable where it is and keeps what it read (`GetBindingAtSiteOnce`). Undefined is
+nothing kept: a `var` before its initializer, and a variable that is undefined, are read each time.
+
+It qualifies where nothing can change it during a call of the reader, which is what
+`bytecode_compiler/kept_captures.rs` says at length: the reader is a plain function (a generator's or an
+async function's call goes on after other code has run); the variable is declared outside it (one
+declared in a block of the function itself is another variable in every turn of a loop); nothing assigns
+to it (no reference writes it, and no direct `eval` is anywhere in the declaring scope); and its
+declaration gives it its value once (a `let`, a `const`, a class) or only while no call of the reader
+can be going on (a `var`, a function declaration, a parameter of a plain function: a generator or an
+async function that declares it can be resumed from inside the reader, and its `var`s keep nothing).
+The script written for it goes at each of these, and at the stack around the slots.
+`prop/get-set-one-shape` went from 3.2x to 2.5x, `array/index-read-write` from 2.5x to 2.0x,
+`typed/pixels-rgba` from 2.6x to 2.25x, `typed/float64-math` from 3.3x to 2.9x,
+`prop/dynamic-string-key` from 1.5x to 1.2x, a grid of Arrays from 1.7x to 1.5x; properties together
+from 1.6x to 1.5x, typed arrays from 2.5x to 2.3x, all cases from 1.57x to 1.53x.
+
 Left: `typeof name` still goes through a Reference. The code of a Module and of an `eval` is compiled as
-before, and module variables are resolved the long way. A `let` or `const` of the top level is found
+before, and module variables are resolved the long way. A variable of an enclosing function that is
+read outside a loop, or assigned to anywhere, is read where it is each time (a recursive function's
+calls of itself, `call/recursive-fib`; a counter that closures share). A `let` or `const` of the top level is found
 through the realm at every read (2.0x in a loop). A write of a global asks the descriptors of the global
 object's storage whether the property is writable, two hash lookups: its attributes change with nothing a
 site could see.
@@ -1222,6 +1250,11 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   confirmed it. One function out of the loop now has all that is not two integers, and the call for
   Strings is compiled only into the four comparisons. A change to those helpers is measured on the plain
   loops first, whatever case it was made for.
+- `with (object) { name }` does not ask the object for the name: a name the object has is read from the
+  scope outside it, here and in the build this started from. And a function declared in a block is not
+  a variable of the function around the block after the block has run (Annex B.3.3): `typeof` of it
+  stays "undefined" there. Both upstream, both seen in the script for the variables kept for a call,
+  where Node gave what the specification says; neither is fixed, and the script leaves them out.
 - Private names put on an intrinsic object moved every property of the object under its shape, which
   stays the same shape, and no property lookup cache was told: a constructor that returns the object to
   a class with private fields (`class S extends B { #x }`, `B` returning `globalThis` or
