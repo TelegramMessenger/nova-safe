@@ -52,8 +52,9 @@ The worst case was 303x (appending to a string 100,000 times); that one is 1.9x,
 was the worst after it (38x, area 7). The worst are now the two cases of arithmetic on doubles, typed
 `Float64Array` elements and a step of a particle animation, which read between 2.9x and 3.2x from one
 run to the next, then the call of a closure (2.9x) and the properties of one object read and written in
-a loop (2.5x). 81 of the 108 cases are at or under 2x, 16 of them at or under QuickJS's time. Over all
-cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+a loop (2.5x). 80 of the 108 cases are at or under 2x in the last run and 81 in the one before (a few
+sit within a few hundredths of 2x and cross it from one run to the next), 15 of them at or under
+QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -67,7 +68,9 @@ answered there to 1.63x, a generator resumed in the loop of instructions to 1.60
 global object read by the state of the global scope to 1.59x, a property read and written by a
 computed String in the loop of instructions to 1.57x, the variables of enclosing functions kept for a
 call once it has read them to 1.534x, and derived class constructors and `super(…)` run in the loop of
-instructions took it here (1.527x).
+instructions to 1.527x. One handler around a `for`-`of` loop, where every turn of it pushed and popped
+one, took a fifth off the walk of an Array and left the mean where it was (1.529x, in a run where
+QuickJS's own times were 0.5% lower than in the run before and Nova's 0.3% lower).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -866,9 +869,9 @@ TypeError) or completed, a `next` of one's own, and every other way of resuming 
 and by hand in turn. The interrupt is asked and a due collection run at every resume, as at a call.
 `call/generator` went from 6.5 to 3.6 ms (4.2x to 2.2x).
 
-Left: a turn of that loop is 36 ns against QuickJS's 16. About half is the twelve instructions that the
-loop and the generator run for it (two of them push and pop the handler that closes the iterator if the
-body throws, one is the jump that follows every `yield`), the rest entering and yielding: the frame, the
+Left: a turn of that loop is 34 ns against QuickJS's 16. About half is the ten instructions that the
+loop and the generator run for it (twelve before the loop had one handler, below; one is the jump that
+follows every `yield`), the rest entering and yielding: the frame, the
 execution context moved to the stack of contexts and back, the code's tables held and let go, its
 executable rooted. Tried and dropped, each measured with the two binaries run in turn: an arm of the
 fast loop for `yield` (1-2% of this case, and `loop/switch` 14% slower: see the defects); the three value
@@ -876,6 +879,30 @@ stacks exchanged with each place read before it is written; the one handler of a
 moved by itself; the generator's executable kept current by the collector in the frame instead of read
 again at each `yield` (none of the three measurable); the jump after a `yield` taken at the resume (5%
 slower).
+
+A `for`-`of` loop pushed a handler after every step and popped it before the next, and a `for`-`in` loop
+did the same. What the binding or the statement throws closes the iterator (its `return` is called), and
+what the step throws must not: the handler was around the one and not the other. A loop has one handler
+now, pushed before its first step and popped where the loop is done, and a step that throws leaves the
+loop's iterator record exhausted before its error goes to that handler: closing an exhausted record
+asks for no `return` and calls nothing. That is done in the three places the step of a loop throws
+from: the general step (`next` throws or gives no object, reading `done` or `value` throws), a
+generator resumed in place that throws, and the read of the result that a `yield*` in it passed on.
+What leaves the statement by `break`, `continue` or `return` finds the same handlers above it as
+before, and `continue` pops none. `for await` keeps its handler around the turn: its step is several
+instructions, with an Await among them. Array patterns and spreads step without a handler, as they did.
+
+Two instructions fewer in every turn: `for`-`of` over an Array went from 1.94 to 1.58 ms (0.97x to
+0.77x), a string walked by code point from 1.15 to 1.09 ms (2.09x to 1.96x), a generator from 3.51 to
+3.40 ms (2.23x to 2.15x), `for`-`in` with `Object.keys` from 2.37 to 2.29 ms.
+
+What it cost: `loop/empty-for`, which runs none of this, is 3% slower in the binary that has it (3.29 to
+3.40 ms with the two binaries run in turn; 0.98x to 1.01x), by where the loop of instructions landed.
+Written with the marking inside the loop of instructions it was 7%, then 3.4% with one of the two
+places moved out; both are functions of their own now, called where the step was called before, and
+the loop of instructions has no new code. No other case moved outside its noise (the ones the full run
+showed 3-5% slower were run again, binary against binary: within 1%, but for the step of the particle
+animation, whose runs overlap and whose best is 4% apart).
 
 ### 6. Numbers
 
