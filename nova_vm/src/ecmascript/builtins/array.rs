@@ -10,8 +10,9 @@ mod data;
 pub(crate) use abstract_operations::*;
 pub(crate) use data::*;
 
+use crate::heap::DescriptorEntry as Entry;
 use core::ops::RangeInclusive;
-use std::collections::{TryReserveError, hash_map::Entry};
+use std::collections::TryReserveError;
 
 use crate::{
     ecmascript::{

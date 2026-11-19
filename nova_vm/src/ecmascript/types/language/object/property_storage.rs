@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::{TryReserveError, hash_map::Entry};
+use crate::heap::DescriptorEntry as Entry;
+use std::collections::TryReserveError;
 
 use crate::{
     ecmascript::{
@@ -11,7 +12,7 @@ use crate::{
     },
     engine::{Bindable, NoGcScope},
     heap::{
-        ArenaAccess, ArenaAccessMut, DirectArenaAccess, ElementDescriptorMap, ElementIndex, Heap,
+        ArenaAccess, ArenaAccessMut, DirectArenaAccess, ElementDescriptorMap, Heap,
         KEY_OFFSETS_MIN_LEN,
         {
             ElementDescriptor, ElementStorageMut, ElementStorageUninit, PropertyStorageMut,
@@ -47,10 +48,7 @@ pub(crate) fn find_key_offset(
     )
 }
 
-fn verify_writable(
-    descriptors: Entry<'_, ElementIndex<'static>, ElementDescriptorMap<'static>>,
-    index: u32,
-) -> bool {
+fn verify_writable(descriptors: Entry<'_>, index: u32) -> bool {
     let Entry::Occupied(e) = descriptors else {
         // Note: no descriptors means all values are plain data properties.
         return true;

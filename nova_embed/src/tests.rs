@@ -13228,3 +13228,206 @@ collections 588 199999"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// Whether an assignment may simply write a slot is asked of the table of
+/// descriptors, which knows the storages that have any and the slot it
+/// last found writable. The script writes one property at one place while
+/// the property is made read-only, writable, an accessor, a value and
+/// hidden, and the object frozen; writes two objects of one shape, one
+/// with a read-only property, from sloppy and from strict code; writes
+/// the slots of one object in turn around changes to them, and a
+/// read-only property that moved to the slot of a writable one; adds to
+/// global variables that are made read-only, accessors, deleted and made
+/// again; grows an object with a hidden property through the capacities
+/// and removes properties; writes elements and the length of Arrays that
+/// are read-only or frozen; calls methods and accessors of a class; keeps
+/// objects with and without read-only properties over collections that
+/// move them; and enumerates, copies and serializes an object with a
+/// hidden property. What is expected is what Node prints for the same
+/// script.
+#[test]
+fn a_write_asks_the_descriptors_whether_it_may() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(writes_that_descriptors_decide)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn writes_that_descriptors_decide() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+var gCounter = 0;
+gFree = 0;
+
+(function () {
+  var o = { a: 1, b: 2, c: 3, d: 4 };
+  function w(v) { o.b = v; return o.b; }
+  var r = [];
+  for (var i = 0; i < 5; i++) r.push(w(i));
+  Object.defineProperty(o, "b", { writable: false }); r.push(w(10), w(11));
+  Object.defineProperty(o, "b", { writable: true }); r.push(w(12));
+  Object.defineProperty(o, "b", { get: function () { return "got"; }, set: function (v) { this.seen = v; }, configurable: true }); r.push(w(13), o.seen);
+  Object.defineProperty(o, "b", { value: 14, writable: true, enumerable: true, configurable: true }); r.push(w(15));
+  Object.defineProperty(o, "b", { enumerable: false }); r.push(w(16), Object.keys(o).join(""));
+  Object.freeze(o); r.push(w(17), Object.isFrozen(o));
+  P("one slot", r.join());
+})();
+
+(function () {
+  function make() { return { x: 0, y: 0 }; }
+  var plain = make(), ro = make();
+  Object.defineProperty(ro, "x", { writable: false });
+  function w(o, v) { o.x = v; o.y = v; return o.x + ":" + o.y; }
+  var r = [];
+  for (var i = 1; i < 5; i++) r.push(w(plain, i), w(ro, i));
+  P("same shape", r.join());
+  function ws(o, v) { "use strict"; o.x = v; return o.x; }
+  P("strict", ws(plain, 9), T(function () { return ws(ro, 9); }), plain.x, ro.x);
+})();
+
+(function () {
+  var o = { a: 0, b: 0, c: 0 };
+  Object.defineProperty(o, "c", { enumerable: false });
+  function wa(v) { o.a = v; }
+  function wb(v) { o.b = v; }
+  function wc(v) { o.c = v; }
+  var r = [];
+  for (var i = 0; i < 6; i++) { wa(i); wb(i * 2); wc(i * 3); }
+  r.push(o.a, o.b, o.c);
+  wa(100); Object.defineProperty(o, "a", { writable: false }); wa(200); r.push(o.a);
+  wb(100); Object.defineProperty(o, "a", { writable: true }); wa(300); wb(400); r.push(o.a, o.b);
+  wa(1); Object.seal(o); wa(2); r.push(o.a, Object.isSealed(o));
+  wa(3); Object.freeze(o); wa(4); wb(5); wc(6); r.push(o.a, o.b, o.c);
+  P("slot seen", r.join());
+  var m = { a: 1, b: 2, c: 3, d: 4 };
+  Object.defineProperty(m, "c", { writable: false });
+  function mb(v) { m.b = v; }
+  function mc(v) { m.c = v; }
+  for (var j = 0; j < 5; j++) mb(j);
+  delete m.a;
+  mc("changed"); mb("b"); mc("again");
+  P("moved", m.b, m.c, Object.keys(m).join(""), Object.getOwnPropertyDescriptor(m, "c").writable, Object.getOwnPropertyDescriptor(m, "b").writable);
+})();
+
+(function () {
+  function bump() { gFree += 2; return gFree; }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(bump());
+  Object.defineProperty(globalThis, "gFree", { writable: false }); r.push(bump(), bump());
+  Object.defineProperty(globalThis, "gFree", { writable: true }); r.push(bump());
+  Object.defineProperty(globalThis, "gFree", { get: function () { return "getter"; }, set: function (v) { globalThis.gSet = v; }, configurable: true }); r.push(bump(), globalThis.gSet);
+  delete globalThis.gFree; r.push(T(bump));
+  gFree = 5; r.push(bump());
+  P("globals", r.join());
+  var s = [];
+  function bumpVar() { gCounter += 1; return gCounter; }
+  for (var j = 0; j < 4; j++) s.push(bumpVar());
+  Object.defineProperty(globalThis, "gCounter", { writable: false }); s.push(bumpVar(), bumpVar());
+  s.push(T(function () { "use strict"; gCounter = 50; return gCounter; }));
+  s.push(T(function () { Object.defineProperty(globalThis, "gCounter", { writable: true }); return "writable"; }), bumpVar());
+  P("global var", s.join());
+})();
+
+(function () {
+  var o = {};
+  Object.defineProperty(o, "hidden", { value: "h", writable: true, enumerable: false, configurable: true });
+  var r = [];
+  for (var i = 0; i < 40; i++) { o["k" + i] = i; if (i % 9 === 0) { o.hidden = "h" + i; r.push(o.hidden + "/" + Object.keys(o).length); } }
+  Object.defineProperty(o, "k3", { writable: false }); o.k3 = "no"; o.k4 = "yes";
+  delete o.k1; delete o.hidden; o.k3 = "still no"; o.k5 = "moved";
+  r.push(o.k3, o.k4, o.k5, o.hidden, Object.keys(o).length, Object.getOwnPropertyDescriptor(o, "k3").writable, Object.getOwnPropertyDescriptor(o, "k4").writable);
+  P("growth", r.join());
+})();
+
+(function () {
+  var a = [1, 2, 3, 4];
+  function w(i, v) { a[i] = v; return a[i]; }
+  var r = [];
+  for (var i = 0; i < 4; i++) r.push(w(1, i));
+  Object.defineProperty(a, 1, { writable: false }); r.push(w(1, "x"), w(2, "y"));
+  Object.defineProperty(a, 1, { writable: true }); r.push(w(1, "z"));
+  Object.freeze(a); r.push(w(2, "f"), T(function () { a.push(9); return "pushed"; }), a.length);
+  var b = [1, 2, 3]; Object.defineProperty(b, "length", { writable: false });
+  r.push(T(function () { b.push(4); return "pushed"; }), b.length);
+  var c = [1, 2, 3, 4, 5, 6, 7, 8]; Object.defineProperty(c, 6, { enumerable: false }); c.length = 3; c.push(9);
+  r.push(c.join(""), Object.keys(c).join(""));
+  P("arrays", r.join());
+})();
+
+(function () {
+  class K {
+    constructor(v) { this.v = v; this.w = 0; }
+    step() { this.w += this.v; return this.w; }
+    get twice() { return this.v * 2; }
+    set twice(x) { this.v = x / 2; }
+  }
+  var ks = [];
+  for (var i = 0; i < 50; i++) ks.push(new K(i));
+  var n = 0;
+  for (var j = 0; j < 50; j++) { n += ks[j].step() + ks[j].twice; ks[j].twice = j; }
+  K.prototype.step = function () { return -1; };
+  P("classes", n, ks[10].step(), ks[10].v, Object.keys(ks[10]).join(""), Object.getOwnPropertyNames(K.prototype).join(""));
+  Object.defineProperty(K.prototype, "step", { writable: false }); K.prototype.step = 5; ks[3].step = "own";
+  P("methods", typeof K.prototype.step, typeof ks[3].step, T(function () { "use strict"; ks[4].step = 1; return "set"; }));
+})();
+
+(function () {
+  var keep = [];
+  for (var i = 0; i < 300; i++) { var o = { a: i, b: i, c: i, d: i }; if (i % 3 === 0) Object.defineProperty(o, "b", { writable: false }); keep.push(o); }
+  var junk;
+  for (var g = 0; g < 150000; g++) junk = { p: g, q: [g] };
+  var changed = 0, same = 0;
+  for (var j = 0; j < 300; j++) { keep[j].b = -1; keep[j].c = -2; if (keep[j].b === -1) changed++; else same++; }
+  keep = keep.filter(function (o, i) { return i % 2 === 0; });
+  for (var g2 = 0; g2 < 150000; g2++) junk = { p: g2, q: [g2] };
+  var again = 0, cs = 0;
+  for (var k = 0; k < keep.length; k++) { keep[k].b = -3; if (keep[k].b === -3) again++; cs += keep[k].c; }
+  P("collections", changed, same, again, keep.length, cs, junk.p);
+})();
+
+(function () {
+  var o = { a: 1 };
+  Object.defineProperty(o, "hid", { value: 2, enumerable: false, writable: true });
+  o.z = 3;
+  var copy = Object.assign({}, o), spread = { ...o };
+  var names = [];
+  for (var k in o) names.push(k);
+  o.hid = 20;
+  P("enumeration", Object.keys(copy).join(""), Object.keys(spread).join(""), names.join(""), JSON.stringify(o), o.hid, Object.getOwnPropertyNames(o).join(","), o.propertyIsEnumerable("hid"), Object.entries(o).join("|"));
+  function f(a, b) { "use strict"; arguments[0] = "changed"; arguments.length = 5; return a + ":" + arguments[0] + ":" + arguments.length + ":" + Object.keys(arguments).join(""); }
+  function g() {}
+  g.prototype = { own: 1 }; g.extra = 2;
+  var r = [f(1, 2), T(function () { g.name = "renamed"; return g.name; }), T(function () { "use strict"; g.length = 3; return "set"; }), typeof g.prototype.own, g.extra];
+  P("functions", r.join());
+})();
+
+out.join("\n")"##;
+    let expected = r##"one slot 0,1,2,3,4,4,4,12,got,13,15,16,acdseen,16,true
+same shape 1:1,0:1,2:2,0:2,3:3,0:3,4:4,0:4
+strict 9 throws TypeError 9 0
+slot seen 5,10,15,100,300,400,2,true,3,400,15
+moved b 3 bcd false true
+globals 2,4,6,8,8,8,10,getter,getter2,throws ReferenceError,7
+global var 1,2,3,4,4,4,throws TypeError,throws TypeError,4
+growth h0/1,h9/10,h18/19,h27/28,h36/37,3,yes,moved,,39,false,true
+arrays 0,1,2,3,3,y,z,y,throws TypeError,4,throws TypeError,3,1239,0123
+classes 3675 -1 5 vw constructorsteptwice
+methods function function throws TypeError
+collections 200 100 100 150 -300 149999
+enumeration az az az {"a":1,"z":3} 20 a,hid,z false a,1|z,3
+functions 1:changed:5:01,g,throws TypeError,number,2"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
