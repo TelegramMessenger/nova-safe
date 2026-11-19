@@ -108,11 +108,7 @@ impl Generator<'_> {
         };
 
         // 7. Set generator.[[GeneratorState]] to executing.
-        let SuspendedGeneratorState {
-            vm,
-            executable,
-            execution_context,
-        } = match generator
+        let mut state = match generator
             .get_mut(agent)
             .generator_state
             .replace(GeneratorState::Executing)
@@ -121,6 +117,9 @@ impl Generator<'_> {
             | Some(GeneratorState::SuspendedStart(state)) => state,
             _ => unreachable!(),
         };
+        // The record of the suspended state waits here, with its parts taken
+        // out, for the next `yield` to fill again.
+        let (vm, executable, execution_context) = state.take_parts();
         let executable = executable.scope(agent, gc.nogc());
 
         // 4. Let genContext be generator.[[GeneratorContext]].
@@ -193,12 +192,9 @@ impl Generator<'_> {
                 // 3. Let generator be the value of the Generator component of genContext.
                 // 5. Set generator.[[GeneratorState]] to suspended-yield.
                 let realm = execution_context.realm;
+                state.put_parts(vm, executable.get(agent), execution_context);
                 generator.get_mut(agent).generator_state =
-                    Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
-                        vm,
-                        executable: executable.get(agent),
-                        execution_context,
-                    }));
+                    Some(GeneratorState::SuspendedYield(state));
                 // 8. Resume callerContext passing NormalCompletion(iterNextObj). ...
                 // NOTE: `callerContext` here is the `GeneratorResume` execution context.
                 if !plain {
@@ -259,17 +255,14 @@ impl Generator<'_> {
         };
 
         // 8. Set generator.[[GeneratorState]] to executing.
-        let Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
-            vm,
-            executable,
-            execution_context,
-        })) = generator
+        let Some(GeneratorState::SuspendedYield(mut state)) = generator
             .get_mut(agent)
             .generator_state
             .replace(GeneratorState::Executing)
         else {
             unreachable!()
         };
+        let (vm, executable, execution_context) = state.take_parts();
         let generator = generator.scope(agent, gc.nogc());
         let executable = executable.scope(agent, gc.nogc());
 
@@ -317,12 +310,9 @@ impl Generator<'_> {
                 plain,
             } => {
                 let realm = execution_context.realm;
+                state.put_parts(vm, executable.unbind(), execution_context);
                 generator.get_mut(agent).generator_state =
-                    Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
-                        vm,
-                        executable: executable.unbind(),
-                        execution_context,
-                    }));
+                    Some(GeneratorState::SuspendedYield(state));
                 if plain {
                     create_iter_result_object_in_realm(agent, realm, yielded_value, false, gc)
                         .map(|o| o.into())
@@ -390,17 +380,14 @@ impl Generator<'_> {
 
         // 4. Assert: state is suspended-yield.
         // 8. Set generator.[[GeneratorState]] to executing.
-        let Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
-            vm,
-            executable,
-            execution_context,
-        })) = generator
+        let Some(GeneratorState::SuspendedYield(mut state)) = generator
             .get_mut(agent)
             .generator_state
             .replace(GeneratorState::Executing)
         else {
             unreachable!()
         };
+        let (vm, executable, execution_context) = state.take_parts();
         let generator = generator.scope(agent, gc.nogc());
         let executable = executable.scope(agent, gc.nogc());
 
@@ -453,12 +440,9 @@ impl Generator<'_> {
                 plain,
             } => {
                 let realm = execution_context.realm;
+                state.put_parts(vm, executable.unbind(), execution_context);
                 generator.get_mut(agent).generator_state =
-                    Some(GeneratorState::SuspendedYield(SuspendedGeneratorState {
-                        vm,
-                        executable: executable.unbind(),
-                        execution_context,
-                    }));
+                    Some(GeneratorState::SuspendedYield(state));
                 if plain {
                     create_iter_result_object_in_realm(agent, realm, yielded_value, false, gc)
                         .map(|o| o.into())
@@ -494,7 +478,10 @@ impl<'a> InternalMethods<'a> for Generator<'a> {}
 impl<'a> CreateHeapData<GeneratorHeapData<'a>, Generator<'a>> for Heap {
     fn create(&mut self, data: GeneratorHeapData<'a>) -> Generator<'a> {
         self.generators.push(data.unbind());
-        self.alloc_counter += core::mem::size_of::<GeneratorHeapData<'static>>();
+        // With the record of its suspended state, which every new generator
+        // has.
+        self.alloc_counter += core::mem::size_of::<GeneratorHeapData<'static>>()
+            + core::mem::size_of::<SuspendedGeneratorState>();
         Generator(BaseIndex::last(&self.generators))
     }
 }
@@ -525,13 +512,44 @@ pub(crate) struct GeneratorHeapData<'a> {
 pub(crate) struct SuspendedGeneratorState {
     pub(crate) vm: SuspendedVm,
     pub(crate) executable: Executable<'static>,
-    pub(crate) execution_context: ExecutionContext,
+    /// The generator's execution context. None only in a record that what
+    /// runs the generator holds aside meanwhile, to fill it again at the
+    /// next `yield`: never in the state of a generator.
+    pub(crate) execution_context: Option<ExecutionContext>,
 }
 
+impl SuspendedGeneratorState {
+    /// What a generator that is resumed goes on with, taken out of the
+    /// record, which is left to be filled again by
+    /// [`SuspendedGeneratorState::put_parts`].
+    pub(crate) fn take_parts(&mut self) -> (SuspendedVm, Executable<'static>, ExecutionContext) {
+        let execution_context = self
+            .execution_context
+            .take()
+            .expect("a suspended generator has its execution context");
+        (self.vm.take(), self.executable, execution_context)
+    }
+
+    /// The record as it is in the state of a generator that yielded.
+    pub(crate) fn put_parts(
+        &mut self,
+        vm: SuspendedVm,
+        executable: Executable<'static>,
+        execution_context: ExecutionContext,
+    ) {
+        self.vm = vm;
+        self.executable = executable;
+        self.execution_context = Some(execution_context);
+    }
+}
+
+/// The suspended states are records of their own: resuming a generator and
+/// suspending it again exchanges the one record, and what is in it stays
+/// where it is.
 #[derive(Debug)]
 pub(crate) enum GeneratorState {
-    SuspendedStart(SuspendedGeneratorState),
-    SuspendedYield(SuspendedGeneratorState),
+    SuspendedStart(Box<SuspendedGeneratorState>),
+    SuspendedYield(Box<SuspendedGeneratorState>),
     Executing,
     Completed,
 }

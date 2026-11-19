@@ -4,7 +4,7 @@
 
 //! An estimate of the bytes the heap holds, for the heap limit.
 
-use core::mem::size_of;
+use core::mem::{size_of, size_of_val};
 
 use super::Heap;
 use crate::ecmascript::{GeneratorState, PropertyKey, Value};
@@ -94,7 +94,7 @@ impl Heap {
                 GeneratorState::SuspendedStart(state) | GeneratorState::SuspendedYield(state),
             ) = &generator.generator_state
             {
-                total += state.vm.heap_bytes();
+                total += state.vm.heap_bytes() + size_of_val(&**state);
             }
         }
         for reaction in self.await_reactions.iter() {

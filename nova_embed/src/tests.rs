@@ -10107,3 +10107,368 @@ sparse  200 true true 201 true true 1 200"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A generator that a loop or a spread steps is resumed by the `Vm` that
+/// runs the loop, in place of a call of its `next`: what the loop sees is
+/// what `next` gives. The script steps generators that return, throw, catch
+/// their own errors, yield from loops of their own, delegate with `yield*`
+/// (to iterators whose results are read by getters, are not objects, or
+/// throw), step themselves, are stepped by hand between the turns of a
+/// loop, are closed by `break` and by an error of the body with `finally`
+/// blocks that yield or throw, recurse past the depth of calls, and
+/// allocate through collections. What is expected is what Node prints for
+/// the same script. (The generators that delegate to themselves do so a
+/// dozen deep: each `yield*` is a `Vm` of its own on the native stack,
+/// and a build that is not optimised has little of it under this limit.)
+#[test]
+fn a_generator_stepped_in_place_is_what_its_next_gives() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(generators_stepped_in_place)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn generators_stepped_in_place() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+var log = [];
+function L(x) { log.push(String(x)); }
+function flush(name) { P(name, log.join("|")); log = []; }
+
+// 1. plain loop
+function* range(n) { for (var i = 0; i < n; i++) yield i; }
+var sum = 0; for (var v of range(1000)) sum += v & 7; P("sum", sum);
+var s2 = 0; for (const a of range(4)) for (const b of range(3)) s2 += a * 10 + b; P("nested", s2);
+
+// 2. break runs finally through return()
+function* fin() { try { L("a"); yield 1; L("b"); yield 2; L("c"); yield 3; } finally { L("fin"); } }
+for (var x of fin()) { L("got" + x); if (x == 2) break; }
+flush("break");
+for (var x of fin()) { L("got" + x); }
+flush("whole");
+
+// 3. generator throws: caller catches, generator is completed
+function* thrower() { yield 1; yield 2; throw new Error("boom"); }
+var it = thrower();
+try { for (var x of it) L(x); } catch (e) { L("caught " + e.message); }
+var r = it.next(); L(r.done + "," + r.value);
+flush("throws");
+
+// 4. own handler across yields
+function* own() { for (var i = 0; i < 4; i++) { try { yield i; if (i % 2) throw new Error("odd" + i); L("even" + i); } catch (e) { L("in:" + e.message); yield "c" + i; } finally { L("f" + i); } } }
+for (var x of own()) L("v" + x);
+flush("own");
+
+// 5. yield inside for-of inside a generator
+function* dbl(inner) { for (var x of inner) yield x * 2; }
+for (var x of dbl(dbl(range(5)))) L(x);
+flush("dbl");
+
+// 6. yield* of several kinds
+function* star() { yield* [1, 2]; var r = yield* ret(); L("r=" + r); yield* custom(); yield* "ab"; }
+function* ret() { yield "x"; return "R"; }
+function custom() {
+  var n = 0;
+  var it = { next: function () { n++; L("next" + n); return { get done() { L("done?" + n); return n > 2; }, get value() { L("value?" + n); return "c" + n; } }; } };
+  it[Symbol.iterator] = function () { return it; };
+  return it;
+}
+for (var x of star()) L("s" + x);
+flush("star");
+function* badstar() { yield* { [Symbol.iterator]: function () { return { next: function () { return 7; } }; } }; }
+try { for (var x of badstar()) L(x); } catch (e) { L(e instanceof TypeError); }
+flush("badstar");
+function* throwdone() { yield* { [Symbol.iterator]: function () { return { next: function () { return { get done() { throw new Error("done threw"); } }; } }; } }; }
+var td = throwdone();
+try { for (var x of td) L(x); } catch (e) { L(e.message); }
+L(JSON.stringify(td.next()));
+flush("throwdone");
+function* catchesdone() { try { yield* { [Symbol.iterator]: function () { return { next: function () { return { get done() { throw new Error("inner"); } }; } }; } }; } catch (e) { L("gen saw " + e.message); yield "after"; } }
+try { for (var x of catchesdone()) L(x); } catch (e) { L("loop saw " + e.message); }
+flush("catchesdone");
+
+// 7. a generator stepping itself
+var self;
+function* selfish() { yield 1; try { for (var x of self) L("no" + x); } catch (e) { L(e instanceof TypeError); } yield 2; }
+self = selfish();
+for (var x of self) L("o" + x);
+flush("self");
+
+// 8. next() by hand around a loop
+var it = range(6);
+L(JSON.stringify(it.next()));
+for (var x of it) { L(x); if (x == 3) break; }
+L(JSON.stringify(it.next()));
+var it = range(6);
+for (var x of it) { L(x); if (x == 1) L(JSON.stringify(it.next())); if (x == 3) { L(JSON.stringify(it.return(9))); } }
+L(JSON.stringify(it.next()));
+flush("byhand");
+
+// 9. a called function throws through the generator
+function bad(i) { if (i == 2) throw new RangeError("two"); return i; }
+function* calls() { for (var i = 0; i < 5; i++) yield bad(i); }
+try { for (var x of calls()) L(x); } catch (e) { L(e.name + ":" + e.message); }
+function* calls2() { for (var i = 0; i < 5; i++) { try { yield bad(i); } catch (e) { yield "saved" + i; } } }
+for (var x of calls2()) L(x);
+flush("calls");
+
+// 10. recursion
+function* walk(n) { if (n > 0) { for (var x of walk(n - 1)) yield x; yield n; } }
+var t = 0, c = 0; for (var x of walk(60)) { t += x; c++; } P("walk", t, c);
+function* walk2(n) { if (n > 0) { yield* walk2(n - 1); yield n; } }
+var t = 0; for (var x of walk2(12)) t += x; P("walk2", t);
+function* forever(n) { for (var x of forever(n + 1)) yield x; yield n; }
+try { for (var x of forever(0)) L(x); } catch (e) { L(e instanceof RangeError); }
+flush("forever");
+
+// 11. spreads
+function f3() { var t = 0; for (var i = 0; i < arguments.length; i++) t += arguments[i]; return arguments.length + ":" + t; }
+P("spread", [...range(5)].join(","), f3(...range(4)), [0, ...range(2), ...dbl(range(3)), 9].join(","), Math.max(...range(7)));
+function* spreadthrow() { yield 1; throw new Error("in spread"); }
+try { [...spreadthrow()]; } catch (e) { P("spreadthrow", e.message); }
+try { f3(...spreadthrow()); } catch (e) { P("callspreadthrow", e.message); }
+var o = { m: function () { return this.k + ":" + arguments.length; }, k: "K" };
+P("methodspread", o.m(...range(3)), o["m"](...range(2)));
+
+// 12. this, arguments, closures, methods
+var obj = { base: 10, gen: function* (a, b) { yield this.base + a; yield arguments.length; var k = 0; var add = function () { return ++k; }; yield add() + add(); yield b; } };
+for (var x of obj.gen(1, 2, 3)) L(x);
+class C { constructor() { this.items = [3, 1, 2]; } *[Symbol.iterator]() { for (var i = 0; i < this.items.length; i++) yield this.items[i]; } static *s(n) { while (n--) yield n; } }
+for (var x of new C()) L(x);
+for (var x of C.s(3)) L(x);
+flush("this");
+
+// 13. sent value is undefined, return value is not seen
+function* sent() { var a = yield 1; L("a=" + a); var b = yield 2; L("b=" + b); return 99; }
+for (var x of sent()) L(x);
+flush("sent");
+
+// 14. finally that yields while the loop is left
+function* yfin() { try { yield 1; yield 2; } finally { L("f1"); yield "ignored"; L("never"); } }
+for (var x of yfin()) { L(x); break; }
+var it = yfin();
+for (var x of it) { L(x); break; }
+L(JSON.stringify(it.next()));
+flush("yfin");
+function* yfin2() { try { yield 1; return 5; } finally { yield "late"; L("end"); } }
+for (var x of yfin2()) L(x);
+flush("yfin2");
+
+// 15. the body throws: the generator is closed
+function* closing() { try { yield 1; yield 2; } finally { L("closed"); } }
+try { for (var x of closing()) { L(x); throw new Error("body"); } } catch (e) { L(e.message); }
+function* closing2() { try { yield 1; } finally { throw new Error("from finally"); } }
+try { for (var x of closing2()) { throw new Error("body2"); } } catch (e) { L(e.message); }
+try { for (var x of closing2()) { break; } } catch (e) { L(e.message); }
+flush("closing");
+
+// 16. return() from the body, then the loop goes on
+var it = range(10);
+for (var x of it) { L(x); if (x == 1) it.return(); }
+flush("returned");
+
+// 17. a next of its own
+var it = range(3);
+it.next = function () { L("mine"); return { done: true }; };
+for (var x of it) L(x);
+var it = range(3);
+var real = it.next;
+var count = 0;
+Object.getPrototypeOf(range.prototype).next2 = 1;
+for (var x of it) { L(x); }
+flush("ownnext");
+
+// 18. two generators side by side, labels
+function* letters() { yield "a"; yield "b"; yield "c"; }
+outer: for (var x of range(3)) { for (var y of letters()) { if (y == "b" && x == 1) continue outer; if (y == "c" && x == 2) break outer; L(x + y); } }
+flush("labels");
+
+// 19. errors through several generators with handlers on the way
+function* deep(n) { if (n == 0) { yield "bottom"; throw new Error("deep"); } try { for (var x of deep(n - 1)) yield x; } catch (e) { if (n == 2) { yield "caught at 2"; } else throw e; } finally { L("f" + n); } }
+try { for (var x of deep(4)) L(x); } catch (e) { L("top " + e.message); }
+flush("deep");
+
+// 20. garbage while a generator runs in place
+function* garbage(n) { var keep = []; for (var i = 0; i < n; i++) { var o = { i: i, s: "s" + i, a: [i, i + 1] }; if (i % 1000 == 0) keep.push(o); yield o; } yield keep; }
+var t = 0, last;
+for (var o of garbage(60000)) { last = o; if (o.a) { t += o.a[1] - o.i; var tmp = { p: o.s + "x" }; } }
+P("garbage", t, last.length, last[59].s, last[59].a[1]);
+function* strs(n) { var s = ""; for (var i = 0; i < n; i++) { s += "ab"; yield s.length + [i, i, i].join("").length; } }
+var t = 0; for (var q of strs(20000)) t += q; P("strs", t);
+
+// 21. generator inside functions run in place, and the other way round
+function total(n) { var t = 0; for (var x of range(n)) t += x; return t; }
+function* totals(n) { for (var i = 0; i < n; i++) yield total(i); }
+var t = 0; for (var x of totals(40)) t += x; P("totals", t);
+
+// 22. a generator that is done, or was never started
+var it = range(0); for (var x of it) L("no"); for (var x of it) L("no");
+var it = range(2); for (var x of it) L(x); for (var x of it) L("no");
+flush("done");
+
+// 23. default parameters and destructuring in the generator and in the loop head
+function* pairs(n = 3, { k } = { k: "k" }) { for (var i = 0; i < n; i++) yield [i, k + i]; }
+for (var [i, name] of pairs()) L(i + name);
+for (var { 0: a, length } of pairs(2, { k: "z" })) L(a + ":" + length);
+flush("pairs");
+
+// 24. let per iteration with closures, const, and var in the head
+var fs = []; for (let x of range(3)) fs.push(function () { return x; });
+P("closures", fs.map(function (f) { return f(); }).join(","));
+
+// 25. the Reference of the call is kept across a spread
+var holder = { name: "h", who: function () { return this.name + arguments.length; } };
+P("ref", holder.who(...range(2), ...range(1)), (0, holder.who)(...range(1)) === undefined ? "u" : "d");
+
+// 26. a generator that the loop's own iterator method returns late
+var lazy = { [Symbol.iterator]: function () { L("iter"); return range(2); } };
+for (var x of lazy) L(x);
+flush("lazy");
+
+// 27. typeof and identity of what is yielded
+function* kinds() { yield 1.5; yield "s"; yield null; yield undefined; yield { a: 1 }; yield 2 ** 40; yield -0; yield Symbol.iterator; yield 10n; }
+for (var x of kinds()) L(typeof x + (Object.is(x, -0) ? "-0" : ""));
+flush("kinds");
+
+// 28. generator objects from one function, interleaved
+var g1 = range(3), g2 = range(3);
+for (var x of g1) { L("1:" + x); for (var y of g2) { L("2:" + y); break; } }
+flush("interleaved");
+
+// 29. a throw() by hand on a generator a loop suspended
+function* resist() { while (true) { try { yield 1; } catch (e) { L("resisted " + e); yield 2; } } }
+var it = resist();
+var turns = 0;
+for (var x of it) { L(x); if (++turns > 3) break; if (x == 1) L(JSON.stringify(it.throw("T"))); }
+flush("resist");
+function* resist2() { try { yield 1; yield 2; } finally { L("r2 fin"); } }
+var it = resist2();
+try { for (var x of it) { L(x); it.throw(new Error("thrown by hand")); } } catch (e) { L(e.message); }
+L(JSON.stringify(it.next()));
+flush("resist2");
+lines.join("\n")"##;
+    let expected = r##"sum 3500
+nested 192
+break a|got1|b|got2|fin
+whole a|got1|b|got2|c|got3|fin
+throws 1|2|caught boom|true,undefined
+own v0|even0|f0|v1|in:odd1|vc1|f1|v2|even2|f2|v3|in:odd3|vc3|f3
+dbl 0|4|8|12|16
+star s1|s2|sx|r=R|next1|done?1|done?1|value?1|sc1|next2|done?2|done?2|value?2|sc2|next3|done?3|value?3|sa|sb
+badstar true
+throwdone done threw|{"done":true}
+catchesdone gen saw inner|after
+self o1|true|o2
+byhand {"value":0,"done":false}|1|2|3|{"done":true}|0|1|{"value":2,"done":false}|3|{"value":9,"done":true}|{"done":true}
+calls 0|1|RangeError:two|0|1|saved2|3|4
+walk 1830 60
+walk2 78
+forever true
+spread 0,1,2,3,4 4:6 0,0,1,0,2,4,9 6
+spreadthrow in spread
+callspreadthrow in spread
+methodspread K:3 K:2
+this 11|3|3|2|3|1|2|2|1|0
+sent 1|a=undefined|2|b=undefined
+yfin 1|f1|1|f1|never|{"done":true}
+yfin2 1|late|end
+closing 1|closed|body|body2|from finally
+returned 0|1
+ownnext mine|0|1|2
+labels 0a|0b|0c|1a|2a|2b
+deep bottom|f1|caught at 2|f2|f3|f4
+garbage 60000 60 s59000 59001
+strs 400286670
+totals 9880
+done 0|1
+pairs 0k0|1k1|2k2|0:2|1:2
+closures 0,1,2
+ref h3 d
+lazy iter|0|1
+kinds number|string|object|undefined|object|number|number-0|symbol|bigint
+interleaved 1:0|2:0|1:1|1:2
+resist 1|resisted T|{"value":2,"done":false}|1|resisted T|{"value":2,"done":false}|1|resisted T|{"value":2,"done":false}|1
+resist2 1|r2 fin|thrown by hand|{"done":true}"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// The limits hold while a generator runs in place of the step of a loop:
+/// the interrupt ends the script from the loop's body, from the
+/// generator's own loop and from a function the generator calls, with no
+/// `catch` of either run and no `finally` of code that was interrupted; a
+/// generator that was interrupted while it ran is completed (one that was
+/// suspended at that moment stays so); and the heap limit ends a generator
+/// that allocates past it.
+#[test]
+fn the_limits_hold_in_a_generator_stepped_in_place() {
+    let (mut engine, stop, polls) = limited(0, 0);
+    engine
+        .register_function("__stop", 1, 0, ArgumentMode::Values)
+        .unwrap();
+    engine
+        .evaluate(
+            "var ran = []; \
+             function* ones() { for (;;) { try { yield 1; } catch (e) { ran.push('catch'); } } } \
+             function* spins() { yield 1; try { for (;;) {} } finally { ran.push('spin finally'); } } \
+             function spin() { for (;;) {} } \
+             function* calls() { yield 1; try { spin(); } catch (e) { ran.push('call catch'); } } \
+             var a = ones(), b = spins(), c = calls(), d = ones();",
+            false,
+        )
+        .unwrap();
+    let before = polls.get();
+    for script in [
+        "__stop(); for (var x of a) {}",
+        "for (var x of b) { __stop(); }",
+        "for (var x of c) { __stop(); }",
+        "__stop(); try { for (var x of d) { try { [...d]; } catch (e) { ran.push('body catch'); } } } finally { ran.push('body finally'); }",
+        "__stop(); function* inner() { for (;;) { try { yield* ones(); } catch (e) { ran.push('inner catch'); } } } for (var x of inner()) {}",
+    ] {
+        assert_eq!(
+            engine.evaluate(script, false),
+            Err(Error::Interrupted),
+            "{script}"
+        );
+        stop.set(false);
+    }
+    assert!(polls.get() > before);
+    assert_eq!(
+        engine.evaluate(
+            "[ran.join(), b.next().done, c.next().done, typeof a.next().done, typeof d.next().done].join()",
+            false
+        ),
+        Ok(Completion::String(",true,true,boolean,boolean".into()))
+    );
+
+    let (mut engine, _, _) = limited(16 << 20, 0);
+    assert_eq!(
+        engine.evaluate(
+            "function* hoard() { var keep = []; for (;;) { try { keep.push(new Float64Array(1 << 17)); } catch (e) {} yield keep.length; } } \
+             var n = 0; for (var x of hoard()) n = x;",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    engine.collect_garbage().unwrap();
+    assert!(engine.memory_used() < 16 << 20);
+    assert_eq!(
+        engine.evaluate(
+            "function* three() { yield 1; yield 2; yield 3; } var t = 0; for (var x of three()) t += x; t",
+            false
+        ),
+        Ok(Completion::Number(6.0))
+    );
+}

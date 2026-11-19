@@ -14,10 +14,11 @@ use crate::ecmascript::{AnyTypedArray, TypedArrayAbstractOperations, TypedArrayP
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, BigInt, CachedSet,
-        ECMAScriptFunction, Environment, ExceptionType, Function, FunctionPrototype,
-        InternalMethods, InternalSlots, JsError, JsResult, Number, Object, OrdinaryObject,
-        Primitive, Promise, PropertyKey, Reference, RegularFn, SmallInteger, String, TryGetResult,
-        Value, binding_value_at_site, call_function, get_method, get_this_value, is_callable,
+        ECMAScriptFunction, Environment, ExceptionType, Function, FunctionPrototype, Generator,
+        GeneratorPrototype, GeneratorState, InternalMethods, InternalSlots, IteratorRecord,
+        JsError, JsResult, Number, Object, OrdinaryObject, Primitive, Promise, PropertyKey,
+        Reference, RegularFn, SmallInteger, String, SuspendedGeneratorState, TryGetResult, Value,
+        binding_value_at_site, call_function, get_method, get_this_value, is_callable,
         is_property_reference, is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache,
         ordinary_call_bind_this, ordinary_has_instance,
         prepare_for_call_without_function_environment, prepare_for_ordinary_call,
@@ -30,10 +31,15 @@ use crate::{
         Bindable, GcScope, NoGcScope, Scopable, Scoped,
         bytecode::{
             CallEnvironment, CodeTables, Executable, IndexType, Instruction, InstructionIter,
-            TablesView, instructions::Instr, iterator::VmIteratorRecord,
+            TablesView,
+            instructions::Instr,
+            iterator::{VmIteratorRecord, step_value_of_result},
         },
     },
-    heap::{ArenaAccess, CompactionLists, HeapMarkAndSweep, WellKnownSymbols, WorkQueues},
+    heap::{
+        ArenaAccess, ArenaAccessMut, CompactionLists, HeapMarkAndSweep, WellKnownSymbols,
+        WorkQueues,
+    },
 };
 
 #[derive(Debug, Bindable)]
@@ -98,6 +104,9 @@ enum Plain {
     /// Not executed and nothing changed: the instruction that ends a
     /// function.
     Return,
+    /// Not executed and nothing changed: the step of an iteration over a
+    /// generator, which the Vm may resume itself.
+    Resume,
 }
 
 /// What the code that a function is run in place for makes of what the
@@ -112,6 +121,10 @@ enum Completion {
     /// object that was made for the constructor, which waits on top of the
     /// caller's stack.
     Constructed,
+    /// The end of an iteration: what ran from the frame is a generator
+    /// that a step of the iteration resumed ([`Frame::resumed`]), and it
+    /// is done.
+    Stepped,
 }
 
 /// The steps a backward jump or a call counts for in the interrupt countdown:
@@ -200,6 +213,49 @@ struct Frame {
     /// function's instructions scope is above it), and is the caller's
     /// again when the function is left.
     scoped: Scoped<'static, Executable<'static>>,
+    /// The generator that runs from this frame, resumed in place of the
+    /// step of an iteration ([`Vm::enter_generator`]); None for the frame
+    /// of a call.
+    resumed: Option<Generator<'static>>,
+    /// The record of the suspended state of the generator that runs from
+    /// this frame, which waits here for the generator to yield: the value
+    /// stack in it is the frame's spare one (the generator's own is the
+    /// `Vm`'s meanwhile), its other three stacks are empty (what they held
+    /// is on the `Vm`'s, above what the caller has there), and its
+    /// execution context is the running one. Nothing in it is for the
+    /// collector to see: its executable is written again when the
+    /// generator yields. None for the frame of a call.
+    kept: Option<Box<SuspendedGeneratorState>>,
+    /// Where the iteration goes when the generator that runs from this
+    /// frame is done.
+    done: usize,
+    /// Whether the caller's Reference register waits on the Reference
+    /// stack, right under [`Frame::reference_base`], while a generator runs
+    /// from this frame: the step of an iteration leaves it as it was.
+    reference_kept: bool,
+}
+
+impl Frame {
+    /// A frame that is not in use yet, for the code `executable`.
+    fn new(executable: Executable<'static>, scoped: Scoped<'static, Executable<'static>>) -> Self {
+        Self {
+            ip: 0,
+            stack: Vec::with_capacity(32),
+            reference_base: 0,
+            iterator_base: 0,
+            handler_base: 0,
+            executable,
+            tables: None,
+            completion: Completion::Value,
+            stack_depth: 0,
+            collections_depth: 0,
+            scoped,
+            resumed: None,
+            kept: None,
+            done: 0,
+            reference_kept: false,
+        }
+    }
 }
 
 /// The code that is running in a `Vm`, between two changes of it: the code
@@ -235,6 +291,13 @@ enum Change {
     /// A function run in place of a call returned with a termination
     /// pending: every caller ends too.
     Terminate,
+    /// The step of an iteration over a generator that the `Vm` resumes
+    /// itself.
+    Resume(Generator<'static>, Instr),
+    /// The generator that is resumed in place of a step yields: the value
+    /// that `yield` was given where this is true, an iterator result
+    /// object where it is not ([`ExecutionResult::Yield`]).
+    Yield(bool),
 }
 
 /// The most arguments that a rest parameter takes into its Array in the
@@ -284,6 +347,17 @@ pub(crate) struct SuspendedVm {
 /// never less than this many entries in all.
 const SUSPENDED_STACK_ROOM: usize = 8;
 
+/// Cuts a stack of a generator that yields where it was resumed in place
+/// down to twice what it holds, as [`fit_suspended_stack`] does, but for
+/// its room when it holds nothing: the generator that pushes to it between
+/// two `yield`s would allocate it at every step.
+fn refit_suspended_stack<T>(stack: &mut Vec<T>) {
+    let room = (stack.len() * 2).max(SUSPENDED_STACK_ROOM);
+    if stack.capacity() > room + SUSPENDED_STACK_ROOM {
+        stack.shrink_to(room);
+    }
+}
+
 /// Cuts a stack that is being suspended down to twice what it holds.
 fn fit_suspended_stack<T>(mut stack: Vec<T>) -> Vec<T> {
     let room = (stack.len() * 2).max(SUSPENDED_STACK_ROOM);
@@ -298,6 +372,20 @@ fn fit_suspended_stack<T>(mut stack: Vec<T>) -> Vec<T> {
 }
 
 impl SuspendedVm {
+    /// What is suspended, taken from where it was: nothing is left there.
+    pub(crate) fn take(&mut self) -> Self {
+        core::mem::replace(self, Self::EMPTY)
+    }
+
+    /// Nothing suspended: no stack holds or has room for anything.
+    const EMPTY: Self = Self {
+        ip: 0,
+        stack: Vec::new(),
+        reference_stack: Vec::new(),
+        iterator_stack: Vec::new(),
+        exception_jump_target_stack: Vec::new(),
+    };
+
     /// Bytes held by the suspended stacks, for the heap size estimate.
     pub(crate) fn heap_bytes(&self) -> usize {
         self.stack.capacity() * core::mem::size_of::<Value<'static>>()
@@ -579,9 +667,15 @@ impl HeapMarkAndSweep for VmFrames {
                 stack_depth: _,
                 collections_depth: _,
                 scoped: _,
+                resumed,
+                // Nothing to see while the frame is in use: see the field.
+                kept: _,
+                done: _,
+                reference_kept: _,
             } = frame;
             stack.as_slice().mark_values(queues);
             executable.mark_values(queues);
+            resumed.mark_values(queues);
         }
     }
 
@@ -599,9 +693,14 @@ impl HeapMarkAndSweep for VmFrames {
                 stack_depth: _,
                 collections_depth: _,
                 scoped: _,
+                resumed,
+                kept: _,
+                done: _,
+                reference_kept: _,
             } = frame;
             stack.as_mut_slice().sweep_values(compactions);
             executable.sweep_values(compactions);
+            resumed.sweep_values(compactions);
         }
     }
 }
@@ -1024,6 +1123,13 @@ impl Vm {
                             break Change::Call(callee, call);
                         }
                     }
+                    // The step of an iteration over a generator that this
+                    // Vm resumes itself.
+                    Plain::Resume => {
+                        if let Some(generator) = self.generator_resumed_in_place(agent, gc.nogc()) {
+                            break Change::Resume(generator, instr);
+                        }
+                    }
                     // The end of every call, taken here where nothing is
                     // out of the ordinary: a termination that is pending
                     // goes the general way below.
@@ -1070,7 +1176,14 @@ impl Vm {
                     }
                     Ok(kind) => {
                         if self.depth != 0 {
-                            // Only the code a Vm is started with yields or
+                            // The generator that a step of an iteration
+                            // resumed in place yields.
+                            if let ContinuationKind::Yield | ContinuationKind::YieldValue = kind
+                                && self.runs_resumed_generator(agent)
+                            {
+                                break Change::Yield(matches!(kind, ContinuationKind::YieldValue));
+                            }
+                            // Nothing else that runs in place yields or
                             // awaits: a function run in place of its call
                             // returned with a termination pending.
                             break Change::Terminate;
@@ -1144,14 +1257,63 @@ impl Vm {
                     if self.result.is_none() || matches!(change, Change::End) {
                         self.result = Some(Value::Undefined);
                     }
-                    running = self.leave_function(agent, running);
+                    running = self.leave_function(agent, running, true);
                 }
                 Change::Throw(error) => thrown = Some(error),
                 Change::Terminate => {
                     while self.depth != 0 {
-                        running = self.leave_function(agent, running);
+                        running = self.leave_function(agent, running, false);
                     }
                     return ExecutionResult::Throw(JsError::new(Value::Undefined));
+                }
+                Change::Resume(generator, instr) => {
+                    running = self.enter_generator(agent, instr, generator, ip, running, gc.nogc());
+                    // As for the code a Vm is started with, which a
+                    // generator resumed by a call of its own is: the host
+                    // is asked, and a collection that is due is run.
+                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+                        thrown = Some(err.unbind());
+                    } else if agent.check_gc() {
+                        self.trigger_gc(agent, gc.reborrow());
+                        running.code = running.executable.get(agent);
+                    }
+                }
+                Change::Yield(plain) => {
+                    let yielded = self.result.take().expect("a generator yields a value");
+                    if print_internals {
+                        Self::print_yielding(yielded);
+                    }
+                    let (caller, done) = self.suspend_generator(agent, ip, running);
+                    running = caller;
+                    if plain {
+                        // The value of the step.
+                        self.result = Some(yielded);
+                    } else {
+                        // What `yield*` passes on is an iterator result
+                        // object already, which the step reads as any
+                        // other's: in the calling code, whose handlers an
+                        // error of that reading goes to.
+                        let step = with_vm_gc(
+                            agent,
+                            self,
+                            |agent, gc| step_value_of_result(agent, yielded, gc),
+                            gc.reborrow(),
+                        )
+                        .unbind();
+                        running.code = running.executable.get(agent);
+                        match step {
+                            Ok(Some(value)) => self.result = Some(value),
+                            Ok(None) => {
+                                self.result = None;
+                                self.ip = done;
+                            }
+                            Err(error) => {
+                                if !self.handle_error(agent, error) {
+                                    thrown = Some(error);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if let Some(error) = thrown {
@@ -1165,7 +1327,7 @@ impl Vm {
                         }
                         return ExecutionResult::Throw(error.bind(gc.into_nogc()));
                     }
-                    running = self.leave_function(agent, running);
+                    running = self.leave_function(agent, running, false);
                     if self.handle_error(agent, error) {
                         break;
                     }
@@ -1423,19 +1585,10 @@ impl Vm {
         let code = caller.code;
         let scoped = Scoped::from_root_repr(caller.executable.into_root_repr());
         if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
-            agent.vm_frames.frames.push(Frame {
-                ip: 0,
-                stack: Vec::with_capacity(32),
-                reference_base: 0,
-                iterator_base: 0,
-                handler_base: 0,
-                executable: code,
-                tables: None,
-                completion: Completion::Value,
-                stack_depth: 0,
-                collections_depth: 0,
-                scoped: scoped.clone(),
-            });
+            agent
+                .vm_frames
+                .frames
+                .push(Frame::new(code, scoped.clone()));
         }
         let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
         // The function's value stack is the Vm's, and the caller's waits in
@@ -1543,7 +1696,17 @@ impl Vm {
     /// stay in the frame for the next function, while those of the calling
     /// code are the `Vm`'s again. Returns the calling code as the code to
     /// run; `callee` is the function's code.
-    fn leave_function<'s>(&mut self, agent: &mut Agent, callee: Running) -> Running<'s> {
+    ///
+    /// The same ends a generator that was resumed in place of the step of
+    /// an iteration ([`Vm::enter_generator`]) and returned or threw: it is
+    /// completed, and where it returned (`returned`; an error is the
+    /// caller's to handle) the iteration is over.
+    fn leave_function<'s>(
+        &mut self,
+        agent: &mut Agent,
+        callee: Running,
+        returned: bool,
+    ) -> Running<'s> {
         agent.remove_execution_context();
         self.depth -= 1;
         agent.vm_frames.in_use -= 1;
@@ -1560,6 +1723,7 @@ impl Vm {
         self.iterator_stack.truncate(frame.iterator_base);
         self.exception_handler_stack.truncate(self.handler_base);
         self.handler_base = frame.handler_base;
+        let mut stepped = None;
         match frame.completion {
             Completion::Value => {}
             Completion::Discarded => self.result = None,
@@ -1571,6 +1735,23 @@ impl Vm {
                 if !self.result.is_some_and(|value| value.is_object()) {
                     self.result = object;
                 }
+            }
+            Completion::Stepped => {
+                // The generator's value stack stays in the frame for the
+                // next function, as a function's does; the record of its
+                // suspended state is let go of, and the frame's spare
+                // stack with it.
+                drop(frame.kept.take());
+                let generator = frame
+                    .resumed
+                    .take()
+                    .expect("the frame of a resumed generator has it");
+                let reference = if core::mem::take(&mut frame.reference_kept) {
+                    self.reference_stack.pop()
+                } else {
+                    None
+                };
+                stepped = Some((generator, frame.done, reference));
             }
         }
         if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
@@ -1597,6 +1778,9 @@ impl Vm {
         agent.stack_refs.get_mut().truncate(stack_depth);
         debug_assert_eq!(executable.get(agent), code);
         release_scoped_collections(agent, collections_depth);
+        if let Some((generator, done, reference)) = stepped {
+            self.end_resumed_generator(agent, generator, done, reference, returned);
+        }
         Running {
             executable,
             code,
@@ -1604,6 +1788,294 @@ impl Vm {
             stack_depth,
             collections_depth,
         }
+    }
+
+    /// What is left to do where a generator that was resumed in place of
+    /// the step of an iteration returned or threw, and its frame is left.
+    #[inline(never)]
+    fn end_resumed_generator(
+        &mut self,
+        agent: &mut Agent,
+        generator: Generator<'static>,
+        done: usize,
+        reference: Option<Reference<'static>>,
+        returned: bool,
+    ) {
+        // GeneratorStart 4.g. Set acGenerator.[[GeneratorState]] to
+        // completed: for a return and for a throw completion.
+        generator.get_mut(agent).generator_state = Some(GeneratorState::Completed);
+        // The step leaves the caller's Reference register as it was.
+        self.reference = reference;
+        if returned {
+            // Iterator finished: the step has no value, and the calling
+            // code goes on where its loop ends.
+            self.result = None;
+            self.ip = done;
+        }
+    }
+
+    /// Whether the code that runs is a generator's, resumed in place of the
+    /// step of an iteration.
+    fn runs_resumed_generator(&self, agent: &Agent) -> bool {
+        self.depth != 0
+            && agent
+                .vm_frames
+                .in_use
+                .checked_sub(1)
+                .and_then(|top| agent.vm_frames.frames.get(top))
+                .is_some_and(|frame| frame.completion == Completion::Stepped)
+    }
+
+    /// The generator that the step of an iteration is about to resume, if
+    /// this `Vm` runs it itself: the iterator of the step is a generator
+    /// that is suspended, with the next method IteratorStepValue would call
+    /// being the original one of the running realm (which resumes the
+    /// generator and does nothing else that can be seen: see
+    /// [`ActiveIterator::step_value`]), where one more call is not one too
+    /// many. Nothing has changed where this returns None.
+    ///
+    /// [`ActiveIterator::step_value`]: super::iterator::ActiveIterator
+    #[inline(never)]
+    fn generator_resumed_in_place(
+        &self,
+        agent: &Agent,
+        gc: NoGcScope,
+    ) -> Option<Generator<'static>> {
+        let Some(VmIteratorRecord::GenericIterator(IteratorRecord {
+            iterator: Object::Generator(generator),
+            next_method,
+        })) = self.iterator_stack.last()
+        else {
+            return None;
+        };
+        if !GeneratorPrototype::is_next(agent, *next_method, gc) {
+            return None;
+        }
+        // 1. Let state be ? GeneratorValidate(generator, generatorBrand).
+        // One that is running throws, and one that is completed is done:
+        // both the general way.
+        if !matches!(
+            generator.get(agent).generator_state,
+            Some(GeneratorState::SuspendedStart(_) | GeneratorState::SuspendedYield(_))
+        ) {
+            return None;
+        }
+        if agent.call_depth_exceeded() {
+            return None;
+        }
+        Some(generator.unbind())
+    }
+
+    /// Resumes `generator` in this `Vm`, in place of the step `instr` of an
+    /// iteration over it: GeneratorResume with undefined, up to the
+    /// generator's code. The calling code, which goes on at `ip`, is put
+    /// aside as for a call ([`Vm::enter_function`]). The generator's own
+    /// value stack is the `Vm`'s while it runs, and what it kept on its
+    /// other three stacks is on the `Vm`'s above what the caller has there.
+    /// Returns the generator's code as the code to run, which goes on
+    /// where it yielded, or starts.
+    fn enter_generator<'s>(
+        &mut self,
+        agent: &mut Agent,
+        instr: Instr,
+        generator: Generator<'static>,
+        ip: usize,
+        caller: Running,
+        gc: NoGcScope<'_, 's>,
+    ) -> Running<'s> {
+        // 7. Set generator.[[GeneratorState]] to executing.
+        let Some(
+            GeneratorState::SuspendedStart(mut state) | GeneratorState::SuspendedYield(mut state),
+        ) = generator
+            .get_mut(agent)
+            .generator_state
+            .replace(GeneratorState::Executing)
+        else {
+            unreachable!("the generator was seen to be suspended")
+        };
+        let code = caller.code;
+        let scoped = Scoped::from_root_repr(caller.executable.into_root_repr());
+        if agent.vm_frames.in_use == agent.vm_frames.frames.len() {
+            agent
+                .vm_frames
+                .frames
+                .push(Frame::new(code, scoped.clone()));
+        }
+        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        // The caller's value stack waits in the frame, the generator's own
+        // is the Vm's, and the frame's spare one waits in the record of the
+        // suspended state for the generator to yield.
+        core::mem::swap(&mut self.stack, &mut frame.stack);
+        core::mem::swap(&mut self.stack, &mut state.vm.stack);
+        // The step leaves the caller's Reference register as it was: it
+        // waits under what the generator has on the Reference stack.
+        frame.reference_kept = match self.reference.take() {
+            Some(reference) => {
+                self.reference_stack.push(reference);
+                true
+            }
+            None => false,
+        };
+        frame.reference_base = self.reference_stack.len();
+        frame.iterator_base = self.iterator_stack.len();
+        frame.handler_base = self.handler_base;
+        self.handler_base = self.exception_handler_stack.len();
+        // What the generator kept on its other stacks goes above what the
+        // caller has on the Vm's: most keep nothing.
+        if !state.vm.reference_stack.is_empty() {
+            self.reference_stack.append(&mut state.vm.reference_stack);
+        }
+        if !state.vm.iterator_stack.is_empty() {
+            self.iterator_stack.append(&mut state.vm.iterator_stack);
+        }
+        if !state.vm.exception_jump_target_stack.is_empty() {
+            self.exception_handler_stack
+                .append(&mut state.vm.exception_jump_target_stack);
+        }
+        let execution_context = state
+            .execution_context
+            .take()
+            .expect("a suspended generator has its execution context");
+        let executable = state.executable;
+        let resumed_at = state.vm.ip;
+        frame.resumed = Some(generator);
+        frame.kept = Some(state);
+        frame.done = instr.get_jump_slot();
+        frame.ip = ip;
+        frame.executable = code;
+        frame.tables = Some(caller.tables);
+        frame.completion = Completion::Stepped;
+        frame.stack_depth = caller.stack_depth;
+        frame.collections_depth = caller.collections_depth;
+        frame.scoped = scoped;
+        agent.vm_frames.in_use += 1;
+        self.depth += 1;
+        self.ip = resumed_at;
+        // 9. Resume the suspended evaluation of genContext using
+        // NormalCompletion(value) as the result of the operation that
+        // suspended it: the step resumes with undefined.
+        self.result = Some(Value::Undefined);
+        // 4. Let genContext be generator.[[GeneratorContext]].
+        // 8. Push genContext onto the execution context stack; genContext
+        // is now the running execution context.
+        agent.push_execution_context(execution_context);
+        // The generator's instructions and tables, held while it runs.
+        let executable = executable.bind(gc);
+        let tables = executable.get_tables(agent);
+        let rooted = executable.scope(agent, gc);
+        Running {
+            executable: rooted,
+            code: executable.unbind(),
+            tables,
+            stack_depth: agent.stack_refs.get_mut().len(),
+            collections_depth: agent.stack_ref_collections.get_mut().len(),
+        }
+    }
+
+    /// GeneratorYield of the generator that this `Vm` resumed in place of
+    /// the step of an iteration, which goes on at `ip` when it is resumed
+    /// again: its stacks are its own again, as a suspended `Vm` of its own
+    /// would leave them, its execution context is taken off, and the
+    /// stacks of the calling code are the `Vm`'s. Returns the calling code
+    /// as the code to run, and where it goes when the iteration is over;
+    /// `callee` is the generator's code.
+    fn suspend_generator<'s>(
+        &mut self,
+        agent: &mut Agent,
+        ip: usize,
+        callee: Running,
+    ) -> (Running<'s>, usize) {
+        // GeneratorYield 6. Remove genContext from the execution context
+        // stack and restore the execution context that is at the top of the
+        // execution context stack as the running execution context.
+        let execution_context = agent.pop_execution_context();
+        assert!(
+            execution_context.is_some(),
+            "a generator that runs has its execution context"
+        );
+        self.depth -= 1;
+        agent.vm_frames.in_use -= 1;
+        // The generator's code as the last collection left it.
+        let generator_code = callee.executable.get(agent);
+        let frame = &mut agent.vm_frames.frames[agent.vm_frames.in_use];
+        // The generator's instructions and tables are let go of.
+        drop(callee);
+        let generator = frame
+            .resumed
+            .take()
+            .expect("the frame of a resumed generator has it");
+        let mut state = frame
+            .kept
+            .take()
+            .expect("the frame of a resumed generator has the record of its state");
+        let done = frame.done;
+        // The generator's value stack goes back into the record, the
+        // caller's is the Vm's again, and the frame has its spare one for
+        // the next function.
+        core::mem::swap(&mut self.stack, &mut state.vm.stack);
+        core::mem::swap(&mut self.stack, &mut frame.stack);
+        refit_suspended_stack(&mut state.vm.stack);
+        // What the generator has on the other stacks, above what the
+        // caller has, is the generator's to keep: most have nothing.
+        if self.reference_stack.len() > frame.reference_base {
+            state
+                .vm
+                .reference_stack
+                .extend(self.reference_stack.drain(frame.reference_base..));
+            refit_suspended_stack(&mut state.vm.reference_stack);
+        }
+        if self.iterator_stack.len() > frame.iterator_base {
+            state
+                .vm
+                .iterator_stack
+                .extend(self.iterator_stack.drain(frame.iterator_base..));
+            refit_suspended_stack(&mut state.vm.iterator_stack);
+        }
+        if self.exception_handler_stack.len() > self.handler_base {
+            state
+                .vm
+                .exception_jump_target_stack
+                .extend(self.exception_handler_stack.drain(self.handler_base..));
+            refit_suspended_stack(&mut state.vm.exception_jump_target_stack);
+        }
+        self.handler_base = frame.handler_base;
+        // The step leaves the caller's Reference register as it was.
+        self.reference = if core::mem::take(&mut frame.reference_kept) {
+            self.reference_stack.pop()
+        } else {
+            None
+        };
+        self.ip = frame.ip;
+        frame.completion = Completion::Value;
+        let tables = frame
+            .tables
+            .take()
+            .expect("the frame of the calling code is in use");
+        let (stack_depth, collections_depth) = (frame.stack_depth, frame.collections_depth);
+        let code = frame.executable;
+        let executable = frame.scoped.clone();
+        if agent.vm_frames.in_use == 0 {
+            agent.vm_frames.frames.truncate(SPARE_FRAMES);
+        }
+        agent.stack_refs.get_mut().truncate(stack_depth);
+        debug_assert_eq!(executable.get(agent), code);
+        release_scoped_collections(agent, collections_depth);
+        // GeneratorYield 5. Set generator.[[GeneratorState]] to
+        // suspended-yield.
+        state.vm.ip = ip;
+        state.executable = generator_code;
+        state.execution_context = execution_context;
+        generator.get_mut(agent).generator_state = Some(GeneratorState::SuspendedYield(state));
+        (
+            Running {
+                executable,
+                code,
+                tables,
+                stack_depth,
+                collections_depth,
+            },
+            done,
+        )
     }
 
     /// ## Panics
@@ -1952,11 +2424,17 @@ impl Vm {
                 vm.execute_pop_stack()
             }
             // The step of `for`-`of` over an Array that is walked element
-            // by element, where the element is a value or the walk is over.
+            // by element, where the element is a value or the walk is over;
+            // and the step over a generator, which the Vm may resume itself.
             Instruction::IteratorStepValue => {
                 step!(IteratorStepValue);
-                let Some(VmIteratorRecord::ArrayValues(walk)) = vm.iterator_stack.last_mut() else {
-                    return Plain::No;
+                let walk = match vm.iterator_stack.last_mut() {
+                    Some(VmIteratorRecord::ArrayValues(walk)) => walk,
+                    Some(VmIteratorRecord::GenericIterator(IteratorRecord {
+                        iterator: Object::Generator(_),
+                        ..
+                    })) => return Plain::Resume,
+                    _ => return Plain::No,
                 };
                 let Some(step) = walk.plain_next(agent, gc) else {
                     return Plain::No;

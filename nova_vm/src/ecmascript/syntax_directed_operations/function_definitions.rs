@@ -407,11 +407,13 @@ pub(crate) fn evaluate_generator_body<'gc>(
         .heap
         .create(GeneratorHeapData {
             object_index: None,
-            generator_state: Some(GeneratorState::SuspendedStart(SuspendedGeneratorState {
-                vm,
-                executable: exe.take(agent),
-                execution_context: agent.running_execution_context().clone(),
-            })),
+            generator_state: Some(GeneratorState::SuspendedStart(Box::new(
+                SuspendedGeneratorState {
+                    vm,
+                    executable: exe.take(agent),
+                    execution_context: Some(agent.running_execution_context().clone()),
+                },
+            ))),
         })
         .bind(gc.nogc());
     ordinary_populate_from_constructor(

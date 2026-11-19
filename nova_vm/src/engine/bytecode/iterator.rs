@@ -240,6 +240,57 @@ pub(crate) enum VmIteratorRecord<'a> {
     EmptySliceIterator,
 }
 
+/// IteratorStepValue from what the next method returned: the value of an
+/// iterator result that is not done, None for one that is, and a TypeError
+/// for what is not an object.
+pub(super) fn step_value_of_result<'gc>(
+    agent: &mut Agent,
+    result: Value,
+    mut gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, Option<Value<'gc>>> {
+    let result = result.bind(gc.nogc());
+    let Ok(result) = Object::try_from(result) else {
+        return Err(throw_iterator_returned_non_object(agent, gc.into_nogc()));
+    };
+    let result = result.unbind().bind(gc.nogc());
+    // The result object nearly every iterator returns is an ordinary one
+    // with "done" and "value" as plain properties of its own (the one
+    // CreateIteratorResultObject makes, or a literal): \[\[Get]] of
+    // those is the value in the slot.
+    if let Some(done) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.done.into()) {
+        if to_boolean(agent, done) {
+            // The value of a result that is done is not read.
+            return Ok(None);
+        }
+        if let Some(value) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.value.into()) {
+            return Ok(Some(value.unbind().bind(gc.into_nogc())));
+        }
+    }
+    let scoped_result = result.scope(agent, gc.nogc());
+    // 1. Return ToBoolean(? Get(iterResult, "done")).
+    let done = get(
+        agent,
+        result.unbind(),
+        BUILTIN_STRING_MEMORY.done.into(),
+        gc.reborrow(),
+    )
+    .unbind()?
+    .bind(gc.nogc());
+    let done = to_boolean(agent, done);
+    if done {
+        Ok(None)
+    } else {
+        // 1. Return ? Get(iterResult, "value").
+        let value = get(
+            agent,
+            scoped_result.get(agent),
+            BUILTIN_STRING_MEMORY.value.into(),
+            gc,
+        )?;
+        Ok(Some(value))
+    }
+}
+
 impl<'a> VmIteratorRecord<'a> {
     pub(super) fn remaining_length_estimate(&self, agent: &Agent) -> Option<usize> {
         match self {
@@ -984,48 +1035,7 @@ impl<'a> GenericIterator<'a> {
             .unbind()?
             .bind(gc.nogc())
         };
-        let Ok(result) = Object::try_from(result) else {
-            return Err(throw_iterator_returned_non_object(agent, gc.into_nogc()));
-        };
-        let result = result.unbind().bind(gc.nogc());
-        // The result object nearly every iterator returns is an ordinary one
-        // with "done" and "value" as plain properties of its own (the one
-        // CreateIteratorResultObject makes, or a literal): \[\[Get]] of
-        // those is the value in the slot.
-        if let Some(done) = own_data_property(agent, result, BUILTIN_STRING_MEMORY.done.into()) {
-            if to_boolean(agent, done) {
-                // The value of a result that is done is not read.
-                return Ok(None);
-            }
-            if let Some(value) =
-                own_data_property(agent, result, BUILTIN_STRING_MEMORY.value.into())
-            {
-                return Ok(Some(value.unbind().bind(gc.into_nogc())));
-            }
-        }
-        let scoped_result = result.scope(agent, gc.nogc());
-        // 1. Return ToBoolean(? Get(iterResult, "done")).
-        let done = get(
-            agent,
-            result.unbind(),
-            BUILTIN_STRING_MEMORY.done.into(),
-            gc.reborrow(),
-        )
-        .unbind()?
-        .bind(gc.nogc());
-        let done = to_boolean(agent, done);
-        if done {
-            Ok(None)
-        } else {
-            // 1. Return ? Get(iterResult, "value").
-            let value = get(
-                agent,
-                scoped_result.get(agent),
-                BUILTIN_STRING_MEMORY.value.into(),
-                gc,
-            )?;
-            Ok(Some(value))
-        }
+        step_value_of_result(agent, result.unbind(), gc)
     }
 
     fn throw<'gc>(
