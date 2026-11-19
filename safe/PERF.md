@@ -38,7 +38,7 @@ below.
 | call | 14 | 10.4x | 2.0x |
 | math | 4 | 9.7x | 1.9x |
 | string | 26 | 10.6x | 1.4x |
-| prop | 13 | 7.1x | 1.8x |
+| prop | 13 | 7.1x | 1.6x |
 | map, set | 4 | 4.6x | 1.7x |
 | app | 8 | 6.1x | 1.7x |
 | array | 14 | 5.8x | 1.6x |
@@ -50,9 +50,9 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst is now typed `Float64Array` arithmetic (3.3x), then the
-properties of one object read and written in a loop (3.2x), a step of a particle animation (3.1x) and
-the constructor of a derived class (2.9x). 3 of the 108 cases are above 3x and 78 at or under 2x, 16 of
-them at or under QuickJS's time. Over all cases it is 1.59x: 2.12x before the round of patterns, Array iteration and
+properties of one object read and written in a loop (3.2x), a step of a particle animation (3.0x) and
+the constructor of a derived class (2.9x). 3 of the 108 cases are above 3x and 79 at or under 2x, 15 of
+them at or under QuickJS's time. Over all cases it is 1.57x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -62,8 +62,9 @@ what is concatenated took it to 1.78x, more built-in functions run in place of a
 chains of `+` compiled as one concatenation to 1.68x, the arithmetic of doubles done as that to 1.67x,
 objects copied by their shape to 1.65x, bound functions and rest parameters run in the loop of
 instructions to 1.64x, holes looked for by blocks, Strings compared in the loop and `instanceof`
-answered there to 1.63x, a generator resumed in the loop of instructions to 1.60x, and the names of the
-global object read by the state of the global scope took it here.
+answered there to 1.63x, a generator resumed in the loop of instructions to 1.60x, the names of the
+global object read by the state of the global scope to 1.59x, and a property read and written by a
+computed String in the loop of instructions took it here.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -631,6 +632,29 @@ to 1.8x. Properties together went from 1.9x to 1.8x, all cases from 1.67x to 1.6
 Tried on the way and not kept: the keys of a small object compared as the 64 bits each is, in place of
 kind by kind and field by field. It read a twelfth slower (`prop/dynamic-string-key`, where a computed
 String key is looked up among eight; a fifth of that case is the search, and it is 2.6x).
+
+That case was not the search, though. `o[name]` with a String for the key, and `o[name] = v`, had no
+short way at all: the instruction that reads an element took only an integer, and everything else made a
+Reference of the object and the key, went through GetValue to \[\[Get]], and there had a property
+descriptor made of the property found (its attributes asked of the descriptors' table) to take the value
+out of; three fifths of the case. For an ordinary object that has the name as a data property of its own
+the read is that property's value, and the assignment sets it where it is writable (what OrdinarySet
+comes to with the object for the receiver): the key is found among the object's keys (a search of a few,
+the table of a large shape) and the value read or written at its place, with no descriptor. A name the
+object does not have itself, an accessor, a property that is not writable, and every other kind of
+object go as before, and give what they gave. A String that is the text of an integer is that integer
+for a key, as everywhere. `prop/dynamic-string-key` went from 2.6x to 1.5x, `prop/dictionary-churn` from
+1.9x to 1.4x, an object used as a dictionary from 1.9x to 1.5x, `for`-`in` with `o[k]` in its body from
+1.05x to 0.86x, an event emitter that keeps its listeners by name from 2.1x to 1.8x; properties together
+from 1.8x to 1.6x.
+
+The instructions are the ones that read and write an element by its index, and as first written the
+String was one more arm of their choice of key: a grid of Arrays read by two indexes was 5% slower and
+an Array read and written by index 2.5%. The integer's way is as it was, and the String is taken where
+that way finds no integer, in functions of their own.
+
+Left: a name the object inherits, and a name it does not have (`undefined`), still go the general way; a
+small cache by shape and key would answer them, and would save the search.
 
 ### 5. Array and typed array elements
 
