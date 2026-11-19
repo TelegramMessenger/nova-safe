@@ -11398,3 +11398,232 @@ many 1950 600"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A `for`-`of` loop has one handler for whatever is thrown in it, which
+/// closes the iterator, where it had one pushed and popped in every turn
+/// around the binding and the statement alone. The step is under that
+/// handler now, and an iterator whose step throws is not to be closed:
+/// the step leaves it exhausted. The script has the step throw in each of
+/// its ways (`next` throws, returns no object, `done` or `value` throws)
+/// and looks for the `return` that must not even be asked for; has the
+/// body and the binding throw, break, continue and return, with a
+/// `return` that throws or gives a primitive, and with none; nests loops
+/// with labels, `try` and `finally`; runs loops that throw and are caught
+/// hundreds of times; walks Arrays whose iterator has a `return`,
+/// generators that throw, delegate and are thrown into, and `for`-`in`;
+/// and reads the value of a loop. What is expected is what Node prints
+/// for the same script.
+#[test]
+fn a_loop_closes_its_iterator_when_its_body_ends_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(iterators_closed_by_loops)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn iterators_closed_by_loops() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e && e.constructor === Error ? "Error:" + e.message : e && e.constructor ? e.constructor.name : "thrown:" + String(e); } }
+var log = [];
+function L(x) { log.push(String(x)); }
+function flush(name) { P(name, log.join("|")); log = []; }
+
+// An iterable whose every part can be made to throw, and that logs what is asked of it.
+function make(steps, opts) {
+  opts = opts || {};
+  var i = 0;
+  var it = {
+    next: function () {
+      L("next");
+      var step = steps[i++];
+      if (step === "throw") throw new Error("next threw");
+      if (step === "nonobject") return 5;
+      if (step === "donethrows") return { get done() { throw new Error("done threw"); }, value: 1 };
+      if (step === "valuethrows") return { done: false, get value() { throw new Error("value threw"); } };
+      if (step === undefined) return { done: true, value: "end" };
+      return { done: false, value: step };
+    }
+  };
+  if (!opts.noReturn) {
+    Object.defineProperty(it, "return", { get: function () { L("get return"); return function (v) { L("return"); if (opts.returnThrows) throw new Error("return threw"); return opts.returnValue === undefined ? {} : opts.returnValue; }; } });
+  }
+  var iterable = {}; iterable[Symbol.iterator] = function () { L("iter"); return it; };
+  return iterable;
+}
+
+// 1. the step throws in each of its ways: nothing is closed
+var ways = ["throw", "nonobject", "donethrows", "valuethrows"];
+for (var w = 0; w < ways.length; w++) {
+  L(tryit(function () { for (var x of make([1, ways[w], 3])) L("body " + x); return "finished"; }));
+  flush("step " + ways[w]);
+}
+
+// 2. the body throws, breaks, continues, returns
+L(tryit(function () { for (var x of make([1, 2, 3])) { L("body " + x); if (x == 2) throw new Error("body threw"); } }));
+flush("body throws");
+L(tryit(function () { for (var x of make([1, 2, 3], { returnThrows: true })) { if (x == 2) throw new Error("body threw"); } }));
+flush("body and return throw");
+L(tryit(function () { for (var x of make([1, 2, 3])) { if (x == 2) break; } return "after"; }));
+flush("break");
+L(tryit(function () { for (var x of make([1, 2, 3], { returnThrows: true })) { if (x == 2) break; } return "after"; }));
+flush("break, return throws");
+L(tryit(function () { for (var x of make([1, 2, 3], { returnValue: 7 })) { if (x == 2) break; } return "after"; }));
+flush("break, return gives a primitive");
+L(tryit(function () { for (var x of make([1, 2, 3])) { if (x == 2) continue; L("body " + x); } return "all"; }));
+flush("continue");
+L(tryit(function () { for (var x of make([1, 2, 3])) { if (x == 2) return "returned " + x; } }));
+flush("return");
+L(tryit(function () { for (var x of make([1, 2, 3], { noReturn: true })) { if (x == 2) break; } return "no return method"; }));
+flush("no return");
+L(tryit(function () { for (var x of make([])) L("never"); return "empty"; }));
+flush("empty");
+
+// 3. the binding throws: closed
+L(tryit(function () { for (var [a, b] of make([[1, 2], 5, [3, 4]])) L(a + b); }));
+flush("pattern");
+var target = { set v(x) { if (x == 2) throw new Error("setter threw"); L("set " + x); } };
+L(tryit(function () { for (target.v of make([1, 2, 3])) L("body"); }));
+flush("setter");
+L(tryit(function () { for (const { length } of make(["ab", null, "c"])) L(length); }));
+flush("object pattern");
+L(tryit(function () { "use strict"; for (undeclaredName of make([1, 2])) L("body"); }));
+flush("unresolvable");
+
+// 4. nested loops and labels
+L(tryit(function () { outer: for (var a of make([1, 2])) { for (var b of make([10, 20])) { if (b == 20) continue outer; L(a + b); } } return "done"; }));
+flush("continue outer");
+L(tryit(function () { outer: for (var a of make([1, 2])) { for (var b of make([10, 20])) { if (a == 1 && b == 10) break outer; } } return "done"; }));
+flush("break outer");
+L(tryit(function () { for (var a of make([1, 2])) { for (var b of make([10, "throw"])) L(a + b); } }));
+flush("inner step throws");
+L(tryit(function () { for (var a of make([1, 2])) { try { for (var b of make([10, 20])) { if (b == 20) throw new Error("inner"); } } catch (e) { L("caught " + e.message); } } return "outer went on"; }));
+flush("inner body throws, caught");
+L(tryit(function () { for (var a of make([1, 2])) { try { for (var b of make(["throw"])) L("never"); } catch (e) { L("caught " + e.message); } } return "outer went on"; }));
+flush("inner step throws, caught");
+
+// 5. try and finally in the body
+L(tryit(function () { for (var x of make([1, 2, 3])) { try { if (x == 1) continue; if (x == 2) break; } finally { L("finally " + x); } } return "out"; }));
+flush("finally");
+L(tryit(function () { for (var x of make([1, 2])) { try { throw new Error("t" + x); } catch (e) { L(e.message); } finally { L("f" + x); } } return "out"; }));
+flush("caught in the body");
+L(tryit(function () { for (var x of make([1, 2])) { try { return "from try"; } finally { L("f"); } } }));
+flush("return in try");
+
+// 6. many turns with errors caught inside: nothing piles up
+var caught = 0, turns = 0;
+for (var r = 0; r < 300; r++) { try { for (var x of [1, 2, 3]) { turns++; if (x == 2 && r % 3 == 0) throw new Error("x"); if (x == 3 && r % 5 == 0) break; } } catch (e) { caught++; } }
+P("many", caught, turns);
+function deepTry(n) { var c = 0; for (var i = 0; i < n; i++) { try { for (var k of [1]) { try { for (var m of [1, 2]) { if (m == 2) throw 1; } } finally { c++; } } } catch (e) { c += 10; } } return c; }
+P("nested many", deepTry(200));
+
+// 7. Arrays, with what the Array iterator can be asked
+var ArrayIteratorPrototype = Object.getPrototypeOf([][Symbol.iterator]());
+ArrayIteratorPrototype.return = function () { L("array return"); return {}; };
+var poisoned = [1, 2, 3]; Object.defineProperty(poisoned, 1, { get: function () { throw new Error("element threw"); } });
+L(tryit(function () { for (var x of poisoned) L("body " + x); }));
+flush("array element throws");
+L(tryit(function () { for (var x of [1, 2, 3]) { if (x == 2) throw new Error("body threw"); } }));
+flush("array body throws");
+L(tryit(function () { for (var x of [1, 2, 3]) { if (x == 2) break; } return "broke"; }));
+flush("array break");
+L(tryit(function () { for (var x of [1, 2, 3]) L(x); return "whole"; }));
+flush("array whole");
+delete ArrayIteratorPrototype.return;
+
+// 8. generators
+function* gen(n, bad) { try { for (var i = 0; i < n; i++) { if (i == bad) throw new Error("generator threw"); yield i; } } finally { L("gen finally"); } }
+L(tryit(function () { for (var x of gen(3, 1)) L("body " + x); }));
+flush("generator throws");
+L(tryit(function () { for (var x of gen(3, -1)) { if (x == 1) throw new Error("body threw"); } }));
+flush("generator, body throws");
+L(tryit(function () { for (var x of gen(3, -1)) { if (x == 1) break; } return "broke"; }));
+flush("generator break");
+function* delegating(inner) { yield* inner; }
+L(tryit(function () { for (var x of delegating(make([1, "donethrows"]))) L("body " + x); }));
+flush("delegate, done throws");
+L(tryit(function () { for (var x of delegating(make([1, 2, 3]))) { if (x == 2) break; } return "broke"; }));
+flush("delegate, break");
+function* looping(inner) { for (var x of inner) { L("yielding " + x); yield x; } }
+var lg = looping(make([1, 2, 3])); lg.next(); L(tryit(function () { return JSON.stringify(lg.throw(new Error("thrown in"))); }));
+flush("throw into a generator's loop");
+var lg2 = looping(make([1, 2, 3])); lg2.next(); L(JSON.stringify(lg2.return("r")));
+flush("return into a generator's loop");
+var lg3 = looping(make([1, "throw"])); lg3.next(); L(tryit(function () { return JSON.stringify(lg3.next()); }));
+flush("generator's loop, step throws");
+
+// 9. for-in
+var proto = { inherited: 1 }, obj = Object.create(proto); obj.a = 1; obj.b = 2; obj.c = 3;
+L(tryit(function () { for (var k in obj) { if (k == "b") throw new Error("in body threw"); L(k); } }));
+L(tryit(function () { var s = ""; for (var k in obj) { if (k == "b") continue; if (k == "inherited") break; s += k; } return s; }));
+L(tryit(function () { for (var k in new Proxy({}, { ownKeys: function () { throw new Error("ownKeys threw"); } })) L(k); }));
+L(tryit(function () { outer: for (var k in obj) { for (var j in obj) { if (j == "b") continue outer; L(k + j); } } return "labels"; }));
+L(tryit(function () { var n = 0; for (var r = 0; r < 200; r++) { try { for (var k in obj) { if (k == "c") throw 1; n++; } } catch (e) { n += 100; } } return n; }));
+flush("for-in");
+
+// 10. the value of a loop
+P("values", eval("for (var x of [1, 2, 3]) { x * 2; }"), eval("for (var x of [1, 2, 3]) { if (x == 2) break; x; }"), eval("for (var x of []) { x; }"), eval("7; for (var x of [1]) { }"), eval("for (var k in { a: 1, b: 2 }) { k; }"), eval("for (var x of [1, 2]) { if (x == 1) continue; 'second'; }"));
+
+// 11. closures over the loop variable, and the iterator method looked up once
+var fs = []; for (let x of make([1, 2, 3])) fs.push(function () { return x; });
+P("closures", fs.map(function (f) { return f(); }).join());
+flush("closures log");
+lines.join("\n")"##;
+    let expected = r##"step throw iter|next|body 1|next|Error:next threw
+step nonobject iter|next|body 1|next|TypeError
+step donethrows iter|next|body 1|next|Error:done threw
+step valuethrows iter|next|body 1|next|Error:value threw
+body throws iter|next|body 1|next|body 2|get return|return|Error:body threw
+body and return throw iter|next|next|get return|return|Error:body threw
+break iter|next|next|get return|return|after
+break, return throws iter|next|next|get return|return|Error:return threw
+break, return gives a primitive iter|next|next|get return|return|TypeError
+continue iter|next|body 1|next|next|body 3|next|all
+return iter|next|next|get return|return|returned 2
+no return iter|next|next|no return method
+empty iter|next|empty
+pattern iter|next|3|next|get return|return|TypeError
+setter iter|next|set 1|body|next|get return|return|Error:setter threw
+object pattern iter|next|2|next|get return|return|TypeError
+unresolvable iter|next|get return|return|ReferenceError
+continue outer iter|next|iter|next|11|next|get return|return|next|iter|next|12|next|get return|return|next|done
+break outer iter|next|iter|next|get return|return|get return|return|done
+inner step throws iter|next|iter|next|11|next|get return|return|Error:next threw
+inner body throws, caught iter|next|iter|next|next|get return|return|caught inner|next|iter|next|next|get return|return|caught inner|next|outer went on
+inner step throws, caught iter|next|iter|next|caught next threw|next|iter|next|caught next threw|next|outer went on
+finally iter|next|finally 1|next|finally 2|get return|return|out
+caught in the body iter|next|t1|f1|next|t2|f2|next|out
+return in try iter|next|f|get return|return|from try
+many 100 800
+nested many 2200
+array element throws body 1|Error:element threw
+array body throws array return|Error:body threw
+array break array return|broke
+array whole 1|2|3|whole
+generator throws body 0|gen finally|Error:generator threw
+generator, body throws gen finally|Error:body threw
+generator break gen finally|broke
+delegate, done throws iter|next|body 1|next|Error:done threw
+delegate, break iter|next|next|get return|return|broke
+throw into a generator's loop iter|next|yielding 1|get return|return|Error:thrown in
+return into a generator's loop iter|next|yielding 1|get return|return|{"value":"r","done":true}
+generator's loop, step throws iter|next|yielding 1|next|Error:next threw
+for-in a|Error:in body threw|ac|Error:ownKeys threw|aa|ba|ca|inheriteda|labels|20400
+values 6 undefined undefined undefined b second
+closures 1,2,3
+closures log iter|next|next|next|next"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

@@ -1364,7 +1364,7 @@ impl Vm {
                         let step = with_vm_gc(
                             agent,
                             self,
-                            |agent, gc| step_value_of_result(agent, yielded, gc),
+                            |agent, gc| Self::step_value_of_yielded(agent, yielded, gc),
                             gc.reborrow(),
                         )
                         .unbind();
@@ -2154,11 +2154,49 @@ impl Vm {
         generator.get_mut(agent).generator_state = Some(GeneratorState::Completed);
         // The step leaves the caller's Reference register as it was.
         self.reference = reference;
+        if !returned {
+            // The step threw: its iterator is not to be closed.
+            self.exhaust_active_iterator();
+        }
         if returned {
             // Iterator finished: the step has no value, and the calling
             // code goes on where its loop ends.
             self.result = None;
             self.ip = done;
+        }
+    }
+
+    /// IteratorStepValue from the iterator result object that a generator
+    /// resumed in place passed on from `yield*`, for the `Vm` that waits on
+    /// top of the Agent's while this reads the object: where the reading
+    /// throws, the step has thrown, and that `Vm`'s iterator is left
+    /// exhausted ([`Vm::exhaust_active_iterator`]).
+    // A function of its own, so that the loop of instructions has one call
+    // here as it had: with the iterator seen to in the loop itself, an
+    // empty loop was 7% slower for where the loop's code then lay.
+    #[inline(never)]
+    fn step_value_of_yielded<'gc>(
+        agent: &mut Agent,
+        result: Value,
+        gc: GcScope<'gc, '_>,
+    ) -> JsResult<'gc, Option<Value<'gc>>> {
+        let step = step_value_of_result(agent, result, gc);
+        if step.is_err()
+            && let Some(vm) = agent.vm_stack.last_mut()
+        {
+            vm.exhaust_active_iterator();
+        }
+        step
+    }
+
+    /// Leaves the iterator that a step was taken of exhausted: the step
+    /// threw, and an iterator whose step throws is done and is not closed.
+    /// The handler around a `for`-`of` loop closes the iterator for
+    /// whatever is thrown in the loop, the step included; of an exhausted
+    /// one there is nothing to close.
+    pub(super) fn exhaust_active_iterator(&mut self) {
+        if let Some(iterator) = self.iterator_stack.last_mut() {
+            *iterator = VmIteratorRecord::EmptySliceIterator;
         }
     }
 

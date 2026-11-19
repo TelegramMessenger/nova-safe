@@ -3383,12 +3383,7 @@ pub(super) fn execute_iterator_step_value<'gc>(
     };
     let result = match plain {
         Some(step) => step.bind(gc.into_nogc()),
-        None => with_vm_gc(
-            agent,
-            vm,
-            |agent, gc| ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc),
-            gc,
-        )?,
+        None => with_vm_gc(agent, vm, step_value_of_waiting_vm, gc)?,
     };
     vm.result = result.unbind();
     if result.is_none() {
@@ -3400,6 +3395,28 @@ pub(super) fn execute_iterator_step_value<'gc>(
         vm.ip = ip;
     }
     Ok(())
+}
+
+/// IteratorStepValue of the active iterator of the `Vm` that waits on top
+/// of the Agent's while this runs. Where the step throws, the iterator is
+/// left exhausted: it is not to be closed (7.4.8 IteratorStep and those
+/// that call it set iteratorRecord.\[\[Done]] to true), which the handler
+/// around a `for`-`of` loop would do for whatever is thrown in the loop.
+/// The properties that `for`-`in` walks are nothing to close.
+// A function of its own: seen to in the instruction, which is part of the
+// loop of instructions, it moved that loop.
+#[inline(never)]
+fn step_value_of_waiting_vm<'gc>(
+    agent: &mut Agent,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, Option<Value<'gc>>> {
+    let step = ActiveIterator::new(agent, gc.nogc()).step_value(agent, gc);
+    if step.is_err()
+        && let Some(vm) = agent.vm_stack.last_mut()
+    {
+        vm.exhaust_active_iterator();
+    }
+    step
 }
 
 pub(super) fn execute_iterator_step_value_or_undefined<'gc>(
