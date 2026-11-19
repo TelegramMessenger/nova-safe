@@ -19,6 +19,7 @@ import glob
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 
@@ -57,10 +58,40 @@ def build(qjs_src, nova_lib, work):
         nova_lib = os.path.join(target, "release", "libnova_embed_ffi.a")
     binary = os.path.join(work, "bench")
     source = os.path.join(HERE, "bench.c")
-    if newer(binary, [source, nova_lib] + objects):
+    order = os.path.join(HERE, "order.txt")
+    if newer(binary, [source, nova_lib, order] + objects):
         frameworks = ["-framework", "CoreFoundation"] if sys.platform == "darwin" else ["-ldl"]
-        sh(["cc", "-O2", "-std=gnu11", "-Wall", "-I", qjs_src, "-I", os.path.join(ROOT, "nova_embed_ffi", "include"), source] + objects + [nova_lib, "-lm", "-lpthread"] + frameworks + ["-o", binary])
+        sh(["cc", "-O2", "-std=gnu11", "-Wall", "-I", qjs_src, "-I", os.path.join(ROOT, "nova_embed_ffi", "include"), source] + objects + [nova_lib, "-lm", "-lpthread"] + frameworks + placed_first(nova_lib, order, work) + ["-o", binary])
     return binary
+
+
+def placed_first(nova_lib, order, work):
+    """The linker arguments that put the functions order.txt names at the start
+    of the binary, in its order. Where a function is in the binary changes how
+    fast it runs by a few percent, and without this that place moves with any
+    change to what is laid out before it."""
+    if sys.platform != "darwin":
+        return []
+    symbols = subprocess.run(["nm", nova_lib], capture_output=True).stdout.decode("utf-8", "replace").split()
+    listed = []
+    for line in open(order):
+        part = line.strip()
+        if not part or part.startswith("#"):
+            continue
+        if part.startswith("_"):
+            # A function of QuickJS, by its whole name.
+            listed.append(part)
+            continue
+        # The function itself: its name ends with the part and a hash.
+        whole = re.compile("_+ZN.*" + re.escape(part) + "[0-9a-f]{16}E")
+        found = sorted(set(name for name in symbols if whole.fullmatch(name)))
+        if len(found) != 1:
+            print("order.txt: %s names %d functions of the library, not one" % (part, len(found)), file=sys.stderr)
+        listed += found
+    path = os.path.join(work, "order.txt")
+    with open(path, "w") as out:
+        out.write("".join(name + "\n" for name in listed))
+    return ["-Wl,-order_file," + path]
 
 
 def run_case(binary, engine, case, index, heap):
