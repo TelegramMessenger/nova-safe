@@ -12,6 +12,7 @@ mod finaliser_stack;
 mod for_in_of_statement;
 mod function_declaration_instantiation;
 mod function_environment_use;
+mod kept_captures;
 mod labelled_statement;
 mod template_literals;
 mod with_statement;
@@ -72,8 +73,14 @@ pub(crate) enum Place<'s, 'gc> {
     /// A variable in an environment that no `with` or direct `eval` can come
     /// between it and this place in the code. Where it was found is
     /// remembered (the BindingSite `site` of the executable), and it is read
-    /// and written there without a Reference.
-    Site { name: String<'gc>, site: IndexType },
+    /// and written there without a Reference. `once`: the stack slot in
+    /// which a read keeps the value for the rest of the call, for a
+    /// variable that has one value that long (see `kept_captures`).
+    Site {
+        name: String<'gc>,
+        site: IndexType,
+        once: Option<IndexType>,
+    },
     /// A name of the global scope, in a Script, that no `with` or direct
     /// `eval` can come between it and this place in the code: as a Site,
     /// with the place remembered in the global scope (among its lexical
@@ -190,12 +197,36 @@ impl<'s, 'gc> Place<'s, 'gc> {
         );
     }
 
+    /// The value of a variable at a site into the result register: read
+    /// where it was found the last time, or, with `once`, taken from the
+    /// stack slot that keeps it for the call once it was read.
+    fn get_site(
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        name: String<'gc>,
+        site: IndexType,
+        once: Option<IndexType>,
+    ) {
+        match once {
+            Some(slot) => ctx.add_instruction_with_identifier_site_and_slot(
+                Instruction::GetBindingAtSiteOnce,
+                name.to_property_key(),
+                site,
+                slot,
+            ),
+            None => ctx.add_instruction_with_identifier_and_site(
+                Instruction::GetBindingAtSite,
+                name.to_property_key(),
+                site,
+            ),
+        }
+    }
+
     fn initialise_referenced_binding_to_undefined(
         &self,
         ctx: &mut CompileContext<'_, '_, 'gc, '_>,
     ) {
         match self {
-            Place::Site { name, site } => {
+            Place::Site { name, site, .. } => {
                 Self::resolve_site(ctx, *name, *site);
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
@@ -230,7 +261,7 @@ impl<'s, 'gc> Place<'s, 'gc> {
         value: ValueOutput,
     ) {
         match self {
-            Place::Site { name, site } => {
+            Place::Site { name, site, .. } => {
                 Self::resolve_site(ctx, *name, *site);
                 ctx.add_instruction(Instruction::InitializeReferencedBinding);
             }
@@ -289,12 +320,8 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCache, cache);
                 Ok(ValueOutput::Value)
             }
-            Place::Site { name, site } => {
-                ctx.add_instruction_with_identifier_and_site(
-                    Instruction::GetBindingAtSite,
-                    name.to_property_key(),
-                    *site,
-                );
+            Place::Site { name, site, once } => {
+                Self::get_site(ctx, *name, *site, *once);
                 Ok(ValueOutput::Value)
             }
             Place::GlobalSite { name, site, .. } => {
@@ -352,13 +379,9 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::GetValueWithCacheKeepReference, cache);
                 Ok(ValueOutput::Value)
             }
-            Self::Site { name, site } => {
+            Self::Site { name, site, once } => {
                 // Like a stack variable, there is no reference to keep.
-                ctx.add_instruction_with_identifier_and_site(
-                    Instruction::GetBindingAtSite,
-                    name.to_property_key(),
-                    *site,
-                );
+                Self::get_site(ctx, *name, *site, *once);
                 Ok(ValueOutput::Value)
             }
             Self::GlobalSite { name, site, .. } => {
@@ -449,7 +472,7 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_cache(Instruction::PutValueWithCache, cache);
                 Ok(())
             }
-            Self::Site { name, site } => {
+            Self::Site { name, site, .. } => {
                 ctx.add_instruction_with_identifier_and_site(
                     Instruction::PutBindingAtSite,
                     name.to_property_key(),
@@ -522,7 +545,7 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, false);
                 Ok(false.into())
             }
-            Self::Site { name, site } => {
+            Self::Site { name, site, .. } => {
                 Self::resolve_site(ctx, name, site);
                 ctx.add_instruction(Instruction::Delete);
                 Ok(ValueOutput::Value)
@@ -729,7 +752,7 @@ impl<'s, 'gc> PlaceOrValue<'s, 'gc> {
     /// the reference register, for an operator that takes a Reference.
     fn reference_into_register(&self, ctx: &mut CompileContext<'_, '_, 'gc, '_>) {
         match self {
-            PlaceOrValue::Place(Place::Site { name, site }) => {
+            PlaceOrValue::Place(Place::Site { name, site, .. }) => {
                 Place::resolve_site(ctx, *name, *site);
             }
             PlaceOrValue::Place(Place::GlobalSite { name, site, .. }) => {
@@ -1087,8 +1110,10 @@ enum VariableKind {
     /// Stored in an environment, with no `with` and no direct `eval` in any
     /// scope from the reference out to the declaration: the Environment
     /// Records on the way are the same ones, made in the same order, every
-    /// time the reference runs.
-    LocalFixed,
+    /// time the reference runs. `once`: the stack slot in which the
+    /// function being compiled keeps the variable's value once it has read
+    /// it, where it does (see `kept_captures`).
+    LocalFixed { once: Option<IndexType> },
     /// Found in the global scope.
     Global,
     /// Found in the global scope of a Script, with no `with` and no direct
@@ -1127,10 +1152,10 @@ impl VariableKind {
                 );
                 Place::Env { name }
             }
-            VariableKind::LocalFixed => {
+            VariableKind::LocalFixed { once } => {
                 let name = ctx.create_string(name);
                 if let Some(site) = ctx.new_binding_site() {
-                    Place::Site { name, site }
+                    Place::Site { name, site, once }
                 } else {
                     // More sites than an instruction can number.
                     ctx.add_instruction_with_identifier(
@@ -1268,7 +1293,9 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Identi
                     } else if global_object {
                         VariableKind::Global
                     } else if fixed {
-                        VariableKind::LocalFixed
+                        VariableKind::LocalFixed {
+                            once: ctx.kept_capture_slot(s),
+                        }
                     } else {
                         VariableKind::Local
                     }

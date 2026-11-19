@@ -2762,6 +2762,49 @@ impl Vm {
                 vm.result = None;
                 vm.stack.push(value.unbind());
             }
+            // A variable of an enclosing function that has one value for
+            // as long as the call lasts: read from the stack slot that
+            // keeps it, which the first read in the call fills. Undefined
+            // there is nothing kept.
+            Instruction::GetBindingAtSiteOnce => {
+                step!(GetBindingAtSiteOnce);
+                let slot = Instr::wide_third_index(instructions, *ip);
+                let Some(&kept) = vm.stack.get(slot) else {
+                    return Plain::No;
+                };
+                let value = if kept.is_undefined() {
+                    let name = tables.identifier(instr.get_first_index(), gc);
+                    let site = tables.binding_site(instr.get_second_index());
+                    let Some(value) = binding_value_at_site(agent, site, name, gc) else {
+                        return Plain::No;
+                    };
+                    vm.stack[slot] = value.unbind();
+                    value.unbind()
+                } else {
+                    kept
+                };
+                vm.result = Some(value);
+            }
+            Instruction::LoadBindingAtSiteOnce => {
+                step!(LoadBindingAtSiteOnce);
+                let slot = Instr::wide_third_index(instructions, *ip);
+                let Some(&kept) = vm.stack.get(slot) else {
+                    return Plain::No;
+                };
+                let value = if kept.is_undefined() {
+                    let name = tables.identifier(instr.get_first_index(), gc);
+                    let site = tables.binding_site(instr.get_second_index());
+                    let Some(value) = binding_value_at_site(agent, site, name, gc) else {
+                        return Plain::No;
+                    };
+                    vm.stack[slot] = value.unbind();
+                    value.unbind()
+                } else {
+                    kept
+                };
+                vm.result = None;
+                vm.stack.push(value);
+            }
             Instruction::PutBindingAtSite | Instruction::PutGlobalAtSite => {
                 step!(PutBindingAtSite, PutGlobalAtSite);
                 let Some(value) = vm.result else {
@@ -4296,7 +4339,10 @@ impl Vm {
             Instruction::ResolveBindingAtSite => {
                 execute_resolve_binding_at_site(agent, vm, executable, instr, gc)?;
             }
-            Instruction::GetBindingAtSite => {
+            // The second is the first where its stack slot keeps nothing
+            // and the name is not where it is remembered to be: the slot is
+            // filled by the next read that finds it there.
+            Instruction::GetBindingAtSite | Instruction::GetBindingAtSiteOnce => {
                 execute_get_binding_at_site(agent, vm, executable, instr, false, gc)?;
             }
             Instruction::PutBindingAtSite => {
@@ -4376,6 +4422,7 @@ impl Vm {
             | Instruction::GetValueWithIndexKey
             | Instruction::PutValueWithExpressionKey
             | Instruction::LoadBindingAtSite
+            | Instruction::LoadBindingAtSiteOnce
             | Instruction::ApplyBinaryOperatorWithConstant
             | Instruction::ApplyBinaryOperatorToIndexWithConstant
             | Instruction::ApplyBinaryOperatorAndMove
@@ -4463,6 +4510,8 @@ impl Vm {
             | Instruction::ResolveBinding
             | Instruction::ResolveBindingAtSite
             | Instruction::GetBindingAtSite
+            | Instruction::GetBindingAtSiteOnce
+            | Instruction::LoadBindingAtSiteOnce
             | Instruction::PutBindingAtSite
             | Instruction::ResolveGlobalAtSite
             | Instruction::GetGlobalAtSite

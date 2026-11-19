@@ -351,6 +351,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     self.instructions[start] = Instruction::LoadBindingAtSite.as_u8();
                     return;
                 }
+                if let Some(start) = self.recent_instruction(0, Instruction::GetBindingAtSiteOnce) {
+                    self.instructions[start] = Instruction::LoadBindingAtSiteOnce.as_u8();
+                    return;
+                }
                 // A constant pushed right after another push: there is no
                 // result before the two instructions and none after them,
                 // as with the one that pushes the constant itself.
@@ -511,6 +515,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             Instruction::Load,
             Instruction::LoadFromIndex,
             Instruction::LoadBindingAtSite,
+            Instruction::LoadBindingAtSiteOnce,
             Instruction::PushReferenceAndLoad,
             Instruction::LoadPropertyWithCachePushReference,
             Instruction::PutValueToIndex,
@@ -576,6 +581,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             (
                 Instruction::LoadBindingAtSite,
                 Instruction::GetBindingAtSite,
+            ),
+            (
+                Instruction::LoadBindingAtSiteOnce,
+                Instruction::GetBindingAtSiteOnce,
             ),
             (
                 Instruction::PushReferenceAndLoad,
@@ -1160,6 +1169,25 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         let identifier = self.add_identifier(identifier);
         self.add_index_of(identifier, TOO_MANY_NAMES);
         self.instructions.extend_from_slice(&site.to_ne_bytes());
+    }
+
+    /// GetBindingAtSiteOnce: the name, its BindingSite, and the stack slot
+    /// that keeps its value once it was read.
+    pub(super) fn add_instruction_with_identifier_site_and_slot(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        site: IndexType,
+        slot: IndexType,
+    ) {
+        debug_assert_eq!(instruction, Instruction::GetBindingAtSiteOnce);
+        self.push_instruction(instruction);
+        let identifier = self.add_identifier(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
+        self.instructions.extend_from_slice(&site.to_ne_bytes());
+        self.instructions.extend_from_slice(&slot.to_ne_bytes());
+        // The fourth argument, of which nothing is made.
+        self.instructions.extend_from_slice(&[0, 0]);
     }
 
     pub(super) fn add_instruction_with_identifier_and_constant(

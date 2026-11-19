@@ -499,6 +499,14 @@ pub(crate) enum Instruction {
     /// GetBindingAtSite followed by Load: the value of such a name, pushed
     /// onto the stack.
     LoadBindingAtSite,
+    /// GetBindingAtSite for a name declared outside the running function
+    /// that nothing assigns to once it is initialized: the value, once
+    /// read, is kept for the rest of the call in a stack slot of the
+    /// function (the third argument, which is undefined while nothing is
+    /// kept), and is read from there after.
+    GetBindingAtSiteOnce,
+    /// GetBindingAtSiteOnce followed by Load.
+    LoadBindingAtSiteOnce,
     /// Set a name whose scope chain no `with` or direct `eval` can change to
     /// the value in the result register: PutValue(ResolveBinding(), value)
     /// with no Reference when the name is where the BindingSite remembers it.
@@ -794,6 +802,8 @@ impl Instruction {
             | Self::JumpIfIndexStrictlyEqualIndex
             | Self::GetIndexPropertyWithCache
             | Self::GetIndexPropertyWithCacheKeepReference
+            | Self::GetBindingAtSiteOnce
+            | Self::LoadBindingAtSiteOnce
             | Self::JumpIfIndexLessThanConstant
             | Self::JumpIfIndexLessThanIndex
             | Self::JumpIfIndexLessThanEqualsConstant
@@ -997,6 +1007,8 @@ impl Instruction {
                 | Self::ResolveBindingAtSite
                 | Self::GetBindingAtSite
                 | Self::LoadBindingAtSite
+                | Self::GetBindingAtSiteOnce
+                | Self::LoadBindingAtSiteOnce
                 | Self::PutBindingAtSite
                 | Self::ResolveGlobalAtSite
                 | Self::GetGlobalAtSite
@@ -1496,6 +1508,20 @@ impl Instr {
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
                 eprintln!("  {}: {:?}({}, {}, {})", ip, self.kind, slot, key, arg1);
             }
+            4 if matches!(
+                self.kind,
+                Instruction::GetBindingAtSiteOnce | Instruction::LoadBindingAtSiteOnce
+            ) =>
+            {
+                let [arg0, arg1] = self.args.two_args();
+                let instructions = exe.get_instructions(agent);
+                let slot = Self::wide_third_index(&instructions, ip + 9);
+                let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
+                eprintln!(
+                    "  {}: {:?}({}, {}, kept in {})",
+                    ip, self.kind, key, arg1, slot
+                );
+            }
             4 => {
                 let [arg0, arg1] = self.args.two_args();
                 let instructions = exe.get_instructions(agent);
@@ -1956,6 +1982,8 @@ impl Instruction {
         const GETBINDINGATSITE: u8 = Instruction::GetBindingAtSite.as_u8();
         const INSTANTIATEREGEXPLITERAL: u8 = Instruction::InstantiateRegExpLiteral.as_u8();
         const LOADBINDINGATSITE: u8 = Instruction::LoadBindingAtSite.as_u8();
+        const GETBINDINGATSITEONCE: u8 = Instruction::GetBindingAtSiteOnce.as_u8();
+        const LOADBINDINGATSITEONCE: u8 = Instruction::LoadBindingAtSiteOnce.as_u8();
         const GETVALUEWITHINDEXKEY: u8 = Instruction::GetValueWithIndexKey.as_u8();
         const APPLYBINARYOPERATORWITHCONSTANT: u8 =
             Instruction::ApplyBinaryOperatorWithConstant.as_u8();
@@ -2247,6 +2275,8 @@ impl Instruction {
             GETBINDINGATSITE => Some(Instruction::GetBindingAtSite),
             INSTANTIATEREGEXPLITERAL => Some(Instruction::InstantiateRegExpLiteral),
             LOADBINDINGATSITE => Some(Instruction::LoadBindingAtSite),
+            GETBINDINGATSITEONCE => Some(Instruction::GetBindingAtSiteOnce),
+            LOADBINDINGATSITEONCE => Some(Instruction::LoadBindingAtSiteOnce),
             GETVALUEWITHINDEXKEY => Some(Instruction::GetValueWithIndexKey),
             APPLYBINARYOPERATORWITHCONSTANT => Some(Instruction::ApplyBinaryOperatorWithConstant),
             APPLYBINARYOPERATORTOINDEXWITHCONSTANT => {

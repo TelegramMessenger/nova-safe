@@ -2259,7 +2259,7 @@ pub(super) fn execute_fused_instruction<'gc>(
             execute_evaluate_property_access_with_expression_key(agent, vm, gc.nogc());
             execute_get_value(agent, vm, executable, instr, false, false, gc)
         }
-        Instruction::LoadBindingAtSite => {
+        Instruction::LoadBindingAtSite | Instruction::LoadBindingAtSiteOnce => {
             // GetBindingAtSite, Load
             execute_get_binding_at_site(agent, vm, executable, instr, false, gc)?;
             vm.execute_load();

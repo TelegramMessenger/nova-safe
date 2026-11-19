@@ -34,10 +34,25 @@ use super::{
         ControlFlowFinallyEntry, ControlFlowStackEntry, compile_async_iterator_exit,
         compile_iterator_pop,
     },
-    function_declaration_instantiation, parsed_string_to_wtf8, string_literal_to_wtf8,
+    function_declaration_instantiation,
+    kept_captures::kept_captures,
+    parsed_string_to_wtf8, string_literal_to_wtf8,
 };
 
 pub(crate) type IndexType = u16;
+
+/// What a stack slot that is found by a name holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StackSlotOf {
+    /// A variable that the code keeps in the slot.
+    Variable(oxc_semantic::SymbolId),
+    /// The arguments object of the function
+    /// ([`CompileContext::arguments_slot`]).
+    Arguments,
+    /// The value of a variable of an enclosing function, once the call has
+    /// read it ([`CompileContext::kept_capture_slot`]).
+    KeptCapture(oxc_semantic::SymbolId),
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum NamedEvaluationParameter {
@@ -97,9 +112,8 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     control_flow_stack: Vec<ControlFlowStackEntry<'script>>,
     /// Stores a stack of variables on the stack that are accessed by stack
     /// slot.
-    /// The variables that are kept in stack slots, each with its slot. The
-    /// arguments object has no symbol ([`CompileContext::arguments_slot`]).
-    stack_variables: Vec<(Option<oxc_semantic::SymbolId>, u32)>,
+    /// What is kept in stack slots under names, each with its slot.
+    stack_variables: Vec<(StackSlotOf, u32)>,
     /// The stack slot of the arguments object of the function being
     /// compiled, where it is kept in one, with the function's scope:
     /// nothing finds it by its name then, and a reference to `arguments`
@@ -435,8 +449,31 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     pub(super) fn get_variable_stack_index(&self, symbol: oxc_semantic::SymbolId) -> Option<u32> {
         self.stack_variables
             .iter()
-            .find(|(s, _)| *s == Some(symbol))
+            .find(|(s, _)| *s == StackSlotOf::Variable(symbol))
             .map(|(_, i)| *i)
+    }
+
+    /// The stack slot in which the function being compiled keeps the value
+    /// of `symbol`, a variable of an enclosing function, once it has read
+    /// it: see `kept_captures`.
+    pub(super) fn kept_capture_slot(&self, symbol: oxc_semantic::SymbolId) -> Option<IndexType> {
+        self.stack_variables
+            .iter()
+            .find(|(s, _)| *s == StackSlotOf::KeptCapture(symbol))
+            .and_then(|(_, i)| IndexType::try_from(*i).ok())
+    }
+
+    /// A stack slot that keeps the value of `symbol`, a variable of an
+    /// enclosing function, for the rest of a call once the call has read
+    /// it: undefined, which is nothing kept, until then.
+    fn push_kept_capture(&mut self, symbol: oxc_semantic::SymbolId) -> StackVariable {
+        self.add_instruction_with_constant(Instruction::LoadConstant, Value::Undefined);
+        let idx = self.executable.push_stack();
+        self.stack_variables
+            .push((StackSlotOf::KeptCapture(symbol), idx));
+        self.control_flow_stack
+            .push(ControlFlowStackEntry::StackValue);
+        StackVariable
     }
 
     /// The stack slot that a reference to `arguments` reads, where the
@@ -472,7 +509,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ) -> StackVariable {
         self.add_instruction(Instruction::Load);
         let idx = self.executable.push_stack();
-        self.stack_variables.push((None, idx));
+        self.stack_variables.push((StackSlotOf::Arguments, idx));
         self.arguments_slot = Some((idx, function_scope));
         self.control_flow_stack
             .push(ControlFlowStackEntry::StackValue);
@@ -536,7 +573,8 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             self.add_instruction_with_constant(Instruction::LoadConstant, Value::Undefined);
         }
         let idx = self.executable.push_stack();
-        self.stack_variables.push((Some(symbol), idx));
+        self.stack_variables
+            .push((StackSlotOf::Variable(symbol), idx));
         self.control_flow_stack
             .push(ControlFlowStackEntry::StackValue);
         StackVariable
@@ -550,7 +588,8 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         symbol: oxc_semantic::SymbolId,
     ) -> StackVariable {
         let idx = self.executable.push_stack();
-        self.stack_variables.push((Some(symbol), idx));
+        self.stack_variables
+            .push((StackSlotOf::Variable(symbol), idx));
         self.control_flow_stack
             .push(ControlFlowStackEntry::StackValue);
         StackVariable
@@ -561,7 +600,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         core::mem::forget(var);
         let entry = self.control_flow_stack.pop();
         debug_assert!(matches!(entry, Some(ControlFlowStackEntry::StackValue)));
-        if let Some((None, _)) = self.stack_variables.pop() {
+        if let Some((StackSlotOf::Arguments, _)) = self.stack_variables.pop() {
             self.arguments_slot = None;
         }
         self.executable.pop_stack();
@@ -1291,6 +1330,15 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             self.add_instruction(Instruction::Yield);
         }
 
+        // The variables of enclosing functions that the function reads in
+        // its loops and that have one value for as long as a call of it
+        // lasts: each has a stack slot that keeps the value once it was
+        // read.
+        for symbol in kept_captures(self, data.ast) {
+            let kept = self.push_kept_capture(symbol);
+            stack_variables.push(kept);
+        }
+
         let body: &'script [Statement<'script>] = data.ast.ecmascript_code().statements.as_slice();
 
         self.compile_statements(body);
@@ -1417,6 +1465,17 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
     ) {
         self.executable
             .add_instruction_with_identifier_and_site(instruction, identifier, site);
+    }
+
+    pub(super) fn add_instruction_with_identifier_site_and_slot(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        site: IndexType,
+        slot: IndexType,
+    ) {
+        self.executable
+            .add_instruction_with_identifier_site_and_slot(instruction, identifier, site, slot);
     }
 
     pub(super) fn add_instruction_with_cache(

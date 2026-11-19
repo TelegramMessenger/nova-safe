@@ -10909,3 +10909,277 @@ live a1c3 a=10;c=30;d=4;"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A variable of an enclosing function that a function reads in its loops
+/// is read from its Environment Record once in a call and from a stack
+/// slot after, where it has one value for as long as the call lasts. The
+/// script is about where it has not, and must be read each time: a `var`
+/// whose declarator runs again, in a loop or because the generator that
+/// declares it is resumed from inside the reader; a `let` read before it
+/// is initialized, and initialized during the call; a generator that
+/// reads; a variable of a block of the function itself, another in every
+/// turn; variables assigned to by a call, an update, a pattern or the head
+/// of a loop; a direct `eval`; a parameter that is assigned to. And about
+/// where it has: every kind of declaration, closures over different
+/// objects called in turn, recursion, values of every kind (undefined is
+/// never kept), collections while a value is kept, and the stack around
+/// the slots through blocks, `try`, iterators and early exits. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn a_variable_kept_for_a_call_is_the_variable() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(variables_kept_for_a_call)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn variables_kept_for_a_call() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) keep.push({ i: i, s: "s" + i }); return keep.length; }
+
+// 1. every kind of declaration, read in a loop of an inner function
+(function () {
+  var v = { n: 1 }; let l = { n: 2 }; const c = { n: 3 }; function fd() { return 4; } class K { static n = 5; }
+  function reader(p) { var t = 0; for (var i = 0; i < 4; i++) t += v.n + l.n + c.n + fd() + K.n + p.n; return t; }
+  var arrow = (p) => { let t = 0; for (const k of [1, 2, 3]) t += v.n * k + p.n; return t; };
+  var obj = { m() { var t = 0; var i = 0; while (i++ < 3) t += c.n; return t; }, get g() { var t = 0; do { t += l.n; } while (t < 6); return t; } };
+  P("kinds", reader({ n: 6 }), arrow({ n: 1 }), obj.m(), obj.g);
+  try { throw { n: 7 }; } catch (e) { var fromCatch = function () { var t = 0; for (var i = 0; i < 3; i++) t += e.n; return t; }; }
+  P("catch", fromCatch());
+  var named = function self(n) { var t = 0; for (var i = 0; i < 2; i++) t += typeof self === "function" ? 1 : 0; return n ? t + self(n - 1) : t; };
+  P("named", named(3));
+})();
+
+// 2. a var that gets its value later, and again
+(function () {
+  var out = [];
+  function read() { var t = []; for (var i = 0; i < 3; i++) t.push(x); return t.join(); }
+  out.push(read());
+  var x = (out.push("during:" + read()), "first");
+  out.push(read());
+  for (var k = 0; k < 3; k++) { var y = k * 10; out.push(readY()); }
+  function readY() { var t = []; for (var i = 0; i < 2; i++) t.push(y); return t.join(); }
+  for (var k = 0; k < 2; k++) { var z = (out.push("z during:" + readZ()), "z" + k); out.push(readZ()); }
+  function readZ() { var t = []; for (var i = 0; i < 2; i++) t.push(z); return t.join(); }
+  P("var later", out.join(" | "));
+})();
+
+// 3. the temporal dead zone
+(function () {
+  function read() { var t = []; for (var i = 0; i < 2; i++) t.push(l + c); return t.join(); }
+  var before = tryit(read);
+  let l = 1; const c = 2;
+  P("tdz", before, read(), tryit(function () { for (var i = 0; i < 2; i++) late; return "no"; }));
+  let late = 5;
+})();
+
+// 4. a generator that declares the variable is resumed from inside the reader
+(function () {
+  function* outer() { for (var k = 0; k < 4; k++) { var x = yield k; } }
+  var g = outer(); g.next();
+  var out = [];
+  function* declares() {
+    var reader = function (gen) { var seen = []; for (var i = 0; i < 3; i++) { seen.push(w); gen.next("w" + i); } seen.push(w); return seen.join(); };
+    for (;;) { var w = yield reader; }
+  }
+  var d = declares(); var reader = d.next().value;
+  out.push(reader(d));
+  function* lexical() {
+    var reader = function (gen) { var seen = []; for (var i = 0; i < 3; i++) { try { seen.push(c); } catch (e) { seen.push(e.constructor.name); gen.next(); } } return seen.join(); };
+    yield reader;
+    const c = "initialized";
+    yield;
+  }
+  var lg = lexical(); out.push(lg.next().value(lg));
+  P("generator declares", out.join(" | "));
+})();
+
+// 5. a generator and an async function that read
+(function () {
+  var out = [];
+  function* reader() { for (;;) yield x + ":" + c.n; }
+  var gen = reader(); const c = { n: 0 };
+  for (var k = 0; k < 3; k++) { var x = "x" + k; c.n = k; out.push(gen.next().value); }
+  P("generator reads", out.join());
+})();
+
+// 6. a variable of the function's own block, another one in every turn
+(function () {
+  var fs = [], total = 0;
+  for (let i = 0; i < 3; i++) { let v = i * 2; fs.push(function () { var s = 0; for (var j = 0; j < 3; j++) s += v; return s; }); total += v; for (var q = 0; q < 2; q++) total += v; }
+  var each = []; for (var k = 0; k < fs.length; k++) each.push(fs[k]());
+  P("per turn", total, each.join());
+  function own() { var a = []; for (var i = 0; i < 3; i++) { const obj = { i: i }; a.push(function () { return obj.i; }); for (var j = 0; j < 2; j++) a.push(obj.i * 10); } return a.map(function (x) { return typeof x === "function" ? x() : x; }).join(); }
+  P("own block", own());
+})();
+
+// 7. variables that are assigned to, by whatever way
+(function () {
+  var a = 1, b = 1, c = 1, d = 1, e = 1, f = 1;
+  function setA(v) { a = v; } function bump() { b++; } function destr() { [c] = [c + 1]; ({ d } = { d: d + 1 }); } function loop() { for (e of [e + 1]); } function compound() { f += 1; }
+  function read() { var t = []; for (var i = 0; i < 3; i++) { t.push([a, b, c, d, e, f].join("")); setA(a + 1); bump(); destr(); loop(); compound(); } return t.join(); }
+  P("assigned", read(), read());
+  var fn = function () { return 1; };
+  function callIt() { var t = 0; for (var i = 0; i < 3; i++) { t += fn(); if (i == 0) fn = function () { return 10; }; } return t; }
+  P("function assigned", callIt());
+})();
+
+// 8. direct eval
+(function () {
+  var x = 1, y = 1;
+  function ev(code) { return eval(code); }
+  function read() { var t = []; for (var i = 0; i < 3; i++) { t.push(x); if (i == 0) ev("x = 99"); } return t.join(); }
+  P("eval elsewhere", read(), x);
+  function inner() { var t = []; for (var i = 0; i < 3; i++) { t.push(y); if (i == 0) eval("y = 5"); } return t.join(); }
+  P("eval here", inner(), y);
+})();
+
+// 9. parameters, and closures made in a loop
+(function () {
+  function make(o, k) { return function () { var s = 0; for (var i = 0; i < 3; i++) s += o.v * k; return s; }; }
+  var fs = []; for (var i = 1; i <= 3; i++) fs.push(make({ v: i }, 10));
+  P("params", fs.map(function (f) { return f(); }).join());
+  function reassigned(o) { var f = function () { var s = []; for (var i = 0; i < 2; i++) s.push(o.v); return s.join(); }; var first = f(); o = { v: "second" }; return first + "|" + f(); }
+  P("param reassigned", reassigned({ v: "first" }));
+  function rec(n) { var v = n; function inner() { var s = 0; for (var i = 0; i < 2; i++) s += v; return s; } return n ? inner() + "," + rec(n - 1) : String(inner()); }
+  P("recursion", rec(4));
+  function defaults(a) { return function (b = a + 1) { var s = 0; for (var i = 0; i < 2; i++) s += a + b; return s; }; }
+  P("defaults", defaults(1)(), defaults(2)(10));
+})();
+
+// 10. function declarations, and one declared twice
+(function () {
+  function reader() { var t = []; for (var i = 0; i < 2; i++) t.push(typeof dup + ":" + dup()); return t.join(); }
+  var before = reader();
+  function dup() { return 1; }
+  function dup() { return 2; }
+  P("declarations", before, reader());
+})();
+
+// 11. values that are not kept, or are of every kind
+(function () {
+  var u, n = null, z = 0, e = "", f = false, nan = NaN, big = 10n, sym = Symbol.iterator, neg = -0;
+  function read() { var t = []; for (var i = 0; i < 2; i++) t.push(String(u), String(n), z, "[" + e + "]", f, nan, big, typeof sym, Object.is(neg, -0)); return t.join(); }
+  P("values", read());
+  var late;
+  function readLate() { var t = []; for (var i = 0; i < 2; i++) t.push(typeof late); return t.join(); }
+  var first = readLate();
+  var late = { now: 1 };
+  P("undefined then set", first, readLate());
+})();
+
+// 12. operators on the name
+(function () {
+  var o = { m: function () { return this === o; }, v: 1 }; function F() { this.made = true; } function plain() { return this === undefined || this === globalThis; }
+  function read() { var t = []; for (var i = 0; i < 2; i++) t.push(typeof o, typeof missing, o.m(), new F().made, plain(), delete o.none, o instanceof Object, "v" in o, tryit(function () { return delete o; })); return t.join(); }
+  P("operators", read());
+})();
+
+// 13. collections while the value is kept
+(function () {
+  var kept = { list: [1, 2, 3], text: "kept" };
+  function read() { var t = 0; for (var i = 0; i < 6; i++) { t += kept.list.length + kept.text.length; churn(20000); kept.list.push(i); } return t + ":" + kept.list.join(""); }
+  P("collections", read());
+})();
+
+// 14. the stack around the kept slots: blocks, try, iterators, early exits
+(function () {
+  var data = [3, 1, 2], limit = { n: 2 }, names = { a: 1, b: 2 };
+  function exits(mode) {
+    var total = 0;
+    outer: for (var i = 0; i < 4; i++) {
+      let block = i * 2;
+      try {
+        for (const d of data) {
+          const inner = d + block;
+          if (mode == "break" && d == 1) break outer;
+          if (mode == "continue" && d == 1) continue outer;
+          if (mode == "return" && inner > 6) return "returned " + total;
+          if (mode == "throw" && i == 2) throw new Error("thrown " + total);
+          total += inner + limit.n;
+          for (var key in names) total += names[key];
+        }
+      } catch (e) { if (mode == "throw") return e.message + ":" + limit.n; } finally { total += data.length; }
+    }
+    return total;
+  }
+  P("exits", exits("none"), exits("break"), exits("continue"), exits("return"), exits("throw"));
+  function many() { var a = 1, b = 2, c = 3; let d = 4; { let e = 5; for (var i = 0; i < 2; i++) { a += data[0] + limit.n; const f = a; b += f; } c += e; } return [a, b, c, d].join(); }
+  P("many locals", many());
+})();
+
+// 15. more variables than slots
+(function () {
+  var a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8, i2 = 9, j = 10, k = 11;
+  function read() { var t = 0; for (var i = 0; i < 3; i++) t += a + b + c + d + e + f + g + h + i2 + j + k; return t; }
+  P("eleven", read(), read());
+})();
+
+// 16. classes: constructors, fields, a derived class
+(function () {
+  const base = { n: 2 }; var count = 0;
+  class A { field = base.n; constructor() { for (var i = 0; i < 2; i++) count += base.n; } m() { var t = 0; for (var i = 0; i < 3; i++) t += base.n + this.field; return t; } static s() { var t = 0; for (var i = 0; i < 2; i++) t += base.n; return t; } }
+  class B extends A { constructor() { super(); for (var i = 0; i < 2; i++) count += base.n * 10; } }
+  var b = new B();
+  P("classes", count, b.m(), A.s(), new A().field);
+})();
+
+// 17. a lexical variable of a generator, and a var of one, read by an inner function
+(function () {
+  function* gen() { const c = { n: 1 }; var v = 1; var read = function () { var t = []; for (var i = 0; i < 2; i++) t.push(c.n + ":" + v); return t.join(); }; yield read; v = 2; c.n = 2; yield read; }
+  var it = gen(); var r1 = it.next().value; var a = r1(); var r2 = it.next().value; P("generator's own", a, r2());
+})();
+
+// 18. one function, many closures over different objects, called in turn
+(function () {
+  function make(o) { return function (n) { var t = 0; for (var i = 0; i < n; i++) t += o.v; return t; }; }
+  var fs = [make({ v: 1 }), make({ v: 100 }), make({ v: 10000 })], t = 0;
+  for (var r = 0; r < 50; r++) t += fs[r % 3](r % 4);
+  P("closures in turn", t);
+})();
+lines.join("\n")"##;
+    let expected = r##"kinds 84 9 9 6
+catch 21
+named 8
+var later ,, | during:,, | first,first,first | 0,0 | 10,10 | 20,20 | z during:, | z0,z0 | z during:z0,z0 | z1,z1
+tdz ReferenceError 3,3 ReferenceError
+generator declares ,w0,w1,w2 | ReferenceError,initialized,initialized
+generator reads x0:0,x1:1,x2:2
+per turn 18 0,6,12
+own block 0,0,0,1,10,10,2,20,20
+assigned 111111,222222,333333 444444,555555,666666
+function assigned 21
+eval elsewhere 1,99,99 99
+eval here 1,5,5 5
+params 30,60,90
+param reassigned first,first|second,second
+recursion 8,6,4,2,0
+defaults 6 24
+declarations function:2,function:2 function:2,function:2
+values undefined,null,0,[],false,NaN,10,symbol,true,undefined,null,0,[],false,NaN,10,symbol,true
+undefined then set undefined,undefined object,object
+operators object,undefined,true,true,true,true,true,true,false,object,undefined,true,true,true,true,true,true,false
+collections 57:123012345
+exits 132 11 56 returned 54 thrown 54:2
+many locals 11,19,8,4
+eleven 198 198
+classes 44 12 4 2
+generator's own 1:1,1:1 2:2,2:2
+closures in turn 242524"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
