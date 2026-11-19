@@ -14199,3 +14199,246 @@ many 127400 184 tail 59 59 399"##;
         );
     }
 }
+
+/// An arguments object has the properties that CreateUnmappedArgumentsObject
+/// gives it, though their descriptors are kept once for all such objects:
+/// read, enumerated and copied; with `length`, `callee` and the iterator
+/// redefined, deleted and assigned in one object while others keep theirs;
+/// grown past its storage and shrunk again; frozen, sealed and made not
+/// extensible; made by methods, generators, arrows and functions with rest
+/// and default parameters, by `apply`, `call` and a bound function; and
+/// thousands of them kept, changed and dropped while the heap is collected.
+/// What is expected is what Node prints for the same script. Then objects
+/// are kept over a collection that moves them and asked again, written to
+/// through one place, all dropped and made anew; and made until the heap
+/// has no room, which ends the script as it did.
+#[test]
+fn an_arguments_object_has_the_descriptors_kept_for_all_of_them() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arguments_descriptors)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arguments_descriptors() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##""use strict";
+var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function D(o, k) {
+  var d = Object.getOwnPropertyDescriptor(o, k);
+  if (!d) return "none";
+  var what = "value" in d ? (typeof d.value === "function" ? "fn" : String(d.value)) : "get:" + typeof d.get + ",set:" + typeof d.set;
+  return what + "/" + (d.writable === undefined ? "." : d.writable ? "w" : "-") + (d.enumerable ? "e" : "-") + (d.configurable ? "c" : "-");
+}
+function args() { return arguments; }
+function all(a) { return [D(a, "length"), D(a, "callee"), D(a, Symbol.iterator), D(a, "0")].join(" "); }
+
+(function () {
+  var a = args("x", "y"), r = [];
+  r.push(all(a), D(a, "2"), Object.keys(a).join(), Object.getOwnPropertyNames(a).join(), Reflect.ownKeys(a).length, typeof Reflect.ownKeys(a)[4], Object.prototype.toString.call(a));
+  var callee = Object.getOwnPropertyDescriptor(a, "callee"), other = Object.getOwnPropertyDescriptor(args(), "callee");
+  r.push(callee.get === callee.set, callee.get === other.get, a[Symbol.iterator] === Array.prototype.values, a[Symbol.iterator] === args()[Symbol.iterator]);
+  r.push(T(function () { return a.callee; }), T(function () { a.callee = 1; return "set"; }), T(function () { return delete a.callee; }), T(function () { return callee.get.call(null); }));
+  r.push(a.hasOwnProperty("callee"), "callee" in a, a.propertyIsEnumerable("length"), a.propertyIsEnumerable("0"), Object.isExtensible(a), Object.isSealed(a), Object.isFrozen(a));
+  var names = []; for (var k in a) names.push(k);
+  r.push(names.join(), JSON.stringify(a), JSON.stringify(Object.entries(a)), JSON.stringify(Object.assign({}, a)), JSON.stringify({ ...a }), [...a].join(""), Array.from(a).length, Array.prototype.slice.call(a, 1).join());
+  P("fresh", r.join(" "));
+})();
+
+(function () {
+  var a = args(1, 2), b = args(3, 4), c = args(5), d = args(), r = [];
+  a.length = 10;
+  Object.defineProperty(b, "length", { writable: false });
+  r.push(a.length, D(a, "length"), T(function () { b.length = 7; return "set"; }), b.length, D(b, "length"), c.length, D(c, "length"));
+  Object.defineProperty(c, "length", { enumerable: true });
+  r.push(Object.keys(c).join(), D(c, "length"), Object.keys(d).join("") === "", D(d, "length"));
+  r.push(delete a.length, "length" in a, D(a, "length"), Array.prototype.slice.call(a).length);
+  a.length = 3; r.push(D(a, "length"), Object.keys(a).join(), all(b), all(d));
+  r.push(T(function () { Object.defineProperty(a, "callee", { value: 1 }); return "defined"; }), T(function () { Object.defineProperty(a, "callee", { enumerable: true }); return "defined"; }), T(function () { Object.defineProperty(a, "callee", { configurable: true }); return "defined"; }));
+  var same = Object.getOwnPropertyDescriptor(a, "callee");
+  r.push(T(function () { Object.defineProperty(a, "callee", { get: same.get, set: same.set, enumerable: false, configurable: false }); return "same"; }), T(function () { Object.defineProperty(a, "callee", { get: function () {} }); return "defined"; }), D(a, "callee"), D(b, "callee"));
+  P("changed", r.join(" "));
+})();
+
+(function () {
+  var a = args("p", "q"), b = args("r"), r = [];
+  Object.defineProperty(a, Symbol.iterator, { value: function* () { yield "own"; yield this.length; } });
+  r.push([...a].join(), [...b].join(), D(a, Symbol.iterator), D(b, Symbol.iterator));
+  b[Symbol.iterator] = function () { var i = 0; return { next: function () { return { done: i++ > 1, value: "n" + i }; } }; };
+  r.push([...b].join(), D(b, Symbol.iterator), [...args(7, 8)].join());
+  delete a[Symbol.iterator];
+  r.push(T(function () { return [...a].length; }), D(a, Symbol.iterator), Symbol.iterator in a, all(a));
+  var c = args(1); Object.defineProperty(c, "length", { get: function () { return 3; }, configurable: true });
+  r.push(c.length, D(c, "length"), Array.prototype.slice.call(c).length, T(function () { c.length = 1; return "set"; }), all(args(1)));
+  P("iterator", r.join(" "));
+})();
+
+(function () {
+  var a = args(1, 2, 3), b = args(4), r = [];
+  for (var i = 0; i < 12; i++) a["p" + i] = i;
+  r.push(Object.keys(a).length, all(a), a.p11, all(b), Object.keys(b).join());
+  for (var j = 0; j < 12; j++) delete a["p" + j];
+  r.push(Object.keys(a).join(), all(a));
+  a[0] = "z"; a[7] = "far"; a[-1] = "neg";
+  r.push(a.length, Object.keys(a).join(), D(a, "7"), D(a, "0"), Array.prototype.join.call(a, "+"));
+  Object.defineProperty(a, "1", { value: "fixed", writable: false });
+  Object.defineProperty(a, "2", { get: function () { return "got"; }, enumerable: false, configurable: true });
+  r.push(T(function () { a[1] = 0; return "set"; }), a[1], a[2], D(a, "1"), D(a, "2"), all(a), Object.keys(a).join());
+  P("grown", r.join(" "));
+})();
+
+(function () {
+  var a = args(1, 2), b = args(1, 2), c = args(), d = args(9), e = args(9), r = [];
+  Object.freeze(a); Object.seal(b); Object.preventExtensions(c);
+  r.push(Object.isFrozen(a), all(a), T(function () { a[0] = 5; return "set"; }), T(function () { a.length = 5; return "set"; }), T(function () { a.x = 1; return "set"; }));
+  r.push(Object.isSealed(b), Object.isFrozen(b), all(b), T(function () { b[0] = 5; return b[0]; }), T(function () { b.length = 5; return b.length; }), T(function () { return delete b.length; }));
+  r.push(Object.isExtensible(c), Object.isSealed(c), Object.isFrozen(c), all(c), T(function () { c.length = 2; return c.length; }), T(function () { c[0] = 1; return "set"; }));
+  r.push(Object.isFrozen(d), Object.isSealed(d), all(d), all(e));
+  Object.setPrototypeOf(e, { inherited: "yes", get length2() { return this.length * 2; } });
+  r.push(e.inherited, e.length2, all(e), Object.getPrototypeOf(d) === Object.prototype);
+  P("levels", r.join(" "));
+})();
+
+(function () {
+  class K { constructor() { this.a = arguments; } m() { return arguments; } static s() { return arguments; } get g() { return arguments; } }
+  function* gen() { yield arguments; }
+  var arrow = (function () { return () => arguments; })(1, 2, 3);
+  function rest(...list) { return arguments; }
+  function defaults(a = 1) { return arguments; }
+  var r = [all(new K(1).a), all(new K().m(1, 2)), all(K.s()), all(new K().g), all(gen(1).next().value), all(arrow()), arrow().length, all(rest(1, 2)), all(defaults()), defaults().length, all(args.apply(null, [1, 2, 3])), all(args.call(null, 1)), all(Reflect.apply(args, null, [])), all(args.bind(null, 1, 2)(3))];
+  P("makers", r.join(" | "));
+})();
+
+(function () {
+  var kept = [], r = [], junk;
+  for (var i = 0; i < 3000; i++) {
+    var a = args(i, i + 1, i + 2);
+    if (i % 7 === 0) Object.defineProperty(a, "length", { writable: false });
+    if (i % 11 === 0) a.extra = i;
+    if (i % 13 === 0) delete a[Symbol.iterator];
+    if (i % 17 === 0) Object.freeze(a);
+    kept.push(a);
+  }
+  for (var round = 0; round < 4; round++) {
+    for (var j = 0; j < 3000; j++) if ((j + round) % 5 === 0) kept[j] = null;
+    for (var g = 0; g < 60000; g++) junk = { g: g, list: [g, args(g)] };
+    for (var n = 0; n < 3000; n++) if (kept[n] === null && n % 2 === 0) kept[n] = args(n, n + 1, n + 2);
+  }
+  var live = 0, sum = 0, readOnly = 0, extra = 0, noIterator = 0, frozen = 0, callee = 0, wrong = 0;
+  for (var k = 0; k < 3000; k++) {
+    var x = kept[k]; if (x === null) continue;
+    live++; sum += x.length + x[0];
+    var d = Object.getOwnPropertyDescriptor(x, "length");
+    if (!d.writable) readOnly++;
+    if (d.enumerable || (!d.configurable && !Object.isFrozen(x))) wrong++;
+    if ("extra" in x) extra++;
+    if (!(Symbol.iterator in x)) noIterator++;
+    if (Object.isFrozen(x)) frozen++;
+    var c = Object.getOwnPropertyDescriptor(x, "callee"); if (c && c.get && c.get === c.set && !c.configurable && !c.enumerable) callee++;
+    if (x[0] !== k) wrong++;
+  }
+  r.push(live, sum, readOnly, extra, noIterator, frozen, callee, wrong, junk.list[1].length, all(kept[1]), all(junk.list[1]));
+  kept = null;
+  for (var g2 = 0; g2 < 200000; g2++) junk = [g2, { g: g2 }];
+  r.push(all(args(1)), all(args()), T(function () { return args().callee; }));
+  P("many", r.join(" "));
+})();
+
+out.join("\n")"##;
+    let expected = r##"fresh 2/w-c get:function,set:function/.-- fn/w-c x/wec none 0,1 0,1,length,callee 5 symbol [object Arguments] true true true true throws TypeError throws TypeError throws TypeError throws TypeError true true false true true false false 0,1 {"0":"x","1":"y"} [["0","x"],["1","y"]] {"0":"x","1":"y"} {"0":"x","1":"y"} xy 2 y
+changed 10 10/w-c throws TypeError 2 2/--c 1 1/w-c 0,length 1/wec true 0/w-c true false none 0 3/wec 0,1,length 2/--c get:function,set:function/.-- fn/w-c 3/wec 0/w-c get:function,set:function/.-- fn/w-c none throws TypeError throws TypeError throws TypeError same throws TypeError get:function,set:function/.-- get:function,set:function/.--
+iterator own,2 r fn/w-c fn/w-c n1,n2 fn/w-c 7,8 throws TypeError none false 2/w-c get:function,set:function/.-- none p/wec 3 get:function,set:undefined/.-c 3 throws TypeError 1/w-c get:function,set:function/.-- fn/w-c 1/wec
+grown 15 3/w-c get:function,set:function/.-- fn/w-c 1/wec 11 1/w-c get:function,set:function/.-- fn/w-c 4/wec 0 0,1,2 3/w-c get:function,set:function/.-- fn/w-c 1/wec 3 0,1,2,7,-1 far/wec z/wec z+2+3 throws TypeError fixed got fixed/-ec get:function,set:undefined/.-c 3/w-c get:function,set:function/.-- fn/w-c z/wec 0,1,7,-1
+levels true 2/--- get:function,set:function/.-- fn/--- 1/-e- throws TypeError throws TypeError throws TypeError true false 2/w-- get:function,set:function/.-- fn/w-- 1/we- 5 5 throws TypeError false false false 0/w-c get:function,set:function/.-- fn/w-c none 2 throws TypeError false false 1/w-c get:function,set:function/.-- fn/w-c 9/wec 1/w-c get:function,set:function/.-- fn/w-c 9/wec yes 2 1/w-c get:function,set:function/.-- fn/w-c 9/wec true
+makers 1/w-c get:function,set:function/.-- fn/w-c 1/wec | 2/w-c get:function,set:function/.-- fn/w-c 1/wec | 0/w-c get:function,set:function/.-- fn/w-c none | 0/w-c get:function,set:function/.-- fn/w-c none | 1/w-c get:function,set:function/.-- fn/w-c 1/wec | 3/w-c get:function,set:function/.-- fn/w-c 1/wec | 3 | 2/w-c get:function,set:function/.-- fn/w-c 1/wec | 0/w-c get:function,set:function/.-- fn/w-c none | 0 | 3/w-c get:function,set:function/.-- fn/w-c 1/wec | 1/w-c get:function,set:function/.-- fn/w-c 1/wec | 0/w-c get:function,set:function/.-- fn/w-c none | 3/w-c get:function,set:function/.-- fn/w-c 1/wec
+many 1800 2702700 116 55 46 35 1800 0 1 3/w-c get:function,set:function/.-- fn/w-c 1/wec 1/w-c get:function,set:function/.-- fn/w-c 59999/wec 1/w-c get:function,set:function/.-- fn/w-c 1/wec 0/w-c get:function,set:function/.-- fn/w-c none throws TypeError"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    // Kept over a collection: every third is gone, so the others move.
+    let fresh = r##"(function () { "use strict"; var a = args(1, 2, 3), l = Object.getOwnPropertyDescriptor(a, "length"), c = Object.getOwnPropertyDescriptor(a, "callee"), threw = false; try { a.callee = 1; } catch (e) { threw = e instanceof TypeError; } return [l.value, l.writable, l.enumerable, l.configurable, typeof c.get, c.get === c.set, c.enumerable, c.configurable, threw, [...a].join("")].join(); })()"##;
+    let made = r##"var keep = []; function args() { "use strict"; return arguments; }
+for (var i = 0; i < 400; i++) keep.push(args(i, i + 1));
+for (var j = 0; j < 400; j += 3) keep[j] = null;
+Object.defineProperty(keep[1], "length", { writable: false });
+keep[2].added = 1; delete keep[4].length; Object.freeze(keep[5]);
+String(keep.length)"##;
+    assert_eq!(text(&mut engine, made), "400");
+    engine.collect_garbage().unwrap();
+    let asked = r##"(function () {
+  "use strict";
+  var live = 0, wrong = 0;
+  for (var i = 0; i < keep.length; i++) {
+    var a = keep[i]; if (a === null) continue; live++;
+    var l = Object.getOwnPropertyDescriptor(a, "length"), c = Object.getOwnPropertyDescriptor(a, "callee"), it = Object.getOwnPropertyDescriptor(a, Symbol.iterator);
+    var plain = i !== 1 && i !== 4 && i !== 5;
+    if (plain && !(l && l.value === 2 && l.writable && !l.enumerable && l.configurable)) wrong++;
+    if (!(c && c.get && c.get === c.set && !c.enumerable && !c.configurable)) wrong++;
+    if (i !== 5 && !(it && it.value === Array.prototype.values && it.writable && !it.enumerable && it.configurable)) wrong++;
+    if (a[0] !== i || a[1] !== i + 1) wrong++;
+    var threw = false; try { a.callee; } catch (e) { threw = e instanceof TypeError; } if (!threw) wrong++;
+  }
+  var one = Object.getOwnPropertyDescriptor(keep[1], "length"), five = Object.getOwnPropertyDescriptor(keep[5], "length");
+  return [live, wrong, one.writable, keep[2].added, "length" in keep[4], five.writable, five.configurable, Object.isFrozen(keep[5]), Object.isFrozen(keep[7])].join();
+})()"##;
+    assert_eq!(
+        text(&mut engine, asked),
+        "266,0,false,1,false,false,false,true,false"
+    );
+    // One place writes the length of each: of those that share their
+    // descriptors, of the one whose length is read-only, of the frozen
+    // one, and of the one that has none.
+    let written = r##"(function () { "use strict"; var set = 0, refused = 0; for (var i = 0; i < keep.length; i++) { var a = keep[i]; if (a === null) continue; try { a.length = 9; set++; } catch (e) { refused++; } } return [set, refused, keep[7].length, keep[1].length, keep[4].length, keep[5].length].join(); })()"##;
+    assert_eq!(text(&mut engine, written), "264,2,9,2,9,2");
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            asked.replace("l.value === 2", "l.value === 9").as_str()
+        ),
+        "266,0,false,1,true,false,false,true,false"
+    );
+    // None is left to have the kept descriptors, and the next ones made
+    // have them all the same.
+    engine.evaluate("keep = null", false).unwrap();
+    engine.collect_garbage().unwrap();
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(&mut engine, fresh),
+        "3,true,false,true,function,true,false,false,true,123"
+    );
+    // Objects that share their descriptors, and ones that each got their
+    // own, until the heap has no room.
+    for fills in [
+        r##"var keep = []; function args() { "use strict"; return arguments; } for (;;) keep.push(args(keep.length, 1, 2));"##,
+        r##"var keep = []; function args() { "use strict"; return arguments; } for (;;) { var a = args(keep.length); Object.defineProperty(a, "length", { enumerable: true }); keep.push(a); }"##,
+    ] {
+        let (mut engine, _, _) = limited(8 << 20, 0);
+        assert_eq!(
+            engine.evaluate(fills, false),
+            Err(Error::OutOfMemory),
+            "{fills}"
+        );
+        engine.evaluate("keep = null", false).unwrap();
+        engine.collect_garbage().unwrap();
+        assert_eq!(
+            text(&mut engine, fresh),
+            "3,true,false,true,function,true,false,false,true,123"
+        );
+    }
+}

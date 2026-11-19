@@ -4889,7 +4889,7 @@ mod descriptor_table {
     use core::cell::Cell;
     use std::collections::{
         TryReserveError,
-        hash_map::{Entry, OccupiedEntry, VacantEntry},
+        hash_map::{Entry, OccupiedEntry},
     };
 
     type Map = AHashMap<ElementIndex<'static>, ElementDescriptorMap<'static>>;
@@ -4917,15 +4917,37 @@ mod descriptor_table {
     /// taken away, which costs the search and nothing else. And every way
     /// to change a descriptor needs the table exclusively, which forgets
     /// the slot seen.
+    ///
+    /// Descriptors that many storages have alike are kept once (`shared`,
+    /// with a bit for each storage that has them): those of an arguments
+    /// object, which every call of a function that uses `arguments` makes
+    /// one of. Such a storage has no entry in the map until its
+    /// descriptors are to be changed, when it is given a copy.
+    ///
+    /// The table is as large as it was before it kept any (the two kinds
+    /// of bits side by side in one slice, the kept descriptors behind a
+    /// pointer): there is one for every capacity in the heap, and what is
+    /// laid out after them is read by the loop of instructions.
     #[derive(Debug, Default)]
     pub(crate) struct DescriptorTable {
         map: Map,
-        /// Bit `i` is set if the storage at index `i` has an entry in
-        /// `map`, and may be set if it has none.
-        described: Vec<u64>,
+        /// For the 64 storages from index `64 * i` on, at `i`.
+        marks: Box<[Marks]>,
+        /// The descriptors that the storages marked as sharing have, each
+        /// of them all of these and no entry in `map`.
+        shared: Option<Box<ElementDescriptorMap<'static>>>,
         /// A storage that has descriptors and a slot of it that none of
         /// them forbids writing to, as last looked up.
         writable_seen: Cell<Option<(ElementIndex<'static>, u32)>>,
+    }
+
+    #[derive(Debug, Default, Clone, Copy)]
+    struct Marks {
+        /// A bit is set if the storage has an entry in the map or shares,
+        /// and may be set if it has neither.
+        described: u64,
+        /// A bit is set if the storage has the shared descriptors.
+        sharing: u64,
     }
 
     impl DescriptorTable {
@@ -4933,18 +4955,61 @@ mod descriptor_table {
         #[inline(always)]
         fn is_described(&self, index: ElementIndex) -> bool {
             let index = index.get_index();
-            self.described
+            self.marks
                 .get(index / 64)
-                .is_some_and(|word| word & (1 << (index % 64)) != 0)
+                .is_some_and(|marks| marks.described & (1 << (index % 64)) != 0)
         }
 
-        fn describe(described: &mut Vec<u64>, index: ElementIndex) {
+        /// The marks that the storage at `index` has its bits in, and its
+        /// bit there.
+        fn marks_of<'a>(marks: &'a mut Box<[Marks]>, index: ElementIndex) -> (&'a mut Marks, u64) {
             let index = index.get_index();
-            let word = index / 64;
-            if word >= described.len() {
-                described.resize(word + 1, 0);
+            let place = index / 64;
+            if place >= marks.len() {
+                // Twice as long at least, as a vector grows.
+                let mut grown = core::mem::take(marks).into_vec();
+                grown.resize((place + 1).max(grown.len() * 2), Marks::default());
+                *marks = grown.into_boxed_slice();
             }
-            described[word] |= 1 << (index % 64);
+            (&mut marks[place], 1 << (index % 64))
+        }
+
+        fn describe(marks: &mut Box<[Marks]>, index: ElementIndex) {
+            let (marks, bit) = Self::marks_of(marks, index);
+            marks.described |= bit;
+        }
+
+        fn shares(marks: &[Marks], index: ElementIndex) -> bool {
+            let index = index.get_index();
+            marks
+                .get(index / 64)
+                .is_some_and(|marks| marks.sharing & (1 << (index % 64)) != 0)
+        }
+
+        /// Gives a storage that shares its descriptors a copy of them for
+        /// its own, to be changed; nothing for one that does not.
+        fn unshare(&mut self, index: ElementIndex<'static>) {
+            if !Self::shares(&self.marks, index) {
+                return;
+            }
+            let place = index.get_index();
+            self.marks[place / 64].sharing &= !(1 << (place % 64));
+            let shared = self
+                .shared
+                .as_deref()
+                .cloned()
+                .expect("a storage shares the descriptors that are kept");
+            let had = self.map.insert(index, shared);
+            debug_assert!(had.is_none());
+        }
+
+        /// The descriptors of a storage that may have some.
+        #[inline]
+        fn described_get(&self, index: ElementIndex) -> Option<&ElementDescriptorMap<'static>> {
+            if Self::shares(&self.marks, index) {
+                return self.shared.as_deref();
+            }
+            self.map.get(&index.unbind())
         }
 
         /// The descriptors of the storage at `index`, if it has any.
@@ -4953,7 +5018,7 @@ mod descriptor_table {
             if !self.is_described(*index) {
                 return None;
             }
-            self.map.get(&index.unbind())
+            self.described_get(*index)
         }
 
         /// Whether the slot at `offset` of the storage at `index` has a
@@ -4973,8 +5038,7 @@ mod descriptor_table {
                 return false;
             }
             let forbidden = self
-                .map
-                .get(&index)
+                .described_get(index)
                 .and_then(|descriptors| descriptors.get(&offset))
                 .is_some_and(|descriptor| descriptor.is_writable() != Some(true));
             if !forbidden {
@@ -4995,33 +5059,80 @@ mod descriptor_table {
             descriptors: ElementDescriptorMap<'static>,
         ) -> Option<ElementDescriptorMap<'static>> {
             *self.writable_seen.get_mut() = None;
-            Self::describe(&mut self.described, index);
+            self.unshare(index);
+            Self::describe(&mut self.marks, index);
             self.map.insert(index, descriptors)
         }
 
         /// The place of the descriptors of the storage at `index`, to read,
         /// change, remove or give it some.
+        ///
+        /// Every storage that is to be written to is asked for this, and
+        /// nearly none has descriptors: for those the answer is the test of
+        /// a bit, and the map is searched only when some are given.
         #[inline]
         pub(crate) fn entry(&mut self, index: ElementIndex<'static>) -> DescriptorEntry<'_> {
             *self.writable_seen.get_mut() = None;
-            match self.map.entry(index) {
-                Entry::Occupied(entry) => DescriptorEntry::Occupied(entry),
-                Entry::Vacant(entry) => DescriptorEntry::Vacant(VacantDescriptors {
-                    entry,
-                    described: &mut self.described,
-                }),
+            if self.is_described(index) && self.has_own(index) {
+                let Entry::Occupied(entry) = self.map.entry(index) else {
+                    unreachable!("the storage was found there");
+                };
+                return DescriptorEntry::Occupied(entry);
             }
+            DescriptorEntry::Vacant(VacantDescriptors {
+                index,
+                map: &mut self.map,
+                marks: &mut self.marks,
+                shared: &mut self.shared,
+            })
         }
 
-        /// Lets `change` do anything to the map (the collector removes the
-        /// storages that are gone and moves the others), and sets the bits
-        /// for what it left.
-        pub(crate) fn rebuild_with(&mut self, change: impl FnOnce(&mut Map)) {
+        /// Whether a storage that may have descriptors has an entry in the
+        /// map, once it has been given its own if it shared.
+        #[inline(never)]
+        fn has_own(&mut self, index: ElementIndex<'static>) -> bool {
+            self.unshare(index);
+            self.map.contains_key(&index)
+        }
+
+        /// For the collector. Lets `change` do anything to the map (it
+        /// removes the storages that are gone and moves the others); asks
+        /// `moved` where each storage that shares is now, None for one that
+        /// is gone; has `sweep` see to the handles in the shared
+        /// descriptors, if any storage still has them (they are let go of
+        /// if none has: nothing kept what they name); and sets the bits for
+        /// what is left.
+        pub(crate) fn rebuild_with(
+            &mut self,
+            change: impl FnOnce(&mut Map),
+            moved: impl Fn(ElementIndex<'static>) -> Option<ElementIndex<'static>>,
+            sweep: impl FnOnce(&mut ElementDescriptorMap<'static>),
+        ) {
             *self.writable_seen.get_mut() = None;
             change(&mut self.map);
-            self.described.clear();
+            let before = core::mem::take(&mut self.marks);
+            let mut any_shares = false;
+            for (place, marks) in before.iter().enumerate() {
+                let mut sharing = marks.sharing;
+                while sharing != 0 {
+                    let index = place * 64 + sharing.trailing_zeros() as usize;
+                    sharing &= sharing - 1;
+                    if let Some(index) = moved(ElementIndex::from_index(index)) {
+                        debug_assert!(!self.map.contains_key(&index));
+                        let (marks, bit) = Self::marks_of(&mut self.marks, index);
+                        marks.described |= bit;
+                        marks.sharing |= bit;
+                        any_shares = true;
+                    }
+                }
+            }
+            if !any_shares {
+                self.shared = None;
+            } else if let Some(shared) = &mut self.shared {
+                sweep(shared);
+            }
             for index in self.map.keys() {
-                Self::describe(&mut self.described, *index);
+                Self::describe(&mut self.marks, *index);
             }
         }
     }
@@ -5033,19 +5144,53 @@ mod descriptor_table {
         Vacant(VacantDescriptors<'a>),
     }
 
-    /// The place for the descriptors of a storage that has none.
+    /// The place for the descriptors of a storage that has none: the
+    /// storage has no entry in the map, and it does not share.
     pub(crate) struct VacantDescriptors<'a> {
-        entry: VacantEntry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>>,
-        described: &'a mut Vec<u64>,
+        index: ElementIndex<'static>,
+        map: &'a mut Map,
+        marks: &'a mut Box<[Marks]>,
+        shared: &'a mut Option<Box<ElementDescriptorMap<'static>>>,
     }
 
     impl<'a> VacantDescriptors<'a> {
+        fn insert_entry(
+            self,
+            descriptors: ElementDescriptorMap<'static>,
+        ) -> OccupiedEntry<'a, ElementIndex<'static>, ElementDescriptorMap<'static>> {
+            DescriptorTable::describe(self.marks, self.index);
+            self.map.entry(self.index).insert_entry(descriptors)
+        }
+
         pub(crate) fn insert(
             self,
             descriptors: ElementDescriptorMap<'static>,
         ) -> &'a mut ElementDescriptorMap<'static> {
-            DescriptorTable::describe(self.described, *self.entry.key());
-            self.entry.insert(descriptors)
+            self.insert_entry(descriptors).into_mut()
+        }
+
+        /// Gives the storage the descriptors that `make` makes, which
+        /// many storages have alike: where the table keeps descriptors to
+        /// be shared and `same` says they are these, the storage shares
+        /// them and nothing is made; where it keeps none yet, these are
+        /// kept. Otherwise the storage has them for its own.
+        pub(crate) fn share(
+            self,
+            same: impl FnOnce(&ElementDescriptorMap<'static>) -> bool,
+            make: impl FnOnce() -> ElementDescriptorMap<'static>,
+        ) {
+            let (marks, bit) = DescriptorTable::marks_of(self.marks, self.index);
+            marks.described |= bit;
+            match self.shared {
+                Some(shared) if !same(shared) => {
+                    let had = self.map.insert(self.index, make());
+                    debug_assert!(had.is_none());
+                    return;
+                }
+                Some(_) => {}
+                None => *self.shared = Some(Box::new(make())),
+            }
+            marks.sharing |= bit;
         }
     }
 
@@ -5081,10 +5226,7 @@ mod descriptor_table {
                     entry.insert(descriptors);
                     entry
                 }
-                Self::Vacant(entry) => {
-                    DescriptorTable::describe(entry.described, *entry.entry.key());
-                    entry.entry.insert_entry(descriptors)
-                }
+                Self::Vacant(entry) => entry.insert_entry(descriptors),
             }
         }
     }
@@ -5119,7 +5261,12 @@ mod descriptor_table {
         /// every step against a search of the map itself.
         fn agrees(table: &DescriptorTable, storages: usize, slots: u32) {
             for index in 0..storages {
-                let found = table.map.get(&at(index));
+                let found = if DescriptorTable::shares(&table.marks, at(index)) {
+                    assert!(!table.map.contains_key(&at(index)));
+                    table.shared.as_deref()
+                } else {
+                    table.map.get(&at(index))
+                };
                 assert_eq!(table.get(&at(index)).is_some(), found.is_some());
                 for offset in 0..slots {
                     let forbidden = found
@@ -5159,6 +5306,34 @@ mod descriptor_table {
         }
 
         #[test]
+        fn a_place_asked_for_and_left_empty_leaves_the_table_as_it_was() {
+            let mut table = DescriptorTable::default();
+            for index in [0, 5, 900] {
+                assert!(matches!(table.entry(at(index)), DescriptorEntry::Vacant(_)));
+            }
+            assert!(table.map.is_empty());
+            assert!(table.marks.is_empty());
+            agrees(&table, 1000, 2);
+            // A storage whose descriptors were taken away has its bit and
+            // no descriptors: its place is empty, and it can be given some.
+            table.insert(at(5), one(0, READ_ONLY));
+            let DescriptorEntry::Occupied(entry) = table.entry(at(5)) else {
+                panic!("the storage has descriptors");
+            };
+            entry.remove();
+            assert!(matches!(table.entry(at(5)), DescriptorEntry::Vacant(_)));
+            assert!(table.map.is_empty());
+            let DescriptorEntry::Vacant(vacant) = table.entry(at(5)) else {
+                panic!("the storage has no descriptors");
+            };
+            vacant.insert(one(1, READ_ONLY)).insert(2, HIDDEN);
+            assert!(table.forbids_write(at(5), 1));
+            assert!(!table.forbids_write(at(5), 0));
+            assert!(!table.forbids_write(at(5), 2));
+            agrees(&table, 16, 3);
+        }
+
+        #[test]
         fn a_slot_seen_writable_is_looked_at_again_after_a_change() {
             let mut table = DescriptorTable::default();
             table.insert(at(5), one(1, HIDDEN));
@@ -5195,16 +5370,144 @@ mod descriptor_table {
             assert!(!table.forbids_write(at(70), 0));
             // As the collector does: one storage is gone, one moves to an
             // index that had no descriptors.
-            table.rebuild_with(|map| {
-                map.remove(&at(9));
-                let moved = map.remove(&at(70)).expect("it was put there");
-                map.insert(at(2), moved);
-            });
+            table.rebuild_with(
+                |map| {
+                    map.remove(&at(9));
+                    let moved = map.remove(&at(70)).expect("it was put there");
+                    map.insert(at(2), moved);
+                },
+                Some,
+                |_| panic!("no storage shares"),
+            );
             agrees(&table, 100, 3);
             assert!(table.forbids_write(at(2), 1));
             assert!(!table.forbids_write(at(70), 1));
             assert!(table.get(&at(9)).is_none());
             assert!(table.get(&at(2)).is_some());
+        }
+
+        /// The descriptors of an arguments object, as far as a test needs
+        /// them: a slot that is hidden, one that is no writable value, and
+        /// another hidden one.
+        fn alike() -> ElementDescriptorMap<'static> {
+            let mut map = ElementDescriptorMap::with_capacity(3);
+            map.insert(0, HIDDEN);
+            map.insert(1, READ_ONLY);
+            map.insert(2, HIDDEN);
+            map
+        }
+
+        fn is_alike(map: &ElementDescriptorMap<'static>) -> bool {
+            map.len() == 3
+                && map.get(&0) == Some(&HIDDEN)
+                && map.get(&1) == Some(&READ_ONLY)
+                && map.get(&2) == Some(&HIDDEN)
+        }
+
+        fn share(table: &mut DescriptorTable, index: usize) {
+            let DescriptorEntry::Vacant(vacant) = table.entry(at(index)) else {
+                panic!("the storage has no descriptors yet");
+            };
+            vacant.share(is_alike, alike);
+        }
+
+        #[test]
+        fn storages_share_descriptors_until_one_is_changed() {
+            let mut table = DescriptorTable::default();
+            for index in [10, 11, 70, 200] {
+                share(&mut table, index);
+            }
+            // Kept once, with no entry for any of the storages.
+            assert!(table.map.is_empty());
+            agrees(&table, 300, 5);
+            for index in [10, 11, 70, 200] {
+                assert!(table.get(&at(index)).is_some_and(is_alike));
+                assert!(table.forbids_write(at(index), 1));
+                assert!(!table.forbids_write(at(index), 0));
+                assert!(!table.forbids_write(at(index), 2));
+                assert!(!table.forbids_write(at(index), 4));
+            }
+            assert!(table.get(&at(12)).is_none());
+            // One of them changed: it has its own from then on, and the
+            // others what they had.
+            let DescriptorEntry::Occupied(mut entry) = table.entry(at(11)) else {
+                panic!("the storage has descriptors");
+            };
+            assert!(is_alike(entry.get()));
+            entry.get_mut().insert(0, READ_ONLY);
+            assert!(table.forbids_write(at(11), 0));
+            assert!(!table.forbids_write(at(10), 0));
+            assert!(table.get(&at(10)).is_some_and(is_alike));
+            assert_eq!(table.map.len(), 1);
+            agrees(&table, 300, 5);
+            // One given others at once, and one whose descriptors go.
+            table.insert(at(70), one(3, READ_ONLY));
+            assert!(!table.forbids_write(at(70), 1));
+            assert!(table.forbids_write(at(70), 3));
+            let DescriptorEntry::Occupied(entry) = table.entry(at(200)) else {
+                panic!("the storage has descriptors");
+            };
+            entry.remove();
+            assert!(table.get(&at(200)).is_none());
+            assert!(!table.forbids_write(at(200), 1));
+            agrees(&table, 300, 5);
+            // Descriptors that are not the kept ones are the storage's own.
+            let DescriptorEntry::Vacant(vacant) = table.entry(at(20)) else {
+                panic!("the storage has no descriptors yet");
+            };
+            vacant.share(|_| false, || one(2, READ_ONLY));
+            assert!(table.forbids_write(at(20), 2));
+            assert!(!table.forbids_write(at(20), 1));
+            assert!(table.get(&at(10)).is_some_and(is_alike));
+            agrees(&table, 300, 5);
+        }
+
+        #[test]
+        fn shared_descriptors_follow_their_storages_through_a_collection() {
+            let mut table = DescriptorTable::default();
+            for index in [3, 64, 65, 130] {
+                share(&mut table, index);
+            }
+            table.insert(at(66), one(0, READ_ONLY));
+            let swept = core::cell::Cell::new(0);
+            // 3 stays, 64 is gone, 65 and 130 move down, as 66 does.
+            table.rebuild_with(
+                |map| {
+                    let moved = map.remove(&at(66)).expect("it was put there");
+                    map.insert(at(5), moved);
+                },
+                |index| match index.get_index() {
+                    3 => Some(at(3)),
+                    65 => Some(at(4)),
+                    130 => Some(at(6)),
+                    _ => None,
+                },
+                |shared| {
+                    assert!(is_alike(shared));
+                    swept.set(swept.get() + 1);
+                },
+            );
+            assert_eq!(swept.get(), 1);
+            agrees(&table, 200, 4);
+            for index in [3, 4, 6] {
+                assert!(table.get(&at(index)).is_some_and(is_alike));
+                assert!(table.forbids_write(at(index), 1));
+            }
+            for index in [64, 65, 130, 66] {
+                assert!(table.get(&at(index)).is_none());
+                assert!(!table.forbids_write(at(index), 1));
+            }
+            assert!(table.forbids_write(at(5), 0));
+            // All that shared are gone: the kept descriptors are let go of,
+            // and the next storage to have such keeps them anew.
+            table.rebuild_with(|_| {}, |_| None, |_| panic!("no storage shares"));
+            assert!(table.shared.is_none());
+            assert!(table.get(&at(3)).is_none());
+            assert!(table.forbids_write(at(5), 0));
+            agrees(&table, 200, 4);
+            share(&mut table, 3);
+            assert!(table.get(&at(3)).is_some_and(is_alike));
+            agrees(&table, 200, 4);
         }
     }
 }

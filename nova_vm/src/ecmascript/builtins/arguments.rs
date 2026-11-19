@@ -158,9 +158,41 @@ fn create_unmapped_arguments_object_from_slice<'a>(
         .bind(gc);
     let storage = obj.get_elements_storage_mut(agent);
     let values = storage.values;
-    let descriptors = storage
-        .descriptors
-        .or_insert(ElementDescriptorMap::with_capacity(3));
+    // The descriptors of "length", "callee" and %Symbol.iterator%, which
+    // every arguments object of the realm has alike: the table keeps them
+    // once, and this object shares them until one of them is changed. A
+    // map of them for each object was an allocation, a place in the table
+    // and its removal by the collector, at every call.
+    let length_or_iterator = ElementDescriptor::WritableUnenumerableConfigurableData;
+    let callee = ElementDescriptor::ReadWriteUnenumerableUnconfigurableAccessor {
+        get: throw_type_error.unbind().into(),
+        set: throw_type_error.unbind().into(),
+    };
+    let make = || {
+        let mut descriptors = ElementDescriptorMap::with_capacity(3);
+        // "length"
+        descriptors.insert(0, length_or_iterator);
+        // "callee"
+        descriptors.insert(1, callee);
+        // Iterator
+        descriptors.insert(2, length_or_iterator);
+        descriptors
+    };
+    match storage.descriptors {
+        crate::heap::DescriptorEntry::Vacant(vacant) => vacant.share(
+            |shared| {
+                shared.len() == 3
+                    && shared.get(&0) == Some(&length_or_iterator)
+                    && shared.get(&1) == Some(&callee)
+                    && shared.get(&2) == Some(&length_or_iterator)
+            },
+            make,
+        ),
+        // A new storage has none.
+        crate::heap::DescriptorEntry::Occupied(mut entry) => {
+            entry.insert(make());
+        }
+    }
 
     // 3. Set obj.[[ParameterMap]] to undefined.
     // 4. Perform ! DefinePropertyOrThrow(obj, "length", PropertyDescriptor {
@@ -176,18 +208,6 @@ fn create_unmapped_arguments_object_from_slice<'a>(
     values[1] = None;
     // Iterator
     values[2] = Some(array_prototype_values.unbind().into());
-    // "length"
-    descriptors.insert(0, ElementDescriptor::WritableUnenumerableConfigurableData);
-    // "callee"
-    descriptors.insert(
-        1,
-        ElementDescriptor::ReadWriteUnenumerableUnconfigurableAccessor {
-            get: throw_type_error.unbind().into(),
-            set: throw_type_error.unbind().into(),
-        },
-    );
-    // Iterator
-    descriptors.insert(2, ElementDescriptor::WritableUnenumerableConfigurableData);
     // 5. Let index be 0.
     // 6. Repeat, while index < len,
     for index in 0..len {

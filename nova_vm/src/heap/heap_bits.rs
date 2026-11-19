@@ -2262,14 +2262,17 @@ pub(crate) fn sweep_heap_elements_vector_descriptors(
     bits: &[AtomicBits],
 ) {
     // The table sets its bits anew for what is left when this is done.
-    descriptors.rebuild_with(|descriptors| {
-        let mut keys_to_remove = Vec::with_capacity(range.len() / 4);
-        let mut keys_to_reassign = Vec::with_capacity(range.len() / 4);
-        for (key, descriptor) in descriptors.iter_mut() {
-            let old_key = *key;
-            if !range.get_bit(old_key.get_index(), bits) {
-                keys_to_remove.push(old_key);
-            } else {
+    descriptors.rebuild_with(
+        |descriptors| {
+            // The storages that are gone are dropped where they are; those
+            // that moved are put under their new keys afterwards, lowest
+            // first, so that none is put where another still is.
+            let mut keys_to_reassign = Vec::new();
+            descriptors.retain(|key, descriptor| {
+                let old_key = *key;
+                if !range.get_bit(old_key.get_index(), bits) {
+                    return false;
+                }
                 for descriptor in descriptor.values_mut() {
                     descriptor.sweep_values(compactions);
                 }
@@ -2278,20 +2281,30 @@ pub(crate) fn sweep_heap_elements_vector_descriptors(
                 if new_key != old_key {
                     keys_to_reassign.push((old_key, new_key));
                 }
+                true
+            });
+            keys_to_reassign.sort();
+            for (old_key, new_key) in keys_to_reassign {
+                let descriptor = descriptors.remove(&old_key).expect(
+                    "reassigned descriptor key must exist: it came from iterating descriptors",
+                );
+                descriptors.insert(new_key, descriptor);
             }
-        }
-        keys_to_remove.sort();
-        keys_to_reassign.sort();
-        for old_key in keys_to_remove.iter() {
-            descriptors.remove(old_key);
-        }
-        for (old_key, new_key) in keys_to_reassign {
-            let descriptor = descriptors
-                .remove(&old_key)
-                .expect("reassigned descriptor key must exist: it came from iterating descriptors");
-            descriptors.insert(new_key, descriptor);
-        }
-    });
+        },
+        |old_key| {
+            if !range.get_bit(old_key.get_index(), bits) {
+                return None;
+            }
+            let mut new_key = old_key;
+            self_compactions.shift_index(&mut new_key);
+            Some(new_key)
+        },
+        |shared| {
+            for descriptor in shared.values_mut() {
+                descriptor.sweep_values(compactions);
+            }
+        },
+    );
 }
 
 /// Weakly held garbage-collectable reference value.
