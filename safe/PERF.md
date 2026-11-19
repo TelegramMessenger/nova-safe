@@ -86,7 +86,8 @@ and was repeated from the round's saved library when the machine was quiet), a t
 descriptors that knows which storages have any to 1.46x, and the `+` of Strings done where the
 operators on Numbers are done to 1.44x. What a RegExp match gives made without defining it piece by
 piece took the two RegExp cases that were over 2x under it (the mean read 1.44x again, in a run
-where QuickJS's own times were 2% lower).
+where QuickJS's own times were 2% lower), and an Array's storage looked at once to write an element
+took the loop over the elements of an Array under it (1.45x, QuickJS's times lower again).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1021,6 +1022,29 @@ that was a loop that stops at the first hole: one element, one branch. Asked of 
 with no way out inside a block, it is compiled to compare several elements at once, and an Array with a
 hole is still known within the block that has it. `array/shift-unshift-splice` went from 2.3x to 1.4x.
 
+`a[i] = v` looked the storage of the Array up three times: for its values with its descriptors, for
+its descriptors, and again to write. A tenth of a loop that reads and writes the elements of one
+Array. One function tests the element and writes it now, in one look: the element is there as a
+value, and no descriptor says it is not writable. An element that has a descriptor and is still
+writable (hidden, not configurable, in a sealed Array) is written in place as well, where any
+descriptor sent the assignment the general way; a hole, an accessor, a read-only element and an
+index past the length go the general way as before. `array/index-read-write` went from 7.59 to
+7.24 ms with the two binaries run in turn (2.05x to 1.93x).
+
+Only the arm for an assignment whose object and key are on the stack does this; the arm for an
+assignment through a Reference (`a[i] += v`) looks three times still. With both changed, two calls
+of a function were 3-4% slower (`call/plain-function`, `call/recursive-fib`), though neither writes
+an element, and the way that was found is how such things are told apart since. The loop of
+instructions is one function of 52 KB, and the compiler decides the places on the stack, the
+registers and the order of the blocks for all of it at once: with 324 instructions taken out of
+two arms, some 2,800 of its 13,135 were others (1,467 places), and with the one arm, 256 places.
+So a case that runs none of the changed code can move by 3% either way, by more than where the
+function starts. Branch targets put on 16-byte boundaries (an option of the compiler; the binary
+5.6% larger) did not settle it: other cases moved instead. What is looked at is therefore a fixed
+panel of 34 cases, each run on the two binaries in turn, and the mean of their changes, which was
+0.2% lower with both arms and 0.6% lower with the one; and a change that touches fewer arms is
+preferred.
+
 Left: a compound assignment to an element (`a[i] += 1`) and one whose value is used still make a Reference.
 The same methods of typed arrays, `flatMap`, and `forEach` of Map and Set call their callbacks the general
 way; so does every single call from native code (a bound function, `call` and `apply`, a getter reached
@@ -1688,6 +1712,10 @@ Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
   started from; `o[key] += v` makes a property key of `key` once, where Node does it twice (the
   specification says once). Seen in the scripts for the length of a TypedArray and for compound
   assignment, which leave both out. Neither is changed.
+- An Array has a slot for every index up to its length: `a[4294967294] = v` asks for all of them, and
+  under a heap limit the script ends for it (out of memory), here and in the build this started
+  from, where another engine keeps such an Array sparse. Without a limit the slots are asked for and
+  never touched. Seen in the script for the writing of elements, which leaves it out. Not changed.
 
 ## Checking a change
 
