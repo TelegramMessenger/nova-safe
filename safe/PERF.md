@@ -50,9 +50,9 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.9x, and so is prepending, which
 was the worst after it (38x, area 7). The worst are now a step of a particle animation and the call of
-a closure (2.7x), the properties of one object read and written in a loop (2.5x) and arithmetic on the
-elements of a `Float64Array` (2.4x). 85 of the 108 cases are at or under 2x (a few sit within a few
-hundredths of 2x and cross it from one run to the next), 15 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
+a closure (2.7x), the properties of one object read and written in a loop (2.5x) and slices of a
+string that is not ASCII (2.4x). 84 or 85 of the 108 cases are at or under 2x (a few sit within a few
+hundredths of 2x and cross it from one run to the next), 16 of them at or under QuickJS's time. Over all cases it is 1.53x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -74,7 +74,9 @@ from 2.4x to 2.2x and the particle step under 3x, with the mean at 1.526x (these
 machine with other builds, and each engine's times read 1% higher than in the run before). A return
 that cuts back only what the function left, and a last instruction read as any other, took 3-8% off
 the calls and the mean to 1.519x. The `length` of a TypedArray remembered to be its accessor took a
-loop over a `Uint8Array` from 2.0x to 1.2x, and the mean to 1.503x.
+loop over a `Uint8Array` from 2.0x to 1.2x, and the mean to 1.503x; the getter and the setter of a
+property remembered likewise took a tenth off a loop that calls both, with the mean where it was
+(1.505x in that run).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -688,6 +690,18 @@ result); and the assignment is such a call of the setter, whose result the frame
 getter and a setter went from 4.7x to 2.9x. Reads that keep a Reference for a call that follows
 (`o.getter()`) take the general way still.
 
+Finding the function for that call was a fifth of such a loop: the cache gives the object that has the
+property and its place, and the getter or the setter was then read from that object's descriptors (its
+storage found again, and two tables looked up), at every read and every assignment. The loop remembers
+the last getter and the last setter it found, each with the object and the place (`AccessorSeen`), and
+they are the functions of that place until the heap counts a change of descriptors: a property that an
+object had defined again, or the properties of an object moved (one removed, private names put in
+front), which puts another property at a place. The count is the one that the `length` of a
+TypedArray is remembered by (area 6), and a collection ends what was seen, since it moves the object
+and the function. `prop/getter-setter` went from 15.9 to 14.1 ms with the two binaries run in turn
+(2.37x to 2.08x). An accessor that is no function of the script, and one found with other descriptors
+counted since, go the way they went.
+
 `v instanceof F` looked F[Symbol.hasInstance] up key by key, called the method every function inherits as
 a built-in, and that looked F.prototype up key by key. Both lookups go through the property cache of
 their name, and the inherited method of the running realm is done without the call: 4.4x to 4.0x. What is
@@ -1080,6 +1094,16 @@ Left for these: a double read from a `Float64Array` or made by an operator becom
 function of some sixty machine instructions (whether it is an integer, whether it fits a Value, else a
 Number of the heap), a fifth of `typed/float64-math`; and an element read goes through three functions
 to its bytes.
+
+Of that function: a double with any bit set in its low byte fits no Value, and is a Number of the heap
+unless it is a whole number among the safe integers, which the conversion to an integer and back
+tells. Those two tests are asked first now, where the function is called (not where an operator of
+the loop has the conversion in line), and what they do not settle goes on as before.
+`typed/float64-math` is 3% faster (2.41x to 2.31x), `math/random-and-date` 3%, arithmetic on doubles
+in a loop 2%, trigonometry 1%. Tried: the whole conversion written as those tests (whole and safe, else
+a low byte of zeros, else the heap), which gives the same Numbers for four million doubles and is
+half as long. In line in the operators of the loop it was slower: trigonometry in a loop by 12%,
+integers mixed with doubles and arithmetic on doubles by 8%.
 
 Left: a double that is not an integer and has more than 45 bits of mantissa is a Number of the heap, one
 allocated for the result of every operator, the intermediate ones too (a tenth of the loop, and the
