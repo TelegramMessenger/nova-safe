@@ -1595,13 +1595,7 @@ impl Vm {
             return None;
         };
         let prototype = Object::try_from(prototype).ok()?;
-        let object: Value = crate::ecmascript::ordinary_object_create_with_intrinsics(
-            agent,
-            crate::ecmascript::ProtoIntrinsics::Object,
-            Some(prototype),
-            gc,
-        )
-        .into();
+        let object: Value = Self::object_with_prototype(agent, prototype, gc)?.into();
         self.stack.insert(at, object.unbind());
         self.result = None;
         // 6. a. Perform OrdinaryCallBindThis(F, calleeContext, thisArgument):
@@ -1617,6 +1611,24 @@ impl Vm {
             },
             Instr::new_with_arg(Instruction::EvaluateCall, count as u16),
         ))
+    }
+
+    /// OrdinaryObjectCreate(`prototype`): the object that `new` of a
+    /// function of the script starts from. Made with the shape of the
+    /// objects that have this prototype and nothing else, which is what
+    /// the general way arrives at by making an object with the Realm's
+    /// %Object.prototype% and then giving it this one: two shapes looked
+    /// up by their prototypes for every object made, and the prototype's
+    /// own shape seen to each time, where the first object made with a
+    /// prototype sees to it once. None where there is no room for it,
+    /// which the general way reports.
+    fn object_with_prototype<'gc>(
+        agent: &mut Agent,
+        prototype: Object,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Object<'gc>> {
+        let object = OrdinaryObject::create_object(agent, Some(prototype.unbind()), &[]).ok()?;
+        Some(Object::Object(object).bind(gc))
     }
 
     /// The call that `super(…)` comes to, if this `Vm` runs the parent
@@ -1708,13 +1720,7 @@ impl Vm {
             return None;
         };
         let prototype = Object::try_from(prototype).ok()?;
-        let object: Value = crate::ecmascript::ordinary_object_create_with_intrinsics(
-            agent,
-            crate::ecmascript::ProtoIntrinsics::Object,
-            Some(prototype),
-            gc,
-        )
-        .into();
+        let object: Value = Self::object_with_prototype(agent, prototype, gc)?.into();
         // The object and the parent under the arguments, as `new` of the
         // parent leaves them.
         self.stack.insert(at, parent.unbind().into());
@@ -3115,6 +3121,19 @@ impl Vm {
             Instruction::LogicalNot => {
                 step!(LogicalNot);
                 execute_logical_not(agent, vm)
+            }
+            // `typeof` of a value: nothing is run for it. A name that may
+            // not be bound comes with its Reference, and goes the general
+            // way, where every `typeof` went.
+            Instruction::Typeof => {
+                step!(Typeof);
+                if vm.reference.is_some() {
+                    return Plain::No;
+                }
+                let Some(value) = vm.result else {
+                    return Plain::No;
+                };
+                vm.result = Some(typeof_operator(agent, value, gc).into());
             }
             Instruction::PushExceptionJumpTarget => {
                 step!(PushExceptionJumpTarget);

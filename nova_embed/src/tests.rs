@@ -12764,3 +12764,209 @@ end 2100  true"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// `typeof` of a value is done in the loop of instructions, where every
+/// `typeof` took the general way; a name that may not be bound still
+/// does, with its Reference. The script asks it of every kind of value,
+/// compares what it gives in every way a test does, asks it of
+/// expressions and of names (bound nowhere, bound later, global, in a
+/// temporal dead zone, deleted), and after what leaves something in the
+/// reference register: an assignment through a Reference, one that
+/// threw, a method call. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn typeof_of_a_value_is_its_kind() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(kinds_by_typeof)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn kinds_by_typeof() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+// of a value in a local, a parameter, a property, a call, an element
+function T(v) { return typeof v; }
+class K {} function plain() {} function* gen() {} async function asy() {}
+var values = [undefined, null, true, false, 0, -0, 1.5, NaN, Infinity, 10n, "", "s", Symbol("y"), Symbol.iterator, {}, [], plain, K, gen, asy, () => 1, plain.bind(null), Math.max, new K(), new Date(0), /x/, new Map(), new Set(), new WeakMap(), new Error("e"), new Uint8Array(2), new ArrayBuffer(2), Promise.resolve(1), gen(), new Proxy({}, {}), new Proxy(plain, {}), new Proxy(K, {}), Object(1), Object("s"), Object(true), Object(Symbol("b")), Object(1n), Object.create(null), JSON, Math, globalThis, new String("x"), new Number(2), (function () { return arguments; })()];
+var all = []; for (var i = 0; i < values.length; i++) all.push(T(values[i]));
+P("kinds", all.join(" "));
+(function () { var counts = {}; for (var r = 0; r < 50; r++) for (var i = 0; i < values.length; i++) { var t = typeof values[i]; counts[t] = (counts[t] || 0) + 1; } P("counts", Object.keys(counts).sort().map(function (k) { return k + "=" + counts[k]; }).join(" ")); })();
+// compared in every way a test compares it
+(function () {
+  var hits = [0, 0, 0, 0, 0, 0, 0, 0];
+  for (var r = 0; r < 20; r++) for (var i = 0; i < values.length; i++) {
+    var v = values[i];
+    if (typeof v === "number") hits[0]++; else if (typeof v === "string") hits[1]++; else if (typeof v == "function") hits[2]++;
+    if (typeof v !== "object") hits[3]++;
+    if (typeof v != "undefined" && v !== null) hits[4]++;
+    if ("symbol" === typeof v || "bigint" == typeof v) hits[5]++;
+    if (typeof v === typeof values[(i + 1) % values.length]) hits[6]++;
+    hits[7] += (typeof v).length;
+  }
+  P("tests", hits.join(","));
+  var o = { p: 1, f: plain, u: undefined, n: null }, a = [1, "s", plain];
+  P("of expressions", typeof o.p, typeof o.f, typeof o.u, typeof o.n, typeof o.missing, typeof a[0], typeof a[1], typeof a[2], typeof a[9], typeof plain(), typeof new K(), typeof (1 + 1), typeof ("a" + 1), typeof !0, typeof void 0, typeof typeof 1, typeof -"3", typeof (o && o.f), typeof [].length, typeof K.name, typeof this);
+})();
+// of names: bound nowhere, bound later, global, in a temporal dead zone, deleted
+P("names", typeof neverDeclaredAnywhere, typeof laterVar, typeof globalThis, typeof undefined, typeof NaN, typeof Infinity, typeof print, typeof P, typeof K, typeof values);
+var laterVar = 1;
+P("dead zone", kind(function () { return typeof inZone; let inZone = 1; }), kind(function () { return typeof alsoZone; const alsoZone = 1; }), kind(function () { { return typeof hoisted; } var hoisted; }), kind(function () { return typeof fn; function fn() {} }));
+globalThis.madeGlobal = 5; P("global made", typeof madeGlobal, typeof globalThis.madeGlobal); delete globalThis.madeGlobal; P("global deleted", typeof madeGlobal);
+(function () { var log = [], holder = { get scoped() { log.push("get"); return 1; } }; log.push(typeof holder.scoped); P("getter runs", log.join(",")); })();
+(function (param) { P("parameters", typeof param, typeof arguments, typeof arguments[0], typeof arguments[5], (function () { return typeof captured; var captured; })()); })("x");
+// after what leaves something behind: an assignment through a Reference, one that threw, a method call
+(function () {
+  "use strict";
+  var o = { n: 1, s: Symbol("s"), m: function () { return this; } }, v = "text", w = 5;
+  o.n += 1; var after = [typeof v];
+  o.n += w; after.push(typeof v);
+  try { o.s += 1; } catch (e) { after.push(e.constructor.name); } after.push(typeof v);
+  try { o.s += w; } catch (e) { after.push(e.constructor.name); } after.push(typeof w);
+  o.m(); after.push(typeof v);
+  o.n++; after.push(typeof w); --o.n; after.push(typeof o);
+  try { null.x; } catch (e) {} after.push(typeof v);
+  try { undefinedName; } catch (e) {} after.push(typeof v);
+  P("after other things", after.join(","));
+})();
+// in a generator, in a closure, in a loop that changes what it looks at
+function* types(list) { for (var i = 0; i < list.length; i++) yield typeof list[i]; }
+P("generator", [...types([1, "a", null, plain, undefined, 2n])].join(","));
+(function () { var x = 1, seen = []; function look() { return typeof x; } seen.push(look()); x = "s"; seen.push(look()); x = look; seen.push(look()); x = undefined; seen.push(look()); x = null; seen.push(look()); P("closure", seen.join(",")); })();
+(function () { var seen = "", x; for (var i = 0; i < 8; i++) { x = i % 4 === 0 ? i : i % 4 === 1 ? "s" + i : i % 4 === 2 ? [i] : plain; seen += (typeof x)[0]; } P("changing", seen); })();
+P("switch", values.map(function (v) { switch (typeof v) { case "number": return "n"; case "string": return "s"; case "object": return v === null ? "0" : "o"; case "function": return "f"; case "undefined": return "u"; default: return "x"; } }).join(""));
+lines.join("\n")"##;
+    let expected = r##"kinds undefined object boolean boolean number number number number number bigint string string symbol symbol object object function function function function function function function object object object object object object object object object object object object function function object object object object object object object object object object object object
+counts bigint=50 boolean=100 function=450 number=250 object=1350 string=100 symbol=100 undefined=50
+tests 100,40,180,440,940,60,740,6340
+of expressions number function undefined object undefined number string function undefined undefined object number string boolean undefined string number function number string object
+names undefined undefined object undefined number number function function function object
+dead zone ReferenceError ReferenceError ok undefined ok function
+global made number number
+global deleted undefined
+getter runs get,number
+parameters string object string undefined undefined
+after other things string,string,TypeError,string,TypeError,number,string,number,object,string,string
+generator number,string,object,function,undefined,bigint
+closure number,string,function,undefined,object
+changing nsofnsof
+switch u0xxnnnnnxssxxoofffffffooooooooooooffoooooooooooo"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// `new` of a function of the script that is run in place starts from an
+/// object made with the function's "prototype" at once, where it was
+/// made with the Realm's %Object.prototype% and given the other after.
+/// The script makes objects from a function whose "prototype" is
+/// replaced, is no object, and is an object of every other kind (a
+/// Proxy and an object with no prototype among them); from classes with
+/// fields, extended, with their chain changed and put back; looks at
+/// the shapes of objects that start alike; at `new.target`, a
+/// constructor that returns something, another new target, bound and
+/// nested constructors, and a constructor that throws. What is expected
+/// is what Node prints for the same script.
+#[test]
+fn new_starts_from_an_object_with_the_prototype() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(objects_that_new_starts_from)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn objects_that_new_starts_from() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var s = ""; for (var i = 0; i < arguments.length; i++) s += (i ? " " : "") + String(arguments[i]); print(s); }
+function kind(f) { try { return "ok " + f(); } catch (e) { return (e && e.constructor && e.constructor.name) + ""; } }
+function is(o, F) { return Object.getPrototypeOf(o) === F.prototype; }
+// what `new` of a function of the script starts from
+function F(a) { this.a = a; }
+F.prototype.m = function () { return "m" + this.a; };
+function make(C, n) { var all = []; for (var i = 0; i < n; i++) all.push(new C(i)); return all; }
+var fs = make(F, 200);
+P("plain", is(fs[0], F), is(fs[199], F), fs[3].m(), fs[7] instanceof F, Object.keys(fs[5]).join(), fs[0].constructor === F, Object.getPrototypeOf(Object.getPrototypeOf(fs[1])) === Object.prototype);
+// the prototype replaced, and replaced by what is no object
+var first = F.prototype, second = { m: function () { return "second"; }, marker: 2 };
+F.prototype = second;
+var later = make(F, 3);
+P("replaced", is(later[0], F), Object.getPrototypeOf(later[0]) === second, later[1].m(), later[2].marker, Object.getPrototypeOf(fs[0]) === first, fs[0].m(), later[0] instanceof F, fs[0] instanceof F);
+var notObjects = [1, "s", null, undefined, true, Symbol("p"), 10n];
+P("no object", notObjects.map(function (v) { F.prototype = v; var o = new F(1); return (Object.getPrototypeOf(o) === Object.prototype) + "/" + o.a; }).join(" "));
+// prototypes of other kinds
+function G() { this.g = 1; }
+var kinds = [[], function () {}, new Proxy({ viaProxy: 1 }, {}), Object.create(null), new Map(), /x/, new F(0), Object.freeze({ frozen: 1 }), new Uint8Array(1), Math];
+P("other kinds", kinds.map(function (p) { G.prototype = p; var o = new G(); return (Object.getPrototypeOf(o) === p) + "/" + o.g + "/" + Object.keys(o).join(""); }).join(" "));
+G.prototype = new Proxy({ viaProxy: "seen" }, { get: function (t, k, r) { return k === "trapped" ? "by trap" : Reflect.get(t, k, r); } });
+P("proxy prototype", new G().viaProxy, new G().trapped, new G().g);
+G.prototype = Object.create(null); var bare = new G();
+P("null chain", bare.g, typeof bare.toString, Object.getPrototypeOf(Object.getPrototypeOf(bare)));
+// classes, with fields, extended, and their prototypes changed
+class A { constructor(x) { this.x = x; } get double() { return this.x * 2; } }
+class B extends A { y = 5; constructor(x) { super(x); this.z = x + this.y; } }
+class C extends B {}
+var as = make(A, 50), bs = make(B, 50), cs = make(C, 50);
+P("classes", is(as[1], A), is(bs[1], B), is(cs[1], C), bs[2] instanceof A, cs[3].z, cs[4].double, Object.keys(cs[1]).join(), Object.getPrototypeOf(B.prototype) === A.prototype);
+Object.setPrototypeOf(B.prototype, { double: "detached", extra: 1 });
+P("chain changed", bs[2].double, new B(1).double, new C(1).extra, new B(1) instanceof A, is(new B(1), B));
+Object.setPrototypeOf(B.prototype, A.prototype);
+A.prototype.added = "added later";
+P("chain back", new C(2).double, new B(2).added, bs[0].added, as[0].added);
+// objects that start alike and then differ
+(function () { var a = new F(1), b = new F(2); F.prototype = first; var c = new F(3), d = new F(4); c.extra = 1; d.other = 2; delete c.a; P("shapes", Object.keys(a).join(), Object.keys(c).join(), Object.keys(d).join(), c.m === d.m, typeof a.m, a.marker, c.marker); })();
+// new.target, a constructor that returns something, Reflect.construct with another target
+function T() { this.t = new.target === T; }
+function R(v) { this.r = 1; return v; }
+function H() {} H.prototype = { fromH: true };
+P("returns", new T().t, T.call({}) === undefined, new R({ own: 1 }).own, new R(5).r, new R(null).r, new R(function () {}).r, is(new R(5), R));
+P("another target", Reflect.construct(F, [9], H).fromH, Reflect.construct(F, [9], H).a, Object.getPrototypeOf(Reflect.construct(A, [1], H)) === H.prototype, Reflect.construct(B, [1], H).z, kind(function () { return Reflect.construct(F, [], 5); }));
+// bound and nested, and many at once
+var BoundF = F.bind(null, "bound"); function Outer() { this.inner = new F("in"); this.list = [new F(1), new F(2)]; }
+P("bound nested", new BoundF().a, is(new BoundF(), F), new Outer().inner.m(), new Outer().list[1].a, is(new Outer().list[0], F));
+(function () { var n = 0; for (var i = 0; i < 5000; i++) { var o = new F(i); if (Object.getPrototypeOf(o) === first && o.a === i) n++; } P("many", n); })();
+// an error from the constructor, and what is made after
+function Throws() { this.half = 1; throw new RangeError("ctor"); }
+P("throws", kind(function () { return new Throws(); }), is(new F(1), F), new F(2).m());
+lines.join("\n")"##;
+    let expected = r##"plain true true m3 true a true true
+replaced true true second 2 true m0 true false
+no object true/1 true/1 true/1 true/1 true/1 true/1 true/1
+other kinds true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g true/1/g
+proxy prototype seen by trap 1
+null chain 1 undefined null
+classes true true true true 8 8 x,y,z true
+chain changed detached detached 1 false true
+chain back 4 added later added later added later
+shapes a extra a,other true undefined undefined undefined
+returns true true 1 1 1 undefined true
+another target true 9 true 6 TypeError
+bound nested bound true min 2 true
+many 5000
+throws RangeError true m2"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
