@@ -5,10 +5,10 @@
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, CollectionIteratorKind,
-        ExceptionType, JsResult, Realm, String, Value, builders::OrdinaryObjectBuilder,
-        create_array_from_list, create_iter_result_object,
+        ExceptionType, Function, JsResult, MapIterator, Realm, RegularFn, String, Value,
+        builders::OrdinaryObjectBuilder, create_array_from_list, create_iter_result_object,
     },
-    engine::{Bindable, GcScope},
+    engine::{Bindable, GcScope, NoGcScope},
     heap::{ArenaAccess, ArenaAccessMut, WellKnownSymbols},
 };
 
@@ -42,12 +42,28 @@ impl MapIteratorPrototype {
             ));
         };
 
+        match Self::step(agent, iterator, gc) {
+            // 4. Perform ? GeneratorYield(CreateIteratorResultObject(result, false)).
+            Some(result) => create_iter_result_object(agent, result, false, gc),
+            // e. Return undefined.
+            None => create_iter_result_object(agent, Value::Undefined, true, gc),
+        }
+        .map(|o| o.into())
+    }
+
+    /// One step of the Map Iterator: the key, the value or the two in an
+    /// Array, as its kind has it, of the next entry that is there, which
+    /// `next` wraps in an iterator result object; None where it reports
+    /// done.
+    pub(crate) fn step<'gc>(
+        agent: &mut Agent,
+        iterator: MapIterator,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        let iterator = iterator.bind(gc);
         // 24.1.5.1 CreateMapIterator ( map, kind ), step 2
         // NOTE: We set `map` to None when the generator in the spec text has returned.
-        let Some(map) = iterator.get(agent).map else {
-            return create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc())
-                .map(|o| o.into());
-        };
+        let map = iterator.get(agent).map?;
 
         // a. Let entries be map.[[MapData]].
         // c. Let numEntries be the number of elements in entries.
@@ -91,9 +107,7 @@ impl MapIteratorPrototype {
                 }
             };
 
-            // 4. Perform ? GeneratorYield(CreateIteratorResultObject(result, false)).
-            return create_iter_result_object(agent, result, false, gc.into_nogc())
-                .map(|o| o.into());
+            return Some(result.bind(gc));
         }
 
         debug_assert_eq!(
@@ -103,7 +117,22 @@ impl MapIteratorPrototype {
 
         // e. Return undefined.
         iterator.get_mut(agent).map = None;
-        create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc()).map(|o| o.into())
+        None
+    }
+
+    /// Whether `function` is %MapIteratorPrototype%.next, in any realm:
+    /// what a call of it on a Map Iterator returns is [`Self::step`] in an
+    /// iterator result object.
+    pub(crate) fn is_next(agent: &Agent, function: Function) -> bool {
+        let Function::BuiltinFunction(function) = function else {
+            return false;
+        };
+        // Two functions at one address do the same thing.
+        matches!(
+            function.get(agent).behaviour,
+            Behaviour::Regular(behaviour)
+                if core::ptr::fn_addr_eq(behaviour, Self::next as RegularFn)
+        )
     }
 
     pub(crate) fn create_intrinsic(agent: &mut Agent, realm: Realm<'static>) {

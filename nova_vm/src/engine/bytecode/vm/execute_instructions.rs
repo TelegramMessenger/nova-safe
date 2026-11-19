@@ -3379,6 +3379,43 @@ pub(super) fn execute_iterator_step_value<'gc>(
                 None => None,
             }
         }
+        // And of a String Iterator with its original next, which only
+        // wraps the String of the next code point in an iterator result
+        // for this step to take apart: the step the general way comes to
+        // for it too, after the `Vm` was put aside for a call that is
+        // not made. A third of a `for`-`of` over a String was that.
+        VmIteratorRecord::GenericIterator(crate::ecmascript::IteratorRecord {
+            iterator: Object::StringIterator(iterator),
+            next_method,
+        }) => {
+            use crate::ecmascript::StringIteratorPrototype;
+            let (iterator, next_method) = (*iterator, *next_method);
+            StringIteratorPrototype::is_next(agent, next_method)
+                .then(|| StringIteratorPrototype::step(agent, iterator, gc.nogc()).unbind())
+        }
+        // The iterators of a Map and of a Set likewise: the entry, without
+        // the iterator result that their original next puts it in.
+        #[cfg(feature = "set")]
+        VmIteratorRecord::GenericIterator(crate::ecmascript::IteratorRecord {
+            iterator: Object::SetIterator(iterator),
+            next_method,
+        }) => {
+            use crate::ecmascript::SetIteratorPrototype;
+            let (iterator, next_method) = (*iterator, *next_method);
+            SetIteratorPrototype::is_next(agent, next_method)
+                .then(|| SetIteratorPrototype::step(agent, iterator, gc.nogc()).unbind())
+        }
+        // (The kind of a Map Iterator is there with the Set's.)
+        #[cfg(feature = "set")]
+        VmIteratorRecord::GenericIterator(crate::ecmascript::IteratorRecord {
+            iterator: Object::MapIterator(iterator),
+            next_method,
+        }) => {
+            use crate::ecmascript::MapIteratorPrototype;
+            let (iterator, next_method) = (*iterator, *next_method);
+            MapIteratorPrototype::is_next(agent, next_method)
+                .then(|| MapIteratorPrototype::step(agent, iterator, gc.nogc()).unbind())
+        }
         _ => None,
     };
     let result = match plain {

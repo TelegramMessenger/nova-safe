@@ -13912,3 +13912,145 @@ collections 150 50 50 5,-1,-2 4,5,-2 149999"##;
     }
     assert_eq!(found.lines().count(), expected.lines().count());
 }
+
+/// A step of the iterator of a String, a Map or a Set, with its original
+/// next, is taken without the iterator result that next would wrap it in.
+/// The script walks Strings by code point (outside the BMP and with lone
+/// halves), and Maps and Sets by their entries, keys and values; changes
+/// a Map and a Set while it walks them; goes on with an iterator that was
+/// stepped by hand or left by a `break`; replaces next in each of the
+/// three prototypes, on one iterator, and for an iteration that had begun
+/// before; gives the prototypes a `return` and leaves loops early and by
+/// an exception; borrows a next for an object of no such kind; replaces
+/// %Symbol.iterator% of String and of Map; delegates to all three from a
+/// generator, destructures from them, and walks long ones while garbage
+/// is made. What is expected is what Node prints for the same script.
+#[test]
+fn a_step_of_a_string_a_map_or_a_set_is_what_its_next_gives() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(steps_of_built_in_iterators)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn steps_of_built_in_iterators() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function codes(s) { var a = []; for (var i = 0; i < s.length; i++) a.push(s.charCodeAt(i).toString(16)); return a.join("."); }
+
+(function () {
+  var r = [];
+  var parts = []; for (var ch of "aж中😀b") parts.push(ch.length + ":" + codes(ch));
+  r.push(parts.join(" "));
+  var lone = []; for (var c of "x\uD83Dy\uDE00\uDE00\uD83D") lone.push(codes(c));
+  r.push(lone.join(" "), [..."😀\uD83D"].length, Array.from("").length);
+  var n = 0; for (var e of "") n++; r.push(n);
+  var s = ""; for (var i = 0; i < 300; i++) s += "aж中😀b";
+  var total = 0, count = 0; for (var k of s) { total += k.length; count++; }
+  r.push(total, count, s.length);
+  var [a, b, ...rest] = "héllo"; r.push(a, b, rest.join("|"));
+  var boxed = new String("ab"); var bx = []; for (var q of boxed) bx.push(q); r.push(bx.join());
+  P("strings", r.join(" "));
+})();
+
+(function () {
+  var m = new Map([[1, "a"], ["k", "b"], [{}, "c"]]), s = new Set([3, "x", 3, null]), r = [];
+  var t = []; for (var [k, v] of m) t.push(typeof k + "=" + v); r.push(t.join());
+  t = []; for (var key of m.keys()) t.push(typeof key); r.push(t.join());
+  t = []; for (var val of m.values()) t.push(val); r.push(t.join());
+  t = []; for (var e of m.entries()) t.push(e.length + ":" + Array.isArray(e)); r.push(t.join());
+  t = []; for (var x of s) t.push(String(x)); r.push(t.join());
+  t = []; for (var y of s.entries()) t.push(y[0] === y[1]); r.push(t.join());
+  t = []; for (var z of s.keys()) t.push(String(z)); r.push(t.join());
+  var first = m.entries().next().value, again = m.entries().next().value; first[1] = "changed";
+  r.push(first === again, m.get(1), again[1], [...m].length, [...s].length, Array.from(m.keys()).length, new Map(m).size, new Set(s).size, Math.max(...new Set([1, 5, 2])));
+  var empty = 0; for (var u of new Map()) empty++; for (var w of new Set()) empty++; r.push(empty);
+  P("collections", r.join(" "));
+})();
+
+(function () {
+  var r = [];
+  var m = new Map([[1, 1], [2, 2], [3, 3]]), seen = [];
+  for (var [k] of m) { seen.push(k); if (k === 1) { m.delete(2); m.set(4, 4); } if (k === 4) m.set(5, 5); if (seen.length > 10) break; }
+  r.push(seen.join(""));
+  var s = new Set([1, 2, 3]); seen = [];
+  for (var x of s) { seen.push(x); if (x === 1) { s.delete(3); s.add(9); s.delete(1); s.add(1); } if (seen.length > 10) break; }
+  r.push(seen.join(""));
+  var c = new Set([1, 2, 3]); seen = []; for (var y of c) { seen.push(y); c.clear(); c.add(7); if (seen.length > 5) break; } r.push(seen.join(""));
+  var it = new Map([[1, 1], [2, 2], [3, 3]]).keys(); it.next(); seen = []; for (var z of it) seen.push(z); r.push(seen.join(""), it.next().done, [...it].length);
+  var si = "abc"[Symbol.iterator](); si.next(); seen = []; for (var ch of si) { seen.push(ch); break; } for (var ch2 of si) seen.push(ch2); r.push(seen.join(""), si.next().done);
+  var setIt = new Set([1, 2, 3]).values(); seen = []; for (var a of setIt) { seen.push(a); if (a === 2) break; } seen.push(setIt.next().value); r.push(seen.join(""));
+  P("changes", r.join(" "));
+})();
+
+(function () {
+  var log = "", r = [];
+  var stringProto = Object.getPrototypeOf(""[Symbol.iterator]()), mapProto = Object.getPrototypeOf(new Map().entries()), setProto = Object.getPrototypeOf(new Set().values());
+  var stringNext = stringProto.next, mapNext = mapProto.next, setNext = setProto.next;
+  var started = "ab"[Symbol.iterator]();
+  stringProto.next = function () { log += "S"; return stringNext.call(this); };
+  mapProto.next = function () { log += "M"; var step = mapNext.call(this); if (!step.done) step.value = "wrapped"; return step; };
+  setProto.next = function () { log += "T"; return { done: true }; };
+  var t = []; for (var ch of "xy") t.push(ch); for (var e of new Map([[1, 2]])) t.push(e); for (var v of new Set([1, 2])) t.push(v); for (var c of started) t.push(c);
+  r.push(t.join(), log);
+  stringProto.next = stringNext; mapProto.next = mapNext; setProto.next = setNext;
+  log = "";
+  var own = "pq"[Symbol.iterator](); own.next = function () { log += "o"; return { value: "own", done: log.length > 2 }; };
+  t = []; for (var o of own) t.push(o); r.push(t.join(), log);
+  stringProto.return = function () { log += "R"; return {}; };
+  mapProto.return = function () { log += "r"; return {}; };
+  log = ""; for (var b of "abc") { if (b === "b") break; } for (var e2 of new Map([[1, 1], [2, 2]])) break; for (var d of "zz") { }
+  r.push(log, T(function () { for (var q of "abc") throw new RangeError("stop"); }), log);
+  delete stringProto.return; delete mapProto.return;
+  r.push(T(function () { for (var q of { [Symbol.iterator]: function () { return { next: stringNext }; } }) { } return "ran"; }), T(function () { for (var q of { [Symbol.iterator]: function () { return { next: mapNext }; } }) { } return "ran"; }));
+  var originalIterator = String.prototype[Symbol.iterator];
+  String.prototype[Symbol.iterator] = function () { var i = 0, s = String(this); return { next: function () { return i < s.length ? { value: s.charCodeAt(i++), done: false } : { done: true }; } }; };
+  t = []; for (var u of "AB") t.push(u); r.push(t.join());
+  Object.defineProperty(String.prototype, Symbol.iterator, { value: originalIterator, writable: true, configurable: true });
+  var mapIterator = Map.prototype[Symbol.iterator]; Map.prototype[Symbol.iterator] = function () { return this.keys(); };
+  t = []; for (var k of new Map([[7, 8]])) t.push(k); r.push(t.join());
+  Object.defineProperty(Map.prototype, Symbol.iterator, { value: mapIterator, writable: true, configurable: true });
+  P("protocol", r.join(" | "));
+})();
+
+(function () {
+  function* all() { yield* "ab"; yield* new Set([1, 2]); yield* new Map([[3, 4]]); }
+  var r = [], t = [];
+  for (var v of all()) t.push(String(v)); r.push(t.join("/"));
+  var m = new Map(), s = new Set(), text = "";
+  for (var i = 0; i < 3000; i++) { m.set("k" + i, i); s.add(i * 2); text += i % 10; }
+  var sum = 0, junk;
+  for (var round = 0; round < 3; round++) {
+    for (var [k, val] of m) { sum += val + k.length; junk = [k, { v: val }]; }
+    for (var x of s) { sum += x; junk = { x: x }; }
+    for (var ch of text) { sum += ch.charCodeAt(0) & 7; junk = ch + "!"; }
+  }
+  r.push(sum, junk, m.size, s.size);
+  var nested = 0; for (var a of "abc") for (var b of new Set([1, 2])) for (var [c] of new Map([[a, b]])) nested += c.length + b;
+  r.push(nested);
+  var [[k0, v0], second] = new Map([["x", 1], ["y", 2]]); var [p, , q = "dflt"] = new Set([1, 2]);
+  r.push(k0, v0, second.join(""), p, q);
+  P("more", r.join(" "));
+})();
+
+out.join("\n")"##;
+    let expected = r##"strings 1:61 1:436 1:4e2d 2:d83d.de00 1:62 78 d83d 79 de00 de00 d83d 2 0 0 1800 1500 1800 h é l|l|o a,b
+collections number=a,string=b,object=c number,string,object a,b,c 2:true,2:true,2:true 3,x,null true,true,true 3,x,null false a a 3 3 3 3 3 5 0
+changes 1345 12911111111 177777 23 true 0 bc true 123
+protocol x,y,wrapped,a,b | SSSMMTSSS | own,own | ooo | Rr | throws RangeError | RrR | throws TypeError | throws TypeError | 65,66 | 7
+more a/b/1/2/3,4 40554270 9! 3000 3000 15 x 1 y2 1 dflt"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}

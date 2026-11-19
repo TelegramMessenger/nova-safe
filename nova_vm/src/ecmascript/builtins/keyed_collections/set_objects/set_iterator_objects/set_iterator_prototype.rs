@@ -5,10 +5,10 @@
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, Builtin, CollectionIteratorKind,
-        ExceptionType, JsResult, Realm, String, Value, builders::OrdinaryObjectBuilder,
-        create_array_from_list, create_iter_result_object,
+        ExceptionType, Function, JsResult, Realm, RegularFn, SetIterator, String, Value,
+        builders::OrdinaryObjectBuilder, create_array_from_list, create_iter_result_object,
     },
-    engine::{Bindable, GcScope},
+    engine::{Bindable, GcScope, NoGcScope},
     heap::{ArenaAccess, ArenaAccessMut, ArenaAccessSoA, WellKnownSymbols},
 };
 
@@ -40,14 +40,28 @@ impl SetIteratorPrototype {
                 gc,
             ));
         };
+        match Self::step(agent, iterator, gc) {
+            // b. Perform ? GeneratorYield(CreateIteratorResultObject(result, false)).
+            Some(result) => create_iter_result_object(agent, result, false, gc),
+            // e. Return undefined.
+            None => create_iter_result_object(agent, Value::Undefined, true, gc),
+        }
+        .map(|o| o.into())
+    }
+
+    /// One step of the Set Iterator: the next value that is there, or the
+    /// value twice in an Array, as its kind has it, which `next` wraps in
+    /// an iterator result object; None where it reports done.
+    pub(crate) fn step<'gc>(
+        agent: &mut Agent,
+        iterator: SetIterator,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
         let iterator = iterator.bind(gc);
 
         // 24.2.6.1 CreateSetIterator ( set, kind )
         // NOTE: We set `set` to None when the generator in the spec text has returned.
-        let Some(set) = iterator.get(agent).set else {
-            return create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc())
-                .map(|o| o.into());
-        };
+        let set = iterator.get(agent).set?;
 
         // b. Let entries be set.[[SetData]].
         // c. Let numEntries be the number of elements in entries.
@@ -79,15 +93,29 @@ impl SetIteratorPrototype {
                 }
             };
 
-            return create_iter_result_object(agent, result.unbind(), false, gc.into_nogc())
-                .map(|o| o.into());
+            return Some(result.unbind().bind(gc));
         }
 
         debug_assert_eq!(iterator.get(agent).next_index, set.get(agent).values.len());
 
         // e. Return undefined.
         iterator.get_mut(agent).set = None;
-        create_iter_result_object(agent, Value::Undefined, true, gc.into_nogc()).map(|o| o.into())
+        None
+    }
+
+    /// Whether `function` is %SetIteratorPrototype%.next, in any realm:
+    /// what a call of it on a Set Iterator returns is [`Self::step`] in an
+    /// iterator result object.
+    pub(crate) fn is_next(agent: &Agent, function: Function) -> bool {
+        let Function::BuiltinFunction(function) = function else {
+            return false;
+        };
+        // Two functions at one address do the same thing.
+        matches!(
+            function.get(agent).behaviour,
+            Behaviour::Regular(behaviour)
+                if core::ptr::fn_addr_eq(behaviour, Self::next as RegularFn)
+        )
     }
 
     pub(crate) fn create_intrinsic(agent: &mut Agent, realm: Realm<'static>) {
