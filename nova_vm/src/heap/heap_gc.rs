@@ -176,6 +176,8 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             intrinsic_key_moves: _,
             intrinsic_shape_changes: _,
             bare_shape_seen: _,
+            #[cfg(feature = "array-buffer")]
+                typed_array_views: _,
             descriptor_changes: _,
             intrinsic_integer_keys: _,
         } = &agent.heap;
@@ -941,6 +943,8 @@ fn sweep(
         intrinsic_key_moves: _,
         intrinsic_shape_changes: _,
         bare_shape_seen: _,
+        #[cfg(feature = "array-buffer")]
+            typed_array_views: _,
         descriptor_changes: _,
         intrinsic_integer_keys: _,
     } = &mut agent.heap;

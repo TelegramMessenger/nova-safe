@@ -225,6 +225,13 @@ pub(crate) struct Heap {
             >,
         >,
     >,
+    /// Where the elements of the TypedArrays last read or written are: see
+    /// [`TypedArrayViewSeen`](crate::ecmascript::TypedArrayViewSeen). Its
+    /// handles are of the collection it counted, and are not read after
+    /// another.
+    #[cfg(feature = "array-buffer")]
+    pub(crate) typed_array_views:
+        [crate::ecmascript::TypedArrayViewSeen; crate::ecmascript::TYPED_ARRAY_VIEWS_SEEN],
     /// How many times a property that an object already had was given a
     /// descriptor, or had the one it had taken away: the one way an
     /// accessor property becomes another accessor or a data property with
@@ -415,6 +422,8 @@ impl Heap {
             intrinsic_key_moves: 0,
             intrinsic_shape_changes: 0,
             bare_shape_seen: core::cell::Cell::new(None),
+            #[cfg(feature = "array-buffer")]
+            typed_array_views: Default::default(),
             descriptor_changes: 0,
             data_bytes_since_gc: 0,
             gc_alloc_limit: crate::heap::heap_gc::MIN_GC_ALLOC_LIMIT,

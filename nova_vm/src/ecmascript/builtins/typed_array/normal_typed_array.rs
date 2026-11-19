@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use core::{
+    cell::Cell,
     hash::{Hash, Hasher},
     marker::PhantomData,
 };
@@ -39,6 +40,35 @@ use crate::{
         WorkQueues,
     },
 };
+
+/// Where the elements of a TypedArray over an ArrayBuffer are, as an element
+/// read or write last found it: the buffer, the offset of the first element
+/// in it and how many there are.
+///
+/// IsValidIntegerIndex asks the TypedArray's record for its buffer, its
+/// offset and its length, each of which may be kept in a table beside the
+/// record, and the buffer for whether it is detached and how long it is, at
+/// every element read or written: a fifth of a loop that fills a
+/// `Uint8ClampedArray`. All of that follows from the record, which is not
+/// changed once the TypedArray is made, and from the length of the buffer in
+/// bytes. So what was found is good for as long as the handles name what
+/// they named (no collection has run) and the buffer is as long as it was;
+/// a detached buffer has no length. Nothing unsafe leans on it: the bytes
+/// are read and written through the buffer's own checked accessors.
+#[derive(Debug, Default)]
+pub(crate) struct TypedArrayViewSeen {
+    /// None where nothing is kept.
+    array: Cell<Option<VoidArray<'static>>>,
+    collections: Cell<u64>,
+    buffer: Cell<Option<ArrayBuffer<'static>>>,
+    buffer_byte_length: Cell<usize>,
+    byte_offset: Cell<usize>,
+    length: Cell<usize>,
+}
+
+/// The views kept at once ([`TypedArrayViewSeen`]): a loop over two or three
+/// TypedArrays finds each where it left it.
+pub(crate) const TYPED_ARRAY_VIEWS_SEEN: usize = 4;
 
 /// ## [23.2 TypedArray Objects](https://tc39.es/ecma262/#sec-typedarray-objects)
 ///
@@ -203,6 +233,10 @@ impl<'ta, T: Viewable> GenericTypedArray<'ta, T> {
         byte_offset: usize,
         byte_and_array_length: Option<(usize, usize)>,
     ) {
+        // Whatever was seen of the record as it was before this.
+        agent.heap.typed_array_views[self.into_void_array().get_index() % TYPED_ARRAY_VIEWS_SEEN]
+            .array
+            .set(None);
         let heap_byte_offset = byte_offset.into();
         let d = self.into_void_array().get_mut(agent);
         d.viewed_array_buffer = ab.unbind();
@@ -1348,8 +1382,130 @@ impl<'a> InternalMethods<'a> for TypedArray<'a> {
     }
 }
 
+impl<'a, T: Viewable> GenericTypedArray<'a, T> {
+    /// The buffer of the TypedArray and the byte in it that the element at
+    /// `index` starts at, if IsValidIntegerIndex(O, index) is true.
+    #[inline]
+    fn element_place(self, agent: &Agent, index: i64) -> Option<(ArrayBuffer<'static>, usize)> {
+        // 2. If index is not an integral Number, return false.
+        // 3. If index is -0𝔽 or index < -0𝔽, return false.
+        let index = usize::try_from(index).ok()?;
+        let key = self.into_void_array().unbind();
+        let heap = &agent.heap;
+        let seen = &heap.typed_array_views[key.get_index() % TYPED_ARRAY_VIEWS_SEEN];
+        let (buffer, byte_offset, length) = match seen.buffer.get() {
+            Some(buffer)
+                if seen.array.get() == Some(key)
+                    && seen.collections.get() == heap.collections
+                    && buffer.byte_length(agent) == seen.buffer_byte_length.get() =>
+            {
+                (buffer, seen.byte_offset.get(), seen.length.get())
+            }
+            _ => self.see_view(agent)?,
+        };
+        // 8. If ℝ(index) ≥ length, return false.
+        // 9. Return true.
+        (index < length).then(|| (buffer, byte_offset + index * size_of::<T>()))
+    }
+
+    /// Where the elements of the TypedArray are now, kept for the next
+    /// element read or written; None if its buffer is detached or it is out
+    /// of the buffer's bounds, when it has no element.
+    #[inline(never)]
+    fn see_view(self, agent: &Agent) -> Option<(ArrayBuffer<'static>, usize, usize)> {
+        let key = self.into_void_array().unbind();
+        let buffer = key.get(agent).viewed_array_buffer;
+        // 1. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is true, return false.
+        // 4. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(O, unordered).
+        let cached_buffer_byte_length: CachedBufferByteLength =
+            self.get_cached_buffer_byte_length(agent, Ordering::Unordered);
+        let buffer_byte_length = Option::<usize>::from(cached_buffer_byte_length)?;
+        // 6. If IsTypedArrayOutOfBounds(taRecord) is true, return false.
+        // 7. Let length be TypedArrayLength(taRecord).
+        let byte_offset = self.byte_offset(agent);
+        let element_size = size_of::<T>();
+        let length = if let Some(array_length) = self.array_length(agent) {
+            if byte_offset + array_length * element_size > buffer_byte_length {
+                return None;
+            }
+            array_length
+        } else {
+            if byte_offset > buffer_byte_length {
+                return None;
+            }
+            (buffer_byte_length - byte_offset) / element_size
+        };
+        debug_assert_eq!(buffer.byte_length(agent), buffer_byte_length);
+        let seen = &agent.heap.typed_array_views[key.get_index() % TYPED_ARRAY_VIEWS_SEEN];
+        seen.array.set(Some(key));
+        seen.collections.set(agent.heap.collections);
+        seen.buffer.set(Some(buffer.unbind()));
+        seen.buffer_byte_length.set(buffer_byte_length);
+        seen.byte_offset.set(byte_offset);
+        seen.length.set(length);
+        Some((buffer.unbind(), byte_offset, length))
+    }
+}
+
 impl<'a, T: Viewable> TypedArrayAbstractOperations<'a> for GenericTypedArray<'a, T> {
     type ElementType = T;
+
+    /// ### [10.4.5.17 TypedArrayGetElement ( O, index )](https://tc39.es/ecma262/#sec-typedarraygetelement)
+    ///
+    /// As the trait has it, with the place of the element from what was
+    /// last seen of the view ([`TypedArrayViewSeen`]).
+    fn typed_array_get_element<'gc>(
+        self,
+        agent: &mut Agent,
+        index: i64,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Numeric<'gc>> {
+        Self::check_not_void_array();
+        // 1. If IsValidIntegerIndex(O, index) is false, return undefined.
+        let (buffer, byte_index_in_buffer) = self.element_place(agent, index)?;
+        debug_assert_eq!(
+            Some(byte_index_in_buffer),
+            self.is_valid_integer_index(agent, index)
+                .map(|index| index * size_of::<T>() + self.byte_offset(agent))
+        );
+        // 6. Return GetValueFromBuffer(O.[[ViewedArrayBuffer]], byteIndexInBuffer, elementType, true, unordered).
+        Some(crate::ecmascript::get_value_from_buffer::<T>(
+            agent,
+            buffer.into(),
+            byte_index_in_buffer,
+            true,
+            Ordering::Unordered,
+            None,
+            gc,
+        ))
+    }
+
+    /// ### [10.4.5.18 TypedArraySetElement ( O, index, value )](https://tc39.es/ecma262/#sec-typedarraysetelement)
+    ///
+    /// As the trait has it, with the place of the element from what was
+    /// last seen of the view ([`TypedArrayViewSeen`]).
+    fn typed_array_set_element(self, agent: &mut Agent, index: i64, num_value: Numeric) {
+        Self::check_not_void_array();
+        debug_assert_eq!(
+            self.element_place(agent, index).map(|(_, place)| place),
+            self.is_valid_integer_index(agent, index)
+                .map(|index| index * size_of::<T>() + self.byte_offset(agent))
+        );
+        // 3. If IsValidIntegerIndex(O, index) is true, then
+        if let Some((buffer, byte_index_in_buffer)) = self.element_place(agent, index) {
+            // e. Perform SetValueInBuffer(O.[[ViewedArrayBuffer]], byteIndexInBuffer, elementType, numValue, true, unordered).
+            crate::ecmascript::set_value_in_buffer::<T>(
+                agent,
+                buffer.into(),
+                byte_index_in_buffer,
+                num_value,
+                true,
+                Ordering::Unordered,
+                None,
+            );
+        }
+        // 4. Return UNUSED.
+    }
 
     #[inline(always)]
     fn is_detached(self, agent: &Agent) -> bool {

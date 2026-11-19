@@ -14790,3 +14790,168 @@ many 480000 63 привет м р 世界 при false 4469484 21 т мир 世�
         );
     }
 }
+
+/// An element of a TypedArray is read and written where the view was last
+/// seen to have it, and that is where IsValidIntegerIndex puts it: for
+/// every kind of TypedArray with values that wrap, clamp and round, in and
+/// out of bounds and at indices that are no integers; through views of one
+/// buffer with offsets and lengths, a subarray and a DataView; under a
+/// resizable buffer that shrinks below its views, grows past them, goes to
+/// nothing and comes back; with nine arrays read and written in turn where
+/// four are remembered; with arrays made and dropped while the heap is
+/// collected; and beside a subclass, numeric strings, inherited indices,
+/// frozen arrays and the other kinds of objects under the same places.
+/// What is expected is what Node prints for the same script. Then arrays
+/// are kept over a collection that moves them and read again, all dropped,
+/// and made anew where the old ones were; and made until the heap has no
+/// room, which ends the script as it did.
+#[test]
+fn an_element_of_a_typed_array_is_where_its_view_was_seen() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(typed_array_views)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn typed_array_views() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function get(a, i) { return a[i]; }
+function put(a, i, v) { a[i] = v; }
+function show(a) { return Array.prototype.join.call(a, ","); }
+
+(function () {
+  // Every kind, in and out of its bounds, under the same places.
+  var kinds = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array], r = [];
+  var values = [0, 1, -1, 127, 128, 255, 256, 65535, 65537, 2147483647, 2147483648, 4294967295, -2147483649, 0.5, 1.5, 2.5, -0.5, 255.5, 1e20, NaN, Infinity, -Infinity, -0];
+  for (var k = 0; k < kinds.length; k++) {
+    var a = new kinds[k](values.length + 1);
+    for (var i = 0; i < values.length; i++) put(a, i, values[i]);
+    put(a, values.length + 1, 7); put(a, -1, 7); put(a, 1e9, 7); put(a, 1.5, 7);
+    var row = []; for (var j = 0; j <= values.length + 1; j++) row.push(Object.is(get(a, j), -0) ? "-0" : String(get(a, j)));
+    r.push(kinds[k].name + ":" + row.join(",") + ":" + [get(a, -1), get(a, 1e9), get(a, 1.5), a.length, Object.keys(a).length].join("/"));
+  }
+  P("kinds", r.join(" | "));
+  var big = new BigInt64Array(3), ubig = new BigUint64Array(2);
+  put(big, 0, 5n); put(big, 1, -(2n ** 63n)); put(big, 2, 2n ** 64n + 3n); put(ubig, 0, -1n); put(big, 5, 1n);
+  P("bigints", show(big), show(ubig), typeof get(big, 0), get(big, 3), T(function () { put(big, 0, 1); return "set"; }), T(function () { put(new Uint8Array(1), 0, 1n); return "set"; }), get(big, 0));
+})();
+
+(function () {
+  // Views of one buffer, with an offset and a length, written through one and read through another.
+  var buffer = new ArrayBuffer(32), r = [];
+  var bytes = new Uint8Array(buffer), mid = new Uint8Array(buffer, 8, 8), words = new Uint32Array(buffer, 4, 4), tail = new Float64Array(buffer, 24), sub = bytes.subarray(10, 14);
+  for (var i = 0; i < 32; i++) put(bytes, i, i);
+  r.push(show(mid), show(words), get(sub, 0), get(sub, 3), get(sub, 4), mid.length, words.length, tail.length, sub.byteOffset);
+  put(mid, 0, 200); put(mid, 7, 201); put(mid, 8, 202); put(words, 1, 0x01020304); put(sub, 0, 77); put(tail, 0, 1.5);
+  r.push(get(bytes, 8), get(bytes, 15), get(bytes, 16), show(bytes.subarray(8, 12)), get(bytes, 10), get(mid, 2), show(new Uint8Array(buffer, 24, 8)), get(tail, 0), get(tail, 1));
+  var view = new DataView(buffer); view.setInt16(0, -2, true); r.push(get(bytes, 0), get(bytes, 1), view.getUint8(10));
+  P("views", r.join(" "));
+})();
+
+(function () {
+  // A buffer that changes its length under its views.
+  var buffer = new ArrayBuffer(16, { maxByteLength: 64 }), r = [];
+  var tracking = new Uint8Array(buffer), fixed = new Uint8Array(buffer, 4, 8), words = new Uint32Array(buffer, 8), end = new Uint8Array(buffer, 12);
+  for (var i = 0; i < 16; i++) put(tracking, i, i + 1);
+  r.push(tracking.length, fixed.length, words.length, end.length, get(tracking, 15), get(fixed, 7), get(words, 1), get(end, 3));
+  buffer.resize(10);
+  r.push(tracking.length, fixed.length, words.length, end.length, get(tracking, 9), get(tracking, 10), get(fixed, 0), get(words, 0), get(end, 0), fixed.byteOffset, end.byteOffset);
+  put(tracking, 9, 99); put(tracking, 10, 100); put(fixed, 0, 5); put(end, 0, 6);
+  buffer.resize(40);
+  r.push(tracking.length, fixed.length, words.length, end.length, get(tracking, 9), get(tracking, 10), get(tracking, 39), get(fixed, 0), get(fixed, 7), get(words, 7), get(end, 27), get(end, 28));
+  put(tracking, 39, 9); put(words, 7, 0x7f000000); put(end, 27, 3);
+  r.push(get(tracking, 39), get(end, 27), get(words, 7));
+  buffer.resize(0); r.push(tracking.length, get(tracking, 0), fixed.length, T(function () { put(tracking, 0, 1); return get(tracking, 0); }));
+  buffer.resize(16); r.push(tracking.length, get(tracking, 0), get(fixed, 7), words.length, show(end));
+  buffer.resize(16); put(tracking, 15, 250); r.push(get(end, 3), get(words, 1));
+  P("resized", r.join(" "));
+})();
+
+(function () {
+  // More arrays than are remembered at once, read and written in turn, and through collections.
+  var arrays = [], r = [], sum = 0, wrong = 0;
+  for (var n = 0; n < 9; n++) { var a = new (n % 2 ? Float64Array : Int32Array)(40 + n); for (var i = 0; i < a.length; i++) a[i] = n * 1000 + i; arrays.push(a); }
+  for (var round = 0; round < 50; round++) for (var i = 0; i < 40; i++) for (var n = 0; n < 9; n++) { var v = get(arrays[n], i); if (v !== n * 1000 + i + round) wrong++; put(arrays[n], i, v + 1); sum += v; }
+  r.push(wrong, sum, get(arrays[8], 47), get(arrays[8], 48), get(arrays[0], 39), get(arrays[0], 40));
+  var kept = [], junk;
+  for (var g = 0; g < 6; g++) {
+    for (var m = 0; m < 400; m++) { var t = new Uint16Array(8 + (m & 7)); put(t, 3, m); put(t, t.length - 1, g); if (m % 50 === 0) kept.push(t); junk = t; }
+    for (var w = 0; w < 30000; w++) junk = { w: w, a: new Float32Array(2) };
+    for (var c = 0; c < kept.length; c++) { var x = kept[c]; if (get(x, 3) !== (c % 8) * 50 || get(x, x.length - 1) !== (c / 8 | 0) || get(x, x.length) !== undefined) wrong++; put(x, 0, c); }
+  }
+  for (var c2 = 0; c2 < kept.length; c2++) if (get(kept[c2], 0) !== c2) wrong++;
+  r.push(wrong, kept.length, get(junk.a, 0), get(junk.a, 2), show(kept[47]));
+  P("many", r.join(" "));
+})();
+
+(function () {
+  // What is not an element, and the objects around the arrays.
+  var a = new Uint8Array([1, 2, 3]), r = [];
+  class Mine extends Float32Array { get first() { return this[0]; } }
+  var mine = new Mine([1.5, 2.5]); put(mine, 1, 9.25); mine.note = "n";
+  r.push(get(a, "1"), get(a, "-0"), get(a, "1.0"), get(a, " 1"), get(a, "length"), a["2"], get(mine, 1), mine.first, mine.note, get(mine, 2), Object.keys(mine).join());
+  put(a, "1", 20); put(a, "-0", 21); put(a, "1.5", 22); put(a, "x", 23); r.push(show(a), a.x, a["1.5"], a["-0"], Object.keys(a).join());
+  Uint8Array.prototype[5] = "inherited"; Object.prototype[6] = "far"; r.push(get(a, 5), get(a, 6), 5 in a, a.hasOwnProperty(2)); delete Uint8Array.prototype[5]; delete Object.prototype[6];
+  r.push(T(function () { Object.defineProperty(a, 0, { get: function () { return 1; } }); return "defined"; }), T(function () { "use strict"; a[7] = 1; return a[7]; }), T(function () { return delete a[0]; }), T(function () { "use strict"; return delete a[7]; }), Object.isFrozen(a), T(function () { Object.freeze(a); return "frozen"; }), Object.isFrozen(Object.freeze(new Uint8Array(0))));
+  var args = (function () { return arguments; })(4, 5), arr = [7, 8], str = "xy";
+  r.push(get(args, 1), get(arr, 1), get(str, 1), get(a, 0), get(args, 2), get(arr, 2), get(str, 2), get({ 1: "o" }, 1));
+  put(args, 0, "A"); put(arr, 0, "B"); put(a, 0, 255); r.push(args[0], arr[0], a[0]);
+  P("others", r.join(" "));
+})();
+
+out.join("\n")"##;
+    let expected = r##"kinds Int8Array:0,1,-1,127,-128,-1,0,-1,1,-1,0,-1,-1,0,1,2,0,-1,0,0,0,0,0,0,undefined:///24/24 | Uint8Array:0,1,255,127,128,255,0,255,1,255,0,255,255,0,1,2,0,255,0,0,0,0,0,0,undefined:///24/24 | Uint8ClampedArray:0,1,0,127,128,255,255,255,255,255,255,255,0,0,2,2,0,255,255,0,255,0,0,0,undefined:///24/24 | Int16Array:0,1,-1,127,128,255,256,-1,1,-1,0,-1,-1,0,1,2,0,255,0,0,0,0,0,0,undefined:///24/24 | Uint16Array:0,1,65535,127,128,255,256,65535,1,65535,0,65535,65535,0,1,2,0,255,0,0,0,0,0,0,undefined:///24/24 | Int32Array:0,1,-1,127,128,255,256,65535,65537,2147483647,-2147483648,-1,2147483647,0,1,2,0,255,1661992960,0,0,0,0,0,undefined:///24/24 | Uint32Array:0,1,4294967295,127,128,255,256,65535,65537,2147483647,2147483648,4294967295,2147483647,0,1,2,0,255,1661992960,0,0,0,0,0,undefined:///24/24 | Float32Array:0,1,-1,127,128,255,256,65535,65537,2147483648,2147483648,4294967296,-2147483648,0.5,1.5,2.5,-0.5,255.5,100000002004087730000,NaN,Infinity,-Infinity,-0,0,undefined:///24/24 | Float64Array:0,1,-1,127,128,255,256,65535,65537,2147483647,2147483648,4294967295,-2147483649,0.5,1.5,2.5,-0.5,255.5,100000000000000000000,NaN,Infinity,-Infinity,-0,0,undefined:///24/24
+bigints 5,-9223372036854775808,3 18446744073709551615,0 bigint undefined throws TypeError throws TypeError 5
+views 8,9,10,11,12,13,14,15 117835012,185207048,252579084,319951120 10 13  8 4 1 10 4 201 16 4,3,77,1 77 77 0,0,0,0,0,0,248,63 1.5  254 255 77
+resized 16 8 2 4 16 12 269422093 16 10 0 0 0 10     0 0 40 8 8 28 99 0 0 5 0 0 0  3 3 50331648 0  0  16 0 0 2 0,0,0,0 250 4194304000
+many 0 72792000 8047  89  0 48 0  47,0,0,350,0,0,0,0,0,0,0,0,0,5
+others 2    3 3 9.25 1.5 n  0,1,note 1,20,3 23   0,1,2,x   false true throws TypeError  false true false throws TypeError true 5 8 y 1    o A B 255"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // Kept over a collection: every third is gone, so the others and their
+    // buffers move.
+    let made = r##"var keep = []; function get(a, i) { return a[i]; } function put(a, i, v) { a[i] = v; }
+for (var n = 0; n < 60; n++) { var a = new (n % 2 ? Float64Array : Uint16Array)(8); for (var i = 0; i < 8; i++) put(a, i, n * 10 + i); keep.push(a); get(a, 7); }
+for (var j = 0; j < 60; j += 3) keep[j] = null;
+String(keep.length)"##;
+    assert_eq!(text(&mut engine, made), "60");
+    engine.collect_garbage().unwrap();
+    let asked = r##"(function () { var live = 0, wrong = 0; for (var n = 0; n < keep.length; n++) { var a = keep[n]; if (!a) continue; live++; for (var i = 0; i < 8; i++) { if (get(a, i) !== n * 10 + i) wrong++; put(a, i, get(a, i) + 1); if (get(a, i) !== n * 10 + i + 1) wrong++; put(a, i, n * 10 + i); } if (get(a, 8) !== undefined) wrong++; } return live + "," + wrong; })()"##;
+    assert_eq!(text(&mut engine, asked), "40,0");
+    engine.collect_garbage().unwrap();
+    assert_eq!(text(&mut engine, asked), "40,0");
+    // None is left, and arrays made where they were are their own.
+    engine.evaluate("keep = null", false).unwrap();
+    engine.collect_garbage().unwrap();
+    engine.collect_garbage().unwrap();
+    let anew = r##"(function () { var r = []; for (var n = 0; n < 12; n++) { var a = new Uint8Array(n + 1); r.push(get(a, n)); put(a, n, n + 1); r.push(get(a, n), get(a, n + 1)); } return r.join(); })()"##;
+    assert_eq!(
+        text(&mut engine, anew),
+        "0,1,,0,2,,0,3,,0,4,,0,5,,0,6,,0,7,,0,8,,0,9,,0,10,,0,11,,0,12,"
+    );
+    // Arrays, each with its buffer, until the heap has no room.
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    let fills = "var keep = []; for (;;) { var a = new Float64Array(64); a[0] = keep.length; a[63] = 1.5; keep.push(a); }";
+    assert_eq!(engine.evaluate(fills, false), Err(Error::OutOfMemory));
+    engine.evaluate("keep = null", false).unwrap();
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            "var t = new Uint8ClampedArray(2); t[0] = 300; t[1] = 1.5; t[0] + ':' + t[1] + ':' + t[2]"
+        ),
+        "255:2:undefined"
+    );
+}
