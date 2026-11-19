@@ -10472,3 +10472,255 @@ fn the_limits_hold_in_a_generator_stepped_in_place() {
         Ok(Completion::Number(6.0))
     );
 }
+
+/// A name of the global scope that is a property of the global object is
+/// read and written at the place it was found at for as long as the global
+/// scope is in the state it was found in. The script reads and writes such
+/// names while properties are added to the global object, removed from
+/// among the others (which moves the later ones), made accessors and
+/// values again, made read-only, and while private names are put in front
+/// of them all; across collections; for names that are only written, that
+/// are functions and built-ins, that are missing, and that the global
+/// object inherits. What is expected is what Node prints for the same
+/// script.
+#[test]
+fn a_global_is_read_where_the_global_scope_has_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(globals_at_their_places)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn globals_at_their_places() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var lines = [];
+function print(line) { lines.push(line); }
+function P() { var line = ""; for (var i = 0; i < arguments.length; i++) { if (i) line += " "; line += String(arguments[i]); } print(line); }
+function tryit(f) { try { return String(f()); } catch (e) { return e.constructor.name; } }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) keep.push({ i: i, s: "s" + i, a: [i] }); return keep.length; }
+
+// 1. plain reads and writes in loops
+var counter = 0;
+function bump(n) { for (var i = 0; i < n; i++) counter += i & 3; return counter; }
+P("bump", bump(1000), bump(1000), counter);
+gprop = 5;
+function readProp() { return gprop; }
+function writeProp(v) { gprop = v; }
+P("prop", readProp(), (writeProp(6), readProp()), (gprop++, gprop), (gprop -= 3, readProp()));
+
+// 2. new globals between reads
+function readAll() { return ga + ":" + gb + ":" + gc_ + ":" + counter; }
+globalThis.ga = "a"; globalThis.gb = "b"; globalThis.gc_ = "c";
+var r = readAll();
+for (var i = 0; i < 40; i++) { globalThis["extra" + i] = i; r += "|" + readAll().length; }
+P("added", r, readAll(), extra39);
+
+// 3. a key removed before others: the later ones move
+P("before delete", readAll());
+delete globalThis.ga;
+P("after delete", tryit(readAll), tryit(function () { return gb; }), tryit(function () { return gc_; }), counter, extra0, extra39);
+function readLater() { return gb + gc_ + extra5 + extra39; }
+P("later", readLater());
+delete globalThis.extra0; delete globalThis.extra3;
+P("later2", readLater(), tryit(function () { return extra3; }), typeof extra3, typeof extra4);
+globalThis.ga = "A2";
+P("readded", readAll(), readLater());
+for (var k = 6; k < 30; k++) { delete globalThis["extra" + k]; if (k % 5 == 0) P("deleting", k, readLater(), bump(1), typeof Math.floor, tryit(function () { return globalThis["extra" + k]; })); }
+
+// 4. writes after moves
+function setLater(v) { gc_ = v; extra39 = v + 1; return gc_ + ":" + extra39; }
+P("set", setLater(10), readLater());
+delete globalThis.extra30;
+P("set2", setLater(20), readLater(), globalThis.gc_, globalThis.extra39);
+
+// 5. an accessor in place of a value, and back
+var hits = 0;
+globalThis.acc = 1;
+function readAcc() { return acc; }
+function writeAcc(v) { acc = v; }
+P("acc value", readAcc(), (writeAcc(2), readAcc()));
+Object.defineProperty(globalThis, "acc", { get: function () { hits++; return "got" + hits; }, set: function (v) { hits += 10; }, configurable: true, enumerable: true });
+P("acc getter", readAcc(), readAcc(), (writeAcc(3), hits), readAcc());
+Object.defineProperty(globalThis, "acc", { value: "plain", writable: true, configurable: true, enumerable: true });
+P("acc back", readAcc(), (writeAcc(4), readAcc()), hits);
+
+// 6. not writable
+Object.defineProperty(globalThis, "ro", { value: 1, writable: false, configurable: true, enumerable: true });
+function writeRo(v) { ro = v; return ro; }
+function writeRoStrict(v) { "use strict"; ro = v; return ro; }
+P("ro", writeRo(2), tryit(function () { return writeRoStrict(3); }), ro);
+Object.defineProperty(globalThis, "ro", { writable: true });
+P("rw", writeRo(4), writeRoStrict(5), ro);
+Object.defineProperty(globalThis, "ro", { writable: false });
+P("ro again", writeRo(6), tryit(function () { return writeRoStrict(7); }), ro);
+
+// 7. private names put in front of the keys of the global object
+class Base { constructor(o) { return o; } }
+class Stamp extends Base { #secret = 42; #other = 7; static read(o) { return o.#secret + o.#other; } static has(o) { return #secret in o; } }
+P("before stamp", readLater(), readAll(), bump(1) > 0, readAcc());
+var stamped = tryit(function () { new Stamp(globalThis); return Stamp.read(globalThis) + ":" + Stamp.has(globalThis); });
+P("stamped", stamped, readLater(), readAll(), bump(1) > 0, readAcc(), setLater(30), typeof Math.max, tryit(function () { return ga; }));
+
+// 8. collections between reads
+var before = readLater() + readAll();
+P("churn", churn(60000), readLater() + readAll() === before, bump(10) > 0, (writeProp(77), readProp()), setLater(40));
+function onlyWrite(v) { wo = v; }
+wo = 0;
+for (var j = 0; j < 5; j++) { churn(30000); onlyWrite(j); }
+P("only written", wo);
+
+// 9. functions and built-ins by their global names
+function callee(x) { return x * 2; }
+function caller(n) { var t = 0; for (var i = 0; i < n; i++) t += callee(i) + Math.floor(i / 2); return t; }
+P("calls", caller(100));
+var realMath = Math;
+Math = { floor: function () { return 1000; } };
+P("math replaced", caller(3));
+Math = realMath;
+callee = function (x) { return x; };
+P("callee replaced", caller(100));
+delete globalThis.gb;
+P("after delete", caller(10), tryit(readLater), tryit(readAll));
+
+// 10. undeclared, typeof, strict assignment
+function readMissing() { return nope; }
+function typeofMissing() { return typeof nope; }
+function assignMissingStrict() { "use strict"; nope2 = 1; }
+P("missing", tryit(readMissing), typeofMissing(), tryit(assignMissingStrict), typeof nope2);
+globalThis.nope = "now";
+P("found later", readMissing(), typeofMissing());
+delete globalThis.nope;
+P("gone again", tryit(readMissing), typeofMissing());
+function assignMissing() { nope3 = 9; return nope3; }
+P("made by assignment", assignMissing(), nope3, delete globalThis.nope3, tryit(function () { return nope3; }), assignMissing());
+
+// 11. var and function declarations are not deletable
+var declared = 1; function declaredFn() { return "f"; }
+function readDeclared() { return declared + declaredFn(); }
+P("declared", readDeclared(), delete globalThis.declared, delete globalThis.declaredFn, readDeclared());
+
+// 12. through globalThis and by name, in turn
+function mix(n) { var t = 0; for (var i = 0; i < n; i++) { globalThis.mixed = i; t += mixed; mixed = i + 1; t += globalThis.mixed; } return t; }
+P("mixed", mix(200));
+
+// 13. many moves in a loop that reads
+function spin(n) { var t = 0; for (var i = 0; i < n; i++) { globalThis.tmp = i; t += tmp + counter % 3 + gc_; delete globalThis.tmp; } return t; }
+P("spin", spin(300), typeof tmp);
+
+// 14. prototype of the global object and inherited names
+Object.prototype.inheritedName = "inherited";
+function readInherited() { return inheritedName; }
+P("inherited", readInherited());
+globalThis.inheritedName = "own";
+P("own over inherited", readInherited());
+delete globalThis.inheritedName;
+P("inherited again", readInherited());
+delete Object.prototype.inheritedName;
+P("gone", tryit(readInherited));
+lines.join("\n")"##;
+    let expected = r##"bump 1500 3000 3000
+prop 5 6 7 4
+added a:b:c:3000|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10|10 a:b:c:3000 39
+before delete a:b:c:3000
+after delete ReferenceError b c 3000 0 39
+later bc539
+later2 bc539 ReferenceError undefined number
+readded A2:b:c:3000 bc539
+deleting 10 bc539 3000 function undefined
+deleting 15 bc539 3000 function undefined
+deleting 20 bc539 3000 function undefined
+deleting 25 bc539 3000 function undefined
+set 10:11 b10511
+set2 20:21 b20521 20 21
+acc value 1 2
+acc getter got1 got2 12 got13
+acc back plain 4 13
+ro 1 TypeError 1
+rw 4 5 5
+ro again 5 TypeError 5
+before stamp b20521 A2:b:20:3000 true 4
+stamped 49:true b20521 A2:b:20:3000 true 4 30:31 function A2
+churn 60000 true true 77 40:41
+only written 4
+calls 12350
+math replaced 3006
+callee replaced 7400
+after delete 65 ReferenceError ReferenceError
+missing ReferenceError undefined ReferenceError undefined
+found later now string
+gone again ReferenceError undefined
+made by assignment 9 9 true ReferenceError 9
+declared 1f false false 1f
+mixed 40000
+spin 57150 undefined
+inherited inherited
+own over inherited own
+inherited again inherited
+gone ReferenceError"##;
+    let found = match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+}
+
+/// A lexical declaration that a later script adds to the global scope
+/// comes before a property of the global object of the same name: the
+/// functions of an earlier script that read and wrote the property read
+/// and write the declaration from then on. What is expected is what Node
+/// prints for the same three scripts.
+#[test]
+fn a_later_lexical_declaration_comes_before_a_global_property() {
+    let (mut engine, _, _) = limited(64 << 20, 0);
+    engine
+        .evaluate(
+            "var lines = []; function print(line) { lines.push(line); }",
+            false,
+        )
+        .unwrap();
+    for script in [
+        r##"globalThis.y = 1; globalThis.z = 10; globalThis.w = "prop";
+function readY() { return y; }
+function writeY(v) { y = v; }
+function readZ() { return z; }
+function readW() { return w; }
+function loopY(n) { var t = 0; for (var i = 0; i < n; i++) t += y; return t; }
+print("one " + readY() + " " + readZ() + " " + readW() + " " + loopY(100));"##,
+        r##"let y = 2;
+print("two " + readY() + " " + loopY(100) + " " + globalThis.y);
+writeY(3);
+print("two written " + y + " " + globalThis.y + " " + readY() + " " + readZ() + " " + readW());
+globalThis.y = 50;
+print("two prop " + y + " " + readY() + " " + globalThis.y);"##,
+        r##"const z = 20; class w {}
+print("three " + readY() + " " + readZ() + " " + globalThis.z + " " + typeof readW() + " " + loopY(10));
+try { (function () { z = 5; })(); print("assigned"); } catch (e) { print("three " + e.constructor.name); }
+delete globalThis.y;
+print("three deleted " + readY() + " " + typeof globalThis.y + " " + loopY(10));"##,
+    ] {
+        if let Err(error) = engine.evaluate(script, false) {
+            panic!("a script did not run: {error:?}");
+        }
+    }
+    let expected = r##"one 1 10 prop 100
+two 2 200 1
+two written 3 1 3 10 prop
+two prop 3 3 50
+three 3 20 10 function 30
+three TypeError
+three deleted 3 undefined 30"##;
+    let found = match engine.evaluate("lines.join('\\n')", false) {
+        Ok(Completion::String(found)) => found,
+        Ok(_) => panic!("the checks gave no text"),
+        Err(error) => panic!("the checks did not run: {error:?}"),
+    };
+    let found = std::string::String::from_utf8(found).expect("text");
+    assert_eq!(found, expected);
+}

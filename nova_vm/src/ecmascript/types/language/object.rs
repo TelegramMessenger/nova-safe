@@ -509,6 +509,12 @@ impl<'a> OrdinaryObject<'a> {
         )
     }
 
+    /// The Object's shape as it is now, read from its record.
+    #[inline]
+    pub(crate) fn shape_now(self, agent: &Agent) -> ObjectShape<'a> {
+        self.get_direct(&agent.heap.objects).get_shape()
+    }
+
     /// The keys of the Object's properties, in the order of its property
     /// storage.
     pub(crate) fn get_property_keys<'b>(self, agent: &'b Agent) -> &'b [PropertyKey<'a>] {

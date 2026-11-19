@@ -173,6 +173,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             alloc_counter: _,
             data_bytes_since_gc: _,
             collections: _,
+            intrinsic_key_moves: _,
             intrinsic_integer_keys: _,
         } = &agent.heap;
         let Environments {
@@ -934,6 +935,7 @@ fn sweep(
         free_globals: _,
         gc_alloc_limit,
         collections: _,
+        intrinsic_key_moves: _,
         intrinsic_integer_keys: _,
     } = &mut agent.heap;
     // Reset the allocation counter.

@@ -199,6 +199,12 @@ impl<'a> PropertyStorage<'a> {
         let data = object.get_mut(agent);
         data.set_shape(new_shape);
         data.set_values(elements_vector.elements_index.unbind());
+        if old_shape == new_shape && insertion_index != old_len as usize {
+            // The shape did not change: an intrinsic one, changed in place,
+            // with the properties after the private names moved. No
+            // property lookup cache is to find one where it was.
+            Caches::invalidate_caches_on_intrinsic_shape_properties_moved(agent);
+        }
         Ok(())
     }
 

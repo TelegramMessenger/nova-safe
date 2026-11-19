@@ -296,6 +296,9 @@ pub(crate) fn set_realm_global_object(
 
     // 4. Set realmRec.[[GlobalObject]] to globalObj.
     realm_id.get_mut(agent).global_object = global_object.unbind();
+    // What was found among the properties of another global object is not
+    // found there for this one.
+    agent.global_scope_seen.forget();
 
     // 5. Let newGlobalEnv be NewGlobalEnvironment(globalObj, thisValue).
     let new_global_env = new_global_environment(agent, global_object, this_value, gc);

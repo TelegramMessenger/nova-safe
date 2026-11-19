@@ -481,6 +481,8 @@ impl<'a> ObjectShape<'a> {
         let keys_index = self.keys_index(agent);
         if self.is_intrinsic(agent) {
             debug_assert_eq!(self.values_capacity(agent), self.len(agent).into());
+            // The keys after the one removed move, under the same shape.
+            agent.heap.intrinsic_key_moves += 1;
             let data = self.get_direct_mut(&mut agent.heap.object_shapes);
             agent
                 .heap
@@ -542,6 +544,8 @@ impl<'a> ObjectShape<'a> {
         private_fields: &[PrivateField<'a>],
         insertion_index: usize,
     ) -> Result<(Self, usize), TryReserveError> {
+        // The keys from `insertion_index` on move, under the same shape.
+        agent.heap.intrinsic_key_moves += 1;
         let ObjectShapeRecord {
             prototype: _,
             keys,

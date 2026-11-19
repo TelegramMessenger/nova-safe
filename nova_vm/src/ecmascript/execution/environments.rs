@@ -38,13 +38,13 @@ pub(crate) use module_environment::*;
 pub(crate) use object_environment::*;
 pub(crate) use private_environment::*;
 
-use std::ops::ControlFlow;
+use std::{cell::Cell, ops::ControlFlow};
 
 use crate::{
     ecmascript::{
-        Agent, InternalMethods, JsResult, Object, OrdinaryObject, PropertyLookupCache,
-        PropertyOffset, Proxy, Reference, SetResult, String, TryError, TryHasResult, TryResult,
-        Value, js_result_into_try, ordinary_set_own_data_at_offset,
+        Agent, InternalMethods, JsResult, Object, ObjectShape, OrdinaryObject, PropertyLookupCache,
+        PropertyOffset, Proxy, Realm, Reference, SetResult, String, TryError, TryHasResult,
+        TryResult, Value, js_result_into_try, ordinary_set_own_data_at_offset,
     },
     engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable},
     heap::{CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
@@ -798,23 +798,117 @@ impl<'a> From<TryHasBindingContinue<'a>> for TryResult<'a, TryHasBindingContinue
 /// A name found in the global scope (which the compiler allows where the
 /// chain is fixed all the way out, in a Script) is remembered there without
 /// the records on the way: among the lexical declarations of the global
-/// scope, or among the properties of the global object. The second holds
-/// only while no lexical declaration has been added, since one of the same
-/// name would come first; and the name is checked at the place as elsewhere.
+/// scope, where the name is checked at the place as elsewhere, or among the
+/// properties of the global object. The second holds only while the global
+/// scope is in the state the name was found in ([`GlobalScopeSeen`]): the
+/// same properties at the same places, and no lexical declaration added,
+/// since one of the same name would come first. One place in the code names
+/// one name, so the place of that name in that state is the name's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BindingSite {
     outwards: u16,
-    /// For a property of the global object: how many lexical declarations
-    /// the global scope had when the name was not among them.
-    lexical: u16,
+    /// For a property of the global object: its place among the object's
+    /// properties (a [`PropertyOffset`]).
+    place: u16,
+    /// The place among the bindings of a record; for a property of the
+    /// global object, the number of the state of the global scope the
+    /// property was found in.
     slot: u32,
+}
+
+/// What a name's place among the properties of a realm's global object
+/// depends on: found in one state of these, it is there in the same state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GlobalScopeState {
+    realm: Realm<'static>,
+    /// The global object, an ordinary one.
+    object: OrdinaryObject<'static>,
+    /// Its shape. One shape has the same keys at the same places, except
+    /// the shape of an intrinsic object, which the default global object
+    /// is: that is changed in place, and `key_moves` says when a key of
+    /// such a shape was moved.
+    shape: ObjectShape<'static>,
+    key_moves: u64,
+    /// The lexical declarations of the global scope and how many there
+    /// were: none is ever removed, and one that is added may be of a name
+    /// that was a property.
+    lexical: DeclarativeEnvironment<'static>,
+    declarations: usize,
+    /// The collections that had run: one more moves what the handles above
+    /// name.
+    collections: u64,
+}
+
+/// The state of the global scope that names were last found in among the
+/// properties of the global object, and its number. A place remembered with
+/// the number ([`BindingSite`]) is good while the global scope is in that
+/// state, which a few comparisons tell: reading a global variable does not
+/// go from the realm to its global object and to the keys of that every
+/// time. A state that is seen after another gets a new number, whatever it
+/// is, so that a number never names two states.
+#[derive(Debug, Default)]
+pub(crate) struct GlobalScopeSeen {
+    /// 0 before any state was seen.
+    epoch: Cell<u32>,
+    state: Cell<Option<GlobalScopeState>>,
+}
+
+impl GlobalScopeSeen {
+    /// The global object of the running realm, if the global scope is in
+    /// the state numbered `epoch`.
+    #[inline]
+    fn object_in<'a>(
+        &self,
+        agent: &Agent,
+        epoch: u32,
+        gc: NoGcScope<'a, '_>,
+    ) -> Option<OrdinaryObject<'a>> {
+        if self.epoch.get() != epoch {
+            return None;
+        }
+        let state = self.state.get()?;
+        let heap = &agent.heap;
+        // The collections first: the handles name what they did only if
+        // none has run.
+        if state.collections != heap.collections
+            || state.key_moves != heap.intrinsic_key_moves
+            || state.realm != agent.current_realm(gc).unbind()
+            || state.object.shape_now(agent) != state.shape
+            || heap
+                .environments
+                .get_declarative_environment(state.lexical)
+                .binding_count()
+                != state.declarations
+        {
+            return None;
+        }
+        Some(state.object.bind(gc))
+    }
+
+    /// The number of `state`, which is the state seen from now on.
+    fn see(&self, state: GlobalScopeState) -> u32 {
+        if self.state.get() == Some(state) {
+            return self.epoch.get();
+        }
+        // With the numbers used up nothing is remembered any more: every
+        // name of the global object is then resolved the long way.
+        let epoch = self.epoch.get().saturating_add(1);
+        self.epoch.set(epoch);
+        self.state.set((epoch != u32::MAX).then_some(state));
+        epoch
+    }
+
+    /// Nothing is remembered: for when a realm is given its global object.
+    pub(crate) fn forget(&self) {
+        self.state.set(None);
+    }
 }
 
 impl BindingSite {
     /// Nothing is remembered yet.
     pub(crate) const UNKNOWN: Self = Self {
         outwards: u16::MAX,
-        lexical: 0,
+        place: 0,
         slot: 0,
     };
 
@@ -822,7 +916,7 @@ impl BindingSite {
     /// record, or past one): it is resolved the long way every time.
     pub(crate) const ELSEWHERE: Self = Self {
         outwards: u16::MAX - 1,
-        lexical: 0,
+        place: 0,
         slot: 0,
     };
 
@@ -904,8 +998,9 @@ fn global_lexical_record<'a>(agent: &Agent, gc: NoGcScope<'a, '_>) -> Declarativ
 }
 
 /// The global object, if `site` remembers `name` among its properties and
-/// the name is still there, with no lexical declaration added to the global
-/// scope since: the property is then what the name means.
+/// the global scope is in the state it was found in: the name is then at
+/// its place still, with no lexical declaration added to the global scope
+/// since, and the property is what the name means.
 #[inline]
 fn global_object_at_site<'a>(
     agent: &Agent,
@@ -913,22 +1008,21 @@ fn global_object_at_site<'a>(
     name: String,
     gc: NoGcScope<'a, '_>,
 ) -> Option<OrdinaryObject<'a>> {
-    let environments = &agent.heap.environments;
-    let global = environments.get_global_environment(agent.current_global_env(gc));
-    let lexical = environments.get_declarative_environment(global.declarative_record());
-    if lexical.binding_count() != usize::from(site.lexical) {
-        return None;
-    }
-    let Object::Object(object) = global.object_record().get_binding_object(agent) else {
-        return None;
-    };
-    let keys = object.get_property_keys(agent);
-    (keys.get(site.slot as usize) == Some(&name.to_property_key())).then_some(object.bind(gc))
+    let object = agent.global_scope_seen.object_in(agent, site.slot, gc)?;
+    debug_assert_eq!(
+        object.get_property_keys(agent).get(usize::from(site.place)),
+        Some(&name.to_property_key())
+    );
+    Some(object)
 }
 
 /// The value of `name` where `site` remembers it in the global scope, if it
 /// is still found there as a value (a lexical declaration that is
 /// initialized, a data property of the global object).
+// Not part of what reads a variable of an enclosing function, which every
+// such read in the loop of instructions is a copy of: with this in it,
+// those reads were a twentieth slower.
+#[inline(never)]
 fn global_value_at_site<'a>(
     agent: &Agent,
     site: BindingSite,
@@ -948,7 +1042,7 @@ fn global_value_at_site<'a>(
             // An empty slot is an accessor.
             object
                 .get_elements_values(agent)
-                .get(site.slot as usize)
+                .get(usize::from(site.place))
                 .copied()
                 .flatten()
         }
@@ -960,6 +1054,9 @@ fn global_value_at_site<'a>(
 /// still found there as something an assignment simply writes: a lexical
 /// declaration that is mutable and initialized, a writable data property of
 /// the global object.
+// Kept out of the writes of variables of enclosing functions, as
+// [`global_value_at_site`] is out of the reads.
+#[inline(never)]
 fn set_global_value_at_site(
     agent: &mut Agent,
     site: BindingSite,
@@ -988,7 +1085,7 @@ fn set_global_value_at_site(
             let Some(object) = global_object_at_site(agent, site, name, gc) else {
                 return false;
             };
-            let Some(offset) = PropertyOffset::new(site.slot) else {
+            let Some(offset) = PropertyOffset::new(u32::from(site.place)) else {
                 return false;
             };
             ordinary_set_own_data_at_offset(agent, object.unbind(), offset, value)
@@ -1160,7 +1257,7 @@ pub(crate) fn binding_site_of(
             return match record.binding_slot(name) {
                 Some(slot) => BindingSite {
                     outwards,
-                    lexical: 0,
+                    place: 0,
                     slot,
                 },
                 None => BindingSite::ELSEWHERE,
@@ -1195,7 +1292,7 @@ fn global_binding_site(
     if let Some(slot) = lexical.binding_slot(name) {
         return BindingSite {
             outwards: BindingSite::GLOBAL_LEXICAL,
-            lexical: 0,
+            place: 0,
             slot,
         };
     }
@@ -1204,11 +1301,8 @@ fn global_binding_site(
     // not an ordinary one.
     let somewhere = BindingSite {
         outwards: BindingSite::GLOBAL_SOMEWHERE,
-        lexical: 0,
+        place: 0,
         slot: 0,
-    };
-    let Ok(lexical) = u16::try_from(lexical.binding_count()) else {
-        return somewhere;
     };
     let Object::Object(object) = global.object_record().get_binding_object(agent) else {
         return somewhere;
@@ -1219,13 +1313,26 @@ fn global_binding_site(
         return somewhere;
     };
     let is_value = matches!(object.get_elements_values(agent).get(slot), Some(Some(_)));
-    match u32::try_from(slot) {
-        Ok(slot) if is_value && PropertyOffset::new(slot).is_some() => BindingSite {
-            outwards: BindingSite::GLOBAL_OBJECT,
-            lexical,
-            slot,
-        },
-        _ => somewhere,
+    let Ok(place) = u16::try_from(slot) else {
+        return somewhere;
+    };
+    if !is_value || PropertyOffset::new(u32::from(place)).is_none() {
+        return somewhere;
+    }
+    // The place is the name's in the state the global scope is in now.
+    let epoch = agent.global_scope_seen.see(GlobalScopeState {
+        realm: agent.current_realm(gc).unbind(),
+        object: object.unbind(),
+        shape: object.shape_now(agent).unbind(),
+        key_moves: agent.heap.intrinsic_key_moves,
+        lexical: global.declarative_record().unbind(),
+        declarations: lexical.binding_count(),
+        collections: agent.heap.collections,
+    });
+    BindingSite {
+        outwards: BindingSite::GLOBAL_OBJECT,
+        place,
+        slot: epoch,
     }
 }
 

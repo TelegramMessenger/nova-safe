@@ -352,7 +352,17 @@ pub(super) fn execute_put_binding_at_site<'gc>(
         // global object for it once more than the assignment does.
         let name = executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
         let strict = agent.is_evaluating_strict_code();
-        vm.reference = Some(global_scope_reference(agent, name, strict, gc.nogc()).unbind());
+        let reference = global_scope_reference(agent, name, strict, gc.nogc());
+        // Where the name is now is remembered for the next assignment: a
+        // place among the properties of the global object is good only in
+        // the state of the global scope it was found in, and nothing but
+        // this would find it again for a name that is only assigned to.
+        // Looking for the place asks the global object for nothing.
+        let found = binding_site_of(agent, &reference, true, gc.nogc());
+        if found != site {
+            executable.set_binding_site(agent, instr.get_second_index(), found);
+        }
+        vm.reference = Some(reference.unbind());
     } else {
         execute_resolve_binding_at_site_cold(
             agent,

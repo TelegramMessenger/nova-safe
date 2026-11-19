@@ -21,11 +21,11 @@
 
 use crate::hashing::AHashMap;
 
-use crate::ecmascript::GlobalEnvironment;
 #[cfg(feature = "shared-array-buffer")]
 use crate::ecmascript::SharedArrayBuffer;
 #[cfg(feature = "weak-refs")]
 use crate::ecmascript::{FinalizationRegistryCleanupJob, clear_kept_objects};
+use crate::ecmascript::{GlobalEnvironment, GlobalScopeSeen};
 #[cfg(feature = "atomics")]
 use crate::ecmascript::{WaitAsyncJob, WaitAsyncTimeoutJob};
 use crate::{
@@ -961,6 +961,9 @@ pub struct Agent {
     /// The frames of the calls that `Vm`s run in place: see
     /// [`VmFrames`].
     pub(crate) vm_frames: VmFrames,
+    /// The state of the global scope that global variables were last
+    /// found in: see [`GlobalScopeSeen`].
+    pub(crate) global_scope_seen: GlobalScopeSeen,
     /// Emptied argument vectors, reused for call arguments.
     pub(crate) arguments_pool: Vec<Vec<Value<'static>>>,
     /// ### \[\[KeptAlive]]
@@ -1002,6 +1005,7 @@ impl Agent {
             vm_stack_pool: Vec::new(),
             spare_vm_stacks: SpareVmStacks::default(),
             vm_frames: VmFrames::default(),
+            global_scope_seen: GlobalScopeSeen::default(),
             arguments_pool: Vec::new(),
             #[cfg(feature = "weak-refs")]
             kept_alive: false,
@@ -1798,6 +1802,9 @@ impl HeapMarkAndSweep for Agent {
             math_random_state: _,
             limits: _,
             compile_limit_error: _,
+            // Its handles are of the collection before this one, and are
+            // not read after it: nothing to keep or move.
+            global_scope_seen: _,
         } = self;
 
         execution_context_stack.iter().for_each(|ctx| {
@@ -1859,6 +1866,9 @@ impl HeapMarkAndSweep for Agent {
             math_random_state: _,
             limits: _,
             compile_limit_error: _,
+            // Its handles are of the collection before this one, and are
+            // not read after it: nothing to keep or move.
+            global_scope_seen: _,
         } = self;
 
         execution_context_stack

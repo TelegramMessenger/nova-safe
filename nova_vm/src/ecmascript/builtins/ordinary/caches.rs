@@ -310,6 +310,33 @@ impl<'a> Caches<'a> {
         }
     }
 
+    /// Invalidate property lookup caches where the properties of an
+    /// intrinsic object were moved under its shape: private names were put
+    /// in front of them. Every cache that read a property of the object,
+    /// from the object itself or through a shape that inherits from it,
+    /// has the place the property was at. This happens once for an object
+    /// (a constructor that returns it to a class with private elements), so
+    /// every cache forgets what it found, whatever it was of.
+    pub(crate) fn invalidate_caches_on_intrinsic_shape_properties_moved(agent: &mut Agent) {
+        let caches = &mut agent.heap.caches;
+        for ((s, offset), proto) in caches
+            .property_lookup_caches
+            .iter_mut()
+            .zip(caches.property_lookup_cache_prototypes.iter_mut())
+            .flat_map(|(cache, prototypes)| {
+                cache
+                    .shapes
+                    .iter_mut()
+                    .zip(cache.offsets.iter_mut())
+                    .zip(prototypes.prototypes.iter_mut())
+            })
+        {
+            *s = None;
+            *offset = PropertyOffset(0);
+            *proto = None;
+        }
+    }
+
     /// Invalidate property lookup caches on intrinsic shape prototype change.
     ///
     /// When such a change happens, it means that:
