@@ -797,6 +797,12 @@ impl StringRecord {
         }
     }
 
+    /// The bytes up to which [`StringRecord::utf16_len`] counts the code
+    /// units of a text in place of making the table of its indices: asked
+    /// again and again for its length and never for an index, a text of
+    /// this length is counted each time, in a few instructions.
+    const COUNTED_LENGTH: usize = 64;
+
     fn index_mapping(&self) -> &IndexMapping {
         self.mapping.get_or_init(|| {
             fn is_surrogate_pair(cp: CodePoint) -> bool {
@@ -864,6 +870,13 @@ impl StringRecord {
         // is building for its length.
         if let StringBuffer::Built(text) = &self.data {
             return text.utf16_len;
+        }
+        // A short text that was not asked for its indices yet is counted.
+        // The table of them is an allocation of eight bytes for every code
+        // unit, made here to answer once what a look at the bytes answers:
+        // the length of a substring, which is all that many are asked for.
+        if self.mapping.get().is_none() && self.len() <= Self::COUNTED_LENGTH {
+            return utf16_len_of(self.as_bytes());
         }
         match self.index_mapping() {
             IndexMapping::Ascii => self.len(),

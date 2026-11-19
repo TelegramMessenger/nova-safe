@@ -14630,3 +14630,163 @@ String(keep.length)"##;
     let anew = r##"(function () { var sum = 0; for (var n = 0; n < 70; n++) { var o = { a: n }; for (var k = 0; k < n; k++) o["q" + k] = k; writeA(o, n + 1); sum += readA(o); } return String(sum); })()"##;
     assert_eq!(text(&mut engine, anew), "2485");
 }
+
+/// A substring is looked up in the string table where it lies in its source
+/// and copied only if no string has its text, and a short text is counted
+/// for its length in place of having its table of indices made: both give
+/// what they gave. Lengths of short texts that are not ASCII, with astral
+/// characters and lone surrogates, asked before and after an index is, and
+/// of texts of 28 to 36 characters built in five ways; `slice`, `substring`
+/// and `substr` of ASCII, Cyrillic, mixed and built texts, cut through
+/// surrogate pairs at every place; substrings as property keys, Map keys,
+/// Set members and `switch` cases beside literals of the same text; what
+/// `split`, `exec`, `match`, `matchAll`, `replace`, `trim`, `at` and
+/// `charAt` cut; and 60,000 pieces of one text made, kept and dropped while
+/// the heap is collected. What is expected is what Node prints for the same
+/// script. Then pieces that are all different are kept until the heap has no
+/// room for another, which ends the script as it did.
+#[test]
+fn a_substring_is_the_text_it_spells() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(substrings)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn substrings() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function P() { var a = []; for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i])); out.push(a.join(" ")); }
+function T(f) { try { return f(); } catch (e) { return "throws " + e.constructor.name; } }
+function codes(s) { var a = []; for (var i = 0; i < s.length; i++) a.push(s.charCodeAt(i).toString(16)); return a.join("."); }
+function units(s) { var n = 0; for (var i = 0; i < s.length; i++) n++; return n; }
+
+(function () {
+  // Lengths of short texts that are not ASCII, asked before and after an index is.
+  var r = [], samples = ["привет мир", "世界 hello", "a😀b😀c", "\uD83D", "x\uDE00y", "\uD83D😀\uDE00", "ß", "naïve café", "\u0000é\u0000", "𝒳𝒴𝒵𝒳𝒴𝒵𝒳𝒴"];
+  for (var i = 0; i < samples.length; i++) {
+    var s = samples[i] + "";
+    var first = s.length, again = s.length, counted = units(s), code = s.charCodeAt(s.length - 1), after = s.length;
+    r.push(first + ":" + (first === again && again === counted && counted === after) + ":" + code.toString(16));
+  }
+  // Around the length up to which a text is counted, built in several ways.
+  var edge = [];
+  for (var n = 28; n <= 36; n++) {
+    var two = "é".repeat(n), built = ""; for (var k = 0; k < n; k++) built += "ж";
+    var joined = new Array(n + 1).join("ы"), sliced = ("я".repeat(100)).slice(3, 3 + n), astral = "😀".repeat(n >> 1);
+    edge.push([two.length, built.length, joined.length, sliced.length, astral.length, (two + "a").length, (built + built).length].join("/"));
+  }
+  r.push(edge.join(" "));
+  var long = "ё".repeat(500) + "😀" + "\uD800"; r.push(long.length, long.length, long.charCodeAt(501).toString(16), long.length, long.slice(498).length, codes(long.slice(499)));
+  P("lengths", r.join(" "));
+})();
+
+(function () {
+  // Substrings of every kind of text, from the builtins that cut them.
+  var r = [];
+  var ascii = "", cyr = "", mixed = "", built = "";
+  for (var i = 0; i < 40; i++) { ascii += "field" + i + ","; cyr += "привет мир 世界 "; mixed += "a😀é\uD800" + i; }
+  for (var j = 0; j < 30; j++) built = built + "ж" + j + "😀";
+  var sources = [ascii, cyr, mixed, built, "short", "кор", "😀😀😀😀😀"];
+  for (var s = 0; s < sources.length; s++) {
+    var t = sources[s], row = [];
+    var cuts = [[0, 3], [1, 9], [2, 10], [5, 13], [0, t.length], [t.length - 9, t.length], [7, 7], [9, 2], [3, 4], [-5, -1], [0, 70], [1, 71], [33, 99]];
+    for (var c = 0; c < cuts.length; c++) {
+      var a = t.slice(cuts[c][0], cuts[c][1]), b = t.substring(cuts[c][0], cuts[c][1]), d = t.substr(cuts[c][0], 8);
+      row.push(a.length + "," + b.length + "," + d.length + "," + codes(a.slice(0, 2)) + "," + (a === t.slice(cuts[c][0], cuts[c][1])) + (b.length ? b.charCodeAt(b.length - 1).toString(16) : "-"));
+    }
+    r.push(row.join(";"));
+  }
+  P("cuts", r.join(" | "));
+  // Cuts through a surrogate pair keep the half that is inside.
+  var pairs = "x😀y😀z"; r = [];
+  for (var from = 0; from <= pairs.length; from++) for (var to = from; to <= pairs.length; to++) { var piece = pairs.slice(from, to); r.push(piece.length + ":" + codes(piece)); }
+  var longPairs = "ab" + "😀".repeat(20) + "cd", lp = [];
+  for (var f = 0; f < 12; f++) { var q = longPairs.slice(f, f + 9); lp.push(q.length + ":" + q.charCodeAt(0).toString(16) + ":" + q.charCodeAt(8).toString(16) + ":" + (q === longPairs.substring(f, f + 9))); }
+  P("pairs", r.join(" "), lp.join(" "));
+})();
+
+(function () {
+  // A substring is the text it spells, wherever else that text is.
+  var r = [], base = "prefix-the-key-of-it-suffix и ключ-к-нему тут";
+  var key = base.slice(7, 20), key2 = base.slice(29, 40), o = {}, m = new Map(), set = new Set();
+  o["the-key-of-it"] = 1; o["ключ-к-нему"] = 2; m.set("the-key-of-it", "a"); m.set("ключ-к-нему", "b"); set.add(key); set.add(key2);
+  r.push(key, key2, o[key], o[key2], m.get(key), m.get(key2), set.has("the-key-of-it"), set.has("ключ-к-нему"), key === "the-key-of-it", key2 === "ключ-к-нему", key in o, Object.keys(o).indexOf(key2));
+  var n = 0; switch (base.substring(7, 20)) { case "the-key-of-it": n = 1; break; default: n = 2; } r.push(n);
+  o[base.slice(0, 13)] = 3; r.push(o["prefix-the-ke"], JSON.stringify(Object.keys(o)));
+  var whole = base.slice(0), same = base.substring(0, base.length), tail = base.slice(-9);
+  r.push(whole === base, same === base, tail, tail.length, base.slice(7, 20) + base.slice(29, 40), (base.slice(7, 20) + "!").length);
+  var made = ""; for (var i = 0; i < 20; i++) made += "ab-ж" + i; var cut = made.slice(4, 16), again = made.slice(4, 16), other = ("xx" + made).slice(6, 18);
+  r.push(cut, cut === again, cut === other, cut.length, made.length, made.slice(0, made.length) === made);
+  P("same", r.join(" "));
+})();
+
+(function () {
+  // split, match, replace and trim give substrings too.
+  var r = [], line = "", wide = "";
+  for (var i = 0; i < 60; i++) { line += "field-number-" + i + ","; wide += "поле-номер-" + i + "→"; }
+  var parts = line.split(","), wparts = wide.split("→"), chars = "a😀é".split(""), limited = line.split(",", 3), byRe = wide.split(/→/), none = "нет разделителя здесь".split("|");
+  r.push(parts.length, parts[59], parts[60] === "", parts[7].length, wparts.length, wparts[59], wparts[12].length, codes(chars.join("|")), limited.join("+"), byRe.length, byRe[33], none.length, none[0].length);
+  var total = 0; for (var k = 0; k < wparts.length; k++) total += wparts[k].length; r.push(total, wide.length);
+  var m = /(\S+)-(номер)-(\d+)/.exec(wide), all = wide.match(/номер-\d+/g), groups = "ключ=значение; other=thing-that-is-long".match(/(\S+)=(\S+)/g);
+  r.push(m[0], m[1], m[2], m[3], m.index, m[0].length, all.length, all[59], all[59].length, groups.join("|"));
+  r.push("  отступы вокруг текста  ".trim().length, "\t\ttabs-and-a-long-tail-here\n".trim(), "xx-середина-длинной-строки-yy".replace(/^xx-|-yy$/g, "").length, "aaa-ббб-ccc-ддд".replace(/-(\S+?)-/, "[$1]"), "заглавная буква".replace(/^./, function (c) { return c.toUpperCase(); }));
+  var its = []; for (var x of "длинная-строка-для-поиска и ещё-одна-такая".matchAll(/(\S+)-(\S+)/g)) its.push(x[1].length + ":" + x[2].length + ":" + x[0].slice(-3)); r.push(its.join());
+  r.push("0123456789abcdef".at(-1), "0123456789abcdef".charAt(10), "привет, мир и все".slice(8).padStart(12, "*"), "привет".repeat(3).slice(3, 15).length);
+  P("builtins", r.join(" "));
+})();
+
+(function () {
+  // Many substrings made, kept and dropped, of a text and of what was cut from it.
+  var r = [], s = ""; for (var i = 0; i < 200; i++) s += "привет мир 世界 ";
+  var n = 0, kept = [], sum = 0;
+  for (var round = 0; round < 3; round++) for (var j = 0; j < 20000; j++) { var at = j % 2400, piece = s.slice(at, at + 8); n += piece.length; if (j % 997 === 0) kept.push(piece); if (j % 50 === 0) sum += piece.slice(2, 6).length + piece.charCodeAt(3); }
+  r.push(n, kept.length, kept[0], kept[30], kept[60] === kept[0], sum);
+  var junk; for (var g = 0; g < 100000; g++) junk = { g: g, t: s.slice(g % 3000, g % 3000 + 12) };
+  var ok = 0; for (var k = 0; k < kept.length; k++) if (kept[k].length === 8 && kept[k] === s.slice((k * 997) % 20000 % 2400, (k * 997) % 20000 % 2400 + 8)) ok++;
+  r.push(ok, junk.t, junk.t.length, s.length);
+  var nested = s; for (var d = 0; d < 12; d++) nested = nested.slice(1, nested.length - 1); r.push(nested.length, nested.slice(0, 9), nested === s.slice(12, s.length - 12));
+  P("many", r.join(" "));
+})();
+
+out.join("\n")"##;
+    let expected = r##"lengths 10:true:440 8:true:6f 7:true:63 1:true:d83d 3:true:79 4:true:de00 1:true:df 10:true:e9 3:true:0 16:true:dcb4 28/28/28/28/28/29/56 29/29/29/29/28/30/58 30/30/30/30/30/31/60 31/31/31/31/30/32/62 32/32/32/32/32/33/64 33/33/33/33/32/34/66 34/34/34/34/34/35/68 35/35/35/35/34/36/70 36/36/36/36/36/37/72 503 503 de00 503 5 451.d83d.de00.d800
+cuts 3,3,8,66.69,true65;8,8,8,69.65,true69;8,8,8,65.6c,true65;8,8,8,30.2c,true31;310,310,8,66.69,true2c;9,9,8,2c.66,true2c;0,0,8,,true-;0,7,8,,true69;1,1,8,6c,true6c;4,0,5,6c.64,true-;70,70,8,66.69,true2c;70,70,8,69.65,true66;66,66,8,34.2c,true64 | 3,3,8,43f.440,true438;8,8,8,440.438,true438;8,8,8,438.432,true440;8,8,8,442.20,true754c;560,560,8,43f.440,true20;9,9,8,442.20,true20;0,0,8,,true-;0,7,8,,true438;1,1,8,432,true432;4,0,5,440.20,true-;70,70,8,43f.440,true20;70,70,8,440.438,true43f;66,66,8,442.20,true43f | 3,3,8,61.d83d,truede00;8,8,8,d83d.de00,truede00;8,8,8,de00.e9,truee9;8,8,8,30.61,true61;270,270,8,61.d83d,true39;9,9,8,33.38,true39;0,0,8,,true-;0,7,8,,truede00;1,1,8,e9,truee9;4,0,5,de00.e9,true-;70,70,8,61.d83d,truede00;70,70,8,d83d.de00,truee9;66,66,8,e9.d800,truee9 | 3,3,8,436.30,trued83d;8,8,8,30.d83d,true436;8,8,8,d83d.de00,true32;8,8,8,31.d83d,true436;140,140,8,436.30,truede00;9,9,8,32.38,truede00;0,0,8,,true-;0,7,8,,true436;1,1,8,de00,truede00;4,0,5,436.32,true-;70,70,8,436.30,truede00;70,70,8,30.d83d,true436;66,66,8,38.d83d,trued83d | 3,3,5,73.68,true6f;4,4,4,68.6f,true74;3,3,3,6f.72,true74;0,0,0,,true-;5,5,5,73.68,true74;4,5,4,68.6f,true74;0,0,0,,true-;0,3,0,,true74;1,1,2,72,true72;4,0,5,73.68,true-;5,5,5,73.68,true74;4,4,4,68.6f,true74;0,0,0,,true- | 3,3,3,43a.43e,true440;2,2,2,43e.440,true440;1,1,1,440,true440;0,0,0,,true-;3,3,3,43a.43e,true440;3,3,3,43a.43e,true440;0,0,0,,true-;0,1,0,,true440;0,0,0,,true-;2,0,3,43a.43e,true-;3,3,3,43a.43e,true440;2,2,2,43e.440,true440;0,0,0,,true- | 3,3,8,d83d.de00,trued83d;8,8,8,de00.d83d,trued83d;8,8,8,d83d.de00,truede00;5,5,5,de00.d83d,truede00;10,10,8,d83d.de00,truede00;9,9,8,de00.d83d,truede00;0,0,3,,true-;0,7,1,,trued83d;1,1,7,de00,truede00;4,0,5,de00.d83d,true-;10,10,8,d83d.de00,truede00;9,9,8,de00.d83d,truede00;0,0,0,,true-
+pairs 0: 1:78 2:78.d83d 3:78.d83d.de00 4:78.d83d.de00.79 5:78.d83d.de00.79.d83d 6:78.d83d.de00.79.d83d.de00 7:78.d83d.de00.79.d83d.de00.7a 0: 1:d83d 2:d83d.de00 3:d83d.de00.79 4:d83d.de00.79.d83d 5:d83d.de00.79.d83d.de00 6:d83d.de00.79.d83d.de00.7a 0: 1:de00 2:de00.79 3:de00.79.d83d 4:de00.79.d83d.de00 5:de00.79.d83d.de00.7a 0: 1:79 2:79.d83d 3:79.d83d.de00 4:79.d83d.de00.7a 0: 1:d83d 2:d83d.de00 3:d83d.de00.7a 0: 1:de00 2:de00.7a 0: 1:7a 0: 9:61:d83d:true 9:62:de00:true 9:d83d:d83d:true 9:de00:de00:true 9:d83d:d83d:true 9:de00:de00:true 9:d83d:d83d:true 9:de00:de00:true 9:d83d:d83d:true 9:de00:de00:true 9:d83d:d83d:true 9:de00:de00:true
+same the-key-of-it  ключ-к-нем 1  a  true false true false true -1 1 3 ["the-key-of-it","ключ-к-нему","prefix-the-ke"] true true -нему тут 9 the-key-of-it ключ-к-нем 14 0ab-ж1ab-ж2a true true 12 110 true
+builtins 61 field-number-59 true 14 61 поле-номер-59 13 61.7c.d83d.7c.de00.7c.e9 field-number-0+field-number-1+field-number-2 61 поле-номер-33 1 21 770 830 поле-номер-0→поле-номер-1→поле-номер-2→поле-номер-3→поле-номер-4→поле-номер-5→поле-номер-6→поле-номер-7→поле-номер-8→поле-номер-9→поле-номер-10→поле-номер-11→поле-номер-12→поле-номер-13→поле-номер-14→поле-номер-15→поле-номер-16→поле-номер-17→поле-номер-18→поле-номер-19→поле-номер-20→поле-номер-21→поле-номер-22→поле-номер-23→поле-номер-24→поле-номер-25→поле-номер-26→поле-номер-27→поле-номер-28→поле-номер-29→поле-номер-30→поле-номер-31→поле-номер-32→поле-номер-33→поле-номер-34→поле-номер-35→поле-номер-36→поле-номер-37→поле-номер-38→поле-номер-39→поле-номер-40→поле-номер-41→поле-номер-42→поле-номер-43→поле-номер-44→поле-номер-45→поле-номер-46→поле-номер-47→поле-номер-48→поле-номер-49→поле-номер-50→поле-номер-51→поле-номер-52→поле-номер-53→поле-номер-54→поле-номер-55→поле-номер-56→поле-номер-57→поле-номер-58→поле-номер-59 поле-номер-0→поле-номер-1→поле-номер-2→поле-номер-3→поле-номер-4→поле-номер-5→поле-номер-6→поле-номер-7→поле-номер-8→поле-номер-9→поле-номер-10→поле-номер-11→поле-номер-12→поле-номер-13→поле-номер-14→поле-номер-15→поле-номер-16→поле-номер-17→поле-номер-18→поле-номер-19→поле-номер-20→поле-номер-21→поле-номер-22→поле-номер-23→поле-номер-24→поле-номер-25→поле-номер-26→поле-номер-27→поле-номер-28→поле-номер-29→поле-номер-30→поле-номер-31→поле-номер-32→поле-номер-33→поле-номер-34→поле-номер-35→поле-номер-36→поле-номер-37→поле-номер-38→поле-номер-39→поле-номер-40→поле-номер-41→поле-номер-42→поле-номер-43→поле-номер-44→поле-номер-45→поле-номер-46→поле-номер-47→поле-номер-48→поле-номер-49→поле-номер-50→поле-номер-51→поле-номер-52→поле-номер-53→поле-номер-54→поле-номер-55→поле-номер-56→поле-номер-57→поле-номер-58→поле номер 59 0 829 60 номер-59 8 ключ=значение;|other=thing-that-is-long 21 tabs-and-a-long-tail-here 23 aaa[ббб]ccc-ддд Заглавная буква 18:6:ска,8:5:кая f a ***мир и все 12
+many 480000 63 привет м р 世界 при false 4469484 21 т мир 世界 при 12 2800 2776 界 привет  true"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // Pieces that no string has yet, of an ASCII text and of one that is
+    // not, each kept: more than 8 MB of them.
+    for fills in [
+        "var keep = [], s = ''; for (var i = 0; i < 60000; i++) s += i + ','; for (var k = 0;; k++) keep.push(s.slice(k % 300000, k % 300000 + 12 + (k / 300000 | 0)));",
+        "var keep = [], s = ''; for (var i = 0; i < 6000; i++) s += 'ж' + i + '世'; for (var k = 0;; k++) keep.push(s.substring(k % 30000, k % 30000 + 9 + (k / 30000 | 0)));",
+    ] {
+        let (mut engine, _, _) = limited(8 << 20, 0);
+        assert_eq!(
+            engine.evaluate(fills, false),
+            Err(Error::OutOfMemory),
+            "{fills}"
+        );
+        engine.evaluate("keep = s = null", false).unwrap();
+        engine.collect_garbage().unwrap();
+        assert_eq!(
+            text(
+                &mut engine,
+                "var t = 'привет, мир и все'.slice(3, 12); t.length + ':' + t + ':' + 'abcdefghijklmnop'.slice(2, 12)"
+            ),
+            "9:вет, мир :cdefghijkl"
+        );
+    }
+}

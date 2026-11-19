@@ -485,11 +485,19 @@ impl<'a> String<'a> {
         let (leading_trail, start, end, trailing_lead) =
             self.utf16_range_to_wtf8(agent, from, to, utf16_len);
         let middle = self.as_wtf8_(agent).slice(start, end);
-        if leading_trail.is_none()
-            && trailing_lead.is_none()
-            && let Ok(small) = String::try_from(middle)
-        {
-            return small;
+        if leading_trail.is_none() && trailing_lead.is_none() {
+            if let Ok(small) = String::try_from(middle) {
+                return small;
+            }
+            // The text is in the heap as it is: looked up there, and copied
+            // only if no string has it yet. (A text too long for a
+            // SmallString is not part of one.)
+            if let String::String(source) = self {
+                return agent
+                    .heap
+                    .alloc_wtf8_slice(source.unbind(), start, end)
+                    .bind(gc);
+            }
         }
         let mut buf = Wtf8Buf::with_capacity(middle.len() + 6);
         if let Some(trail) = leading_trail {
@@ -550,6 +558,12 @@ impl<'a> String<'a> {
         let substring = wtf8.slice(start, end);
         if let Ok(small) = String::try_from(substring) {
             return small;
+        }
+        if let String::String(source) = self {
+            return agent
+                .heap
+                .alloc_wtf8_slice(source.unbind(), start, end)
+                .bind(gc);
         }
         let mut buf = Wtf8Buf::with_capacity(substring.len());
         buf.push_wtf8(substring);

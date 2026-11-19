@@ -542,6 +542,30 @@ impl Heap {
         }
     }
 
+    /// The heap string with the text of the bytes from `start` to `end` of
+    /// the heap string `source`, which is too long for a SmallString: the
+    /// one there is, or a new one. As [`Heap::alloc_wtf8`] for a text that
+    /// lies in the heap itself, as a substring does: it is looked up where
+    /// it lies, and copied only if no string has it yet.
+    pub(crate) fn alloc_wtf8_slice(
+        &mut self,
+        source: HeapString,
+        start: usize,
+        end: usize,
+    ) -> String<'static> {
+        let index = source.get_index();
+        match self.find_equal_wtf8(self.strings[index].as_wtf8().slice(start, end)) {
+            Ok(string) => string,
+            Err(hash) => {
+                let message = self.strings[index].as_wtf8().slice(start, end);
+                let mut text = Wtf8Buf::with_capacity(message.len());
+                text.push_wtf8(message);
+                let data = StringRecord::from_wtf8_buf(text, hash);
+                self.create(data)
+            }
+        }
+    }
+
     /// Allocates a long string that a concatenation made, as
     /// [`Heap::alloc_wtf8_buf`] does, marked so that appending to it again
     /// builds on it ([`Heap::alloc_appended`]).
