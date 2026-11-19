@@ -14955,3 +14955,121 @@ String(keep.length)"##;
         "255:2:undefined"
     );
 }
+
+/// Three things the loop of instructions does rarely, and has to do the
+/// same however it is arranged: an instruction is read where the code has
+/// less left than the loop reads at a time (code that ends in every way,
+/// and functions that return nothing run off its end), a call that finds
+/// no frame gets one more (down past the few an Agent keeps, back, and
+/// down again, with throws and generators on the way), and what an
+/// instruction scoped is released (key sets and argument lists, inside
+/// functions run in place of their calls). What is expected is what Node
+/// prints for the same script. Then the frames are grown again after a
+/// collection, and a function called in place destructures in a loop on a
+/// heap with little room: key sets that were kept until it returned would
+/// end the script.
+#[test]
+fn code_ends_frames_grow_and_what_is_scoped_is_released() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(endings_frames_and_scopes)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn endings_frames_and_scopes() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+// Endings: code whose last instruction is of every length, reached by fall-through, by a jump and by a return.
+function e0() {}
+function e1() { return; }
+function e2(a) { return a; }
+function e3(a) { if (a) return 1; }
+function e4(a) { while (a-- > 0); }
+function e5(a) { for (var i = 0; i < a; i++) {} return i; }
+function e6(a) { try { return a; } finally { a = 0; } }
+function e7(a) { switch (a) { case 1: return "one"; default: } }
+function e8(a) { label: { if (a) break label; return "no"; } }
+var e9 = (a) => a + 1;
+var e10 = (a) => { a; };
+function e11(a) { do { a--; } while (a > 0) }
+function e12(a) { return a ? e12(a - 1) : 0 }
+out.push([e0(), e1(), e2(5), e3(0), e3(1), e4(3), e5(4), e6(7), e7(1), e7(2), e8(1), e8(0), e9(1), e10(1), e11(3), e12(5)].join(","));
+out.push(String(eval("1;")) + String(eval("")) + String(eval("if (0) 1")) + String(eval("var q = 2")) + String(new Function("")()) + String(new Function("return")()) + String(new Function("a", "a")()));
+// Frames: deeper than the few an Agent keeps, several times, with returns, throws and generators on the way.
+function down(n, acc) { return n === 0 ? acc : down(n - 1, acc + (n & 3)); }
+function thrower(n) { if (n === 0) throw new RangeError("bottom"); return thrower(n - 1) + 1; }
+function* gen(n) { if (n > 0) yield* gen(n - 1); yield n; }
+var depths = [];
+for (var round = 0; round < 6; round++) {
+  var d = [3, 150, 40, 400, 1, 250][round];
+  var caught = "";
+  try { thrower(d); } catch (e) { caught = e.message; }
+  var seen = 0;
+  for (var v of gen(d % 7)) seen += v;
+  depths.push(down(d, 0) + ":" + caught + ":" + seen);
+}
+out.push(depths.join(" "));
+// Mutual recursion through a method, a getter, a constructor and a bound function, each run in place of its call.
+var chain = {
+  get next() { return this.n > 0 ? new Link(this.n - 1).walk() : "end"; },
+  n: 0,
+};
+function Link(n) { this.n = n; }
+Link.prototype.walk = function () { var o = Object.create(chain); o.n = this.n; return hop.call(o) ; };
+var hop = function () { return this.next; }.bind(undefined);
+function unboundHop() { return this.next; }
+Link.prototype.walk = function () { var o = Object.create(chain); o.n = this.n; return unboundHop.call(o); };
+out.push(new Link(9).walk() + " " + new Link(7).walk());
+// What instructions scope: key sets and argument lists inside calls in place, many times over.
+function spread3(a, b, c) { return a + b + c; }
+function restOf(...r) { return r.length; }
+function inner(o, k) {
+  var total = 0;
+  for (var i = 0; i < k; i++) {
+    var { a, b, ...others } = o;
+    for (var key in others) total += others[key];
+    total += a + b + spread3(...[i, 1, 2]) + restOf(i, i, i) + restOf(...[1, 2]);
+    var [x, y = 3, ...zs] = [i, undefined, 5, 6];
+    total += x + y + zs.length;
+  }
+  return total;
+}
+function outer(k) { var s = 0; for (var j = 0; j < 20; j++) s += inner({ a: 1, b: 2, c: 3, d: 4 }, k); return s; }
+out.push(String(outer(300)));
+function deepScoped(n) { var { p, ...rest } = { p: n, q: 1, r: 2 }; return n === 0 ? Object.keys(rest).length : deepScoped(n - 1) + rest.q; }
+out.push(String(deepScoped(200)) + " " + String(deepScoped(5)));
+out.join("\n")"##;
+    let expected = r##",,5,,1,,4,7,one,,,no,2,,,0
+1undefinedundefinedundefinedundefinedundefinedundefined
+6:bottom:6 225:bottom:6 60:bottom:15 600:bottom:1 1:bottom:1 375:bottom:15
+end end
+1932000
+202 7"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // The frames an Agent keeps are few again after the calls returned:
+    // grown anew, after a collection too.
+    assert_eq!(text(&mut engine, "String(down(300, 0))"), "450");
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(&mut engine, "String(down(500, 0)) + ' ' + deepScoped(300)"),
+        "750 302"
+    );
+    // A function run in place of its call scopes a key set at every turn.
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    let turns = r##"function turn(o, k) { var t = 0; for (var i = 0; i < k; i++) { var { a, ...others } = o; for (var key in others) t += others[key]; t += a; } return t; }
+function calls(k) { return turn({ a: 1, b: 2, c: 3 }, k); }
+String(calls(100000))"##;
+    assert_eq!(text(&mut engine, turns), "600000");
+    engine.collect_garbage().unwrap();
+    assert_eq!(text(&mut engine, "String(calls(10))"), "60");
+}
