@@ -4818,6 +4818,15 @@ impl Vm {
     /// the `+` of two Strings is a String of it: what a plain instruction
     /// allocates, and no collection is due before the loop looks for one
     /// again.
+    ///
+    /// The arithmetic of two doubles is the way straight through, since
+    /// nearly every call is for it: each operand is read as the double it
+    /// is, once, the operator is found by one jump, and the Number of the
+    /// result is made here. Everything else is a function of its own.
+    /// (Written as one `match` over the operator around the operands taken
+    /// apart as Numbers, this ran 137 instructions for a product of two
+    /// doubles: it asked what the operator is three times, and called for
+    /// the result.)
     #[inline(never)]
     fn float_operation(
         agent: &mut Agent,
@@ -4826,52 +4835,79 @@ impl Vm {
         right: Value,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
-        let (Ok(left), Ok(right)) = (Number::try_from(left), Number::try_from(right)) else {
-            // Not two Numbers: a comparison of two Strings is answered, and
-            // the `+` of a String and a String or another primitive.
-            return match kind {
-                Instruction::LessThan
-                | Instruction::LessThanEquals
-                | Instruction::GreaterThan
-                | Instruction::GreaterThanEquals => {
-                    Self::values_compare(agent, kind, left, right).map(|holds| holds.into())
-                }
-                Instruction::ApplyAdditionBinaryOperator => {
-                    Self::values_added(agent, left, right, gc)
-                }
-                _ => None,
-            };
+        let (Some(left_double), Some(right_double)) =
+            (Self::double_of(agent, left), Self::double_of(agent, right))
+        else {
+            return Self::operation_on_others(agent, kind, left, right, gc);
         };
-        let (left, right) = (left.bind(gc), right.bind(gc));
-        let value: Value = match kind {
+        // The four that are the arithmetic of doubles (Number::add and the
+        // others say so), on the doubles the Numbers are.
+        let result = match kind {
+            Instruction::ApplyAdditionBinaryOperator => left_double + right_double,
+            Instruction::ApplySubtractionBinaryOperator => left_double - right_double,
+            Instruction::ApplyMultiplicationBinaryOperator => left_double * right_double,
+            Instruction::ApplyDivisionBinaryOperator => left_double / right_double,
+            Instruction::LessThan => return Some((left_double < right_double).into()),
+            Instruction::LessThanEquals => return Some((left_double <= right_double).into()),
+            Instruction::GreaterThan => return Some((left_double > right_double).into()),
+            Instruction::GreaterThanEquals => return Some((left_double >= right_double).into()),
+            _ => return Self::operation_on_numbers(agent, kind, left, right, gc),
+        };
+        let value: Value = Number::from_f64_in_line(agent, result, gc).into();
+        Some(value.unbind())
+    }
+
+    /// The double that a Number of any kind is; None for what is no Number.
+    #[inline(always)]
+    fn double_of(agent: &Agent, value: Value) -> Option<f64> {
+        match value {
+            Value::Number(number) => Some(*number.get(agent)),
+            Value::Integer(number) => Some(number.into_i64() as f64),
+            Value::SmallF64(number) => Some(number.into_f64()),
+            _ => None,
+        }
+    }
+
+    /// What [`Vm::float_operation`] gives for operands that are not two
+    /// Numbers: a comparison of two Strings is answered, and the `+` of a
+    /// String and a String or another primitive.
+    #[inline(never)]
+    fn operation_on_others(
+        agent: &mut Agent,
+        kind: Instruction,
+        left: Value,
+        right: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        match kind {
             Instruction::LessThan
             | Instruction::LessThanEquals
             | Instruction::GreaterThan
             | Instruction::GreaterThanEquals => {
-                let (left, right) = (left.into_f64_(agent), right.into_f64_(agent));
-                let holds = match kind {
-                    Instruction::LessThan => left < right,
-                    Instruction::LessThanEquals => left <= right,
-                    Instruction::GreaterThan => left > right,
-                    _ => left >= right,
-                };
-                holds.into()
+                Self::values_compare(agent, kind, left, right).map(|holds| holds.into())
             }
-            // The four that are the arithmetic of doubles (Number::add and
-            // the others say so), on the doubles the Numbers are.
-            Instruction::ApplyAdditionBinaryOperator
-            | Instruction::ApplySubtractionBinaryOperator
-            | Instruction::ApplyMultiplicationBinaryOperator
-            | Instruction::ApplyDivisionBinaryOperator => {
-                let (left, right) = (left.into_f64_(agent), right.into_f64_(agent));
-                let result = match kind {
-                    Instruction::ApplyAdditionBinaryOperator => left + right,
-                    Instruction::ApplySubtractionBinaryOperator => left - right,
-                    Instruction::ApplyMultiplicationBinaryOperator => left * right,
-                    _ => left / right,
-                };
-                Number::from_f64(agent, result, gc).into()
-            }
+            Instruction::ApplyAdditionBinaryOperator => Self::values_added(agent, left, right, gc),
+            _ => None,
+        }
+    }
+
+    /// What [`Vm::float_operation`] gives for two Numbers and an operator
+    /// that is not the arithmetic of doubles or a comparison: the
+    /// remainder, the shifts and the bitwise operators, as the Number type
+    /// defines them.
+    #[inline(never)]
+    fn operation_on_numbers(
+        agent: &mut Agent,
+        kind: Instruction,
+        left: Value,
+        right: Value,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let (Ok(left), Ok(right)) = (Number::try_from(left), Number::try_from(right)) else {
+            return None;
+        };
+        let (left, right) = (left.bind(gc), right.bind(gc));
+        match kind {
             Instruction::ApplyRemainderBinaryOperator
             | Instruction::ApplyShiftLeftBinaryOperator
             | Instruction::ApplyShiftRightBinaryOperator
@@ -4879,13 +4915,13 @@ impl Vm {
             | Instruction::ApplyBitwiseORBinaryOperator
             | Instruction::ApplyBitwiseXORBinaryOperator
             | Instruction::ApplyBitwiseAndBinaryOperator => {
-                number_binary_operator(agent, kind, left, right, gc)
+                let value: Value = number_binary_operator(agent, kind, left, right, gc)
                     .ok()?
-                    .into()
+                    .into();
+                Some(value.unbind())
             }
-            _ => return None,
-        };
-        Some(value.unbind())
+            _ => None,
+        }
     }
 
     /// What a comparison or an arithmetic operator gives for two integers,

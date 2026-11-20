@@ -71,8 +71,21 @@ impl<'a> Number<'a> {
     }
 
     /// Create a new Number from an f64.
-    #[inline]
+    ///
+    /// A function of its own for everyone who asks but the arithmetic of
+    /// the loop of instructions ([`Number::from_f64_in_line`]): it was one
+    /// before that had its own, by the compiler's choice, which this keeps.
+    #[inline(never)]
     pub fn from_f64(agent: &mut Agent, value: f64, gc: NoGcScope<'a, '_>) -> Self {
+        Self::from_f64_in_line(agent, value, gc)
+    }
+
+    /// [`Number::from_f64`] as part of the function that asks: for the one
+    /// place that makes a Number of every double it works out, the
+    /// arithmetic of the loop of instructions, where the call was a
+    /// tenth of an addition of doubles.
+    #[inline(always)]
+    pub(crate) fn from_f64_in_line(agent: &mut Agent, value: f64, gc: NoGcScope<'a, '_>) -> Self {
         if Self::is_heap_f64(value) {
             let id = Self::alloc_number(&mut agent.heap, value);
             return Number::Number(id.unbind().bind(gc));
