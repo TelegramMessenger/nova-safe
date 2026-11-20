@@ -1473,15 +1473,16 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn range(index: usize) -> Option<core::ops::Range<usize>> {
         let start = index.checked_mul(N)?;
         Some(start..start.checked_add(N)?)
     }
 
     /// The storage at `index`: all `N` slots, or the slots in use of a
-    /// dynamic storage.
-    #[inline]
+    /// dynamic storage. Part of whoever asks, as the indexing that is
+    /// written with it is.
+    #[inline(always)]
     pub(crate) fn get(&self, index: usize) -> Option<&[T]> {
         if self.dynamic {
             self.storages.get(index).map(Vec::as_slice)
@@ -1684,6 +1685,10 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
 impl<const N: usize> Index<ElementIndex<'_>> for StridedVec<Option<Value<'static>>, N> {
     type Output = [Option<Value<'static>>];
 
+    // Part of whoever asks: left to the compiler, the read of a slot that
+    // two functions share ([`ElementArrays::get_element_value_raw`]) came
+    // here by a call.
+    #[inline(always)]
     fn index(&self, index: ElementIndex) -> &Self::Output {
         self.get(index.get_index())
             .expect("Invalid ElementsVector: No item at index")
@@ -1759,8 +1764,10 @@ impl<const N: usize> ElementArray<N> {
 
     /// The value in the slot at `offset` of the storage. None where the
     /// slot holds none (an accessor property, a hole) and where the storage
-    /// has no such slot.
-    #[inline]
+    /// has no such slot. Part of whoever asks, as the function that picks
+    /// the storage by its capacity is
+    /// ([`ElementArrays::get_element_value_raw`]).
+    #[inline(always)]
     fn get_value_raw(
         &self,
         index: ElementIndex,
@@ -4426,7 +4433,12 @@ impl ElementArrays {
 
     /// The value in the slot at `offset` of an elements storage, in one
     /// look at the storage: see [`ElementArray::get_value_raw`].
-    #[inline]
+    ///
+    /// Part of each of the two functions that ask (a property read by its
+    /// cache, a global variable read where it was found): left to the
+    /// compiler it was a function of its own as soon as there were two, and
+    /// a property that is inherited was read in ten instructions more.
+    #[inline(always)]
     pub(crate) fn get_element_value_raw(
         &self,
         index: ElementIndex,

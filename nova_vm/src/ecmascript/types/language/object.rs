@@ -632,6 +632,29 @@ impl<'a> OrdinaryObject<'a> {
         )
     }
 
+    /// The value in the slot at `offset` of the Object's property storage,
+    /// in one look at the storage: None for an accessor property, and for a
+    /// slot the storage has not. For one place that knows the slot (a
+    /// global variable that is a property of the global object), where the
+    /// slots as a whole ([`OrdinaryObject::get_elements_values`]) were
+    /// half of the read.
+    #[inline]
+    pub(crate) fn get_element_value(self, agent: &Agent, offset: usize) -> Option<Value<'a>> {
+        let Heap {
+            elements,
+            objects,
+            object_shapes,
+            ..
+        } = &agent.heap;
+        let data = self.get_direct(objects);
+        elements.get_element_value_raw(
+            data.get_values(),
+            data.values_capacity(object_shapes),
+            data.len(object_shapes),
+            offset,
+        )
+    }
+
     /// What `object.name` is where `cache`, the property cache of a place
     /// that names the property, knows the shape of this Object: the value
     /// of a data property of its own or of the object it inherits it from,

@@ -1040,11 +1040,7 @@ fn global_value_at_site<'a>(
         BindingSite::GLOBAL_OBJECT => {
             let object = global_object_at_site(agent, site, name, gc)?;
             // An empty slot is an accessor.
-            object
-                .get_elements_values(agent)
-                .get(usize::from(site.place))
-                .copied()
-                .flatten()
+            object.get_element_value(agent, usize::from(site.place))
         }
         _ => None,
     }
