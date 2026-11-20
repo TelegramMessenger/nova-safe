@@ -5791,6 +5791,10 @@ impl Vm {
                 execute_verify_is_object(agent, vm, executable, instr, gc.into_nogc())?
             }
             Instruction::Debug => execute_debug(agent, vm),
+            // A byte that is no instruction: see [`Instruction::is_unused`].
+            super::instructions::unused_kinds!() => {
+                super::instructions::panic_invalid_instruction()
+            }
         };
         Ok(ContinuationKind::Normal)
     }

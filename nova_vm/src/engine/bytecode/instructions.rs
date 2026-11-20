@@ -782,7 +782,74 @@ pub(crate) enum Instruction {
     /// The error message is provided as an identifier.
     VerifyIsObject,
     Debug,
+    // The bytes that are no instruction, each with a kind of its own, so
+    // that every byte is a kind: the loop of a `Vm` then reads the kind
+    // of an instruction without asking whether its byte is one, a test
+    // and a branch before every instruction. Code that has one of these
+    // bytes is no code: [`Instruction::is_unused`] says so to whoever
+    // reads instructions with care, and the loop leaves the byte to the
+    // general way, which ends as it did.
+    Unused231,
+    Unused232,
+    Unused233,
+    Unused234,
+    Unused235,
+    Unused236,
+    Unused237,
+    Unused238,
+    Unused239,
+    Unused240,
+    Unused241,
+    Unused242,
+    Unused243,
+    Unused244,
+    Unused245,
+    Unused246,
+    Unused247,
+    Unused248,
+    Unused249,
+    Unused250,
+    Unused251,
+    Unused252,
+    Unused253,
+    Unused254,
+    Unused255,
 }
+
+const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::MAX);
+
+/// The kinds of the bytes that are no instruction, as one pattern: for a
+/// `match` that has an arm for every kind and is to stay one.
+macro_rules! unused_kinds {
+    () => {
+        Instruction::Unused231
+            | Instruction::Unused232
+            | Instruction::Unused233
+            | Instruction::Unused234
+            | Instruction::Unused235
+            | Instruction::Unused236
+            | Instruction::Unused237
+            | Instruction::Unused238
+            | Instruction::Unused239
+            | Instruction::Unused240
+            | Instruction::Unused241
+            | Instruction::Unused242
+            | Instruction::Unused243
+            | Instruction::Unused244
+            | Instruction::Unused245
+            | Instruction::Unused246
+            | Instruction::Unused247
+            | Instruction::Unused248
+            | Instruction::Unused249
+            | Instruction::Unused250
+            | Instruction::Unused251
+            | Instruction::Unused252
+            | Instruction::Unused253
+            | Instruction::Unused254
+            | Instruction::Unused255
+    };
+}
+pub(super) use unused_kinds;
 
 impl Instruction {
     /// Returns true if this instruction is a terminal instruction where
@@ -1336,6 +1403,9 @@ impl Instr {
         let Some(kind) = Instruction::from_u8(byte) else {
             panic_invalid_instruction()
         };
+        if kind.is_unused() {
+            panic_invalid_instruction()
+        }
         let argument_bytes = ARGUMENT_BYTES[byte as usize] as usize;
         let args_ip = cur_ip + 1;
         *ip = args_ip + argument_bytes;
@@ -1821,7 +1891,10 @@ impl TryFrom<u8> for Instruction {
 
     #[inline]
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Self::from_u8(value).ok_or(())
+        match Self::from_u8(value) {
+            Some(kind) if !kind.is_unused() => Ok(kind),
+            _ => Err(()),
+        }
     }
 }
 
@@ -1848,6 +1921,31 @@ impl Instruction {
         const APPLYBITWISEANDBINARYOPERATOR: u8 =
             Instruction::ApplyBitwiseAndBinaryOperator.as_u8();
         const DEBUG: u8 = Instruction::Debug.as_u8();
+        const UNUSED231: u8 = Instruction::Unused231.as_u8();
+        const UNUSED232: u8 = Instruction::Unused232.as_u8();
+        const UNUSED233: u8 = Instruction::Unused233.as_u8();
+        const UNUSED234: u8 = Instruction::Unused234.as_u8();
+        const UNUSED235: u8 = Instruction::Unused235.as_u8();
+        const UNUSED236: u8 = Instruction::Unused236.as_u8();
+        const UNUSED237: u8 = Instruction::Unused237.as_u8();
+        const UNUSED238: u8 = Instruction::Unused238.as_u8();
+        const UNUSED239: u8 = Instruction::Unused239.as_u8();
+        const UNUSED240: u8 = Instruction::Unused240.as_u8();
+        const UNUSED241: u8 = Instruction::Unused241.as_u8();
+        const UNUSED242: u8 = Instruction::Unused242.as_u8();
+        const UNUSED243: u8 = Instruction::Unused243.as_u8();
+        const UNUSED244: u8 = Instruction::Unused244.as_u8();
+        const UNUSED245: u8 = Instruction::Unused245.as_u8();
+        const UNUSED246: u8 = Instruction::Unused246.as_u8();
+        const UNUSED247: u8 = Instruction::Unused247.as_u8();
+        const UNUSED248: u8 = Instruction::Unused248.as_u8();
+        const UNUSED249: u8 = Instruction::Unused249.as_u8();
+        const UNUSED250: u8 = Instruction::Unused250.as_u8();
+        const UNUSED251: u8 = Instruction::Unused251.as_u8();
+        const UNUSED252: u8 = Instruction::Unused252.as_u8();
+        const UNUSED253: u8 = Instruction::Unused253.as_u8();
+        const UNUSED254: u8 = Instruction::Unused254.as_u8();
+        const UNUSED255: u8 = Instruction::Unused255.as_u8();
         const ARRAYCREATE: u8 = Instruction::ArrayCreate.as_u8();
         const ARRAYFROMSTACK: u8 = Instruction::ArrayFromStack.as_u8();
         const ARRAYPUSH: u8 = Instruction::ArrayPush.as_u8();
@@ -2409,8 +2507,38 @@ impl Instruction {
             IMPORTCALL => Some(Instruction::ImportCall),
             IMPORTMETA => Some(Instruction::ImportMeta),
             VERIFYISOBJECT => Some(Instruction::VerifyIsObject),
-            _ => None,
+            UNUSED231 => Some(Instruction::Unused231),
+            UNUSED232 => Some(Instruction::Unused232),
+            UNUSED233 => Some(Instruction::Unused233),
+            UNUSED234 => Some(Instruction::Unused234),
+            UNUSED235 => Some(Instruction::Unused235),
+            UNUSED236 => Some(Instruction::Unused236),
+            UNUSED237 => Some(Instruction::Unused237),
+            UNUSED238 => Some(Instruction::Unused238),
+            UNUSED239 => Some(Instruction::Unused239),
+            UNUSED240 => Some(Instruction::Unused240),
+            UNUSED241 => Some(Instruction::Unused241),
+            UNUSED242 => Some(Instruction::Unused242),
+            UNUSED243 => Some(Instruction::Unused243),
+            UNUSED244 => Some(Instruction::Unused244),
+            UNUSED245 => Some(Instruction::Unused245),
+            UNUSED246 => Some(Instruction::Unused246),
+            UNUSED247 => Some(Instruction::Unused247),
+            UNUSED248 => Some(Instruction::Unused248),
+            UNUSED249 => Some(Instruction::Unused249),
+            UNUSED250 => Some(Instruction::Unused250),
+            UNUSED251 => Some(Instruction::Unused251),
+            UNUSED252 => Some(Instruction::Unused252),
+            UNUSED253 => Some(Instruction::Unused253),
+            UNUSED254 => Some(Instruction::Unused254),
+            UNUSED255 => Some(Instruction::Unused255),
         }
+    }
+
+    /// Whether this is the kind of a byte that is no instruction.
+    #[inline(always)]
+    pub(crate) const fn is_unused(self) -> bool {
+        self.as_u8() > Instruction::Debug.as_u8()
     }
 }
 
@@ -2426,7 +2554,7 @@ impl Instruction {
 
 #[cold]
 #[inline(never)]
-fn panic_invalid_instruction() -> ! {
+pub(super) fn panic_invalid_instruction() -> ! {
     panic!("Invalid bytecode instruction")
 }
 
@@ -2452,4 +2580,41 @@ fn panic_first_argument_not_boolean() -> ! {
 #[inline(never)]
 fn panic_second_argument_not_boolean() -> ! {
     panic!("Second argument was not a boolean")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Instr, Instruction};
+
+    #[test]
+    fn every_byte_is_a_kind_and_the_unused_ones_are_no_instruction() {
+        for byte in 0..=u8::MAX {
+            let kind = Instruction::from_u8(byte).expect("every byte is a kind");
+            assert_eq!(kind.as_u8(), byte);
+            assert_eq!(kind.is_unused(), byte > Instruction::Debug.as_u8());
+            assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
+            if kind.is_unused() {
+                assert_eq!(kind.argument_count(), 0);
+            }
+        }
+        assert!(!Instruction::Debug.is_unused());
+        assert!(Instruction::Unused231.is_unused());
+        assert!(Instruction::Unused255.is_unused());
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid bytecode instruction")]
+    fn code_with_a_byte_that_is_no_instruction_is_not_read() {
+        let code = [Instruction::Unused231.as_u8()];
+        let mut ip = 0;
+        let _ = Instr::consume_instruction(&code, &mut ip);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid bytecode instruction")]
+    fn the_last_byte_is_no_instruction_either() {
+        let code = [Instruction::Debug.as_u8(), u8::MAX];
+        let mut ip = 1;
+        let _ = Instr::consume_instruction(&code, &mut ip);
+    }
 }
