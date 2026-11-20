@@ -18085,3 +18085,123 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// An assignment to a name of the global scope that may not be bound,
+/// whose value is worked out without the reference register, finds the
+/// name bound at its place and makes no Reference of it; the assignment
+/// then writes at the place, or makes the Reference when it has to go the
+/// long way. The value is worked out by code that changes the global scope
+/// under the assignment: it removes the name, removes it and makes it
+/// again, puts an accessor in its place, forbids writing it and lets it be
+/// written again, adds four hundred properties to the global object, runs
+/// the same assignment again; in functions that are strict and not. Names
+/// that are not bound when the assignment begins, names another script
+/// declares lexically, and the reference register holding something else
+/// when the assignment begins. What is expected is what Node prints for
+/// the same scripts, but for the two lines of a strict assignment to a
+/// name that the code working the value out makes: unbound when the
+/// assignment began, it is a ReferenceError by the specification, and V8
+/// assigns.
+#[test]
+fn an_assignment_to_a_global_finds_it_bound_and_makes_no_reference() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(assignments_to_globals_found_bound)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn assignments_to_globals_found_bound() {
+    let first = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+globalThis.g1 = 1; globalThis.g2 = 2; var gv = 3;
+// Plain assignments whose value is worked out without the reference register.
+function plain(a, b) { g1 = a; g2 = a + b; gv = a * 2 - b; return g1 + ',' + g2 + ',' + gv; }
+say(plain(1, 2)); say(plain(3, 4)); say(plain('s', 5));
+function cond(a, b) { g1 = a ? b : -b; g2 = a && b; gv = !a; return g1 + ',' + g2 + ',' + gv; }
+say(cond(1, 2)); say(cond(0, 2));
+function kept(a) { var x = (g1 = a + 1); var y = g2 = a; return x + ',' + y + ',' + g1 + ',' + g2; }
+say(kept(5)); say(kept(6));
+// A name that is not bound: made by a function that is not strict, an error in one that is.
+function makes(a) { fresh1 = a; return typeof fresh1 + fresh1; }
+note('makes', function () { return makes(7); }); note('makes again', function () { return makes(8); });
+function strictMakes(a) { 'use strict'; fresh2 = a; return fresh2; }
+note('strict makes', function () { return strictMakes(7); });
+globalThis.fresh2 = 0; note('strict now bound', function () { return strictMakes(9); });
+delete globalThis.fresh2; note('strict unbound again', function () { return strictMakes(9); });
+// The value is worked out by code that changes the global scope under the assignment.
+function assign(o) { victim = o * 2; return typeof victim + ':' + victim; }
+function strictAssign(o) { 'use strict'; victim = o * 2; return typeof victim + ':' + victim; }
+globalThis.victim = 0;
+var deletes = { valueOf: function () { delete globalThis.victim; return 5; } };
+var remakes = { valueOf: function () { delete globalThis.victim; globalThis.victim = 'remade'; return 6; } };
+var accessor = { valueOf: function () { Object.defineProperty(globalThis, 'victim', { get: function () { return 'got'; }, set: function (v) { say('setter ' + v); }, configurable: true }); return 7; } };
+var locks = { valueOf: function () { Object.defineProperty(globalThis, 'victim', { value: 'locked', writable: false, configurable: true }); return 8; } };
+var unlocks = { valueOf: function () { Object.defineProperty(globalThis, 'victim', { value: 'open', writable: true, configurable: true }); return 9; } };
+var grows = { n: 0, valueOf: function () { for (var i = 0; i < 400; i++) globalThis['grown' + this.n + '_' + i] = i; this.n++; return 10; } };
+var reenters = { depth: 0, valueOf: function () { if (this.depth++ < 2) return assign(this).length; return 11; } };
+note('plain number', function () { return assign(4) + ' ' + assign(4); });
+note('deletes', function () { return assign(deletes); });
+note('after deletes', function () { return assign(1); });
+note('strict deletes', function () { return strictAssign(deletes); });
+note('typeof after strict deletes', function () { return typeof victim; });
+globalThis.victim = 0;
+note('remakes', function () { return assign(remakes) + ' ' + strictAssign(remakes); });
+note('accessor', function () { return assign(accessor) + ' ' + strictAssign(4); });
+note('locks', function () { return assign(locks); });
+note('strict locked', function () { return strictAssign(4); });
+note('unlocks', function () { return strictAssign(unlocks) + ' ' + assign(3); });
+note('grows', function () { return assign(grows) + ' ' + strictAssign(grows) + ' ' + assign(2); });
+note('reenters', function () { return assign(reenters) + ' ' + reenters.depth; });
+// Unbound when the assignment begins, made by the code that works the value out.
+var defines = { valueOf: function () { globalThis.late = 'defined'; return 12; } };
+function assignLate(o) { late = o + 1; return late; }
+function strictAssignLate(o) { 'use strict'; late = o + 1; return late; }
+note('strict defines', function () { return strictAssignLate(defines); });
+note('late after strict', function () { return late; });
+delete globalThis.late;
+note('defines', function () { return assignLate(defines); });
+// The reference register holds something else when the assignment begins.
+var holder = { p: 1, q: { r: 2 } };
+function after(o, a) { o.p; o.q.r = a; g1 = a; o.q.r++; g2 = a + o.p; return g1 + ',' + g2 + ',' + o.q.r; }
+say(after(holder, 20)); say(after(holder, 21));
+// Names another script declares lexically, assigned here before and after it does.
+function setLexical(a) { lexLater = a; return lexLater; }
+function strictSetLexical(a) { 'use strict'; lexLater = a + 1; return lexLater; }
+function setConst(a) { constLater = a; return constLater; }
+note('lexical before', function () { return strictSetLexical(1); });
+note('typeof lexical before', function () { return typeof lexLater; });
+// Many assignments, the place found once.
+function many(n) { var s = 0; for (var i = 0; i < n; i++) { g1 = i & 7; g2 = i + s; s += g1; } return s + ',' + g1 + ',' + g2; }
+say(many(100000));
+"done""##;
+    let second = r##"note('tdz', function () { return setLexical(1); });
+let lexLater = 'declared';
+const constLater = 'fixed';
+note('lexical', function () { return setLexical(2) + ',' + lexLater; });
+note('strict lexical', function () { return strictSetLexical(3) + ',' + lexLater; });
+note('const', function () { return setConst(4); });
+note('const still', function () { return constLater; });
+note('plain after', function () { return plain(7, 8) + ' ' + many(1000); });
+globalThis.lexLater = 'property under the lexical';
+note('lexical over property', function () { return setLexical(5) + ',' + lexLater + ',' + globalThis.lexLater; });
+note('victim', function () { return assign(1) + ' ' + strictAssign(2) + ' ' + victim; });
+out.join("|")"##;
+    let expected = r##"1,3,0|3,7,2|s,s5,NaN|2,2,false|-2,0,true|6,5,6,5|7,6,7,6|makes=number7|makes again=number8|strict makes!ReferenceError|strict now bound=9|strict unbound again!ReferenceError|plain number=number:8 number:8|deletes=number:10|after deletes=number:2|strict deletes!ReferenceError|typeof after strict deletes=undefined|remakes=number:12 number:12|setter 14|setter 8|accessor=string:got string:got|locks=string:locked|strict locked!TypeError|unlocks=number:18 number:6|grows=number:20 number:20 number:4|reenters=number:18 3|strict defines!ReferenceError|late after strict=defined|defines=13|20,21,21|21,22,22|lexical before!ReferenceError|typeof lexical before=undefined|350000,7,449992|tdz!ReferenceError|lexical=2,2|strict lexical=4,4|const!TypeError|const still=fixed|plain after=7,15,6 3500,7,4492|lexical over property=5,5,property under the lexical|victim=number:2 number:4 4"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(first, false) {
+        Ok(Completion::String(found)) => assert_eq!(found, b"done"),
+        other => panic!("{other:?}"),
+    }
+    match engine.evaluate(second, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
