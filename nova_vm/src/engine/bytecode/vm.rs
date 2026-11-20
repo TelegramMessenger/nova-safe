@@ -3643,12 +3643,14 @@ impl Vm {
             Instruction::GetIndexPropertyWithCache
             | Instruction::GetIndexPropertyWithCacheKeepReference
             | Instruction::LoadIndexPropertyWithCachePushThis
-            | Instruction::GetKeptPropertyWithCache => {
+            | Instruction::GetKeptPropertyWithCache
+            | Instruction::LoadIndexPropertyWithCache => {
                 step!(
                     GetIndexPropertyWithCache,
                     GetIndexPropertyWithCacheKeepReference,
                     LoadIndexPropertyWithCachePushThis,
-                    GetKeptPropertyWithCache
+                    GetKeptPropertyWithCache,
+                    LoadIndexPropertyWithCache
                 );
                 let base = vm.stack[Instr::window_third_index(window)];
                 if !Self::cached_property_into_result(agent, vm, base, tables, instr, gc) {
@@ -3672,6 +3674,11 @@ impl Vm {
                         vm.result = Some(base);
                         Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
                         vm.result = found;
+                    }
+                    // The value, pushed.
+                    Instruction::LoadIndexPropertyWithCache => {
+                        vm.reference = None;
+                        vm.stack.extend(vm.result.take());
                     }
                     // The function of `p.m(x)`, pushed after `p`, the this
                     // value of the call.
@@ -5550,7 +5557,8 @@ impl Vm {
             | Instruction::GetThisPropertyWithCacheKeepReference
             | Instruction::GetIndexPropertyWithCache
             | Instruction::GetIndexPropertyWithCacheKeepReference
-            | Instruction::GetKeptPropertyWithCache => {
+            | Instruction::GetKeptPropertyWithCache
+            | Instruction::LoadIndexPropertyWithCache => {
                 // Kept out of this function, whose frame every native call
                 // of a function is on top of.
                 execute_fused_property_instruction(agent, vm, executable, instr, gc)?;
@@ -5716,6 +5724,7 @@ impl Vm {
             | Instruction::LoadPropertyWithCachePushReference
             | Instruction::LoadPropertyWithCachePushThis
             | Instruction::LoadIndexPropertyWithCachePushThis
+            | Instruction::LoadIndexPropertyWithCache
             | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }

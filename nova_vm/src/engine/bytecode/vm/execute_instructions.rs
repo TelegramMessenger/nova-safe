@@ -2755,6 +2755,7 @@ pub(super) fn execute_fused_property_instruction<'gc>(
         instr.kind,
         Instruction::GetIndexPropertyWithCache
             | Instruction::GetIndexPropertyWithCacheKeepReference
+            | Instruction::LoadIndexPropertyWithCache
     ) {
         // GetValueFromIndex: the plain way found the property not to be
         // one the cache places.
@@ -2784,7 +2785,21 @@ pub(super) fn execute_fused_property_instruction<'gc>(
         },
         instr.get_second_index() as u16,
     );
-    execute_get_value(agent, vm, executable, get_value, true, keep_reference, gc)
+    execute_get_value(
+        agent,
+        vm,
+        executable,
+        get_value,
+        true,
+        keep_reference,
+        gc.reborrow(),
+    )
+    .unbind()?;
+    // Load
+    if instr.kind == Instruction::LoadIndexPropertyWithCache {
+        vm.execute_load();
+    }
+    Ok(())
 }
 
 #[inline(always)]

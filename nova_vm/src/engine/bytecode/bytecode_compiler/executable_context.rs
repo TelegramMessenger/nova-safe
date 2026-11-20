@@ -366,6 +366,13 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     self.instructions[start] = Instruction::LoadBindingAtSiteOnce.as_u8();
                     return;
                 }
+                // The property of a local, pushed.
+                if let Some(start) =
+                    self.recent_instruction(0, Instruction::GetIndexPropertyWithCache)
+                {
+                    self.instructions[start] = Instruction::LoadIndexPropertyWithCache.as_u8();
+                    return;
+                }
                 // A constant pushed right after another push: there is no
                 // result before the two instructions and none after them,
                 // as with the one that pushes the constant itself.
@@ -529,6 +536,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             Instruction::LoadBindingAtSiteOnce,
             Instruction::PushReferenceAndLoad,
             Instruction::LoadPropertyWithCachePushReference,
+            Instruction::LoadIndexPropertyWithCache,
             Instruction::PutValueToIndex,
             Instruction::ApplyBinaryOperatorAndMove,
         ]
@@ -600,6 +608,10 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             (
                 Instruction::PushReferenceAndLoad,
                 Instruction::PushReference,
+            ),
+            (
+                Instruction::LoadIndexPropertyWithCache,
+                Instruction::GetIndexPropertyWithCache,
             ),
         ] {
             if let Some(start) = self.recent_instruction(nth, pushing) {
@@ -903,13 +915,16 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             .find_map(|comparison| {
                 self.recent_instruction(0, comparison)?;
                 let constant = self.recent_instruction(1, Instruction::StoreConstant)?;
-                let load = self.recent_instruction(2, Instruction::Load)?;
-                Some((comparison.result_comparison()?, constant, load))
+                Some((comparison.result_comparison()?, constant))
             });
-            if let Some((comparison, constant, load)) = of_result {
+            if let Some((comparison, constant)) = of_result {
+                // Whatever pushed the value leaves it as the result: a
+                // Load is dropped, an instruction that ends in one is the
+                // one that does not.
                 let constant = self.operand_bytes(constant);
-                self.drop_recent_instructions(load, 3);
-                return self.add_result_comparison(comparison, constant);
+                if self.unpush_recent(2) {
+                    return self.add_result_comparison(comparison, constant);
+                }
             }
             // Any other operands: the comparison and the jump on it.
             let fused = [
@@ -960,11 +975,11 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         // where the comparison does not hold: as above.
         if let Some(comparison) = instruction.result_comparison()
             && let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant)
-            && let Some(load) = self.recent_instruction(1, Instruction::Load)
         {
             let constant = self.operand_bytes(constant);
-            self.drop_recent_instructions(load, 2);
-            return self.add_result_comparison(comparison, constant);
+            if self.unpush_recent(1) {
+                return self.add_result_comparison(comparison, constant);
+            }
         }
         self.push_instruction(instruction);
         self.add_jump_index()

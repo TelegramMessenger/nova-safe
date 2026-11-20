@@ -810,6 +810,11 @@ pub(crate) enum Instruction {
     /// for a statement, the new value ([`Instruction::STEP_KEEPS_NEW`]) or
     /// the value before ([`Instruction::STEP_KEEPS_OLD`]).
     StepValueWithCache,
+    /// [`Instruction::GetIndexPropertyWithCache`] followed by Load: `p.x` of
+    /// a local, pushed, as the left operand of an operator or an argument
+    /// of a call is (`p.x + p.vx`, `f(p.x, p.y)`). The arguments are those
+    /// of [`Instruction::GetIndexPropertyWithCache`].
+    LoadIndexPropertyWithCache,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
@@ -818,7 +823,6 @@ pub(crate) enum Instruction {
     // reads instructions with care, and the loop leaves the byte to the
     // general way, which ends as it did. A new instruction takes the
     // first of them.
-    Unused234,
     Unused235,
     Unused236,
     Unused237,
@@ -848,8 +852,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused234
-            | Instruction::Unused235
+        Instruction::Unused235
             | Instruction::Unused236
             | Instruction::Unused237
             | Instruction::Unused238
@@ -909,6 +912,7 @@ impl Instruction {
             | Self::GetIndexPropertyWithCache
             | Self::GetIndexPropertyWithCacheKeepReference
             | Self::LoadIndexPropertyWithCachePushThis
+            | Self::LoadIndexPropertyWithCache
             | Self::GetKeptPropertyWithCache
             | Self::JumpIfResultComparesWithConstant
             | Self::GetBindingAtSiteOnce
@@ -1073,6 +1077,7 @@ impl Instruction {
                 | Self::GetIndexPropertyWithCache
                 | Self::GetIndexPropertyWithCacheKeepReference
                 | Self::LoadIndexPropertyWithCachePushThis
+                | Self::LoadIndexPropertyWithCache
                 | Self::GetKeptPropertyWithCache
                 | Self::PutPropertyWithCache
                 | Self::PutValueWithCache
@@ -1117,6 +1122,7 @@ impl Instruction {
                 | Self::GetIndexPropertyWithCache
                 | Self::GetIndexPropertyWithCacheKeepReference
                 | Self::LoadIndexPropertyWithCachePushThis
+                | Self::LoadIndexPropertyWithCache
                 | Self::GetKeptPropertyWithCache
                 | Self::PutPropertyWithCache
                 | Self::MakePrivateReference
@@ -1701,6 +1707,7 @@ impl Instr {
                 Instruction::GetIndexPropertyWithCache
                     | Instruction::GetIndexPropertyWithCacheKeepReference
                     | Instruction::LoadIndexPropertyWithCachePushThis
+                    | Instruction::LoadIndexPropertyWithCache
             ) =>
             {
                 let [arg0, arg1] = self.args.two_args();
@@ -2040,7 +2047,7 @@ impl Instruction {
         const JUMPIFRESULTCOMPARESWITHCONSTANT: u8 =
             Instruction::JumpIfResultComparesWithConstant.as_u8();
         const STEPVALUEWITHCACHE: u8 = Instruction::StepValueWithCache.as_u8();
-        const UNUSED234: u8 = Instruction::Unused234.as_u8();
+        const LOADINDEXPROPERTYWITHCACHE: u8 = Instruction::LoadIndexPropertyWithCache.as_u8();
         const UNUSED235: u8 = Instruction::Unused235.as_u8();
         const UNUSED236: u8 = Instruction::Unused236.as_u8();
         const UNUSED237: u8 = Instruction::Unused237.as_u8();
@@ -2626,7 +2633,7 @@ impl Instruction {
             GETKEPTPROPERTYWITHCACHE => Some(Instruction::GetKeptPropertyWithCache),
             JUMPIFRESULTCOMPARESWITHCONSTANT => Some(Instruction::JumpIfResultComparesWithConstant),
             STEPVALUEWITHCACHE => Some(Instruction::StepValueWithCache),
-            UNUSED234 => Some(Instruction::Unused234),
+            LOADINDEXPROPERTYWITHCACHE => Some(Instruction::LoadIndexPropertyWithCache),
             UNUSED235 => Some(Instruction::Unused235),
             UNUSED236 => Some(Instruction::Unused236),
             UNUSED237 => Some(Instruction::Unused237),
@@ -2654,7 +2661,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() >= Instruction::Unused234.as_u8()
+        self.as_u8() >= Instruction::Unused235.as_u8()
     }
 }
 
@@ -2709,7 +2716,7 @@ mod tests {
             assert_eq!(kind.as_u8(), byte);
             assert_eq!(
                 kind.is_unused(),
-                byte > Instruction::StepValueWithCache.as_u8()
+                byte > Instruction::LoadIndexPropertyWithCache.as_u8()
             );
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
@@ -2720,14 +2727,15 @@ mod tests {
         assert!(!Instruction::GetKeptPropertyWithCache.is_unused());
         assert!(!Instruction::JumpIfResultComparesWithConstant.is_unused());
         assert!(!Instruction::StepValueWithCache.is_unused());
-        assert!(Instruction::Unused234.is_unused());
+        assert!(!Instruction::LoadIndexPropertyWithCache.is_unused());
+        assert!(Instruction::Unused235.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused234.as_u8()];
+        let code = [Instruction::Unused235.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }
