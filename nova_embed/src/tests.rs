@@ -16086,3 +16086,108 @@ out.join(",")"##;
         "891/7 7:22:320:string 4"
     );
 }
+
+/// Unary minus of every kind of value, of which a Number is negated by
+/// the loop of instructions itself (an integer, both zeros, doubles that
+/// a Value holds and that it does not, NaN and the infinities; Strings,
+/// Booleans, null, undefined, BigInts and objects go the general way, and
+/// a Symbol throws). And generators stepped by loops, by what they keep
+/// between two steps, which is handed over at every `yield` and every
+/// resumption: no loop, one loop, loops in loops, a `try` with `catch`
+/// and `finally`, loops over an Array, a Set, a String and another
+/// generator, `yield*`, locals of every kind; generators ended early by
+/// `break` and `return`, one that throws, one stepped after it is done;
+/// two stepped in turn, one inside the loop over another, 50,000 steps,
+/// and generators that step themselves to a depth of 40. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn a_generator_keeps_what_it_has_between_steps_and_a_number_is_negated() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(generators_and_negation)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn generators_and_negation() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"// Unary minus of every kind of value, and generators stepped by loops: what a generator keeps between two steps
+// (its locals, the handlers of the loops and the `try` it is in, the iterators of the loops it is in) and how it ends.
+var out = [];
+function text(v) { return Object.is(v, -0) ? "-0" : typeof v === "bigint" ? v + "n" : String(v); }
+var values = [0, -0, 1, -1, 7, 2147483647, -2147483648, 9007199254740991, -9007199254740991, 9007199254740992, 0.5, -0.5, 1.5, 1e21, 5e-324, 1.7976931348623157e308, NaN, Infinity, -Infinity, "5", "-0", "", "x", true, false, null, undefined, 10n, -10n, 0n, { valueOf: function () { return 3; } }, [4], []];
+function neg(v) { return -v; }
+out.push("neg " + values.map(function (v) { try { return text(neg(v)); } catch (e) { return e.name; } }).join(" "));
+out.push("twice " + values.map(function (v) { try { return text(-(-v)); } catch (e) { return e.name; } }).join(" "));
+var acc = 0, flip = 1.5, zero = 0, whole = 3; for (var i = 0; i < 1000; i++) { flip = -flip; zero = -zero; whole = -whole; acc += -i + flip - -whole; } out.push("loop " + [text(acc), text(flip), text(zero), text(whole), text(-(i & 7)), text(-(0.25 * 4)), text(-(1 / 3))].join(" "));
+try { -Symbol.iterator; out.push("no"); } catch (e) { out.push("symbol " + e.name); }
+// Generators: one handler (a loop), several (loops in loops, try), iterators (for-of in the generator), none.
+function* plain() { yield 1; yield 2; return 3; }
+function* looped(n) { for (var i = 0; i < n; i++) yield i * 2; }
+function* nested(n) { for (var i = 0; i < n; i++) { for (var j = 0; j <= i; j++) { yield i + ":" + j; } } }
+function* over(list) { for (var x of list) { yield "<" + x + ">"; } }
+function* overTwo(a, b) { for (var x of a) { for (var y of b) { yield x + y; } } }
+function* tried(n) { for (var i = 0; i < n; i++) { try { if (i === 2) throw new RangeError("two"); yield "t" + i; } catch (e) { yield "caught " + e.message; } finally { trace.push("f" + i); } } }
+function* whiled(n) { var k = 0; while (true) { if (k >= n) return "done"; yield k++; } }
+function* delegating() { yield "a"; yield* looped(3); yield* over(["p", "q"]); return "end"; }
+function* withLocals(a, b) { var s = a; let t = b; const u = "u"; for (let i = 0; i < 3; i++) { s += i; t = t + u; yield s + t; } }
+function* thrower(n) { for (var i = 0; i < n; i++) { if (i === 1) throw new TypeError("gen " + i); yield i; } }
+var trace = [];
+function drain(g) { var r = []; for (var v of g) r.push(v); return r.join(","); }
+out.push("plain " + drain(plain()) + " | " + drain(looped(5)) + " | " + drain(looped(0)) + " | " + drain(nested(3)));
+out.push("over " + drain(over(["a", "b", "c"])) + " | " + drain(over(new Set([1, 2]))) + " | " + drain(over(looped(3))) + " | " + drain(over("xy")) + " | " + drain(overTwo(["a", "b"], [1, 2, 3])));
+out.push("tried " + drain(tried(4)) + " " + trace.join(""));
+out.push("more " + drain(whiled(4)) + " | " + drain(delegating()) + " | " + drain(withLocals(10, "t")));
+// Ended early: break and return out of the loop, a generator that throws, one that is finished and stepped again.
+function firstOver(g, limit) { var r = []; for (var v of g) { if (v > limit) break; r.push(v); } return r.join(","); }
+function found(g, want) { for (var v of g) { if (v === want) return "found " + v; } return "none"; }
+trace = []; out.push("early " + firstOver(looped(10), 5) + " | " + found(looped(10), 6) + " | " + found(over(["a"]), "z") + " | " + firstOver(tried(4), "t0") + " " + trace.join(""));
+var errs = []; for (var round = 0; round < 3; round++) { try { errs.push(drain(thrower(3))); } catch (e) { errs.push(e.message); } } out.push("throws " + errs.join(","));
+var g = looped(2); out.push("again " + drain(g) + "|" + drain(g) + "|" + JSON.stringify(g.next()) + "|" + JSON.stringify(looped(1).return(7)) + "|" + JSON.stringify(plain().next()));
+// Two generators stepped in turn, a generator inside the loop over another, many steps, and recursion.
+var a = looped(4), b = over(["x", "y", "z", "w"]); var turns = []; for (var i = 0; i < 4; i++) turns.push(a.next().value + b.next().value); out.push("turns " + turns.join(","));
+var pairs = []; for (var x of looped(3)) for (var y of nested(2)) pairs.push(x + y); out.push("pairs " + pairs.join(","));
+var sum = 0; for (var v of looped(50000)) sum += v & 7; out.push("many " + sum);
+function* tree(depth) { if (depth === 0) { yield "leaf"; return; } for (var part of tree(depth - 1)) yield depth + part; yield "node" + depth; }
+out.push("tree " + drain(tree(3)) + " | " + drain(tree(40)).length);
+function* counted() { var n = 0; try { while (true) yield n++; } finally { trace.push("closed at " + n); } }
+trace = []; for (var v of counted()) { if (v === 3) break; } var c = counted(); c.next(); c.next(); c.return(); out.push("closed " + trace.join(";"));
+out.join("\n")"##;
+    let expected = r##"neg -0 0 -1 1 -7 -2147483647 2147483648 -9007199254740991 9007199254740991 -9007199254740992 -0.5 0.5 -1.5 -1e+21 -5e-324 -1.7976931348623157e+308 NaN -Infinity Infinity -5 0 -0 NaN -1 -0 -0 NaN -10n 10n 0n -3 -4 -0
+twice 0 -0 1 -1 7 2147483647 -2147483648 9007199254740991 -9007199254740991 9007199254740992 0.5 -0.5 1.5 1e+21 5e-324 1.7976931348623157e+308 NaN Infinity -Infinity 5 -0 0 NaN 1 0 0 NaN 10n -10n 0n 3 4 0
+loop -499500 1.5 0 3 -0 -1 -0.3333333333333333
+symbol TypeError
+plain 1,2 | 0,2,4,6,8 |  | 0:0,1:0,1:1,2:0,2:1,2:2
+over <a>,<b>,<c> | <1>,<2> | <0>,<2>,<4> | <x>,<y> | a1,a2,a3,b1,b2,b3
+tried t0,t1,caught two,t3 f0f1f2f3
+more 0,1,2,3 | a,0,2,4,<p>,<q> | 10tu,11tuu,13tuuu
+early 0,2,4 | found 6 | none | t0 f0f1
+throws gen 1,gen 1,gen 1
+again 0,2||{"done":true}|{"value":7,"done":true}|{"value":1,"done":false}
+turns 0<x>,2<y>,4<z>,6<w>
+pairs 00:0,01:0,01:1,20:0,21:0,21:1,40:0,41:0,41:1
+many 150000
+tree 321leaf,32node1,3node2,node3 | 1870
+closed closed at 4;closed at 2"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // A generator suspended across a collection goes on where it was.
+    let kept = "var held = nested(3); held.next(); held.next(); var heldTried = tried(4); heldTried.next(); 'held'";
+    assert_eq!(text(&mut engine, kept), "held");
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            "[drain(held), drain(heldTried), drain(looped(3)), text(neg(0)), text(neg(-0)), text(neg(2.5))].join(' ')"
+        ),
+        "1:1,2:0,2:1,2:2 t1,caught two,t3 0,2,4 -0 0 -2.5"
+    );
+}
