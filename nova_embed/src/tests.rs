@@ -16726,3 +16726,270 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `++` and `--` of a property by its name are one instruction, which
+/// steps the value that was just read, assigns it and leaves what the
+/// expression is (`--p.life`, `o.count++`): the three to five instructions
+/// it stands for give the same. The four of them, used and not, as a
+/// condition, an argument and an operand; values of every kind, the ones
+/// whose conversion runs code or throws and the integers at the ends of
+/// what an integer holds among them; properties that are inherited,
+/// absent, accessors, not writable, of a frozen, a sealed and a
+/// not extensible object, in sloppy and in strict code; objects of every
+/// kind, the length of an Array and of a function, primitives, undefined
+/// and null as the object; a Proxy; a `valueOf` that reshapes or freezes
+/// the object it is a property of; `this`, a name of an enclosing
+/// function, a global and a call as the object, each evaluated once;
+/// shapes that change between and inside the loops that step; a storage
+/// that grows; garbage made between the steps; a generator. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn a_property_is_stepped_by_one_instruction_as_by_its_parts() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(steps_of_properties)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn steps_of_properties() {
+    let script = r##"// `++` and `--` of a property by its name (`--p.life`, `o.count++`): one instruction steps the value that was just
+// read and assigns it, and leaves what the expression is.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + String(f())); } catch (e) { out.push(label + "!" + e.name); } }
+function show(v) { return typeof v === "bigint" ? v + "n" : Object.is(v, -0) ? "-0" : typeof v === "string" ? JSON.stringify(v) : String(v); }
+
+// The four of them, used and not, in a loop that warms the cache.
+(function () {
+  var o = { a: 5, b: 5, c: 5, d: 5, e: 5, f: 5, g: 5, h: 5 };
+  var seen = [];
+  for (var i = 0; i < 4; i++) {
+    seen.push(++o.a, --o.b, o.c++, o.d--);
+    ++o.e; --o.f; o.g++; o.h--;
+  }
+  out.push("four", seen.join(","), JSON.stringify(o));
+  // As a condition, an argument, an operand, the right side of an assignment, a returned value.
+  var p = { life: 3, n: 0 };
+  var alive = 0;
+  while (--p.life > 0) alive++;
+  function id(x) { return x; }
+  function ret() { return p.n++; }
+  var t = id(p.n++) + id(++p.n) * 10 + (p.n-- - --p.n) * 100 + ret() * 1000;
+  var u = p.n++, v = (p.n++, p.n);
+  out.push(alive, p.life, t, u, v, p.n, typeof (p.n++), void p.n++, p.n);
+})();
+
+// Every kind of value the property can have.
+(function () {
+  var values = [0, 1, -1, -0, 0.5, -0.5, 1.5, 0.1, 1e21, -1e21, 4503599627370495, 9007199254740991, 9007199254740992, -9007199254740991,
+    2147483647, -2147483648, 36028797018963967, -36028797018963968, 72057594037927935, Infinity, -Infinity, NaN, "7", "7.5", "", " 12 ", "x", "0x10", "-0",
+    true, false, null, undefined, 10n, -1n, 0n, 9007199254740993n, [], [5], [1, 2], {}, { valueOf: function () { return 41; } },
+    { valueOf: function () { return "9"; } }, { valueOf: function () { return 3n; } }, { toString: function () { return "2"; } }, new Date(0), function () {}];
+  var kinds = [function (o) { return ++o.v; }, function (o) { return --o.v; }, function (o) { return o.v++; }, function (o) { return o.v--; },
+    function (o) { ++o.v; return "s"; }, function (o) { o.v--; return "s"; }];
+  for (var k = 0; k < kinds.length; k++) {
+    var row = [];
+    for (var i = 0; i < values.length; i++) {
+      var o = { v: values[i] };
+      var r;
+      try { r = show(kinds[k](o)); } catch (e) { r = "!" + e.name; }
+      row.push(r + "/" + show(o.v));
+    }
+    out.push("kind" + k, row.join(" "));
+  }
+  note("symbol", function () { var o = { v: Symbol("s") }; return ++o.v; });
+  note("symbol post", function () { var o = { v: Symbol("s") }; o.v++; return 1; });
+  // Twice over each, so that the second time the cache is warm and the value is another kind.
+  var o = { v: 0 };
+  var seq = [];
+  function bump() { return o.v++; }
+  for (var i = 0; i < 3; i++) seq.push(bump());
+  o.v = 0.25; seq.push(bump(), o.v); o.v = "3"; seq.push(bump(), o.v); o.v = 5n; seq.push(show(bump()), show(o.v));
+  o.v = 9007199254740991; seq.push(bump(), o.v, bump(), o.v); o.v = -9007199254740991; function down() { return --o.v; } seq.push(down(), down(), o.v);
+  o.v = 36028797018963967; seq.push(bump(), o.v); o.v = -36028797018963968; seq.push(down(), o.v);
+  out.push("seq", seq.join(","));
+})();
+
+// Every kind of property: inherited, absent, accessor, not writable, frozen, sealed, not extensible.
+(function () {
+  var proto = { inherited: 10 };
+  var o = Object.create(proto);
+  function inc(x) { return x.inherited++; }
+  out.push("inherited", inc(o), inc(o), o.inherited, proto.inherited, Object.keys(o).join());
+  var a = {};
+  function absent(x) { return ++x.nothing; }
+  out.push("absent", absent(a), absent(a), show(a.nothing), Object.keys(a).join());
+  var log = [];
+  var acc = { get p() { log.push("get"); return this._p; }, set p(v) { log.push("set" + v); this._p = v; }, _p: 1 };
+  function accInc(x) { return x.p++; }
+  out.push("accessor", accInc(acc), accInc(acc), acc._p, log.join("+"));
+  var getterOnly = { get q() { return 7; } };
+  function goInc(x) { return ++x.q; }
+  out.push("getter only", goInc(getterOnly), goInc(getterOnly), getterOnly.q);
+  note("getter only strict", function () { "use strict"; return ++getterOnly.q; });
+  var setterOnly = { set r(v) { log.push("r" + v); } };
+  out.push("setter only", show(setterOnly.r++), show(++setterOnly.r), log.join("+"));
+  var ro = {}; Object.defineProperty(ro, "w", { value: 3, writable: false, enumerable: true, configurable: true });
+  function roInc(x) { return ++x.w; }
+  out.push("read only", roInc(ro), roInc(ro), ro.w);
+  note("read only strict", function () { "use strict"; return ++ro.w; });
+  var frozen = Object.freeze({ z: 1 });
+  function frInc(x) { return x.z++; }
+  out.push("frozen", frInc(frozen), frInc(frozen), frozen.z);
+  note("frozen strict", function () { "use strict"; return frozen.z++; });
+  note("frozen strict absent", function () { "use strict"; return frozen.nothing++; });
+  var sealed = Object.seal({ z: 1 });
+  out.push("sealed", frInc(sealed), frInc(sealed), sealed.z);
+  var fixed = Object.preventExtensions({ z: 1 });
+  out.push("not extensible", frInc(fixed), fixed.z, show(fixed.y++), "y" in fixed);
+  note("not extensible strict", function () { "use strict"; return fixed.y++; });
+  var inheritedRo = Object.create(ro);
+  out.push("inherited read only", roInc(inheritedRo), inheritedRo.w, Object.keys(inheritedRo).length);
+  var inheritedSetter = Object.create(acc);
+  out.push("inherited setter", accInc(inheritedSetter), inheritedSetter._p, Object.keys(inheritedSetter).join());
+})();
+
+// Every kind of object, and what is no object.
+(function () {
+  function inc(x) { return x.n++; }
+  function dec(x) { return --x.n; }
+  var arr = [1, 2, 3]; arr.n = 1;
+  function f() {} f.n = 1;
+  var date = new Date(0); date.n = 1;
+  var map = new Map(); map.n = 1;
+  var re = /a/g; re.n = 1;
+  var typed = new Uint8Array(2); typed.n = 1;
+  var args = (function () { return arguments; })(); args.n = 1;
+  class C { static n = 1; } var inst = new C(); inst.n = 1;
+  var err = new Error("e"); err.n = 1;
+  var all = [arr, f, date, map, re, typed, args, C, inst, err, Object.create(null, { n: { value: 1, writable: true } })];
+  var row = [];
+  for (var i = 0; i < all.length; i++) row.push(inc(all[i]) + "" + dec(all[i]) + inc(all[i]) + all[i].n);
+  out.push("objects", row.join(" "));
+  // The length of an Array and of a function, the index of a RegExp, the name of a function.
+  var list = [1, 2, 3];
+  out.push("length", list.length++, list.length, --list.length, list.length, list.join());
+  list.length--; list.length--; out.push(list.join(), list.length);
+  note("length too far", function () { var l = []; l.length--; return l.length; });
+  var rx = /a/g; rx.lastIndex++; rx.lastIndex++; out.push("lastIndex", rx.lastIndex, rx.lastIndex--, rx.lastIndex);
+  function g(a, b) {} out.push("fn length", g.length++, g.length, show(g.name++), g.name);
+  note("fn length strict", function () { "use strict"; return g.length++; });
+  var str = "abc"; out.push("string", show(str.length++), str.length, show(str.x++), show(str.x));
+  note("string strict", function () { "use strict"; return str.x++; });
+  note("string length strict", function () { "use strict"; return str.length++; });
+  var num = 5; out.push("number", show(num.x++), show(++num.x), num);
+  note("undefined", function () { var u; return u.x++; });
+  note("null", function () { var u = null; return ++u.x; });
+  note("undefined statement", function () { var u; u.x++; return 1; });
+  var sym = Symbol("s"); out.push("symbol base", show(sym.x++));
+  out.push("bigint base", show((1n).x++), "boolean base", show(true.x--));
+  // A Proxy sees a get and a set.
+  var plog = [];
+  var proxy = new Proxy({ n: 1 }, { get: function (t, k, r) { plog.push("get " + String(k)); return t[k]; }, set: function (t, k, v, r) { plog.push("set " + String(k) + " " + v + " " + (r === proxy)); t[k] = v; return true; } });
+  out.push("proxy", inc(proxy), dec(proxy), plog.join("; "));
+  var refuses = new Proxy({ n: 1 }, { set: function () { return false; } });
+  out.push("proxy refuses", inc(refuses), refuses.n);
+  note("proxy refuses strict", function () { "use strict"; return refuses.n++; });
+  // An object whose valueOf changes the object that holds it.
+  var holder = { v: null, other: 1 };
+  holder.v = { valueOf: function () { delete holder.other; holder.added = true; return 5; } };
+  out.push("valueOf reshapes", holder.v++, holder.v, JSON.stringify(holder));
+  var holder2 = { v: { valueOf: function () { Object.freeze(holder2); return 5; } } };
+  out.push("valueOf freezes", show(holder2.v++), typeof holder2.v);
+  var holder3 = { v: { valueOf: function () { throw new RangeError("no"); } } };
+  note("valueOf throws", function () { return holder3.v++; });
+  out.push(typeof holder3.v);
+  var holder4 = { get v() { return { valueOf: function () { return 1; } }; }, set v(x) { throw new EvalError("set " + x); } };
+  note("setter throws", function () { return ++holder4.v; });
+  note("setter throws post", function () { try { holder4.v++; } catch (e) { return e.message; } });
+})();
+
+// `this`, a name of an enclosing function, a global, a chain, a call as the object.
+var globalCounter = { n: 0 };
+(function () {
+  function Counter() { this.n = 0; }
+  Counter.prototype.up = function () { return ++this.n; };
+  Counter.prototype.down = function () { this.n--; return this.n; };
+  Counter.prototype.post = function () { return this.n++ + this.n--; };
+  var c = new Counter();
+  var r = [];
+  for (var i = 0; i < 5; i++) r.push(c.up());
+  r.push(c.down(), c.post(), c.n);
+  out.push("this", r.join(","));
+  const kept = { hits: 0, deep: { er: { n: 10 } } };
+  function hit() { var s = 0; for (var i = 0; i < 4; i++) { kept.hits++; s += kept.hits; s += kept.deep.er.n--; } return s; }
+  out.push("kept", hit(), hit(), kept.hits, kept.deep.er.n);
+  function g() { for (var i = 0; i < 3; i++) globalCounter.n++; return --globalCounter.n; }
+  out.push("global", g(), g(), globalCounter.n);
+  var made = 0;
+  function make() { made++; return kept; }
+  out.push("call", make().hits++, ++make().hits, made, kept.hits);
+  // The object is evaluated once, before the value; the property is read once and written once.
+  var order = [];
+  var w = { get x() { order.push("get"); return 1; }, set x(v) { order.push("set " + v); } };
+  function base() { order.push("base"); return w; }
+  base().x++; ++base().x;
+  out.push("order", order.join(","));
+  // A class with a counter, static and of an instance; `super` is another kind of place.
+  class A { static made = 0; constructor() { A.made++; this.id = A.made; this.uses = 0; } use() { return this.uses++; } }
+  class B extends A { use() { super.use(); return ++this.uses; } bump() { return super.x++; } }
+  var b = new B(), b2 = new B();
+  out.push("class", A.made, b.id, b2.id, b.use(), b.use(), b.uses, show(b.bump()), show(b.x));
+})();
+
+// Shapes that change between and inside the loops that step.
+(function () {
+  function tick(o) { return ++o.t; }
+  var objs = [{ t: 0 }, { t: 0, a: 1 }, { a: 1, t: 0 }, { a: 1, b: 2, t: 0 }, Object.create({ t: 100 }), { get t() { return 7; }, set t(v) { this.last = v; } }];
+  var r = [];
+  for (var round = 0; round < 3; round++) for (var i = 0; i < objs.length; i++) r.push(tick(objs[i]));
+  out.push("shapes", r.join(","), JSON.stringify(objs));
+  var m = { n: 0 };
+  var s = [];
+  for (var i = 0; i < 8; i++) {
+    s.push(m.n++);
+    if (i === 1) m.extra = 1;
+    if (i === 2) delete m.extra;
+    if (i === 3) Object.defineProperty(m, "n", { get: function () { return 50; }, set: function (v) { s.push("set" + v); }, configurable: true });
+    if (i === 4) Object.defineProperty(m, "n", { value: 60, writable: false, configurable: true });
+    if (i === 5) Object.defineProperty(m, "n", { value: 70, writable: true });
+    if (i === 6) delete m.n;
+  }
+  out.push("morph", s.join(","), show(m.n));
+  // Many properties: a storage that grows while its counters are stepped.
+  var big = {};
+  for (var i = 0; i < 40; i++) { big["k" + i] = i; big.k0++; --big.k1; }
+  out.push("grows", big.k0, big.k1, big.k39, Object.keys(big).length);
+})();
+
+// Garbage between the steps, and doubles that are kept on the heap.
+(function () {
+  function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var s = "garbage " + i; if ((i & 1023) === 0) keep.push(s); } return keep.length; }
+  var o = { f: 0.1, i: 0, big: 9007199254740990 };
+  var r = [];
+  for (var i = 0; i < 5; i++) { o.f++; o.i--; o.big++; churn(20000); r.push(o.f, o.i, o.big); }
+  out.push("gc", r.join(","));
+})();
+
+// A generator steps the same way.
+(function () {
+  function* gen(o) { while (o.left-- > 0) yield ++o.made; return o.made; }
+  var st = { left: 3, made: 0 };
+  var got = [];
+  for (var v of gen(st)) got.push(v);
+  out.push("generator", got.join(","), st.left, st.made);
+})();
+out.join(" ")"##;
+    let expected = r##"four 6,4,5,5,7,3,6,4,8,2,7,3,9,1,8,2 {"a":9,"b":1,"c":9,"d":1,"e":9,"f":1,"g":9,"h":1} 2 0 220 1 3 3 number  5 kind0 1/1 2/2 0/0 1/1 1.5/1.5 0.5/0.5 2.5/2.5 1.1/1.1 1e+21/1e+21 -1e+21/-1e+21 4503599627370496/4503599627370496 9007199254740992/9007199254740992 9007199254740992/9007199254740992 -9007199254740990/-9007199254740990 2147483648/2147483648 -2147483647/-2147483647 36028797018963970/36028797018963970 -36028797018963970/-36028797018963970 72057594037927940/72057594037927940 Infinity/Infinity -Infinity/-Infinity NaN/NaN 8/8 8.5/8.5 1/1 13/13 NaN/NaN 17/17 1/1 2/2 1/1 1/1 NaN/NaN 11n/11n 0n/0n 1n/1n 9007199254740994n/9007199254740994n 1/1 6/6 NaN/NaN NaN/NaN 42/42 10/10 4n/4n 3/3 1/1 NaN/NaN kind1 -1/-1 0/0 -2/-2 -1/-1 -0.5/-0.5 -1.5/-1.5 0.5/0.5 -0.9/-0.9 1e+21/1e+21 -1e+21/-1e+21 4503599627370494/4503599627370494 9007199254740990/9007199254740990 9007199254740991/9007199254740991 -9007199254740992/-9007199254740992 2147483646/2147483646 -2147483649/-2147483649 36028797018963970/36028797018963970 -36028797018963970/-36028797018963970 72057594037927940/72057594037927940 Infinity/Infinity -Infinity/-Infinity NaN/NaN 6/6 6.5/6.5 -1/-1 11/11 NaN/NaN 15/15 -1/-1 0/0 -1/-1 -1/-1 NaN/NaN 9n/9n -2n/-2n -1n/-1n 9007199254740992n/9007199254740992n -1/-1 4/4 NaN/NaN NaN/NaN 40/40 8/8 2n/2n 1/1 -1/-1 NaN/NaN kind2 0/1 1/2 -1/0 -0/1 0.5/1.5 -0.5/0.5 1.5/2.5 0.1/1.1 1e+21/1e+21 -1e+21/-1e+21 4503599627370495/4503599627370496 9007199254740991/9007199254740992 9007199254740992/9007199254740992 -9007199254740991/-9007199254740990 2147483647/2147483648 -2147483648/-2147483647 36028797018963970/36028797018963970 -36028797018963970/-36028797018963970 72057594037927940/72057594037927940 Infinity/Infinity -Infinity/-Infinity NaN/NaN 7/8 7.5/8.5 0/1 12/13 NaN/NaN 16/17 -0/1 1/2 0/1 0/1 NaN/NaN 10n/11n -1n/0n 0n/1n 9007199254740993n/9007199254740994n 0/1 5/6 NaN/NaN NaN/NaN 41/42 9/10 3n/4n 2/3 0/1 NaN/NaN kind3 0/-1 1/0 -1/-2 -0/-1 0.5/-0.5 -0.5/-1.5 1.5/0.5 0.1/-0.9 1e+21/1e+21 -1e+21/-1e+21 4503599627370495/4503599627370494 9007199254740991/9007199254740990 9007199254740992/9007199254740991 -9007199254740991/-9007199254740992 2147483647/2147483646 -2147483648/-2147483649 36028797018963970/36028797018963970 -36028797018963970/-36028797018963970 72057594037927940/72057594037927940 Infinity/Infinity -Infinity/-Infinity NaN/NaN 7/6 7.5/6.5 0/-1 12/11 NaN/NaN 16/15 -0/-1 1/0 0/-1 0/-1 NaN/NaN 10n/9n -1n/-2n 0n/-1n 9007199254740993n/9007199254740992n 0/-1 5/4 NaN/NaN NaN/NaN 41/40 9/8 3n/2n 2/1 0/-1 NaN/NaN kind4 "s"/1 "s"/2 "s"/0 "s"/1 "s"/1.5 "s"/0.5 "s"/2.5 "s"/1.1 "s"/1e+21 "s"/-1e+21 "s"/4503599627370496 "s"/9007199254740992 "s"/9007199254740992 "s"/-9007199254740990 "s"/2147483648 "s"/-2147483647 "s"/36028797018963970 "s"/-36028797018963970 "s"/72057594037927940 "s"/Infinity "s"/-Infinity "s"/NaN "s"/8 "s"/8.5 "s"/1 "s"/13 "s"/NaN "s"/17 "s"/1 "s"/2 "s"/1 "s"/1 "s"/NaN "s"/11n "s"/0n "s"/1n "s"/9007199254740994n "s"/1 "s"/6 "s"/NaN "s"/NaN "s"/42 "s"/10 "s"/4n "s"/3 "s"/1 "s"/NaN kind5 "s"/-1 "s"/0 "s"/-2 "s"/-1 "s"/-0.5 "s"/-1.5 "s"/0.5 "s"/-0.9 "s"/1e+21 "s"/-1e+21 "s"/4503599627370494 "s"/9007199254740990 "s"/9007199254740991 "s"/-9007199254740992 "s"/2147483646 "s"/-2147483649 "s"/36028797018963970 "s"/-36028797018963970 "s"/72057594037927940 "s"/Infinity "s"/-Infinity "s"/NaN "s"/6 "s"/6.5 "s"/-1 "s"/11 "s"/NaN "s"/15 "s"/-1 "s"/0 "s"/-1 "s"/-1 "s"/NaN "s"/9n "s"/-2n "s"/-1n "s"/9007199254740992n "s"/-1 "s"/4 "s"/NaN "s"/NaN "s"/40 "s"/8 "s"/2n "s"/1 "s"/-1 "s"/NaN symbol!TypeError symbol post!TypeError seq 0,1,2,0.25,1.25,3,4,5n,6n,9007199254740991,9007199254740992,9007199254740992,9007199254740992,-9007199254740992,-9007199254740992,-9007199254740992,36028797018963970,36028797018963970,-36028797018963970,-36028797018963970 inherited 10 11 12 10 inherited absent NaN NaN NaN nothing accessor 1 2 3 get+set2+get+set3 getter only 8 8 7 getter only strict!TypeError setter only NaN NaN get+set2+get+set3+rNaN+rNaN read only 4 4 3 read only strict!TypeError frozen 1 1 1 frozen strict!TypeError frozen strict absent!TypeError sealed 1 2 3 not extensible 1 2 NaN false not extensible strict!TypeError inherited read only 4 3 0 inherited setter 3 4 _p objects 1112 1112 1112 1112 1112 1112 1112 1112 1112 1112 1112 length 3 4 3 3 1,2,3 1 1 length too far!RangeError lastIndex 2 2 1 fn length 2 2 NaN g fn length strict!TypeError string 3 3 NaN undefined string strict!TypeError string length strict!TypeError number NaN NaN 5 undefined!TypeError null!TypeError undefined statement!TypeError symbol base NaN bigint base NaN boolean base NaN proxy 1 1 get n; set n 2 true; get n; set n 1 true proxy refuses 1 1 proxy refuses strict!TypeError valueOf reshapes 5 6 {"v":6,"added":true} valueOf freezes 5 object valueOf throws!RangeError object setter throws!EvalError setter throws post=set 2 this 1,2,3,4,5,4,9,4 kept 44 44 8 2 global 2 4 4 call 8 10 2 10 order base,get,set 2,base,get,set 2 class 2 1 2 2 4 4 NaN NaN shapes 1,1,1,1,101,8,2,2,2,2,102,8,3,3,3,3,103,8 [{"t":3},{"t":3,"a":1},{"a":1,"t":3},{"a":1,"b":2,"t":3},{"t":103},{"t":7,"last":8}] morph 0,1,2,3,set51,50,60,70,NaN NaN grows 40 -38 39 40 gc 1.1,-1,9007199254740991,2.1,-2,9007199254740992,3.1,-3,9007199254740992,4.1,-4,9007199254740992,5.1,-5,9007199254740992 generator 1,2,3 -1 3"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
