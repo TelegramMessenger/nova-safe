@@ -271,7 +271,9 @@ particles 2.15x, a closure 2.25x); the table above is the one before them. A pro
 one instruction (area 4) took 3.35% more of its instructions off a step of the particles, counted
 the same way, a property that is pushed by the instruction that reads it 1.5% more, and an
 assignment that takes its object from the variable's slot 3.4% more, for 0.5 to 0.9% more
-instructions in the cases that call.
+instructions in the cases that call. An assignment to a variable of an enclosing function that
+leaves its value for the read after it (area 2) took 7.4% of its instructions off the call of a
+closure.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -794,6 +796,33 @@ Each such place then asked two tables, the constants for its name and the bindin
 remembers, and made a String of the name at every use. A site keeps its name beside what it
 remembers now (area 1, the same section): a variable of an enclosing function is read in 57
 instructions and written in 122, a global read in 102 and assigned in 332.
+
+A variable of an enclosing function that is assigned to and read next (`total += x; return total`,
+`n = next(); if (n) …`) was written where it was found, and then found again to be read. The
+assignment leaves what it assigned as the result now (`PutBindingAtSiteAndGet`, one more kind in
+the arm of the assignment), and the read is not made: the variable has what was assigned, once it
+is set. Where the arm does not set it (an immutable name in sloppy code, which an assignment
+leaves as it is; a name that is not where it was), the general way assigns and then reads. The
+compiler joins the two only where the read is the instruction after the assignment and nothing
+jumps in between: after a join of branches or at a turn of a loop the read is made as before.
+
+Counted by the instructions the cases retire, the call of a closure that adds to a variable of its
+maker and returns it is 7.4% fewer, and nothing else moves: the loops that assign to such a
+variable or to a global are 0.3 to 0.4% more, the one comparison of the kind at each assignment.
+With the two binaries run in turn under the other work, in two pairs of fifteen runs, that call is
+4.3 and 6.2% less; the table of the round's checks, taken under that work too, has it at 2.18x for
+2.34x.
+
+What a site remembers was tried one step further, and that is not kept: beside its place, the
+record the walk to the variable started from and the record it ended at, so that a walk from the
+same record is not made again and the name is not looked at where it ends. (That holds from one
+collection to the next, which forgets it for every site, and while no binding is removed from a
+record, which moves another to its place.) A read was 51 instructions for 56 and an assignment 107
+for 118, the call of a closure 2.5% fewer. But twelve bytes more for every site were 119 KB of the
+8 MB a widget has: a widget's runtime has ten thousand sites, one for every reference to a name
+of an enclosing function or of the global scope, and a long widget no longer fit. The table of
+sites may not grow. That it is 160 KB as it is, with a site for every reference and not for every
+name, is the next thing to look at there.
 
 ### 3. Calls
 
