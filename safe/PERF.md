@@ -279,8 +279,10 @@ Where that leaves the two cases, with no table of a quiet machine yet: the two e
 in one binary, and the least of nine to thirteen runs of each taken, which other work on the
 machine leaves near what a quiet machine gives (QuickJS's least times are those of its quiet
 tables). A step of the particles is 1.84 to 1.92x that way, and the call of a closure 2.04x, and
-2.01 to 2.02x once the names of bindings are compared at once and 1.99 to 2.00x once the read of
-such a variable asks nothing twice (area 2): the one case that is not under 2x, and on it. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
+2.01 to 2.02x once the names of bindings are compared at once, 1.99 to 2.00x once the read of
+such a variable asks nothing twice, and 1.96x once a place in the code keeps its name as the
+bytes that are compared (area 2). By this measure no case is over 2x; a table of a quiet machine
+has still to say so. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
 Float64Array 1.88x, a step of a generator 1.81x, a plain call 1.72x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
@@ -874,6 +876,24 @@ of every such read. It walks without asking now, and the read is 48 instructions
 by the instructions the cases retire, the call of a closure is 0.8% fewer and a loop that adds to
 such a variable 0.9%. With the two binaries run in turn under the other work each is 1.8% less,
 and with the two engines run in turn the call of a closure is 1.99 to 2.00x.
+
+A place in the code kept its name as a String beside what it remembers, and the name was made
+eight bytes at every read and every assignment there: five instructions of each. The place keeps
+the eight bytes now. The tables make them once, and again after a collection for a name of the
+heap, which is at another index then; what reads or assigns the variable compares them as they
+are. A read from a record after a collection that moved its names takes what it took before one
+(three million calls of a closure with names of twenty-eight letters, made after two hundred
+thousand strings of garbage: 280 ms with the collection and without).
+
+A variable of an enclosing function is read in 44 instructions for 50 and assigned in 110 for 115.
+Counted by the instructions the cases retire, the call of a closure is 1.5% fewer and a loop that
+adds to such a variable 2.7%. An assignment to a name of the global scope that may not be bound
+(`g = v` of a `var` or of a property of the global object) is 343 for 330: the Reference it makes
+is made of the String, which is made of the eight bytes there, and its two arms are longer by what
+the compiler made of them, whichever way the name is fetched (from the key, 340 to 343; from the
+constants, 345). With the two binaries run in turn under the other work the call of a closure is
+3.1% less and a loop that adds to a variable of an enclosing function 2.8%; with the two engines
+run in turn the call of a closure is 1.96x.
 
 The operator and the assignment of `total += x` as one instruction, for such a variable, were
 tried and are not kept. The call of a closure was 0.35% fewer of its instructions with the
