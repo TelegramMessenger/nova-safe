@@ -90,36 +90,36 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the assignment that takes its
-object from a slot (area 4), in machine instructions per operation:
+a million times the price of the operation. As of the round of the global scope that says when it
+changes (area 2), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 227 / 269 / 261 | 480 / 563 / 571 | 2.1-2.2x |
-| call of a method, of one that reads `this.n`, of an inherited one | 311 / 415 / 326 | 699 / 782 / 741 | 1.9-2.3x |
-| a callee that reads a variable of its maker, in place of its parameter | 3 | 56 | |
-| a callee that assigns one, more | 25 | 118 | |
-| read of a variable of the enclosing function, in place of a local | 2 | 3 | |
-| assignment to one, in place of a local | 2 | 57 | |
-| read of a global, in place of a local | 41 | 101 | 2.5x |
-| assignment to a global, in place of a local | 60 | 330 | 5.5x |
-| property read, own / inherited, in place of a local | 53 / 68 | 100 / 143 | 1.9-2.1x |
-| a second property of the same object, in place of a local | 53 | 74 | 1.4x |
-| property assignment, in place of a local | 52 | 118 | 2.3x |
-| getter / setter | 329 / 405 | 730 / 764 | 2.2x / 1.9x |
-| integer `+` of two locals, more | 23 | 87 | 3.8x |
-| `-(i & 7)` / `-x` of a double, more | 22 / 9 | 121 / 111 | |
-| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 238 | 3.5x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 326 | 541 / 484 / 560 | 1.7-2.1x |
-| `Math.max(i, 7)` | 270 | 415 | 1.5x |
-| Array element read / written | 55 / 52 | 134 / 177 | 2.5x / 3.4x |
-| Uint8Array element read / written | 88 / 77 | 197 / 208 | 2.2x / 2.7x |
-| Float64Array element read / written | 106 / 76 | 272 / 191 | 2.6x / 2.5x |
-| `new` of a function / of a class, one field set | 1073 / 1128 | 2142 / 2110 | 2.0x / 1.9x |
-| an object literal of two properties | 743 | 490 | 0.66x |
-| one callback of `forEach` (the whole turn) | 395 | 749 | 1.9x |
-| one step of `for-of` over a generator (the whole turn) | 492 | 908 | 1.8x |
-| `s.charCodeAt(i)` | 349 | 471 | 1.3x |
+| call, no argument / one / two | 228 / 270 / 262 | 478 / 561 / 569 | 2.1-2.2x |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 417 / 328 | 697 / 781 / 739 | 1.9-2.3x |
+| a callee that reads a variable of its maker, in place of its parameter | 2 | 43 | |
+| a callee that assigns one, more | 25 | 109 | |
+| read of a variable of the enclosing function, in place of a local | 2 | 2 | |
+| assignment to one, in place of a local | 3 | 49 | |
+| read of a global, in place of a local | 41 | 60 | 1.5x |
+| assignment to a global, in place of a local | 61 | 303 | 5.0x |
+| property read, own / inherited, in place of a local | 53 / 68 | 100 / 144 | 1.9-2.1x |
+| a second property of the same object, in place of a local | 53 | 75 | 1.4x |
+| property assignment, in place of a local | 53 | 119 | 2.2x |
+| getter / setter | 328 / 405 | 726 / 762 | 2.2x / 1.9x |
+| integer `+` of two locals, more | 24 | 88 | 3.7x |
+| `-(i & 7)` / `-x` of a double, more | 23 / 9 | 121 / 111 | |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 68 | 221 | 3.3x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 326 | 495 / 434 / 511 | 1.6-1.9x |
+| `Math.max(i, 7)` | 271 | 373 | 1.4x |
+| Array element read / written | 56 / 53 | 135 / 176 | 2.4x / 3.3x |
+| Uint8Array element read / written | 89 / 78 | 197 / 207 | 2.2x / 2.7x |
+| Float64Array element read / written | 106 / 76 | 271 / 191 | 2.6x / 2.5x |
+| `new` of a function / of a class, one field set | 1074 / 1130 | 2138 / 2110 | 2.0x / 1.9x |
+| an object literal of two properties | 745 | 490 | 0.66x |
+| one callback of `forEach` (the whole turn) | 395 | 742 | 1.9x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 911 | 1.9x |
+| `s.charCodeAt(i)` | 350 | 471 | 1.3x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
@@ -287,6 +287,15 @@ table had nearest to it are, on that build, the call of a closure 1.96x, trigono
 of one object 1.83x, a step of the particles 1.81x, a sort with a comparator 1.81x, and the rest
 1.79x and under. A table of a quiet machine has still to say so. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
 Float64Array 1.88x, a step of a generator 1.81x, a plain call 1.72x.
+
+With the global scope saying when it changes and the sweep by the words of the marks (areas 2 and
+9), by the same measure: trigonometry 1.71x, calls of `Math` functions 1.52x for 1.68x, a loop
+over a global 1.55x for 1.76x, the arithmetic of a Float64Array 1.79x. What that round did not
+touch reads as it did or within what the measure scatters by under more of the other work (a load
+of 50 to 120): the call of a closure 1.96x, the properties of one object 1.79x, a sort with a
+comparator 1.86x, a step of the particles 1.90x, objects spread and assigned 1.90 to 2.07x on this
+build and 1.90x on the one before in the same minutes, where the two builds run in turn are level
+(34.4 to 35.8 ms each, whichever is run first) and retire the same instructions.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -903,6 +912,48 @@ tried and are not kept. The call of a closure was 0.35% fewer of its instruction
 operator found by its number, and no fewer with `+` tried first as the operator it is, each call
 two to three machine instructions longer with the arm: what one dispatch saves, finding the
 operator and one more arm cost.
+
+A read of a global that is a property of the global object asked every time whether the global
+scope was as it had been seen: the number of the state, two counters of the heap (the collections,
+the keys of an intrinsic shape moved in place), the running realm, the shape of the global object,
+the number of lexical declarations of the global scope, and then the record of the shape for the
+capacity of the object's storage and the slots it uses: 55 of the 101 instructions of the read,
+most of them a record read through another (QuickJS reads a global in 41). All of it but one
+thing happens where the engine can say so, and seldom, so the global scope says when it changes
+and the state is forgotten then: by a collection, which moves what the state names; by the three
+functions that change the shape of an intrinsic object in place (a key removed from among the
+others, private names put in front, a key added at the end, which moves none and counts only
+when the values go to a storage of another capacity); by the two functions of the global record
+that add a lexical declaration, which may be of a name that was a property. A realm that is made
+is counted, and the running realm is compared with the one of the state only in an agent that
+has made more than one. What nothing tells of is asked: whether the global object has the shape
+it had, which any property added to an ordinary object changes. The capacity of the storage is
+kept with the state, the storage itself is read from the object's record with its shape, and the
+slot is read as the property cache reads one of a capacity it knows, without the count of the
+slots in use: a place that is remembered is in use until a key is removed. No place is
+remembered in a storage of more than 65,536 slots, which is read by a call, for which the
+function kept a frame on every way through it.
+
+Each of those tells was a comparison because a place read in a state it was not found in is a
+wrong value and no failure, so each is tested by what goes wrong without it. Three scripts of
+one global scope add 1,200 properties to the global object while its variables are read, remove
+some, put an accessor in place of a value and back, collect, and then declare lexical names over
+properties, where the first thing a later script does is call a function of an earlier one by a
+lexical name, so that no property of the global object is found anew, which would see the state
+changed, before the old places are read. With the tell of a removed key taken out, or of a
+lexical declaration, the test fails at the name it finds at the place; with that of the capacity
+it never ends (the counter of its loop is such a variable). A collection moves nothing that the
+state names in a runtime of one realm, so no script tells of it: a test of the engine asks
+whether the state is remembered after each of the four.
+
+A global is read in 60 instructions for 101 and assigned in 303 for 343, and every call of
+`Math.sqrt` and its like, which reads `Math` first, is 41 fewer (434 for 476; `Math.max(i, 7)`
+373 for 415). Counted by the instructions the cases retire, a loop over a global is 11.5%
+fewer, trigonometry 7.6% (with the sweep of area 9), calls of `Math` functions 7.1%, a frame of
+easing 2.0%, a class that calls its parent's methods 1.4%; nothing is more. The reader of a slot
+had the function of the property cache as its one caller, and was a function of its own again
+with a second: a property was read in eight instructions more. The read of a global has a reader
+of its own for the capacities that are not read by a call.
 
 ### 3. Calls
 
@@ -2500,6 +2551,18 @@ run in turn.
 ### 9. Garbage
 
 Allocation-heavy loops are about 2x, strings as garbage 5x. Not a priority.
+
+A collection looked at every item of every vector of the heap to keep it or drop it, the mark of
+each taken from an iterator over the marks, one at a time. A loop of arithmetic on doubles leaves
+some hundred thousand dead Numbers between two collections (every result that is no small Number
+is a Number of the heap, area 6), and the look at each was 5.6% of the time of
+`math/trig-and-sqrt`. The marks are read 64 at a look now and only the live items are visited:
+each changes places with the first dead one below it, which keeps the live ones in their order,
+and the dead ones are dropped together at the end. A run of dead items costs its words. The sweep
+is 1.7% of that case after, `x * 0.999 + 0.25` on doubles is 221 instructions for 236, and counted
+by the instructions the cases retire trigonometry and the arithmetic of a Float64Array are 2.4%
+fewer, a step of the particles and a frame of easing 0.3%; a tree built and walked and a
+tokenizer, where most of what is swept lives, are the same to 0.2%.
 
 ## Defects found on the way
 
