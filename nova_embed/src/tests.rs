@@ -17169,3 +17169,221 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `p.x = v` and `p.x += v` of a local that the value does not assign to
+/// take the object from the variable's slot when the assignment is made,
+/// where it was pushed before the value and popped after: the object is
+/// the one the variable held before the value either way. Values of every
+/// kind, plain and with every operator; values that assign to the
+/// variable (a comma, a chain, a destructuring), which are compiled as
+/// before, and values that assign to a property of the object or to
+/// another variable; undefined, null and primitives as the object, with
+/// the value evaluated first, and a variable that is not initialized yet,
+/// with the value not evaluated; data properties, accessors with one half
+/// or both, properties that are not writable, inherited ones, new ones,
+/// of frozen, sealed and not extensible objects, in sloppy and in strict
+/// code; a setter that throws and one that reshapes its object; objects
+/// of every kind, a Proxy that sees the set and one that refuses it, the
+/// length of an Array; parameters, the names of functions and classes,
+/// catch parameters, loop variables and destructured names as the local;
+/// objects that grow and shapes that change under the same code; the
+/// order of getters, setters and conversions; garbage made between the
+/// assignments; a generator. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn a_property_of_a_local_is_assigned_from_its_slot_as_from_the_stack() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(assignments_to_properties_of_locals)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn assignments_to_properties_of_locals() {
+    let script = r##"// `p.x = v` and `p.x += v` of a local `p` that the value does not assign to: the object is not pushed before the value
+// is evaluated, the assignment takes it from the variable's slot.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + String(f())); } catch (e) { out.push(label + "!" + e.name); } }
+function show(v) { return typeof v === "bigint" ? v + "n" : Object.is(v, -0) ? "-0" : typeof v === "string" ? JSON.stringify(v) : typeof v === "function" ? "fn" : typeof v === "symbol" ? "sym" : v instanceof Array ? "[" + v.map(show).join() + "]" : v && typeof v === "object" ? "{" + Object.keys(v).map(function (k) { return k + ":" + show(v[k]); }).join() + "}" : String(v); }
+
+// Every kind of value, plain and with every operator.
+(function () {
+  var values = [0, -0, 1, -7, 2.5, 0.1, 1e21, NaN, Infinity, "s", "", "12", true, false, null, undefined, 10n, [], [3], {}, { valueOf: function () { return 6; } }, function () {}];
+  var row = [];
+  for (var i = 0; i < values.length; i++) {
+    var o = { v: 1 };
+    o.v = values[i];
+    o.w = values[i];
+    row.push(show(o.v) + (o.w === o.v || o.v !== o.v ? "" : "?"));
+  }
+  out.push("plain", row.join(" "));
+  var ops = [function (p, v) { p.x += v; }, function (p, v) { p.x -= v; }, function (p, v) { p.x *= v; }, function (p, v) { p.x /= v; }, function (p, v) { p.x %= v; }, function (p, v) { p.x **= v; },
+    function (p, v) { p.x <<= v; }, function (p, v) { p.x >>= v; }, function (p, v) { p.x >>>= v; }, function (p, v) { p.x &= v; }, function (p, v) { p.x |= v; }, function (p, v) { p.x ^= v; }];
+  var starts = [7, -7, 2.5, "5", "t", true, null, undefined, 9n, [2], { valueOf: function () { return 3; } }];
+  var operands = [2, -1, 0.5, "3", "u", false, null, undefined, 2n, {}];
+  for (var k = 0; k < ops.length; k++) {
+    var line = [];
+    for (var a = 0; a < starts.length; a++) for (var b = 0; b < operands.length; b++) {
+      var p = { x: starts[a] };
+      try { ops[k](p, operands[b]); line.push(show(p.x)); } catch (e) { line.push("!" + e.name[0]); }
+    }
+    out.push("op" + k, line.join(","));
+  }
+})();
+
+// The object is the one the variable held before the value: a value that assigns to the variable.
+(function () {
+  var a = { n: "a" }, b = { n: "b" }, c = { n: "c" };
+  var p = a; p.x = (p = b, 1);
+  out.push("reassigned", show(a), show(b), p.n);
+  p = a; p.x += (p = b, 10);
+  out.push(show(a), show(b));
+  p = a; p.y = p = c;
+  out.push(show(a), show(c), p.n);
+  p = a; p.z = [p] = [b];
+  out.push(show(a.z), p.n);
+  p = a; p.w = ({ q: p } = { q: c }).q;
+  out.push(show(a.w === c), p.n);
+  var i = 0, list = [{}, {}, {}], q = list[0];
+  q.k = (q = list[++i], i); q.k = (q = list[++i], i);
+  out.push(show(list), i);
+  var n = { v: 5 }; n.v = n.v++ + ++n.v; out.push(n.v);
+  var m = { v: 5 }; m.v += m.v++; m.v *= (m.v = 2) + m.v; out.push(m.v);
+  // A value that assigns to a property of the object, or to another variable, leaves the object the variable's.
+  var r = { a: 1 }, s = { a: 2 }, t;
+  r.b = r.a = 7; r.c = s.a = r.b + 1; r.d = t = r; r.e = (s = r, s.a);
+  out.push(show({ a: r.a, b: r.b, c: r.c, e: r.e }), r.d === r, t === r, s === r);
+})();
+
+// What is not an object, and what is not there yet.
+(function () {
+  var log = [];
+  function f(v) { log.push("f" + v); return v; }
+  var u, nul = null, str = "abc", num = 5, sym = Symbol("s"), big = 1n, bool = true;
+  note("undefined", function () { u.x = f(1); });
+  note("null", function () { nul.x = f(2); });
+  note("undefined compound", function () { u.x += f(3); });
+  note("null compound", function () { nul.x *= f(4); });
+  str.x = f(5); num.x = f(6); bool.x = f(7); sym.x = f(8); big.x = f(9); str.length = 1; str[0] = "z";
+  out.push("primitives", str, str.x, num.x, str.length, log.join(""));
+  note("string strict", function () { "use strict"; var s = "abc"; s.x = 1; });
+  note("number strict", function () { "use strict"; var n = 5; n.x += 1; });
+  note("symbol strict", function () { "use strict"; var s = Symbol(); s.x = 1; });
+  note("tdz", function () { early.x = f("no"); let early = {}; return 1; });
+  note("tdz compound", function () { early.x += f("no"); const early = {}; return 1; });
+  note("const", function () { const k = {}; k.x = 1; k.x += 2; return k.x; });
+  out.push(log.join(""));
+})();
+
+// Every kind of property that is assigned to.
+(function () {
+  var log = [];
+  function make() {
+    var o = { data: 1, get acc() { log.push("g"); return this._a; }, set acc(v) { log.push("s" + v); this._a = v; }, get ro() { return "ro"; }, _a: 0 };
+    Object.defineProperty(o, "fixed", { value: "fixed", writable: false, enumerable: true, configurable: true });
+    return o;
+  }
+  function assign(o) { o.data = 2; o.acc = 3; o.ro = 4; o.fixed = 5; o.fresh = 6; o.data += 1; o.acc += 1; o.ro += "!"; o.fixed += "!"; o.fresh2 += 1; return show(o); }
+  out.push("kinds", assign(make()), assign(make()), log.join(""));
+  note("strict getter only", function () { "use strict"; var o = make(); o.ro = 1; });
+  note("strict read only", function () { "use strict"; var o = make(); o.fixed = 1; });
+  note("strict read only compound", function () { "use strict"; var o = make(); o.fixed += 1; });
+  var frozen = Object.freeze({ a: 1 }), sealed = Object.seal({ a: 1 }), fixed = Object.preventExtensions({ a: 1 });
+  frozen.a = 2; frozen.b = 2; sealed.a = 2; sealed.b = 2; fixed.a = 2; fixed.b = 2; frozen.a += 5; sealed.a += 5;
+  out.push(show(frozen), show(sealed), show(fixed));
+  note("strict frozen", function () { "use strict"; var o = frozen; o.a = 3; });
+  note("strict sealed add", function () { "use strict"; var o = sealed; o.b = 3; });
+  note("strict not extensible add", function () { "use strict"; var o = fixed; o.b += 3; });
+  var proto = { inherited: 1, set viaSetter(v) { this.got = v; } };
+  Object.defineProperty(proto, "locked", { value: "L", writable: false });
+  var child = Object.create(proto);
+  child.inherited = 2; child.viaSetter = 3; child.locked = 4; child.inherited += 10;
+  out.push(show(child), proto.inherited, child.locked);
+  note("strict inherited read only", function () { "use strict"; var o = Object.create(proto); o.locked = 1; });
+  // A setter that throws, and one that changes the object's shape; the stack is as it was after either.
+  var bomb = { set x(v) { throw new RangeError("x" + v); }, set grow(v) { this["k" + v] = v; delete this.gone; }, gone: 1 };
+  function tryBomb(o, v) { var keep = [1, 2, 3]; try { o.x = v; } catch (e) { return keep.length + e.message; } return "none"; }
+  out.push(tryBomb(bomb, 1), tryBomb(bomb, 2), tryBomb({ x: 0 }, 3));
+  for (var i = 0; i < 4; i++) bomb.grow = i;
+  out.push(Object.keys(bomb).join());
+})();
+
+// Every kind of object as the local.
+(function () {
+  function put(o) { o.tag = 1; o.tag += 1; o.length = 1; return show(o.tag) + ":" + show(o.length); }
+  var plog = [];
+  var proxy = new Proxy({}, { set: function (t, k, v, r) { plog.push(String(k) + "=" + v + (r === proxy)); t[k] = v; return true; }, get: function (t, k) { plog.push("get " + String(k)); return t[k]; } });
+  var refuses = new Proxy({}, { set: function () { return false; } });
+  var all = [[1, 2, 3], function (a, b) {}, new Date(0), new Map(), /x/, new Uint8Array(3), (function () { return arguments; })(1, 2), class K {}, new (class { constructor() { this.tag = 0; } })(), Object.create(null), proxy, refuses, new Error("e"), Math, new Proxy([], {})];
+  var row = [];
+  for (var i = 0; i < all.length; i++) { try { row.push(put(all[i])); } catch (e) { row.push("!" + e.name); } }
+  out.push("objects", row.join(" "), plog.join(","));
+  note("proxy refuses strict", function () { "use strict"; var o = refuses; o.x = 1; });
+  var arr = [1, 2, 3, 4]; arr.length = 2; arr.length += 3; arr.extra = "e"; out.push(arr.length, arr.join(), arr.extra);
+  note("array length", function () { var a = []; a.length = -1; });
+  var typed = new Float64Array(2); typed.x = 1; typed.length = 9; out.push(typed.length, typed.x);
+  function fn(a) {} fn.name = "renamed"; fn.custom = 1; fn.prototype = { p: 1 }; out.push(fn.name, fn.custom, new fn().p);
+  // Parameters, the names of functions and of classes, catch parameters, loop variables, destructured names.
+  function params(a, b = {}, ...rest) { a.x = 1; b.y = 2; rest.z = 3; a.x += b.y; return show(a) + show(b) + rest.z; }
+  function self() { self.calls = (self.calls || 0) + 1; self.calls += 0; return self.calls; }
+  class Counted { static n = 0; constructor() { Counted.n += 1; } }
+  new Counted(); new Counted();
+  var caught; try { throw { code: 1 }; } catch (e) { e.code += 1; e.seen = true; caught = e; }
+  var loops = []; for (let o of [{}, {}]) { o.i = loops.length; o.i += 10; loops.push(o); } for (const k in { a: 1 }) { var kk = {}; kk.k = k; loops.push(kk); }
+  var { d1, d2 = {} } = { d1: {} }, [d3] = [{}]; d1.v = 1; d2.v = 2; d3.v = 3; d3.v += d1.v + d2.v;
+  out.push(params({}), self(), self(), Counted.n, show(caught), show(loops), show([d1, d2, d3]));
+})();
+
+// Objects that grow, shapes that change, many objects through the same code.
+(function () {
+  var big = {};
+  for (var i = 0; i < 70; i++) { big.count = i; big.sum = (big.sum || 0) + i; big["k" + i] = i; big.count += 1; }
+  out.push("grows", big.count, big.sum, Object.keys(big).length);
+  function Point(x, y) { var self = this; self.x = x; self.y = y; self.x += 0; }
+  function fill(o, v) { o.a = v; o.b = v + 1; o.a += o.b; return o; }
+  var made = [];
+  for (var i = 0; i < 6; i++) made.push(show(fill(i % 3 === 0 ? {} : i % 3 === 1 ? { b: 0 } : { z: 0, a: 0 }, i)), show(new Point(i, -i)));
+  out.push(made.join(" "));
+  var morph = { v: 0 }, trail = [];
+  for (var i = 0; i < 8; i++) {
+    morph.v = i; morph.v += 100; trail.push(show(morph.v));
+    if (i === 0) morph.extra = 1; if (i === 1) delete morph.extra; if (i === 2) Object.defineProperty(morph, "v", { set: function (x) { trail.push("set" + x); }, get: function () { return "G"; }, configurable: true });
+    if (i === 3) Object.defineProperty(morph, "v", { value: "W", writable: false, configurable: true }); if (i === 4) delete morph.v; if (i === 5) Object.setPrototypeOf(morph, { set v(x) { trail.push("proto" + x); } }); if (i === 6) Object.freeze(morph);
+  }
+  out.push("morph", trail.join(","));
+})();
+
+// The order of what is evaluated, with getters and conversions that log.
+(function () {
+  var log = [];
+  var o = { get x() { log.push("get"); return { valueOf: function () { log.push("valueOf"); return 1; } }; }, set x(v) { log.push("set" + v); } };
+  function rhs() { log.push("rhs"); return { valueOf: function () { log.push("rv"); return 2; } }; }
+  o.x += rhs(); o.x = rhs(); o.x -= 1;
+  var c = { n: 1 }; function bump() { c.n = 50; return 1; }
+  c.n += bump(); var d = { n: 1 }; function swap() { d.n *= 10; return d.n; } d.n = swap() + d.n;
+  out.push("order", log.join(","), c.n, d.n);
+})();
+
+// Garbage, doubles and strings kept across the assignment; a generator.
+(function () {
+  function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var s = "garbage " + i; if ((i & 1023) === 0) keep.push(s); } return keep.length; }
+  var acc = { f: 0.1, s: "", list: null, n: 0 };
+  for (var i = 0; i < 6; i++) { acc.f += 0.7; acc.s += "ab" + i; acc.list = [acc.list, i]; acc.n -= churn(15000); acc.f *= 1.5; }
+  out.push("gc", acc.f, acc.s, JSON.stringify(acc.list), acc.n);
+  function* gen() { var st = { got: "" }; st.got = yield 1; st.got += yield 2; st.sum = (yield 3) + st.got; return st; }
+  var it = gen(); it.next(); it.next("a"); it.next("b"); out.push("generator", show(it.next("c").value));
+})();
+out.join(" ")"##;
+    let expected = r##"plain 0 -0 1 -7 2.5 0.1 1e+21 NaN Infinity "s" "" "12" true false null undefined 10n [] [3] {} {valueOf:fn} fn op0 9,6,7.5,"73","7u",7,7,NaN,!T,"7[object Object]",-5,-8,-6.5,"-73","-7u",-7,-7,NaN,!T,"-7[object Object]",4.5,1.5,3,"2.53","2.5u",2.5,2.5,NaN,!T,"2.5[object Object]","52","5-1","50.5","53","5u","5false","5null","5undefined","52","5[object Object]","t2","t-1","t0.5","t3","tu","tfalse","tnull","tundefined","t2","t[object Object]",3,0,1.5,"true3","trueu",1,1,NaN,!T,"true[object Object]",2,-1,0.5,"null3","nullu",0,0,NaN,!T,"null[object Object]",NaN,NaN,NaN,"undefined3","undefinedu",NaN,NaN,NaN,!T,"undefined[object Object]",!T,!T,!T,"93","9u",!T,!T,!T,11n,"9[object Object]","22","2-1","20.5","23","2u","2false","2null","2undefined","22","2[object Object]",5,2,3.5,"33","3u",3,3,NaN,!T,"3[object Object]" op1 5,8,6.5,4,NaN,7,7,NaN,!T,NaN,-9,-6,-7.5,-10,NaN,-7,-7,NaN,!T,NaN,0.5,3.5,2,-0.5,NaN,2.5,2.5,NaN,!T,NaN,3,6,4.5,2,NaN,5,5,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,-1,2,0.5,-2,NaN,1,1,NaN,!T,NaN,-2,1,-0.5,-3,NaN,0,0,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,!T,!T,!T,!T,!T,!T,!T,!T,7n,!T,0,3,1.5,-1,NaN,2,2,NaN,!T,NaN,1,4,2.5,0,NaN,3,3,NaN,!T,NaN op2 14,-7,3.5,21,NaN,0,0,NaN,!T,NaN,-14,7,-3.5,-21,NaN,-0,-0,NaN,!T,NaN,5,-2.5,1.25,7.5,NaN,0,0,NaN,!T,NaN,10,-5,2.5,15,NaN,0,0,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,2,-1,0.5,3,NaN,0,0,NaN,!T,NaN,0,-0,0,0,NaN,0,0,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,!T,!T,!T,!T,!T,!T,!T,!T,18n,!T,4,-2,1,6,NaN,0,0,NaN,!T,NaN,6,-3,1.5,9,NaN,0,0,NaN,!T,NaN op3 3.5,-7,14,2.3333333333333335,NaN,Infinity,Infinity,NaN,!T,NaN,-3.5,7,-14,-2.3333333333333335,NaN,-Infinity,-Infinity,NaN,!T,NaN,1.25,-2.5,5,0.8333333333333334,NaN,Infinity,Infinity,NaN,!T,NaN,2.5,-5,10,1.6666666666666667,NaN,Infinity,Infinity,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,0.5,-1,2,0.3333333333333333,NaN,Infinity,Infinity,NaN,!T,NaN,0,-0,0,0,NaN,NaN,NaN,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,!T,!T,!T,!T,!T,!T,!T,!T,4n,!T,1,-2,4,0.6666666666666666,NaN,Infinity,Infinity,NaN,!T,NaN,1.5,-3,6,1,NaN,Infinity,Infinity,NaN,!T,NaN op4 1,0,0,1,NaN,NaN,NaN,NaN,!T,NaN,-1,-0,-0,-1,NaN,NaN,NaN,NaN,!T,NaN,0.5,0.5,0,2.5,NaN,NaN,NaN,NaN,!T,NaN,1,0,0,2,NaN,NaN,NaN,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,1,0,0,1,NaN,NaN,NaN,NaN,!T,NaN,0,0,0,0,NaN,NaN,NaN,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,!T,NaN,!T,!T,!T,!T,!T,!T,!T,!T,1n,!T,0,0,0,2,NaN,NaN,NaN,NaN,!T,NaN,1,0,0,0,NaN,NaN,NaN,NaN,!T,NaN op5 49,0.14285714285714285,2.6457513110645907,343,NaN,1,1,NaN,!T,NaN,49,-0.14285714285714285,NaN,-343,NaN,1,1,NaN,!T,NaN,6.25,0.4,1.5811388300841898,15.625,NaN,1,1,NaN,!T,NaN,25,0.2,2.23606797749979,125,NaN,1,1,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,1,1,NaN,!T,NaN,1,1,1,1,NaN,1,1,NaN,!T,NaN,0,Infinity,0,0,NaN,1,1,NaN,!T,NaN,NaN,NaN,NaN,NaN,NaN,1,1,NaN,!T,NaN,!T,!T,!T,!T,!T,!T,!T,!T,81n,!T,4,0.5,1.4142135623730951,8,NaN,1,1,NaN,!T,NaN,9,0.3333333333333333,1.7320508075688772,27,NaN,1,1,NaN,!T,NaN op6 28,-2147483648,7,56,7,7,7,7,!T,7,-28,-2147483648,-7,-56,-7,-7,-7,-7,!T,-7,8,0,2,16,2,2,2,2,!T,2,20,-2147483648,5,40,5,5,5,5,!T,5,0,0,0,0,0,0,0,0,!T,0,4,-2147483648,1,8,1,1,1,1,!T,1,0,0,0,0,0,0,0,0,!T,0,0,0,0,0,0,0,0,0,!T,0,!T,!T,!T,!T,!T,!T,!T,!T,36n,!T,8,0,2,16,2,2,2,2,!T,2,12,-2147483648,3,24,3,3,3,3,!T,3 op7 1,0,7,0,7,7,7,7,!T,7,-2,-1,-7,-1,-7,-7,-7,-7,!T,-7,0,0,2,0,2,2,2,2,!T,2,1,0,5,0,5,5,5,5,!T,5,0,0,0,0,0,0,0,0,!T,0,0,0,1,0,1,1,1,1,!T,1,0,0,0,0,0,0,0,0,!T,0,0,0,0,0,0,0,0,0,!T,0,!T,!T,!T,!T,!T,!T,!T,!T,2n,!T,0,0,2,0,2,2,2,2,!T,2,0,0,3,0,3,3,3,3,!T,3 op8 1,0,7,0,7,7,7,7,!T,7,1073741822,1,4294967289,536870911,4294967289,4294967289,4294967289,4294967289,!T,4294967289,0,0,2,0,2,2,2,2,!T,2,1,0,5,0,5,5,5,5,!T,5,0,0,0,0,0,0,0,0,!T,0,0,0,1,0,1,1,1,1,!T,1,0,0,0,0,0,0,0,0,!T,0,0,0,0,0,0,0,0,0,!T,0,!T,!T,!T,!T,!T,!T,!T,!T,!T,!T,0,0,2,0,2,2,2,2,!T,2,0,0,3,0,3,3,3,3,!T,3 op9 2,7,0,3,0,0,0,0,!T,0,0,-7,0,1,0,0,0,0,!T,0,2,2,0,2,0,0,0,0,!T,0,0,5,0,1,0,0,0,0,!T,0,0,0,0,0,0,0,0,0,!T,0,0,1,0,1,0,0,0,0,!T,0,0,0,0,0,0,0,0,0,!T,0,0,0,0,0,0,0,0,0,!T,0,!T,!T,!T,!T,!T,!T,!T,!T,0n,!T,2,2,0,2,0,0,0,0,!T,0,2,3,0,3,0,0,0,0,!T,0 op10 7,-1,7,7,7,7,7,7,!T,7,-5,-1,-7,-5,-7,-7,-7,-7,!T,-7,2,-1,2,3,2,2,2,2,!T,2,7,-1,5,7,5,5,5,5,!T,5,2,-1,0,3,0,0,0,0,!T,0,3,-1,1,3,1,1,1,1,!T,1,2,-1,0,3,0,0,0,0,!T,0,2,-1,0,3,0,0,0,0,!T,0,!T,!T,!T,!T,!T,!T,!T,!T,11n,!T,2,-1,2,3,2,2,2,2,!T,2,3,-1,3,3,3,3,3,3,!T,3 op11 5,-8,7,4,7,7,7,7,!T,7,-5,6,-7,-6,-7,-7,-7,-7,!T,-7,0,-3,2,1,2,2,2,2,!T,2,7,-6,5,6,5,5,5,5,!T,5,2,-1,0,3,0,0,0,0,!T,0,3,-2,1,2,1,1,1,1,!T,1,2,-1,0,3,0,0,0,0,!T,0,2,-1,0,3,0,0,0,0,!T,0,!T,!T,!T,!T,!T,!T,!T,!T,11n,!T,0,-3,2,1,2,2,2,2,!T,2,1,-4,3,0,3,3,3,3,!T,3 reassigned {n:"a",x:1} {n:"b"} b {n:"a",x:11} {n:"b"} {n:"a",x:11,y:{n:"c"}} {n:"c"} c [{n:"b"}] b true c [{k:1},{k:2},{}] 2 12 40 {a:7,b:7,c:8,e:7} true true true undefined!TypeError null!TypeError undefined compound!TypeError null compound!TypeError primitives abc   3 f1f2f5f6f7f8f9 string strict!TypeError number strict!TypeError symbol strict!TypeError tdz!ReferenceError tdz compound!ReferenceError const=3 f1f2f5f6f7f8f9 kinds {data:3,acc:4,ro:"ro",_a:4,fixed:"fixed",fresh:6,fresh2:NaN} {data:3,acc:4,ro:"ro",_a:4,fixed:"fixed",fresh:6,fresh2:NaN} s3gs4gs3gs4g strict getter only!TypeError strict read only!TypeError strict read only compound!TypeError {a:1} {a:7} {a:2} strict frozen!TypeError strict sealed add!TypeError strict not extensible add!TypeError {inherited:12,got:3} 1 L strict inherited read only!TypeError 3x1 3x2 none x,grow,k0,k1,k2,k3 objects 2:1 2:2 2:1 2:1 2:1 2:3 2:1 2:0 2:1 2:1 2:1 undefined:undefined 2:1 2:1 2:1 tag=1true,get tag,tag=2true,length=1true,get tag,get length proxy refuses strict!TypeError 5 1,2,,, e array length!RangeError 2 1 fn 1 1 {x:3}{y:2}3 1 2 2 {code:2,seen:true} [{i:10},{i:11},{k:"a"}] [{v:1},{v:2},{v:6}] grows 70 2415 72 {a:1,b:1} {x:0,y:-0} {b:2,a:3} {x:1,y:-1} {z:0,a:5,b:3} {x:2,y:-2} {a:7,b:4} {x:3,y:-3} {b:5,a:9} {x:4,y:-4} {z:0,a:11,b:6} {x:5,y:-5} morph 100,101,102,set3,setG100,"G","W",105,106,106 order get,rhs,valueOf,rv,set3,rhs,rv,set2,get,valueOf,set0 2 20 gc 22.959374999999998 ab0ab1ab2ab3ab4ab5 [[[[[[null,0],1],2],3],4],5] -90 generator {got:"ab",sum:"cab"}"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
