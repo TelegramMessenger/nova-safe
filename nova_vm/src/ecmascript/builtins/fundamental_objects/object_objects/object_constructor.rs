@@ -335,7 +335,8 @@ impl ObjectConstructor {
             // all from the first key: what was assigned is assigned again,
             // which nothing can see.
             if let Object::Object(plain) = from
-                && Self::assign_plain_properties(agent, to.get(agent), plain, gc.nogc())
+                && (Self::assign_to_empty_by_shape(agent, to.get(agent), plain, gc.nogc())
+                    || Self::assign_plain_properties(agent, to.get(agent), plain, gc.nogc()))
             {
                 continue;
             }
@@ -388,6 +389,59 @@ impl ObjectConstructor {
         }
         // 4. Return to.
         Ok(to.get(agent).into())
+    }
+
+    /// Assigns the properties of `from` to `to` as Object.assign does, all
+    /// at once, where that leaves `to` with the shape of `from` and a copy
+    /// of its values: `to` is an ordinary object that has no properties yet
+    /// and takes some, of the prototype `from` has, and `from` has only
+    /// plain data properties under String keys
+    /// ([`OrdinaryObject::try_copy_from_object`], which is what
+    /// CopyDataProperties comes to then). Object.assign assigns where that
+    /// defines, so a property of the same key on an object that `to`
+    /// inherits from would have its say (a setter is called, a property
+    /// that is not writable refuses): the copy is made only where no
+    /// object on the way has any of the keys, and each is an ordinary one.
+    /// Each assignment then makes a plain data property of `to`, in the
+    /// order of the keys, which is the copy. False with nothing done where
+    /// any of it is not so.
+    ///
+    /// (Key by key, each assignment looked for the key in the target and
+    /// in the objects it inherits from, and took the target from one shape
+    /// to the next: a tenth of `{ ...o }` followed by `Object.assign({},
+    /// o)` was the descriptors made of properties that are not there.)
+    fn assign_to_empty_by_shape(
+        agent: &mut Agent,
+        to: Object,
+        from: OrdinaryObject,
+        gc: crate::engine::NoGcScope,
+    ) -> bool {
+        let Object::Object(to) = to else {
+            return false;
+        };
+        if from.is_empty(agent) || !to.is_empty(agent) {
+            // Nothing to assign is left to the steps, which do nothing
+            // then; a target with properties takes each as it has it.
+            return false;
+        }
+        let storage = from.get_property_storage(agent);
+        if storage.descriptors.is_some() || storage.keys.iter().any(|key| !key.is_string()) {
+            return false;
+        }
+        let keys = storage.keys;
+        let mut inherited = to.internal_prototype(agent).bind(gc);
+        // A chain of prototypes ends, or is not one of ordinary objects.
+        while let Some(prototype) = inherited {
+            let Object::Object(prototype) = prototype else {
+                return false;
+            };
+            let theirs = prototype.get_property_keys(agent);
+            if keys.iter().any(|key| theirs.contains(key)) {
+                return false;
+            }
+            inherited = prototype.internal_prototype(agent).bind(gc);
+        }
+        to.try_copy_from_object(agent, from)
     }
 
     /// Assigns the properties of `from` to `to` as Object.assign does,
