@@ -1408,6 +1408,68 @@ impl<'a, T: Viewable> GenericTypedArray<'a, T> {
         (index < length).then(|| (buffer, byte_offset + index * size_of::<T>()))
     }
 
+    /// The buffer of the TypedArray and where in its bytes the element at
+    /// `index` starts, where the view is the one last seen
+    /// ([`TypedArrayViewSeen`]) and the index is within its length. None
+    /// for everything else, the view that was not seen included: nothing
+    /// here calls or can fail, so that the functions this is part of keep
+    /// no frame, and whoever asks goes on to [`Self::element_place`],
+    /// which sees the view.
+    #[inline(always)]
+    fn element_start_seen(
+        self,
+        agent: &Agent,
+        index: i64,
+    ) -> Option<(ArrayBuffer<'static>, usize)> {
+        let index = usize::try_from(index).ok()?;
+        let key = self.into_void_array().unbind();
+        let heap = &agent.heap;
+        let seen = &heap.typed_array_views[key.get_index() % TYPED_ARRAY_VIEWS_SEEN];
+        let buffer = seen.buffer.get()?;
+        if seen.array.get() != Some(key)
+            || seen.collections.get() != heap.collections
+            || heap.array_buffers.get(buffer.get_index())?.bytes().len()
+                != seen.buffer_byte_length.get()
+            || index >= seen.length.get()
+        {
+            return None;
+        }
+        Some((buffer, seen.byte_offset.get() + index * size_of::<T>()))
+    }
+
+    /// The element at `index` as it is in the buffer, where
+    /// [`Self::element_start_seen`] finds it.
+    #[inline(always)]
+    pub(crate) fn element_seen(self, agent: &Agent, index: i64) -> Option<T> {
+        let (buffer, start) = self.element_start_seen(agent, index)?;
+        let bytes = agent.heap.array_buffers.get(buffer.get_index())?.bytes();
+        let bytes = bytes.get(start..start.checked_add(size_of::<T>())?)?;
+        Some(T::read_ne(bytes))
+    }
+
+    /// Writes `element` at `index` where [`Self::element_start_seen`]
+    /// finds the place; false with nothing written where it does not.
+    #[inline(always)]
+    pub(crate) fn set_element_seen(self, agent: &mut Agent, index: i64, element: T) -> bool {
+        let Some((buffer, start)) = self.element_start_seen(agent, index) else {
+            return false;
+        };
+        let Some(bytes) = agent
+            .heap
+            .array_buffers
+            .get_mut(buffer.get_index())
+            .and_then(|buffer| {
+                buffer
+                    .bytes_mut()
+                    .get_mut(start..start.checked_add(size_of::<T>())?)
+            })
+        else {
+            return false;
+        };
+        element.write_ne(bytes);
+        true
+    }
+
     /// Where the elements of the TypedArray are now, kept for the next
     /// element read or written; None if its buffer is detached or it is out
     /// of the buffer's bounds, when it has no element.

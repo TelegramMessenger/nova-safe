@@ -99,6 +99,25 @@ impl DataBlock {
         self.bytes.is_none()
     }
 
+    /// The bytes of the block, none of a detached one: what dereferencing
+    /// it gives, as part of whoever asks.
+    #[inline(always)]
+    pub(crate) fn bytes(&self) -> &[u8] {
+        match &self.bytes {
+            Some(bytes) => bytes,
+            None => &[],
+        }
+    }
+
+    /// [`DataBlock::bytes`], to write them.
+    #[inline(always)]
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        match &mut self.bytes {
+            Some(bytes) => bytes,
+            None => &mut [],
+        }
+    }
+
     /// Allocate a new zeroed DataBlock with the given size.
     ///
     /// Returns None if the allocation is impossible.

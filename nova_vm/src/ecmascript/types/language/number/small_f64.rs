@@ -80,6 +80,20 @@ impl SmallF64 {
     }
 }
 
+impl SmallF64 {
+    /// `SmallF64::try_from(value)` as part of whoever asks: for the Number
+    /// made of an element of a TypedArray where its view was last seen,
+    /// which makes no call.
+    #[inline(always)]
+    pub(crate) fn of_double(value: f64) -> Option<Self> {
+        if SmallF64::can_convert(value) {
+            Some(Self::from_f64_unchecked(value))
+        } else {
+            None
+        }
+    }
+}
+
 impl TryFrom<f64> for SmallF64 {
     type Error = ();
     fn try_from(value: f64) -> Result<Self, Self::Error> {

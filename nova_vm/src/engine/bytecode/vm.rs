@@ -4748,26 +4748,44 @@ impl Vm {
     /// arguments, reads the argument where the object has it
     /// ([`UnmappedArguments::argument`](crate::ecmascript::UnmappedArguments)),
     /// and a TypedArray its element.
-    #[inline]
+    // A function of its own, which it was by the compiler's choice while
+    // its work was calls: part of the loop of instructions, the element of
+    // every kind of TypedArray read in place made every call there six
+    // instructions longer.
+    #[inline(never)]
     fn exotic_element(
         agent: &mut Agent,
         base: Value,
         index: i64,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
+        // Each of the two by a function called last, and the element of a
+        // TypedArray whose view was last seen read here: with either as a
+        // call in the middle, this function kept a frame of six registers
+        // for it on every way through.
         if let Value::Arguments(arguments) = base {
-            return arguments
-                .argument(agent, u32::try_from(index).ok()?)
-                .map(Value::unbind);
+            return Self::argument_of_arguments(agent, arguments, index);
         }
         Self::typed_array_element(agent, base, index, gc)
+    }
+
+    /// `arguments[index]` where the arguments object has the argument.
+    #[inline(never)]
+    fn argument_of_arguments(
+        agent: &mut Agent,
+        arguments: crate::ecmascript::UnmappedArguments,
+        index: i64,
+    ) -> Option<Value<'static>> {
+        arguments
+            .argument(agent, u32::try_from(index).ok()?)
+            .map(Value::unbind)
     }
 
     /// `a[i]` of a TypedArray, for an index within its length: the element,
     /// read from the buffer. Outside the length the general way gives
     /// undefined.
     #[cfg(feature = "array-buffer")]
-    #[inline]
+    #[inline(always)]
     fn typed_array_element(
         agent: &mut Agent,
         base: Value,
@@ -4775,6 +4793,26 @@ impl Vm {
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         let array = AnyTypedArray::try_from(base).ok()?;
+        // Read where the view of the TypedArray was last seen, with no
+        // call; everything else by a function of its own, called last, so
+        // that this one keeps no frame for it.
+        if let Some(value) = array.element_value_seen(agent, index) {
+            return Some(value);
+        }
+        Self::typed_array_element_unseen(agent, array, index, gc)
+    }
+
+    /// [`Vm::typed_array_element`] where the view of the TypedArray is not
+    /// the one last seen, or its element is not read from it as it is: the
+    /// view is seen, and TypedArrayGetElement answers.
+    #[cfg(feature = "array-buffer")]
+    #[inline(never)]
+    fn typed_array_element_unseen(
+        agent: &mut Agent,
+        array: AnyTypedArray,
+        index: i64,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
         let element = array.typed_array_get_element(agent, index, gc)?;
         Some(Value::from(element).unbind())
     }
@@ -4797,8 +4835,27 @@ impl Vm {
     #[cfg(feature = "array-buffer")]
     #[inline]
     fn set_typed_array_element(agent: &mut Agent, base: Value, index: i64, value: Value) -> bool {
-        AnyTypedArray::try_from(base)
-            .is_ok_and(|array| array.set_element_unconverted(agent, index, value))
+        // Written where the view of the TypedArray was last seen, by a
+        // function of its own that calls nothing; everything else as it
+        // was, here.
+        AnyTypedArray::try_from(base).is_ok_and(|array| {
+            Self::set_typed_array_element_seen(agent, array, index, value)
+                || array.set_element_unconverted(agent, index, value)
+        })
+    }
+
+    /// [`AnyTypedArray::set_element_seen`], as a function of its own: part
+    /// of the loop of instructions, the element of every kind of TypedArray
+    /// written in place is that much more of it.
+    #[cfg(feature = "array-buffer")]
+    #[inline(never)]
+    fn set_typed_array_element_seen(
+        agent: &mut Agent,
+        array: AnyTypedArray,
+        index: i64,
+        value: Value,
+    ) -> bool {
+        array.set_element_seen(agent, index, value)
     }
 
     #[cfg(not(feature = "array-buffer"))]

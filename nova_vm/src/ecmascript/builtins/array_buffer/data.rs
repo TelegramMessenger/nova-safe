@@ -219,6 +219,20 @@ impl<'a> ArrayBufferHeapData<'a> {
         self.buffer.data_block.is_detached()
     }
 
+    /// The bytes of the buffer as they are now: none of a detached one.
+    /// For the read of a TypedArray's element where its view was last
+    /// seen, which has no failure of its own to report.
+    #[inline(always)]
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.buffer.data_block.bytes()
+    }
+
+    /// [`ArrayBufferHeapData::bytes`], to write an element.
+    #[inline(always)]
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        self.buffer.data_block.bytes_mut()
+    }
+
     pub(crate) fn is_resizable(&self) -> bool {
         self.buffer.capacity != usize::MAX
     }

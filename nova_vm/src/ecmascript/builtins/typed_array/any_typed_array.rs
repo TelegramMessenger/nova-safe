@@ -1122,6 +1122,124 @@ impl<'a> AnyTypedArray<'a> {
         )
     }
 
+    /// `O[index]` for an integer index within the length of a TypedArray
+    /// whose view is the one last seen
+    /// ([`TypedArrayViewSeen`](super::normal_typed_array::TypedArrayViewSeen)),
+    /// for the kinds whose elements are Numbers: the element read from the
+    /// bytes of the buffer and made the Number that TypedArrayGetElement
+    /// makes of it. None for everything else, which
+    /// [`TypedArrayAbstractOperations::typed_array_get_element`] answers.
+    ///
+    /// Nothing here calls or can fail, and it is part of the one function
+    /// that asks: the element was read by three functions one inside the
+    /// other, two of them with a frame, and came back as a Numeric to be
+    /// made a Value.
+    #[inline(always)]
+    pub(crate) fn element_value_seen(
+        self,
+        agent: &mut Agent,
+        index: i64,
+    ) -> Option<Value<'static>> {
+        use crate::{ecmascript::Number, engine::Bindable};
+        let number: Number = match self {
+            Self::Int8Array(ta) => ta.element_seen(agent, index)?.into(),
+            Self::Uint8Array(ta) => ta.element_seen(agent, index)?.into(),
+            Self::Uint8ClampedArray(ta) => ta.element_seen(agent, index)?.0.into(),
+            Self::Int16Array(ta) => ta.element_seen(agent, index)?.into(),
+            Self::Uint16Array(ta) => ta.element_seen(agent, index)?.into(),
+            Self::Int32Array(ta) => ta.element_seen(agent, index)?.into(),
+            Self::Uint32Array(ta) => ta.element_seen(agent, index)?.into(),
+            // The Number of a double as [`Number::from_f64`] makes it,
+            // where the heap's vector of Numbers has room for one that goes
+            // there; and of the double of four bytes as `Number::from`
+            // makes it, which is the same Number of that double.
+            Self::Float32Array(ta) => {
+                return Self::number_value_in_place(
+                    agent,
+                    f64::from(ta.element_seen(agent, index)?),
+                );
+            }
+            Self::Float64Array(ta) => {
+                return Self::number_value_in_place(agent, ta.element_seen(agent, index)?);
+            }
+            _ => return None,
+        };
+        Some(Value::from(number).unbind())
+    }
+
+    /// The Number of `double` as a Value, made with no call: None where
+    /// the heap's vector of Numbers has to grow for it.
+    #[inline(always)]
+    fn number_value_in_place(agent: &mut Agent, double: f64) -> Option<Value<'static>> {
+        use crate::{ecmascript::Number, engine::Bindable};
+        if Number::is_heap_f64(double) {
+            Number::alloc_in_place(&mut agent.heap, double)
+                .map(|number| Value::Number(number.unbind()))
+        } else if Number::is_whole_and_safe(double) {
+            crate::ecmascript::SmallInteger::try_from(double as i64)
+                .ok()
+                .map(Value::Integer)
+        } else {
+            crate::ecmascript::SmallF64::of_double(double).map(Value::SmallF64)
+        }
+    }
+
+    /// `O[index] = value` for an integer index within the length of a
+    /// TypedArray whose view is the one last seen, where the element is
+    /// made of the value by a cast: an integer for the integer kinds (and a
+    /// double for the clamped one), an integer or a double for the two
+    /// kinds of doubles. False with nothing done for everything else, which
+    /// [`AnyTypedArray::set_element_unconverted`] does.
+    ///
+    /// Nothing here calls or can fail, as in
+    /// [`AnyTypedArray::element_value_seen`].
+    #[inline(always)]
+    pub(crate) fn set_element_seen(self, agent: &mut Agent, index: i64, value: Value) -> bool {
+        use crate::ecmascript::{Number, U8Clamped};
+        // The integer the value is, or the double: ToNumber has nothing to
+        // do for either.
+        let (integer, double) = match value {
+            Value::Integer(integer) => (Some(integer.into_i64()), None),
+            Value::SmallF64(double) => (None, Some(double.into_f64())),
+            Value::Number(number) => match Number::heap_f64(agent, number) {
+                Some(double) => (None, Some(double)),
+                None => return false,
+            },
+            _ => return false,
+        };
+        match (self, integer, double) {
+            // ToInt8 and the others of an integer are the integer modulo
+            // the size of the element, which the cast is.
+            (Self::Int8Array(ta), Some(i), _) => ta.set_element_seen(agent, index, i as i8),
+            (Self::Uint8Array(ta), Some(i), _) => ta.set_element_seen(agent, index, i as u8),
+            (Self::Int16Array(ta), Some(i), _) => ta.set_element_seen(agent, index, i as i16),
+            (Self::Uint16Array(ta), Some(i), _) => ta.set_element_seen(agent, index, i as u16),
+            (Self::Int32Array(ta), Some(i), _) => ta.set_element_seen(agent, index, i as i32),
+            (Self::Uint32Array(ta), Some(i), _) => ta.set_element_seen(agent, index, i as u32),
+            // ToUint8Clamp, as to_uint8_clamp_number has it.
+            (Self::Uint8ClampedArray(ta), Some(i), _) => {
+                ta.set_element_seen(agent, index, U8Clamped(i.clamp(0, 255) as u8))
+            }
+            (Self::Uint8ClampedArray(ta), _, Some(d)) => {
+                let clamped = if d.is_nan() {
+                    0
+                } else {
+                    d.clamp(0.0, 255.0).round_ties_even() as u8
+                };
+                ta.set_element_seen(agent, index, U8Clamped(clamped))
+            }
+            // An integer of a Value is a double exactly, and the double of
+            // an element of four bytes is that double rounded to it.
+            (Self::Float32Array(ta), Some(i), _) => {
+                ta.set_element_seen(agent, index, i as f64 as f32)
+            }
+            (Self::Float32Array(ta), _, Some(d)) => ta.set_element_seen(agent, index, d as f32),
+            (Self::Float64Array(ta), Some(i), _) => ta.set_element_seen(agent, index, i as f64),
+            (Self::Float64Array(ta), _, Some(d)) => ta.set_element_seen(agent, index, d),
+            _ => false,
+        }
+    }
+
     /// `O[index] = value` for an integer index (TypedArraySetElement) and a
     /// value that is already what the elements are made from, a Number, or
     /// a BigInt for the BigInt types: no conversion that could run a script
