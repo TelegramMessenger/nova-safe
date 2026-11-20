@@ -15893,3 +15893,133 @@ frozen 1,TypeError,1,TypeError,1,TypeError"##;
         "5,undefined,3,undefined,undefined,function,undefined,undefined 2,4,c2, 7 8 7 32 45"
     );
 }
+
+/// Method calls, whose this value is kept on the stack under the function
+/// while the arguments are worked out, with no Reference made for it:
+/// `o.m(x)` of an object in a local, in a global and at the end of a chain,
+/// `this.m(x)` in methods, static methods and through getters, with no
+/// argument, some, and more than the parameters; the forms that still make
+/// a Reference beside them (a computed name, an optional call, `super`, a
+/// private name, arguments that are spread, tagged templates, `new`);
+/// primitives as the this value in functions that are strict and that are
+/// not; built-ins that take a this value and that take none; bound
+/// functions, getters that give functions, a Proxy, and what is no
+/// function; the object or the method replaced while the arguments are
+/// worked out, an argument that throws, a callee that throws, and calls
+/// as arguments of calls; recursion through a method; and one call place
+/// with the kind of its object changing under it. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn a_method_call_has_its_this_value_under_the_function() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(method_calls)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn method_calls() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"// Method calls: the this value of `o.m(x)` in every form the call is written in, with what happens while the arguments
+// are worked out, and after calls that throw.
+var out = [];
+var G = globalThis;
+function name(v) { return v === G ? "global" : v === undefined ? "undefined" : v === null ? "null" : typeof v === "object" || typeof v === "function" ? (v.tag || Object.prototype.toString.call(v)) : typeof v + ":" + String(v); }
+function who() { return name(this) + "/" + arguments.length; }
+function strictWho() { "use strict"; return name(this) + "/" + arguments.length; }
+var o = { tag: "o", m: who, s: strictWho, inner: { tag: "inner", m: who, deep: { tag: "deep", m: who } }, get g() { return who; }, arrow: () => name(this) === "global" || name(this) === "[object Object]" };
+var other = { tag: "other", m: who };
+G.gobj63 = { tag: "gobj", m: who };
+function forms(p) {
+  var r = [];
+  r.push(p.m(), p.m(1), p.m(1, 2, 3), p.s(), p.s(1), p.inner.m(1), p.inner.deep.m(1, 2), p.g(1), p["m"](1), gobj63.m(1), gobj63.m());
+  var k = "m"; r.push(p[k](1), (p.m)(1), (0, p.m)(1), p.m.call(other, 1), p.m.apply(other, [1, 2]), p.m.bind(other)(1));
+  r.push(p?.m(1), p.m?.(1), p.nope?.(1), p.inner?.deep.m(1));
+  return r.join(" ");
+}
+for (var i = 0; i < 3; i++) out.push("forms " + forms(o));
+// this.m(x) in methods, classes, static and private methods, getters; super.
+class A { constructor(t) { this.tag = t; } who(x) { return name(this) + ":" + x; } call(x) { return this.who(x) + "|" + this.who(); } static make(t) { return new this(t); } static twice(t) { return this.make(t).call(1) + this.make(t + "2").who(2); } #p(x) { return "#" + this.tag + x; } priv(x) { return this.#p(x) + this.#p(x + 1); } get me() { return this; } viaGetter(x) { return this.me.who(x); } }
+class B extends A { who(x) { return "B" + super.who(x); } call(x) { return super.call(x) + "/" + this.who(x); } }
+var a = new A("a"), b = new B("b");
+out.push("classes " + [a.call(1), b.call(2), A.twice("t"), B.twice("u"), a.priv(1), b.priv(2), a.viaGetter(3), b.viaGetter(4), A.make("z").tag].join(" "));
+// Primitives as the this value, strict and not.
+String.prototype.w63 = who; String.prototype.sw63 = strictWho; Number.prototype.w63 = who; Number.prototype.sw63 = strictWho; Boolean.prototype.sw63 = strictWho; Symbol.prototype.sw63 = strictWho; BigInt.prototype.sw63 = strictWho;
+var str = "abc", num = 5, flt = 1.5;
+out.push("primitives " + [str.w63(1), str.sw63(1), num.w63(), num.sw63(1, 2), flt.sw63(), true.sw63(), Symbol.iterator.sw63(1), 10n.sw63(), "lit".sw63(), (7).sw63(), 5..toString(), str.charCodeAt(1), str.slice(1, 3), str.indexOf("c"), str.toUpperCase(), num.toFixed(1), flt.toString(2)].join(" "));
+// Built-ins called with a this value and without.
+var arr = [3, 1, 2];
+out.push("builtins " + [Math.max(1, 5, 2), Math.min(4, 2), Math.floor(2.5), Math.abs(-3), arr.push(9), arr.pop(), arr.indexOf(2), arr.includes(1), arr.join("-"), arr.slice(1).length, "a-b".split("-").length, "x".repeat(3), "7".padStart(3, "0"), "abc".startsWith("ab"), "abc".endsWith("bc"), "abc".includes("b"), "abc".charAt(2), JSON.stringify({ a: 1 }), Object.keys(o).length, Array.isArray(arr), Number.isInteger(5), String.fromCharCode(65, 66), parseInt("12px"), who.call(o, 1), who.call(), Function.prototype.call.call(who, other, 1, 2), Reflect.apply(who, o, [1])].join(" "));
+// Bound functions, getters that give functions, proxies, functions that are not there.
+var bound = { tag: "holder", b: who.bind(other), sb: strictWho.bind(undefined), bb: who.bind(other).bind(o) };
+var proxy = new Proxy({ tag: "target", m: who }, { get: function (t, k, r) { return k === "tag" ? "proxy" : k === "m" ? t.m : k === "who" ? function () { return name(this) === "proxy" ? "this-is-proxy" : "this-is-" + name(this); } : undefined; } });
+out.push("bound " + [bound.b(1), bound.sb(1, 2), bound.bb(), proxy.m(1), proxy.who(), proxy.who(1, 2)].join(" "));
+var errors = [];
+[function () { o.nope(1); }, function () { o.nope(); }, function () { undefined.m(1); }, function () { null.m(); }, function () { o.tag(1); }, function () { o.inner.nope(1, 2); }, function () { (5).nope(1); }, function () { var u; u.m(1); }, function () { A.prototype.priv.call({}, 1); }].forEach(function (f) { for (var i = 0; i < 2; i++) { try { f(); errors.push("no"); } catch (e) { errors.push(e.name); } } });
+out.push("errors " + errors.join(","));
+// While the arguments are worked out: the object or the method replaced, an argument that throws, calls in arguments.
+var trace = [];
+function arg(v) { trace.push("arg" + v); return v; }
+function boom() { trace.push("boom"); throw new RangeError("arg"); }
+var holder = { tag: "h1", m: function (a, b) { trace.push(name(this) + "(" + a + "," + b + ")"); return a + b; } };
+var h = holder, replaced = { tag: "h2", m: function () { trace.push("wrong"); return -1; } };
+var sums = [h.m(arg(1), (h = replaced, arg(2))), holder.m(arg(3), (holder.m = function () { trace.push("late"); return -9; }, arg(4))), holder.m(arg(5), 6)];
+out.push("replaced " + sums.join(",") + " " + trace.join(" "));
+trace = []; var kept = { tag: "kept", m: function (a, b, c) { return name(this) + ":" + a + b + c; }, count: 0 };
+for (var i = 0; i < 6; i++) { try { trace.push(kept.m(arg(i), i & 1 ? boom() : arg("x"), kept.m(1, 2, 3))); } catch (e) { trace.push(e.name); kept.count++; } }
+out.push("throws " + kept.count + " " + trace.join(" ") + " " + kept.m(1, kept.m(2, 3, 4), kept.m(kept.m(5, 6, 7), 8, 9)));
+function thrower(x) { if (x > 2) throw new TypeError("in " + name(this)); return x; }
+var tobj = { tag: "t", f: thrower, depth: function (n) { return n === 0 ? this.f(3) : this.depth(n - 1) + 1; } };
+var caught = []; for (var i = 0; i < 5; i++) { try { caught.push(tobj.f(i)); } catch (e) { caught.push(e.message); } try { tobj.depth(4); } catch (e) { caught.push("d" + e.message.length); } }
+out.push("callee throws " + caught.join(",") + " " + o.m(1) + " " + tobj.f(1));
+// Many arguments, more and fewer than the parameters, arguments spread, new, tagged templates, generators, recursion.
+var wide = { tag: "wide", m: function (a, b, c) { return name(this) + [a, b, c, arguments.length].join(""); }, sum: function () { var t = 0; for (var i = 0; i < arguments.length; i++) t += arguments[i]; return t + "/" + name(this); } };
+var list = [1, 2, 3, 4];
+function* gen(n) { for (var i = 0; i < n; i++) yield name(this) + i; }
+var gobj = { tag: "gen", g: gen, C: function (x) { this.x = x; this.tag = "made"; }, t: function (s, v) { return name(this) + s[0] + v; } };
+out.push("shapes " + [wide.m(), wide.m(1), wide.m(1, 2, 3, 4, 5), wide.sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20), wide.sum(...list), wide.sum(0, ...list, 5), wide.m(...list), Array.from(gobj.g(3)).join("+"), name(new gobj.C(1)), new gobj.C(2).x, gobj.t`a${1}b`].join(" "));
+var deepObj = { tag: "deepObj", fact: function (n) { return n <= 1 ? 1 : n * this.fact(n - 1); }, count: function (n) { return n === 0 ? name(this) : this.count(n - 1); }, fib: function (n) { return n < 2 ? n : this.fib(n - 1) + this.fib(n - 2); } };
+out.push("recursion " + [deepObj.fact(10), deepObj.count(1500), deepObj.fib(15)].join(" "));
+// The same call many times, with the kinds of its object changing under it.
+function callIt(x, v) { return x.m(v); }
+var kinds = [o, other, { tag: "fresh", m: who, extra: 1 }, Object.create(o), new A("inst"), "text", 7, proxy, bound];
+A.prototype.m = who; bound.m = who.bind(other); String.prototype.m = strictWho; Number.prototype.m = who;
+var mixed = []; for (var r = 0; r < 3; r++) for (var i = 0; i < kinds.length; i++) mixed.push(callIt(kinds[i], r)); out.push("mixed " + mixed.slice(-kinds.length).join(" "));
+var total = 0; var counter = { n: 0, bump: function (by) { this.n += by; return this.n; }, get: function () { return this.n; } }; for (var i = 0; i < 20000; i++) { counter.bump(i & 3); total += counter.get() & 1; } out.push("loop " + counter.n + " " + total);
+out.join("\n")"##;
+    let expected = r##"forms o/0 o/1 o/3 o/0 o/1 inner/1 deep/2 o/1 o/1 gobj/1 gobj/0 o/1 o/1 global/1 other/1 other/2 other/1 o/1 o/1  deep/1
+forms o/0 o/1 o/3 o/0 o/1 inner/1 deep/2 o/1 o/1 gobj/1 gobj/0 o/1 o/1 global/1 other/1 other/2 other/1 o/1 o/1  deep/1
+forms o/0 o/1 o/3 o/0 o/1 inner/1 deep/2 o/1 o/1 gobj/1 gobj/0 o/1 o/1 global/1 other/1 other/2 other/1 o/1 o/1  deep/1
+classes a:1|a:undefined Bb:2|Bb:undefined/Bb:2 t:1|t:undefinedt2:2 Bu:1|Bu:undefined/Bu:1Bu2:2 #a1#a2 #b2#b3 a:3 Bb:4 z
+primitives [object String]/1 string:abc/1 [object Number]/0 number:5/2 number:1.5/0 boolean:true/0 symbol:Symbol(Symbol.iterator)/1 bigint:10/0 string:lit/0 number:7/0 5 98 bc 2 ABC 5.0 1.1
+builtins 5 2 2 3 4 9 2 true 3-1-2 2 2 xxx 007 true true true c {"a":1} 6 true true AB 12 o/1 global/0 other/2 o/1
+bound other/1 undefined/2 other/0 proxy/1 this-is-proxy this-is-proxy
+errors TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError
+replaced 3,7,-9 arg1 arg2 h1(1,2) arg3 arg4 h1(3,4) arg5 late
+throws 3 arg0 argx kept:0xkept:123 arg1 boom RangeError arg2 argx kept:2xkept:123 arg3 boom RangeError arg4 argx kept:4xkept:123 arg5 boom RangeError kept:1kept:234kept:kept:56789
+callee throws 0,d4,1,d4,2,d4,in t,d4,in t,d4 o/1 1
+shapes wide0 wide11 wide1235 210/wide 10/wide 15/wide wide1234 gen0+gen1+gen2 made 2 gena1
+recursion 3628800 deepObj 610
+mixed o/1 other/1 fresh/1 o/1 inst/1 string:text/1 [object Number]/1 proxy/1 other/1
+loop 30000 10000"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // The same calls after a collection, and after one that threw.
+    engine.collect_garbage().unwrap();
+    assert!(engine.evaluate("o.nope(1, 2)", false).is_err());
+    assert_eq!(
+        text(
+            &mut engine,
+            "[o.m(1), o.inner.deep.m(1, 2), a.call(1), str.sw63(1), bound.b(1), deepObj.fact(5), counter.bump(1), Math.max(2, 9), 'abc'.charCodeAt(1), kept.m(1, 2, 3)].join(' ')"
+        ),
+        "o/1 deep/2 a:1|a:undefined string:abc/1 other/1 120 30001 9 98 kept:123"
+    );
+}
