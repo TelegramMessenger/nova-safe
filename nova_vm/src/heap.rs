@@ -990,6 +990,19 @@ fn init_heap() {
     let _ = Heap::new();
 }
 
+/// Says that `handle` names nothing in the heap: the failure of every
+/// accessor of a handle, with its message made here. Made in the accessor
+/// itself, the message had the handle written to the stack for it where
+/// the function that reads through the handle starts, whether or not the
+/// read ever fails, and that function kept a frame for it: a function
+/// that reads a property, a variable or a Number through a handle and
+/// calls nothing else saved and restored for this alone.
+#[cold]
+#[inline(never)]
+pub(crate) fn invalid_handle<T: core::fmt::Debug>(handle: T) -> ! {
+    panic!("Invalid handle {:?}", handle)
+}
+
 macro_rules! arena_vec_access {
     (soa: $name: ident, $lt: lifetime, $data: ident, $member: ident, $output_ref: ident, $output_mut: ident) => {
         #[doc(hidden)]
@@ -1003,7 +1016,7 @@ macro_rules! arena_vec_access {
             ) -> <Self::Data as crate::heap::soa::SoAble>::Ref<'_> {
                 source
                     .get(self.get_index_u32())
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+                    .unwrap_or_else(|| crate::heap::invalid_handle(self))
             }
         }
 
@@ -1016,7 +1029,7 @@ macro_rules! arena_vec_access {
             ) -> <Self::Data as crate::heap::soa::SoAble>::Mut<'agent> {
                 source
                     .get_mut(self.get_index_u32())
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+                    .unwrap_or_else(|| crate::heap::invalid_handle(self))
             }
         }
 
@@ -1046,7 +1059,7 @@ macro_rules! arena_vec_access {
             fn get_direct(self, source: &Vec<Self::Data>) -> &Self::Output {
                 source
                     .get(crate::heap::HeapIndexHandle::get_index(self))
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+                    .unwrap_or_else(|| crate::heap::invalid_handle(self))
             }
         }
 
@@ -1056,7 +1069,7 @@ macro_rules! arena_vec_access {
             fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Data {
                 source
                     .get_mut(crate::heap::HeapIndexHandle::get_index(self))
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+                    .unwrap_or_else(|| crate::heap::invalid_handle(self))
             }
         }
 
@@ -1086,7 +1099,7 @@ macro_rules! arena_vec_access {
             fn get_direct(self, source: &Vec<Self::Data>) -> &Self::Output {
                 source
                     .get(crate::heap::HeapIndexHandle::get_index(self))
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+                    .unwrap_or_else(|| crate::heap::invalid_handle(self))
             }
         }
 
@@ -1096,7 +1109,7 @@ macro_rules! arena_vec_access {
             fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Data {
                 source
                     .get_mut(crate::heap::HeapIndexHandle::get_index(self))
-                    .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+                    .unwrap_or_else(|| crate::heap::invalid_handle(self))
             }
         }
 

@@ -400,7 +400,7 @@ impl<'a> DirectArenaAccess for UnmappedArguments<'a> {
     fn get_direct(self, source: &Vec<Self::Data>) -> &Self::Output {
         source
             .get(crate::heap::HeapIndexHandle::get_index(self))
-            .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+            .unwrap_or_else(|| crate::heap::invalid_handle(self))
     }
 }
 impl<'a> crate::heap::DirectArenaAccessMut for UnmappedArguments<'a> {
@@ -408,7 +408,7 @@ impl<'a> crate::heap::DirectArenaAccessMut for UnmappedArguments<'a> {
     fn get_direct_mut(self, source: &mut Vec<Self::Data>) -> &mut Self::Data {
         source
             .get_mut(crate::heap::HeapIndexHandle::get_index(self))
-            .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+            .unwrap_or_else(|| crate::heap::invalid_handle(self))
     }
 }
 // === END ===

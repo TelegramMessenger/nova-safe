@@ -2393,7 +2393,7 @@ impl<'a, T: Viewable> DirectArenaAccess for GenericTypedArray<'a, T> {
     fn get_direct(self, source: &Vec<Self::Data>) -> &Self::Output {
         source
             .get(HeapIndexHandle::get_index(self))
-            .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+            .unwrap_or_else(|| crate::heap::invalid_handle(self))
     }
 }
 impl<'a, T: Viewable> DirectArenaAccessMut for GenericTypedArray<'a, T> {
@@ -2401,7 +2401,7 @@ impl<'a, T: Viewable> DirectArenaAccessMut for GenericTypedArray<'a, T> {
     fn get_direct_mut<'agent>(self, source: &'agent mut Vec<Self::Data>) -> &'agent mut Self::Data {
         source
             .get_mut(HeapIndexHandle::get_index(self))
-            .unwrap_or_else(|| panic!("Invalid handle {:?}", self))
+            .unwrap_or_else(|| crate::heap::invalid_handle(self))
     }
 }
 #[doc(hidden)]
