@@ -3779,6 +3779,44 @@ impl Vm {
                 vm.result = None;
                 vm.reference = None;
             }
+            // `--o.p` and `o.p++` of an integer that stays one, where the
+            // property cache knows the shape of `o` and `p` is a writable
+            // data property of its own: the value that was just read is
+            // stepped and assigned, and the result register is left with
+            // what the instructions this one stands for leave in it.
+            Instruction::StepValueWithCache => {
+                step!(StepValueWithCache);
+                let (Some(Value::Integer(before)), Some(reference)) =
+                    (vm.result, vm.reference.as_ref())
+                else {
+                    return Plain::No;
+                };
+                let Some(Value::Object(object)) = reference.named_property_base() else {
+                    return Plain::No;
+                };
+                let which = instr.get_second_index();
+                let step = if which & Instruction::STEP_DOWN != 0 {
+                    -1
+                } else {
+                    1
+                };
+                let Ok(after) = SmallInteger::try_from(before.into_i64() + step) else {
+                    return Plain::No;
+                };
+                let cache = tables.cache(instr.get_first_index(), gc);
+                if object.set_value_by_cache(agent, cache, Value::Integer(after)) != CachedSet::Done
+                {
+                    return Plain::No;
+                }
+                vm.reference = None;
+                vm.result = if which & Instruction::STEP_KEEPS_NEW != 0 {
+                    Some(Value::Integer(after))
+                } else if which & Instruction::STEP_KEEPS_OLD != 0 {
+                    Some(Value::Integer(before))
+                } else {
+                    None
+                };
+            }
             // `a[i]` of an Array that has an element there, or of a
             // TypedArray within its length.
             Instruction::GetValue | Instruction::GetValueKeepReference => {
@@ -5475,6 +5513,7 @@ impl Vm {
             | Instruction::JumpIfIndexStrictlyEqualConstant
             | Instruction::JumpIfIndexStrictlyEqualIndex
             | Instruction::JumpIfResultComparesWithConstant
+            | Instruction::StepValueWithCache
             | Instruction::JumpIfIndexLessThanConstant
             | Instruction::JumpIfIndexLessThanIndex
             | Instruction::JumpIfIndexLessThanEqualsConstant
@@ -5647,6 +5686,7 @@ impl Vm {
             | Instruction::JumpIfIndexStrictlyEqualConstant
             | Instruction::JumpIfIndexStrictlyEqualIndex
             | Instruction::JumpIfResultComparesWithConstant
+            | Instruction::StepValueWithCache
             | Instruction::JumpIfIndexLessThanConstant
             | Instruction::JumpIfIndexLessThanIndex
             | Instruction::JumpIfIndexLessThanEqualsConstant

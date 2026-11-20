@@ -2440,6 +2440,32 @@ pub(super) fn execute_fused_instruction<'gc>(
             vm.stack[slot] = vm.result.take().unwrap();
             Ok(())
         }
+        Instruction::StepValueWithCache => {
+            let which = instr.get_second_index();
+            // ToNumeric
+            execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+            // LoadCopy, where the value before the step is the one used
+            if which & Instruction::STEP_KEEPS_OLD != 0 {
+                vm.execute_load_copy();
+            }
+            // Increment or Decrement
+            if which & Instruction::STEP_DOWN != 0 {
+                execute_decrement(agent, vm, gc.nogc());
+            } else {
+                execute_increment(agent, vm, gc.nogc());
+            }
+            // LoadCopy, where the new value is the one used
+            if which & Instruction::STEP_KEEPS_NEW != 0 {
+                vm.execute_load_copy();
+            }
+            // PutValueWithCache, whose cache is the first argument here too
+            execute_put_value(agent, vm, executable, instr, true, gc.reborrow()).unbind()?;
+            // Store
+            if which & (Instruction::STEP_KEEPS_OLD | Instruction::STEP_KEEPS_NEW) != 0 {
+                vm.execute_store();
+            }
+            Ok(())
+        }
         Instruction::JumpIfResultComparesWithConstant => {
             let target = Instr::wide_jump_target(executable.get_instructions(agent).code(), vm.ip);
             let comparison = instr.get_first_index();

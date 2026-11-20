@@ -3519,6 +3519,29 @@ fn compile_update_expression<'s, 'gc>(
         }
         let lref = lref.assignment_target(ctx, true);
         lref.get_value_keep_reference(ctx)?;
+        // `++` and `--` of a property by its name: one instruction for the
+        // three to five below, which says which step it is and which value
+        // the expression has.
+        if let Place::Member { name: Some(name) } = &lref {
+            let mut which = match this.operator {
+                oxc_syntax::operator::UpdateOperator::Increment => 0,
+                oxc_syntax::operator::UpdateOperator::Decrement => Instruction::STEP_DOWN,
+            };
+            if keep_value {
+                which |= if this.prefix {
+                    Instruction::STEP_KEEPS_NEW
+                } else {
+                    Instruction::STEP_KEEPS_OLD
+                };
+            }
+            let cache = ctx.create_property_lookup_cache(*name);
+            ctx.add_instruction_with_cache_and_immediate(
+                Instruction::StepValueWithCache,
+                cache,
+                which,
+            );
+            return Ok(ValueOutput::Value);
+        }
         ctx.add_instruction(Instruction::ToNumeric);
         let value_on_stack = if keep_value && !this.prefix {
             // The return value of postfix increment/decrement is the value

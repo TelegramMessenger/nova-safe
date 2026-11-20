@@ -1279,6 +1279,22 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         }
     }
 
+    /// StepValueWithCache: the cache of the assignment, and which step it
+    /// is and what it leaves.
+    pub(super) fn add_instruction_with_cache_and_immediate(
+        &mut self,
+        instruction: Instruction,
+        cache: PropertyLookupCache<'gc>,
+        immediate: usize,
+    ) {
+        debug_assert_eq!(instruction.argument_count(), 2);
+        debug_assert!(instruction.has_cache_index());
+        self.push_instruction(instruction);
+        let cache = self.add_cache(cache);
+        self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
+        self.add_index(immediate);
+    }
+
     pub(super) fn add_instruction_with_identifier_and_cache(
         &mut self,
         instruction: Instruction,
