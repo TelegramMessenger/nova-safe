@@ -47,7 +47,10 @@ use crate::{
         TryResult, Value, js_result_into_try, ordinary_set_own_data_at_offset,
     },
     engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable},
-    heap::{CompactionLists, HeapIndexHandle, HeapMarkAndSweep, WorkQueues},
+    heap::{
+        CompactionLists, ElementArrayKey, ElementIndex, HeapIndexHandle, HeapMarkAndSweep,
+        WorkQueues,
+    },
 };
 
 /// ### [\[\[OuterEnv\]\]](https://tc39.es/ecma262/#sec-environment-records)
@@ -823,37 +826,104 @@ struct GlobalScopeState {
     realm: Realm<'static>,
     /// The global object, an ordinary one.
     object: OrdinaryObject<'static>,
-    /// Its shape. One shape has the same keys at the same places, except
-    /// the shape of an intrinsic object, which the default global object
-    /// is: that is changed in place, and `key_moves` says when a key of
-    /// such a shape was moved.
+    /// Its shape. One shape has the same keys at the same places, and the
+    /// storage of an object of it has one capacity, except the shape of an
+    /// intrinsic object, which the default global object is: that is
+    /// changed in place, and whatever changes it so that a key is at
+    /// another place, or the storage of another capacity, says so
+    /// ([`GlobalScopeSeen::forget`]).
     shape: ObjectShape<'static>,
-    key_moves: u64,
+    /// The capacity of the storage that an object of the shape keeps its
+    /// values in: with it and the object's record a value is read without
+    /// the record of the shape.
+    capacity: ElementArrayKey,
     /// The lexical declarations of the global scope and how many there
     /// were: none is ever removed, and one that is added may be of a name
-    /// that was a property.
+    /// that was a property, so whatever adds one says so too.
     lexical: DeclarativeEnvironment<'static>,
     declarations: usize,
-    /// The collections that had run: one more moves what the handles above
-    /// name.
-    collections: u64,
 }
 
 /// The state of the global scope that names were last found in among the
 /// properties of the global object, and its number. A place remembered with
 /// the number ([`BindingSite`]) is good while the global scope is in that
-/// state, which a few comparisons tell: reading a global variable does not
-/// go from the realm to its global object and to the keys of that every
-/// time. A state that is seen after another gets a new number, whatever it
-/// is, so that a number never names two states.
+/// state: reading a global variable does not go from the realm to its
+/// global object and to the keys of that every time. A state that is seen
+/// after another gets a new number, whatever it is, so that a number never
+/// names two states.
+///
+/// Only what nothing tells of when it happens is asked about by every read:
+/// whether the global object has the shape it had, which any property added
+/// to an object changes. The rest is told here when it happens, and the
+/// state is forgotten: a collection, which moves what the handles of the
+/// state name; a change in place of the shape of an intrinsic object that
+/// moves a key or makes the storage one of another capacity; a lexical
+/// declaration added to a global scope. Each is rare. (Asked about by every
+/// read, they were two counters of the heap compared, the record of the
+/// shape read for the capacity, and the record of the lexical declarations
+/// read for their number: 30 of the 100 instructions of a read.)
 #[derive(Debug, Default)]
 pub(crate) struct GlobalScopeSeen {
     /// 0 before any state was seen.
     epoch: Cell<u32>,
     state: Cell<Option<GlobalScopeState>>,
+    /// Whether the agent has made more than one realm. With one, the
+    /// running realm is the one the state was seen in, and is not asked
+    /// for.
+    realms: Cell<Realms>,
+}
+
+/// How many realms an agent has made, as far as [`GlobalScopeSeen`] cares.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Realms {
+    #[default]
+    None,
+    One,
+    Many,
 }
 
 impl GlobalScopeSeen {
+    /// The global object of the running realm, the storage of its values
+    /// and the capacity of that, if the global scope is in the state
+    /// numbered `epoch`.
+    #[inline(always)]
+    fn object_and_values_in<'a>(
+        &self,
+        agent: &Agent,
+        epoch: u32,
+        gc: NoGcScope<'a, '_>,
+    ) -> Option<(OrdinaryObject<'a>, ElementIndex<'a>, ElementArrayKey)> {
+        if self.epoch.get() != epoch {
+            return None;
+        }
+        let state = self.state.get()?;
+        // What is not there to be asked (no running realm, a handle that
+        // names nothing) is no state the name was found in: nothing here
+        // fails, so that a read of a global variable keeps no frame for
+        // it, and the long way says what is wrong.
+        if self.realms.get() != Realms::One && state.realm != agent.realm_if_any()? {
+            return None;
+        }
+        let (shape, values) = state.object.shape_and_values_if_any(agent)?;
+        if shape != state.shape {
+            return None;
+        }
+        debug_assert!(
+            agent
+                .realm_if_any()
+                .is_none_or(|realm| realm == state.realm)
+        );
+        debug_assert_eq!(
+            agent
+                .heap
+                .environments
+                .get_declarative_environment(state.lexical)
+                .binding_count(),
+            state.declarations
+        );
+        Some((state.object.bind(gc), values.bind(gc), state.capacity))
+    }
+
     /// The global object of the running realm, if the global scope is in
     /// the state numbered `epoch`.
     #[inline]
@@ -863,31 +933,7 @@ impl GlobalScopeSeen {
         epoch: u32,
         gc: NoGcScope<'a, '_>,
     ) -> Option<OrdinaryObject<'a>> {
-        if self.epoch.get() != epoch {
-            return None;
-        }
-        let state = self.state.get()?;
-        let heap = &agent.heap;
-        // The collections first: the handles name what they did only if
-        // none has run.
-        // What is not there to be asked (no running realm, a handle that
-        // names nothing) is no state the name was found in: nothing here
-        // fails, so that a read of a global variable keeps no frame for
-        // it, and the long way says what is wrong.
-        if state.collections != heap.collections
-            || state.key_moves != heap.intrinsic_key_moves
-            || state.realm != agent.realm_if_any()?
-            || state.object.shape_if_any(agent)? != state.shape
-            || heap
-                .environments
-                .declarative
-                .get(state.lexical.get_index())?
-                .binding_count()
-                != state.declarations
-        {
-            return None;
-        }
-        Some(state.object.bind(gc))
+        Some(self.object_and_values_in(agent, epoch, gc)?.0)
     }
 
     /// The number of `state`, which is the state seen from now on.
@@ -903,9 +949,28 @@ impl GlobalScopeSeen {
         epoch
     }
 
-    /// Nothing is remembered: for when a realm is given its global object.
+    /// Nothing is remembered: for when a realm is given its global object,
+    /// when a collection has moved what the state names, when the shape of
+    /// an intrinsic object is changed in place so that a key is at another
+    /// place or the storage of another capacity, and when a lexical
+    /// declaration is added to a global scope.
+    #[inline]
     pub(crate) fn forget(&self) {
         self.state.set(None);
+    }
+
+    /// Whether a state is remembered.
+    #[cfg(test)]
+    pub(crate) fn remembers(&self) -> bool {
+        self.state.get().is_some()
+    }
+
+    /// The agent has made a realm.
+    pub(crate) fn realm_made(&self) {
+        self.realms.set(match self.realms.get() {
+            Realms::None => Realms::One,
+            Realms::One | Realms::Many => Realms::Many,
+        });
     }
 }
 
@@ -1075,9 +1140,20 @@ fn global_value_at_site<'a>(
             value
         }
         BindingSite::GLOBAL_OBJECT => {
-            let object = global_object_at_site(agent, site, name, gc)?;
+            let (_object, values, capacity) = agent
+                .global_scope_seen
+                .object_and_values_in(agent, site.slot, gc)?;
+            debug_assert_eq!(
+                _object
+                    .get_property_keys(agent)
+                    .get(usize::from(site.place)),
+                Some(&name.name().to_property_key())
+            );
             // An empty slot is an accessor.
-            object.get_element_value(agent, usize::from(site.place))
+            agent
+                .heap
+                .elements
+                .get_fixed_slot_value_raw(values, capacity, usize::from(site.place))
         }
         _ => None,
     }
@@ -1382,15 +1458,20 @@ fn global_binding_site(
     if !is_value || PropertyOffset::new(u32::from(place)).is_none() {
         return somewhere;
     }
+    // A storage that is read by a call (one of more slots than a global
+    // object comes to) is not read where the place is remembered.
+    let capacity = object.shape_now(agent).values_capacity(agent);
+    if matches!(capacity, ElementArrayKey::E24 | ElementArrayKey::E32) {
+        return somewhere;
+    }
     // The place is the name's in the state the global scope is in now.
     let epoch = agent.global_scope_seen.see(GlobalScopeState {
         realm: agent.current_realm(gc).unbind(),
         object: object.unbind(),
         shape: object.shape_now(agent).unbind(),
-        key_moves: agent.heap.intrinsic_key_moves,
+        capacity,
         lexical: global.declarative_record().unbind(),
         declarations: lexical.binding_count(),
-        collections: agent.heap.collections,
     });
     BindingSite {
         outwards: BindingSite::GLOBAL_OBJECT,

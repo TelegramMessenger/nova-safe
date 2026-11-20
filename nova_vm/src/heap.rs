@@ -196,14 +196,6 @@ pub(crate) struct Heap {
     /// collection moves (the instruction loop, its executable) looks the
     /// handle up again when this has changed.
     pub(crate) collections: u64,
-    /// How many times the keys of an intrinsic object's shape were moved
-    /// where they are: such a shape is changed in place, so that it is the
-    /// same shape with a key removed from among the others, or with private
-    /// names put in front of them. A key added at the end moves none. What
-    /// remembers the place of a key under such a shape
-    /// ([`GlobalScopeSeen`](crate::ecmascript::GlobalScopeSeen)) is good
-    /// while this has not changed.
-    pub(crate) intrinsic_key_moves: u64,
     /// How many times an object whose shape is changed in place (an
     /// intrinsic object, or any object that is the prototype of another)
     /// has had a property added or removed, its properties moved, or its
@@ -419,7 +411,6 @@ impl Heap {
             weak_sets: Vec::with_capacity(0),
             alloc_counter: 0,
             collections: 0,
-            intrinsic_key_moves: 0,
             intrinsic_shape_changes: 0,
             bare_shape_seen: core::cell::Cell::new(None),
             #[cfg(feature = "array-buffer")]

@@ -317,7 +317,16 @@ impl<'a> ObjectShape<'a> {
             len,
         } = self.get_direct_mut(&mut agent.heap.object_shapes);
         agent.heap.elements.push_key(keys_cap, keys, len, key)?;
-        *values_cap = (*len).into();
+        let capacity = (*len).into();
+        let grown = *values_cap != capacity;
+        *values_cap = capacity;
+        if grown {
+            // A key added at the end moves none, and the place of a key
+            // that is remembered under this shape stays good: but the
+            // values are now in a storage of another capacity, which is
+            // remembered with the shape.
+            agent.global_scope_seen.forget();
+        }
         Ok(())
     }
 
@@ -495,7 +504,7 @@ impl<'a> ObjectShape<'a> {
         if self.is_intrinsic(agent) {
             debug_assert_eq!(self.values_capacity(agent), self.len(agent).into());
             // The keys after the one removed move, under the same shape.
-            agent.heap.intrinsic_key_moves += 1;
+            agent.global_scope_seen.forget();
             let data = self.get_direct_mut(&mut agent.heap.object_shapes);
             agent
                 .heap
@@ -558,7 +567,7 @@ impl<'a> ObjectShape<'a> {
         insertion_index: usize,
     ) -> Result<(Self, usize), TryReserveError> {
         // The keys from `insertion_index` on move, under the same shape.
-        agent.heap.intrinsic_key_moves += 1;
+        agent.global_scope_seen.forget();
         let ObjectShapeRecord {
             prototype: _,
             keys,

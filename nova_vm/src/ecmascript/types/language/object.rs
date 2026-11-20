@@ -600,18 +600,20 @@ impl<'a> OrdinaryObject<'a> {
         self.get_direct(&agent.heap.objects).get_shape()
     }
 
-    /// [`OrdinaryObject::shape_now`] where the Object has a record: None
-    /// for a handle that names none. For what has no failure of its own to
-    /// report (see [`OrdinaryObject::value_by_cache`]).
+    /// The Object's shape and the storage of its values as they are now, in
+    /// one look at its record: None for a handle that names none. For what
+    /// reads a global variable where it was found, which knows the capacity
+    /// of the storage by the shape and has no failure of its own to report.
     #[inline(always)]
-    pub(crate) fn shape_if_any(self, agent: &Agent) -> Option<ObjectShape<'a>> {
-        Some(
-            agent
-                .heap
-                .objects
-                .get(crate::heap::HeapIndexHandle::get_index(self))?
-                .get_shape(),
-        )
+    pub(crate) fn shape_and_values_if_any(
+        self,
+        agent: &Agent,
+    ) -> Option<(ObjectShape<'a>, crate::heap::ElementIndex<'a>)> {
+        let data = agent
+            .heap
+            .objects
+            .get(crate::heap::HeapIndexHandle::get_index(self))?;
+        Some((data.get_shape(), data.get_values()))
     }
 
     /// The keys of the Object's properties, in the order of its property
@@ -644,28 +646,6 @@ impl<'a> OrdinaryObject<'a> {
             data.values_capacity(object_shapes),
             data.len(object_shapes),
         )
-    }
-
-    /// The value in the slot at `offset` of the Object's property storage,
-    /// in one look at the storage: None for an accessor property, and for a
-    /// slot the storage has not. For one place that knows the slot (a
-    /// global variable that is a property of the global object), where the
-    /// slots as a whole ([`OrdinaryObject::get_elements_values`]) were
-    /// half of the read.
-    #[inline]
-    pub(crate) fn get_element_value(self, agent: &Agent, offset: usize) -> Option<Value<'a>> {
-        let Heap {
-            elements,
-            objects,
-            object_shapes,
-            ..
-        } = &agent.heap;
-        // None for a handle that names nothing too: the one place that
-        // asks has no failure of its own to report (see
-        // [`OrdinaryObject::value_by_cache`]).
-        let data = objects.get(crate::heap::HeapIndexHandle::get_index(self))?;
-        let (capacity, len) = data.get_shape().values_capacity_and_len(object_shapes)?;
-        elements.get_element_value_raw(data.get_values(), capacity, len, offset)
     }
 
     /// What `object.name` is where `cache`, the property cache of a place

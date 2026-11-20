@@ -229,6 +229,7 @@ pub(crate) fn create_realm<'gc>(agent: &mut Agent, gc: NoGcScope<'gc, '_>) -> Re
 
     // 7. Return realmRec.
     let realm = agent.heap.create(realm_rec).bind(gc);
+    agent.global_scope_seen.realm_made();
     Intrinsics::create_intrinsics(agent, realm.unbind(), gc);
     realm
 }

@@ -31,6 +31,8 @@ const GC_ALLOC_BYTES_PER_LIVE_ITEM: usize = 16;
 pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static>>], gc: GcScope) {
     ndt::gc_start!(|| ());
     agent.heap.collections += 1;
+    // What the state of the global scope was seen as names what this moves.
+    agent.global_scope_seen.forget();
 
     let mut bits = HeapBits::new(&agent.heap);
     bits.strings
@@ -173,7 +175,6 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             alloc_counter: _,
             data_bytes_since_gc: _,
             collections: _,
-            intrinsic_key_moves: _,
             intrinsic_shape_changes: _,
             bare_shape_seen: _,
             #[cfg(feature = "array-buffer")]
@@ -940,7 +941,6 @@ fn sweep(
         free_globals: _,
         gc_alloc_limit,
         collections: _,
-        intrinsic_key_moves: _,
         intrinsic_shape_changes: _,
         bare_shape_seen: _,
         #[cfg(feature = "array-buffer")]

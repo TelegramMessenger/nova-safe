@@ -4468,10 +4468,11 @@ impl ElementArrays {
     /// The value in the slot at `offset` of an elements storage, in one
     /// look at the storage: see [`ElementArray::get_value_raw`].
     ///
-    /// Part of each of the two functions that ask (a property read by its
-    /// cache, a global variable read where it was found): left to the
-    /// compiler it was a function of its own as soon as there were two, and
-    /// a property that is inherited was read in ten instructions more.
+    /// Part of the function that asks (a property read by its cache): while
+    /// a second asked too (a global variable read where it was found, which
+    /// reads its slot by [`ElementArrays::get_fixed_slot_value_raw`] now),
+    /// it was a function of its own left to the compiler, and a property
+    /// that is inherited was read in ten instructions more.
     #[inline(always)]
     pub(crate) fn get_element_value_raw(
         &self,
@@ -4547,6 +4548,49 @@ impl ElementArrays {
             ElementArrayKey::E16 => e2pow16.get_slot_value_raw(index, offset),
             ElementArrayKey::E24 => e2pow24.get_slot_value_raw(index, offset),
             ElementArrayKey::E32 => e2pow32.get_slot_value_raw(index, offset),
+        }
+    }
+
+    /// As [`ElementArrays::get_slot_value_raw`] for the capacities whose
+    /// storages are never dynamic (those of at most
+    /// [`DYNAMIC_STORAGE_SLOTS`] slots), and None for the others: for the
+    /// read of a global variable where it was found, which remembers no
+    /// place in a storage of the others. The read of a dynamic storage is a
+    /// call there, and for the call the function kept a frame on every way
+    /// through it.
+    #[inline(always)]
+    pub(crate) fn get_fixed_slot_value_raw(
+        &self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        offset: usize,
+    ) -> Option<Value<'static>> {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty
+            | ElementArrayKey::EmptyIntrinsic
+            | ElementArrayKey::E24
+            | ElementArrayKey::E32 => None,
+            ElementArrayKey::E1 => e2pow1.get_slot_value_raw(index, offset),
+            ElementArrayKey::E2 => e2pow2.get_slot_value_raw(index, offset),
+            ElementArrayKey::E3 => e2pow3.get_slot_value_raw(index, offset),
+            ElementArrayKey::E4 => e2pow4.get_slot_value_raw(index, offset),
+            ElementArrayKey::E6 => e2pow6.get_slot_value_raw(index, offset),
+            ElementArrayKey::E8 => e2pow8.get_slot_value_raw(index, offset),
+            ElementArrayKey::E10 => e2pow10.get_slot_value_raw(index, offset),
+            ElementArrayKey::E12 => e2pow12.get_slot_value_raw(index, offset),
+            ElementArrayKey::E16 => e2pow16.get_slot_value_raw(index, offset),
         }
     }
 

@@ -247,6 +247,9 @@ impl<'e> GlobalEnvironment<'e> {
         } else {
             // 3. Return ! DclRec.CreateMutableBinding(N, D).
             dcl_rec.create_mutable_binding(agent, name, is_deletable);
+            // The name may have been found as a property of the global
+            // object, which the declaration now comes before.
+            agent.global_scope_seen.forget();
             Ok(())
         }
     }
@@ -281,6 +284,8 @@ impl<'e> GlobalEnvironment<'e> {
         } else {
             // 3. Return ! DclRec.CreateImmutableBinding(N, S).
             dcl_rec.create_immutable_binding(agent, name, is_strict);
+            // As in CreateMutableBinding.
+            agent.global_scope_seen.forget();
             Ok(())
         }
     }
