@@ -17697,3 +17697,160 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// The name of a binding is kept as eight bytes that are compared at once,
+/// and is the same name by them as by the String it is. Names of one to
+/// sixteen bytes, names that differ in their last byte, their first and
+/// their middle, names of other alphabets and beyond the basic plane, read
+/// and assigned by closures before and after collections; the lexical
+/// declarations of the global scope; a record of twenty-seven bindings,
+/// which has an index, found by place and by name; names made after much
+/// garbage, which a collection moves in the heap; bindings that `eval`
+/// declares and that are removed and declared again, three and sixty at
+/// a time, among others that stay; the same name in records inside one
+/// another; names that are not initialized yet; every kind of declaration;
+/// the variables of each turn of two loops; a generator. What is expected
+/// is what Node prints for the same script.
+#[test]
+fn a_binding_is_found_by_the_eight_bytes_of_its_name_as_by_its_name() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(names_of_bindings)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn names_of_bindings() {
+    let script = r##"// The name of a binding is kept as eight bytes that are compared at once: names of every length and alphabet, names
+// that differ in one byte, records of few and of many bindings, names of the heap across collections, and bindings
+// that are removed.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + String(f())); } catch (e) { out.push(label + "!" + e.name); } }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var s = "garbage number " + i + " of " + n; if ((i & 2047) === 0) keep.push(s); } return keep.length; }
+let topShort = 1, topSevenB = 7, topEightBy = 8, topAVeryLongNameIndeed = 22, é = "e", 名前 = "n";
+const topConst = "c", topConstantWithALongName = "C";
+
+// Names of every length, read and written by closures.
+(function () {
+  var a = 1, ab = 2, abc = 3, abcd = 4, abcde = 5, abcdef = 6, abcdefg = 7, abcdefgh = 8, abcdefghi = 9, abcdefghijklmnop = 16;
+  var abcdefx = "x", abcdefy = "y", xbcdefg = "X", abcdxfg = "m", $ = "$", _ = "_", $_ = "$_", ñ = "n~", ππ = "pp", 名 = "na", 名前です = "nmds", aé = "ae", éa = "ea", 𝒳 = "X4", a𝒳b = "a4b";
+  function read() { return [a, ab, abc, abcd, abcde, abcdef, abcdefg, abcdefgh, abcdefghi, abcdefghijklmnop, abcdefx, abcdefy, xbcdefg, abcdxfg, $, _, $_, ñ, ππ, 名, 名前です, aé, éa, 𝒳, a𝒳b].join(","); }
+  function write(d) { a += d; ab += d; abc += d; abcd += d; abcde += d; abcdef += d; abcdefg += d; abcdefgh += d; abcdefghi += d; abcdefghijklmnop += d; abcdefx += d; abcdefy += d; xbcdefg += d; abcdxfg += d; $ += d; _ += d; $_ += d; ñ += d; ππ += d; 名 += d; 名前です += d; aé += d; éa += d; 𝒳 += d; a𝒳b += d; return read(); }
+  out.push("lengths", read(), write(1), write(1));
+  churn(60000);
+  out.push(read(), write(1));
+  // The global scope's own.
+  function tops() { topShort += 1; topSevenB += 1; topEightBy += 1; topAVeryLongNameIndeed += 1; é += "!"; 名前 += "!"; return [topShort, topSevenB, topEightBy, topAVeryLongNameIndeed, é, 名前, topConst, topConstantWithALongName].join(","); }
+  out.push("top", tops(), (churn(60000), tops()));
+  note("top const", function () { topConst = 1; });
+  note("top long const", function () { topConstantWithALongName = 1; });
+})();
+
+// A record of many bindings (it gets an index), with short and long names, across collections.
+(function () {
+  var v0 = 0, v1 = 1, v2 = 2, v3 = 3, v4 = 4, v5 = 5, v6 = 6, v7 = 7, v8 = 8, v9 = 9, v10 = 10, v11 = 11, v12 = 12, v13 = 13, v14 = 14, v15 = 15, v16 = 16, v17 = 17, v18 = 18, v19 = 19;
+  var longName00 = "a", longName01 = "b", longName02 = "c", longName03 = "d", longName04 = "e", anotherRatherLongName = "f", anotherRatherLongNamf = "g";
+  function sum() { return v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19 + longName00 + longName01 + longName02 + longName03 + longName04 + anotherRatherLongName + anotherRatherLongNamf; }
+  function bump() { v0++; v19 += 2; v10 -= 1; longName00 += "!"; anotherRatherLongNamf += "?"; anotherRatherLongName = anotherRatherLongName + v0; return sum(); }
+  var r = [sum()];
+  for (var i = 0; i < 4; i++) { r.push(bump()); churn(40000); }
+  out.push("many", r.join(" "));
+  // The same names found by name and not by place: typeof, a name that is not there, a function with a direct eval.
+  function byName(code) { return eval(code); }
+  out.push(byName("v7 + v17 + longName03 + anotherRatherLongName.length"), byName("typeof v19 + typeof longName04 + typeof notThere + typeof anotherRatherLongNamg"), byName("v3 = 33; longName02 = 'C'; v3 + longName02"), sum().length);
+})();
+
+// Names made after much garbage, so that a collection moves them to other places in the heap.
+(function () {
+  var junk = []; for (var i = 0; i < 30000; i++) junk.push("junk string number " + i);
+  var make = new Function("var firstNameMadeLate = 1, secondNameMadeLate = 'two', n3 = 3; var many = {}; for (var i = 0; i < 20; i++) many['k' + i] = i; return { get: function () { return firstNameMadeLate + secondNameMadeLate + n3; }, set: function (v) { firstNameMadeLate += v; secondNameMadeLate += v; n3 += v; return this.get(); }, byName: function (c) { return eval(c); } };");
+  var o = make(), p = make();
+  var r = [o.get(), o.set(1), p.get()];
+  junk = null; churn(80000);
+  r.push(o.get(), o.set(1), p.set(5), o.byName("firstNameMadeLate + secondNameMadeLate"), o.byName("typeof thirdNameNeverMade"), o.byName("var declaredByEvalLater = 9; declaredByEvalLater + n3"));
+  churn(80000);
+  r.push(o.set(1), p.set(5), o.byName("secondNameMadeLate + firstNameMadeLate"), p.byName("typeof declaredByEvalLater + n3"));
+  out.push("moved", r.join(" "));
+})();
+
+// Bindings that are removed and made again, among others that stay.
+(function () {
+  function shuffle() {
+    eval("var gone1 = 1, stay1 = 10, goneWithALongName = 2, stayWithALongName = 20, gone2 = 3");
+    var f = function () { return [typeof gone1, stay1, typeof goneWithALongName, stayWithALongName, typeof gone2].join("/"); };
+    var g = function (d) { stay1 += d; stayWithALongName += d; return stay1 + stayWithALongName; };
+    var r = [f(), g(1)];
+    r.push(delete gone1, f(), g(1)); churn(30000);
+    r.push(delete goneWithALongName, f(), g(1));
+    eval("var gone1 = 'again', laterWithALongName = 'later'");
+    r.push(f(), g(1), gone1, laterWithALongName, delete gone2, delete stay1);
+    try { r.push(f()); } catch (e) { r.push(e.name); }
+    try { r.push(g(1)); } catch (e) { r.push(e.name); }
+    r.push(typeof stay1, stayWithALongName, laterWithALongName);
+    return r.join(" ");
+  }
+  out.push("removed", shuffle(), shuffle());
+  // Many of them: the record gets its index, and loses bindings from the middle.
+  function manyRemoved() {
+    var src = "var "; for (var i = 0; i < 30; i++) src += (i ? "," : "") + "e" + i + "=" + i + ",evalDeclaredName" + i + "=" + i * 100;
+    eval(src);
+    var total = function () { var t = 0; for (var i = 0; i < 30; i++) { try { t += eval("e" + i) + eval("evalDeclaredName" + i); } catch (e) { t -= 1; } } return t; };
+    var fixed = function () { return e29 + evalDeclaredName29 + e15 + evalDeclaredName0; };
+    var r = [total(), fixed()];
+    for (var i = 0; i < 28; i += 3) { eval("delete e" + i + "; delete evalDeclaredName" + (i + 1)); }
+    churn(30000);
+    r.push(total());
+    try { r.push(fixed()); } catch (e) { r.push(e.name); }
+    eval("var e0 = 1000, evalDeclaredName1 = 5000");
+    r.push(total(), e0, evalDeclaredName1, e29, evalDeclaredName29);
+    return r.join(",");
+  }
+  out.push("many removed", manyRemoved());
+})();
+
+// The same name in records inside one another; names that are not initialized yet; every kind of declaration.
+(function () {
+  var name = "outer", aLongerNameThanSeven = "OUTER";
+  function level1() {
+    var name = "one", aLongerNameThanSeven = "ONE";
+    return function level2(flag) {
+      if (flag) { let name = "block", aLongerNameThanSeven = "BLOCK"; return function () { name += "+"; aLongerNameThanSeven += "+"; return name + aLongerNameThanSeven; }; }
+      return function () { name += "."; aLongerNameThanSeven += "."; return name + aLongerNameThanSeven; };
+    };
+  }
+  var l2 = level1(), inBlock = l2(true), plain = l2(false);
+  out.push("nested", inBlock(), plain(), inBlock(), plain(), name + aLongerNameThanSeven);
+  note("tdz short", function () { var f = function () { return later; }; var v = f(); let later = 1; return v; });
+  note("tdz long", function () { var f = function () { return initializedLater; }; var v = f(); let initializedLater = 1; return v; });
+  note("tdz long write", function () { var f = function () { initializedLater = 2; }; f(); const initializedLater = 1; });
+  note("const long", function () { const constantOfTheClosure = 1; return (function () { constantOfTheClosure = 2; })(); });
+  function declarations(parameterWithALongName, p2 = "d", ...restParameters) {
+    function functionWithALongName() { return "f"; }
+    class ClassWithALongName { static tag = "k"; }
+    try { throw "thrown"; } catch (caughtWithALongName) {
+      var { destructuredLongName, d2 = "D" } = { destructuredLongName: "x" };
+      return function () { return [parameterWithALongName, p2, restParameters.length, functionWithALongName(), ClassWithALongName.tag, caughtWithALongName, destructuredLongName, d2, typeof arguments].join(""); };
+    }
+  }
+  out.push("kinds", declarations("P")(), declarations("Q", "e", 1, 2)());
+  var fns = [];
+  for (let indexOfTheTurn = 0; indexOfTheTurn < 3; indexOfTheTurn++) for (let j = 0; j < 2; j++) fns.push(function () { indexOfTheTurn += 10; j += 1; return indexOfTheTurn + ":" + j; });
+  churn(40000);
+  out.push("turns", fns.map(function (f) { return f() + "|" + f(); }).join(" "));
+  function* gen() { var generatorLocalName = 0, g = 0; var bump = function () { generatorLocalName += 1; g += 2; return generatorLocalName + g; }; yield bump(); churn(20000); yield bump(); return bump(); }
+  var it = gen(); out.push("generator", it.next().value, it.next().value, it.next().value);
+})();
+out.join(" ")"##;
+    let expected = r##"lengths 1,2,3,4,5,6,7,8,9,16,x,y,X,m,$,_,$_,n~,pp,na,nmds,ae,ea,X4,a4b 2,3,4,5,6,7,8,9,10,17,x1,y1,X1,m1,$1,_1,$_1,n~1,pp1,na1,nmds1,ae1,ea1,X41,a4b1 3,4,5,6,7,8,9,10,11,18,x11,y11,X11,m11,$11,_11,$_11,n~11,pp11,na11,nmds11,ae11,ea11,X411,a4b11 3,4,5,6,7,8,9,10,11,18,x11,y11,X11,m11,$11,_11,$_11,n~11,pp11,na11,nmds11,ae11,ea11,X411,a4b11 4,5,6,7,8,9,10,11,12,19,x111,y111,X111,m111,$111,_111,$_111,n~111,pp111,na111,nmds111,ae111,ea111,X4111,a4b111 top 2,8,9,23,e!,n!,c,C 3,9,10,24,e!!,n!!,c,C top const!TypeError top long const!TypeError many 190abcdefg 192a!bcdef1g? 194a!!bcdef12g?? 196a!!!bcdef123g??? 198a!!!!bcdef1234g???? 24d5 numberstringundefinedundefined 33C 22 moved 1two3 2two14 1two3 2two14 3two115 6two58 3two11 undefined 14 4two1116 11two5513 two1114 undefined13 removed number/10/number/20/number 32 true undefined/11/number/21/number 34 true undefined/12/undefined/22/number 36 string/13/undefined/23/number 38 again later true true ReferenceError ReferenceError undefined 24 later number/10/number/20/number 32 true undefined/11/number/21/number 34 true undefined/12/undefined/22/number 36 string/13/undefined/23/number 38 again later true true ReferenceError ReferenceError undefined 24 later many removed 43935,2944,15635,ReferenceError,21638,1000,5000,29,2900 nested block+BLOCK+ one.ONE. block++BLOCK++ one..ONE.. outerOUTER tdz short!ReferenceError tdz long!ReferenceError tdz long write!ReferenceError const long!TypeError kinds Pd0fkthrownxDobject Qe2fkthrownxDobject turns 10:1|20:2 30:2|40:3 11:1|21:2 31:2|41:3 12:1|22:2 32:2|42:3 generator 3 6 9"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
