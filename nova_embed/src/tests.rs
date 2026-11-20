@@ -17387,3 +17387,169 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// A variable of an enclosing function that is assigned to and read next
+/// (`total += x; return total`) is assigned by an instruction that leaves
+/// what it assigned as the result, and the read is not made. Every form
+/// of the two (a return, a test, an argument, a copy, `typeof`, a member,
+/// a comma, an operand, a comparison) with values of every kind; compound
+/// assignments and updates; twenty thousand calls with garbage between.
+/// Where the read is not always after the assignment, it is made: the
+/// joins of `if`, `?:`, `&&`, `||` and `??`, the turns of `for`, `while`
+/// and `do`, `break`, `continue`, a labelled `break`, `switch`, `try`
+/// with `catch` and `finally`, an early return. Where the assignment
+/// changes nothing or throws, the read is of what the variable has: the
+/// name of a function expression in sloppy and in strict code, a `const`,
+/// a variable that is not initialized yet, the name of a class. Names of
+/// the global scope, an accessor and a property that is not writable
+/// among them; a function with a direct `eval`, and a variable that is
+/// removed and declared again; the variable of each turn of a loop, of a
+/// block, of a generator; many closures of one code. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn a_variable_that_is_assigned_and_read_next_is_what_was_assigned() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(variables_assigned_and_read)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn variables_assigned_and_read() {
+    let script = r##"// A variable of an enclosing function that is assigned to and read next (`total += x; return total`): the assignment
+// leaves what it assigned as the result, and the read is not made. Where the two are not one after the other in
+// every run (a branch joins, a loop turns), or the assignment changes nothing, the read is made.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + String(f())); } catch (e) { out.push(label + "!" + e.name); } }
+function show(v) { return typeof v === "bigint" ? v + "n" : Object.is(v, -0) ? "-0" : typeof v === "string" ? JSON.stringify(v) : typeof v === "function" ? "fn" : typeof v === "symbol" ? "sym" : v instanceof Array ? "[" + v.map(show).join() + "]" : v && typeof v === "object" ? "{" + Object.keys(v).map(function (k) { return k + ":" + show(v[k]); }).join() + "}" : String(v); }
+
+// Every form of the two, with values of every kind.
+(function () {
+  var values = [0, -0, 1, 2.5, NaN, "s", "", true, false, null, undefined, 10n, [1], { k: 1 }, function () {}, Symbol("y")];
+  var x, y = 0, n = 0, s = "", obj = { p: 0 };
+  function id(v) { return v; }
+  function plain(v) { x = v; return x; }
+  function twice(v) { x = v; x = x; return x; }
+  function chain(v) { x = y = v; return x === y && Object.is(x, v) || (x !== x && v !== v); }
+  function cond(v) { x = v; if (x) return "t"; return "f"; }
+  function arg(v) { x = v; return id(x) === x || x !== x; }
+  function copy(v) { x = v; y = x; return Object.is(y, v); }
+  function type(v) { x = v; return typeof x; }
+  function member(v) { x = v; return x.length; }
+  function comma(v) { return (x = v, x); }
+  function operand(v) { x = v; return x + ""; }
+  function compare(v) { x = v; return x < 1 ? "lt" : x >= 1 ? "ge" : "no"; }
+  var forms = [plain, twice, chain, cond, arg, copy, type, member, comma, operand, compare];
+  for (var f = 0; f < forms.length; f++) {
+    var row = [];
+    for (var i = 0; i < values.length; i++) { try { row.push(show(forms[f](values[i]))); } catch (e) { row.push("!" + e.name[0]); } }
+    out.push(forms[f].name, row.join(","));
+  }
+  // Compound assignments and updates, then the read.
+  function add(v) { n += v; return n; }
+  function mul(v) { n *= v; return n; }
+  function cat(v) { s += v; return s; }
+  function inc() { n++; return n; }
+  function dec() { --n; return n; }
+  function post() { var before = n++; return before + ":" + n; }
+  function shifts() { n <<= 2; n >>= 1; n |= 1; return n; }
+  function logical(v) { n ||= v; n &&= n + 1; n ??= 99; return n; }
+  out.push("compound", add(5), add(0.5), mul(2), cat("a"), cat(1), cat(null), inc(), inc(), dec(), post(), shifts(), (n = 0, logical(7)), logical(7), n, s);
+  // Called over and over, with collections of garbage between.
+  var total = 0, step = 2, texts = "";
+  function acc(v) { total += v * step; return total; }
+  function grow(i) { texts += "t" + i; return texts.length; }
+  var last = 0, lens = 0;
+  for (var i = 0; i < 20000; i++) { last = acc(i & 7); if ((i & 1023) === 0) lens += grow(i); }
+  out.push("many", last, total, lens);
+})();
+
+// Where the read is not always after the assignment: joins of branches, turns of loops, jumps.
+(function () {
+  var x = "start", count = 0, log = [];
+  function branch(c) { x = "reset"; if (c) x = "then"; return x; }
+  function either(c) { if (c) x = "a"; else x = "b"; return x; }
+  function ternary(c) { c ? (x = "yes") : 0; return x; }
+  function ternary2(c) { x = "t0"; return c ? (x = "t1", x) : x; }
+  function and(c) { x = "and0"; c && (x = "and1"); return x; }
+  function or(c) { x = "or0"; c || (x = "or1"); return x; }
+  function nullish(c) { x = "n0"; c ?? (x = "n1"); return x; }
+  function loop(n) { x = 0; for (var i = 0; i < n; i++) x = x + i; return x; }
+  function whileLoop(n) { x = 0; while (x < n) x = x + 2; return x; }
+  function doLoop(n) { x = 0; do { x = x + 1; if (x === 2) continue; count++; } while (x < n); return x; }
+  function breaks(n) { x = 0; for (;;) { x = x + 1; if (x >= n) break; } return x; }
+  function labelled(n) { x = 0; outer: for (var i = 0; i < 3; i++) { for (var j = 0; j < 3; j++) { x = i * 10 + j; if (x === n) break outer; } } return x; }
+  function sw(k) { x = "s0"; switch (k) { case 1: x = "s1"; break; case 2: x = "s2"; default: x = x + "d"; } return x; }
+  function tryIt(t) { x = "try0"; try { x = "try1"; if (t) throw new Error("e"); x = "try2"; } catch (e) { x = x + "c"; } finally { log.push(x); x = x + "f"; } return x; }
+  function early(c) { x = "e0"; if (c) return x; x = "e1"; return x; }
+  function thrown() { try { x = "th"; null.p; return x; } catch (e) { return x + "!"; } }
+  out.push("joins", branch(true), branch(false), either(true), either(false), ternary(true), ternary(false), ternary2(true), ternary2(false), and(1), and(0), or(1), or(0), nullish(null), nullish(0),
+    loop(5), loop(0), whileLoop(5), whileLoop(0), doLoop(4), doLoop(0), count, breaks(3), labelled(11), labelled(99), sw(1), sw(2), sw(3), tryIt(true), tryIt(false), log.join("|"), early(true), early(false), thrown());
+})();
+
+// Where the assignment changes nothing, or throws: the read is of what the variable has.
+(function () {
+  var named = function self() { return function () { self = 1; return typeof self; }; };
+  out.push("immutable", named()(), named()());
+  note("immutable strict", function () { var f = function self() { "use strict"; return function () { self = 1; return typeof self; }; }; return f()(); });
+  note("const", function () { const c = 1; return (function () { c = 2; return c; })(); });
+  note("const read", function () { const c = 1; return (function () { try { c = 2; } catch (e) {} return c; })(); });
+  note("const compound", function () { const c = 1; return (function () { c += 2; return c; })(); });
+  note("tdz", function () { function early() { late = 5; return late; } var r = early(); let late; return r; });
+  note("tdz then fine", function () { function set(v) { late = v; return late; } var r = []; try { set(1); } catch (e) { r.push(e.name); } let late = 0; r.push(set(2), set(3), late); return r.join(); });
+  note("class name", function () { class K { static m() { return function () { try { K = 1; } catch (e) { return typeof K + e.name; } return K; }; } } return K.m()(); });
+  note("function declaration", function () { function decl() { return 1; } return (function () { decl = 5; return decl; })(); });
+  note("parameter", function () { return (function (p) { return (function () { p = p + 1; return p; })() + p; })(10); });
+  note("catch parameter", function () { try { throw 1; } catch (e) { return (function () { e = e + 1; return e; })() + e; } });
+  note("arguments", function () { return (function () { var a = arguments; return (function () { a = [9]; return a.length; })(); })(1, 2, 3); });
+})();
+
+// Variables that are found another way: the global scope, a direct `eval`, a variable that is removed.
+var topVar = 1; let topLet = 1;
+Object.defineProperty(globalThis, "accessor", { get: function () { return "got"; }, set: function (v) { topVar = "set" + v; }, configurable: true });
+Object.defineProperty(globalThis, "locked", { value: "L", writable: false, configurable: true });
+(function () {
+  function globals() { topVar = 2; var a = topVar; topLet = 3; var b = topLet; implicitGlobal = 4; var c = implicitGlobal; accessor = 5; var d = accessor; locked = 6; var e = locked; return [a, b, c, d, e, topVar].join(); }
+  out.push("global", globals(), globals());
+  note("global strict locked", function () { "use strict"; locked = 7; return locked; });
+  note("global strict undeclared", function () { "use strict"; neverDeclared = 7; return neverDeclared; });
+  function viaEval(code) { var v = "v0"; return (function () { eval(code); v = v + "+"; return v; })(); }
+  out.push("eval", viaEval(""), viaEval("var v = 'inner'"), viaEval("v = 'assigned'"));
+  function removed() { eval("var gone = 1"); var f = function () { gone = gone + 1; return gone; }; var r = [f(), f()]; r.push(delete gone); try { r.push(f()); } catch (e) { r.push(e.name); } eval("var gone = 10"); r.push(f()); return r.join(); }
+  note("removed", removed);
+})();
+
+// A variable of each loop turn, of a block and of a generator; many closures of one code.
+(function () {
+  var fns = [];
+  for (let i = 0; i < 4; i++) fns.push(function (d) { i = i + d; return i; });
+  var r = []; for (var k = 0; k < 3; k++) for (var j = 0; j < fns.length; j++) r.push(fns[j](j + k));
+  out.push("turns", r.join(","));
+  var blocks = [];
+  { let b = "b"; blocks.push(function () { b = b + "1"; return b; }); { let b = "inner"; blocks.push(function () { b = b + "2"; return b; }); } }
+  out.push(blocks[0](), blocks[1](), blocks[0](), blocks[1]());
+  function counter(start) { var c = start; return { up: function () { c += 1; return c; }, down: function () { c -= 1; return c; }, peek: function () { return c; } }; }
+  var a = counter(0), b = counter(100), seq = [];
+  for (var i = 0; i < 5; i++) seq.push(a.up(), b.down(), a.up(), b.up());
+  out.push("counters", seq.join(","), a.peek(), b.peek());
+  function* gen() { var g = 0; var bump = function (v) { g = g + v; return g; }; var got = yield bump(1); got = yield bump(got); return bump(got); }
+  var it = gen(), gs = [it.next().value, it.next(10).value, it.next(100).value];
+  out.push("generator", gs.join(","));
+  var deep = 0;
+  function level1() { return function level2() { return function level3() { deep = deep + 1; return deep; }; }; }
+  out.push("deep", level1()()(), level1()()(), deep);
+})();
+out.join(" ")"##;
+    let expected = r##"plain 0,-0,1,2.5,NaN,"s","",true,false,null,undefined,10n,[1],{k:1},fn,sym twice 0,-0,1,2.5,NaN,"s","",true,false,null,undefined,10n,[1],{k:1},fn,sym chain true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true cond "f","f","t","t","f","t","f","t","f","f","f","t","t","t","t","t" arg true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true copy true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true type "number","number","number","number","number","string","string","boolean","boolean","object","undefined","bigint","object","object","function","symbol" member undefined,undefined,undefined,undefined,undefined,1,0,undefined,undefined,!T,!T,undefined,1,undefined,0,undefined comma 0,-0,1,2.5,NaN,"s","",true,false,null,undefined,10n,[1],{k:1},fn,sym operand "0","0","1","2.5","NaN","s","","true","false","null","undefined","10","1","[object Object]","function () {}",!T compare "lt","lt","ge","ge","no","no","lt","ge","lt","lt","no","ge","ge","no","no",!T compound 5 5.5 11 a a1 a1null 12 13 12 12:13 27 8 9 9 a1null many 140000 140000 1045 joins then reset a b yes yes t1 t0 and1 and0 or0 or1 n1 n0 10 0 6 0 4 1 4 3 11 22 s1 s2d s0d try1cf try2f try1c|try2 e0 e1 th! immutable function function immutable strict!TypeError const!TypeError const read=1 const compound!TypeError tdz!ReferenceError tdz then fine=ReferenceError,2,3,3 class name=functionTypeError function declaration=5 parameter=22 catch parameter=4 arguments=1 global 2,3,4,got,L,set5 2,3,4,got,L,set5 global strict locked!TypeError global strict undeclared!ReferenceError eval v0+ inner+ assigned+ removed=2,3,true,ReferenceError,11 turns 0,2,4,6,1,4,7,10,3,7,11,15 b1 inner2 b11 inner22 counters 1,99,2,100,3,99,4,100,5,99,6,100,7,99,8,100,9,99,10,100 10 100 generator 1,11,111 deep 1 2 2"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
