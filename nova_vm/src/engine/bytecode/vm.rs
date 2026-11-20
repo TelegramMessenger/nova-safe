@@ -1444,7 +1444,7 @@ impl Vm {
             return None;
         }
         let executable = data.compiled_bytecode?;
-        if agent.call_depth_exceeded() {
+        if agent.calls_in_place_exceeded() {
             return None;
         }
         let code = executable.get(agent);
@@ -1499,7 +1499,7 @@ impl Vm {
             return None;
         }
         let executable = data.compiled_bytecode?;
-        if agent.call_depth_exceeded() {
+        if agent.calls_in_place_exceeded() {
             return None;
         }
         let code = executable.get(agent);
@@ -1556,7 +1556,7 @@ impl Vm {
             return None;
         }
         let executable = data.compiled_bytecode?;
-        if agent.call_depth_exceeded() {
+        if agent.calls_in_place_exceeded() {
             return None;
         }
         let code = executable.get(agent);
@@ -1680,7 +1680,7 @@ impl Vm {
             return None;
         }
         let executable = data.compiled_bytecode?.unbind();
-        if agent.call_depth_exceeded() {
+        if agent.calls_in_place_exceeded() {
             return None;
         }
         let code = executable.get(agent);
@@ -2268,7 +2268,7 @@ impl Vm {
         ) {
             return None;
         }
-        if agent.call_depth_exceeded() {
+        if agent.calls_in_place_exceeded() {
             return None;
         }
         Some(generator.unbind())

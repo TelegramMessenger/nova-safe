@@ -1354,7 +1354,17 @@ impl Agent {
     pub(crate) fn call_depth_exceeded(&self) -> bool {
         // Experimental number that caused stack overflow on local machine;
         // the native stack guard (Agent::set_stack_limit) is the real bound.
-        self.execution_context_stack.len() > 3500 || self.stack_exhausted()
+        self.calls_in_place_exceeded() || self.stack_exhausted()
+    }
+
+    /// Whether a call that the loop of instructions runs itself, in place
+    /// of the call, is one too many. Such a call uses none of the native
+    /// stack, which is where it was when the loop was entered, and the
+    /// loop asked about it then ([`Agent::stack_exhausted`]): asked again
+    /// at every call, the same answer was a fiftieth of a call.
+    #[inline(always)]
+    pub(crate) fn calls_in_place_exceeded(&self) -> bool {
+        self.execution_context_stack.len() > 3500
     }
 
     pub(crate) fn check_call_depth<'gc>(&mut self, gc: NoGcScope<'gc, '_>) -> JsResult<'gc, ()> {
