@@ -681,12 +681,12 @@ impl<'a> OrdinaryObject<'a> {
     /// cache searched by a function, the property read by another through
     /// a third, and what that returned was taken apart again.
     #[inline(never)]
-    pub(crate) fn value_by_cache<'gc>(
+    pub(crate) fn value_by_cache(
         self,
         agent: &Agent,
         cache: PropertyLookupCache,
-        gc: NoGcScope<'gc, '_>,
-    ) -> Option<Value<'gc>> {
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
         let Heap {
             elements,
             objects,
@@ -699,7 +699,10 @@ impl<'a> OrdinaryObject<'a> {
         // six instructions of every property read. What is out of the
         // ordinary, a handle that names nothing included, is None, and
         // [[Get]] says what is wrong. A value is handed on as the bytes it
-        // is kept as: the collector knows it for as long as `gc` says.
+        // is kept as, unbound as the heap keeps it: every caller puts it
+        // in a register of its `Vm`, and bound here and unbound there it
+        // was taken apart and put together again after the call, five
+        // instructions of every property read.
         let data = objects.get(crate::heap::HeapIndexHandle::get_index(self))?;
         let (offset, prototype, capacity) = cache.find_cached_place(agent, data.get_shape())?;
         if capacity != crate::heap::ElementArrayKey::Empty {
@@ -707,12 +710,11 @@ impl<'a> OrdinaryObject<'a> {
             // cache has kept: the shape's record is not asked for it.
             debug_assert_eq!(capacity, data.values_capacity(object_shapes));
             debug_assert!((offset.get_property_offset() as u32) < data.len(object_shapes));
-            let value: Option<Value<'gc>> = elements.get_slot_value_raw(
+            return elements.get_slot_value_raw(
                 data.get_values(),
                 capacity,
                 offset.get_property_offset() as usize,
             );
-            return value;
         }
         if offset.is_unset() {
             return Some(Value::Undefined);
@@ -727,13 +729,12 @@ impl<'a> OrdinaryObject<'a> {
             Some(prototype) => return Self::value_of_exotic_holder(agent, prototype, offset, gc),
         };
         let (capacity, len) = data.get_shape().values_capacity_and_len(object_shapes)?;
-        let value: Option<Value<'gc>> = elements.get_element_value_raw(
+        elements.get_element_value_raw(
             data.get_values(),
             capacity,
             len,
             offset.get_property_offset() as usize,
-        );
-        value
+        )
     }
 
     /// What [`OrdinaryObject::value_by_cache`] gives for a property that
@@ -745,14 +746,14 @@ impl<'a> OrdinaryObject<'a> {
     /// its parts on every other way out, so the compiler does not make
     /// this a call that is made last.)
     #[inline(never)]
-    fn value_of_exotic_holder<'gc>(
+    fn value_of_exotic_holder(
         agent: &Agent,
         holder: Object,
         offset: PropertyOffset,
-        gc: NoGcScope<'gc, '_>,
-    ) -> Option<Value<'gc>> {
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
         match holder.get_own_property_at_offset(agent, offset, gc) {
-            TryGetResult::Value(value) => Some(value),
+            TryGetResult::Value(value) => Some(value.unbind()),
             _ => None,
         }
     }

@@ -17,14 +17,15 @@ use crate::{
         ECMAScriptFunction, Environment, ExceptionType, Function, FunctionEnvironment,
         FunctionPrototype, Generator, GeneratorPrototype, GeneratorState, InternalMethods,
         InternalSlots, IteratorRecord, JsError, JsResult, Number, Object, OrdinaryObject,
-        Primitive, Promise, PropertyKey, Reference, RegularFn, SmallF64, SmallInteger, String,
-        SuspendedGeneratorState, TryGetResult, Value, binding_value_at_site, call_function,
-        get_method, get_this_environment, get_this_value, is_callable, is_property_reference,
-        is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache, ordinary_call_bind_this,
-        ordinary_has_instance, prepare_for_call_without_function_environment,
-        prepare_for_ordinary_call, reference_is_at_global_site, release_scoped_collections,
-        scope_arguments_of_call, set_binding_value_at_site, take_pooled_arguments_vec, to_boolean,
-        to_numeric, to_numeric_primitive, to_primitive, to_property_key, to_property_key_simple,
+        Primitive, Promise, PropertyKey, PropertyLookupCache, Reference, RegularFn, SmallF64,
+        SmallInteger, String, SuspendedGeneratorState, TryGetResult, Value, binding_value_at_site,
+        call_function, get_method, get_this_environment, get_this_value, is_callable,
+        is_property_reference, is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache,
+        ordinary_call_bind_this, ordinary_has_instance,
+        prepare_for_call_without_function_environment, prepare_for_ordinary_call,
+        reference_is_at_global_site, release_scoped_collections, scope_arguments_of_call,
+        set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
+        to_numeric_primitive, to_primitive, to_property_key, to_property_key_simple,
         to_string_primitive, try_get_object_method_by_cache, try_resolve_binding_at_site,
         try_result_into_option_js,
     },
@@ -1604,7 +1605,7 @@ impl Vm {
         // 3. a. Let thisArgument be ? OrdinaryCreateFromConstructor(newTarget,
         //       "%Object.prototype%").
         let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
-        let cache = crate::ecmascript::PropertyLookupCache::new(agent, key);
+        let cache = PropertyLookupCache::new(agent, key);
         let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
             crate::ecmascript::try_get(agent, function, key, Some(cache), gc)
         else {
@@ -1729,7 +1730,7 @@ impl Vm {
         }
         // OrdinaryCreateFromConstructor(newTarget, "%Object.prototype%").
         let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
-        let cache = crate::ecmascript::PropertyLookupCache::new(agent, key);
+        let cache = PropertyLookupCache::new(agent, key);
         let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
             crate::ecmascript::try_get(agent, new_target, key, Some(cache), gc)
         else {
@@ -4208,11 +4209,16 @@ impl Vm {
     // property by its cache, and as part of each of them the calls read
     // 1-4% slower for where the loop's code then lay.
     #[inline(never)]
+    //
+    // It takes the cache, as the other functions that an arm calls for a
+    // property take the cache and the name: given the tables to fetch them
+    // from, which are six words that no register holds together, each arm
+    // that can come here wrote the six to the stack where it starts, for
+    // every property read, eight instructions.
     fn cached_prototype_property_value(
         agent: &mut Agent,
         prototype: OrdinaryObject<'static>,
-        tables: TablesView,
-        instr: Instr,
+        cache: PropertyLookupCache,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         // What a read of that name from the prototype object itself finds
@@ -4220,8 +4226,7 @@ impl Vm {
         // ordinary object so, where this read the storage of the prototype
         // by three more general ones at every call of a method of a String
         // or a Number.
-        let cache = tables.cache(instr.get_second_index(), gc);
-        prototype.value_by_cache(agent, cache, gc).unbind()
+        prototype.value_by_cache(agent, cache, gc)
     }
 
     /// The same for `base`, wherever the instruction has it from.
@@ -4236,16 +4241,13 @@ impl Vm {
         match base {
             Value::Object(object) => {
                 let cache = tables.cache(instr.get_second_index(), gc);
-                object.value_by_cache(agent, cache, gc).unbind()
+                object.value_by_cache(agent, cache, gc)
             }
             // `arguments.length`: an arguments object has its properties as
             // the ordinary object it is has them.
             Value::Arguments(arguments) => {
                 let cache = tables.cache(instr.get_second_index(), gc);
-                arguments
-                    .ordinary_object()
-                    .value_by_cache(agent, cache, gc)
-                    .unbind()
+                arguments.ordinary_object().value_by_cache(agent, cache, gc)
             }
             Value::Array(array) => {
                 let key = tables.property_key(instr.get_first_index(), gc);
@@ -4291,7 +4293,8 @@ impl Vm {
                     .current_realm_record()
                     .intrinsics()
                     .string_prototype_backing_object();
-                Self::cached_prototype_property_value(agent, prototype, tables, instr, gc)
+                let cache = tables.cache(instr.get_second_index(), gc);
+                Self::cached_prototype_property_value(agent, prototype, cache, gc)
             }
             // A Number value has no properties of its own: what \[\[Get]]
             // of %Number.prototype% finds in the cache (`n.toFixed`).
@@ -4300,10 +4303,15 @@ impl Vm {
                     .current_realm_record()
                     .intrinsics()
                     .number_prototype_backing_object();
-                Self::cached_prototype_property_value(agent, prototype, tables, instr, gc)
+                let cache = tables.cache(instr.get_second_index(), gc);
+                Self::cached_prototype_property_value(agent, prototype, cache, gc)
             }
             #[cfg(feature = "array-buffer")]
-            value => Self::exotic_property_value(agent, value, tables, instr, gc),
+            value => {
+                let key = tables.property_key(instr.get_first_index(), gc);
+                let cache = tables.cache(instr.get_second_index(), gc);
+                Self::exotic_property_value(agent, value, key, cache, gc)
+            }
             #[cfg(not(feature = "array-buffer"))]
             _ => None,
         }
@@ -4493,16 +4501,14 @@ impl Vm {
     fn exotic_property_value(
         agent: &mut Agent,
         value: Value,
-        tables: TablesView,
-        instr: Instr,
+        key: PropertyKey,
+        cache: PropertyLookupCache,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         if let Ok(function) = Function::try_from(value) {
-            let cache = tables.cache(instr.get_second_index(), gc);
             if let Some(backing) = function.get_backing_object(agent) {
-                return backing.value_by_cache(agent, cache, gc).unbind();
+                return backing.value_by_cache(agent, cache, gc);
             }
-            let key = tables.property_key(instr.get_first_index(), gc);
             if key == PropertyKey::from(BUILTIN_STRING_MEMORY.length)
                 || key == PropertyKey::from(BUILTIN_STRING_MEMORY.name)
             {
@@ -4524,10 +4530,10 @@ impl Vm {
                 _ => None,
             };
         }
-        if let Some(length) = Self::typed_array_length(agent, value, tables, instr, gc) {
+        if let Some(length) = Self::typed_array_length(agent, value, key, cache, gc) {
             return Some(length);
         }
-        Self::inherited_property_value(agent, value, tables, instr, gc)
+        Self::inherited_property_value(agent, value, key, cache, gc)
     }
 
     /// A named property of an object whose kind gives it nothing by a name
@@ -4546,11 +4552,10 @@ impl Vm {
     fn inherited_property_value(
         agent: &mut Agent,
         value: Value,
-        tables: TablesView,
-        instr: Instr,
+        key: PropertyKey,
+        cache: PropertyLookupCache,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
-        let key = tables.property_key(instr.get_first_index(), gc);
         if !matches!(key, PropertyKey::String(_) | PropertyKey::SmallString(_)) {
             return None;
         }
@@ -4604,9 +4609,8 @@ impl Vm {
                 bare!(array)
             }
         };
-        let cache = tables.cache(instr.get_second_index(), gc);
         if let Some(backing) = backing {
-            return backing.value_by_cache(agent, cache, gc).unbind();
+            return backing.value_by_cache(agent, cache, gc);
         }
         let kind = core::mem::discriminant(&value.unbind());
         let seen = agent.heap.bare_shape_seen.get();
@@ -4636,12 +4640,11 @@ impl Vm {
     fn typed_array_length(
         agent: &mut Agent,
         value: Value,
-        tables: TablesView,
-        instr: Instr,
+        key: PropertyKey,
+        cache: PropertyLookupCache,
         gc: NoGcScope,
     ) -> Option<Value<'static>> {
         let array = AnyTypedArray::try_from(value).ok()?;
-        let key = tables.property_key(instr.get_first_index(), gc);
         if key != PropertyKey::from(BUILTIN_STRING_MEMORY.length) {
             return None;
         }
@@ -4665,7 +4668,6 @@ impl Vm {
         {
             return Some(array.length_value(agent));
         }
-        let cache = tables.cache(instr.get_second_index(), gc);
         let shape = array.object_shape(agent);
         let (offset, Some(prototype)) = cache.find_cached_property_offset(agent, shape)? else {
             return None;
@@ -4863,7 +4865,7 @@ impl Vm {
         };
         // 4. Let P be ? Get(C, "prototype").
         let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
-        let cache = crate::ecmascript::PropertyLookupCache::new(agent, key);
+        let cache = PropertyLookupCache::new(agent, key);
         let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
             crate::ecmascript::try_get(agent, target, key, Some(cache), gc)
         else {
