@@ -267,7 +267,9 @@ instruction (area 1), are counted and not timed: other work had the machine whil
 and after. By the instructions they retire, the properties of one object are 3.8% fewer with the
 first, and a step of the particles 3.0% and then 6.2% fewer. The tables of their checks, taken
 under that work, have the whole at 1.294x and 1.293x and the same two cases over 2x (a step of the
-particles 2.15x, a closure 2.25x); the table above is the one before them.
+particles 2.15x, a closure 2.25x); the table above is the one before them. A property stepped by
+one instruction (area 4) took 3.35% more of its instructions off a step of the particles, counted
+the same way.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1601,6 +1603,22 @@ time, with the two binaries run in turn on a quiet machine, the cases that read 
 where they were (the calls 1.6% less to 1.8% more, a loop that does nothing else 2.4% less); the
 cases that read properties were not timed that way, other work had the machine from there on. The
 table of the round's checks, taken under that work, has a step of the particles at 2.21x for 2.33x.
+
+`--p.life` and `o.count++` were a read that keeps its Reference and then three to five
+instructions: the value made a Number, the step, the assignment by the cache, and, where the value
+of the expression is used, a copy pushed before or after the step and taken back after the
+assignment. They are one instruction after the read (`StepValueWithCache`), which has in an
+argument which step it is and which value it leaves. Its arm steps an integer that stays one and
+assigns it where the cache places a writable property of the object's own; anything else (a
+double, a text, a BigInt, an object that is converted, an accessor, an inherited property, a
+Proxy) goes the general way, which does what the instructions it stands for did, in their order.
+
+Counted by the instructions the cases retire, a step of the particles is 3.35% fewer (its
+`--p.life` was six instructions of the thirty-eight that a particle takes, and is two), and
+nothing else moves: by the price list every operation is within two or three instructions of where
+it was, the calls among them. On a quiet machine it was not timed either; with the two binaries
+run in turn under the other work, the least of fifteen runs of a step of the particles is 5.1%
+less.
 
 ### 5. Array and typed array elements
 
