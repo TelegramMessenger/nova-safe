@@ -90,13 +90,13 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the frames (area 1, "The functions
-the loop calls"), in machine instructions per operation:
+a million times the price of the operation. As of the round of the method calls (area 3), in
+machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 228 / 270 / 262 | 493 / 577 / 587 | 2.2x |
-| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 784 / 893 / 827 | 2.1-2.5x |
+| call, no argument / one / two | 228 / 270 / 262 | 494 / 578 / 589 | 2.2x |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 731 / 840 / 774 | 2.0-2.4x |
 | a callee that reads a variable of its maker, in place of its parameter | 2 | 74 | |
 | a callee that assigns one, more | 25 | 138 | |
 | read of a variable of the enclosing function, in place of a local | 2 | 10 | |
@@ -105,19 +105,19 @@ the loop calls"), in machine instructions per operation:
 | assignment to a global, in place of a local | 61 | 367 | 6.0x |
 | property read, own / inherited, in place of a local | 53 / 68 | 137 / 180 | 2.6x |
 | property assignment, in place of a local | 53 | 129 | 2.4x |
-| getter / setter | 328 / 405 | 757 / 769 | 2.3x / 1.9x |
+| getter / setter | 328 / 405 | 759 / 771 | 2.3x / 1.9x |
 | integer `+` of two locals, more | 24 | 95 | 4.0x |
 | `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 241 | 3.6x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 624 / 561 / 637 | 2.0-2.4x |
-| `Math.max(i, 7)` | 271 | 498 | 1.8x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 586 / 524 / 600 | 1.8-2.2x |
+| `Math.max(i, 7)` | 271 | 462 | 1.7x |
 | Array element read / written | 56 / 53 | 147 / 189 | 2.6x / 3.6x |
 | Uint8Array element read / written | 89 / 78 | 211 / 221 | 2.4x / 2.8x |
 | Float64Array element read / written | 106 / 76 | 283 / 207 | 2.7x / 2.7x |
-| `new` of a function / of a class, one field set | 1072 / 1128 | 2164 / 2136 | 2.0x / 1.9x |
-| an object literal of two properties | 744 | 493 | 0.66x |
-| one callback of `forEach` (the whole turn) | 394 | 773 | 2.0x |
-| one step of `for-of` over a generator (the whole turn) | 491 | 1058 | 2.2x |
-| `s.charCodeAt(i)` | 350 | 553 | 1.6x |
+| `new` of a function / of a class, one field set | 1072 / 1128 | 2165 / 2136 | 2.0x / 1.9x |
+| an object literal of two properties | 744 | 497 | 0.67x |
+| one callback of `forEach` (the whole turn) | 394 | 774 | 2.0x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 1067 | 2.2x |
+| `s.charCodeAt(i)` | 350 | 506 | 1.4x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
@@ -145,10 +145,10 @@ below.
 |---|---|---|---|
 | typed | 4 | 10.6x | 1.7x |
 | call | 14 | 10.4x | 1.6x |
-| math | 4 | 9.7x | 1.7x |
+| math | 4 | 9.7x | 1.6x |
 | string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.4x |
-| map, set | 4 | 4.6x | 1.2x |
+| map, set | 4 | 4.6x | 1.1x |
 | app | 8 | 6.1x | 1.5x |
 | array | 14 | 5.8x | 1.4x |
 | regexp | 4 | 2.4x | 1.4x |
@@ -158,12 +158,11 @@ below.
 | all | 108 | 7.6x | 1.4x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
-was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.5x), then a step
-of a particle animation (2.3x) and the properties of one object read and written in a loop (2.1x);
-trigonometry and a step of a generator sit on 2x (2.04x, 2.02x). 103 of the 108 cases are at or
-under 2x (half a dozen within a few hundredths of it, on either side), 20 of them at or under
-QuickJS's time.
-Over all cases it is 1.40x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.4x), then a step
+of a particle animation (2.3x), the properties of one object read and written in a loop (2.2x) and
+a step of a generator (2.1x). 104 of the 108 cases are at or under 2x (half a dozen within a few
+hundredths of it, on either side), 20 of them at or under QuickJS's time.
+Over all cases it is 1.36x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -235,7 +234,13 @@ as part of the loop (area 3) and the functions the loop calls written without a 
 four more under 2x, the calls among them: a function that calls itself 2.18x to 1.93x, a method
 2.11x to 1.93x and one inherited through three prototypes 2.15x to 1.95x, the arithmetic of a
 Float64Array 2.07x to 1.96x, with a plain call at 1.74x from 1.96x and a closure at 2.47x from
-2.66x. Over all cases 1.360x from 1.385x, 103 at or under 2x.
+2.66x. Over all cases 1.360x from 1.385x, 103 at or under 2x. The this value of a method call kept
+on the stack under the function (area 3) took 5 to 8% off what calls methods: a method 1.95x to
+1.81x and one inherited through three prototypes 1.98x to 1.85x, calls of `Math` 1.92x to 1.76x and
+trigonometry under 2x (2.04x to 1.96x), a Map and a Set by their methods 8 to 10% less (the Set at
+QuickJS's time), `push` and `pop` 8%. Two cases read slower by where the loop's code lay: the
+properties of one object 2.16x to 2.23x and a step of a generator 2.02x to 2.09x. Over all cases
+1.355x from 1.365x in two tables taken one after the other, 104 at or under 2x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -999,6 +1004,44 @@ By the price list a plain call went from 567 to 493 instructions (27 for the thi
 the return, 3 in the entry: the function's code rooted without a borrow of the scoped values, which
 nothing else holds then, and the handles it reads through, area 1), a method from 841 to 784, a
 getter from 830 to 757, a setter from 815 to 769, a callback of `forEach` from 806 to 773.
+
+A method call made a Reference for its this value. `o.m(x)` read the function by the cache of its
+place, made the Reference of `o.m` (its base, its name, and whether the code is strict, which the
+execution context is asked), pushed that to the stack of References before the arguments and popped
+it after them, and the call took the base out of it: 28 bytes moved three times and a question to
+the execution context, to hand one value from before the arguments to after them. The value is
+kept on the value stack now, under the function. One instruction pushes the object and then the
+function it reads from it (the object in the result register, or a local), and the call takes the
+arguments, the function and the this value off the stack together
+(`LoadPropertyWithCachePushThis`, `LoadIndexPropertyWithCachePushThis`, `EvaluateCallOnThis`). That
+is for a property by a name the code states, in a call that is not optional and spreads no
+argument; `this.m(x)` reads the this value by its own instruction and goes on the same way. A
+computed name, `super`, a private name, an optional call, arguments that are spread and a tagged
+template make their Reference as before, and so does the code where these instructions do not find
+the function in the cache: the general way reads the property, takes the base of its Reference and
+pushes the two.
+
+By the price list a method call is 731 instructions for 784 and one inherited through a prototype
+774 for 827; `Math.floor(i / 3)` 586 for 624 and `Math.max(i, 7)` 462 for 498 (a built-in that
+takes no this value was run without looking for one, and now no Reference is made for it either);
+`s.charCodeAt(i)` 506 for 553. A plain call is within one instruction of where it was.
+
+The loop of instructions has no arm more for this. The two instructions that push are part of the
+arms that read a property by the cache with its Reference kept, and the call is part of the arm of
+the other calls. With an arm each, the loop was 440 instructions longer (the search of the cache
+is read into every arm that asks it), and every instruction of every script five instructions
+slower: a turn of an empty loop 253 for 228, a plain call 537 for 493. And the entry of a function
+decides where its this value comes from in one place, the plain call first: asked a second time
+further down, for what to cut off the caller's stack, a call that is no method call was twelve
+instructions longer.
+
+With the two binaries run in turn, fifteen runs each: a method call reads 5.4% less time, a method
+inherited through three prototypes 6.3%, calls of `Math` 6.9%, `Math.floor`, `round`, `max` and `min`
+in a loop 6.5%, trigonometry 4.7%; a plain call, a closure, `new`, getters and setters, an empty
+loop and a sum of integers are within 1.5% of where they were. What it cost elsewhere, by where the
+compiler put things: a step of a generator is nine instructions longer (1067 for 1058) and reads
+2.4% more time, `new` three instructions, and the properties of one object read and written in a
+loop, whose instructions are what they were, read 2.2% more.
 
 What is left of a call is mostly entering it: its execution context (some sixty instructions, all
 of it copies), the frame filled and the stacks exchanged (eighty), the code rooted and its tables
