@@ -73,29 +73,94 @@ impl<'a> Number<'a> {
     /// Create a new Number from an f64.
     ///
     /// A function of its own for everyone who asks but the arithmetic of
-    /// the loop of instructions ([`Number::from_f64_in_line`]): it was one
-    /// before that had its own, by the compiler's choice, which this keeps.
+    /// the loop of instructions, which makes the Number of every double it
+    /// works out as part of itself (`Vm::float_operation`): it was one
+    /// before that had its own, by the compiler's choice, which this
+    /// keeps.
+    ///
+    /// Written so that the way straight through calls nothing and can fail
+    /// nowhere: a function that calls in the middle of its work, or that
+    /// has a message to give where an assertion fails, keeps a frame and
+    /// saves the registers it uses across the call when it is entered,
+    /// every time, and restores them when it returns. That was ten
+    /// instructions of the forty that made a Number of the heap. What can
+    /// fail or has to call (the heap's vector of Numbers grows) is left to
+    /// [`Number::from_f64_on_the_heap`], called last.
     #[inline(never)]
     pub fn from_f64(agent: &mut Agent, value: f64, gc: NoGcScope<'a, '_>) -> Self {
-        Self::from_f64_in_line(agent, value, gc)
+        if Self::is_heap_f64(value) {
+            if let Some(number) = Self::alloc_in_place(&mut agent.heap, value) {
+                return Number::Number(number.unbind().bind(gc));
+            }
+        } else if Self::is_whole_and_safe(value) {
+            if let Ok(integer) = SmallInteger::try_from(value as i64) {
+                return Number::Integer(integer);
+            }
+        } else if let Ok(small) = SmallF64::try_from(value) {
+            return Number::SmallF64(small);
+        }
+        Self::from_f64_on_the_heap(agent, value, gc)
     }
 
-    /// [`Number::from_f64`] as part of the function that asks: for the one
-    /// place that makes a Number of every double it works out, the
-    /// arithmetic of the loop of instructions, where the call was a
-    /// tenth of an addition of doubles.
+    /// Whether `value` is what an integer Number holds: whole, in the range
+    /// of the safe integers, and not -0.
     #[inline(always)]
-    pub(crate) fn from_f64_in_line(agent: &mut Agent, value: f64, gc: NoGcScope<'a, '_>) -> Self {
-        if Self::is_heap_f64(value) {
-            let id = Self::alloc_number(&mut agent.heap, value);
-            return Number::Number(id.unbind().bind(gc));
+    pub(crate) fn is_whole_and_safe(value: f64) -> bool {
+        value.is_finite()
+            && value.trunc() == value
+            && (MIN_NUMBER..=MAX_NUMBER).contains(&value)
+            && !(value == 0.0 && value.is_sign_negative())
+    }
+
+    /// A Number of the heap for `number`, appended to the heap's vector of
+    /// them where that has room: None where the vector has to grow first,
+    /// which [`Number::from_f64_on_the_heap`] does. Nothing here calls or
+    /// can fail.
+    ///
+    /// The number being allocated must not be representable as a
+    /// SmallInteger or a SmallF64, as for [`Number::alloc_number`].
+    #[inline(always)]
+    pub(crate) fn alloc_in_place<'gc>(heap: &mut Heap, number: f64) -> Option<HeapNumber<'gc>> {
+        debug_assert!(
+            SmallInteger::try_from(number).is_err() && SmallF64::try_from(number).is_err()
+        );
+        let index = heap.numbers.len();
+        if index >= heap.numbers.capacity() {
+            return None;
         }
+        let handle = BaseIndex::try_from_index(index)?;
+        heap.numbers.push(number.into());
+        heap.alloc_counter += core::mem::size_of::<Option<NumberHeapData>>();
+        Some(HeapNumber(handle))
+    }
+
+    /// The double that the Number of the heap `number` is; None for a
+    /// handle that names none, which is left to whoever reads it the
+    /// general way to say.
+    #[inline(always)]
+    pub(crate) fn heap_f64(agent: &Agent, number: HeapNumber) -> Option<f64> {
+        agent
+            .heap
+            .numbers
+            .get(number.0.get_index_u32_const() as usize)
+            .map(|data| data.data)
+    }
+
+    /// The Number of `value` the general way: for
+    /// [`Number::from_f64`] and the arithmetic of the loop of
+    /// instructions where the heap's vector of Numbers has to grow for it.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn from_f64_on_the_heap(
+        agent: &mut Agent,
+        value: f64,
+        gc: NoGcScope<'a, '_>,
+    ) -> Self {
         if let Ok(value) = Number::try_from(value) {
-            value
-        } else {
-            let id = Self::alloc_number(&mut agent.heap, value);
-            Number::Number(id.unbind().bind(gc))
+            return value;
         }
+        let id = Self::alloc_number(&mut agent.heap, value);
+        Number::Number(id.unbind().bind(gc))
     }
 
     /// Whether `value` is surely a Number of the heap: what nearly every
@@ -117,7 +182,7 @@ impl<'a> Number<'a> {
     /// slower where an operator of the loop of instructions has it in
     /// line: trigonometry in a loop by 12%, arithmetic on doubles by 8%.
     #[inline(always)]
-    fn is_heap_f64(value: f64) -> bool {
+    pub(crate) fn is_heap_f64(value: f64) -> bool {
         if value.to_bits() & 0xFF == 0 {
             return false;
         }

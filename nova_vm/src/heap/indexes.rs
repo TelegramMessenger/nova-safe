@@ -47,6 +47,21 @@ impl<T: ?Sized> BaseIndex<'_, T> {
     pub(crate) const fn get_index_u32_const(self) -> u32 {
         self.0.get() - 1
     }
+
+    /// The index of the place `index` of a vector, where there is one: None
+    /// for a place beyond those an index can name. For whoever makes an
+    /// index where a failed assertion, with its message, would be the only
+    /// reason for the function to keep a frame.
+    #[inline(always)]
+    pub(crate) const fn try_from_index(index: usize) -> Option<Self> {
+        if index >= u32::MAX as usize {
+            return None;
+        }
+        match NonZeroU32::new(index as u32 + 1) {
+            Some(index) => Some(Self(index, PhantomData, PhantomData)),
+            None => None,
+        }
+    }
 }
 
 impl<T: ?Sized> Bindable for BaseIndex<'_, T> {

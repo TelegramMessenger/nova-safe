@@ -17,7 +17,7 @@ use crate::{
         ECMAScriptFunction, Environment, ExceptionType, Function, FunctionEnvironment,
         FunctionPrototype, Generator, GeneratorPrototype, GeneratorState, InternalMethods,
         InternalSlots, IteratorRecord, JsError, JsResult, Number, Object, OrdinaryObject,
-        Primitive, Promise, PropertyKey, Reference, RegularFn, SmallInteger, String,
+        Primitive, Promise, PropertyKey, Reference, RegularFn, SmallF64, SmallInteger, String,
         SuspendedGeneratorState, TryGetResult, Value, binding_value_at_site, call_function,
         get_method, get_this_environment, get_this_value, is_callable, is_property_reference,
         is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache, ordinary_call_bind_this,
@@ -4919,7 +4919,35 @@ impl Vm {
             Instruction::GreaterThanEquals => return Some((left_double >= right_double).into()),
             _ => return Self::operation_on_numbers(agent, kind, left, right, gc),
         };
-        let value: Value = Number::from_f64_in_line(agent, result, gc).into();
+        // The Number of the result, made here where that calls nothing and
+        // can fail nowhere, as [`Number::from_f64`] makes it and for its
+        // reason: this function keeps no frame. Where the heap's vector of
+        // Numbers has to grow for it, the Number is made by a function
+        // called last.
+        if Number::is_heap_f64(result) {
+            if let Some(number) = Number::alloc_in_place(&mut agent.heap, result) {
+                return Some(Value::Number(number.unbind()));
+            }
+        } else if Number::is_whole_and_safe(result) {
+            if let Ok(integer) = SmallInteger::try_from(result as i64) {
+                return Some(Value::Integer(integer));
+            }
+        } else if let Ok(small) = SmallF64::try_from(result) {
+            return Some(Value::SmallF64(small));
+        }
+        Self::float_result_on_the_heap(agent, result, gc)
+    }
+
+    /// The result of [`Vm::float_operation`] where the heap's vector of
+    /// Numbers grows for it.
+    #[cold]
+    #[inline(never)]
+    fn float_result_on_the_heap(
+        agent: &mut Agent,
+        result: f64,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let value: Value = Number::from_f64_on_the_heap(agent, result, gc).into();
         Some(value.unbind())
     }
 
@@ -4927,7 +4955,10 @@ impl Vm {
     #[inline(always)]
     fn double_of(agent: &Agent, value: Value) -> Option<f64> {
         match value {
-            Value::Number(number) => Some(*number.get(agent)),
+            // None for a handle that names no Number too: nothing here
+            // has a message to give, and whoever takes the operands the
+            // general way says so.
+            Value::Number(number) => Number::heap_f64(agent, number),
             Value::Integer(number) => Some(number.into_i64() as f64),
             Value::SmallF64(number) => Some(number.into_f64()),
             _ => None,
