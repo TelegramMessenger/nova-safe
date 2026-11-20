@@ -2440,6 +2440,14 @@ pub(super) fn execute_fused_instruction<'gc>(
             vm.stack[slot] = vm.result.take().unwrap();
             Ok(())
         }
+        Instruction::PutBindingAtSiteAndGet => {
+            // PutBindingAtSite, then GetBindingAtSite of the same name:
+            // what the variable has then, which is not what was assigned
+            // where the assignment changes nothing.
+            execute_put_binding_at_site(agent, vm, executable.clone(), instr, false, gc.reborrow())
+                .unbind()?;
+            execute_get_binding_at_site(agent, vm, executable, instr, false, gc)
+        }
         Instruction::StepValueWithCache => {
             let which = instr.get_second_index();
             // ToNumeric

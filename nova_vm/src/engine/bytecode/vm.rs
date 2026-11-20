@@ -3400,8 +3400,13 @@ impl Vm {
                 vm.result = None;
                 vm.stack.push(value);
             }
-            Instruction::PutBindingAtSite | Instruction::PutGlobalAtSite => {
-                step!(PutBindingAtSite, PutGlobalAtSite);
+            // The assignment to such a variable; and the assignment and
+            // the read of it that follows, where what was assigned stays
+            // the result: the variable has it, once it is set.
+            Instruction::PutBindingAtSite
+            | Instruction::PutGlobalAtSite
+            | Instruction::PutBindingAtSiteAndGet => {
+                step!(PutBindingAtSite, PutGlobalAtSite, PutBindingAtSiteAndGet);
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
@@ -3413,7 +3418,9 @@ impl Vm {
                 if !set_binding_value_at_site(agent, site, name, value, gc) {
                     return Plain::No;
                 }
-                vm.result = None;
+                if instr.kind != Instruction::PutBindingAtSiteAndGet {
+                    vm.result = None;
+                }
             }
             // A name of the global scope that is about to be assigned to:
             // its Reference, made where the name was found the last time.
@@ -5509,6 +5516,9 @@ impl Vm {
             Instruction::PutBindingAtSite => {
                 execute_put_binding_at_site(agent, vm, executable, instr, false, gc)?;
             }
+            Instruction::PutBindingAtSiteAndGet => {
+                execute_fused_instruction(agent, vm, executable, instr, gc)?;
+            }
             Instruction::ResolveGlobalAtSite
             | Instruction::GetGlobalAtSite
             | Instruction::PutGlobalAtSite
@@ -5681,6 +5691,7 @@ impl Vm {
             | Instruction::GetBindingAtSiteOnce
             | Instruction::LoadBindingAtSiteOnce
             | Instruction::PutBindingAtSite
+            | Instruction::PutBindingAtSiteAndGet
             | Instruction::ResolveGlobalAtSite
             | Instruction::GetGlobalAtSite
             | Instruction::PutGlobalAtSite

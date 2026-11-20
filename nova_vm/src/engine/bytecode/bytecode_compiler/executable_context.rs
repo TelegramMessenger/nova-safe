@@ -1380,6 +1380,18 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 | Instruction::PutGlobalAtSite
                 | Instruction::PutValueAtSite
         ));
+        // A variable of an enclosing function that was just assigned to:
+        // the assignment leaves what it assigned as the result, which is
+        // what this read would find there. The two are next to each other
+        // with nothing that jumps in between, so they name one variable;
+        // the site of the read is left with no name and is not used.
+        if instruction == Instruction::GetBindingAtSite
+            && let Some(put) = self.recent_instruction(0, Instruction::PutBindingAtSite)
+            && self.operand(put + 1) == self.add_identifier(identifier)
+        {
+            self.instructions[put] = Instruction::PutBindingAtSiteAndGet.as_u8();
+            return;
+        }
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);
         self.name_binding_site(site, identifier);
