@@ -273,7 +273,14 @@ the same way, a property that is pushed by the instruction that reads it 1.5% mo
 assignment that takes its object from the variable's slot 3.4% more, for 0.5 to 0.9% more
 instructions in the cases that call. An assignment to a variable of an enclosing function that
 leaves its value for the read after it (area 2) took 7.4% of its instructions off the call of a
-closure.
+closure, and an operator that reads its left operand from a local's slot (area 1) 2.7% more.
+
+Where that leaves the two cases, with no table of a quiet machine yet: the two engines run in turn
+in one binary, and the least of nine to thirteen runs of each taken, which other work on the
+machine leaves near what a quiet machine gives (QuickJS's least times are those of its quiet
+tables). A step of the particles is 1.84 to 1.92x that way, and the call of a closure 2.04x: the
+one case over 2x. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
+Float64Array 1.88x, a step of a generator 1.81x, a plain call 1.72x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -583,6 +590,25 @@ for every kind. And the general instructions called, not part of the loop: 28 lo
 50. In a loop of one page each of the first three does what it says, and the comparisons go; in
 this one what the compiler keeps in a register decides, and the loop as it stands is where the
 rounds before left that.
+
+An arithmetic or bitwise operator whose left operand is a local pushed the local, worked out the
+right operand and then ran (`x * step` with `step` a variable of an enclosing function: three
+instructions). Where the right operand does not assign to the local, the local is what it was
+when the operator runs, and the operator reads it from its stack slot then
+(`ApplyBinaryOperatorToIndexWithResult`): the push is not made, one instruction fewer. The
+compiler asks the references of the local for a write inside the right operand, as it does for
+the object of an assignment (area 4); a right operand that assigns to the local (`x + (x = 5)`,
+`x * x++`) is compiled as before, and so is a literal, which the instructions with a constant
+take. What runs in what order is unchanged: the right operand is worked out, then the two are
+converted, left first.
+
+It has an arm of its own. As one more kind in the arm of the operator on a local and a constant,
+which it is all but the same as, it made every turn of a loop five machine instructions longer and
+every call four to seven, and everything a percent or two slower by its instructions; with its own
+arm a call is two to three longer and a turn of a loop what it was. Counted by the instructions
+the cases retire, the call of a closure is 2.7% fewer and nothing else moves. With the two
+binaries run in turn under the other work, the least of fifteen runs of that call is 1.8 to 2.4%
+less.
 
 #### The functions the loop calls
 
