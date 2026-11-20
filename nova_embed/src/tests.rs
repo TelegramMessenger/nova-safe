@@ -16023,3 +16023,66 @@ loop 30000 10000"##;
         "o/1 deep/2 a:1|a:undefined string:abc/1 other/1 120 30001 9 98 kept:123"
     );
 }
+
+/// Variables with names too long for a Value to hold, which are Strings of
+/// the heap that a collection moves: of the global object, of the global
+/// scope's lexical declarations and of enclosing functions, read and
+/// written where they were found the last time, with garbage made and
+/// collected between the reads. Each place in the code keeps the name it
+/// names beside what it remembers, and the collector keeps that name
+/// current: a build with assertions checks at every read that it is still
+/// the name the instruction has. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn the_name_of_a_place_is_its_own_through_collections() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(named_places)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn named_places() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"// Variables with names too long for a Value to hold, read and written where they were found the last time, with
+// garbage made and collected between the reads: the names move, and each place still knows its own.
+var out = [];
+var aVeryLongGlobalVariableName64 = 1;
+globalThis.anotherRatherLongGlobalName64 = 10;
+let aLexicalDeclarationWithALongName64 = 5;
+function makeCounter(initialCounterValueWithLongName) {
+  var theRunningTotalOfEverything = initialCounterValueWithLongName;
+  let theNumberOfCallsMadeSoFar = 0;
+  return function addToTheRunningTotal(stepWithALongParameterName) {
+    theNumberOfCallsMadeSoFar++;
+    theRunningTotalOfEverything += stepWithALongParameterName + aVeryLongGlobalVariableName64 + anotherRatherLongGlobalName64 + aLexicalDeclarationWithALongName64;
+    return theRunningTotalOfEverything + "/" + theNumberOfCallsMadeSoFar;
+  };
+}
+var counterWithLongName = makeCounter(100);
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var s = "garbage string number " + i + " of " + n; if ((i & 255) === 0) keep.push(s); } return keep.length; }
+function readAllOfThem() { return [aVeryLongGlobalVariableName64, anotherRatherLongGlobalName64, aLexicalDeclarationWithALongName64, typeof aNameThatIsNotDeclaredAnywhere64].join(":"); }
+for (var round = 0; round < 6; round++) {
+  out.push(counterWithLongName(round), churn(30000), readAllOfThem());
+  aVeryLongGlobalVariableName64 += 1; anotherRatherLongGlobalName64 += 2; aLexicalDeclarationWithALongName64 *= 2;
+  if (round === 3) globalThis.aNameThatIsNotDeclaredAnywhere64 = "now";
+}
+out.join(",")"##;
+    let expected = r##"116/1,118,1:10:5:undefined,141/2,118,2:12:10:undefined,180/3,118,3:14:20:undefined,243/4,118,4:16:40:undefined,350/5,118,5:18:80:string,541/6,118,6:20:160:string"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    assert_eq!(text(&mut engine, script), expected);
+    for _ in 0..3 {
+        engine.collect_garbage().unwrap();
+    }
+    assert_eq!(
+        text(
+            &mut engine,
+            "[counterWithLongName(1), readAllOfThem(), churn(1000)].join(' ')"
+        ),
+        "891/7 7:22:320:string 4"
+    );
+}
