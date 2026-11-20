@@ -90,36 +90,36 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the second property of a kept
-name (area 4), in machine instructions per operation:
+a million times the price of the operation. As of the round of the instruction read whole
+(area 1), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 228 / 270 / 262 | 484 / 566 / 576 | 2.1-2.2x |
-| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 704 / 798 / 747 | 1.9-2.3x |
-| a callee that reads a variable of its maker, in place of its parameter | 2 | 58 | |
-| a callee that assigns one, more | 25 | 118 | |
-| read of a variable of the enclosing function, in place of a local | 2 | 10 | |
+| call, no argument / one / two | 228 / 270 / 262 | 476 / 557 / 566 | 2.1-2.2x |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 692 / 785 / 735 | 1.9-2.2x |
+| a callee that reads a variable of its maker, in place of its parameter | 2 | 57 | |
+| a callee that assigns one, more | 25 | 116 | |
+| read of a variable of the enclosing function, in place of a local | 2 | 3 | |
 | assignment to one, in place of a local | 3 | 57 | |
-| read of a global, in place of a local | 41 | 103 | 2.5x |
-| assignment to a global, in place of a local | 61 | 331 | 5.4x |
-| property read, own / inherited, in place of a local | 53 / 68 | 122 / 165 | 2.3x |
-| a second property of the same object, in place of a local | 53 | 94 | 1.8x |
-| property assignment, in place of a local | 53 | 127 | 2.4x |
-| getter / setter | 328 / 405 | 738 / 766 | 2.2x / 1.9x |
-| integer `+` of two locals, more | 24 | 90 | 3.8x |
-| `-(i & 7)` / `-x` of a double, more | 23 / 9 | 123 / 111 | |
-| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 238 | 3.5x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 549 / 490 / 565 | 1.7-2.1x |
-| `Math.max(i, 7)` | 271 | 424 | 1.6x |
-| Array element read / written | 56 / 53 | 143 / 185 | 2.6x / 3.5x |
-| Uint8Array element read / written | 89 / 78 | 207 / 217 | 2.3x / 2.8x |
-| Float64Array element read / written | 106 / 76 | 279 / 203 | 2.6x / 2.7x |
-| `new` of a function / of a class, one field set | 1072 / 1128 | 2150 / 2121 | 2.0x / 1.9x |
-| an object literal of two properties | 744 | 493 | 0.66x |
-| one callback of `forEach` (the whole turn) | 394 | 751 | 1.9x |
-| one step of `for-of` over a generator (the whole turn) | 491 | 915 | 1.9x |
-| `s.charCodeAt(i)` | 350 | 482 | 1.4x |
+| read of a global, in place of a local | 41 | 102 | 2.5x |
+| assignment to a global, in place of a local | 61 | 329 | 5.4x |
+| property read, own / inherited, in place of a local | 53 / 68 | 111 / 154 | 2.1-2.3x |
+| a second property of the same object, in place of a local | 53 | 87 | 1.6x |
+| property assignment, in place of a local | 53 | 118 | 2.2x |
+| getter / setter | 328 / 405 | 727 / 756 | 2.2x / 1.9x |
+| integer `+` of two locals, more | 24 | 86 | 3.6x |
+| `-(i & 7)` / `-x` of a double, more | 23 / 9 | 121 / 109 | |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 235 | 3.5x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 541 / 483 / 559 | 1.7-2.1x |
+| `Math.max(i, 7)` | 271 | 416 | 1.5x |
+| Array element read / written | 56 / 53 | 134 / 175 | 2.4x / 3.3x |
+| Uint8Array element read / written | 89 / 78 | 197 / 206 | 2.2x / 2.6x |
+| Float64Array element read / written | 106 / 76 | 270 / 192 | 2.5x / 2.5x |
+| `new` of a function / of a class, one field set | 1072 / 1128 | 2130 / 2101 | 2.0x / 1.9x |
+| an object literal of two properties | 744 | 490 | 0.66x |
+| one callback of `forEach` (the whole turn) | 395 | 747 | 1.9x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 901 | 1.8x |
+| `s.charCodeAt(i)` | 350 | 470 | 1.3x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
@@ -145,13 +145,13 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 1.7x |
-| call | 14 | 10.4x | 1.6x |
+| typed | 4 | 10.6x | 1.6x |
+| call | 14 | 10.4x | 1.5x |
 | math | 4 | 9.7x | 1.6x |
 | string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.3x |
 | map, set | 4 | 4.6x | 1.1x |
-| app | 8 | 6.1x | 1.5x |
+| app | 8 | 6.1x | 1.4x |
 | array | 14 | 5.8x | 1.4x |
 | regexp | 4 | 2.4x | 1.4x |
 | loop | 11 | 11.1x | 1.2x |
@@ -163,7 +163,7 @@ The worst case was 303x (appending to a string 100,000 times); that one is 1.6x,
 was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure and a step of a
 particle animation (2.3x): the two that are over 2x. 106 of the 108 cases are at or under it, 21 of
 them at or under QuickJS's time.
-Over all cases it is 1.33x: 2.12x before the round of patterns, Array iteration and
+Over all cases it is 1.31x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -256,7 +256,12 @@ instruction (area 1) took 5.7% off the properties of one object read and written
 instruction (area 4) took 7.1% more off that case (2.04x to 1.89x in two tables taken one after
 the other) and left the mean where it was: 1.327x for 1.324x, in a pair where QuickJS's own times
 read 1.2% lower and Nova's 1.0%. A `switch` in a loop and a step of the particles read 3 to 6%
-more time in that pair with the instructions they had before, by where the loop's code lies.
+more time in that pair with the instructions they had before, by where the loop's code lies. An
+instruction read with every argument it can have in one look at the code (area 1) took 2 to 8% off
+the loops and the calls: 1.309x from 1.319x in two tables taken one after the other, with the same
+two cases over 2x (a step of the particles 2.3x, a closure 2.25x for 2.29x). Two RegExp cases read
+12% and 21% more time in the second of those tables, which were taken while other work ran on the
+machine, and 3.1% more and 0.5% less with the two binaries run in turn.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -502,6 +507,34 @@ The table of the arms still asks one thing of the kind: whether it is past the l
 has, since the kinds after that go the general way together. With an arm of its own for the last
 kind, so that the table has an entry for every byte, that comparison went too: the turn of a loop
 was one instruction shorter and every call three to five longer. Not kept.
+
+And what an instruction has beyond its first two arguments. The comparisons of a local that jump,
+the steps that end a loop, the reads of a property of a local or of a kept name and the reads of a
+kept name have four arguments, nine bytes. The loop read the first two with the instruction, and
+the arm fetched the others from the code by the place of the next instruction: is that place four
+bytes into the code, is it within the code, where does the code start, the address, the load; eight
+machine instructions for one argument, at every turn of a `for` loop and at every `p.x`. The loop
+now reads an instruction with the eight bytes after it, the longest instruction there is, in its
+one look at how much code is left (the padding after the code is eight bytes where it was four),
+and hands that window to the arm: the third argument is one load from it. The compiler made more
+of this than the arguments: with the window at hand the step from one instruction to the next is
+shorter for every kind.
+
+By the price list the turn of a loop is 214 instructions for 223 and a variable of the enclosing
+function read in it 3 for 10 (QuickJS: 2); a call is 8 to 10 shorter (476 for 484 with no
+argument) and a method call 12; a property read is 111 for 122, a second one of the same object 87
+for 94 and an assignment 118 for 127; an element of an Array is 9 to 10 less read or written and
+of a typed array 9 to 11; `new` 20, a step of a generator 14, `s.charCodeAt(i)` 12, a getter 11.
+Nothing is longer. A widget takes the memory it took (the four bytes more of padding for every
+function of the sandbox do not show in what a runtime counts).
+
+With the two binaries run in turn, fifteen runs each: a `switch` in a loop takes 7.7% less time, an
+empty loop 5.0%, a sum of integers 3.6%, arithmetic on doubles in a loop and nested loops 3.5%
+each, a global variable in a loop 3.4%, the properties of one object 3.3%, a function that calls
+itself and the arithmetic of a Float64Array 2.9% each, a method 2.2%, `new` of a class 2.1%, a
+plain call 1.6% and a closure 1.5%. A step of the particles is where it was (2.4% more in that
+run, 1.2% less in the next) with 3.9% fewer instructions: it retires them in the cycles it took
+before, so its time is not the count of its instructions.
 
 #### The functions the loop calls
 
