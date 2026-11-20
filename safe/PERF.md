@@ -142,7 +142,7 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 1.7x |
-| call | 14 | 10.4x | 1.8x |
+| call | 14 | 10.4x | 1.7x |
 | math | 4 | 9.7x | 1.7x |
 | string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.4x |
@@ -157,11 +157,11 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
 was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.7x), then a step
-of a particle animation (2.4x), a function that calls itself (2.3x), the properties of one object
-read and written in a loop and a method inherited through three prototypes (2.2x): calls and
-properties, where the arithmetic of doubles was among them. 95 to 97 of the 108 cases are at or
-under 2x from one run to the next (half a dozen sit within a few hundredths of 2x, on either side
-of it), 18 to 20 of them at or under QuickJS's time.
+of a particle animation (2.4x), the properties of one object read and written in a loop (2.3x), a
+function that calls itself, trigonometry and a method inherited through three prototypes (2.2x):
+calls and properties, where the arithmetic of doubles was among them. 97 to 99 of the 108 cases are
+at or under 2x from one run to the next (half a dozen sit within a few hundredths of 2x, on either
+side of it), 18 to 20 of them at or under QuickJS's time.
 Over all cases it is 1.40x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -224,7 +224,12 @@ libraries with every function of `order.txt` in a slot of its own ("Where a func
 the table of the round's checks had a `switch` in a loop 5.6% slower for no change to it. The native
 stack asked about once for the calls the loop runs itself (area 3) took a percent off the cases
 that call: 1.394x, in tables of the fastest of five processes for a case, where 97 cases are at or
-under 2x and three more sit on it (a plain call, a call of `Math`, padding a text).
+under 2x and three more sit on it (a plain call, a call of `Math`, padding a text). The copies of a
+text with no surrogate in it made as its bytes (area 8) and the functions of `Math` that read their
+Number once (area 6) took two of those three off it (`string/pad-and-repeat` 1.98x to 1.86x,
+`call/native-math` 2.02x to 1.91x, and `math/floor-round-minmax` 1.94x to 1.82x): 1.385x from
+1.393x in two tables taken one after the other, with 99 cases at or under 2x and 20 at or under
+QuickJS's time.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1653,6 +1658,20 @@ putting together of tag and bytes, at every operator. So a double stays a Number
 its low byte is zeros; what is left of the price of an operator on doubles is the instruction around
 it (its operands fetched, the call) and the 85 of the function.
 
+`Math.floor`, `Math.ceil`, `Math.round` and `Math.sign` asked their Number one thing after another:
+whether it is integral, whether it is finite, whether it is a zero of either sign, and then for its
+double. Each question looks at the Number's kind and, for a Number of the heap, reads it: five reads
+for one `Math.floor(x)`. The double is read once now and the answers are taken from it (a zero, an
+integral double and an infinity are their own floor, and the floor of a double between 0 and 1 is
++0: what the steps of the specification name one by one is what `floor` gives), and an integer
+Number is returned before that. `Math.max` and `Math.min` of two integer Numbers, which is what most
+calls give them, return one of the two after one comparison; the loop that takes any number of
+arguments of any kind was eight times that. By the price list `Math.floor(i / 3)` went from 665 to
+652 instructions and `Math.max(i, 7)` from 574 to 515, with nothing else moved. With the two
+binaries run in turn `call/native-math` reads 5.0% less time and `math/floor-round-minmax` 5.1%; a
+step of the particles, an animation's easing and a sum of integers, which call none of these, are
+within half a percent of where they were.
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
@@ -1879,6 +1898,16 @@ Tried: the method of an Array (`a.push`) found under a remembered shape of the A
 properties of their own, and read from its slot. The case of strings pushed and joined gained
 nothing (what `push` costs is in `push`: whether the Array appends plainly, its storage grown, the
 bytes counted), and a plain call and the properties of one object read 4-6% slower. Dropped.
+
+`s.repeat(n)` and the filler of `padStart` and `padEnd` were appended a copy at a time, each the way
+a text that may end in half a surrogate pair is appended: the end of what is there and the start of
+what comes are looked at, so that two halves that meet become one character. That was two thirds of
+`"-".repeat(n)`. A text that is valid UTF-8 has no such half, and says so in one pass over its bytes:
+its copies are then its bytes, as many times, and only a text with a lone surrogate in it is
+appended the careful way (`"\uDC00\uD800".repeat(2)` has a pair at its seam). A result that is too
+long for a String or for the heap is refused before any of it is made, as it was.
+`string/pad-and-repeat` executes 6.8% fewer instructions and reads 7.5% less time, the two binaries
+run in turn.
 
 ### 9. Garbage
 
