@@ -278,8 +278,8 @@ closure, and an operator that reads its left operand from a local's slot (area 1
 Where that leaves the two cases, with no table of a quiet machine yet: the two engines run in turn
 in one binary, and the least of nine to thirteen runs of each taken, which other work on the
 machine leaves near what a quiet machine gives (QuickJS's least times are those of its quiet
-tables). A step of the particles is 1.84 to 1.92x that way, and the call of a closure 2.04x: the
-one case over 2x. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
+tables). A step of the particles is 1.84 to 1.92x that way, and the call of a closure 2.04x, and
+2.01 to 2.02x once the names of bindings are compared at once (area 2): the one case over 2x. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
 Float64Array 1.88x, a step of a generator 1.81x, a plain call 1.72x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
@@ -849,6 +849,23 @@ for 118, the call of a closure 2.5% fewer. But twelve bytes more for every site 
 of an enclosing function or of the global scope, and a long widget no longer fit. The table of
 sites may not grow. That it is 160 KB as it is, with a site for every reference and not for every
 name, is the next thing to look at there.
+
+The name at a place was compared as the String it is: its kind first, then what that kind keeps,
+and the seven bytes of a short name four, two and one at a time. That was a dozen instructions of
+every read and every assignment of a variable where it was found the last time, and the function
+of the standard library that compares two arrays was 2.9% of the time of a closure's call. A
+record keeps the names of its bindings as eight bytes each now, which two names have alike
+exactly where they are the same String (the kind, then the seven bytes of a short name or the
+index of a name of the heap), made once where a binding is created. The name that is looked for
+is made eight bytes the same way, in the register it arrives in, and the two are compared at
+once; the search of a record of few bindings compares the same way. An entry is the twenty bytes
+it was, and a widget's memory what it was.
+
+A variable of an enclosing function is read in 51 instructions for 56 and assigned in 114 for 118.
+Counted by the instructions the cases retire, the call of a closure is 1.2% fewer, a loop that
+adds to a variable of an enclosing function 2.6% and a tokenizer 0.7%; nothing else moves. With
+the two binaries run in turn under the other work that call is 0.5% less and that loop 1.1% less;
+with the two engines run in turn the call of a closure is 2.01 to 2.02x, for 2.04x before.
 
 ### 3. Calls
 
