@@ -792,6 +792,14 @@ pub(crate) enum Instruction {
     /// are the BindingSite of the name. The name is no argument: the site
     /// has it.
     GetKeptPropertyWithCache,
+    /// Load, StoreConstant and a comparison that jumps, as one instruction:
+    /// what was just computed (the result register, which the instruction
+    /// empties) is compared with a constant, as in `p.x < 0`; or
+    /// IsStrictlyEqualConstant and the jump on it, `f() === 3`. The first
+    /// argument says which comparison it is and which way it jumps
+    /// ([`Instruction::result_comparison`]), the second is the constant,
+    /// the last two are the jump target.
+    JumpIfResultComparesWithConstant,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
@@ -800,7 +808,6 @@ pub(crate) enum Instruction {
     // reads instructions with care, and the loop leaves the byte to the
     // general way, which ends as it did. A new instruction takes the
     // first of them.
-    Unused232,
     Unused233,
     Unused234,
     Unused235,
@@ -832,8 +839,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused232
-            | Instruction::Unused233
+        Instruction::Unused233
             | Instruction::Unused234
             | Instruction::Unused235
             | Instruction::Unused236
@@ -896,6 +902,7 @@ impl Instruction {
             | Self::GetIndexPropertyWithCacheKeepReference
             | Self::LoadIndexPropertyWithCachePushThis
             | Self::GetKeptPropertyWithCache
+            | Self::JumpIfResultComparesWithConstant
             | Self::GetBindingAtSiteOnce
             | Self::LoadBindingAtSiteOnce
             | Self::JumpIfIndexLessThanConstant
@@ -1320,6 +1327,36 @@ impl Instruction {
             _ => return None,
         })
     }
+
+    /// Which comparison [`Instruction::JumpIfResultComparesWithConstant`]
+    /// makes and which way it jumps, as its first argument has it: for the
+    /// instruction `self` that makes the same comparison and jump on the
+    /// stack and the result, or, where `self` is a comparison alone
+    /// (LessThan and its like), for the jump where that holds. The lowest
+    /// two bits are the order, [`Instruction::RESULT_COMPARISON_NOT`] says
+    /// that it jumps where the comparison does not hold, and from
+    /// [`Instruction::RESULT_COMPARISON_STRICT`] on it is strict equality:
+    /// jump where equal, and one more where not.
+    pub(crate) const fn result_comparison(self) -> Option<IndexType> {
+        Some(match self {
+            Self::LessThan | Self::JumpIfLessThan => 0,
+            Self::LessThanEquals | Self::JumpIfLessThanEquals => 1,
+            Self::GreaterThan | Self::JumpIfGreaterThan => 2,
+            Self::GreaterThanEquals | Self::JumpIfGreaterThanEquals => 3,
+            Self::JumpIfNotLessThan => 4,
+            Self::JumpIfNotLessThanEquals => 5,
+            Self::JumpIfNotGreaterThan => 6,
+            Self::JumpIfNotGreaterThanEquals => 7,
+            Self::JumpIfStrictlyEqual => 8,
+            Self::JumpIfNotStrictlyEqual => 9,
+            _ => return None,
+        })
+    }
+
+    /// See [`Instruction::result_comparison`].
+    pub(crate) const RESULT_COMPARISON_NOT: usize = 4;
+    /// See [`Instruction::result_comparison`].
+    pub(crate) const RESULT_COMPARISON_STRICT: usize = 8;
 
     /// The instruction that makes the comparison and jump of `self` on a
     /// local and a constant, or on two locals.
@@ -1965,7 +2002,8 @@ impl Instruction {
             Instruction::ApplyBitwiseAndBinaryOperator.as_u8();
         const DEBUG: u8 = Instruction::Debug.as_u8();
         const GETKEPTPROPERTYWITHCACHE: u8 = Instruction::GetKeptPropertyWithCache.as_u8();
-        const UNUSED232: u8 = Instruction::Unused232.as_u8();
+        const JUMPIFRESULTCOMPARESWITHCONSTANT: u8 =
+            Instruction::JumpIfResultComparesWithConstant.as_u8();
         const UNUSED233: u8 = Instruction::Unused233.as_u8();
         const UNUSED234: u8 = Instruction::Unused234.as_u8();
         const UNUSED235: u8 = Instruction::Unused235.as_u8();
@@ -2551,7 +2589,7 @@ impl Instruction {
             IMPORTMETA => Some(Instruction::ImportMeta),
             VERIFYISOBJECT => Some(Instruction::VerifyIsObject),
             GETKEPTPROPERTYWITHCACHE => Some(Instruction::GetKeptPropertyWithCache),
-            UNUSED232 => Some(Instruction::Unused232),
+            JUMPIFRESULTCOMPARESWITHCONSTANT => Some(Instruction::JumpIfResultComparesWithConstant),
             UNUSED233 => Some(Instruction::Unused233),
             UNUSED234 => Some(Instruction::Unused234),
             UNUSED235 => Some(Instruction::Unused235),
@@ -2581,7 +2619,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() >= Instruction::Unused232.as_u8()
+        self.as_u8() >= Instruction::Unused233.as_u8()
     }
 }
 
@@ -2636,7 +2674,7 @@ mod tests {
             assert_eq!(kind.as_u8(), byte);
             assert_eq!(
                 kind.is_unused(),
-                byte > Instruction::GetKeptPropertyWithCache.as_u8()
+                byte > Instruction::JumpIfResultComparesWithConstant.as_u8()
             );
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
@@ -2645,14 +2683,15 @@ mod tests {
         }
         assert!(!Instruction::Debug.is_unused());
         assert!(!Instruction::GetKeptPropertyWithCache.is_unused());
-        assert!(Instruction::Unused232.is_unused());
+        assert!(!Instruction::JumpIfResultComparesWithConstant.is_unused());
+        assert!(Instruction::Unused233.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused232.as_u8()];
+        let code = [Instruction::Unused233.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }

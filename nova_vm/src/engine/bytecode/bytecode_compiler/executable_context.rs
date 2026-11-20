@@ -794,6 +794,15 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     self.instructions.extend_from_slice(&slot);
                     self.instructions.extend_from_slice(&constant);
                     strict
+                } else if let Some(equal) =
+                    self.recent_instruction(0, Instruction::IsStrictlyEqualConstant)
+                    && let Some(comparison) = strict.result_comparison()
+                {
+                    // What was just computed and a constant: the test and
+                    // the jump on it by one instruction.
+                    let constant = self.operand_bytes(equal);
+                    self.drop_recent_instructions(equal, 1);
+                    return self.add_result_comparison(comparison, constant);
                 } else {
                     instruction
                 }
@@ -881,6 +890,27 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     return self.add_jump_index();
                 }
             }
+            // What was just computed compared with a constant: the
+            // Load, the StoreConstant, the comparison and the jump as one
+            // instruction.
+            let of_result = [
+                Instruction::LessThan,
+                Instruction::LessThanEquals,
+                Instruction::GreaterThan,
+                Instruction::GreaterThanEquals,
+            ]
+            .into_iter()
+            .find_map(|comparison| {
+                self.recent_instruction(0, comparison)?;
+                let constant = self.recent_instruction(1, Instruction::StoreConstant)?;
+                let load = self.recent_instruction(2, Instruction::Load)?;
+                Some((comparison.result_comparison()?, constant, load))
+            });
+            if let Some((comparison, constant, load)) = of_result {
+                let constant = self.operand_bytes(constant);
+                self.drop_recent_instructions(load, 3);
+                return self.add_result_comparison(comparison, constant);
+            }
             // Any other operands: the comparison and the jump on it.
             let fused = [
                 (Instruction::LessThan, Instruction::JumpIfLessThan),
@@ -926,7 +956,28 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             self.instructions.extend_from_slice(&second);
             return self.add_jump_index();
         }
+        // What was just computed compared with a constant, and the jump
+        // where the comparison does not hold: as above.
+        if let Some(comparison) = instruction.result_comparison()
+            && let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant)
+            && let Some(load) = self.recent_instruction(1, Instruction::Load)
+        {
+            let constant = self.operand_bytes(constant);
+            self.drop_recent_instructions(load, 2);
+            return self.add_result_comparison(comparison, constant);
+        }
         self.push_instruction(instruction);
+        self.add_jump_index()
+    }
+
+    /// JumpIfResultComparesWithConstant: which comparison and jump it makes
+    /// ([`Instruction::result_comparison`]), the constant as another
+    /// instruction had it, and the jump target to be set.
+    fn add_result_comparison(&mut self, comparison: IndexType, constant: [u8; 2]) -> JumpIndex {
+        self.push_instruction(Instruction::JumpIfResultComparesWithConstant);
+        self.instructions
+            .extend_from_slice(&comparison.to_ne_bytes());
+        self.instructions.extend_from_slice(&constant);
         self.add_jump_index()
     }
 

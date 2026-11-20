@@ -3085,6 +3085,15 @@ impl Vm {
             Instruction::JumpIfIndexStrictlyEqualIndex => {
                 compare_local_and_jump!(JumpIfIndexStrictlyEqualIndex)
             }
+            // What was just computed compared with a constant, and the
+            // jump on it: one arm for the ten comparisons, which the
+            // instruction has as an argument.
+            Instruction::JumpIfResultComparesWithConstant => {
+                step!(JumpIfResultComparesWithConstant);
+                return Self::compare_result_with_constant_and_jump(
+                    agent, vm, ip, window, tables, instr, gc,
+                );
+            }
             // The test at the end of a loop, after `i++` or `i--` where the
             // instruction makes that too: all of it here, or none. The step
             // is made of an integer only; the test takes any two Numbers.
@@ -4129,6 +4138,71 @@ impl Vm {
                 };
                 !holds
             }
+        };
+        vm.result = None;
+        if jumps {
+            let from = *ip;
+            *ip = Instr::window_jump_target(window);
+            if *ip < from {
+                return Plain::Looped;
+            }
+        }
+        Plain::Done
+    }
+
+    /// JumpIfResultComparesWithConstant: what the result register holds
+    /// compared with a constant, and the jump where the instruction says;
+    /// the register is emptied, as the comparison it stands for empties
+    /// it. Two integers and two Numbers here; anything else is left to the
+    /// general way with nothing changed, as the comparisons of a local
+    /// leave it.
+    // Part of its arm. As a function that the arm calls it made the
+    // calls of a script no shorter than it does here (they are three to
+    // four instructions longer with this instruction in the loop, however
+    // it is written) and the comparison six longer.
+    #[inline(always)]
+    fn compare_result_with_constant_and_jump(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        ip: &mut usize,
+        window: &[u8; Instr::WINDOW],
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> Plain {
+        let Some(left) = vm.result else {
+            return Plain::No;
+        };
+        let right = tables.constant(instr.get_second_index(), gc).unbind();
+        let comparison = instr.get_first_index();
+        let jumps = if comparison >= Instruction::RESULT_COMPARISON_STRICT {
+            Self::strictly_equal(agent, left, right)
+                == (comparison == Instruction::RESULT_COMPARISON_STRICT)
+        } else {
+            let holds = match (left, right) {
+                (Value::Integer(left), Value::Integer(right)) => {
+                    let (left, right) = (left.into_i64(), right.into_i64());
+                    match comparison & 3 {
+                        0 => left < right,
+                        1 => left <= right,
+                        2 => left > right,
+                        _ => left >= right,
+                    }
+                }
+                (left, right) => {
+                    let order = match comparison & 3 {
+                        0 => Instruction::LessThan,
+                        1 => Instruction::LessThanEquals,
+                        2 => Instruction::GreaterThan,
+                        _ => Instruction::GreaterThanEquals,
+                    };
+                    let Some(holds) = Self::numbers_compare(agent, order, left, right) else {
+                        return Plain::No;
+                    };
+                    holds
+                }
+            };
+            holds != (comparison & Instruction::RESULT_COMPARISON_NOT != 0)
         };
         vm.result = None;
         if jumps {
@@ -5400,6 +5474,7 @@ impl Vm {
             | Instruction::JumpIfIndexNotStrictlyEqualIndex
             | Instruction::JumpIfIndexStrictlyEqualConstant
             | Instruction::JumpIfIndexStrictlyEqualIndex
+            | Instruction::JumpIfResultComparesWithConstant
             | Instruction::JumpIfIndexLessThanConstant
             | Instruction::JumpIfIndexLessThanIndex
             | Instruction::JumpIfIndexLessThanEqualsConstant
@@ -5571,6 +5646,7 @@ impl Vm {
             | Instruction::JumpIfIndexNotStrictlyEqualIndex
             | Instruction::JumpIfIndexStrictlyEqualConstant
             | Instruction::JumpIfIndexStrictlyEqualIndex
+            | Instruction::JumpIfResultComparesWithConstant
             | Instruction::JumpIfIndexLessThanConstant
             | Instruction::JumpIfIndexLessThanIndex
             | Instruction::JumpIfIndexLessThanEqualsConstant

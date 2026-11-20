@@ -2440,6 +2440,44 @@ pub(super) fn execute_fused_instruction<'gc>(
             vm.stack[slot] = vm.result.take().unwrap();
             Ok(())
         }
+        Instruction::JumpIfResultComparesWithConstant => {
+            let target = Instr::wide_jump_target(executable.get_instructions(agent).code(), vm.ip);
+            let comparison = instr.get_first_index();
+            let strict = comparison >= Instruction::RESULT_COMPARISON_STRICT;
+            // Load, StoreConstant
+            vm.execute_load();
+            vm.result = Some(
+                executable
+                    .fetch_constant(agent, instr.get_second_index(), gc.nogc())
+                    .unbind(),
+            );
+            // The comparison
+            if strict {
+                execute_is_strictly_equal(agent, vm, gc.into_nogc());
+            } else {
+                match comparison & 3 {
+                    0 => execute_less_than(agent, vm, gc),
+                    1 => execute_less_than_equals(agent, vm, gc),
+                    2 => execute_greater_than(agent, vm, gc),
+                    _ => execute_greater_than_equals(agent, vm, gc),
+                }?;
+            }
+            // JumpIfTrue or JumpIfNot
+            let result = vm.result.take().unwrap();
+            let truthy = match result {
+                Value::Boolean(value) => value,
+                _ => to_boolean(agent, result),
+            };
+            let jumps = if strict {
+                truthy == (comparison == Instruction::RESULT_COMPARISON_STRICT)
+            } else {
+                truthy != (comparison & Instruction::RESULT_COMPARISON_NOT != 0)
+            };
+            if jumps {
+                vm.ip = target;
+            }
+            Ok(())
+        }
         kind if kind.loop_test().is_some() => {
             let Some((step, comparison, constant)) = kind.loop_test() else {
                 unreachable!()
