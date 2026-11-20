@@ -838,6 +838,15 @@ pub(crate) enum Instruction {
     /// stack slot of the left operand in its low eleven bits; the second
     /// is not used.
     ApplyBinaryOperatorToIndexWithResult,
+    /// ResolveGlobalAtSite for an assignment whose value is worked out
+    /// without the reference register: where the name is found bound at
+    /// the place the BindingSite remembers, no Reference is made, and the
+    /// reference register is left empty for PutValueAtSite to say so. The
+    /// Reference of a name that is bound in the global scope is the same
+    /// whenever it is made (the global scope, the name), so PutValueAtSite
+    /// makes it when it has to go the long way. A name that is not found at
+    /// its place is resolved as ResolveGlobalAtSite resolves it.
+    CheckGlobalAtSite,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
@@ -846,7 +855,6 @@ pub(crate) enum Instruction {
     // reads instructions with care, and the loop leaves the byte to the
     // general way, which ends as it did. A new instruction takes the
     // first of them.
-    Unused238,
     Unused239,
     Unused240,
     Unused241,
@@ -872,8 +880,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused238
-            | Instruction::Unused239
+        Instruction::Unused239
             | Instruction::Unused240
             | Instruction::Unused241
             | Instruction::Unused242
@@ -1007,6 +1014,7 @@ impl Instruction {
             | Self::PutBindingAtSite
             | Self::PutBindingAtSiteAndGet
             | Self::ResolveGlobalAtSite
+            | Self::CheckGlobalAtSite
             | Self::GetGlobalAtSite
             | Self::PutGlobalAtSite
             | Self::PutValueAtSite => 2,
@@ -1159,6 +1167,7 @@ impl Instruction {
                 | Self::PutBindingAtSite
                 | Self::PutBindingAtSiteAndGet
                 | Self::ResolveGlobalAtSite
+                | Self::CheckGlobalAtSite
                 | Self::GetGlobalAtSite
                 | Self::PutGlobalAtSite
                 | Self::PutValueAtSite
@@ -1966,6 +1975,7 @@ impl Instr {
             | Instruction::PutBindingAtSite
             | Instruction::PutBindingAtSiteAndGet
             | Instruction::ResolveGlobalAtSite
+            | Instruction::CheckGlobalAtSite
             | Instruction::GetGlobalAtSite
             | Instruction::PutGlobalAtSite
             | Instruction::PutValueAtSite
@@ -2081,7 +2091,7 @@ impl Instruction {
         const PUTBINDINGATSITEANDGET: u8 = Instruction::PutBindingAtSiteAndGet.as_u8();
         const APPLYBINARYOPERATORTOINDEXWITHRESULT: u8 =
             Instruction::ApplyBinaryOperatorToIndexWithResult.as_u8();
-        const UNUSED238: u8 = Instruction::Unused238.as_u8();
+        const CHECKGLOBALATSITE: u8 = Instruction::CheckGlobalAtSite.as_u8();
         const UNUSED239: u8 = Instruction::Unused239.as_u8();
         const UNUSED240: u8 = Instruction::Unused240.as_u8();
         const UNUSED241: u8 = Instruction::Unused241.as_u8();
@@ -2669,7 +2679,7 @@ impl Instruction {
             APPLYBINARYOPERATORTOINDEXWITHRESULT => {
                 Some(Instruction::ApplyBinaryOperatorToIndexWithResult)
             }
-            UNUSED238 => Some(Instruction::Unused238),
+            CHECKGLOBALATSITE => Some(Instruction::CheckGlobalAtSite),
             UNUSED239 => Some(Instruction::Unused239),
             UNUSED240 => Some(Instruction::Unused240),
             UNUSED241 => Some(Instruction::Unused241),
@@ -2693,7 +2703,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() >= Instruction::Unused238.as_u8()
+        self.as_u8() >= Instruction::Unused239.as_u8()
     }
 }
 
@@ -2748,7 +2758,7 @@ mod tests {
             assert_eq!(kind.as_u8(), byte);
             assert_eq!(
                 kind.is_unused(),
-                byte > Instruction::ApplyBinaryOperatorToIndexWithResult.as_u8()
+                byte > Instruction::CheckGlobalAtSite.as_u8()
             );
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
@@ -2763,14 +2773,15 @@ mod tests {
         assert!(!Instruction::PutIndexPropertyWithCache.is_unused());
         assert!(!Instruction::PutBindingAtSiteAndGet.is_unused());
         assert!(!Instruction::ApplyBinaryOperatorToIndexWithResult.is_unused());
-        assert!(Instruction::Unused238.is_unused());
+        assert!(!Instruction::CheckGlobalAtSite.is_unused());
+        assert!(Instruction::Unused239.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused238.as_u8()];
+        let code = [Instruction::Unused239.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }

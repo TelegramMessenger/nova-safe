@@ -1292,20 +1292,6 @@ fn ordinary_set_with_own_descriptor<'a>(
     Ok(true)
 }
 
-/// ### [10.1.9.1 OrdinarySet ( O, P, V, Receiver )](https://tc39.es/ecma262/#sec-ordinaryset)
-/// The assignment `o.p = v` where the shape of `o` puts `p` at `offset`: sets
-/// an own data property that is writable. False (an accessor, a property
-/// that is not writable) leaves everything to \[\[Set]].
-#[inline]
-pub(crate) fn ordinary_set_own_data_at_offset(
-    agent: &mut Agent,
-    object: OrdinaryObject,
-    offset: PropertyOffset,
-    value: Value,
-) -> bool {
-    object.set_writable_value_at(agent, offset.get_property_offset() as usize, value.unbind())
-}
-
 /// ### [10.1.9.2 OrdinarySetWithOwnDescriptor ( O, P, V, Receiver, ownDesc )](https://tc39.es/ecma262/#sec-ordinarysetwithowndescriptor)
 /// The assignment `o.p = v` where the property cache knows that neither `o`
 /// nor any object it inherits from has `p`: CreateDataProperty(o, p, v) on

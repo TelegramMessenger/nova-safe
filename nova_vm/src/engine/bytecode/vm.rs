@@ -20,10 +20,10 @@ use crate::{
         Primitive, Promise, PropertyKey, PropertyLookupCache, Reference, RegularFn, SmallF64,
         SmallInteger, String, SuspendedGeneratorState, TryGetResult, Value, binding_value_at_site,
         call_function, get_method, get_this_environment, get_this_value, is_callable,
-        is_property_reference, is_same_type, is_strictly_equal, ordinary_add_own_data_by_cache,
-        ordinary_call_bind_this, ordinary_has_instance,
+        is_property_reference, is_same_type, is_strictly_equal, name_is_bound_at_global_site,
+        ordinary_add_own_data_by_cache, ordinary_call_bind_this, ordinary_has_instance,
         prepare_for_call_without_function_environment, prepare_for_ordinary_call,
-        reference_is_at_global_site, release_scoped_collections, scope_arguments_of_call,
+        put_value_at_global_site, release_scoped_collections, scope_arguments_of_call,
         set_binding_value_at_site, take_pooled_arguments_vec, to_boolean, to_numeric,
         to_numeric_primitive, to_primitive, to_property_key, to_property_key_simple,
         to_string_primitive, try_get_object_method_by_cache, try_resolve_binding_at_site,
@@ -3441,8 +3441,21 @@ impl Vm {
                 };
                 vm.reference = Some(reference.unbind());
             }
+            // The same where the value is worked out without the reference
+            // register: the name is found bound at its place and no
+            // Reference is made of it.
+            Instruction::CheckGlobalAtSite => {
+                step!(CheckGlobalAtSite);
+                let (site, name) =
+                    tables.keyed_binding_site(instr.get_second_index(), instr.get_first_index());
+                if !name_is_bound_at_global_site(agent, site, name, gc) {
+                    return Plain::No;
+                }
+                vm.reference = None;
+            }
             // The assignment through that Reference, at the place in the
-            // global scope it is to.
+            // global scope it is to; with no Reference (CheckGlobalAtSite
+            // found the name bound), at the place where the name still is.
             Instruction::PutValueAtSite => {
                 step!(PutValueAtSite);
                 let Some(value) = vm.result else {
@@ -3450,12 +3463,15 @@ impl Vm {
                 };
                 let (site, name) =
                     tables.keyed_binding_site(instr.get_second_index(), instr.get_first_index());
-                if !vm.reference.as_ref().is_some_and(|reference| {
-                    reference_is_at_global_site(agent, site, reference, gc)
-                }) {
-                    return Plain::No;
-                }
-                if !set_binding_value_at_site(agent, site, name, value, gc) {
+                let written = match &vm.reference {
+                    Some(reference) => {
+                        put_value_at_global_site(agent, site, name, reference, value, gc)
+                    }
+                    None => {
+                        site.is_global() && set_binding_value_at_site(agent, site, name, value, gc)
+                    }
+                };
+                if !written {
                     return Plain::No;
                 }
                 vm.result = None;
@@ -5520,6 +5536,7 @@ impl Vm {
                 execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
             Instruction::ResolveGlobalAtSite
+            | Instruction::CheckGlobalAtSite
             | Instruction::GetGlobalAtSite
             | Instruction::PutGlobalAtSite
             | Instruction::PutValueAtSite => {
@@ -5694,6 +5711,7 @@ impl Vm {
             | Instruction::PutBindingAtSite
             | Instruction::PutBindingAtSiteAndGet
             | Instruction::ResolveGlobalAtSite
+            | Instruction::CheckGlobalAtSite
             | Instruction::GetGlobalAtSite
             | Instruction::PutGlobalAtSite
             | Instruction::PutValueAtSite

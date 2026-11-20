@@ -279,7 +279,10 @@ pub(super) fn execute_global_name_the_long_way<'gc>(
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     match instr.kind {
-        Instruction::ResolveGlobalAtSite => {
+        // CheckGlobalAtSite where the name is not found bound at its place:
+        // resolved as ResolveGlobalAtSite resolves it, its Reference left
+        // in the reference register.
+        Instruction::ResolveGlobalAtSite | Instruction::CheckGlobalAtSite => {
             let site = executable.fetch_binding_site(agent, instr.get_second_index());
             execute_resolve_binding_at_site_cold(agent, vm, executable, instr, site, true, gc)
         }
@@ -289,7 +292,18 @@ pub(super) fn execute_global_name_the_long_way<'gc>(
         Instruction::PutGlobalAtSite => {
             execute_put_binding_at_site(agent, vm, executable, instr, true, gc)
         }
-        Instruction::PutValueAtSite => execute_put_value(agent, vm, executable, instr, false, gc),
+        Instruction::PutValueAtSite => {
+            if vm.reference.is_none() {
+                // CheckGlobalAtSite found the name bound in the global
+                // scope and made no Reference: it is made now, the same
+                // (the global scope, the name).
+                let name = executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
+                let strict = agent.is_evaluating_strict_code();
+                vm.reference =
+                    Some(global_scope_reference(agent, name, strict, gc.nogc()).unbind());
+            }
+            execute_put_value(agent, vm, executable, instr, false, gc)
+        }
         _ => unreachable!(),
     }
 }

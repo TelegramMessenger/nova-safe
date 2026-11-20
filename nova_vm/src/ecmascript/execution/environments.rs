@@ -44,7 +44,7 @@ use crate::{
     ecmascript::{
         Agent, InternalMethods, JsResult, Object, ObjectShape, OrdinaryObject, PropertyLookupCache,
         PropertyOffset, Proxy, Realm, Reference, SetResult, String, TryError, TryHasResult,
-        TryResult, Value, js_result_into_try, ordinary_set_own_data_at_offset,
+        TryResult, Value, js_result_into_try,
     },
     engine::{Bindable, GcScope, HeapRootData, NoGcScope, Scopable},
     heap::{
@@ -824,6 +824,9 @@ pub(crate) struct BindingSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GlobalScopeState {
     realm: Realm<'static>,
+    /// The global scope of the realm: what a Reference to one of its names
+    /// is to.
+    environment: GlobalEnvironment<'static>,
     /// The global object, an ordinary one.
     object: OrdinaryObject<'static>,
     /// Its shape. One shape has the same keys at the same places, and the
@@ -884,15 +887,20 @@ enum Realms {
 
 impl GlobalScopeSeen {
     /// The global object of the running realm, the storage of its values
-    /// and the capacity of that, if the global scope is in the state
-    /// numbered `epoch`.
+    /// and the capacity of that, and the global scope itself, if the global
+    /// scope is in the state numbered `epoch`.
     #[inline(always)]
     fn object_and_values_in<'a>(
         &self,
         agent: &Agent,
         epoch: u32,
         gc: NoGcScope<'a, '_>,
-    ) -> Option<(OrdinaryObject<'a>, ElementIndex<'a>, ElementArrayKey)> {
+    ) -> Option<(
+        OrdinaryObject<'a>,
+        ElementIndex<'a>,
+        ElementArrayKey,
+        GlobalEnvironment<'a>,
+    )> {
         if self.epoch.get() != epoch {
             return None;
         }
@@ -921,19 +929,12 @@ impl GlobalScopeSeen {
                 .binding_count(),
             state.declarations
         );
-        Some((state.object.bind(gc), values.bind(gc), state.capacity))
-    }
-
-    /// The global object of the running realm, if the global scope is in
-    /// the state numbered `epoch`.
-    #[inline]
-    fn object_in<'a>(
-        &self,
-        agent: &Agent,
-        epoch: u32,
-        gc: NoGcScope<'a, '_>,
-    ) -> Option<OrdinaryObject<'a>> {
-        Some(self.object_and_values_in(agent, epoch, gc)?.0)
+        Some((
+            state.object.bind(gc),
+            values.bind(gc),
+            state.capacity,
+            state.environment.bind(gc),
+        ))
     }
 
     /// The number of `state`, which is the state seen from now on.
@@ -1085,25 +1086,6 @@ fn global_lexical_record<'a>(agent: &Agent, gc: NoGcScope<'a, '_>) -> Declarativ
         .bind(gc)
 }
 
-/// The global object, if `site` remembers `name` among its properties and
-/// the global scope is in the state it was found in: the name is then at
-/// its place still, with no lexical declaration added to the global scope
-/// since, and the property is what the name means.
-#[inline]
-fn global_object_at_site<'a>(
-    agent: &Agent,
-    site: BindingSite,
-    name: NameKey,
-    gc: NoGcScope<'a, '_>,
-) -> Option<OrdinaryObject<'a>> {
-    let object = agent.global_scope_seen.object_in(agent, site.slot, gc)?;
-    debug_assert_eq!(
-        object.get_property_keys(agent).get(usize::from(site.place)),
-        Some(&name.name().to_property_key())
-    );
-    Some(object)
-}
-
 /// The value of `name` where `site` remembers it in the global scope, if it
 /// is still found there as a value (a lexical declaration that is
 /// initialized, a data property of the global object).
@@ -1140,7 +1122,7 @@ fn global_value_at_site<'a>(
             value
         }
         BindingSite::GLOBAL_OBJECT => {
-            let (_object, values, capacity) = agent
+            let (_object, values, capacity, _) = agent
                 .global_scope_seen
                 .object_and_values_in(agent, site.slot, gc)?;
             debug_assert_eq!(
@@ -1191,13 +1173,27 @@ fn set_global_value_at_site(
             true
         }
         BindingSite::GLOBAL_OBJECT => {
-            let Some(object) = global_object_at_site(agent, site, name, gc) else {
+            let Some((_object, values, capacity, _)) = agent
+                .global_scope_seen
+                .object_and_values_in(agent, site.slot, gc)
+            else {
                 return false;
             };
-            let Some(offset) = PropertyOffset::new(u32::from(site.place)) else {
-                return false;
-            };
-            ordinary_set_own_data_at_offset(agent, object.unbind(), offset, value)
+            debug_assert_eq!(
+                _object
+                    .get_property_keys(agent)
+                    .get(usize::from(site.place)),
+                Some(&name.name().to_property_key())
+            );
+            // The slot is written where it holds a value (no accessor) that
+            // its descriptor, if it has one, lets be written.
+            let values = values.unbind();
+            agent.heap.elements.set_writable_fixed_slot_raw(
+                values,
+                capacity,
+                usize::from(site.place),
+                value.unbind(),
+            )
         }
         _ => false,
     }
@@ -1300,6 +1296,111 @@ pub(crate) fn reference_is_at_global_site(
         && reference.base_env() == Environment::Global(agent.current_global_env(gc))
 }
 
+/// Whether `name` is bound in the running realm's global scope, by the
+/// place `site` remembers for it there: a lexical declaration that is at
+/// its place, a property of the global object while the global scope is as
+/// it was seen. False says nothing: the name is then resolved the long way.
+// Kept out of the loop of instructions, as [`set_global_value_at_site`] is.
+#[inline(never)]
+pub(crate) fn name_is_bound_at_global_site(
+    agent: &Agent,
+    site: BindingSite,
+    name: NameKey,
+    gc: NoGcScope,
+) -> bool {
+    match site.outwards {
+        BindingSite::GLOBAL_OBJECT => {
+            let Some((_object, _, _, _)) = agent
+                .global_scope_seen
+                .object_and_values_in(agent, site.slot, gc)
+            else {
+                return false;
+            };
+            debug_assert_eq!(
+                _object
+                    .get_property_keys(agent)
+                    .get(usize::from(site.place)),
+                Some(&name.name().to_property_key())
+            );
+            true
+        }
+        BindingSite::GLOBAL_LEXICAL => {
+            let environments = &agent.heap.environments;
+            let Some(global) = agent
+                .realm_if_any()
+                .and_then(|realm| agent.heap.realms.get(realm.get_index()))
+                .and_then(|realm| realm.global_env)
+            else {
+                return false;
+            };
+            environments
+                .global
+                .get(global.get_index())
+                .and_then(|global| {
+                    environments
+                        .declarative
+                        .get(global.declarative_record().get_index())
+                })
+                .is_some_and(|lexical| lexical.binding_at_key(site.slot, name).is_some())
+        }
+        _ => false,
+    }
+}
+
+/// PutValue(`reference`, `value`) at the place `site` remembers in the
+/// global scope, where `reference` is to a name of the running realm's
+/// global scope and the place still holds the name as something an
+/// assignment simply writes; false leaves it to PutValue.
+///
+/// For a property of the global object the state of the global scope is
+/// asked once, for what the Reference is to and for the place both: asked
+/// by [`reference_is_at_global_site`] and then by
+/// [`set_binding_value_at_site`], the realm was gone through for its global
+/// scope and the state found as it was a second time.
+// Kept out of the loop of instructions, as [`set_global_value_at_site`] is.
+#[inline(never)]
+pub(crate) fn put_value_at_global_site(
+    agent: &mut Agent,
+    site: BindingSite,
+    name: NameKey,
+    reference: &Reference,
+    value: Value,
+    gc: NoGcScope,
+) -> bool {
+    if site.outwards != BindingSite::GLOBAL_OBJECT {
+        return reference_is_at_global_site(agent, site, reference, gc)
+            && set_global_value_at_site(agent, site, name, value, gc);
+    }
+    if !matches!(
+        reference,
+        Reference::Variable(_) | Reference::VariableStrict(_)
+    ) {
+        return false;
+    }
+    let Some((_object, values, capacity, environment)) = agent
+        .global_scope_seen
+        .object_and_values_in(agent, site.slot, gc)
+    else {
+        return false;
+    };
+    if reference.base_env() != Environment::Global(environment) {
+        return false;
+    }
+    debug_assert_eq!(
+        _object
+            .get_property_keys(agent)
+            .get(usize::from(site.place)),
+        Some(&name.name().to_property_key())
+    );
+    let values = values.unbind();
+    agent.heap.elements.set_writable_fixed_slot_raw(
+        values,
+        capacity,
+        usize::from(site.place),
+        value.unbind(),
+    )
+}
+
 /// The Reference to `name` where `site` remembers it, if the name is still
 /// found there.
 #[inline]
@@ -1351,7 +1452,25 @@ fn try_resolve_global_at_site<'a>(
                 .binding_at_key(site.slot, NameKey::of(name))?;
         }
         BindingSite::GLOBAL_OBJECT => {
-            global_object_at_site(agent, site, NameKey::of(name), gc)?;
+            // The global scope is the one of the state the name was found
+            // in, which is the running realm's while the state holds: the
+            // realm is not asked for it.
+            let (_object, _, _, environment) = agent
+                .global_scope_seen
+                .object_and_values_in(agent, site.slot, gc)?;
+            debug_assert_eq!(environment, agent.current_global_env(gc));
+            debug_assert_eq!(
+                _object
+                    .get_property_keys(agent)
+                    .get(usize::from(site.place)),
+                Some(&name.to_property_key())
+            );
+            return Some(Reference::new_variable_reference(
+                Environment::Global(environment),
+                name,
+                None,
+                strict,
+            ));
         }
         _ => return None,
     }
@@ -1425,6 +1544,7 @@ fn global_binding_site(
     if global != agent.current_global_env(gc) {
         return BindingSite::ELSEWHERE;
     }
+    let environment = global;
     let environments = &agent.heap.environments;
     let global = environments.get_global_environment(global);
     let lexical = environments.get_declarative_environment(global.declarative_record());
@@ -1467,6 +1587,7 @@ fn global_binding_site(
     // The place is the name's in the state the global scope is in now.
     let epoch = agent.global_scope_seen.see(GlobalScopeState {
         realm: agent.current_realm(gc).unbind(),
+        environment: environment.unbind(),
         object: object.unbind(),
         shape: object.shape_now(agent).unbind(),
         capacity,

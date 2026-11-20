@@ -153,6 +153,19 @@ impl<'s, 'gc> Place<'s, 'gc> {
         ctx: &mut CompileContext<'_, '_, 'gc, '_>,
         reads_first: bool,
     ) -> Self {
+        self.assignment_target_for(ctx, reads_first, false)
+    }
+
+    /// [`Place::assignment_target`] where it is known whether the value to
+    /// assign is worked out without the reference register
+    /// (`register_is_left`): the name is then only found bound at its
+    /// place, and no Reference is made of it (CheckGlobalAtSite).
+    fn assignment_target_for(
+        self,
+        ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+        reads_first: bool,
+        register_is_left: bool,
+    ) -> Self {
         match self {
             Place::GlobalSite {
                 name,
@@ -165,6 +178,13 @@ impl<'s, 'gc> Place<'s, 'gc> {
                         site,
                         bound: true,
                     }
+                } else if register_is_left {
+                    ctx.add_instruction_with_identifier_and_site(
+                        Instruction::CheckGlobalAtSite,
+                        name.to_property_key(),
+                        site,
+                    );
+                    Place::GlobalRef { name, site }
                 } else {
                     Self::resolve_global_site(ctx, name, site);
                     Place::GlobalRef { name, site }

@@ -445,7 +445,15 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
             | ast::AssignmentTarget::TSSatisfiesExpression(_) => unreachable!(),
             ast::AssignmentTarget::TSTypeAssertion(_) => unreachable!(),
         };
-        let lref = lref.assignment_target(ctx, !this.operator.is_assign());
+        // A name of the global scope that may not be bound is found bound
+        // at its place and no Reference made of it, where the value is
+        // worked out without the reference register and so leaves it as
+        // that leaves it.
+        let register_is_left = this.operator.is_assign()
+            && matches!(lref, Place::GlobalSite { bound: false, .. })
+            && leaves_reference_register(ctx, &this.right)
+            && !(do_named_evaluation && is_anonymous_function_definition(&this.right));
+        let lref = lref.assignment_target_for(ctx, !this.operator.is_assign(), register_is_left);
 
         if this.operator.is_assign() {
             let push_reference =

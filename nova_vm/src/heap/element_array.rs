@@ -4594,6 +4594,47 @@ impl ElementArrays {
         }
     }
 
+    /// As [`ElementArrays::set_writable_slot_raw`] for the capacities whose
+    /// storages are never dynamic, and false for the others, with nothing
+    /// written: for the assignment to a global variable where it was found
+    /// (see [`ElementArrays::get_fixed_slot_value_raw`]).
+    #[inline(always)]
+    pub(crate) fn set_writable_fixed_slot_raw(
+        &mut self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        offset: usize,
+        value: Value<'static>,
+    ) -> bool {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty
+            | ElementArrayKey::EmptyIntrinsic
+            | ElementArrayKey::E24
+            | ElementArrayKey::E32 => false,
+            ElementArrayKey::E1 => e2pow1.set_writable_slot(index, offset, value),
+            ElementArrayKey::E2 => e2pow2.set_writable_slot(index, offset, value),
+            ElementArrayKey::E3 => e2pow3.set_writable_slot(index, offset, value),
+            ElementArrayKey::E4 => e2pow4.set_writable_slot(index, offset, value),
+            ElementArrayKey::E6 => e2pow6.set_writable_slot(index, offset, value),
+            ElementArrayKey::E8 => e2pow8.set_writable_slot(index, offset, value),
+            ElementArrayKey::E10 => e2pow10.set_writable_slot(index, offset, value),
+            ElementArrayKey::E12 => e2pow12.set_writable_slot(index, offset, value),
+            ElementArrayKey::E16 => e2pow16.set_writable_slot(index, offset, value),
+        }
+    }
+
     /// As [`ElementArrays::set_writable_slot_raw`] for a storage that has
     /// no descriptors, and None for one that may have some: see
     /// [`ElementArray::set_plain_slot`].

@@ -1426,6 +1426,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 | Instruction::GetBindingAtSite
                 | Instruction::PutBindingAtSite
                 | Instruction::ResolveGlobalAtSite
+                | Instruction::CheckGlobalAtSite
                 | Instruction::GetGlobalAtSite
                 | Instruction::PutGlobalAtSite
                 | Instruction::PutValueAtSite
