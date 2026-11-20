@@ -2206,16 +2206,33 @@ pub(crate) fn sweep_heap_vector_values<T: HeapMarkAndSweep>(
     bits: &[AtomicBits],
 ) {
     assert_eq!(vec.len(), range.len());
-    let mut iter = range.iter(bits);
-    vec.retain_mut(|item| {
-        let do_retain = iter.next().unwrap();
-        if do_retain {
+    // The marks are read 64 items at a look and only the live items are
+    // visited, so a run of dead items costs its words and not a look at
+    // each item: what a loop of arithmetic leaves of the Numbers it made is
+    // nearly all dead. A live item changes places with the first dead one
+    // below it, which keeps the live ones in their order and gathers the
+    // dead ones at the end, where they are dropped together.
+    let len = vec.len();
+    let mut kept = 0usize;
+    let mut first = 0usize;
+    while first < len {
+        let count = (len - first).min(64);
+        let mut word = range.load_word(first, count, bits);
+        while word != 0 {
+            let from = first + word.trailing_zeros() as usize;
+            word &= word - 1;
+            let Some(item) = vec.get_mut(from) else {
+                break;
+            };
             item.sweep_values(compactions);
-            true
-        } else {
-            false
+            if kept != from {
+                vec.swap(kept, from);
+            }
+            kept += 1;
         }
-    });
+        first += count;
+    }
+    vec.truncate(kept);
     release_spare_capacity(vec);
 }
 
