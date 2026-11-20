@@ -90,43 +90,45 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the arithmetic of doubles (area 6), in
-machine instructions per operation:
+a million times the price of the operation. As of the round of the frames (area 1, "The functions
+the loop calls"), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 228 / 270 / 262 | 582 / 666 / 676 | 2.5x |
-| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 856 / 973 / 896 | 2.3-2.7x |
-| a callee that reads a variable of its maker, in place of its parameter | 2 | 79 | |
-| a callee that assigns one, more | 25 | 143 | |
+| call, no argument / one / two | 228 / 270 / 262 | 493 / 577 / 587 | 2.2x |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 784 / 893 / 827 | 2.1-2.5x |
+| a callee that reads a variable of its maker, in place of its parameter | 2 | 74 | |
+| a callee that assigns one, more | 25 | 138 | |
 | read of a variable of the enclosing function, in place of a local | 2 | 10 | |
-| assignment to one, in place of a local | 3 | 78 | |
-| read of a global, in place of a local | 41 | 131 | 3.2x |
-| assignment to a global, in place of a local | 61 | 380 | 6.2x |
-| property read, own / inherited, in place of a local | 53 / 68 | 145 / 185 | 2.7x |
-| property assignment, in place of a local | 53 | 136 | 2.6x |
-| getter / setter | 328 / 405 | 845 / 830 | 2.6x / 2.0x |
+| assignment to one, in place of a local | 3 | 73 | |
+| read of a global, in place of a local | 41 | 120 | 2.9x |
+| assignment to a global, in place of a local | 61 | 367 | 6.0x |
+| property read, own / inherited, in place of a local | 53 / 68 | 137 / 180 | 2.6x |
+| property assignment, in place of a local | 53 | 129 | 2.4x |
+| getter / setter | 328 / 405 | 757 / 769 | 2.3x / 1.9x |
 | integer `+` of two locals, more | 24 | 95 | 4.0x |
-| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 269 | 4.0x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 666 / 593 / 666 | 2.0-2.5x |
-| `Math.max(i, 7)` | 271 | 574 | 2.1x |
-| Array element read / written | 56 / 53 | 148 / 190 | 2.6x / 3.6x |
-| Uint8Array element read / written | 89 / 78 | 215 / 225 | 2.4x / 2.9x |
-| Float64Array element read / written | 106 / 76 | 298 / 222 | 2.8x / 2.9x |
-| `new` of a function / of a class, one field set | 1072 / 1128 | 2218 / 2190 | 2.0x |
-| an object literal of two properties | 744 | 494 | 0.66x |
-| one callback of `forEach` (the whole turn) | 394 | 806 | 2.0x |
-| one step of `for-of` over a generator (the whole turn) | 491 | 1081 | 2.2x |
-| `s.charCodeAt(i)` | 350 | 559 | 1.6x |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 241 | 3.6x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 624 / 561 / 637 | 2.0-2.4x |
+| `Math.max(i, 7)` | 271 | 498 | 1.8x |
+| Array element read / written | 56 / 53 | 147 / 189 | 2.6x / 3.6x |
+| Uint8Array element read / written | 89 / 78 | 211 / 221 | 2.4x / 2.8x |
+| Float64Array element read / written | 106 / 76 | 283 / 207 | 2.7x / 2.7x |
+| `new` of a function / of a class, one field set | 1072 / 1128 | 2164 / 2136 | 2.0x / 1.9x |
+| an object literal of two properties | 744 | 493 | 0.66x |
+| one callback of `forEach` (the whole turn) | 394 | 773 | 2.0x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 1058 | 2.2x |
+| `s.charCodeAt(i)` | 350 | 553 | 1.6x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
 times its time; a loop that adds integers retires 1.9 times as many and takes the same time), so
 the table of `run.py` still decides what is kept. What the prices say is where a path is long: the
 arithmetic of doubles was first (371 for the two operators of the table before that round; each
-result is still a Number of the heap, area 6), then the globals, then the calls, which are 580 to
+result is still a Number of the heap, area 6), then the globals, then the calls, which were 580 to
 970 instructions where QuickJS has 230 to 420 and are spread thin (entering the function 18% of the
-time of `call/closure`, leaving it 11%, taking up the code that runs next 15%).
+time of `call/closure`, leaving it 11%, taking up the code that runs next 15%). And they say what a
+profile cannot: that a function was fifteen instructions longer than its work, at every call of it,
+for a frame it had no use for (area 1).
 
 Two builds are compared the same way, case by case of the benchmark: the instructions of a process
 over the runs its case reports. A change that makes a path longer shows there exactly, with the machine
@@ -142,7 +144,7 @@ below.
 | Group | Cases | Before | Now |
 |---|---|---|---|
 | typed | 4 | 10.6x | 1.7x |
-| call | 14 | 10.4x | 1.7x |
+| call | 14 | 10.4x | 1.6x |
 | math | 4 | 9.7x | 1.7x |
 | string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.4x |
@@ -156,12 +158,11 @@ below.
 | all | 108 | 7.6x | 1.4x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
-was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.7x), then a step
-of a particle animation (2.4x), the properties of one object read and written in a loop (2.3x), a
-function that calls itself, trigonometry and a method inherited through three prototypes (2.2x):
-calls and properties, where the arithmetic of doubles was among them. 97 to 99 of the 108 cases are
-at or under 2x from one run to the next (half a dozen sit within a few hundredths of 2x, on either
-side of it), 18 to 20 of them at or under QuickJS's time.
+was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.5x), then a step
+of a particle animation (2.3x) and the properties of one object read and written in a loop (2.1x);
+trigonometry and a step of a generator sit on 2x (2.04x, 2.02x). 103 of the 108 cases are at or
+under 2x (half a dozen within a few hundredths of it, on either side), 20 of them at or under
+QuickJS's time.
 Over all cases it is 1.40x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -229,7 +230,12 @@ text with no surrogate in it made as its bytes (area 8) and the functions of `Ma
 Number once (area 6) took two of those three off it (`string/pad-and-repeat` 1.98x to 1.86x,
 `call/native-math` 2.02x to 1.91x, and `math/floor-round-minmax` 1.94x to 1.82x): 1.385x from
 1.393x in two tables taken one after the other, with 99 cases at or under 2x and 20 at or under
-QuickJS's time.
+QuickJS's time. The this value of a call found when the call asks for it, the return of a function
+as part of the loop (area 3) and the functions the loop calls written without a frame (area 1) took
+four more under 2x, the calls among them: a function that calls itself 2.18x to 1.93x, a method
+2.11x to 1.93x and one inherited through three prototypes 2.15x to 1.95x, the arithmetic of a
+Float64Array 2.07x to 1.96x, with a plain call at 1.74x from 1.96x and a closure at 2.47x from
+2.66x. Over all cases 1.360x from 1.385x, 103 at or under 2x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -447,6 +453,62 @@ shortened by one branch without paying for it somewhere that only a count of ins
 would shorten it soundly is an instruction of its own at the end of every code (so that no read is ever
 short, and the loop has one way to read), which is a change to the compiler of the bytecode; not done.
 
+#### The functions the loop calls
+
+What the loop does not do itself it calls a function for: a property read or written by its cache, a
+variable of an enclosing function or of the global scope, the arithmetic of doubles, the Number made
+of a double. Each is a few dozen instructions of work, and the compiler put up to fifteen more around
+them. A function keeps a frame (the frame pointer and the return address saved where it starts and
+restored where it returns, and with them every register it keeps a value in across a call) wherever
+it calls anything that comes back, however seldom, and wherever it can fail: an index out of range,
+an `expect`, a handle that names nothing are each a call, and the compiler saves for them where the
+function starts, not where they are. A handle that the message of a failure prints was written to
+the stack there too, for the message, in every call. Making a Number of the heap was 41
+instructions, ten of them for the one call that grows the heap's vector of Numbers.
+
+So a function on the way of an instruction is written with nothing that comes back:
+
+- It has no failure of its own. What is out of the ordinary (a handle that names nothing, a slot the
+  storage has not, a record that is not there) is `None`, as a shape the cache does not know is:
+  the instruction then goes the general way, and that says what is wrong where something is.
+- What it calls, it calls last, and hands back what the callee returns as it is. A call made last is
+  a jump; a function whose calls are all jumps keeps no frame. The rare work goes there whole: the
+  Number of a double where the vector has to grow is made by the function that grows it, and a
+  write to a storage that has descriptors by the function that asks them.
+- A value is handed back as it was read. Taken apart into its kind and its bytes on one way out and
+  put together where the ways out meet, it is five instructions, and the compiler, which joins the
+  ways out first, no longer sees that a call beside them is last. Where a function has such a call
+  and other ways out, it is two functions: one that only chooses and calls either (a variable of the
+  global scope or of an enclosing function), and one with the work.
+- The message of a handle that names nothing is made by one function for every accessor of a
+  handle, which takes the handle in a register (`invalid_handle`): twelve accessors had it in line,
+  in every function that reads through a handle.
+
+By the price list, with nothing else changed: the two operators of `x * 0.999 + 0.25` 268 to 241,
+`Math.floor`, `Math.sqrt` and `Math.sin` 28 to 31 less (their result made, `Math` read, the call
+entered), a property read 145 to 137 and written 136 to 129, a variable of an enclosing function
+read 79 to 74 and written 143 to 138, a global read 131 to 120, an element of a Float64Array read
+298 to 283 and written 222 to 207, `new` 38 less, `Math.max` 515 to 498. Nothing in the list went
+up. One frame is left where it was halved: the read of a property keeps two registers for the one
+call it makes for an ordinary object that inherits from an Array or a function, since what it hands
+back on its other ways out is put together from parts.
+
+With this round's binary and the one before it run in turn, fifteen runs each (the calls of area 3
+are in it too): a plain call reads 13.6% less time, a function that calls itself 12.5%, getters and
+setters 10.3%, a method 9.6%, a closure 8.8%, a method inherited through three prototypes 8.4%, a
+step of a generator 4.5%, `new` of a class 3.2%; arithmetic on doubles in a loop 5.2% less,
+trigonometry 4.9%, the arithmetic of a Float64Array 4.4%, a variable of an enclosing function in a
+loop 4.5%, the properties of one object 3.9%, a global variable 2.9%, a step of the particles 2.4%.
+An empty loop, a sum of integers and nested loops are within half a percent of where they were and
+a `switch` in a loop 0.7% under it: the loop of instructions, which has the return of a function in
+it now, runs what it ran.
+
+Tried on the way and not kept: the Number of a double handed back through an `Option` for "the
+vector has to grow" (the test for it was joined into the way out of every Number, four instructions
+for the five saved); a write by the cache that tried its straight way and left everything else to
+the function it had been (a setter was 26 instructions longer and `new` 10, by the cache searched
+twice: the function keeps its ways out and only its two calls became calls made last).
+
 ### 2. Variables that are not locals of the running function
 
 Every read or write of a closure variable, a module-level variable or a global resolved the name at run time:
@@ -558,6 +620,13 @@ the instructions it had been (compared by the instructions; the price list had s
 assignment to such a global is 380, of which a quarter is the name resolved before the right-hand
 side is worked out, a quarter the slot written after the descriptors of the global object's storage
 are asked, and a sixth the state of the global scope found as it was a second time: not changed.
+
+The functions that read and write a variable where it was found the last time keep no frame now
+(area 1, "The functions the loop calls"): the records on the way, and the state of the global
+scope, are asked for what is there and are `None` where it is not, and the read is two functions,
+one for the global scope and one for the enclosing functions, each called last. A variable of an
+enclosing function is read in 74 instructions for 79 and written in 138 for 143, a global read in
+120 for 131 and assigned in 367 for 380.
 
 ### 3. Calls
 
@@ -902,12 +971,42 @@ this value that a function which is not strict gets for a this of undefined, fou
 and its global environment at every such call. Kept from the last call it saved nothing that the
 price list shows.
 
-What is left of a call is spread as before: a quarter of a plain call's time enters the function
+What was left of a call was spread as before: a quarter of a plain call's time enters the function
 (two fifths of that is its execution context, made of what is read from the function's record and
 pushed; the rest fills the frame), a seventh leaves it, a twentieth asks whether it can be run in
-place at all. None of it is one thing; halving it is another frame: one
-value stack with a base for each call in place of a stack exchanged at every call, and an execution
-context that is not made for a call the loop runs itself until something asks for it.
+place at all. Two things in it were not work, which the instructions of the entry and of the return
+read one by one showed.
+
+A function that is not strict has the global object for a this value of undefined or null, and
+every such call found it: from the function's realm to the realm's Global Environment Record to its
+\[\[GlobalThisValue]], 25 instructions for a plain call, a closure or a callback, nearly none of
+which ever says `this`. The execution context of such a call now says that its this value is the
+global one, not found yet; the first `this` of the call finds it (ResolveThisBinding, which the
+instructions of the loop that read `this` from the context leave for, as they do for a call that has
+a Function Environment Record) and keeps it there for the next. A strict function, a method, a
+this value given by `call`, `apply` or `bind`, and a primitive made an object are as they were.
+(A value kept from the last call had saved none of it, the round before: it has to be checked.)
+
+Leaving a function was a function of its own: every return saved fourteen registers and restored
+them, and handed the calling code back through memory, around some sixty instructions of work. It
+is part of the loop where a function returns, which is where every call ends; a function that
+throws, or that a termination ends, is left by a call as before. What only some returns do (the
+object of `new`, the result of a derived constructor, the generator of a step, a frame's value
+stack that grew large, what the function left on the Reference stack or the iterator stack, the
+frames of a deep recursion) is in functions of its own, so that what every return does is short.
+
+By the price list a plain call went from 567 to 493 instructions (27 for the this value, 44 for
+the return, 3 in the entry: the function's code rooted without a borrow of the scoped values, which
+nothing else holds then, and the handles it reads through, area 1), a method from 841 to 784, a
+getter from 830 to 757, a setter from 815 to 769, a callback of `forEach` from 806 to 773.
+
+What is left of a call is mostly entering it: its execution context (some sixty instructions, all
+of it copies), the frame filled and the stacks exchanged (eighty), the code rooted and its tables
+taken (thirty), and the loop left and entered again twice, for the call and for the return, with
+the tables of the code taken to hand each time (fifty); leaving it is ninety. Halving that is
+another frame: one value stack with a base for each call in place of a stack exchanged at every
+call, and an execution context that is not made for a call the loop runs itself until something
+asks for it.
 
 ### 4. Properties
 
@@ -1226,6 +1325,12 @@ With the two binaries run in turn, a method that adds its argument to a property
 
 Left: `this.x op= this.y` is as many instructions either way and was left; a compound assignment whose
 value is used, and one to an element, still make the Reference.
+
+The read and the write of a property by its cache were each a function with a frame, for the
+handles they read through and for the descriptors a write asks of a storage that has any. Neither
+has a failure of its own now, and the write asks the descriptors by a function called last (area
+1, "The functions the loop calls"): a read is 137 instructions for 145, a write 129 for 136, and
+what is built of them less by as much (`new` of a function that sets one field 38, with its call).
 
 ### 5. Array and typed array elements
 
@@ -1671,6 +1776,15 @@ arguments of any kind was eight times that. By the price list `Math.floor(i / 3)
 binaries run in turn `call/native-math` reads 5.0% less time and `math/floor-round-minmax` 5.1%; a
 step of the particles, an animation's easing and a sum of integers, which call none of these, are
 within half a percent of where they were.
+
+The Number of a result is made without a frame (area 1, "The functions the loop calls"): the
+function that works out an operator on doubles and the one that makes a Number for everyone else
+each saved registers at every call for the one that grows the heap's vector of Numbers, and each
+could fail in four places with a message. Where the vector has room, the Number is appended by
+instructions that cannot fail; where it has not, a function called last grows it and makes the
+Number. A double read from a Number of the heap whose handle names nothing is no double, and the
+operands go the general way. `x * 0.999 + 0.25` is 241 instructions for 268, and `Math.floor(i / 3)`
+624 for 652, with the read of `Math` and the entry of the call shorter too.
 
 ### 7. Building strings
 
