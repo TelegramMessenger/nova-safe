@@ -90,34 +90,34 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the method calls (area 3), in
-machine instructions per operation:
+a million times the price of the operation. As of the round of what an arm hands on (area 1,
+"The functions the loop calls"), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
 | call, no argument / one / two | 228 / 270 / 262 | 494 / 578 / 589 | 2.2x |
-| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 731 / 840 / 774 | 2.0-2.4x |
-| a callee that reads a variable of its maker, in place of its parameter | 2 | 74 | |
-| a callee that assigns one, more | 25 | 138 | |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 718 / 812 / 761 | 2.0-2.3x |
+| a callee that reads a variable of its maker, in place of its parameter | 2 | 57 | |
+| a callee that assigns one, more | 25 | 122 | |
 | read of a variable of the enclosing function, in place of a local | 2 | 10 | |
-| assignment to one, in place of a local | 3 | 73 | |
-| read of a global, in place of a local | 41 | 120 | 2.9x |
-| assignment to a global, in place of a local | 61 | 367 | 6.0x |
-| property read, own / inherited, in place of a local | 53 / 68 | 137 / 180 | 2.6x |
-| property assignment, in place of a local | 53 | 129 | 2.4x |
-| getter / setter | 328 / 405 | 759 / 771 | 2.3x / 1.9x |
-| integer `+` of two locals, more | 24 | 95 | 4.0x |
-| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 241 | 3.6x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 586 / 524 / 600 | 1.8-2.2x |
-| `Math.max(i, 7)` | 271 | 462 | 1.7x |
+| assignment to one, in place of a local | 3 | 57 | |
+| read of a global, in place of a local | 41 | 102 | 2.5x |
+| assignment to a global, in place of a local | 61 | 332 | 5.4x |
+| property read, own / inherited, in place of a local | 53 / 68 | 124 / 167 | 2.4x |
+| property assignment, in place of a local | 53 | 128 | 2.4x |
+| getter / setter | 328 / 405 | 746 / 770 | 2.3x / 1.9x |
+| integer `+` of two locals, more | 24 | 94 | 3.9x |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 238 | 3.6x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 553 / 495 / 570 | 1.8-2.1x |
+| `Math.max(i, 7)` | 271 | 430 | 1.6x |
 | Array element read / written | 56 / 53 | 147 / 189 | 2.6x / 3.6x |
-| Uint8Array element read / written | 89 / 78 | 211 / 221 | 2.4x / 2.8x |
-| Float64Array element read / written | 106 / 76 | 283 / 207 | 2.7x / 2.7x |
-| `new` of a function / of a class, one field set | 1072 / 1128 | 2165 / 2136 | 2.0x / 1.9x |
-| an object literal of two properties | 744 | 497 | 0.67x |
-| one callback of `forEach` (the whole turn) | 394 | 774 | 2.0x |
-| one step of `for-of` over a generator (the whole turn) | 491 | 1067 | 2.2x |
-| `s.charCodeAt(i)` | 350 | 506 | 1.4x |
+| Uint8Array element read / written | 89 / 78 | 210 / 220 | 2.4x / 2.8x |
+| Float64Array element read / written | 106 / 76 | 282 / 206 | 2.7x / 2.7x |
+| `new` of a function / of a class, one field set | 1072 / 1128 | 2161 / 2132 | 2.0x / 1.9x |
+| an object literal of two properties | 744 | 496 | 0.67x |
+| one callback of `forEach` (the whole turn) | 394 | 756 | 1.9x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 1060 | 2.2x |
+| `s.charCodeAt(i)` | 350 | 488 | 1.4x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
@@ -155,14 +155,14 @@ below.
 | loop | 11 | 11.1x | 1.2x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.8x |
-| all | 108 | 7.6x | 1.4x |
+| all | 108 | 7.6x | 1.3x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
-was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.4x), then a step
-of a particle animation (2.3x), the properties of one object read and written in a loop (2.2x) and
-a step of a generator (2.1x). 104 of the 108 cases are at or under 2x (half a dozen within a few
-hundredths of it, on either side), 20 of them at or under QuickJS's time.
-Over all cases it is 1.36x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure and a step of a
+particle animation (2.3x), then the properties of one object read and written in a loop (2.1x) and
+a step of a generator (2.02x). 104 of the 108 cases are at or under 2x (half a dozen within a few
+hundredths of it, on either side), 22 of them at or under QuickJS's time.
+Over all cases it is 1.34x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -240,7 +240,12 @@ on the stack under the function (area 3) took 5 to 8% off what calls methods: a 
 trigonometry under 2x (2.04x to 1.96x), a Map and a Set by their methods 8 to 10% less (the Set at
 QuickJS's time), `push` and `pop` 8%. Two cases read slower by where the loop's code lay: the
 properties of one object 2.16x to 2.23x and a step of a generator 2.02x to 2.09x. Over all cases
-1.355x from 1.365x in two tables taken one after the other, 104 at or under 2x.
+1.355x from 1.365x in two tables taken one after the other, 104 at or under 2x. What the arms hand
+on (area 1: the tables not written for a call that is not made, a property's value taken as it is,
+the name of a variable kept beside its place) gave those two back what they had lost and took 4% off
+the cases that read properties and variables: a closure 2.40x to 2.30x, the properties of one
+object 2.19x to 2.11x, a step of a generator 2.05x to 2.02x, trigonometry 1.96x to 1.88x. Over all
+cases 1.336x from 1.353x, with the same four over 2x and 22 at or under QuickJS's time.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -508,6 +513,39 @@ An empty loop, a sum of integers and nested loops are within half a percent of w
 a `switch` in a loop 0.7% under it: the loop of instructions, which has the return of a function in
 it now, runs what it ran.
 
+What an arm hands to such a function counts as well. The tables of the running code (its constants,
+its caches, its binding sites) are three slices: six words that no register holds together. An arm
+that calls a function with the tables wrote the six to the stack for it, and the compiler did that
+where the arm starts, for every way through it. The arms that read a property by the cache each
+have rare ways out to a function for what is no ordinary object (the method of a String or a
+Number, a property of a function, the length of a TypedArray), and those took the tables, to find
+the cache and the name in them: eight instructions of every property read wrote the tables for a
+call that was not made. Those functions take the cache and the name now, fetched on the rare way.
+
+A value was bound and unbound across the call that reads a property by its cache: handed back as a
+value of the scope's lifetime, and made one of no lifetime where the arm puts it in a register of
+the `Vm`, which the compiler does by taking it apart and putting it together, five instructions.
+The function hands back what the heap keeps, as it keeps it.
+
+And the name of a variable was a constant of the code while the place where it was found the last
+time is an entry of another table: an arm that reads a variable at its site asked both tables, and
+made a String of the Value the constant is (told apart by its kind, put together from its bytes).
+A site keeps its name beside what it remembers (`NamedSite`): filled in from the instructions when
+the tables are made, and kept current by the collector as the constants are. A build with
+assertions checks at every use that it is still the name the instruction has.
+
+By the price list: a property read is 124 instructions for 137 and an inherited one 167 for 180; a
+variable of an enclosing function is read in 57 for 74 and written in 122 for 138; a global is read
+in 102 for 120 and assigned in 332 for 367; a method call is 718 for 731, `Math.floor(i / 3)` 553
+for 586, `Math.max(i, 7)` 430 for 462, `s.charCodeAt(i)` 488 for 506, a callback of `forEach` 756
+for 774, and a step of a generator 1060 for 1067. Nothing went up, and the loop of instructions is
+89 instructions shorter. With the two binaries run in turn, fifteen runs each: a variable of an
+enclosing function in a loop reads 7.0% less time, the properties of one object read and written
+6.4% (what the round before had cost them, and four more), calls of `Math` 5.3%, a closure 4.5%, a
+step of the particles 4.1%, a global variable in a loop 3.9%, a method 3.8%, a callback 3.7%; a
+plain call, a sum of integers and a `switch` in a loop are within 1.3% of where they were, and an
+empty loop reads 6.4% less, by where its code lies now.
+
 Tried on the way and not kept: the Number of a double handed back through an `Option` for "the
 vector has to grow" (the test for it was joined into the way out of every Number, four instructions
 for the five saved); a write by the cache that tried its straight way and left everything else to
@@ -632,6 +670,11 @@ scope, are asked for what is there and are `None` where it is not, and the read 
 one for the global scope and one for the enclosing functions, each called last. A variable of an
 enclosing function is read in 74 instructions for 79 and written in 138 for 143, a global read in
 120 for 131 and assigned in 367 for 380.
+
+Each such place then asked two tables, the constants for its name and the binding sites for what it
+remembers, and made a String of the name at every use. A site keeps its name beside what it
+remembers now (area 1, the same section): a variable of an enclosing function is read in 57
+instructions and written in 122, a global read in 102 and assigned in 332.
 
 ### 3. Calls
 
@@ -1374,6 +1417,8 @@ handles they read through and for the descriptors a write asks of a storage that
 has a failure of its own now, and the write asks the descriptors by a function called last (area
 1, "The functions the loop calls"): a read is 137 instructions for 145, a write 129 for 136, and
 what is built of them less by as much (`new` of a function that sets one field 38, with its call).
+The read is 124 since: its arm no longer writes the tables of the code to the stack for the
+functions it seldom calls, and takes the value as the function hands it back (the same section).
 
 ### 5. Array and typed array elements
 
