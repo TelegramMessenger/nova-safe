@@ -90,35 +90,36 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the generators (area 5a), in
-machine instructions per operation:
+a million times the price of the operation. As of the round of the second property of a kept
+name (area 4), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 228 / 270 / 262 | 498 / 581 / 594 | 2.2x |
-| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 719 / 813 / 762 | 2.0-2.3x |
-| a callee that reads a variable of its maker, in place of its parameter | 2 | 57 | |
-| a callee that assigns one, more | 25 | 122 | |
+| call, no argument / one / two | 228 / 270 / 262 | 484 / 566 / 576 | 2.1-2.2x |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 704 / 798 / 747 | 1.9-2.3x |
+| a callee that reads a variable of its maker, in place of its parameter | 2 | 58 | |
+| a callee that assigns one, more | 25 | 118 | |
 | read of a variable of the enclosing function, in place of a local | 2 | 10 | |
 | assignment to one, in place of a local | 3 | 57 | |
-| read of a global, in place of a local | 41 | 102 | 2.5x |
-| assignment to a global, in place of a local | 61 | 332 | 5.4x |
+| read of a global, in place of a local | 41 | 103 | 2.5x |
+| assignment to a global, in place of a local | 61 | 331 | 5.4x |
 | property read, own / inherited, in place of a local | 53 / 68 | 122 / 165 | 2.3x |
-| property assignment, in place of a local | 53 | 128 | 2.4x |
-| getter / setter | 328 / 405 | 746 / 772 | 2.3x / 1.9x |
-| integer `+` of two locals, more | 24 | 93 | 3.9x |
-| `-(i & 7)` / `-x` of a double, more | 23 / 9 | 127 / 115 | |
-| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 238 | 3.6x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 552 / 492 / 568 | 1.7-2.1x |
-| `Math.max(i, 7)` | 271 | 430 | 1.6x |
-| Array element read / written | 56 / 53 | 147 / 189 | 2.6x / 3.6x |
-| Uint8Array element read / written | 89 / 78 | 210 / 220 | 2.4x / 2.8x |
-| Float64Array element read / written | 106 / 76 | 281 / 206 | 2.7x / 2.7x |
-| `new` of a function / of a class, one field set | 1072 / 1128 | 2164 / 2135 | 2.0x / 1.9x |
-| an object literal of two properties | 744 | 498 | 0.67x |
-| one callback of `forEach` (the whole turn) | 394 | 769 | 2.0x |
-| one step of `for-of` over a generator (the whole turn) | 491 | 933 | 1.9x |
-| `s.charCodeAt(i)` | 350 | 487 | 1.4x |
+| a second property of the same object, in place of a local | 53 | 94 | 1.8x |
+| property assignment, in place of a local | 53 | 127 | 2.4x |
+| getter / setter | 328 / 405 | 738 / 766 | 2.2x / 1.9x |
+| integer `+` of two locals, more | 24 | 90 | 3.8x |
+| `-(i & 7)` / `-x` of a double, more | 23 / 9 | 123 / 111 | |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 238 | 3.5x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 549 / 490 / 565 | 1.7-2.1x |
+| `Math.max(i, 7)` | 271 | 424 | 1.6x |
+| Array element read / written | 56 / 53 | 143 / 185 | 2.6x / 3.5x |
+| Uint8Array element read / written | 89 / 78 | 207 / 217 | 2.3x / 2.8x |
+| Float64Array element read / written | 106 / 76 | 279 / 203 | 2.6x / 2.7x |
+| `new` of a function / of a class, one field set | 1072 / 1128 | 2150 / 2121 | 2.0x / 1.9x |
+| an object literal of two properties | 744 | 493 | 0.66x |
+| one callback of `forEach` (the whole turn) | 394 | 751 | 1.9x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 915 | 1.9x |
+| `s.charCodeAt(i)` | 350 | 482 | 1.4x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
@@ -148,7 +149,7 @@ below.
 | call | 14 | 10.4x | 1.6x |
 | math | 4 | 9.7x | 1.6x |
 | string | 26 | 10.6x | 1.3x |
-| prop | 13 | 7.1x | 1.4x |
+| prop | 13 | 7.1x | 1.3x |
 | map, set | 4 | 4.6x | 1.1x |
 | app | 8 | 6.1x | 1.5x |
 | array | 14 | 5.8x | 1.4x |
@@ -160,9 +161,8 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
 was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure and a step of a
-particle animation (2.3x), then the properties of one object read and written in a loop (2.1x):
-the three that are over 2x. 105 of the 108 cases are at or under it (a handful within a few
-hundredths, under it), 22 of them at or under QuickJS's time.
+particle animation (2.3x): the two that are over 2x. 106 of the 108 cases are at or under it, 21 of
+them at or under QuickJS's time.
 Over all cases it is 1.33x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -249,7 +249,14 @@ object 2.19x to 2.11x, a step of a generator 2.05x to 2.02x, trigonometry 1.96x 
 cases 1.336x from 1.353x, with the same four over 2x and 22 at or under QuickJS's time. A generator
 that is suspended at its `yield` by the loop that resumed it, and hands over the one handler and
 the one iterator it has as the entries they are (area 5a), took a step of a generator off 2x
-(2.04x to 1.84x): 1.333x from 1.340x, with three cases over 2x.
+(2.04x to 1.84x): 1.333x from 1.340x, with three cases over 2x. Every byte made the kind of an
+instruction (area 1) took 5.7% off the properties of one object read and written, which is under
+2x with it (2.09x to 1.98x), and 1 to 3% off the calls and off the loops that read elements:
+1.328x from 1.333x, with two cases over 2x. The second property of a kept name read by one
+instruction (area 4) took 7.1% more off that case (2.04x to 1.89x in two tables taken one after
+the other) and left the mean where it was: 1.327x for 1.324x, in a pair where QuickJS's own times
+read 1.2% lower and Nova's 1.0%. A `switch` in a loop and a step of the particles read 3 to 6%
+more time in that pair with the instructions they had before, by where the loop's code lies.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -466,6 +473,35 @@ instructions whose every part the compiler decides again for any change to it, a
 shortened by one branch without paying for it somewhere that only a count of instructions finds. What
 would shorten it soundly is an instruction of its own at the end of every code (so that no read is ever
 short, and the loop has one way to read), which is a change to the compiler of the bytecode; not done.
+
+One test of the step did go, with no branch moved for it. The byte that an instruction starts with
+names its kind, and 231 of the 256 values of a byte did: the read of every instruction asked whether
+its byte names any, a comparison and a branch for what only a defect of the engine can bring about
+(code is made by the compiler of the bytecode and by nothing else: a compiled script is never made
+from bytes). Every byte is a kind now. The 25 that no instruction has are kinds that nothing emits
+(`Unused231` to `Unused255`; a constant of the build checks the last of them to be 255), so the kind
+of a byte is the byte, and reading it asks nothing. Such a byte in code fails as it did, with the
+same message, where it is looked at with care: by whoever walks code (to print it, to name its
+sites) and by the general way of an instruction, which is where the loop sends every kind it has no
+arm for (`Instruction::is_unused`).
+
+By the price list the turn of a loop is 4 instructions shorter, a call 13 to 17 (485 for 498 with
+no argument), a method call 14, a callback of `forEach` and a step of a generator 18 each, `new` 13,
+a getter 8 and a setter 6, an element of an Array 4 read or written and of a typed array 2 to 3,
+the `+` of two integers 3, `s.charCodeAt(i)` 5, `Math.max` 6. A variable of the maker read by a
+callee and a global are one longer each (58 for 57, 103 for 102) and nothing else is up. With the
+two binaries run in turn, fifteen runs each: the properties of one object read and written take
+5.0% less time, nested loops 4.1%, a sum of integers 3.7%, a function that calls itself 2.6%, a
+method inherited through three prototypes 2.5%, the RGBA loop over a typed array 2.4%, calls of
+`Math` 2.0%, a step of the particles 1.9%, a closure and a step of a generator 1.7% each, a method
+1.5%; a plain call, arithmetic on doubles, a `switch` in a loop and the variables of enclosing
+functions and of the global scope are within 1% of where they were, and an empty loop reads 3.3%
+more with four instructions fewer in its turn, by where its code lies now.
+
+The table of the arms still asks one thing of the kind: whether it is past the last arm the loop
+has, since the kinds after that go the general way together. With an arm of its own for the last
+kind, so that the table has an entry for every byte, that comparison went too: the turn of a loop
+was one instruction shorter and every call three to five longer. Not kept.
 
 #### The functions the loop calls
 
@@ -1423,6 +1459,54 @@ has a failure of its own now, and the write asks the descriptors by a function c
 what is built of them less by as much (`new` of a function that sets one field 38, with its call).
 The read is 124 since: its arm no longer writes the tables of the code to the stack for the
 functions it seldom calls, and takes the value as the function hands it back (the same section).
+
+`o.x`, where `o` is a constant, a parameter or a function of the surroundings, is two instructions:
+the name, then the property of what it has. Where the function keeps the value of such a name in a
+stack slot for the call (area 2: a name that nothing assigns to, read in a loop), a read that
+follows another read of the same name is one instruction, the one that reads a property of a local
+with that slot for its local (`GetKeptPropertyWithCache`: the same arguments, and the site of the
+name in the two bytes that the other leaves unused). The compiler emits it only where the code has
+read the name before with nothing jumping in since. The slot is filled then, by the short way of
+the read before, or the name has no value to keep (`undefined`, which has no property that the
+cache places: the instruction goes the general way, which says what a property of that is). The
+first read of such a run of code stays the two instructions it was.
+
+The site has the name, for which the instruction has no room: the compiler says for every site
+where its name is among the constants (the tables found that out by reading the instructions
+before), and the compiled form of a script carries the list to every engine that runs it. The
+tables keep the names and not the list. Kept too, it was one more block of memory for every
+function of a script in every engine: 109 KB for the functions of the widget sandbox, which the
+widget-sandbox suite noticed in a test that takes a widget to within 82 KB of its 8 MB.
+
+By the price list a second property of the same object is 94 instructions for the 122 of the first
+(QuickJS: 53), and nothing else is longer; a call is one shorter. With the two binaries run in
+turn, fifteen runs each: the properties of one object read and written, whose line reads three
+after a first, take 6.4% less time, the arithmetic of a Float64Array 2.2%, a plain call 1.9%. A
+`switch` in a loop reads 3.0% more, a step of the particles 2.1% and a variable of an enclosing
+function in a loop 2.0%, each with the instructions it had: where the loop's code lies.
+
+The first read is left alone on purpose. Five ways of having the instruction fill its slot itself
+were measured first, each by the price list, with the read at 93 to 98 in all of them:
+
+- The name read and the property read again in a second turn of a loop inside the arm: the turn of
+  a plain loop 234 instructions for 223, a call 7 to 12 longer.
+- The slot filled by a function of its own that the arm hands the site, the name and the slot, and
+  the instruction then read again: the turn of a plain loop 229. The arm kept the slot across its
+  read of the property, the compiler gave it a register of the loop for that, and the loop then
+  wrote the arguments of every instruction of a script to the stack and read them back, two
+  instructions at each.
+- The same with the slot read from the instruction again where it is wanted: the loop as it was,
+  and every read of a property of a local one longer, by the place of the instruction that was
+  kept beside the place of the next one for the second reading.
+- The whole first read in a function of its own that is handed the code and the place of the
+  instruction, whether it hands back the value or only says that it did: every call 5 to 8 longer,
+  and that first read still 161 instructions more than the two it stands for.
+- Nothing in the arm, and the slot filled on the general way of the instruction: the loop and the
+  calls as they were, and the first read of a call 327 instructions more than the two instructions
+  it stands for. A function that reads once in a short loop paid that at every call, and only a
+  thirteenth read in the call made it even.
+
+A function that has no loop keeps no names, and reads `o.x` by its two instructions as before.
 
 ### 5. Array and typed array elements
 
