@@ -16622,3 +16622,107 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// A value that was just computed compared with a constant, and the jump
+/// on it, are one instruction (JumpIfResultComparesWithConstant: `p.x < 0`,
+/// `f() >= 10`, `a[i] === "x"`). Every kind of value against integers,
+/// doubles, Strings, null, undefined and true, by the four orders and by
+/// strict equality and its negation, in `if`, `while`, `for`, `do`, `||`,
+/// `&&` and `?:`; operands whose conversion runs code, once for each
+/// comparison, and ones that throw where they are compared; left operands
+/// that are properties, elements, calls, arithmetic, updates and
+/// assignments; and twenty thousand turns over integers and doubles. What
+/// is expected is what Node prints for the same script.
+#[test]
+fn what_was_just_computed_is_compared_with_a_constant_as_its_parts_were() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(comparisons_with_constants)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn comparisons_with_constants() {
+    let script = r##"// A value that was just computed compared with a constant, and the jump on it, are one instruction: `p.x < 0`,
+// `f() >= 10`, `a[i] === "x"`. Every kind of left operand against every kind of constant, in `if`, `while`,
+// `for`, `||`, `&&` and `?:`, with operands whose conversion runs code and with ones that throw.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + f()); } catch (e) { out.push(label + "!" + e.name); } }
+(function () {
+  var log = [];
+  var values = [0, -0, 1, -1, 5, 5.5, -5.5, 0.1 + 0.2, 1e21, -1e21, NaN, Infinity, -Infinity, 2147483648, -2147483649, 9007199254740993,
+    "5", "abc", "", " 5 ", "0x10", true, false, null, undefined, 5n, -5n, [], [5], [1, 2], {}, { valueOf: function () { log.push("v"); return 5; } },
+    { toString: function () { log.push("s"); return "6"; } }, { valueOf: function () { return {}; }, toString: function () { return "4"; } }, new Date(5), function () {}];
+  var box = { v: 0 };
+  function id(v) { return v; }
+  // Each comparison in a statement of its own, so that each is a test that jumps.
+  function row(v) {
+    box.v = v;
+    var r = "";
+    if (box.v < 5) r += "a"; else r += "-";
+    if (box.v <= 5) r += "b"; else r += "-";
+    if (box.v > 5) r += "c"; else r += "-";
+    if (box.v >= 5) r += "d"; else r += "-";
+    if (box.v === 5) r += "e"; else r += "-";
+    if (box.v !== 5) r += "f"; else r += "-";
+    if (id(v) < 5.5) r += "g"; else r += "-";
+    if (id(v) >= -0.5) r += "h"; else r += "-";
+    if (id(v) > "4") r += "i"; else r += "-";
+    if (id(v) <= "abc") r += "j"; else r += "-";
+    if (id(v) === "5") r += "k"; else r += "-";
+    if (id(v) !== null) r += "l"; else r += "-";
+    if (id(v) === undefined) r += "m"; else r += "-";
+    if (id(v) < 1e21) r += "n"; else r += "-";
+    if (id(v) > -1e21) r += "o"; else r += "-";
+    if (id(v) === true) r += "p"; else r += "-";
+    r += (box.v < 0 || box.v > 320) ? "q" : "-";
+    r += (box.v >= 0 && box.v <= 5) ? "r" : "-";
+    r += box.v < 5 ? "s" : box.v > 5 ? "t" : "u";
+    return r;
+  }
+  for (var i = 0; i < values.length; i++) {
+    var v = values[i];
+    try { out.push(row(v)); } catch (e) { out.push("!" + e.name); }
+  }
+  out.push(log.join(""));
+  // Symbols and mixed BigInts throw where they are compared, not before.
+  note("symbol", function () { var s = Symbol("x"); if (id(s) < 5) return "lt"; return "ge"; });
+  note("symbol strict", function () { var s = Symbol("x"); if (id(s) === 5) return "eq"; return "ne"; });
+  note("bigint", function () { var r = ""; if (id(5n) < 6) r += "a"; if (id(5n) >= 5) r += "b"; if (id(5n) === 5) r += "c"; if (id(2n ** 70n) > 1e21) r += "d"; return r; });
+  // Loops whose test is such a comparison, left operands of every form.
+  var a = [3, 1, 4, 1, 5, 9, 2, 6], n = 0, k = 0, s = "";
+  while (a[k] !== 9) k++;
+  for (var j = 0; a[j] < 5; j++) n += a[j];
+  do { n += 1; } while (n * 2 <= 30);
+  var o = { count: 0, next: function () { return ++this.count; } };
+  while (o.next() < 7) s += o.count;
+  for (var q = 10; (q -= 3) > 0;) s += "," + q;
+  var t = 0; while ((t += 2) < 9) s += ".";
+  var life = { life: 3 }, alive = 0; for (var z = 0; z < 6; z++) { if (--life.life > 0) alive++; else life.life = 3; }
+  out.push(k, n, s, alive, life.life);
+  // The value compared is not left behind, and a value the comparison did not take is.
+  function after(p) { var x = p.x < 0 ? -1 : 1; var y = (p.x > 0, p.y); var w = p.x >= 3 || p.y; return x + "|" + y + "|" + w; }
+  out.push(after({ x: -2, y: "y" }), after({ x: 5, y: "z" }), after({ x: 1, y: 0 }));
+  // A getter and a call as the left operand run once for each comparison.
+  var gets = 0, g = { get v() { gets++; return gets; } };
+  var seen = ""; for (var m = 0; m < 4; m++) { if (g.v < 3) seen += "<"; if (g.v >= 5) seen += ">"; }
+  out.push(seen, gets);
+  // A long script of them: thousands of turns with integers, doubles and heap doubles.
+  var total = 0; var pt = { x: 0.5, y: 0 };
+  for (var u = 0; u < 20000; u++) { pt.x += 0.05; pt.y += 1; if (pt.x > 320) pt.x = -pt.x; if (pt.y >= 1000) pt.y = 0; if (pt.x < 100.25) total++; if (pt.y === 500) total += 1000; }
+  out.push(total, pt.x.toFixed(2), pt.y);
+})();
+out.join(" ")"##;
+    let expected = r##"ab---fgh---l-no--rs ab---fgh---l-no--rs ab---fgh---l-no--rs ab---fg----l-no-q-s -b-de-ghi--l-no--ru --cd-f-hi--l-no---t ab---fg----l-no-q-s ab---fgh---l-no--rs --cd-f-hi--l--o-q-t ab---fg----l-n--q-s -----f-----l------u --cd-f-hi--l--o-q-t ab---fg----l-n--q-s --cd-f-hi--l-no-q-t ab---fg----l-no-q-s --cd-f-hi--l-no-q-t -b-d-fghijkl-no--ru -----f--ij-l------u ab---fgh-j-l-no--rs -b-d-fgh-j-l-no--ru --cd-f-h-j-l-no---t ab---fgh---l-nop-rs ab---fgh---l-no--rs ab---fgh-----no--rs -----f-----lm-----u -b-d-fghi--l-no--ru ab---fg----l-no-q-s ab---fgh-j-l-no--rs -b-d-fghij-l-no--ru -----f---j-l------u -----f--ij-l------u -b-d-fghi--l-no--ru --cd-f-hij-l-no---t ab---fgh-j-l-no--rs -b-d-fghi--l-no--ru -----f--i--l------u vvvvvvvvvvvvvvvvssssssssssssssss symbol!TypeError symbol strict=ne bigint=abd 5 16 123456,7,4,1.... 4 3 -1|y|y 1|z|true 1|0|0 <>> 8 31212 -279.50 0"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
