@@ -3566,21 +3566,27 @@ impl Vm {
             // length of an Array.
             Instruction::GetPropertyWithCache | Instruction::GetPropertyWithCacheKeepReference => {
                 step!(GetPropertyWithCache, GetPropertyWithCacheKeepReference);
-                let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
+                let Some(base) = vm.result else {
+                    return Plain::No;
+                };
+                if !Self::cached_property_into_result(agent, vm, base, tables, instr, gc) {
+                    // As the instruction found it.
+                    vm.result = Some(base);
                     if instr.kind == Instruction::GetPropertyWithCache
-                        && let Some(base) = vm.result
                         && Self::getter_for_call(agent, vm, base, tables, instr, gc)
                     {
                         return Plain::Accessor;
                     }
                     return Plain::No;
-                };
+                }
                 if instr.kind == Instruction::GetPropertyWithCacheKeepReference {
+                    let found = vm.result;
+                    vm.result = Some(base);
                     Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                    vm.result = found;
                 } else {
                     vm.reference = None;
                 }
-                vm.result = Some(value);
             }
             // The function of a method call, pushed with its Reference
             // before the arguments.
@@ -3636,8 +3642,7 @@ impl Vm {
                     GetKeptPropertyWithCache
                 );
                 let base = vm.stack[Instr::window_third_index(window)];
-                let Some(value) = Self::cached_property_value_of(agent, base, tables, instr, gc)
-                else {
+                if !Self::cached_property_into_result(agent, vm, base, tables, instr, gc) {
                     if matches!(
                         instr.kind,
                         Instruction::GetIndexPropertyWithCache
@@ -3647,25 +3652,25 @@ impl Vm {
                         return Plain::Accessor;
                     }
                     return Plain::No;
-                };
+                }
                 match instr.kind {
                     Instruction::GetIndexPropertyWithCache
                     | Instruction::GetKeptPropertyWithCache => {
                         vm.reference = None;
-                        vm.result = Some(value);
                     }
                     Instruction::GetIndexPropertyWithCacheKeepReference => {
+                        let found = vm.result;
                         vm.result = Some(base);
                         Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
-                        vm.result = Some(value);
+                        vm.result = found;
                     }
                     // The function of `p.m(x)`, pushed after `p`, the this
                     // value of the call.
                     _ => {
-                        vm.result = None;
+                        let found = vm.result.take();
                         vm.reference = None;
                         vm.stack.push(base);
-                        vm.stack.push(value);
+                        vm.stack.extend(found);
                     }
                 }
             }
@@ -3680,22 +3685,22 @@ impl Vm {
                 let Some(this) = agent.running_call_this_value() else {
                     return Plain::No;
                 };
-                let Some(value) = Self::cached_property_value_of(agent, this, tables, instr, gc)
-                else {
+                if !Self::cached_property_into_result(agent, vm, this, tables, instr, gc) {
                     if instr.kind == Instruction::GetThisPropertyWithCache
                         && Self::getter_for_call(agent, vm, this, tables, instr, gc)
                     {
                         return Plain::Accessor;
                     }
                     return Plain::No;
-                };
+                }
                 if instr.kind == Instruction::GetThisPropertyWithCacheKeepReference {
+                    let found = vm.result;
                     vm.result = Some(this);
                     Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                    vm.result = found;
                 } else {
                     vm.reference = None;
                 }
-                vm.result = Some(value);
             }
             // `new F(…)` of an ECMAScript function, which the Vm may run
             // itself.
@@ -4330,6 +4335,39 @@ impl Vm {
         // by three more general ones at every call of a method of a String
         // or a Number.
         prototype.value_by_cache(agent, cache, gc)
+    }
+
+    /// [`Vm::cached_property_value_of`] with what is found put in the
+    /// result register, and whether anything was; nothing found leaves the
+    /// register empty. Every way that finds a value writes it there as the
+    /// eight bytes it has it in, and the register is asked whether it holds
+    /// one. Handed back to an arm that looked at it and then wrote it, a
+    /// value was written as four pieces (its kind, and its seven bytes as
+    /// four, two and one), ten instructions for the one store, and what
+    /// loads the register whole next had the four to wait for.
+    #[inline(always)]
+    fn cached_property_into_result(
+        agent: &mut Agent,
+        vm: &mut Vm,
+        base: Value,
+        tables: TablesView,
+        instr: Instr,
+        gc: NoGcScope,
+    ) -> bool {
+        match base {
+            Value::Object(object) => {
+                let cache = tables.cache(instr.get_second_index(), gc);
+                vm.result = object.value_by_cache(agent, cache, gc);
+            }
+            Value::Arguments(arguments) => {
+                let cache = tables.cache(instr.get_second_index(), gc);
+                vm.result = arguments.ordinary_object().value_by_cache(agent, cache, gc);
+            }
+            _ => {
+                vm.result = Self::cached_property_value_of(agent, base, tables, instr, gc);
+            }
+        }
+        vm.result.is_some()
     }
 
     /// The same for `base`, wherever the instruction has it from.
