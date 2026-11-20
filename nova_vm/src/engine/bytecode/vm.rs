@@ -3252,8 +3252,11 @@ impl Vm {
             // last time.
             Instruction::GetBindingAtSite | Instruction::GetGlobalAtSite => {
                 step!(GetBindingAtSite, GetGlobalAtSite);
-                let name = tables.identifier(instr.get_first_index(), gc);
-                let site = tables.binding_site(instr.get_second_index());
+                let (site, name) = tables.named_binding_site(
+                    instr.get_second_index(),
+                    instr.get_first_index(),
+                    gc,
+                );
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                     return Plain::No;
                 };
@@ -3262,8 +3265,11 @@ impl Vm {
             // The same variable, pushed: an operand or an argument.
             Instruction::LoadBindingAtSite => {
                 step!(LoadBindingAtSite);
-                let name = tables.identifier(instr.get_first_index(), gc);
-                let site = tables.binding_site(instr.get_second_index());
+                let (site, name) = tables.named_binding_site(
+                    instr.get_second_index(),
+                    instr.get_first_index(),
+                    gc,
+                );
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                     return Plain::No;
                 };
@@ -3281,8 +3287,11 @@ impl Vm {
                     return Plain::No;
                 };
                 let value = if kept.is_undefined() {
-                    let name = tables.identifier(instr.get_first_index(), gc);
-                    let site = tables.binding_site(instr.get_second_index());
+                    let (site, name) = tables.named_binding_site(
+                        instr.get_second_index(),
+                        instr.get_first_index(),
+                        gc,
+                    );
                     let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                         return Plain::No;
                     };
@@ -3300,8 +3309,11 @@ impl Vm {
                     return Plain::No;
                 };
                 let value = if kept.is_undefined() {
-                    let name = tables.identifier(instr.get_first_index(), gc);
-                    let site = tables.binding_site(instr.get_second_index());
+                    let (site, name) = tables.named_binding_site(
+                        instr.get_second_index(),
+                        instr.get_first_index(),
+                        gc,
+                    );
                     let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                         return Plain::No;
                     };
@@ -3318,8 +3330,11 @@ impl Vm {
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
-                let name = tables.identifier(instr.get_first_index(), gc);
-                let site = tables.binding_site(instr.get_second_index());
+                let (site, name) = tables.named_binding_site(
+                    instr.get_second_index(),
+                    instr.get_first_index(),
+                    gc,
+                );
                 if !set_binding_value_at_site(agent, site, name, value, gc) {
                     return Plain::No;
                 }
@@ -3329,8 +3344,11 @@ impl Vm {
             // its Reference, made where the name was found the last time.
             Instruction::ResolveGlobalAtSite => {
                 step!(ResolveGlobalAtSite);
-                let name = tables.identifier(instr.get_first_index(), gc);
-                let site = tables.binding_site(instr.get_second_index());
+                let (site, name) = tables.named_binding_site(
+                    instr.get_second_index(),
+                    instr.get_first_index(),
+                    gc,
+                );
                 let strict = agent.is_evaluating_strict_code();
                 let Some(reference) = try_resolve_binding_at_site(agent, site, name, strict, gc)
                 else {
@@ -3345,13 +3363,16 @@ impl Vm {
                 let Some(value) = vm.result else {
                     return Plain::No;
                 };
-                let site = tables.binding_site(instr.get_second_index());
+                let (site, name) = tables.named_binding_site(
+                    instr.get_second_index(),
+                    instr.get_first_index(),
+                    gc,
+                );
                 if !vm.reference.as_ref().is_some_and(|reference| {
                     reference_is_at_global_site(agent, site, reference, gc)
                 }) {
                     return Plain::No;
                 }
-                let name = tables.identifier(instr.get_first_index(), gc);
                 if !set_binding_value_at_site(agent, site, name, value, gc) {
                     return Plain::No;
                 }

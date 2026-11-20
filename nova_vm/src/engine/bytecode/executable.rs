@@ -202,7 +202,20 @@ pub(crate) struct CodeTables {
     instructions: Bytecode,
     constants: Box<[Cell<Value<'static>>]>,
     caches: Box<[Cell<PropertyLookupCache<'static>>]>,
-    binding_sites: Box<[Cell<BindingSite>]>,
+    binding_sites: Box<[Cell<NamedSite>]>,
+}
+
+/// A [`BindingSite`] with the name whose place it remembers: one place in
+/// the code names one name. The two are kept together, so that the
+/// instruction that reads a variable where it was found the last time has
+/// both by one look at one table. With the name among the constants it was
+/// a second table asked, and the name made a String of the Value it is
+/// kept as there, at every read: twelve instructions of the seventy-four.
+#[derive(Debug, Clone, Copy)]
+struct NamedSite {
+    site: BindingSite,
+    /// The empty String for a site that no instruction names.
+    name: String<'static>,
 }
 
 impl CodeTables {
@@ -214,12 +227,30 @@ impl CodeTables {
         caches: Vec<PropertyLookupCache<'static>>,
         binding_sites: usize,
     ) -> Rc<Self> {
+        // The name of every site, from the instructions that name it.
+        let mut names = vec![String::EMPTY_STRING; binding_sites];
+        let mut ip = 0;
+        while let Some(instr) = Instr::consume_instruction(instructions.code(), &mut ip) {
+            if instr.kind.names_binding_site()
+                && let Some(name) = names.get_mut(instr.get_second_index())
+                && let Some(&constant) = constants.get(instr.get_first_index())
+                && let Ok(identifier) = String::try_from(constant)
+            {
+                *name = identifier;
+            }
+        }
         Rc::new(Self {
             instructions,
             constants: constants.into_iter().map(Cell::new).collect(),
             caches: caches.into_iter().map(Cell::new).collect(),
-            binding_sites: (0..binding_sites)
-                .map(|_| Cell::new(BindingSite::UNKNOWN))
+            binding_sites: names
+                .into_iter()
+                .map(|name| {
+                    Cell::new(NamedSite {
+                        site: BindingSite::UNKNOWN,
+                        name,
+                    })
+                })
                 .collect(),
         })
     }
@@ -266,7 +297,10 @@ impl CodeTables {
 
     fn set_binding_site(&self, index: usize, site: BindingSite) {
         if let Some(slot) = self.binding_sites.get(index) {
-            slot.set(site);
+            slot.set(NamedSite {
+                site,
+                name: slot.get().name,
+            });
         }
     }
 
@@ -282,6 +316,7 @@ impl CodeTables {
         for cache in self.caches.iter() {
             cache.get().mark_values(queues);
         }
+        // The names of the sites are constants too, and marked above.
     }
 
     fn sweep_values(&self, compactions: &CompactionLists) {
@@ -295,6 +330,11 @@ impl CodeTables {
             value.sweep_values(compactions);
             cache.set(value);
         }
+        for named in self.binding_sites.iter() {
+            let mut value = named.get();
+            value.name.sweep_values(compactions);
+            named.set(value);
+        }
     }
 }
 
@@ -304,7 +344,7 @@ impl CodeTables {
 pub(crate) struct TablesView<'a> {
     constants: &'a [Cell<Value<'static>>],
     caches: &'a [Cell<PropertyLookupCache<'static>>],
-    binding_sites: &'a [Cell<BindingSite>],
+    binding_sites: &'a [Cell<NamedSite>],
 }
 
 impl TablesView<'_> {
@@ -343,7 +383,35 @@ impl TablesView<'_> {
     pub(super) fn binding_site(self, index: usize) -> BindingSite {
         self.binding_sites
             .get(index)
-            .map_or(BindingSite::ELSEWHERE, Cell::get)
+            .map_or(BindingSite::ELSEWHERE, |named| named.get().site)
+    }
+
+    /// The BindingSite at `index` and the name whose place it remembers:
+    /// see [`NamedSite`]. A place that remembers nothing, with a name that
+    /// no variable has, where the executable has no such site.
+    ///
+    /// `identifier` is where the instruction that asks has the same name
+    /// among the constants: the two are the same String for as long as
+    /// the executable lives, through every collection, which a build with
+    /// assertions checks at every use.
+    #[inline(always)]
+    pub(super) fn named_binding_site<'gc>(
+        self,
+        index: usize,
+        identifier: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> (BindingSite, String<'gc>) {
+        match self.binding_sites.get(index) {
+            Some(named) => {
+                let NamedSite { site, name } = named.get();
+                debug_assert_eq!(
+                    self.constants.get(identifier).map(Cell::get),
+                    Some(name.into())
+                );
+                (site, name.bind(gc))
+            }
+            None => (BindingSite::ELSEWHERE, String::EMPTY_STRING),
+        }
     }
 }
 

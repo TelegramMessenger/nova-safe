@@ -800,6 +800,24 @@ impl Instruction {
         1 + self.argument_count() as usize * 2
     }
 
+    /// Whether the instruction names a BindingSite of its executable, in
+    /// its second argument, for the name in its first.
+    pub(super) const fn names_binding_site(self) -> bool {
+        matches!(
+            self,
+            Self::ResolveBindingAtSite
+                | Self::GetBindingAtSite
+                | Self::LoadBindingAtSite
+                | Self::GetBindingAtSiteOnce
+                | Self::LoadBindingAtSiteOnce
+                | Self::PutBindingAtSite
+                | Self::ResolveGlobalAtSite
+                | Self::GetGlobalAtSite
+                | Self::PutGlobalAtSite
+                | Self::PutValueAtSite
+        )
+    }
+
     #[inline(always)]
     pub const fn argument_count(self) -> u8 {
         match self {
