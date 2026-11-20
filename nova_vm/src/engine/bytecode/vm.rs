@@ -1101,24 +1101,25 @@ impl Vm {
             let mut ip = self.ip;
             let mut collections = agent.heap.collections;
             // The code as the loop reads an instruction from it with one
-            // look at how much is left: an instruction and the four bytes
-            // after it, which the padding after the code gives its last
-            // instruction too (the Return of a function). None of it when
-            // the instructions are printed, so that every one of them goes
-            // the other way, where the end of the code goes. The
-            // instructions are read where they are from the same slice,
-            // each at or before the place of the next one, so that the
-            // loop has one slice at hand and not two.
+            // look at how much is left: an instruction and the eight bytes
+            // after it, the longest there is, which the padding after the
+            // code gives its last instruction too (the Return of a
+            // function). An instruction of four arguments has its third
+            // and fourth in that window, and its arm reads them there.
+            // None of it when the instructions are printed, so that every
+            // one of them goes the other way, where the end of the code
+            // goes.
             let instructions = code_tables.padded();
             let windows: &[u8] = if print_internals { &[] } else { instructions };
             // The tables as three slices, which stay what they are while
             // this code runs: a collection rewrites their entries in place.
             let tables = code_tables.view();
             let change = loop {
-                let instr = if let Some(window) =
-                    windows.get(ip..).and_then(|rest| rest.first_chunk::<5>())
+                let (instr, window) = if let Some(window) = windows
+                    .get(ip..)
+                    .and_then(|rest| rest.first_chunk::<{ Instr::WINDOW }>())
                 {
-                    Instr::in_window(window)
+                    (Instr::in_window(window), window)
                 } else {
                     let mut next = ip;
                     let Some(instr) =
@@ -1129,7 +1130,15 @@ impl Vm {
                     if print_internals {
                         Self::print_executing(instr.kind);
                     }
-                    instr
+                    // An instruction of the code has its window in the
+                    // padded code, whichever way it was read.
+                    let Some(window) = instructions
+                        .get(ip..)
+                        .and_then(|rest| rest.first_chunk::<{ Instr::WINDOW }>())
+                    else {
+                        break Change::End;
+                    };
+                    (instr, window)
                 };
                 // Most of what runs is plain: it goes straight to the next
                 // instruction, with no result to look at and nothing to
@@ -1139,7 +1148,7 @@ impl Vm {
                     agent,
                     self,
                     &mut ip,
-                    instructions,
+                    window,
                     &executable,
                     code,
                     tables,
@@ -2766,7 +2775,7 @@ impl Vm {
         agent: &mut Agent,
         vm: &mut Vm,
         ip: &mut usize,
-        instructions: &[u8],
+        window: &[u8; Instr::WINDOW],
         executable: &Scoped<Executable>,
         code: Executable,
         tables: TablesView,
@@ -2802,7 +2811,7 @@ impl Vm {
                     agent,
                     vm,
                     ip,
-                    instructions,
+                    window,
                     tables,
                     instr,
                     Instruction::$kind,
@@ -2817,7 +2826,7 @@ impl Vm {
                     agent,
                     vm,
                     ip,
-                    instructions,
+                    window,
                     tables,
                     instr,
                     Instruction::$kind,
@@ -3329,7 +3338,7 @@ impl Vm {
             // there is nothing kept.
             Instruction::GetBindingAtSiteOnce => {
                 step!(GetBindingAtSiteOnce);
-                let slot = Instr::wide_third_index(instructions, *ip);
+                let slot = Instr::window_third_index(window);
                 let Some(&kept) = vm.stack.get(slot) else {
                     return Plain::No;
                 };
@@ -3351,7 +3360,7 @@ impl Vm {
             }
             Instruction::LoadBindingAtSiteOnce => {
                 step!(LoadBindingAtSiteOnce);
-                let slot = Instr::wide_third_index(instructions, *ip);
+                let slot = Instr::window_third_index(window);
                 let Some(&kept) = vm.stack.get(slot) else {
                     return Plain::No;
                 };
@@ -3626,7 +3635,7 @@ impl Vm {
                     LoadIndexPropertyWithCachePushThis,
                     GetKeptPropertyWithCache
                 );
-                let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
+                let base = vm.stack[Instr::window_third_index(window)];
                 let Some(value) = Self::cached_property_value_of(agent, base, tables, instr, gc)
                 else {
                     if matches!(
@@ -4072,7 +4081,7 @@ impl Vm {
         agent: &mut Agent,
         vm: &mut Vm,
         ip: &mut usize,
-        instructions: &[u8],
+        window: &[u8; Instr::WINDOW],
         tables: TablesView,
         instr: Instr,
         kind: Instruction,
@@ -4119,7 +4128,7 @@ impl Vm {
         vm.result = None;
         if jumps {
             let from = *ip;
-            *ip = Instr::wide_jump_target(instructions, from);
+            *ip = Instr::window_jump_target(window);
             if *ip < from {
                 return Plain::Looped;
             }
@@ -4136,7 +4145,7 @@ impl Vm {
         agent: &mut Agent,
         vm: &mut Vm,
         ip: &mut usize,
-        instructions: &[u8],
+        window: &[u8; Instr::WINDOW],
         tables: TablesView,
         instr: Instr,
         kind: Instruction,
@@ -4195,7 +4204,7 @@ impl Vm {
         vm.result = None;
         if holds {
             let from = *ip;
-            *ip = Instr::wide_jump_target(instructions, from);
+            *ip = Instr::window_jump_target(window);
             if *ip < from {
                 return Plain::Looped;
             }

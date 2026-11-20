@@ -1421,13 +1421,20 @@ impl Instr {
         })
     }
 
+    /// How many bytes the loop of a `Vm` reads for an instruction with one
+    /// look at how much code is left: the longest instruction, of four
+    /// arguments.
+    pub(crate) const WINDOW: usize = 9;
+
     /// The instruction that `window` starts with: its byte and the four
     /// bytes after it, whichever of those are its arguments. The same
     /// [`Instr`] as [`Instr::consume_instruction`] reads there, where the
-    /// code has that many bytes left.
+    /// code has that many bytes left. The third and the fourth argument of
+    /// an instruction with four are the rest of the window
+    /// ([`Instr::window_third_index`], [`Instr::window_jump_target`]).
     #[inline(always)]
-    pub(super) fn in_window(window: &[u8; 5]) -> Instr {
-        let [byte, a, b, c, d] = *window;
+    pub(super) fn in_window(window: &[u8; Self::WINDOW]) -> Instr {
+        let [byte, a, b, c, d, ..] = *window;
         let Some(kind) = Instruction::from_u8(byte) else {
             panic_invalid_instruction()
         };
@@ -1489,6 +1496,23 @@ impl Instr {
                 || (self.kind.argument_count() == 2 && !self.kind.has_double_arg())
         );
         self.args.two_args()[1] as usize
+    }
+
+    /// The third argument of an instruction with four, where it is an
+    /// index, from the window the instruction was read in: nothing is asked
+    /// of the code again, where reading it from the code by the place of
+    /// the next instruction asked twice how much code there is, eight
+    /// machine instructions for the one load this is.
+    #[inline(always)]
+    pub(crate) fn window_third_index(window: &[u8; Self::WINDOW]) -> usize {
+        u16::from_ne_bytes([window[5], window[6]]) as usize
+    }
+
+    /// The jump target of an instruction with four arguments, which is its
+    /// last two, from its window.
+    #[inline(always)]
+    pub(crate) fn window_jump_target(window: &[u8; Self::WINDOW]) -> usize {
+        u32::from_ne_bytes([window[5], window[6], window[7], window[8]]) as usize
     }
 
     /// The third argument of an instruction with four, where it is an index:

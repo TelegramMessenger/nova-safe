@@ -111,20 +111,21 @@ const EXECUTABLE_OPTION_SIZE_IS_U32: () =
 /// The instructions of an Executable, shared by whoever runs them, and a few
 /// bytes after them that are no instruction ([`Bytecode::PADDING`]).
 ///
-/// The loop of a `Vm` reads an instruction with the four bytes after it in
-/// one look ([`Bytecode::padded`]), and went another, slower way for an
-/// instruction that has fewer than four bytes of code after it: the Return
-/// that ends nearly every function. The padding gives that one its four
-/// bytes. It is not code: the instructions, where the code ends, and what
-/// a jump or a listing may reach are [`Bytecode::code`], and nothing but
-/// that look reads the padding.
+/// The loop of a `Vm` reads an instruction with the eight bytes after it
+/// in one look ([`Bytecode::padded`]): the longest instruction, whichever
+/// of them the one it finds has. It went another, slower way for an
+/// instruction that has fewer bytes of code after it, as the Return that
+/// ends nearly every function has none. The padding gives every one its
+/// eight bytes. It is not code: the instructions, where the code ends, and
+/// what a jump or a listing may reach are [`Bytecode::code`], and nothing
+/// but that look reads the padding.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bytecode(Arc<[u8]>);
 
 impl Bytecode {
     /// The bytes after the instructions: as many as the loop reads beyond
     /// the first byte of an instruction.
-    const PADDING: usize = 4;
+    const PADDING: usize = Instr::WINDOW - 1;
 
     pub(crate) fn new(mut instructions: Vec<u8>) -> Self {
         instructions.extend_from_slice(&[0; Self::PADDING]);
@@ -141,7 +142,7 @@ impl Bytecode {
     }
 
     /// The instructions and the padding after them, for reading an
-    /// instruction with the four bytes that follow it.
+    /// instruction with the eight bytes that follow it.
     #[inline(always)]
     pub(crate) fn padded(&self) -> &[u8] {
         &self.0
