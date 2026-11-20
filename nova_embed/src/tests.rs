@@ -15073,3 +15073,181 @@ String(calls(100000))"##;
     engine.collect_garbage().unwrap();
     assert_eq!(text(&mut engine, "String(calls(10))"), "60");
 }
+
+/// The arithmetic and the comparisons of Numbers of every kind, as the
+/// loop of instructions works them out (two integers in its arms; anything
+/// with a double in one function, whose way straight through is the four
+/// operators on doubles; the remainder, the shifts and the bitwise
+/// operators, and operands that are not Numbers, in functions of their
+/// own), and global variables read where they were found, through every
+/// change of the global scope that moves, removes or replaces them. What
+/// is expected is what Node prints for the same script. Then doubles of
+/// the heap are kept over a collection that moves them and worked with
+/// again, and made until the heap has no room, which ends the script as it
+/// did.
+#[test]
+fn doubles_are_worked_out_and_globals_read_where_they_are() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(doubles_and_globals)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn doubles_and_globals() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function show() { var a = []; for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; a.push(Object.is(v, -0) ? "-0" : String(v)); } out.push(a.join(" ")); }
+var kinds = [0, 1, -1, 7, 2147483647, -2147483648, 9007199254740991, -9007199254740991, 0.5, -0.5, 1.5, 0.1, -0.1, 1 / 3, 2 / 3, 1e21, -1e21, 1e-7, 5e-324, 1.7976931348623157e308, -0, NaN, Infinity, -Infinity, 4294967296.5, 123456789.125, 0.30000000000000004];
+function ops(a, b) {
+  return [a + b, a - b, a * b, a / b, a % b, a < b, a <= b, a > b, a >= b, a & b, a | b, a ^ b, a << b, a >> b, a >>> b, a ** 2];
+}
+var sums = [];
+for (var i = 0; i < kinds.length; i++) {
+  for (var j = 0; j < kinds.length; j++) {
+    var r = ops(kinds[i], kinds[j]);
+    var line = [];
+    for (var k = 0; k < r.length; k++) line.push(Object.is(r[k], -0) ? "-0" : String(r[k]));
+    sums.push(line.join(","));
+  }
+}
+// The whole table is long: its length, a few rows of it, and a digest of all of it.
+var digest = 0;
+for (var i = 0; i < sums.length; i++) for (var c = 0; c < sums[i].length; c++) digest = (digest * 31 + sums[i].charCodeAt(c)) | 0;
+show(sums.length, digest);
+show(sums[0]); show(sums[8 * kinds.length + 13]); show(sums[13 * kinds.length + 11]); show(sums[20 * kinds.length + 21]); show(sums[22 * kinds.length + 23]); show(sums[4 * kinds.length + 9]);
+// With a constant, with a local, and in place: the fused forms of the operators.
+function fused(x, n) {
+  var a = x; for (var i = 0; i < n; i++) { a = a * 0.999 + 0.25; a = a - 0.125; a = a / 1.5; }
+  var b = x; for (var i = 0; i < n; i++) { b += 0.1; b -= 0.05; b *= 1.01; b /= 1.001; }
+  var c = 0; for (var i = 0; i < n; i++) { c = c + i * 0.5; c = c - i / 3; }
+  var d = 0; for (var i = 0; i < n; i++) { if (i * 0.5 < d) d -= 0.25; else d += i / 7; if (d >= 1e6) d = 0.5; }
+  return [a, b, c, d];
+}
+show.apply(null, fused(0.5, 50)); show.apply(null, fused(1, 3)); show.apply(null, fused(-0, 2)); show.apply(null, fused(1e300, 4)); show.apply(null, fused(NaN, 2));
+// A result that is whole again, one that is an integer too large for a small one, and one that is -0.
+show(0.5 + 0.5, 1.5 * 2, 4.5 / 1.5, 0.1 * 10, 9007199254740991 + 1, 9007199254740991 + 2, 4611686018427387904 * 2, -0.5 + 0.5, -0.5 * 0, 0 * -1, -1 / Infinity, 1e-320 * 1e-10);
+// Operands that are not two Numbers go where they went: strings compared and added, the others converted.
+var things = ["10", "9", "", "a", null, undefined, true, false, 10n, { valueOf: function () { return 2.5; } }, { toString: function () { return "7"; } }, [3], []];
+var mixed = [];
+for (var i = 0; i < things.length; i++) {
+  var t = things[i];
+  var row = [];
+  var tries = [function () { return t + 1.5; }, function () { return 1.5 + t; }, function () { return t * 1.5; }, function () { return t - 0.5; }, function () { return t / 0.5; }, function () { return t < 1.5; }, function () { return 1.5 >= t; }, function () { return t + "x"; }, function () { return t < "b"; }, function () { return t % 2.5; }, function () { return t | 1.5; }];
+  for (var k = 0; k < tries.length; k++) { try { row.push(String(tries[k]())); } catch (e) { row.push(e.name); } }
+  mixed.push(row.join(","));
+}
+for (var i = 0; i < mixed.length; i++) show(mixed[i]);
+// Many doubles of the heap, kept and compared after more were made.
+var kept = []; for (var i = 1; i <= 300; i++) kept.push(i / 7 + 0.001);
+var acc = 0; for (var r = 0; r < 20; r++) for (var i = 0; i < kept.length; i++) acc = acc + kept[i] * 1.0000001 - kept[kept.length - 1 - i] / 3;
+show(acc, kept[0], kept[299], kept[6] === 7 / 7 + 0.001, kept[13] > kept[12]);
+// Globals read where they were found.
+globalThis.g1 = 1.5; globalThis.g2 = "two"; globalThis.g3 = { n: 3 };
+function readAll() { return [typeof g1, g1, g2, g3 && g3.n, typeof gLate, typeof Math, Math === globalThis.Math, typeof undefinedThing].join(","); }
+show(readAll());
+globalThis.gLate = 0.25; show(readAll());
+g1 = g1 * 2 + 0.25; g2 += "!"; show(readAll());
+Object.defineProperty(globalThis, "g1", { get: function () { return "from a getter"; }, configurable: true }); show(readAll());
+Object.defineProperty(globalThis, "g1", { value: 2.75, writable: true, configurable: true }); show(readAll());
+delete globalThis.gLate; show(readAll());
+for (var n = 0; n < 40; n++) globalThis["gFill" + n] = n + 0.5;
+show(readAll(), gFill0, gFill39);
+globalThis.gLate = "back"; show(readAll());
+var savedMath = Math; Math = { sqrt: function (x) { return "mine" + x; } }; show(readAll(), Math.sqrt(4)); Math = savedMath; show(Math.sqrt(4), Math.floor(7 / 2), Math.max(1.5, 2.5), Math.abs(-0.5));
+function hot() { var s = 0; for (var i = 0; i < 200; i++) { s += Math.sqrt(i) + g1; if (i === 100) g1 = 0.125; if (i === 150) globalThis.gNew150 = 1; } return s; }
+show(hot(), g1, typeof gNew150);
+// A global that is deleted while a loop reads it, and one that becomes an accessor there.
+globalThis.gGone = 1.25; function gone() { var seen = []; for (var i = 0; i < 6; i++) { try { seen.push(gGone); } catch (e) { seen.push(e.name); } if (i === 2) delete globalThis.gGone; if (i === 4) globalThis.gGone = "again"; } return seen.join(","); }
+show(gone());
+globalThis.gAcc = 0.75; function acc2() { var seen = []; for (var i = 0; i < 5; i++) { seen.push(gAcc); if (i === 1) Object.defineProperty(globalThis, "gAcc", { get: function () { return "got" + i; }, configurable: true }); if (i === 3) Object.defineProperty(globalThis, "gAcc", { value: -0.5, writable: true }); } return seen.join(","); }
+show(acc2());
+out.join("\n")"##;
+    let expected = r##"729 -687819491
+0,0,0,NaN,NaN,false,true,false,true,0,0,0,0,0,0,0
+0.8333333333333333,0.16666666666666669,0.16666666666666666,1.5,0.16666666666666669,false,false,true,true,0,0,0,0,0,0,0.25
+0.43333333333333335,0.2333333333333333,0.03333333333333333,3.333333333333333,0.0333333333333333,false,false,true,true,0,0,0,0,0,0,0.1111111111111111
+NaN,NaN,NaN,NaN,NaN,false,false,false,false,0,0,0,0,0,0,0
+NaN,Infinity,-Infinity,NaN,NaN,false,false,true,true,0,0,0,0,0,0,Infinity
+2147483646.5,2147483647.5,-1073741823.5,-4294967294,0,false,false,true,true,0,2147483647,2147483647,2147483647,2147483647,2147483647,4611686014132420600
+0.24950099837768716 3.9494855168688856 204.16666666666666 29.42857142857143
+0.47120462933333335 1.1799297752051296 0.5000000000000001 0.42857142857142855
+0.13883333333333334 0.1013526932607852 0.16666666666666669 0.14285714285714285
+1.9674192513600004e+299 1.0364519792243833e+300 1 0.8571428571428571
+NaN NaN 0.16666666666666669 0.14285714285714285
+1 3 3 1 9007199254740992 9007199254740992 9223372036854776000 0 -0 -0 -0 0
+101.5,1.510,15,9.5,20,false,false,10x,true,0,11
+91.5,1.59,13.5,8.5,18,false,false,9x,true,1.5,9
+1.5,1.5,0,-0.5,0,true,true,x,true,0,1
+a1.5,1.5a,NaN,NaN,NaN,false,false,ax,true,NaN,1
+1.5,1.5,0,-0.5,0,true,true,nullx,false,0,1
+NaN,NaN,NaN,NaN,NaN,false,false,undefinedx,false,NaN,1
+2.5,2.5,1.5,0.5,2,true,true,truex,false,1,1
+1.5,1.5,0,-0.5,0,true,true,falsex,false,0,1
+TypeError,TypeError,TypeError,TypeError,TypeError,false,false,10x,false,TypeError,TypeError
+4,4,3.75,2,5,false,false,2.5x,false,0,3
+71.5,1.57,10.5,6.5,14,false,false,7x,true,2,7
+31.5,1.53,4.5,2.5,6,false,false,3x,true,0.5,3
+1.5,1.5,0,-0.5,0,true,true,x,true,0,1
+86004.01290060038 0.14385714285714285 42.85814285714285 true true
+number,1.5,two,3,undefined,object,true,undefined
+number,1.5,two,3,number,object,true,undefined
+number,3.25,two!,3,number,object,true,undefined
+string,from a getter,two!,3,number,object,true,undefined
+number,2.75,two!,3,number,object,true,undefined
+number,2.75,two!,3,undefined,object,true,undefined
+number,2.75,two!,3,undefined,object,true,undefined 0.5 39.5
+number,2.75,two!,3,string,object,true,undefined
+number,2.75,two!,3,string,object,true,undefined mine4
+2 3 2.5 0.5
+2168.467075404619 0.125 number
+1.25,1.25,1.25,ReferenceError,ReferenceError,again
+0.75,0.75,got2,got3,-0.5"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // Doubles of the heap over a collection: every third is let go, so the
+    // others move, and the sums of them are what they were.
+    let made = r##"var doubles = []; for (var i = 1; i <= 600; i++) doubles.push(i / 7 + 0.001);
+function total(a) { var s = 0; for (var i = 0; i < a.length; i++) if (a[i] !== null) s = s + a[i] * 1.5 - a[i] / 3; return s; }
+var before = total(doubles); for (var i = 0; i < 600; i += 3) doubles[i] = null; var thinned = total(doubles);
+String(before) + " " + String(thinned)"##;
+    let sums = text(&mut engine, made);
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(&mut engine, "String(before) + ' ' + String(total(doubles))"),
+        sums
+    );
+    assert_eq!(
+        text(
+            &mut engine,
+            "gLate + ',' + g1 + ',' + Math.sqrt(doubles[1] * doubles[1]) + ',' + (doubles[4] === 5 / 7 + 0.001)"
+        ),
+        "back,0.125,0.2867142857142857,true"
+    );
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(&mut engine, "String(before) + ' ' + String(total(doubles))"),
+        sums
+    );
+    // Doubles until the heap has no room.
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    let fills = "var keep = []; var x = 0.001; for (;;) { x = x * 1.0000001 + 0.3; keep.push(x); }";
+    assert_eq!(engine.evaluate(fills, false), Err(Error::OutOfMemory));
+    engine.evaluate("keep = null", false).unwrap();
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            "String(0.1 + 0.2) + ',' + (1 / 3) * 3 + ',' + typeof Math.PI"
+        ),
+        "0.30000000000000004,1,number"
+    );
+}
