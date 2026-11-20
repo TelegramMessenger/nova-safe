@@ -15535,3 +15535,361 @@ RangeError,RangeError
         );
     }
 }
+
+/// The this value of a call, which a function that is not strict and is
+/// called with none has from its realm's global scope only when it asks
+/// for `this`: plain calls, methods, `call`, `apply`, `bind` and
+/// `Reflect.apply` with every kind of this value in functions that are
+/// strict and that are not, what is made in a function and asks for `this`
+/// itself (an arrow function, a direct eval, a class static block, a
+/// default value), callbacks, constructors, accessors and generators, many
+/// calls that ask once, twice or not at all, and garbage made between the
+/// call and the question. Then how calls end, each way of leaving a frame:
+/// out of a loop over an iterator, by a throw through several calls, as
+/// constructors of every kind, and with a value stack that grew. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn this_of_a_call_is_found_when_the_call_asks_for_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(this_values_and_endings)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn this_values_and_endings() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"// The this value of calls: a function that is not strict has the global object for undefined and null, an object
+// made of any other primitive, and what it is called on otherwise; a strict one has what it is given.
+var out = [];
+var G = globalThis;
+function name(v) { return v === G ? "global" : v === undefined ? "undefined" : v === null ? "null" : typeof v === "object" || typeof v === "function" ? (v.tag || Object.prototype.toString.call(v)) : typeof v + ":" + String(v); }
+G.gx62 = 5;
+function plain() { return this; }
+function twice() { var a = this, b = this; return a === b && a === G; }
+function prop() { return this.gx62; }
+function propTwice() { return this.gx62 + this.gx62; }
+function setProp(v) { this.gy62 = v; return this.gy62; }
+function typeOf() { return typeof this; }
+function inBlock(n) { var r = []; for (var i = 0; i < n; i++) { let k = i; if (k & 1) { r.push(this === G); } else { const z = this; r.push(z === G); } } return r.join(","); }
+function inTry() { try { throw this; } catch (e) { return e === G; } finally { out.push("finally " + (this === G)); } }
+function strictPlain() { "use strict"; return this; }
+function strictProp() { "use strict"; return this.gx62; }
+function strictType() { "use strict"; return typeof this; }
+var o = { tag: "o", m: plain, s: strictPlain, p: prop, gx62: 9, get g() { return this; }, set v(x) { out.push("setter " + name(this) + " " + x); } };
+out.push("plain " + name(plain()) + " " + twice() + " " + prop() + " " + propTwice() + " " + setProp(3) + " " + G.gy62 + " " + typeOf());
+out.push("blocks " + inBlock(4) + " " + inTry());
+out.push("strict " + name(strictPlain()) + " " + strictType());
+try { strictProp(); out.push("no throw"); } catch (e) { out.push("strict prop " + e.name); }
+out.push("method " + name(o.m()) + " " + name(o.s()) + " " + o.p() + " " + name(o.g)); o.v = 4;
+out.push("comma " + name((0, o.m)()) + " " + name((0, o.s)()) + " " + (0, o.p)());
+var f = o.m; out.push("taken " + name(f()) + " " + name((o.m)()) + " " + name((o.missing || o.m)()));
+// call, apply, bind and Reflect.apply with every kind of this value.
+var values = [undefined, null, 0, 5, "", "s", true, false, Symbol.iterator, 10n, o, [], G];
+function kind() { return typeof this + "/" + (this === G ? "global" : this === undefined ? "undefined" : this === null ? "null" : Object.prototype.toString.call(this)) + "/" + (typeof this === "object" && this !== null && this !== G && typeof this.valueOf === "function" && this.valueOf() !== this ? String(this.valueOf() === this.valueOf()) : "-"); }
+function strictKind() { "use strict"; return typeof this + "/" + (this === G ? "global" : this === undefined ? "undefined" : this === null ? "null" : typeof this === "symbol" ? "symbol" : typeof this === "bigint" ? "bigint" : Object.prototype.toString.call(this)); }
+for (var i = 0; i < values.length; i++) {
+  var v = values[i];
+  out.push(i + " " + [kind.call(v), kind.apply(v, []), kind.bind(v)(), Reflect.apply(kind, v, []), strictKind.call(v), strictKind.apply(v), strictKind.bind(v)(), Reflect.apply(strictKind, v, [])].join(" "));
+}
+function same() { return this === this && typeof this.valueOf() === "number"; }
+out.push("wrapper " + same.call(5) + " " + (function () { var a = this; return a === this; }).call("x"));
+// What is made in a function and asks for this itself.
+function arrow() { return (() => this)(); }
+function arrowTwice() { var g = () => () => this; return g()() === G; }
+function evals() { return eval("this") === G; }
+function statics() { var r = []; class C { static tag = "C"; static { r.push(name(this)); } static x = name(this); } r.push(C.x, name(this)); return r.join(","); }
+function defaults(a = this, b = typeof this) { return name(a) + "," + b; }
+function inner() { function deep() { return this; } return name(deep()) + "," + name(deep.call(o)); }
+out.push("made " + name(arrow()) + " " + name(arrow.call(o)) + " " + arrowTwice() + " " + evals() + " " + statics() + " " + statics.call(o) + " " + defaults() + " " + defaults.call(o) + " " + inner());
+// Callbacks, constructors, accessors, generators.
+var seen = [];
+[1, 2].forEach(function (x) { seen.push(name(this)); });
+[1].forEach(function (x) { seen.push(name(this)); }, o);
+[1].map(function (x) { "use strict"; seen.push(name(this)); });
+[3, 1, 2].sort(function (a, b) { seen.push(this === G); return a - b; });
+"ab".replace(/a/, function () { seen.push(name(this)); return "c"; });
+out.push("callbacks " + seen.join(" "));
+function Made(x) { this.x = x; this.self = this; }
+var made = new Made(4); out.push("new " + (made.self === made) + " " + made.x + " " + (G.x === undefined));
+function* gen() { yield name(this); yield typeof this; var t = this; yield t === G; }
+var parts = []; for (var p of gen()) parts.push(p); for (var p of gen.call(o)) parts.push(p); out.push("generator " + parts.join(" "));
+out.push("Function " + name(new Function("return this")()) + " " + name(new Function("'use strict'; return this")()) + " " + name(Function.prototype.call.call(plain)) );
+// Many calls, each asking once, twice or not at all; and deep.
+function ask(n) { return n & 1 ? this === G : n & 2 ? (this === G) === (this === G) : true; }
+var all = true; for (var i = 0; i < 3000; i++) all = all && ask(i) && ask.call(null, i) && (i & 7 ? true : ask.call(undefined, i)); out.push("many " + all);
+function deep(n) { return n === 0 ? this === G : deep(n - 1) && this === G; }
+out.push("deep " + deep(200) + " " + deep.call(o, 3));
+// Garbage between the call and the question.
+function late() { var junk = []; for (var i = 0; i < 20000; i++) junk.push({ i: i, s: "s" + i }); return this === G && this.gx62 === 5 && junk.length === 20000; }
+out.push("late " + late() + " " + late.call(null));
+// How calls end: out of a loop over an iterator, by a throw through several calls, as constructors of every kind, and
+// with a value stack that grew.
+function firstOf(a) { for (var x of a) { if (x > 1) return x; } return -1; }
+function firstKey(o2) { for (var k in o2) { return k; } }
+function thrower(n) { if (n === 0) throw new RangeError("deep " + typeof this); return thrower(n - 1) + 1; }
+var ends = [firstOf([1, 2, 3]), firstOf(new Set([5, 6])), firstOf([]), firstKey({ a: 1, b: 2 })];
+for (var i = 0; i < 3; i++) { try { thrower(4 + i); } catch (e) { ends.push(e.message); } }
+class A { constructor(x) { this.x = x; this.who = name(this) === "[object Object]"; } get me() { return this; } }
+class B extends A { constructor(x) { super(x); this.y = this === this.me; } }
+function Ret() { this.a = 1; return { tag: "returned" }; }
+function RetPrim() { this.a = 1; return 5; }
+var b = new B(3); ends.push(b.x, b.y, b.who, name(new Ret()), new RetPrim().a, new B(1) instanceof A);
+function count() { return arguments.length + (this === G ? 0 : 1); }
+var list = []; for (var i = 0; i < 1100; i++) list.push(i);
+var big = new Function("c", "return c(" + list.join(",") + ") + (this === globalThis ? 0 : 1);");
+ends.push(big(count), big(count), big.call(o, count), plain() === G);
+out.push("ends " + ends.join(" "));
+out.join("\n")"##;
+    let expected = r##"plain global true 5 10 3 3 object
+finally true
+blocks true,true,true,true true
+strict undefined undefined
+strict prop TypeError
+method o o 9 o
+setter o 4
+comma global undefined 5
+taken global o global
+0 object/global/- object/global/- object/global/- object/global/- undefined/undefined undefined/undefined undefined/undefined undefined/undefined
+1 object/global/- object/global/- object/global/- object/global/- object/null object/null object/null object/null
+2 object/[object Number]/true object/[object Number]/true object/[object Number]/true object/[object Number]/true number/[object Number] number/[object Number] number/[object Number] number/[object Number]
+3 object/[object Number]/true object/[object Number]/true object/[object Number]/true object/[object Number]/true number/[object Number] number/[object Number] number/[object Number] number/[object Number]
+4 object/[object String]/true object/[object String]/true object/[object String]/true object/[object String]/true string/[object String] string/[object String] string/[object String] string/[object String]
+5 object/[object String]/true object/[object String]/true object/[object String]/true object/[object String]/true string/[object String] string/[object String] string/[object String] string/[object String]
+6 object/[object Boolean]/true object/[object Boolean]/true object/[object Boolean]/true object/[object Boolean]/true boolean/[object Boolean] boolean/[object Boolean] boolean/[object Boolean] boolean/[object Boolean]
+7 object/[object Boolean]/true object/[object Boolean]/true object/[object Boolean]/true object/[object Boolean]/true boolean/[object Boolean] boolean/[object Boolean] boolean/[object Boolean] boolean/[object Boolean]
+8 object/[object Symbol]/true object/[object Symbol]/true object/[object Symbol]/true object/[object Symbol]/true symbol/symbol symbol/symbol symbol/symbol symbol/symbol
+9 object/[object BigInt]/true object/[object BigInt]/true object/[object BigInt]/true object/[object BigInt]/true bigint/bigint bigint/bigint bigint/bigint bigint/bigint
+10 object/[object Object]/- object/[object Object]/- object/[object Object]/- object/[object Object]/- object/[object Object] object/[object Object] object/[object Object] object/[object Object]
+11 object/[object Array]/- object/[object Array]/- object/[object Array]/- object/[object Array]/- object/[object Array] object/[object Array] object/[object Array] object/[object Array]
+12 object/global/- object/global/- object/global/- object/global/- object/global object/global object/global object/global
+wrapper true true
+made global o true true C,C,global C,C,o global,object o,object global,o
+callbacks global global o undefined true true true global
+new true 4 true
+generator global object true o object false
+Function global undefined global
+many true
+deep true false
+late true true
+ends 2 5 -1 a deep object deep object deep object 3 true true returned 1 true 1100 1100 1101 true"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // The same functions after a collection, and in a second evaluation.
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            "[name(plain()), name(plain.call(null)), name(o.m()), name(strictPlain()), prop(), deep(70), big(count)].join(' ')"
+        ),
+        "global global o undefined 5 true 1100"
+    );
+}
+
+/// The Numbers that arithmetic and `Math` make, which are made where they
+/// are worked out unless the heap's vector of Numbers has to grow for one:
+/// sums, differences, products, quotients, remainders and comparisons of
+/// Numbers of every kind and pair of kinds, whose results are integers,
+/// doubles that a Value holds, doubles of the heap, both zeros, NaN and
+/// the infinities; then 150,000 doubles made and kept, so that the vector
+/// grows again and again while they are made, and read back from an
+/// Array, an object and a Float64Array; and results that are whole, that
+/// a Value holds and that are neither, one after the other. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn numbers_of_every_kind_are_made_while_the_heap_grows() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(numbers_made)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn numbers_made() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"// Numbers made by arithmetic and by Math, of every kind a result can be, and many of them kept so that the heap's
+// vector of Numbers grows again and again while they are made.
+var out = [];
+function text(v) { return Object.is(v, -0) ? "-0" : String(v); }
+var values = [0, -0, 1, -1, 0.5, -0.5, 0.25, 1.5, 0.1, -0.1, 1 / 3, 2147483647, -2147483648, 4294967296, 9007199254740991, -9007199254740991, 9007199254740992, 9007199254740993, 1e21, -1e21, 1e-7, 5e-324, 1.7976931348623157e308, NaN, Infinity, -Infinity, 123456.789, 0.75, 255.5, 256, 3.0000000000000004];
+function row(f) { var r = []; for (var i = 0; i < values.length; i++) for (var j = 0; j < values.length; j += 3) r.push(text(f(values[i], values[(i + j) % values.length]))); return r.join(" "); }
+out.push("add " + row(function (a, b) { return a + b; }));
+out.push("sub " + row(function (a, b) { return a - b; }));
+out.push("mul " + row(function (a, b) { return a * b; }));
+out.push("div " + row(function (a, b) { return a / b; }));
+out.push("rem " + row(function (a, b) { return a % b; }));
+out.push("lt " + row(function (a, b) { return a < b; }) .replace(/true/g, "t").replace(/false/g, "f"));
+out.push("ge " + row(function (a, b) { return a >= b; }).replace(/true/g, "t").replace(/false/g, "f"));
+out.push("neg " + values.map(function (a) { return text(-a); }).join(" "));
+out.push("math " + values.map(function (a) { return [Math.sqrt(a), Math.abs(a), Math.floor(a / 3), Math.ceil(a * 0.7), Math.round(a * 1.1), Math.trunc(a / 7), Math.fround(a), Math.max(a, 0.5), Math.min(a, -0.25)].map(text).join("/"); }).join(" "));
+// Kept: every one a Number of the heap, in an Array, an object and a Float64Array, then read back.
+var kept = [], sum = 0, bag = {}, typed = new Float64Array(4096);
+for (var i = 0; i < 150000; i++) { var v = i * 0.3 + 0.1; kept.push(v); sum += v; if ((i & 1023) === 0) bag["k" + i] = v / 7; }
+for (var i = 0; i < typed.length; i++) typed[i] = Math.sqrt(i) + 0.5;
+var back = 0; for (var i = 0; i < kept.length; i += 997) back += kept[i] - (i * 0.3 + 0.1);
+var tsum = 0; for (var i = 0; i < typed.length; i++) tsum += typed[i] * 1.5;
+out.push("kept " + kept.length + " " + text(sum) + " " + text(back) + " " + text(kept[149999]) + " " + text(bag.k1024) + " " + text(tsum));
+// Results that are whole, that a Value holds, and that are neither, one after the other.
+var mixed = []; var x = 0.5;
+for (var i = 0; i < 40; i++) { x = x * 1.5 + (i & 3) * 0.25; mixed.push(text(x), text(x - (x % 1)), text((x * 4 | 0) / 4)); }
+out.push("mixed " + mixed.join(" "));
+var acc = 0; for (var i = 0; i < 200000; i++) { acc += (i & 1 ? 0.5 : 0.25) * (i & 7); acc -= Math.floor(acc / 1000) * 1000; } out.push("acc " + text(acc));
+out.join("\n")"##;
+    let expected = r##"add 0 -1 0.25 -0.1 -2147483648 -9007199254740991 1e+21 5e-324 Infinity 0.75 3.0000000000000004 -0 0.5 1.5 0.3333333333333333 4294967296 9007199254740992 -1e+21 1.7976931348623157e+308 -Infinity 255.5 0 2 0.5 1.1 2147483648 9007199254740992 9007199254740992 1.0000001 NaN 123457.789 257 1 -2 -0.75 -1.1 -2147483649 -9007199254740992 1e+21 -1 Infinity -0.25 2.0000000000000004 0 1 2 0.8333333333333333 4294967296.5 9007199254740992 -1e+21 1.7976931348623157e+308 -Infinity 256 0.5 -0.5 -1 -0.4 2147483646.5 9007199254740990 9007199254740992 -0.4999999 NaN 123456.289 255.5 -0.5 0 0.5 0.15 -2147483647.75 -9007199254740991 1e+21 0.25 Infinity 1 3.2500000000000004 1.25 -0.25 3 1.8333333333333333 4294967297.5 9007199254740994 -1e+21 1.7976931348623157e+308 -Infinity 257 1.5 0.5 1.75 0.2 2147483647.1 9007199254740991 9007199254740992 0.10000010000000001 NaN 123456.88900000001 256.1 0.1 0.6 1.6 -0.2 -2147483648.1 -9007199254740991 1e+21 -0.1 Infinity 0.65 2.9000000000000004 0.9 -0.6 0 0.6666666666666666 4294967296.333333 9007199254740992 -1e+21 1.7976931348623157e+308 -Infinity 255.83333333333334 0.3333333333333333 -0.6666666666666667 0.5833333333333333 0.2333333333333333 4294967294 9007201402224638 9007201402224640 2147483647 NaN 2147607103.789 2147483903 2147483647 2147483647.5 2147483648.5 2147483647.3333333 -4294967296 -9007201402224640 999999999997852500000 -2147483648 Infinity -2147483647.25 -2147483645 -2147483647 -2147483648.5 -2147483647.9 -1 8589934592 9007203549708288 -999999999995705000000 1.7976931348623157e+308 -Infinity 4294967551.5 4294967296 4294967295 4294967296.25 4294967295.9 2147483648 18014398509481982 18014398509481984 9007199254740991 NaN 9007199254864448 9007199254741248 9007199254740991 9007199254740992 9007199254740992 9007199254740991 9007203549708288 -18014398509481982 999990992800745300000 -9007199254740991 Infinity -9007199254740990 -9007199254740988 -9007199254740990 -9007199254740992 -9007199254740991 -9007197107257344 0 18014398509481984 -999990992800745300000 1.7976931348623157e+308 -Infinity 9007199254741248 9007199254740992 9007199254740991 9007199254740992 9007199254740992 9007197107257344 1 18014398509481984 9007199254740992 NaN 9007199254864448 9007199254741248 9007199254740992 9007199254740992 9007199254740994 9007199254740992 9007203549708288 18014398509481984 2e+21 1e+21 Infinity 1e+21 1e+21 1e+21 1e+21 1e+21 1.0000000000021475e+21 1.0000090071992547e+21 1.0000090071992547e+21 -2e+21 1.7976931348623157e+308 -Infinity -1e+21 -1e+21 -1e+21 -1e+21 -1e+21 -1.0000000000021475e+21 -1.0000090071992547e+21 0 2e-7 NaN 123456.7890001 256.0000001 1e-7 0.5000001 1.5000001 0.3333334333333333 4294967296 9007199254740992 -1e+21 1e-323 Infinity 0.75 3.0000000000000004 1 -0.5 0.1 2147483647 9007199254740991 9007199254740992 1e-7 Infinity -Infinity 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN Infinity Infinity Infinity Infinity Infinity Infinity Infinity Infinity Infinity Infinity NaN -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity NaN 246913.578 123712.789 123456.789 123457.289 123458.289 123457.12233333333 4295090752.789 9007199254864448 -999999999999999900000 1.7976931348623157e+308 -Infinity 1.5 3.7500000000000004 1.75 0.25 0.85 2147483647.75 9007199254740992 9007199254740992 0.7500001 NaN 123457.539 511 255.5 254.5 255.75 255.4 -2147483392.5 -9007199254740736 1e+21 255.5 Infinity 256.25 512 256 256.5 257.5 256.3333333333333 4294967552 9007199254741248 -1e+21 1.7976931348623157e+308 -Infinity 511.5 6.000000000000001 4 2.5000000000000004 3.1000000000000005 2147483650 9007199254740994 9007199254740996 3.0000001000000003 NaN 123459.789 259
+sub 0 1 -0.25 0.1 2147483648 9007199254740991 -1e+21 -5e-324 -Infinity -0.75 -3.0000000000000004 0 -0.5 -1.5 -0.3333333333333333 -4294967296 -9007199254740992 1e+21 -1.7976931348623157e+308 Infinity -255.5 -0 0 1.5 0.9 -2147483646 -9007199254740990 -9007199254740991 0.9999999 NaN -123455.789 -255 1 0 -1.25 -0.9 2147483647 9007199254740990 -1e+21 -1 -Infinity -1.75 -4 -2 0 -1 0.16666666666666669 -4294967295.5 -9007199254740992 1e+21 -1.7976931348623157e+308 Infinity -255 0.5 1.5 0 -0.6 -2147483647.5 -9007199254740992 -9007199254740992 -0.5000001 NaN -123457.289 -256.5 -0.5 -1 0 0.35 2147483648.25 9007199254740991 -1e+21 0.25 -Infinity -0.5 -2.7500000000000004 -0.75 0.75 0 1.1666666666666667 -4294967294.5 -9007199254740990 1e+21 -1.7976931348623157e+308 Infinity -254 1.5 2.5 1.25 0 -2147483646.9 -9007199254740991 -9007199254740992 0.0999999 NaN -123456.689 -255.9 0.1 -0.4 -1.4 0 2147483647.9 9007199254740991 -1e+21 -0.1 -Infinity -0.85 -3.1000000000000005 -1.1 0.4 -0.2 0 -4294967295.6666665 -9007199254740992 1e+21 -1.7976931348623157e+308 Infinity -255.16666666666666 0.3333333333333333 1.3333333333333333 0.08333333333333331 0.43333333333333335 0 -9007197107257344 -9007197107257345 2147483647 NaN 2147360190.211 2147483391 2147483647 2147483646.5 2147483645.5 2147483646.6666667 0 9007197107257343 -1.0000000000021475e+21 -2147483648 -Infinity -2147483648.75 -2147483651 -2147483649 -2147483647.5 -2147483648.1 -4294967295 0 -9007194959773696 1.000000000004295e+21 -1.7976931348623157e+308 Infinity 4294967040.5 4294967296 4294967297 4294967295.75 4294967296.1 6442450944 0 -1 9007199254740991 NaN 9007199254617534 9007199254740735 9007199254740991 9007199254740990 9007199254740990 9007199254740991 9007194959773695 0 -1.0000090071992547e+21 -9007199254740991 -Infinity -9007199254740992 -9007199254740994 -9007199254740992 -9007199254740990 -9007199254740991 -9007201402224638 -18014398509481982 0 1.0000090071992547e+21 -1.7976931348623157e+308 Infinity 9007199254740736 9007199254740992 9007199254740992 9007199254740992 9007199254740992 9007201402224640 18014398509481984 0 9007199254740992 NaN 9007199254617535 9007199254740736 9007199254740992 9007199254740992 9007199254740990 9007199254740992 9007194959773696 0 0 1e+21 -Infinity 1e+21 1e+21 1e+21 1e+21 1e+21 999999999997852500000 999990992800745300000 999990992800745300000 0 -1.7976931348623157e+308 Infinity -1e+21 -1e+21 -1e+21 -1e+21 -1e+21 -999999999997852500000 -999990992800745300000 -2e+21 0 NaN -123456.7889999 -255.9999999 1e-7 -0.4999999 -1.4999999 -0.3333332333333333 -4294967296 -9007199254740992 1e+21 0 -Infinity -0.75 -3.0000000000000004 -1 0.5 -0.1 -2147483647 -9007199254740991 -9007199254740992 -1e-7 0 Infinity 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 1.7976931348623157e+308 NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN Infinity Infinity Infinity Infinity Infinity Infinity Infinity Infinity Infinity NaN NaN -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity 0 123200.789 123456.789 123456.289 123455.289 123456.45566666668 -4294843839.211 -9007199254617535 1.0000000000000001e+21 -1.7976931348623157e+308 Infinity 0 -2.2500000000000004 -0.25 1.25 0.65 -2147483646.25 -9007199254740990 -9007199254740991 0.7499999 NaN -123456.039 0 255.5 256.5 255.25 255.6 2147483903.5 9007199254741246 -1e+21 255.5 -Infinity 254.75 0 256 255.5 254.5 255.66666666666666 -4294967040 -9007199254740736 1e+21 -1.7976931348623157e+308 Infinity 0.5 0 2.0000000000000004 3.5000000000000004 2.9000000000000004 -2147483644 -9007199254740988 -9007199254740989 2.9999999000000006 NaN -123453.789 -253
+mul 0 -0 0 -0 -0 -0 0 0 NaN 0 0 0 -0 -0 -0 -0 -0 0 -0 NaN -0 -0 1 -0.5 0.1 2147483647 9007199254740991 9007199254740992 1e-7 NaN 123456.789 256 -0 1 -0.25 0.1 2147483648 9007199254740991 -1e+21 -5e-324 -Infinity -0.75 -3.0000000000000004 -1 0.25 0.75 0.16666666666666666 2147483648 4503599627370496 -500000000000000000000 8.988465674311579e+307 -Infinity 127.75 0 -0.5 0.25 -0.05 -1073741823.5 -4503599627370495.5 -4503599627370496 -5e-8 NaN -61728.3945 -128 0 -0.25 0.0625 -0.025 -536870912 -2251799813685247.8 250000000000000000000 0 Infinity 0.1875 0.7500000000000001 0.25 -0.125 2.25 0.5 6442450944 13510798882111488 -1.5e+21 Infinity -Infinity 383.25 0 -1.5 0.375 0.010000000000000002 214748364.70000002 900719925474099.1 900719925474099.2 1e-8 NaN 12345.6789 25.6 -0 0.05 0.15000000000000002 0.010000000000000002 214748364.8 900719925474099.1 -100000000000000000000 -0 -Infinity -0.07500000000000001 -0.30000000000000004 -0.1 0.05 -0.010000000000000002 0.1111111111111111 1431655765.3333333 3002399751580330.5 -333333333333333300000 5.992310449541052e+307 -Infinity 85.16666666666666 0 -0.3333333333333333 0.08333333333333333 -0.03333333333333333 4611686014132420600 1.9342813104826865e+25 1.9342813104826868e+25 214.7483647 NaN 265121435488629.5 549755813632 -0 1073741823.5 3221225470.5 715827882.3333333 4611686018427388000 1.9342813113834065e+25 -2.147483648e+30 -1.0609978955e-314 -Infinity -1610612736 -6442450944.000001 -2147483648 1073741824 -214748364.8 -4611686016279904000 18446744073709552000 3.8685626227668134e+25 -4.294967296e+30 Infinity -Infinity 1097364144128 0 -4294967296 1073741824 -429496729.6 -9223372036854776000 8.112963841460666e+31 8.112963841460667e+31 900719925.474099 NaN 1.1119998978735158e+21 2305843009213693700 -0 4503599627370495.5 13510798882111486 3002399751580330 3.868562622766813e+25 8.112963841460666e+31 -9.007199254740991e+36 -4.4501477170144023e-308 -Infinity -6755399441055743 -27021597764222976 -9007199254740991 4503599627370495.5 -900719925474099.1 -1.9342813104826865e+25 -8.112963841460666e+31 8.112963841460668e+31 -9.007199254740992e+36 Infinity -Infinity 2301339409586323500 0 -9007199254740992 2251799813685248 -900719925474099.2 -1.9342813113834067e+25 -8.112963841460667e+31 8.112963841460668e+31 900719925.4740992 NaN 1.111999897873516e+21 2305843009213694000 -0 4503599627370496 13510798882111488 3002399751580330.5 3.8685626227668134e+25 8.112963841460668e+31 1e+42 4.9406564584124654e-303 Infinity 750000000000000000000 3.0000000000000005e+21 1e+21 -500000000000000000000 100000000000000000000 2.147483647e+30 9.007199254740991e+36 9.007199254740992e+36 1e+42 -Infinity Infinity -2.555e+23 -0 1e+21 -250000000000000000000 100000000000000000000 2.147483648e+30 9.007199254740991e+36 -1e+42 9.999999999999998e-15 NaN 0.0123456789 0.0000256 -0 5e-8 1.5e-7 3.333333333333333e-8 429.4967296 900719925.4740992 -100000000000000 0 Infinity 5e-324 1.5e-323 5e-324 -0 0 1.060997895e-314 4.4501477170144023e-308 4.450147717014403e-308 0 Infinity -Infinity Infinity 0 -1.7976931348623157e+308 4.4942328371557893e+307 -1.7976931348623158e+307 -Infinity -Infinity Infinity 8.881784197001251e-16 NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN Infinity Infinity Infinity Infinity -Infinity Infinity Infinity Infinity Infinity Infinity NaN Infinity -Infinity NaN Infinity -Infinity Infinity Infinity Infinity -Infinity -Infinity -Infinity 15241578750.190521 31604937.984 -0 61728.3945 185185.1835 41152.263 530242871224172.56 1.111999897873516e+21 -1.23456789e+26 Infinity -Infinity 0.5625 2.2500000000000004 0.75 -0.375 0.07500000000000001 1610612735.25 6755399441055743 6755399441055744 7.5e-8 NaN 92592.59175 65280.25 0 -255.5 63.875 -25.55 -548682072064 -2301339409586323200 2.555e+23 1.265e-321 Infinity 191.625 65536 -0 128 384 85.33333333333333 1099511627776 2305843009213694000 -2.56e+23 Infinity -Infinity 65408 9.000000000000004 3.0000000000000004 -1.5000000000000002 0.30000000000000004 6442450941.000001 27021597764222976 27021597764222980 3.0000000000000004e-7 NaN 370370.3670000001 768.0000000000001
+div NaN -0 0 -0 -0 -0 0 0 0 0 0 NaN -0 -0 -0 -0 -0 0 -0 0 -0 NaN 1 -2 10 4.656612875245797e-10 1.1102230246251568e-16 1.1102230246251565e-16 10000000 NaN 0.00000810000007371 0.00390625 -Infinity 1 -4 10 4.656612873077393e-10 1.1102230246251568e-16 -1e-21 -Infinity -0 -1.3333333333333333 -0.33333333333333326 -1 1 0.3333333333333333 1.5 1.1641532182693481e-10 5.551115123125783e-17 -5e-22 2.781342323134e-309 -0 0.0019569471624266144 Infinity -0.5 1 -5 -2.3283064376228985e-10 -5.551115123125784e-17 -5.551115123125783e-17 -5000000 NaN -0.000004050000036855 -0.001953125 Infinity -1 1 -2.5 -1.1641532182693481e-10 -2.775557561562892e-17 2.5e-22 Infinity 0 0.3333333333333333 0.08333333333333331 0.25 -0.5 1 4.5 3.4924596548080444e-10 1.6653345369377348e-16 -1.5e-21 8.344026969402005e-309 -0 0.005870841487279843 Infinity -1.5 6 1 4.656612875245797e-11 1.1102230246251568e-17 1.1102230246251566e-17 1000000.0000000001 NaN 8.100000073710001e-7 0.000390625 -Infinity 0.2 0.06666666666666667 1 4.656612873077393e-11 1.1102230246251568e-17 -1e-22 -Infinity -0 -0.13333333333333333 -0.03333333333333333 -0.1 0.2 -1 1 7.761021455128987e-11 3.700743415417188e-17 -3.333333333333333e-22 1.854228215422666e-309 -0 0.001304631441617743 Infinity -0.3333333333333333 1.3333333333333333 -3.333333333333333 1 2.3841857899054022e-7 2.384185789905402e-7 21474836470000000 NaN 17394.61769899102 8388607.99609375 -Infinity 4294967294 1431655764.6666667 6442450941 1 2.3841857910156255e-7 -2.147483648e-12 -Infinity -0 -2863311530.6666665 -715827882.6666665 -2147483648 4294967296 -21474836480 -1.0000000004656613 1 4.76837158203125e-7 -4.294967296e-12 2.389154863368241e-299 -0 16810048.125244617 Infinity -4294967296 17179869184 -42949672960 -2 1 0.9999999999999999 9.007199254740992e+22 NaN 72958314627.3227 35184372088831.996 -Infinity 18014398509481982 6004799503160661 27021597764222976 2097151.9999999998 1 -0.000009007199254740991 -Infinity -0 -12009599006321322 -3002399751580330 -9007199254740991 18014398509481982 -90071992547409900 -4194304.001953125 -1 1 -0.000009007199254740991 5.010420900022433e-293 -0 35253226045953 Infinity -9007199254740992 36028797018963970 -90071992547409920 -4194304 -1.0000000000000002 1 9.007199254740992e+22 NaN 72958314627.3227 35184372088832 -Infinity 18014398509481984 6004799503160661 27021597764222976 2097152 1 1 Infinity 0 1.3333333333333332e+21 333333333333333300000 1e+21 -2e+21 1e+22 465661287524.5797 111022.30246251567 111022.30246251565 1 -5.562684646268004e-288 0 -3913894324853229000 -Infinity 1e+21 -4e+21 1e+22 465661287307.73926 111022.30246251567 -1 1 NaN 8.10000007371e-13 3.90625e-10 -Infinity 2e-7 6.666666666666667e-8 3e-7 2.3283064365386962e-17 1.1102230246251565e-23 -1e-28 1 0 5e-324 0 5e-324 -1e-323 5e-323 0 0 0 4.9406565e-317 1 -0 7.035980958365228e+305 Infinity -1.7976931348623157e+308 Infinity -Infinity -8.3711609936427125e+298 -1.99584030953472e+292 1.7976931348623157e+287 Infinity NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN Infinity Infinity Infinity -Infinity Infinity Infinity Infinity Infinity Infinity NaN NaN -Infinity -Infinity Infinity -Infinity Infinity Infinity Infinity -Infinity -Infinity NaN 1 482.25308203125 -Infinity 246913.578 82304.526 370370.367 0.000028744523646309973 1.3706456969408976e-11 -1.23456789e-16 6.8675118464784865e-304 -0 1 0.24999999999999997 0.75 -1.5 7.5 3.4924596564343477e-10 8.326672684688675e-17 8.326672684688674e-17 7500000 NaN 0.0000060750000552825 1 Infinity -255.5 1022 -2555 -1.1897645890712738e-7 -2.8366198279172753e-14 2.555e-19 Infinity 0 340.6666666666667 1 -Infinity 512 170.66666666666666 768 5.960464477539063e-8 2.842170943040401e-14 -2.56e-19 1.4240472694446092e-306 -0 1.0019569471624266 1 3.0000000000000004 -6.000000000000001 30.000000000000004 1.3969838625737393e-9 3.3306690738754706e-16 3.33066907387547e-16 30000000.000000007 NaN 0.000024300000221130004 0.011718750000000002
+rem NaN 0 0 0 0 0 0 0 0 0 0 NaN -0 -0 -0 -0 -0 -0 -0 -0 -0 NaN 0 0 0.09999999999999995 1 1 1 4.525188817411374e-17 NaN 1 1 NaN -0 -0 -0.09999999999999995 -1 -1 -1 -0 -1 -0.25 -1 -0 0 0.5 0.16666666666666669 0.5 0.5 0.5 0.5 0.5 0.5 NaN 0.5 -0 -0.09999999999999998 -0.5 -0.5 -0.5 -2.262594408705687e-17 NaN -0.5 -0.5 NaN -0 0 0.04999999999999999 0.25 0.25 0.25 0 0.25 0.25 0.25 0.25 0.25 0 0.16666666666666674 1.5 1.5 1.5 1.5 1.5 1.5 NaN 0.5 0 0 0.1 0.1 0.1 1.0076303940537157e-17 NaN 0.1 0.1 NaN 0.1 0.1 -0 -0.1 -0.1 -0.1 -0 -0.1 -0.1 -0.1 -0.1 -0.1 -0 0 0.3333333333333333 0.3333333333333333 0.3333333333333333 0.3333333333333333 0.3333333333333333 0.3333333333333333 NaN 0.3333333333333333 0.08333333333333331 0.0333333333333333 0 2147483647 2147483647 9.717768984978195e-8 NaN 76259.13399992508 255 NaN 0 1 1.192092894952701e-7 -0 -2147483648 -2147483648 -0 -2147483648 -0.5 -1.9999996821085615 -0 -0 -0.09999988079071045 -1 0 4294967296 4294967296 4294967296 4294967296 32 NaN 0 0 0.0999997615814209 0 0 9007199254740991 7.343749997319245e-8 NaN 39837.98274176994 255 NaN 0 1 0.16666666666666663 4294967295 -0 -9007199254740991 -0 -9007199254740991 -0.25 -2.6666666666666674 -0 -0 -8.326672684688674e-17 -4194303 -0 0 9007199254740992 9007199254740992 9007199254740992 0.5 NaN 0 0 2.7755575615628914e-17 0 1 0 7.343750001844434e-8 NaN 39838.98274176994 0 NaN 0 0.5 0.16666666666666669 0 0 0 0 1e+21 0.25 0.2633833124831897 0 0 0.04876874217606031 1244879972 2724340145697198 2724340145586176 -0 -1e+21 -1e+21 -209 NaN -0 -0 -0.04876874217606031 -1587544064 -2724340145697198 -0 0 NaN 1e-7 1e-7 NaN 1e-7 1e-7 1e-7 1e-7 1e-7 1e-7 0 5e-324 5e-324 5e-324 5e-324 5e-324 5e-324 5e-324 5e-324 5e-324 5e-324 0 1.7976931348623157e+308 127.5 NaN 0 0 0.050000000000000044 0 0 250404026184124860000 0 NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN 0 64.78900000000431 NaN 0.28900000000430737 0.7890000000043074 0.12233333334449392 123456.789 123456.789 123456.789 123456.789 123456.789 0 0.75 0.75 0.25 0.04999999999999996 0.75 0.75 0.75 3.3938916130585306e-17 NaN 0.75 0 NaN 0.5 0 0.09999999999998582 255.5 255.5 255.5 0 255.5 0.5 0 NaN 0 1 1.4210854715202004e-14 256 256 256 256 256 0.5 0 4.440892098500626e-16 4.440892098500626e-16 2.7755575615628914e-16 3.0000000000000004 3.0000000000000004 3.0000000000000004 5.798448743724038e-16 NaN 3.0000000000000004 3.0000000000000004
+lt f f t f f f t t t t t f t t t t t f t f t f f f f t t t f f t t f f t t f f t t t t t t f t f t t f t f t f f f t t t t t f t t t t f f f f t f t t t t f f f t t f t f t f f f f t t t f f t t f t t f f f t t t t t t f t f t t f t f t f f f f f t t f f f f f f f f f f t t t t t t t t t f t f t f f f f f f f f t f f f f f f f f f f t t t t t t t t t t f f t f f f f f f f f f f f f f f f f f f f f f t f f f f f f f f f t f t t t t t t t t f f t t f t t t t t f f t t t t f t t t t t f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f t t t t t t t t t t f f f f f f t t f t f f t t f f t t t f f t f f f f f f f t f t f f f f f f t t f t f f f f f f t t t f f t t
+ge t t f t t t f f f f f t f f f f f t f t f t t t t f f f t f f f t t f f t t f f f f f f t f t f f t f t f t t t f f f f f f f f f f t t t t f t f f f f t t t f f t f t f t t t t f f f t f f f t f f t t t f f f f f f t f t f f t f t f t t t t t f f t f t t t t t t t t f f f f f f f f f t f t f t t t t t t t t f t f t t t t t t t t f f f f f f f f f f t t f t t t t t t t t t t f t t t t t t t t t t f t t t t t t t t t f t f f f f f f f f t f f f t f f f f f t t f f f f t f f f f f t t t t t t t t t t t f f f f f f f f f f f t t t t t t t t t t f t f f f f f f f f f f t t t t t t f f t f t t f f t t f f f t f f t t t t t t t f t f t t t t t t f f t f t t t t t t f f f t f f f
+neg -0 0 -1 1 -0.5 0.5 -0.25 -1.5 -0.1 0.1 -0.3333333333333333 -2147483647 2147483648 -4294967296 -9007199254740991 9007199254740991 -9007199254740992 -9007199254740992 -1e+21 1e+21 -1e-7 -5e-324 -1.7976931348623157e+308 NaN -Infinity Infinity -123456.789 -0.75 -255.5 -256 -3.0000000000000004
+math 0/0/0/0/0/0/0/0.5/-0.25 -0/0/-0/-0/-0/-0/-0/0.5/-0.25 1/1/0/1/1/0/1/1/-0.25 NaN/1/-1/-0/-1/-0/-1/0.5/-1 0.7071067811865476/0.5/0/1/1/0/0.5/0.5/-0.25 NaN/0.5/-1/-0/-1/-0/-0.5/0.5/-0.5 0.5/0.25/0/1/0/0/0.25/0.5/-0.25 1.224744871391589/1.5/0/2/2/0/1.5/1.5/-0.25 0.31622776601683794/0.1/0/1/0/0/0.10000000149011612/0.5/-0.25 NaN/0.1/-1/-0/-0/-0/-0.10000000149011612/0.5/-0.25 0.5773502691896257/0.3333333333333333/0/1/0/0/0.3333333432674408/0.5/-0.25 46340.950001051984/2147483647/715827882/1503238553/2362232012/306783378/2147483648/2147483647/-0.25 NaN/2147483648/-715827883/-1503238553/-2362232013/-306783378/-2147483648/0.5/-2147483648 65536/4294967296/1431655765/3006477108/4724464026/613566756/4294967296/4294967296/-0.25 94906265.62425154/9007199254740991/3002399751580330/6305039478318693/9907919180215090/1286742750677284/9007199254740992/9007199254740991/-0.25 NaN/9007199254740991/-3002399751580331/-6305039478318693/-9907919180215090/-1286742750677284/-9007199254740992/0.5/-9007199254740991 94906265.62425156/9007199254740992/3002399751580330/6305039478318694/9907919180215092/1286742750677284/9007199254740992/9007199254740992/-0.25 94906265.62425156/9007199254740992/3002399751580330/6305039478318694/9907919180215092/1286742750677284/9007199254740992/9007199254740992/-0.25 31622776601.683792/1e+21/333333333333333300000/700000000000000000000/1.1000000000000001e+21/142857142857142860000/1.0000000200408773e+21/1e+21/-0.25 NaN/1e+21/-333333333333333300000/-700000000000000000000/-1.1000000000000001e+21/-142857142857142860000/-1.0000000200408773e+21/0.5/-1e+21 0.00031622776601683794/1e-7/0/1/0/0/1.0000000116860974e-7/0.5/-0.25 2.2227587494850775e-162/5e-324/0/1/0/0/0/0.5/-0.25 1.3407807929942596e+154/1.7976931348623157e+308/5.992310449541053e+307/1.2583851944036209e+308/Infinity/2.5681330498033083e+307/Infinity/1.7976931348623157e+308/-0.25 NaN/NaN/NaN/NaN/NaN/NaN/NaN/NaN/NaN Infinity/Infinity/Infinity/Infinity/Infinity/Infinity/Infinity/Infinity/-0.25 NaN/Infinity/-Infinity/-Infinity/-Infinity/-Infinity/-Infinity/0.5/-Infinity 351.3641828644462/123456.789/41152/86420/135802/17636/123456.7890625/123456.789/-0.25 0.8660254037844386/0.75/0/1/1/0/0.75/0.75/-0.25 15.98436736314578/255.5/85/179/281/36/255.5/255.5/-0.25 16/256/85/180/282/36/256/256/-0.25 1.7320508075688774/3.0000000000000004/1/3/3/0/3/3.0000000000000004/-0.25
+kept 150000 3374992500 0 44999.799999999996 43.9 265167.68914722477
+mixed 0.75 0 0.75 1.375 1 1.25 2.5625 2 2.5 4.59375 4 4.5 6.890625 6 6.75 10.5859375 10 10.5 16.37890625 16 16.25 25.318359375 25 25.25 37.9775390625 37 37.75 57.21630859375 57 57 86.324462890625 86 86.25 130.2366943359375 130 130 195.35504150390625 195 195.25 293.2825622558594 293 293.25 440.42384338378906 440 440.25 661.3857650756836 661 661.25 992.0786476135254 992 992 1488.367971420288 1488 1488.25 2233.051957130432 2233 2233 3350.327935695648 3350 3350.25 5025.491903543472 5025 5025.25 7538.487855315208 7538 7538.25 11308.231782972813 11308 11308 16963.09767445922 16963 16963 25444.64651168883 25444 25444.5 38167.21976753324 38167 38167 57251.329651299864 57251 57251.25 85877.7444769498 85877 85877.5 128816.6167154247 128816 128816.5 193225.17507313704 193225 193225 289838.26260970556 289838 289838.25 434758.14391455834 434758 434758 652137.2158718375 652137 652137 978206.0738077562 978206 978206 1467309.6107116342 1467309 1467309.5 2200965.1660674512 2200965 2200965 3301447.749101177 3301447 3301447.5 4952171.873651765 4952171 4952171.75 7428258.310477648 7428258 7428258.25 11142388.215716472 11142388 11142388
+acc 0"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // What was kept is what it was after a collection, and more is made.
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            "var more = 0; for (var i = 0; i < 50000; i++) more += kept[i] * 0.5 + 0.125; [text(kept[149999]), text(more), text(typed[4095] * 1.5), text(0.1 + 0.2), text(1.5 + 2.5), text(-0.5 * 0)].join(' ')"
+        ),
+        "44999.799999999996 187505000 96.73828053465695 0.30000000000000004 4 -0"
+    );
+}
+
+/// Properties read and written by their caches, and variables of
+/// enclosing functions and of the global scope, by the functions that do
+/// so without a failure of their own: each many times at one place, so
+/// that the place remembers. An ordinary object that inherits from an
+/// Array, from a function and from an object with accessors; writes that
+/// are plain, to what is not writable, to accessors, to what is absent,
+/// to frozen and sealed objects, strict and not; one place with many
+/// shapes, a property deleted, added again and made an accessor between
+/// two reads; variables read and written through several records and in
+/// blocks, before they are initialized, and constants; variables of the
+/// global scope as properties of the global object (changed, deleted,
+/// made accessors, not writable) and as lexical declarations. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn properties_and_variables_are_read_and_written_where_a_place_remembers_them() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(remembered_places)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn remembered_places() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"// Properties read and written by their caches, variables of enclosing functions and of the global scope, each many
+// times at one place so that the place remembers: what is found there and what is not.
+var out = [];
+function text(v) { return Object.is(v, -0) ? "-0" : typeof v === "function" ? "function" : String(v); }
+// An ordinary object that inherits from an Array, from a function and from an object with accessors.
+var base = [1, 2, 3]; base.extra = 5;
+function Fn() {} Fn.stat = 7; Fn.prototype.m = function () { return 9; };
+var holders = [Object.create(base), Object.create(Fn), Object.create({ get g() { return this.k; }, set s(v) { this.k = v * 2; }, k: 1 }), Object.create(null), {}];
+function readAll(o) { var r = []; for (var i = 0; i < 4; i++) r.push(text(o.extra), text(o.stat), text(o.length), text(o.g), text(o.k), text(o.push), text(o.call), text(o.missing)); return r.slice(-8).join(","); }
+for (var h = 0; h < holders.length; h++) out.push("holder " + h + " " + readAll(holders[h]));
+function Stack() {} Stack.prototype = []; var st = new Stack(); for (var i = 0; i < 5; i++) st.push(i * 2); out.push("stack " + st.length + " " + st.join("/") + " " + st.pop() + " " + st.length + " " + (st instanceof Array) + " " + Array.isArray(st));
+// Writes: plain, to what is not writable, to accessors, to what is absent, to frozen and sealed objects.
+function writeAll(o, n) { var r = []; for (var i = 0; i < n; i++) { o.a = i; o.b = i * 2; o.c = "c" + i; o.s = i; r.push(o.a, o.b, o.c, o.k); } return r.slice(-4).join(","); }
+var plain = { a: 0, b: 0, c: 0 };
+var fixed = { a: 0, b: 0, c: 0 }; Object.defineProperty(fixed, "b", { value: -1, writable: false });
+var frozen = Object.freeze({ a: 1, b: 2, c: 3 });
+var sealed = Object.seal({ a: 1, b: 2 });
+var accessed = { a: 0, get b() { return this.a + 100; }, set b(v) { this.a = -v; }, c: 0 };
+var inheritsSetter = Object.create({ set s(v) { this.k = v + 0.5; }, set a(v) { this.z = v; } });
+var noExtend = Object.preventExtensions({ a: 0 });
+var targets = [plain, fixed, frozen, sealed, accessed, inheritsSetter, noExtend, Object.create(plain), [], function () {}];
+for (var t = 0; t < targets.length; t++) out.push("write " + t + " " + writeAll(targets[t], 5) + " " + Object.keys(targets[t]).join("") + " " + text(targets[t].z));
+function strictWrite(o) { "use strict"; var r = []; for (var i = 0; i < 3; i++) { try { o.b = i; r.push("ok"); } catch (e) { r.push(e.name); } } return r.join(","); }
+out.push("strict " + [fixed, frozen, sealed, noExtend, accessed, plain].map(strictWrite).join(" "));
+// One place, many shapes; a shape that changes between two reads; a property deleted and added again.
+function get(o) { return o.v; } function set(o, v) { o.v = v; return o.v; }
+var shapes = []; for (var i = 0; i < 12; i++) { var o = {}; for (var j = 0; j < i; j++) o["p" + j] = j; o.v = i; shapes.push(o); }
+var seen = []; for (var round = 0; round < 3; round++) for (var i = 0; i < shapes.length; i++) seen.push(get(shapes[i]) + set(shapes[i], i + round)); out.push("shapes " + seen.slice(-12).join(","));
+var mut = { v: 1 }; var hist = []; for (var i = 0; i < 12; i++) { hist.push(text(get(mut))); if (i === 3) delete mut.v; if (i === 5) mut.v = "back"; if (i === 7) Object.defineProperty(mut, "v", { get: function () { return "got"; }, configurable: true }); if (i === 9) Object.defineProperty(mut, "v", { value: 4, writable: true }); } out.push("mut " + hist.join(","));
+// Variables of enclosing functions: read and written through several records, in blocks, before they are initialized.
+function outer(a) { var total = 0, steps = 0; let block = 10; const fixedName = "f"; function mid(b) { let own = b; function inner(c) { total += a + b + c + own + block; steps++; own++; return total; } return inner; } var f1 = mid(1), f2 = mid(100); var r = []; for (var i = 0; i < 4; i++) { r.push(f1(i), f2(i)); { let block = i; r.push(block); } } r.push(steps, block, fixedName); return r.join(","); }
+out.push("enclosing " + outer(1000));
+function tdz() { var r = []; function early() { return later; } for (var i = 0; i < 3; i++) { try { r.push(early()); } catch (e) { r.push(e.name); } } let later = 5; r.push(early()); function assign() { konst = 1; } const konst = 0; for (var i = 0; i < 2; i++) { try { assign(); r.push("assigned"); } catch (e) { r.push(e.name); } } return r.join(","); }
+out.push("tdz " + tdz());
+function loops() { var fs = []; for (let i = 0; i < 4; i++) { let j = i * 2; fs.push(function () { return i + j; }, function () { j++; return j; }); } return fs.map(function (f) { return f() + f(); }).join(","); }
+out.push("loops " + loops() + " " + loops());
+// Variables of the global scope: as properties of the global object and as lexical declarations.
+var G = globalThis; G.gv62 = 1; G.gw62 = 0;
+function readG() { return gv62; } function writeG(v) { gw62 = v; return gw62; } function typeG() { return typeof gnone62; }
+var gs = []; for (var i = 0; i < 12; i++) { gs.push(text(readG()), writeG(i), typeG()); if (i === 2) G.gv62 = "two"; if (i === 4) { delete G.gv62; try { readG(); gs.push("read"); } catch (e) { gs.push(e.name); } G.gv62 = 3; } if (i === 6) Object.defineProperty(G, "gv62", { get: function () { return "getter"; }, configurable: true }); if (i === 8) { Object.defineProperty(G, "gv62", { value: 8, writable: true, configurable: true }); G.gnew62 = i; } if (i === 9) G.gnone62 = "now"; }
+out.push("global " + gs.join(","));
+let glex62 = 1; const gconst62 = 2;
+function readLex() { return glex62 + gconst62; } function writeLex(v) { glex62 = v; } function writeConst() { gconst62 = 5; }
+var gl = []; for (var i = 0; i < 4; i++) { gl.push(readLex()); writeLex(i * 10); try { writeConst(); gl.push("w"); } catch (e) { gl.push(e.name); } } out.push("lexical " + gl.join(","));
+Object.defineProperty(G, "gfrozen62", { value: 1, writable: false, configurable: true });
+function writeFrozen(v) { gfrozen62 = v; return gfrozen62; } function strictFrozen(v) { "use strict"; gfrozen62 = v; }
+var gf = []; for (var i = 0; i < 3; i++) { gf.push(writeFrozen(i)); try { strictFrozen(i); gf.push("w"); } catch (e) { gf.push(e.name); } } out.push("frozen " + gf.join(","));
+out.join("\n")"##;
+    let expected = r##"holder 0 5,undefined,3,undefined,undefined,function,undefined,undefined
+holder 1 undefined,7,0,undefined,undefined,undefined,function,undefined
+holder 2 undefined,undefined,undefined,1,1,undefined,undefined,undefined
+holder 3 undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined
+holder 4 undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined
+stack 5 0/2/4/6/8 8 4 true false
+write 0 4,8,c4, abcs undefined
+write 1 4,-1,c4, abcs undefined
+write 2 1,2,3, abc undefined
+write 3 4,8,, ab undefined
+write 4 -8,92,c4, abcs undefined
+write 5 ,8,c4,4.5 zbck 4
+write 6 4,,, a undefined
+write 7 4,8,c4, abcs undefined
+write 8 4,8,c4, abcs undefined
+write 9 4,8,c4, abcs undefined
+strict TypeError,TypeError,TypeError TypeError,TypeError,TypeError ok,ok,ok TypeError,TypeError,TypeError ok,ok,ok ok,ok,ok
+shapes 3,5,7,9,11,13,15,17,19,21,23,25
+mut 1,1,1,1,undefined,undefined,back,back,got,got,4,4
+enclosing 1012,2222,0,3236,4448,1,5464,6678,2,7696,8912,3,8,10,f
+tdz ReferenceError,ReferenceError,ReferenceError,5,TypeError,TypeError
+loops 0,3,6,7,12,11,18,15 0,3,6,7,12,11,18,15
+global 1,0,undefined,1,1,undefined,1,2,undefined,two,3,undefined,two,4,undefined,ReferenceError,3,5,undefined,3,6,undefined,getter,7,undefined,getter,8,undefined,8,9,undefined,8,10,string,8,11,string
+lexical 3,TypeError,2,TypeError,12,TypeError,22,TypeError
+frozen 1,TypeError,1,TypeError,1,TypeError"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // The same places after a collection, which moves what they remember.
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            "[readAll(holders[0]), writeAll(plain, 3), get(shapes[5]), text(readG()), writeG(7), readLex(), outer(1).length].join(' ')"
+        ),
+        "5,undefined,3,undefined,undefined,function,undefined,undefined 2,4,c2, 7 8 7 32 45"
+    );
+}
