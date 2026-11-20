@@ -1593,20 +1593,36 @@ With the two binaries run in turn (the function linked last in both, so that not
 `typed/float64-math` 9%, an easing step 5%, `typed/pixels-rgba` 3%, `math/floor-round-minmax` 3%;
 loops and calls on integers as they were, to the instruction.
 
-Tried first, and not kept as built: a double held by the Value itself, whatever its fraction. Sixteen
-more kinds of Value hold the doubles whose magnitude is from 2<sup>-63</sup> up to 2<sup>65</sup>:
-the tag says the sign and the upper seven bits of the exponent, and the other 56 bits are the data. It
-ran every test and every script, and every price went up: the two operators to 485, a call by 30 to 50,
-a typed array element by 30 to 60. Three things, none of them the idea. A Number was sixteen bytes
-there (the double in full, beside the integer of seven), which is returned through memory, its seven
-bytes stored one at a time. The sixteen kinds were put together by a `match` over the sixteen values
-of the upper byte, expanded where it is used: a table of jumps, not the addition it comes to. And their
-tags were above those of the objects, so that "a primitive" was no longer one comparison of the tag
-anywhere. Done again it keeps a Number at eight bytes, with the sixteen kinds in it as in a Value; puts
-their tags after those of the other Numbers, the objects moved up; and has the `match` in a function
-small enough to be an addition before anything reads it in. What it buys over the above is the Number
-of the heap that every result still is: 45 instructions to make, a read for every use, and the
-collector's work for it.
+Tried, twice, and not kept: a double held by the Value itself, whatever its fraction. Sixteen more
+kinds of Value hold the doubles whose magnitude is from 2<sup>-63</sup> up to 2<sup>65</sup>: the tag
+says the sign and the upper seven bits of the exponent, and the other 56 bits are the data.
+
+As first built it ran every test and every script, and every price went up: the two operators to 485,
+a call by 30 to 50, a typed array element by 30 to 60. A Number was sixteen bytes there (the double in
+full, beside the integer of seven), which is returned through memory, its seven bytes stored one at a
+time; the sixteen kinds were put together by a `match` over sixteen values that are not in a row, a
+table of jumps; and their tags were above those of the objects, so that "a primitive" was no longer one
+comparison of the tag anywhere.
+
+Built again without the three (a Number of eight bytes with the sixteen kinds in it as a Value has
+them, kind for kind; their tags right after those of the other Numbers, with the BigInts and the
+objects moved up by sixteen, which by itself moves no price by more than 2; the kinds numbered in a
+row), it ran every script again, and was no shorter and no faster. A standalone probe of the same
+enum had made the two `match`es, a double into its kind and back, ten and nine instructions with no
+branch. In the functions that use them the one that makes the kind is a table of jumps again: a
+function with several ways out gives each arm its own return, and the compiler makes the addition only
+of arms that all end in one place. As functions of their own, never read in, the two cost what they
+replace: `x * 0.999 + 0.25` 271 instructions for 269. And the time was worse, with the two binaries
+run in turn: `loop/float-math` 13% more, `typed/float64-math` and `typed/pixels-rgba` 11%,
+`math/trig-and-sqrt` 10%, a step of the particles 6%.
+
+The reason is that a Number of the heap is cheap here: 22 instructions to make (it is appended to a
+vector of doubles) and seven to read, one of them a load, and the collector's share of a loop of
+arithmetic is 3-6%. A kind per sixteenth of the range costs a test of the range, a test for a whole
+number (which must be an integer Number, so that a Number has one form), and the taking apart and
+putting together of tag and bytes, at every operator. So a double stays a Number of the heap unless
+its low byte is zeros; what is left of the price of an operator on doubles is the instruction around
+it (its operands fetched, the call) and the 85 of the function.
 
 ### 7. Building strings
 
