@@ -281,8 +281,11 @@ machine leaves near what a quiet machine gives (QuickJS's least times are those 
 tables). A step of the particles is 1.84 to 1.92x that way, and the call of a closure 2.04x, and
 2.01 to 2.02x once the names of bindings are compared at once, 1.99 to 2.00x once the read of
 such a variable asks nothing twice, and 1.96x once a place in the code keeps its name as the
-bytes that are compared (area 2). By this measure no case is over 2x; a table of a quiet machine
-has still to say so. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
+bytes that are compared (area 2). By this measure no case is over 2x: the cases that the last
+table had nearest to it are, on that build, the call of a closure 1.96x, trigonometry 1.91 to
+1.97x, the arithmetic of a Float64Array 1.87x, objects spread and assigned 1.86x, the properties
+of one object 1.83x, a step of the particles 1.81x, a sort with a comparator 1.81x, and the rest
+1.79x and under. A table of a quiet machine has still to say so. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
 Float64Array 1.88x, a step of a generator 1.81x, a plain call 1.72x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
