@@ -16191,3 +16191,239 @@ closed closed at 4;closed at 2"##;
         "1:1,2:0,2:1,2:2 t1,caught two,t3 0,2,4 -0 0 -2.5"
     );
 }
+
+/// A property of a name of an enclosing function that nothing assigns to,
+/// read in a loop (`o.x`): where the code has read the name before with
+/// nothing jumping in since, one instruction reads the property from the
+/// stack slot that keeps the value of the name for the call
+/// (GetKeptPropertyWithCache), where two did. A slot that keeps nothing
+/// (a name whose value is undefined) sends it the general way, which reads
+/// the name by the name its site has. The site has the name: the
+/// instruction does not, and the compiled form of a script carries the
+/// names of its sites to every engine that runs it. What is expected is
+/// what Node prints for the same script: names not yet initialized, values
+/// of every kind, shapes that change between and inside the loops, getters,
+/// calls that nest and take turns, garbage collected between the reads.
+#[test]
+fn a_property_of_a_kept_name_is_read_from_the_slot_that_keeps_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(kept_properties)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn kept_properties() {
+    let script = r##"// A property of a name of an enclosing function that nothing assigns to, read in a loop (`o.x`): one instruction
+// reads it from the stack slot that keeps the value of the name once the call has read it.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + f()); } catch (e) { out.push(label + "!" + e.name); } }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var s = "garbage " + i + " of " + n; if ((i & 255) === 0) keep.push(s); } return keep.length; }
+
+// The plain thing: once in a turn, many times in a turn, in both arms of a condition, after and before the loop.
+(function () {
+  const cfg = { scale: 3, bias: 1, name: "cfg" };
+  function once(n) { var s = 0; for (var i = 0; i < n; i++) s += cfg.scale * i; return s; }
+  function thrice(n) { var s = 0; for (var i = 0; i < n; i++) s += cfg.scale * i + cfg.bias + cfg.scale; return s; }
+  function either(n) { var s = ""; for (var i = 0; i < n; i++) s += i & 1 ? cfg.scale : cfg.bias; return s; }
+  function around(n) { var before = cfg.name; for (var i = 0; i < n; i++) before += cfg.bias; return before + cfg.name; }
+  function short(x) { for (var i = 0; i < 1; i++) x += cfg.scale; return x; }
+  var total = 0;
+  for (var i = 0; i < 2000; i++) total += short(i);
+  out.push("plain", once(1000), thrice(1000), either(6), around(3), total);
+  // The benchmark's line.
+  const o = { x: 1, y: 2, z: 3 };
+  function step() { o.x = 0; for (var i = 0; i < 5000; i++) o.x = o.x + o.y + (o.z & 1); return o.x; }
+  out.push(step(), step());
+  // Compound assignments and updates read the property too.
+  function bump() { for (var i = 0; i < 3; i++) { o.x += 2; o.y++; --o.z; } return o.x + "," + o.y + "," + o.z; }
+  out.push(bump(), bump());
+})();
+
+// Before the name is initialized, and after.
+(function () {
+  function read() { var r; for (var i = 0; i < 3; i++) r = late.v; return r; }
+  function typeOf() { var r = ""; for (var i = 0; i < 2; i++) r += typeof late.v + typeof late.w; return r; }
+  note("tdz", read);
+  note("tdz again", read);
+  note("tdz typeof", typeOf);
+  const late = { v: 7 };
+  note("after", read);
+  note("after again", read);
+  note("typeof", typeOf);
+})();
+
+// Values that have no properties, and values that are no objects.
+(function () {
+  const nothing = undefined, nil = null, text = "hello", number = 42, flag = true, sym = Symbol("s"), big = 10n;
+  let never;
+  var zero = { v: 0 }, empty = { v: "" }, no = { v: false }, undef = { v: undefined }, nul = { v: null };
+  function a() { var r; for (var i = 0; i < 2; i++) r = nothing.x; return r; }
+  function b() { var r; for (var i = 0; i < 2; i++) r = nil.x; return r; }
+  function c() { var r = ""; for (var i = 0; i < 2; i++) r += text.length + ":" + text.missing; return r; }
+  function d() { var r = ""; for (var i = 0; i < 2; i++) r += typeof number.toFixed + String(number.missing) + flag.missing; return r; }
+  function e() { var r = ""; for (var i = 0; i < 2; i++) r += sym.description + "/" + String(big.missing); return r; }
+  function f() { var r; for (var i = 0; i < 2; i++) r = never.x; return r; }
+  function g() { var r = ""; for (var i = 0; i < 2; i++) r += zero.v + empty.v + no.v + undef.v + nul.v; return r; }
+  for (var i = 0; i < 3; i++) { note("undefined", a); note("null", b); note("string", c); note("number", d); note("symbol", e); note("let", f); note("falsy", g); }
+})();
+
+// Shapes that change between reads, properties that move, getters.
+(function () {
+  const o = { a: 1 };
+  function read() { var r = []; for (var i = 0; i < 2; i++) r.push(String(o.a)); return r.join(""); }
+  out.push("shapes", read(), read());
+  o.b = 2; out.push(read());
+  delete o.a; out.push(read());
+  Object.setPrototypeOf(o, { a: "inherited" }); out.push(read(), read());
+  o.a = "own again"; out.push(read());
+  var calls = 0;
+  Object.defineProperty(o, "a", { get: function () { calls++; return "got" + calls; }, configurable: true });
+  out.push(read(), read(), read(), calls);
+  Object.defineProperty(o, "a", { get: function () { throw new RangeError("no"); }, configurable: true });
+  note("throwing getter", read);
+  Object.defineProperty(o, "a", { value: "data", writable: false });
+  out.push(read());
+  Object.freeze(o); out.push(read());
+  // The shape changes inside the loop that reads.
+  const m = { p: 1 };
+  function morph() { var r = ""; for (var i = 0; i < 6; i++) { r += m.p; if (i === 1) m.q = 1; if (i === 2) delete m.p; if (i === 3) m.p = "back"; if (i === 4) Object.defineProperty(m, "p", { get: function () { return "G"; } }); } return r; }
+  out.push(morph(), morph());
+  const g = { get twice() { return this.n * 2; }, n: 21 };
+  function viaGetter() { var s = 0; for (var i = 0; i < 100; i++) s += g.twice; return s; }
+  out.push(viaGetter(), viaGetter());
+  g.n = 1; out.push(viaGetter());
+})();
+
+// Arrays, functions, classes, proxies and other objects as the value.
+(function () {
+  const list = [1, 2, 3];
+  function len() { var s = 0; for (var i = 0; i < 2; i++) s += list.length; return s; }
+  out.push("kinds", len()); list.push(4); out.push(len()); list.length = 1; out.push(len());
+  function grow() { var s = ""; for (var i = 0; i < 4; i++) { s += list.length; list.push(i); } return s; }
+  out.push(grow());
+  list.extra = "x"; function extra() { var s = ""; for (var i = 0; i < 2; i++) s += list.extra + list.push.name; return s; } out.push(extra(), extra());
+  function helper() { return 1; }
+  helper.tag = "fn"; function tag() { var s = ""; for (var i = 0; i < 2; i++) s += helper.tag + helper.length + helper.name; return s; } out.push(tag(), tag());
+  class Shape { static count = 5; static get twice() { return Shape.count * 2; } }
+  function count() { var s = 0; for (var i = 0; i < 2; i++) s += Shape.count + Shape.twice; return s; } out.push(count()); Shape.count = 6; out.push(count());
+  var log = [];
+  const proxy = new Proxy({ p: 1 }, { get: function (t, k) { log.push(String(k)); return t[k]; } });
+  function viaProxy() { var s = 0; for (var i = 0; i < 2; i++) s += proxy.p; return s; }
+  out.push(viaProxy(), viaProxy(), log.join("+"));
+  const map = new Map([[1, 2]]), re = /a/g, typed = new Uint8Array(3), set = new Set([1]);
+  function sizes() { var s = ""; for (var i = 0; i < 2; i++) s += map.size + ":" + re.lastIndex + re.global + ":" + set.size + ":" + typed.length + typed.byteLength; return s; }
+  out.push(sizes(), sizes());
+  const args = (function () { return arguments; })(1, 2);
+  function argc() { var s = 0; for (var i = 0; i < 2; i++) s += args.length; return s; } out.push(argc(), argc());
+})();
+
+// Every call has the value of its own maker; calls nest and take turns.
+(function () {
+  function make(v) { const box = { v: v }; return function (d) { var s = 0; for (var i = 0; i < 2; i++) s += box.v; return d > 0 ? s + inner(d - 1) : s; }; }
+  var one = make(1), ten = make(10), inner = function (d) { return (d & 1 ? one : ten)(d); };
+  var s = 0;
+  for (var i = 0; i < 300; i++) s += one(i & 7) + ten(i & 3);
+  out.push("calls", s);
+  var fns = [];
+  for (let i = 0; i < 5; i++) { const cell = { i: i * i }; fns.push(function () { var s = 0; for (var j = 0; j < 2; j++) s += cell.i; return s; }); }
+  out.push(fns.map(function (f) { return f() + f(); }).join("/"));
+  // A grandparent's name, and a name read by an arrow function and by a method.
+  const far = { k: "far" };
+  function mid() { return function () { var s = ""; for (var i = 0; i < 2; i++) s += far.k + [1, 2].map((n) => { for (var j = 0; j < 1; j++) n += far.k.length; return n; }).join(""); return s; }; }
+  const holder = { m() { var s = ""; for (var i = 0; i < 2; i++) s += far.k; return s; } };
+  out.push(mid()(), mid()(), holder.m());
+  // The same name read in two loops and in a loop inside a loop; a call inside the loop that reads it too.
+  const grid = { w: 3, h: 2 };
+  function area() { var s = 0; for (var y = 0; y < grid.h; y++) for (var x = 0; x < grid.w; x++) s += grid.w * y + x; for (var k = 0; k < 2; k++) s += grid.h; return s + rows(); }
+  function rows() { var s = 0; for (var i = 0; i < 2; i++) s += grid.h; return s; }
+  out.push(area(), area());
+})();
+
+// Generators and async functions keep nothing and read as before; a function left by a throw is called again.
+(function () {
+  const src = { n: 3, label: "g" };
+  function* gen() { for (var i = 0; i < src.n; i++) { yield src.label + i; churn(2000); } return src.label; }
+  var seen = [];
+  for (var v of gen()) seen.push(v);
+  var it = gen(); it.next(); src.n = 1; src.label = "changed";
+  seen.push(it.next().value, it.next().done);
+  out.push("generator", seen.join(","));
+  const risky = { limit: 2 };
+  function mayThrow(n) { var s = 0; for (var i = 0; i < n; i++) { if (i > risky.limit) throw new Error("over" + s); s += risky.limit - i; } return s; }
+  var r = [];
+  for (var i = 0; i < 6; i++) { try { r.push(mayThrow(i)); } catch (e) { r.push(e.message); } }
+  out.push(r.join(","));
+  // A finally and a catch inside the loop.
+  function guarded() { var s = ""; for (var i = 0; i < 3; i++) { try { if (i === 1) throw risky; s += risky.limit; } catch (e) { s += "c" + e.limit; } finally { s += "f" + risky.limit; } } return s; }
+  out.push(guarded(), guarded());
+})();
+
+// The value survives collections: garbage is made between the reads of one call.
+(function () {
+  const kept = { tag: "alive", list: [1, 2, 3], inner: { deep: "deep" } };
+  function longCall() {
+    var s = "";
+    for (var i = 0; i < 3; i++) { s += kept.tag; churn(30000); s += kept.list.length; churn(30000); s += kept.inner.deep; }
+    return s + kept.tag;
+  }
+  out.push("gc", longCall(), longCall());
+})();
+
+// Parameters and the names of functions are such names too; a name that is assigned to is not.
+(function () {
+  function outer(param, other) {
+    var changing = { c: 1 };
+    function readParam() { var s = 0; for (var i = 0; i < 2; i++) s += param.p + other.p; return s; }
+    function readChanging() { var s = 0; for (var i = 0; i < 2; i++) s += changing.c; return s; }
+    var first = readParam() + readChanging();
+    changing = { c: 100 };
+    return first + readChanging() + readParam();
+  }
+  out.push("params", outer({ p: 1 }, { p: 2 }), outer({ p: 10 }, { p: 20 }));
+  function selfNamed() { return selfNamed.calls = (selfNamed.calls || 0) + 1; }
+  function caller() { var s = 0; for (var i = 0; i < 2; i++) s += selfNamed.calls; return s; }
+  selfNamed(); selfNamed(); out.push(caller(), caller());
+  // With direct eval in the function the name is looked up as eval may have left it.
+  const shadowed = { w: "outer" };
+  function withEval(code) { eval(code); var s = ""; for (var i = 0; i < 2; i++) s += shadowed.w; return s; }
+  out.push(withEval(""), withEval("var shadowed = { w: 'inner' }"));
+  // More names than a function keeps: the ninth and tenth are read as before.
+  const n1 = { v: 1 }, n2 = { v: 2 }, n3 = { v: 3 }, n4 = { v: 4 }, n5 = { v: 5 }, n6 = { v: 6 }, n7 = { v: 7 }, n8 = { v: 8 }, n9 = { v: 9 }, n10 = { v: 10 };
+  function many() { var s = 0; for (var i = 0; i < 3; i++) s += n1.v + n2.v + n3.v + n4.v + n5.v + n6.v + n7.v + n8.v + n9.v + n10.v; return s; }
+  out.push(many(), many());
+})();
+
+out.join(" ")"##;
+    let expected = r##"plain 1498500 1502500 131313 cfg111cfg 2005000 15000 15000 15006,5,0 15012,8,-3 tdz!ReferenceError tdz again!ReferenceError tdz typeof!ReferenceError after=7 after again=7 typeof=numberundefinednumberundefined undefined!TypeError null!TypeError string=5:undefined5:undefined number=functionundefinedundefinedfunctionundefinedundefined symbol=s/undefineds/undefined let!TypeError falsy=0falseundefinednull0falseundefinednull undefined!TypeError null!TypeError string=5:undefined5:undefined number=functionundefinedundefinedfunctionundefinedundefined symbol=s/undefineds/undefined let!TypeError falsy=0falseundefinednull0falseundefinednull undefined!TypeError null!TypeError string=5:undefined5:undefined number=functionundefinedundefinedfunctionundefinedundefined symbol=s/undefineds/undefined let!TypeError falsy=0falseundefinednull0falseundefinednull shapes 11 11 11 undefinedundefined inheritedinherited inheritedinherited own againown again got1got2 got3got4 got5got6 6 throwing getter!RangeError datadata datadata 111undefinedbackG GGGundefinedbackG 4200 4200 200 kinds 6 8 2 1234 xpushxpush xpushxpush fn0helperfn0helper fn0helperfn0helper 30 36 2 2 p+p+p+p 1:0true:1:331:0true:1:33 1:0true:1:331:0true:1:33 4 4 calls 25712 0/4/16/36/64 far45far45 far45far45 farfar 23 23 generator g0,g1,g2,changed,true 0,2,3,3,over3,over3 2f2c2f22f2 2f2c2f22f2 gc alive3deepalive3deepalive3deepalive alive3deepalive3deepalive3deepalive params 214 322 4 4 outerouter innerinner 165 165"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    assert_eq!(text(&mut engine, script), expected);
+    // The slot is filled anew by every call, whatever was collected since.
+    let reader = "var keptReader67 = (function () { const k = { v: 'kept', n: [1, 2] }; \
+        return function (n) { var s = ''; for (var i = 0; i < n; i++) s += k.v + k.n.length; return s; }; })(); \
+        keptReader67(2)";
+    assert_eq!(text(&mut engine, reader), "kept2kept2");
+    for _ in 0..3 {
+        engine.collect_garbage().unwrap();
+    }
+    assert_eq!(text(&mut engine, "keptReader67(3)"), "kept2kept2kept2");
+    // Compiled once and run by two engines: each names its own sites.
+    let compiled = CompiledScript::compile(script).expect("compiles");
+    for _ in 0..2 {
+        let (mut other, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+        match other.evaluate_compiled(&compiled) {
+            Ok(Completion::String(found)) => {
+                assert_eq!(
+                    std::string::String::from_utf8(found).expect("text"),
+                    expected
+                )
+            }
+            other => panic!("compiled: {other:?}"),
+        }
+    }
+}
