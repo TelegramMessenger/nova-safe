@@ -22,6 +22,13 @@ arrays, collections, JSON and RegExp, garbage under the small heap, and small wh
 A case that the engine ends (out of memory, the interrupt) is reported as failed, not timed: under the widget limits
 that is the result that matters.
 
+One process times a case for 300 ms, and where it lands in memory moves its time by several percent: two tables
+of one library, one right after the other, differ by 5% and more on single cases of either engine, and by two or
+three in the count of cases over 2x. `--repeat N` runs every case in N processes and keeps the fastest; the tables
+that say where things stand are taken with five. A change of a percent or two is not read from tables at all: the two
+binaries run one case in turn, fifteen times each, and the fastest runs are compared (a case that two tables had
+6-9% slower after a change of 15 instructions elsewhere was within 0.8% so).
+
 Where the time goes inside the interpreter loop does not show in a profile by function: the loop is one function.
 `xctrace record --template 'Time Profiler'` and `xctrace export` give the sampled addresses, and those against the
 disassembly give the time per machine instruction. That is how the loop's own share was found (area 1).
@@ -150,8 +157,8 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
 was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.7x), then a step
-of a particle animation (2.5x), a function that calls itself and the properties of one object read
-and written in a loop (2.3x), and a method inherited through three prototypes (2.2x): calls and
+of a particle animation (2.4x), a function that calls itself (2.3x), the properties of one object
+read and written in a loop and a method inherited through three prototypes (2.2x): calls and
 properties, where the arithmetic of doubles was among them. 95 to 97 of the 108 cases are at or
 under 2x from one run to the next (half a dozen sit within a few hundredths of 2x, on either side
 of it), 18 to 20 of them at or under QuickJS's time.
@@ -214,7 +221,10 @@ doubles (`math/trig-and-sqrt` 2.4x to 2.1x, `typed/float64-math` 2.2x to 2.05x, 
 particles 2.65x to 2.5x, `math/floor-round-minmax` and `typed/pixels-rgba` under 2x), with the mean
 at 1.396x from 1.401x and 97 cases at or under 2x from 95: both tables taken from the saved
 libraries with every function of `order.txt` in a slot of its own ("Where a function lands"), where
-the table of the round's checks had a `switch` in a loop 5.6% slower for no change to it.
+the table of the round's checks had a `switch` in a loop 5.6% slower for no change to it. The native
+stack asked about once for the calls the loop runs itself (area 3) took a percent off the cases
+that call: 1.394x, in tables of the fastest of five processes for a case, where 97 cases are at or
+under 2x and three more sit on it (a plain call, a call of `Math`, padding a text).
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -874,6 +884,25 @@ and the three reads and one write of the variables it closes over 3 ns each (a s
 running environment asked of the execution context, the record found by its kind, the binding by its
 place and checked by its name. Less than that is another way of making a call, not a change to this
 one.
+
+A call that the loop of instructions runs itself asked two things first: how many calls are in
+progress, and whether the native stack is used up. The second has one answer for as long as the loop
+runs: such a call uses none of the native stack, which is where it was when the loop was entered, and
+the loop asks then. Asked again at every call it was 15 instructions of the 570 to 960 a call is (the
+price list, "What an operation costs"), for a plain call, a method, a closure, a getter or a setter,
+`new` and a generator stepped in place alike. Without it the cases that call read 0.7-1.8% less time,
+the two binaries in turn. A call that goes through a built-in still asks both, and too deep is a
+RangeError at the same depth for either kind. Looked at in the same place and not kept: the global
+this value that a function which is not strict gets for a this of undefined, found through the realm
+and its global environment at every such call. Kept from the last call it saved nothing that the
+price list shows.
+
+What is left of a call is spread as before: a quarter of a plain call's time enters the function
+(two fifths of that is its execution context, made of what is read from the function's record and
+pushed; the rest fills the frame), a seventh leaves it, a twentieth asks whether it can be run in
+place at all. None of it is one thing; halving it is another frame: one
+value stack with a base for each call in place of a stack exchanged at every call, and an execution
+context that is not made for a call the loop runs itself until something asks for it.
 
 ### 4. Properties
 
