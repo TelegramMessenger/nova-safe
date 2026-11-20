@@ -15413,3 +15413,125 @@ r.join()"##;
     engine.collect_garbage().unwrap();
     assert_eq!(text(&mut engine, too_deep), "true,true,true,true,3000");
 }
+
+/// The functions of `Math` that the loop of instructions calls with the
+/// Numbers as they are (floor, ceil, round, sign, trunc, abs, sqrt, max and
+/// min), over Numbers of every kind and every pair of kinds, and `repeat`
+/// and the two paddings of Strings over texts with and without surrogates,
+/// alone and in pairs, where every seam of the result shows in its code
+/// units. What is expected is what Node prints for the same script. Then
+/// repeats and paddings that are too long for the heap, which end the
+/// script as they did, and the engine goes on.
+#[test]
+fn math_of_numbers_as_they_are_and_texts_repeated_seam_by_seam() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(math_and_repeats)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn math_and_repeats() {
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let script = r##"var out = [];
+function text(v) { return Object.is(v, -0) ? "-0" : String(v); }
+var values = [0, -0, 1, -1, 7, -7, 2147483647, -2147483648, 9007199254740991, -9007199254740991, 0.5, -0.5, 0.49999999999999994, -0.49999999999999994, 1.5, -1.5, 2.5, -2.5, 0.1, -0.1, 0.9999999999999999, -0.9999999999999999, 1e-300, -1e-300, 5e-324, -5e-324, 1e21, -1e21, 4503599627370495.5, -4503599627370495.5, 4503599627370496.5, 9007199254740993, 1.7976931348623157e308, -1.7976931348623157e308, NaN, Infinity, -Infinity, 123456.789, -123456.789, 1 / 3, -2 / 3, 4294967295.5, -4294967296.5];
+function row(f) { var r = []; for (var i = 0; i < values.length; i++) r.push(text(f(values[i]))); return r.join(" "); }
+out.push("floor " + row(function (v) { return Math.floor(v); }));
+out.push("ceil " + row(function (v) { return Math.ceil(v); }));
+out.push("round " + row(function (v) { return Math.round(v); }));
+out.push("sign " + row(function (v) { return Math.sign(v); }));
+out.push("trunc " + row(function (v) { return Math.trunc(v); }));
+out.push("abs " + row(function (v) { return Math.abs(v); }));
+out.push("sqrt " + row(function (v) { return Math.sqrt(v); }));
+// Two arguments of every pair of kinds, then none, one and several.
+var some = [0, -0, 1, -1, 7, 0.5, -0.5, 1e21, NaN, Infinity, -Infinity, 9007199254740991, 2147483648.5];
+var maxes = [], mins = [];
+for (var i = 0; i < some.length; i++) { var a = [], b = []; for (var j = 0; j < some.length; j++) { a.push(text(Math.max(some[i], some[j]))); b.push(text(Math.min(some[i], some[j]))); } maxes.push(a.join(" ")); mins.push(b.join(" ")); }
+out.push("max " + maxes.join(" | "));
+out.push("min " + mins.join(" | "));
+out.push([Math.max(), Math.min(), Math.max(3), Math.min(-0), Math.max(1, 2, 3, 2.5), Math.min(1, 2, -3, 2.5), Math.max(0, -0, 0), Math.min(0, -0, 0), Math.max(1, "5"), Math.min(1, null), Math.max(1, undefined), Math.max(2, { valueOf: function () { return 9; } }), Math.min(7, true)].map(text).join(" "));
+// In loops, where the calls are made with the Numbers as they are.
+function loop() { var t = 0; for (var i = 0; i < 400; i++) t += Math.floor(Math.sqrt(i)) + Math.max(i & 7, 3) - Math.min(i & 3, 2) + Math.round(i / 7) + Math.ceil(i / 3) * Math.sign(i - 200) + Math.floor(-i / 9); return t; }
+out.push(text(loop()));
+// repeat and the paddings: code units of the result, so that every seam shows.
+function units(s) { var r = []; for (var i = 0; i < s.length; i++) r.push(s.charCodeAt(i).toString(16)); return s.length + ":" + r.join(","); }
+var texts = ["", "-", "ab", "é", "中文", "😀", "a😀", "\uD800", "\uDC00", "\uDC00\uD800", "𐀀", "x\uD800", "\uDC00x", "\uDC00a\uD800", "\uD83D", "\uDE00\uD83D"];
+for (var i = 0; i < texts.length; i++) {
+  var t = texts[i], line = [];
+  [0, 1, 2, 3, 5].forEach(function (n) { line.push(units(t.repeat(n))); });
+  line.push(units("12".padStart(7, t)), units("12".padEnd(7, t)), units("\uD800".padEnd(4, t)), units("\uDC00".padStart(4, t)), units(t.padStart(3, "\uDC00\uD800")), units(t.padEnd(3, "\uDC00\uD800")));
+  out.push(i + " " + line.join(" "));
+}
+out.push([units("7".padStart(8, "0")), units("12345678".padStart(8, "0")), units("123456789".padStart(8, "0")), units("x".padEnd(5)), units("x".padStart(5, "")), units("abc".padStart(10, "12345")), units("abc".padEnd(6, "😀")), units("-".repeat(15)), units("ab".repeat(40)).length].join(" "));
+var caught = []; ["-1", "Infinity"].forEach(function (n) { try { "a".repeat(Number(n)); caught.push("no"); } catch (e) { caught.push(e.name); } }); out.push(caught.join(","));
+var total = 0; for (var i = 0; i < 3000; i++) total += String(i).padStart(8, "0").length + "-".repeat(i & 15).length + ("é".repeat(i & 3) + String(i).padEnd(6, "ab")).length; out.push(text(total));
+out.join("\n")"##;
+    let expected = r##"floor 0 -0 1 -1 7 -7 2147483647 -2147483648 9007199254740991 -9007199254740991 0 -1 0 -1 1 -2 2 -3 0 -1 0 -1 0 -1 0 -1 1e+21 -1e+21 4503599627370495 -4503599627370496 4503599627370496 9007199254740992 1.7976931348623157e+308 -1.7976931348623157e+308 NaN Infinity -Infinity 123456 -123457 0 -1 4294967295 -4294967297
+ceil 0 -0 1 -1 7 -7 2147483647 -2147483648 9007199254740991 -9007199254740991 1 -0 1 -0 2 -1 3 -2 1 -0 1 -0 1 -0 1 -0 1e+21 -1e+21 4503599627370496 -4503599627370495 4503599627370496 9007199254740992 1.7976931348623157e+308 -1.7976931348623157e+308 NaN Infinity -Infinity 123457 -123456 1 -0 4294967296 -4294967296
+round 0 -0 1 -1 7 -7 2147483647 -2147483648 9007199254740991 -9007199254740991 1 -0 0 -0 2 -1 3 -2 0 -0 1 -1 0 -0 0 -0 1e+21 -1e+21 4503599627370496 -4503599627370495 4503599627370496 9007199254740992 1.7976931348623157e+308 -1.7976931348623157e+308 NaN Infinity -Infinity 123457 -123457 0 -1 4294967296 -4294967296
+sign 0 -0 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 1 1 -1 NaN 1 -1 1 -1 1 -1 1 -1
+trunc 0 -0 1 -1 7 -7 2147483647 -2147483648 9007199254740991 -9007199254740991 0 -0 0 -0 1 -1 2 -2 0 -0 0 -0 0 -0 0 -0 1e+21 -1e+21 4503599627370495 -4503599627370495 4503599627370496 9007199254740992 1.7976931348623157e+308 -1.7976931348623157e+308 NaN Infinity -Infinity 123456 -123456 0 -0 4294967295 -4294967296
+abs 0 0 1 1 7 7 2147483647 2147483648 9007199254740991 9007199254740991 0.5 0.5 0.49999999999999994 0.49999999999999994 1.5 1.5 2.5 2.5 0.1 0.1 0.9999999999999999 0.9999999999999999 1e-300 1e-300 5e-324 5e-324 1e+21 1e+21 4503599627370495.5 4503599627370495.5 4503599627370496 9007199254740992 1.7976931348623157e+308 1.7976931348623157e+308 NaN Infinity Infinity 123456.789 123456.789 0.3333333333333333 0.6666666666666666 4294967295.5 4294967296.5
+sqrt 0 -0 1 NaN 2.6457513110645907 NaN 46340.950001051984 NaN 94906265.62425154 NaN 0.7071067811865476 NaN 0.7071067811865475 NaN 1.224744871391589 NaN 1.5811388300841898 NaN 0.31622776601683794 NaN 0.9999999999999999 NaN 1e-150 NaN 2.2227587494850775e-162 NaN 31622776601.683792 NaN 67108863.99999999 NaN 67108864 94906265.62425156 1.3407807929942596e+154 NaN NaN Infinity NaN 351.3641828644462 NaN 0.5773502691896257 NaN 65535.9999961853 NaN
+max 0 0 1 0 7 0.5 0 1e+21 NaN Infinity 0 9007199254740991 2147483648.5 | 0 -0 1 -0 7 0.5 -0 1e+21 NaN Infinity -0 9007199254740991 2147483648.5 | 1 1 1 1 7 1 1 1e+21 NaN Infinity 1 9007199254740991 2147483648.5 | 0 -0 1 -1 7 0.5 -0.5 1e+21 NaN Infinity -1 9007199254740991 2147483648.5 | 7 7 7 7 7 7 7 1e+21 NaN Infinity 7 9007199254740991 2147483648.5 | 0.5 0.5 1 0.5 7 0.5 0.5 1e+21 NaN Infinity 0.5 9007199254740991 2147483648.5 | 0 -0 1 -0.5 7 0.5 -0.5 1e+21 NaN Infinity -0.5 9007199254740991 2147483648.5 | 1e+21 1e+21 1e+21 1e+21 1e+21 1e+21 1e+21 1e+21 NaN Infinity 1e+21 1e+21 1e+21 | NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN | Infinity Infinity Infinity Infinity Infinity Infinity Infinity Infinity NaN Infinity Infinity Infinity Infinity | 0 -0 1 -1 7 0.5 -0.5 1e+21 NaN Infinity -Infinity 9007199254740991 2147483648.5 | 9007199254740991 9007199254740991 9007199254740991 9007199254740991 9007199254740991 9007199254740991 9007199254740991 1e+21 NaN Infinity 9007199254740991 9007199254740991 9007199254740991 | 2147483648.5 2147483648.5 2147483648.5 2147483648.5 2147483648.5 2147483648.5 2147483648.5 1e+21 NaN Infinity 2147483648.5 9007199254740991 2147483648.5
+min 0 -0 0 -1 0 0 -0.5 0 NaN 0 -Infinity 0 0 | -0 -0 -0 -1 -0 -0 -0.5 -0 NaN -0 -Infinity -0 -0 | 0 -0 1 -1 1 0.5 -0.5 1 NaN 1 -Infinity 1 1 | -1 -1 -1 -1 -1 -1 -1 -1 NaN -1 -Infinity -1 -1 | 0 -0 1 -1 7 0.5 -0.5 7 NaN 7 -Infinity 7 7 | 0 -0 0.5 -1 0.5 0.5 -0.5 0.5 NaN 0.5 -Infinity 0.5 0.5 | -0.5 -0.5 -0.5 -1 -0.5 -0.5 -0.5 -0.5 NaN -0.5 -Infinity -0.5 -0.5 | 0 -0 1 -1 7 0.5 -0.5 1e+21 NaN 1e+21 -Infinity 9007199254740991 2147483648.5 | NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN | 0 -0 1 -1 7 0.5 -0.5 1e+21 NaN Infinity -Infinity 9007199254740991 2147483648.5 | -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity -Infinity NaN -Infinity -Infinity -Infinity -Infinity | 0 -0 1 -1 7 0.5 -0.5 9007199254740991 NaN 9007199254740991 -Infinity 9007199254740991 2147483648.5 | 0 -0 1 -1 7 0.5 -0.5 2147483648.5 NaN 2147483648.5 -Infinity 2147483648.5 2147483648.5
+-Infinity Infinity 3 -0 3 -3 0 -0 5 0 NaN 9 1
+21951
+0 0: 0: 0: 0: 0: 2:31,32 2:31,32 1:d800 1:dc00 3:dc00,d800,dc00 3:dc00,d800,dc00
+1 0: 1:2d 2:2d,2d 3:2d,2d,2d 5:2d,2d,2d,2d,2d 7:2d,2d,2d,2d,2d,31,32 7:31,32,2d,2d,2d,2d,2d 4:d800,2d,2d,2d 4:2d,2d,2d,dc00 3:dc00,d800,2d 3:2d,dc00,d800
+2 0: 2:61,62 4:61,62,61,62 6:61,62,61,62,61,62 10:61,62,61,62,61,62,61,62,61,62 7:61,62,61,62,61,31,32 7:31,32,61,62,61,62,61 4:d800,61,62,61 4:61,62,61,dc00 3:dc00,61,62 3:61,62,dc00
+3 0: 1:e9 2:e9,e9 3:e9,e9,e9 5:e9,e9,e9,e9,e9 7:e9,e9,e9,e9,e9,31,32 7:31,32,e9,e9,e9,e9,e9 4:d800,e9,e9,e9 4:e9,e9,e9,dc00 3:dc00,d800,e9 3:e9,dc00,d800
+4 0: 2:4e2d,6587 4:4e2d,6587,4e2d,6587 6:4e2d,6587,4e2d,6587,4e2d,6587 10:4e2d,6587,4e2d,6587,4e2d,6587,4e2d,6587,4e2d,6587 7:4e2d,6587,4e2d,6587,4e2d,31,32 7:31,32,4e2d,6587,4e2d,6587,4e2d 4:d800,4e2d,6587,4e2d 4:4e2d,6587,4e2d,dc00 3:dc00,4e2d,6587 3:4e2d,6587,dc00
+5 0: 2:d83d,de00 4:d83d,de00,d83d,de00 6:d83d,de00,d83d,de00,d83d,de00 10:d83d,de00,d83d,de00,d83d,de00,d83d,de00,d83d,de00 7:d83d,de00,d83d,de00,d83d,31,32 7:31,32,d83d,de00,d83d,de00,d83d 4:d800,d83d,de00,d83d 4:d83d,de00,d83d,dc00 3:dc00,d83d,de00 3:d83d,de00,dc00
+6 0: 3:61,d83d,de00 6:61,d83d,de00,61,d83d,de00 9:61,d83d,de00,61,d83d,de00,61,d83d,de00 15:61,d83d,de00,61,d83d,de00,61,d83d,de00,61,d83d,de00,61,d83d,de00 7:61,d83d,de00,61,d83d,31,32 7:31,32,61,d83d,de00,61,d83d 4:d800,61,d83d,de00 4:61,d83d,de00,dc00 3:61,d83d,de00 3:61,d83d,de00
+7 0: 1:d800 2:d800,d800 3:d800,d800,d800 5:d800,d800,d800,d800,d800 7:d800,d800,d800,d800,d800,31,32 7:31,32,d800,d800,d800,d800,d800 4:d800,d800,d800,d800 4:d800,d800,d800,dc00 3:dc00,d800,d800 3:d800,dc00,d800
+8 0: 1:dc00 2:dc00,dc00 3:dc00,dc00,dc00 5:dc00,dc00,dc00,dc00,dc00 7:dc00,dc00,dc00,dc00,dc00,31,32 7:31,32,dc00,dc00,dc00,dc00,dc00 4:d800,dc00,dc00,dc00 4:dc00,dc00,dc00,dc00 3:dc00,d800,dc00 3:dc00,dc00,d800
+9 0: 2:dc00,d800 4:dc00,d800,dc00,d800 6:dc00,d800,dc00,d800,dc00,d800 10:dc00,d800,dc00,d800,dc00,d800,dc00,d800,dc00,d800 7:dc00,d800,dc00,d800,dc00,31,32 7:31,32,dc00,d800,dc00,d800,dc00 4:d800,dc00,d800,dc00 4:dc00,d800,dc00,dc00 3:dc00,dc00,d800 3:dc00,d800,dc00
+10 0: 2:d800,dc00 4:d800,dc00,d800,dc00 6:d800,dc00,d800,dc00,d800,dc00 10:d800,dc00,d800,dc00,d800,dc00,d800,dc00,d800,dc00 7:d800,dc00,d800,dc00,d800,31,32 7:31,32,d800,dc00,d800,dc00,d800 4:d800,d800,dc00,d800 4:d800,dc00,d800,dc00 3:dc00,d800,dc00 3:d800,dc00,dc00
+11 0: 2:78,d800 4:78,d800,78,d800 6:78,d800,78,d800,78,d800 10:78,d800,78,d800,78,d800,78,d800,78,d800 7:78,d800,78,d800,78,31,32 7:31,32,78,d800,78,d800,78 4:d800,78,d800,78 4:78,d800,78,dc00 3:dc00,78,d800 3:78,d800,dc00
+12 0: 2:dc00,78 4:dc00,78,dc00,78 6:dc00,78,dc00,78,dc00,78 10:dc00,78,dc00,78,dc00,78,dc00,78,dc00,78 7:dc00,78,dc00,78,dc00,31,32 7:31,32,dc00,78,dc00,78,dc00 4:d800,dc00,78,dc00 4:dc00,78,dc00,dc00 3:dc00,dc00,78 3:dc00,78,dc00
+13 0: 3:dc00,61,d800 6:dc00,61,d800,dc00,61,d800 9:dc00,61,d800,dc00,61,d800,dc00,61,d800 15:dc00,61,d800,dc00,61,d800,dc00,61,d800,dc00,61,d800,dc00,61,d800 7:dc00,61,d800,dc00,61,31,32 7:31,32,dc00,61,d800,dc00,61 4:d800,dc00,61,d800 4:dc00,61,d800,dc00 3:dc00,61,d800 3:dc00,61,d800
+14 0: 1:d83d 2:d83d,d83d 3:d83d,d83d,d83d 5:d83d,d83d,d83d,d83d,d83d 7:d83d,d83d,d83d,d83d,d83d,31,32 7:31,32,d83d,d83d,d83d,d83d,d83d 4:d800,d83d,d83d,d83d 4:d83d,d83d,d83d,dc00 3:dc00,d800,d83d 3:d83d,dc00,d800
+15 0: 2:de00,d83d 4:de00,d83d,de00,d83d 6:de00,d83d,de00,d83d,de00,d83d 10:de00,d83d,de00,d83d,de00,d83d,de00,d83d,de00,d83d 7:de00,d83d,de00,d83d,de00,31,32 7:31,32,de00,d83d,de00,d83d,de00 4:d800,de00,d83d,de00 4:de00,d83d,de00,dc00 3:dc00,de00,d83d 3:de00,d83d,dc00
+8:30,30,30,30,30,30,30,37 8:31,32,33,34,35,36,37,38 9:31,32,33,34,35,36,37,38,39 5:78,20,20,20,20 1:78 10:31,32,33,34,35,31,32,61,62,63 6:61,62,63,d83d,de00,d83d 15:2d,2d,2d,2d,2d,2d,2d,2d,2d,2d,2d,2d,2d,2d,2d 242
+RangeError,RangeError
+68968"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    engine.collect_garbage().unwrap();
+    assert_eq!(
+        text(
+            &mut engine,
+            "[units('ab'.repeat(3)), units('7'.padStart(4, '0')), Math.max(2, 9), Math.floor(-2.5)].join(' ')"
+        ),
+        "6:61,62,61,62,61,62 4:30,30,30,37 9 -3"
+    );
+    // Too long for the heap: with and without a surrogate in the text.
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    for too_long in [
+        "var kept = 'ab'.repeat(1 << 23); kept.length",
+        "var kept = '\\uD800a'.repeat(1 << 22); kept.length",
+        "var kept = 'x'.padStart(1 << 24, 'yz'); kept.length",
+        "var kept = 'x'.padEnd(1 << 23, '\\uDC00'); kept.length",
+    ] {
+        assert_eq!(
+            engine.evaluate(too_long, false),
+            Err(Error::OutOfMemory),
+            "{too_long}"
+        );
+        engine.collect_garbage().unwrap();
+        assert_eq!(
+            text(&mut engine, "'ab'.repeat(3) + '|' + '7'.padStart(3, '0')"),
+            "ababab|007"
+        );
+    }
+}
