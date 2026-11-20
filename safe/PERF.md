@@ -90,34 +90,35 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of what an arm hands on (area 1,
-"The functions the loop calls"), in machine instructions per operation:
+a million times the price of the operation. As of the round of the generators (area 5a), in
+machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 228 / 270 / 262 | 494 / 578 / 589 | 2.2x |
-| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 718 / 812 / 761 | 2.0-2.3x |
+| call, no argument / one / two | 228 / 270 / 262 | 498 / 581 / 594 | 2.2x |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 719 / 813 / 762 | 2.0-2.3x |
 | a callee that reads a variable of its maker, in place of its parameter | 2 | 57 | |
 | a callee that assigns one, more | 25 | 122 | |
 | read of a variable of the enclosing function, in place of a local | 2 | 10 | |
 | assignment to one, in place of a local | 3 | 57 | |
 | read of a global, in place of a local | 41 | 102 | 2.5x |
 | assignment to a global, in place of a local | 61 | 332 | 5.4x |
-| property read, own / inherited, in place of a local | 53 / 68 | 124 / 167 | 2.4x |
+| property read, own / inherited, in place of a local | 53 / 68 | 122 / 165 | 2.3x |
 | property assignment, in place of a local | 53 | 128 | 2.4x |
-| getter / setter | 328 / 405 | 746 / 770 | 2.3x / 1.9x |
-| integer `+` of two locals, more | 24 | 94 | 3.9x |
+| getter / setter | 328 / 405 | 746 / 772 | 2.3x / 1.9x |
+| integer `+` of two locals, more | 24 | 93 | 3.9x |
+| `-(i & 7)` / `-x` of a double, more | 23 / 9 | 127 / 115 | |
 | `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 238 | 3.6x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 553 / 495 / 570 | 1.8-2.1x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 552 / 492 / 568 | 1.7-2.1x |
 | `Math.max(i, 7)` | 271 | 430 | 1.6x |
 | Array element read / written | 56 / 53 | 147 / 189 | 2.6x / 3.6x |
 | Uint8Array element read / written | 89 / 78 | 210 / 220 | 2.4x / 2.8x |
-| Float64Array element read / written | 106 / 76 | 282 / 206 | 2.7x / 2.7x |
-| `new` of a function / of a class, one field set | 1072 / 1128 | 2161 / 2132 | 2.0x / 1.9x |
-| an object literal of two properties | 744 | 496 | 0.67x |
-| one callback of `forEach` (the whole turn) | 394 | 756 | 1.9x |
-| one step of `for-of` over a generator (the whole turn) | 491 | 1060 | 2.2x |
-| `s.charCodeAt(i)` | 350 | 488 | 1.4x |
+| Float64Array element read / written | 106 / 76 | 281 / 206 | 2.7x / 2.7x |
+| `new` of a function / of a class, one field set | 1072 / 1128 | 2164 / 2135 | 2.0x / 1.9x |
+| an object literal of two properties | 744 | 498 | 0.67x |
+| one callback of `forEach` (the whole turn) | 394 | 769 | 2.0x |
+| one step of `for-of` over a generator (the whole turn) | 491 | 933 | 1.9x |
+| `s.charCodeAt(i)` | 350 | 487 | 1.4x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
@@ -159,10 +160,10 @@ below.
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
 was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure and a step of a
-particle animation (2.3x), then the properties of one object read and written in a loop (2.1x) and
-a step of a generator (2.02x). 104 of the 108 cases are at or under 2x (half a dozen within a few
-hundredths of it, on either side), 22 of them at or under QuickJS's time.
-Over all cases it is 1.34x: 2.12x before the round of patterns, Array iteration and
+particle animation (2.3x), then the properties of one object read and written in a loop (2.1x):
+the three that are over 2x. 105 of the 108 cases are at or under it (a handful within a few
+hundredths, under it), 22 of them at or under QuickJS's time.
+Over all cases it is 1.33x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -245,7 +246,10 @@ on (area 1: the tables not written for a call that is not made, a property's val
 the name of a variable kept beside its place) gave those two back what they had lost and took 4% off
 the cases that read properties and variables: a closure 2.40x to 2.30x, the properties of one
 object 2.19x to 2.11x, a step of a generator 2.05x to 2.02x, trigonometry 1.96x to 1.88x. Over all
-cases 1.336x from 1.353x, with the same four over 2x and 22 at or under QuickJS's time.
+cases 1.336x from 1.353x, with the same four over 2x and 22 at or under QuickJS's time. A generator
+that is suspended at its `yield` by the loop that resumed it, and hands over the one handler and
+the one iterator it has as the entries they are (area 5a), took a step of a generator off 2x
+(2.04x to 1.84x): 1.333x from 1.340x, with three cases over 2x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1669,6 +1673,35 @@ for, which costs it one leaving and no more, and the loop is the same code. No o
 (the five that the full run showed 3-5% slower are within 1.6% binary against binary). A step in the
 loop itself would save that leaving and re-roll everything else (area 5).
 
+A step of a generator that a loop resumes in place was 1060 instructions where QuickJS has 491,
+half of them the generator suspended and resumed, and three things in that were not work.
+
+The collections that the generator's instructions had scoped were released at every `yield`, and
+the frames of a deep recursion let go of, each by a call, where there were none of either: asked
+first now, as where a function is left (area 3).
+
+A generator that yields in a loop has an exception handler between two steps, which every loop
+pushes for its own cleaning up, and one that yields in a loop over an iterator has that iterator.
+Each was handed over at the `yield` and again at the resumption as a part of a vector drained into
+another, or appended to it: for one entry, the copying of some bytes by a call. One entry is moved
+as the entry it is, into the room its vector kept from the step before.
+
+And the `yield` went the general way of an instruction, which finds the instruction among all that
+are not plain to say that it is a `yield`. The loop of instructions sees a `yield` itself now, and
+suspends the generator where it had resumed it; a generator that was not resumed in place (one
+stepped by a call of `next`) yields as before.
+
+By the price list a step is 933 instructions for 1060: 56 less by the first two, 73 by the third.
+The third is an arm more in the loop and a result more of an instruction, and it moved the rest by
+where the compiler put things: a call is four instructions longer and a callback that a built-in
+calls thirteen, a loop two shorter in every turn, the arithmetic of doubles three shorter.
+
+With the two binaries run in turn, fifteen runs each, a step of a generator reads 9.4% less time
+(`call/generator`, off 2x). A plain call, a method, a closure, a function that calls itself and
+`new` are within 1.5% of where they were, as are the properties and the arithmetic; an empty loop
+reads 3.7% more and a `switch` in a loop 2.8%, by where their code lies (the empty loop had read
+6.4% less the round before for the same reason).
+
 ### 6. Numbers
 
 Done: `Number::add`, `subtract` and `lessThan` walked the specification's case list (a dozen checks, each a match
@@ -1873,6 +1906,11 @@ instructions that cannot fail; where it has not, a function called last grows it
 Number. A double read from a Number of the heap whose handle names nothing is no double, and the
 operands go the general way. `x * 0.999 + 0.25` is 241 instructions for 268, and `Math.floor(i / 3)`
 624 for 652, with the read of `Math` and the entry of the call shorter too.
+
+`-x` went the general way of an instruction for every kind of value. A Number is negated by a
+function that the loop calls now (the negation of the double it is, made the Number that double is:
+an integer stays an integer, zero is -0 and -0 zero); a BigInt and what is to be made a number first
+go as before. `-(i & 7)` is 127 instructions for 181, `x = -x` of a double 115 for 202.
 
 ### 7. Building strings
 
