@@ -90,8 +90,8 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the global scope that says when it
-changes (area 2), in machine instructions per operation:
+a million times the price of the operation. As of the round of the assignment to a global that
+makes no Reference (area 2), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
@@ -102,7 +102,7 @@ changes (area 2), in machine instructions per operation:
 | read of a variable of the enclosing function, in place of a local | 2 | 2 | |
 | assignment to one, in place of a local | 3 | 49 | |
 | read of a global, in place of a local | 41 | 60 | 1.5x |
-| assignment to a global, in place of a local | 61 | 303 | 5.0x |
+| assignment to a global, in place of a local | 61 | 163 | 2.7x |
 | property read, own / inherited, in place of a local | 53 / 68 | 100 / 144 | 1.9-2.1x |
 | a second property of the same object, in place of a local | 53 | 75 | 1.4x |
 | property assignment, in place of a local | 53 | 119 | 2.2x |
@@ -296,6 +296,10 @@ of 50 to 120): the call of a closure 1.96x, the properties of one object 1.79x, 
 comparator 1.86x, a step of the particles 1.90x, objects spread and assigned 1.90 to 2.07x on this
 build and 1.90x on the one before in the same minutes, where the two builds run in turn are level
 (34.4 to 35.8 ms each, whichever is run first) and retire the same instructions.
+
+With the assignment to a global that asks the state once and makes no Reference (area 2), a loop
+that adds to a global is 1.49x by that measure; the call of a closure reads 1.95x, a step of the
+particles 1.85x, objects spread and assigned 1.90x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -954,6 +958,38 @@ easing 2.0%, a class that calls its parent's methods 1.4%; nothing is more. The 
 had the function of the property cache as its one caller, and was a function of its own again
 with a second: a property was read in eight instructions more. The read of a global has a reader
 of its own for the capacities that are not read by a call.
+
+An assignment to a global that is a property of the global object asked the state of the global
+scope three times: for the Reference that is made before the value is worked out, for what the
+Reference is to when the assignment is made, and for the place. It went through the realm for
+its global scope twice, and wrote the slot after reading the record of the object's shape for
+the capacity and the slots in use. The state keeps the global scope now and the Reference is
+made of it; the assignment asks the state once, for what the Reference is to and for the place
+both, and writes the slot by the capacity the state keeps, as the property cache writes one of
+a capacity it knows. That is 236 instructions for 303.
+
+Where the value is worked out without the reference register (a literal, a local, the
+arithmetic and the choices among such: what the compiler asks already before it saves the
+register around the value) no Reference is made at all. An instruction of its own
+(`CheckGlobalAtSite`) finds the name bound at its place and leaves the register empty, and the
+assignment writes at the place or, when it has to go the long way, makes the Reference then. It
+is the same assignment: a name that is bound in the global scope has one Reference whenever it
+is made (the global scope, the name, strict or not), and what becomes of the assignment when the
+name is gone or changed by then is what the long way makes of that Reference. The value may
+still be worked out by code of the script, a `valueOf` of a local, which removes the name,
+removes it and makes it again, puts an accessor in its place, forbids writing it, adds
+properties to the global object or runs the same assignment again: the test does each, in
+functions that are strict and not, with names that another script declares lexically, and with
+the register holding something else when the assignment begins. A name that is not found bound
+at its place is resolved as it was, its Reference in the register: unbound when the assignment
+begins, it is a ReferenceError in strict code even where the code that works the value out
+makes it (V8 assigns there, and Node's output differs from the expected by those two lines).
+
+An assignment to a global is 163 instructions for 303 (QuickJS: 61). Counted by the instructions
+the cases retire, a loop that adds to a global is 5.8% fewer (its `+=` reads the name first and
+is written by the capacity), a plain call 0.3% and the call of a closure 0.2% fewer; nothing is
+more. The write of the slot made part of the function that asks, where it is a call, was 162
+and is not kept.
 
 ### 3. Calls
 
