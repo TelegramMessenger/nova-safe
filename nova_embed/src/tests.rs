@@ -18205,3 +18205,145 @@ out.join("|")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// Object.assign to an object that has no properties yet, of the prototype
+/// of a source that has only plain data properties under String keys, is
+/// the shape of the source and a copy of its values, where no object the
+/// target inherits from has any of the keys: each assignment then makes a
+/// plain data property of the target. Where one has (a setter, a property
+/// that is not writable, one that is, a Proxy on the way), and for every
+/// other target and source (properties already there, another prototype,
+/// accessors, hidden and frozen properties, Symbols and integer keys,
+/// primitives, Arrays, functions, Proxies, a target that takes no
+/// properties), it is the assignments one by one. Copies stay apart from
+/// their source, are read and written by the same places in the code, and
+/// a setter that Object.prototype gets later is called. What is expected
+/// is what Node prints for the same script.
+#[test]
+fn object_assign_to_an_empty_object_is_the_shape_and_the_values_of_a_plain_source() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(object_assign_by_shape)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn object_assign_by_shape() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+function show(o) {
+  var parts = [];
+  Reflect.ownKeys(o).forEach(function (k) {
+    var d = Object.getOwnPropertyDescriptor(o, k);
+    parts.push(String(k) + ':' + ('value' in d ? String(d.value) : 'accessor') + (d.writable ? 'w' : '-') + (d.enumerable ? 'e' : '-') + (d.configurable ? 'c' : '-'));
+  });
+  return '{' + parts.join(',') + '}' + (Object.isExtensible(o) ? '' : '!ext');
+}
+var src = { a: 1, b: 'two', c: null, d: undefined, e: 5.5 };
+note('plain', function () { var t = Object.assign({}, src); return show(t) + ' ' + (t !== src) + ' ' + (Object.getPrototypeOf(t) === Object.prototype); });
+note('apart', function () { var t = Object.assign({}, src); t.a = 100; t.z = 1; delete t.b; src.e = 6.5; var u = Object.assign({}, src); src.e = 5.5; return show(t) + ' ' + show(src) + ' ' + show(u); });
+note('two sources', function () { return show(Object.assign({}, src, { b: 2, f: 6 }, null, undefined, { a: 'last' })); });
+note('returns target', function () { var t = {}; return Object.assign(t, src) === t; });
+note('same object', function () { var o = { p: 1, q: 2 }; return show(Object.assign(o, o)); });
+note('target has properties', function () { return show(Object.assign({ z: 0, a: 'old' }, src)); });
+note('empty source', function () { return show(Object.assign({}, {})) + show(Object.assign({}, {}, src)); });
+note('primitives', function () { return show(Object.assign({}, 'ab', 7, true, [8, 9])); });
+note('order', function () { var s = { b: 1, 2: 'two', a: 2, 1: 'one' }; s[Symbol.for('s')] = 3; return show(Object.assign({}, s)); });
+note('symbols only', function () { var s = {}; s[Symbol.for('k')] = 1; s.x = 2; return show(Object.assign({}, s)); });
+note('accessor source', function () { var n = 0; var s = { x: 1, get y() { n++; return 'got' + n; }, z: 3 }; return show(Object.assign({}, s)) + n; });
+note('hidden source', function () { var s = { x: 1 }; Object.defineProperty(s, 'h', { value: 2, enumerable: false }); s.y = 3; return show(Object.assign({}, s)); });
+note('frozen source', function () { var s = Object.freeze({ x: 1, y: 2 }); var t = Object.assign({}, s); t.x = 9; return show(t) + show(s); });
+note('sealed source', function () { var s = Object.seal({ x: 1 }); return show(Object.assign({}, s)); });
+note('not extensible source', function () { var s = Object.preventExtensions({ x: 1, y: 2 }); var t = Object.assign({}, s); t.more = 1; return show(t) + show(s); });
+note('names of Object.prototype', function () { var s = { toString: 1, constructor: 2, valueOf: 3, hasOwnProperty: 4 }; return show(Object.assign({}, s)); });
+// A setter, and a property that is not writable, on the object the target inherits from.
+var seen = [];
+Object.defineProperty(Object.prototype, 'trapped', { set: function (v) { seen.push('set ' + v); }, get: function () { return 'from getter'; }, configurable: true });
+note('setter inherited', function () { var t = Object.assign({}, { a: 1, trapped: 2, b: 3 }); return show(t) + ' ' + seen.join('/') + ' ' + t.trapped; });
+delete Object.prototype.trapped;
+note('setter gone', function () { return show(Object.assign({}, { a: 1, trapped: 2, b: 3 })); });
+Object.defineProperty(Object.prototype, 'locked', { value: 'fixed', writable: false, configurable: true });
+note('not writable inherited', function () { var t = {}; try { Object.assign(t, { a: 1, locked: 2, b: 3 }); } catch (e) { return e.name + ' ' + show(t) + ' ' + t.locked; } return 'no error ' + show(t); });
+delete Object.prototype.locked;
+Object.prototype.plainInherited = 'p';
+note('data inherited', function () { var t = Object.assign({}, { a: 1, plainInherited: 2 }); return show(t) + ' ' + ({}).plainInherited; });
+delete Object.prototype.plainInherited;
+// Targets that are not a fresh ordinary object of the source's prototype.
+note('null prototype target', function () { var t = Object.assign(Object.create(null), src); return show(t) + ' ' + Object.getPrototypeOf(t); });
+note('null prototype source', function () { var s = Object.create(null); s.x = 1; s.y = 2; var t = Object.assign(Object.create(null), s); var u = Object.assign({}, s); return show(t) + Object.getPrototypeOf(t) + show(u) + (Object.getPrototypeOf(u) === Object.prototype); });
+note('prototype with setter', function () { var log = []; var p = { set x(v) { log.push('x=' + v); } }; var s = Object.create(p); Object.defineProperty(s, 'x', { value: 1, writable: true, enumerable: true, configurable: true }); s.y = 2; var t = Object.assign(Object.create(p), s); return show(t) + ' ' + log.join('/'); });
+note('prototype without the keys', function () { var p = { method: function () { return this.x + this.y; } }; var s = Object.create(p); s.x = 1; s.y = 2; var t = Object.assign(Object.create(p), s); return show(t) + ' ' + t.method() + ' ' + (Object.getPrototypeOf(t) === p); });
+note('class instances', function () { class C { constructor() { this.a = 1; this.b = 2; } get sum() { return this.a + this.b; } set b2(v) { this.b = v * 2; } } var s = new C(); var t = Object.assign(Object.create(C.prototype), s); var u = Object.assign({}, s); s.b2 = 5; return show(t) + t.sum + show(u) + u.sum + show(s); });
+note('class field over a setter', function () { var log = []; class D { f = 1; } Object.defineProperty(D.prototype, 'f', { set: function (v) { log.push('f=' + v); }, configurable: true }); var s = new D(); var t = Object.assign(Object.create(D.prototype), s); return show(t) + ' ' + log.join('/'); });
+note('array prototype', function () { var t = Object.assign(Object.create([]), { length: 3, x: 1 }); return show(t) + ' ' + Array.isArray(t); });
+note('proxy prototype', function () { var log = []; var p = new Proxy({}, { set: function (o, k, v, r) { log.push('trap ' + String(k)); return Reflect.set(o, k, v, r); } }); var t = Object.assign(Object.create(p), { x: 1, y: 2 }); return show(t) + ' ' + log.join('/'); });
+note('proxy target', function () { var log = []; var t = new Proxy({}, { set: function (o, k, v) { log.push(k + '=' + v); o[k] = v; return true; } }); Object.assign(t, { x: 1, y: 2 }); return log.join('/'); });
+note('proxy source', function () { var log = []; var s = new Proxy({ x: 1, y: 2 }, { ownKeys: function (o) { log.push('keys'); return Reflect.ownKeys(o); }, get: function (o, k) { log.push('get ' + String(k)); return o[k]; } }); return show(Object.assign({}, s)) + ' ' + log.join('/'); });
+note('not extensible target', function () { var t = Object.preventExtensions({}); try { Object.assign(t, { x: 1 }); } catch (e) { return e.name + show(t); } return 'no error' + show(t); });
+note('frozen target', function () { var t = Object.freeze({ x: 0 }); try { Object.assign(t, { x: 1 }); } catch (e) { return e.name + show(t); } return 'no error' + show(t); });
+note('array target', function () { return JSON.stringify(Object.assign([1, 2], { 1: 'b', x: 1 })) + show(Object.assign([], { x: 1 })); });
+note('function source and target', function () { function f() {} f.x = 1; var g = Object.assign(function () {}, f); return g.x + ' ' + show(Object.assign({}, f)); });
+note('intrinsic source', function () { var t = Object.assign({}, Math); return Object.keys(t).length + show(Object.assign({}, JSON)); });
+note('many keys', function () { var s = {}; for (var i = 0; i < 300; i++) s['k' + i] = i; var t = Object.assign({}, s); var sum = 0; for (var k in t) sum += t[k]; t.k5 = 'changed'; return Object.keys(t).length + ' ' + sum + ' ' + s.k5 + ' ' + t.k299; });
+note('getter that changes the source', function () { var s = { a: 1, get b() { delete this.c; this.d = 4; return 2; }, c: 3 }; return show(Object.assign({}, s)) + show(s); });
+// Copies that share a shape are read and written by the same places in the code.
+function sum(o) { return o.a + o.e; }
+function bump(o) { o.a = o.a + 1; return o.a; }
+note('shared shape', function () { var r = []; for (var i = 0; i < 5; i++) { var t = Object.assign({}, src); r.push(sum(t) + ':' + bump(t) + ':' + sum(src)); t['extra' + i] = i; r.push(Object.keys(t).length); } return r.join(' '); });
+note('spread then assign', function () { var last; for (var i = 0; i < 2000; i++) { last = { ...src, e: i }; last = Object.assign({}, last, { f: 1 }); } return show(last); });
+// A setter that appears on Object.prototype after copies were made by the shape.
+note('setter later', function () { var a = show(Object.assign({}, src)); var log = []; Object.defineProperty(Object.prototype, 'e', { set: function (v) { log.push('e=' + v); }, configurable: true }); var t = Object.assign({}, src); delete Object.prototype.e; return a + show(t) + log.join('/') + show(Object.assign({}, src)); });
+out.join("\n")"##;
+    let expected = r##"plain={a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec} true true
+apart={a:100wec,c:nullwec,d:undefinedwec,e:5.5wec,z:1wec} {a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec} {a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:6.5wec}
+two sources={a:lastwec,b:2wec,c:nullwec,d:undefinedwec,e:5.5wec,f:6wec}
+returns target=true
+same object={p:1wec,q:2wec}
+target has properties={z:0wec,a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec}
+empty source={}{a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec}
+primitives={0:8wec,1:9wec}
+order={1:onewec,2:twowec,b:1wec,a:2wec,Symbol(s):3wec}
+symbols only={x:2wec,Symbol(k):1wec}
+accessor source={x:1wec,y:got1wec,z:3wec}1
+hidden source={x:1wec,y:3wec}
+frozen source={x:9wec,y:2wec}{x:1-e-,y:2-e-}!ext
+sealed source={x:1wec}
+not extensible source={x:1wec,y:2wec,more:1wec}{x:1wec,y:2wec}!ext
+names of Object.prototype={toString:1wec,constructor:2wec,valueOf:3wec,hasOwnProperty:4wec}
+setter inherited={a:1wec,b:3wec} set 2 from getter
+setter gone={a:1wec,trapped:2wec,b:3wec}
+not writable inherited=TypeError {a:1wec} fixed
+data inherited={a:1wec,plainInherited:2wec} p
+null prototype target={a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec} null
+null prototype source={x:1wec,y:2wec}null{x:1wec,y:2wec}true
+prototype with setter={y:2wec} x=1
+prototype without the keys={x:1wec,y:2wec} 3 true
+class instances={a:1wec,b:2wec}3{a:1wec,b:2wec}undefined{a:1wec,b:10wec}
+class field over a setter={} f=1
+array prototype={length:3wec,x:1wec} false
+proxy prototype={x:1wec,y:2wec} trap x/trap y
+proxy target=x=1/y=2
+proxy source={x:1wec,y:2wec} keys/get x/get y
+not extensible target=TypeError{}!ext
+frozen target=TypeError{x:0-e-}!ext
+array target=[1,"b"]{length:0w--,x:1wec}
+function source and target=1 {x:1wec}
+intrinsic source=0{}
+many keys=300 44850 5 299
+getter that changes the source={a:1wec,b:2wec}{a:1wec,b:accessor-ec,d:4wec}
+shared shape=6.5:2:6.5 6 6.5:2:6.5 6 6.5:2:6.5 6 6.5:2:6.5 6 6.5:2:6.5 6
+spread then assign={a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:1999wec,f:1wec}
+setter later={a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec}{a:1wec,b:twowec,c:nullwec,d:undefinedwec}e=5.5{a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec}"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
