@@ -764,18 +764,14 @@ pub(crate) fn prepare_for_call_without_function_environment(
         ThisMode::Lexical => None,
         // 6. a. If thisArgument is either undefined or null, then
         //       iii. Let thisValue be globalEnv.[[GlobalThisValue]].
-        ThisMode::Global if this_argument.is_undefined() || this_argument.is_null() => {
-            let global_env = agent
-                .get_realm_record_by_id(ecmascript_function_object.realm)
-                .global_env
-                .unwrap();
-            Some(global_env.get_this_binding(agent).into())
-        }
+        // Found when the call asks for `this`, if it does: see
+        // [`CallThisValue::value`].
+        ThisMode::Global if this_argument.is_undefined() || this_argument.is_null() => Some(None),
         // 5. If thisMode is STRICT, then let thisValue be thisArgument; and
         // an object is itself in 6.b. A primitive is made an object below.
-        ThisMode::Strict | ThisMode::Global => Some(this_argument),
+        ThisMode::Strict | ThisMode::Global => Some(Some(this_argument)),
     }
-    .map(|value: Value| CallThisValue {
+    .map(|value: Option<Value>| CallThisValue {
         value: value.unbind(),
         variable_environment: environment.unbind(),
     });

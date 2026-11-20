@@ -15,7 +15,14 @@ pub(crate) type ECMAScriptCode = ECMAScriptCodeEvaluationState;
 /// The this value of a call that has no Function Environment Record.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CallThisValue {
-    pub(crate) value: Value<'static>,
+    /// None for the global this value of the realm, which a function that
+    /// is not strict has in place of undefined and null
+    /// (OrdinaryCallBindThis, step 6.a), until something in the call asks
+    /// for `this`: most functions called with no this value never do, and
+    /// finding it through the realm and its Global Environment Record was
+    /// a twentieth of a plain call. [`resolve_this_binding`] finds it then
+    /// and keeps it here.
+    pub(crate) value: Option<Value<'static>>,
     /// The VariableEnvironment of the call. A class static block evaluated in
     /// the call's execution context replaces it with an environment that has
     /// its own this binding; the this value only holds while it is current.
@@ -200,7 +207,21 @@ pub(crate) fn resolve_this_binding<'a>(
         && let Some(this_value) = code.this_value
         && this_value.variable_environment == code.variable_environment
     {
-        return Ok(this_value.value.bind(gc));
+        if let Some(value) = this_value.value {
+            return Ok(value.bind(gc));
+        }
+        // OrdinaryCallBindThis 6.a, left until now:
+        // i. Let globalEnv be calleeRealm.[[GlobalEnv]].
+        // ii. Assert: globalEnv is a Global Environment Record.
+        // iii. Let thisValue be globalEnv.[[GlobalThisValue]].
+        // The realm of the running execution context is calleeRealm.
+        let value: Value = agent
+            .current_global_env(gc)
+            .get_this_binding(agent)
+            .bind(gc)
+            .into();
+        agent.set_running_call_this_value(value.unbind());
+        return Ok(value);
     }
     // 1. Let envRec be GetThisEnvironment().
     let env_rec = get_this_environment(agent, gc);

@@ -1409,7 +1409,12 @@ impl Agent {
             .ecmascript_code
             .as_ref()?;
         let this_value = code.this_value?;
-        (this_value.variable_environment == code.variable_environment).then_some(this_value.value)
+        if this_value.variable_environment != code.variable_environment {
+            return None;
+        }
+        // None where it is the global this value that nothing has asked
+        // for yet: ResolveThisBinding finds it.
+        this_value.value
     }
 
     /// Replaces the this value that the running execution context keeps for
@@ -1421,7 +1426,7 @@ impl Agent {
             .and_then(|context| context.ecmascript_code.as_mut())
             .and_then(|code| code.this_value.as_mut())
         {
-            this_value.value = value;
+            this_value.value = Some(value);
         }
     }
 
