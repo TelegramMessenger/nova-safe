@@ -650,24 +650,21 @@ impl MathObject {
     /// Math.ceil of a Number.
     fn ceil_number<'gc>(agent: &mut Agent, n: Number<'gc>, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
         // 4. If n is an integral Number, return n.
-        if n.is_integer_(agent) {
+        if let Number::Integer(_) = n {
             return n.into();
         }
-
+        // Read as the double it is, once: see [`MathObject::floor_number`].
+        let value = n.into_f64_(agent);
+        let ceil = value.ceil();
         // 2. If n is not finite or n is either +0𝔽 or -0𝔽, return n.
-        if !n.is_finite_(agent) || n.is_pos_zero_(agent) || n.is_neg_zero_(agent) {
+        // 4. If n is an integral Number, return n.
+        if ceil == value || !value.is_finite() {
             return n.into();
         }
-
-        let n = n.into_f64_(agent);
-
         // 3. If n < -0𝔽 and n > -1𝔽, return -0𝔽.
-        if n < -0.0 && n > -1.0 {
-            return Value::neg_zero();
-        }
-
         // 5. Return the smallest (closest to -∞) integral Number value that is not less than n.
-        Value::from_f64(agent, n.ceil(), gc)
+        // (The ceiling of a double between -1 and -0 is -0.)
+        Value::from_f64(agent, ceil, gc)
     }
 
     fn clz32<'gc>(
@@ -832,26 +829,28 @@ impl MathObject {
     }
 
     /// Math.floor of a Number.
+    ///
+    /// The Number is read as the double it is, once: asked in turn whether
+    /// it is integral, finite, +0 and -0, and then for its double, a Number
+    /// of the heap was looked up five times.
     fn floor_number<'gc>(agent: &mut Agent, n: Number<'gc>, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
         // 4. If n is an integral Number, return n.
-        if n.is_integer_(agent) {
+        if let Number::Integer(_) = n {
             return n.into();
         }
-
+        let value = n.into_f64_(agent);
+        let floor = value.floor();
         // 2. If n is not finite or n is either +0𝔽 or -0𝔽, return n.
-        if !n.is_finite_(agent) || n.is_pos_zero_(agent) || n.is_neg_zero_(agent) {
+        // 4. If n is an integral Number, return n.
+        // (A zero of either sign, an integral double and an infinity are
+        // their own floor; NaN is not finite.)
+        if floor == value || !value.is_finite() {
             return n.into();
         }
-
-        let n = n.into_f64_(agent);
-
         // 3. If n < 1𝔽 and n > +0𝔽, return +0𝔽.
-        if n < 1.0 && n > 0.0 {
-            return Value::pos_zero();
-        }
-
         // 5. Return the greatest (closest to +∞) integral Number value that is not greater than n.
-        Value::from_f64(agent, n.floor(), gc)
+        // (The floor of a double between 0 and 1 is +0.)
+        Value::from_f64(agent, floor, gc)
     }
 
     fn fround<'gc>(
@@ -1415,6 +1414,16 @@ impl MathObject {
         arguments: &[Value],
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
+        if let &[Value::Integer(first), Value::Integer(second)] = arguments {
+            // The greater of two integers is one of them: by the loop
+            // below, which has every kind of Number in it for any number of
+            // arguments, it was eight times the comparison.
+            return Some(Value::Integer(if first.into_i64() >= second.into_i64() {
+                first
+            } else {
+                second
+            }));
+        }
         if arguments.is_empty() {
             return None;
         }
@@ -1472,6 +1481,15 @@ impl MathObject {
         arguments: &[Value],
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
+        if let &[Value::Integer(first), Value::Integer(second)] = arguments {
+            // The lesser of two integers is one of them: see
+            // [`MathObject::max_of_numbers`].
+            return Some(Value::Integer(if first.into_i64() <= second.into_i64() {
+                first
+            } else {
+                second
+            }));
+        }
         if arguments.is_empty() {
             return None;
         }
@@ -1548,11 +1566,15 @@ impl MathObject {
     /// Math.round of a Number.
     fn round_number<'gc>(agent: &mut Agent, n: Number<'gc>, gc: NoGcScope<'gc, '_>) -> Value<'gc> {
         // 2. If n is not finite or n is an integral Number, return n.
-        if !n.is_finite_(agent) || n.is_integer_(agent) {
+        if let Number::Integer(_) = n {
             return n.into();
         }
-
+        // Read as the double it is, once: see [`MathObject::floor_number`].
+        let n_number = n;
         let n = n.into_f64_(agent);
+        if !n.is_finite() || n.fract() == 0.0 {
+            return n_number.into();
+        }
 
         // 3. If n < 0.5𝔽 and n > +0𝔽, return +0𝔽.
         if n < 0.5 && n > 0.0 {
@@ -1585,12 +1607,14 @@ impl MathObject {
 
     /// Math.sign of a Number.
     fn sign_number<'gc>(agent: &mut Agent, n: Number<'gc>, _: NoGcScope<'gc, '_>) -> Value<'gc> {
+        // Read as the double it is, once: see [`MathObject::floor_number`].
+        let value = n.into_f64_(agent);
         // 2. If n is one of NaN, +0𝔽, or -0𝔽, return n.
-        if n.is_nan_(agent) || n.is_pos_zero_(agent) || n.is_neg_zero_(agent) {
+        if value.is_nan() || value == 0.0 {
             return n.into();
         }
         // 3. If n < -0𝔽, return -1𝔽.
-        if n.is_sign_negative_(agent) {
+        if value < 0.0 {
             return Value::from(-1);
         }
         // 4. Return 1𝔽.
