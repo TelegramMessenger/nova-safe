@@ -16529,3 +16529,96 @@ out.join(" ")"##;
         other => panic!("compiled: {other:?}"),
     }
 }
+
+/// A property read by its cache puts what it finds straight into the
+/// result register, as the eight bytes it has it in, and finding nothing
+/// leaves the instruction to the general way with the register as that
+/// way wants it. Reads that the cache answers and reads it does not, next
+/// to values that have to survive them: of a value in the register, of a
+/// local, of `this` and of a kept name; own, inherited and absent
+/// properties, getters run in place and getters that throw, a Proxy, a
+/// String, a Number, a Boolean, null and undefined, an Array, an arguments
+/// object and a function; the function of a method call with its this
+/// value; and a shape that changes between two reads of one expression.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn a_property_read_leaves_the_register_as_found_or_as_the_general_way_wants_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(reads_into_the_result_register)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn reads_into_the_result_register() {
+    let script = r##"// A property read puts what it finds straight into the result register, and finding nothing leaves the
+// register to the general way. Reads that are answered by the cache, and reads that are not, next to values
+// that have to survive them: of a value in the register (`f().x`), of a local (`p.x`), of `this`, of a kept
+// name; own, inherited, absent, a getter, a getter that throws, a Proxy, a String, a Number, null and
+// undefined, an Array, an arguments object, a function.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + f()); } catch (e) { out.push(label + "!" + e.name); } }
+(function () {
+  var calls = 0;
+  var proto = { inherited: "i", get viaProto() { calls++; return "gp" + calls; } };
+  function make(n) { var o = Object.create(proto); o.own = "o" + n; Object.defineProperty(o, "g", { get: function () { calls++; return "g" + n; }, configurable: true }); return o; }
+  var a = make(1), b = make(2);
+  var bad = { get boom() { throw new RangeError("boom"); } };
+  var px = new Proxy({ t: "px" }, { get: function (t, k) { calls++; return k === "t" ? t.t : undefined; } });
+  function id(v) { return v; }
+  function C(n) { this.n = n; this.o = { deep: n * 2 }; }
+  C.prototype.sum = function () { return this.n + this.o.deep + this.missing; };
+  C.prototype.viaGetter = function () { return this.g2 + ":" + this.n; };
+  Object.defineProperty(C.prototype, "g2", { get: function () { calls++; return "G" + this.n; } });
+  const kept = { k: "K", get kg() { calls++; return "kg"; } };
+  // Values around a read that is answered, and around one that is not.
+  for (var round = 0; round < 3; round++) {
+    var p = round & 1 ? b : a;
+    out.push(p.own + p.inherited + String(p.absent) + p.g + p.viaProto);
+    out.push(id(p).own + id(p).inherited + String(id(p).absent) + id(p).g + id(px).t + String(id(px).none));
+    out.push([p.own, p.g, p.own, p.absent, p.viaProto, p.own].join("|"));
+    out.push((p.absent || p.own) + (p.g && p.inherited) + (p.absent ?? p.g));
+    var c = new C(round + 1);
+    out.push(String(c.sum()), c.viaGetter(), c.o.deep + c.n);
+    for (var i = 0; i < 2; i++) out.push(kept.k + kept.kg + kept.k + String(kept.none));
+  }
+  // Reads of what is no object, each way.
+  var s = "text", n = 7, t = true, z = null, u, arr = [1, 2, 3], f = function (x, y) { return arguments; }, args = f(1, 2, 3);
+  note("string", function () { return s.length + ":" + id(s).length + ":" + s.missing + ":" + typeof s.charAt + ":" + id(s).at(1); });
+  note("number", function () { return typeof n.toFixed + ":" + id(n).missing + ":" + n.toString(2) + ":" + id(1.5).toFixed(1); });
+  note("boolean", function () { return String(t.missing) + typeof id(t).valueOf; });
+  note("array", function () { return arr.length + ":" + id(arr).length + ":" + typeof arr.push + ":" + String(arr.missing) + ":" + arr[0]; });
+  note("arguments", function () { return args.length + ":" + id(args).length + ":" + String(args.missing); });
+  note("function", function () { return f.length + f.name + ":" + typeof id(f).call + ":" + String(f.missing); });
+  note("null local", function () { return z.x; });
+  note("null value", function () { return id(z).x; });
+  note("undefined local", function () { return u.x; });
+  note("undefined value", function () { return id(u).x; });
+  note("throwing getter local", function () { return bad.boom; });
+  note("throwing getter value", function () { return id(bad).boom; });
+  note("this of nothing", function () { "use strict"; return (function () { return this.x; })(); });
+  note("this of a number", function () { "use strict"; return (function () { return typeof this.toFixed + String(this.missing); }).call(5); });
+  // The function of a method call found by the cache, with its this value, around misses.
+  var obj = { v: 3, m: function (x) { return this.v + x; }, get gm() { return function (x) { return "gm" + x + this.v; }; } };
+  out.push(obj.m(obj.v) + obj.gm(obj.v) + id(obj).m(id(obj).v) + id(obj).gm(1) + arr.map(function (x) { return obj.m(x); }).join(""));
+  note("method of nothing", function () { return obj.none(1); });
+  note("method of null", function () { return z.m(1); });
+  // A shape that changes between two reads of one expression.
+  var q = { a: 1, get grow() { this.b = (this.b || 0) + 1; delete this.a; this.a = this.b * 10; return "!"; } };
+  for (var j = 0; j < 4; j++) out.push(q.a + q.grow + q.a + q.b);
+  out.push("calls", calls);
+})();
+out.join(" ")"##;
+    let expected = r##"o1iundefinedg1gp2 o1iundefinedg1pxundefined o1|g1|o1||gp7|o1 o1ig1 NaN G1:1 3 KkgKundefined KkgKundefined o2iundefinedg2gp14 o2iundefinedg2pxundefined o2|g2|o2||gp19|o2 o2ig2 NaN G2:2 6 KkgKundefined KkgKundefined o1iundefinedg1gp26 o1iundefinedg1pxundefined o1|g1|o1||gp31|o1 o1ig1 NaN G3:3 9 KkgKundefined KkgKundefined string=4:4:undefined:function:e number=function:undefined:111:1.5 boolean=undefinedfunction array=3:3:function:undefined:1 arguments=3:3:undefined function=2f:function:undefined null local!TypeError null value!TypeError undefined local!TypeError undefined value!TypeError throwing getter local!RangeError throwing getter value!RangeError this of nothing!TypeError this of a number=functionundefined 6gm336gm13456 method of nothing!TypeError method of null!TypeError 1!101 10!202 20!303 30!404 calls 36"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
