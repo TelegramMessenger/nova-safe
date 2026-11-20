@@ -15251,3 +15251,165 @@ String(before) + " " + String(thinned)"##;
         "0.30000000000000004,1,number"
     );
 }
+
+/// Calls that the loop of instructions runs in place of the call, of every
+/// kind (a plain function, a method, a closure, a constructor, a getter, a
+/// setter, a bound function, a derived class constructor), down to a depth
+/// that is fine and down to one that is one too many, which is a
+/// RangeError the script catches, again and again; and calls that go
+/// through a built-in, which use the native stack, the same. What is
+/// expected is what Node prints for the same script. The loop asks only
+/// how many calls are in progress before it runs one more in place: the
+/// native stack is where it was when the loop was entered. So the same is
+/// run with little native stack allowed, where a call through a built-in
+/// is one too many much sooner and a call in place is not.
+#[test]
+fn calls_in_place_end_at_their_depth_and_native_ones_at_the_stack() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(deep_calls)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn deep_calls() {
+    let script = r##"var out = [];
+function attempt(name, f) { var r; try { r = String(f()); } catch (e) { r = e instanceof RangeError ? "RangeError" : "other " + e; } out.push(name + " " + r); }
+function plain(n) { return n === 0 ? 0 : plain(n - 1) + 1; }
+var holder = { depth: function (n) { return n === 0 ? 0 : this.depth(n - 1) + 1; } };
+function makeClosure() { var calls = 0; function inner(n) { calls++; return n === 0 ? calls : inner(n - 1); } return inner; }
+function Node(n) { this.depth = n; this.next = n === 0 ? null : new Node(n - 1); }
+var getterChain = { n: 0, get down() { if (this.n === 0) return 0; this.n--; return this.down + 1; } };
+var setterChain = { seen: 0, set down(n) { this.seen++; if (n > 0) this.down = n - 1; } };
+function boundTarget(n) { return n === 0 ? 0 : boundSelf(n - 1) + 1; }
+var boundSelf = boundTarget.bind(null);
+function* gen(n) { if (n > 0) for (var v of gen(n - 1)) yield v + 1; else yield 0; }
+class Base { constructor(n) { this.n = n; this.child = n === 0 ? null : new Derived(n - 1); } }
+class Derived extends Base { constructor(n) { super(n); this.derived = true; } }
+var fine = 300, deep = 1000000;
+for (var round = 0; round < 3; round++) {
+  attempt("plain fine", function () { return plain(fine); });
+  attempt("plain deep", function () { return plain(deep); });
+  attempt("method fine", function () { return holder.depth(fine); });
+  attempt("method deep", function () { return holder.depth(deep); });
+  attempt("closure fine", function () { return makeClosure()(fine); });
+  attempt("closure deep", function () { return makeClosure()(deep); });
+  attempt("new fine", function () { return new Node(fine).next.next.depth; });
+  attempt("new deep", function () { return new Node(deep).depth; });
+  attempt("getter fine", function () { getterChain.n = fine; return getterChain.down; });
+  attempt("getter deep", function () { getterChain.n = deep; return getterChain.down; });
+  attempt("setter fine", function () { setterChain.seen = 0; setterChain.down = fine; return setterChain.seen; });
+  attempt("setter deep", function () { setterChain.seen = 0; setterChain.down = deep; return setterChain.seen; });
+  attempt("bound fine", function () { return boundSelf(fine); });
+  attempt("bound deep", function () { return boundSelf(deep); });
+  attempt("generator fine", function () { var last; for (var v of gen(40)) last = v; return last; });
+  attempt("class fine", function () { return new Derived(fine).child.child.derived; });
+  attempt("class deep", function () { return new Derived(deep).n; });
+}
+// After every one of those, things are as they were: the same calls work, and state is whole.
+getterChain.n = 3;
+out.push([plain(50), holder.depth(50), boundSelf(50), new Node(5).next.depth, getterChain.down, getterChain.n].join(","));
+// A deep call from inside a callback of a built-in, and a built-in called at the bottom of a deep call.
+attempt("callback then deep", function () { return [1, 2, 3].map(function (x) { try { return plain(deep); } catch (e) { return e instanceof RangeError ? x : -1; } }).join(""); });
+function bottom(n) { return n === 0 ? [3, 1, 2].sort().join("") : bottom(n - 1); }
+attempt("built-in at the bottom", function () { return bottom(fine); });
+// Calls that are not run in place (each goes through a built-in) use the native stack: too deep is a RangeError too.
+function through(n) { return [n].map(function (x) { return x ? through(x - 1) + 1 : 0; })[0]; }
+attempt("through a built-in fine", function () { return through(20); });
+attempt("through a built-in deep", function () { return through(deep); });
+attempt("plain after that", function () { return plain(fine); });
+attempt("plain deep after that", function () { return plain(deep); });
+out.join("\n")"##;
+    let expected = r##"plain fine 300
+plain deep RangeError
+method fine 300
+method deep RangeError
+closure fine 301
+closure deep RangeError
+new fine 298
+new deep RangeError
+getter fine 300
+getter deep RangeError
+setter fine 301
+setter deep RangeError
+bound fine 300
+bound deep RangeError
+generator fine 40
+class fine true
+class deep RangeError
+plain fine 300
+plain deep RangeError
+method fine 300
+method deep RangeError
+closure fine 301
+closure deep RangeError
+new fine 298
+new deep RangeError
+getter fine 300
+getter deep RangeError
+setter fine 301
+setter deep RangeError
+bound fine 300
+bound deep RangeError
+generator fine 40
+class fine true
+class deep RangeError
+plain fine 300
+plain deep RangeError
+method fine 300
+method deep RangeError
+closure fine 301
+closure deep RangeError
+new fine 298
+new deep RangeError
+getter fine 300
+getter deep RangeError
+setter fine 301
+setter deep RangeError
+bound fine 300
+bound deep RangeError
+generator fine 40
+class fine true
+class deep RangeError
+50,50,50,4,3,0
+callback then deep 123
+built-in at the bottom 123
+through a built-in fine 20
+through a built-in deep RangeError
+plain after that 300
+plain deep after that RangeError"##;
+    let text = |engine: &mut Engine, script: &str| match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => std::string::String::from_utf8(found).expect("text"),
+        other => panic!("{script}: {other:?}"),
+    };
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    let found = text(&mut engine, script);
+    for (found, expected) in found.lines().zip(expected.lines()) {
+        assert_eq!(found, expected);
+    }
+    assert_eq!(found.lines().count(), expected.lines().count());
+    // And after a collection, with what the deep calls left to collect.
+    engine.collect_garbage().unwrap();
+    let again = "var r = []; try { plain(deep); } catch (e) { r.push(e instanceof RangeError); } r.push(plain(fine), through(15)); r.join()";
+    assert_eq!(text(&mut engine, again), "true,300,15");
+    // With little native stack allowed, calls in place go as deep as they
+    // did (they use none of it), and too deep is a RangeError of either
+    // kind of call.
+    let (mut engine, _, _) = limited(64 << 20, 1 << 20);
+    let kinds = r##"function plain(n) { return n === 0 ? 0 : plain(n - 1) + 1; }
+var holder = { depth: function (n) { return n === 0 ? 0 : this.depth(n - 1) + 1; } };
+function Node(n) { this.depth = n; this.next = n === 0 ? null : new Node(n - 1); }
+function through(n) { return [n].map(function (x) { return x ? through(x - 1) + 1 : 0; })[0]; }
+[plain(3000), holder.depth(3000), new Node(3000).depth].join()"##;
+    assert_eq!(text(&mut engine, kinds), "3000,3000,3000");
+    let too_deep = r##"var r = [];
+[function () { plain(1e6); }, function () { holder.depth(1e6); }, function () { new Node(1e6); }, function () { through(1e6); }].forEach(function (f) {
+  try { f(); r.push("returned"); } catch (e) { r.push(e instanceof RangeError); }
+});
+r.push(plain(3000));
+r.join()"##;
+    assert_eq!(text(&mut engine, too_deep), "true,true,true,true,3000");
+    engine.collect_garbage().unwrap();
+    assert_eq!(text(&mut engine, too_deep), "true,true,true,true,3000");
+}
