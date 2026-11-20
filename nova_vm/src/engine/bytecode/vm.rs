@@ -2947,6 +2947,28 @@ impl Vm {
                     vm.result = Some(value);
                 }
             }
+            // An operator with a local as its left operand and the result
+            // as its right one.
+            Instruction::ApplyBinaryOperatorToIndexWithResult => {
+                step!(ApplyBinaryOperatorToIndexWithResult);
+                let operation = instr.get_first_index();
+                let (slot, operator) = Instruction::fused_slot_and_operator(operation);
+                let left = vm.stack[slot];
+                let Some(right) = vm.result else {
+                    return Plain::No;
+                };
+                let Some(value) = Instruction::fused_operator(operator)
+                    .and_then(|kind| Self::number_operation(agent, kind, left, right, gc))
+                else {
+                    return Plain::No;
+                };
+                if Instruction::fused_pushes(operation) {
+                    vm.result = None;
+                    vm.stack.push(value);
+                } else {
+                    vm.result = Some(value);
+                }
+            }
             // An operator on the top of the stack and the result, whose
             // value replaces the top of the stack or goes to a local.
             Instruction::ApplyBinaryOperatorAndMove => {
@@ -5598,6 +5620,7 @@ impl Vm {
             | Instruction::LoadBindingAtSiteOnce
             | Instruction::ApplyBinaryOperatorWithConstant
             | Instruction::ApplyBinaryOperatorToIndexWithConstant
+            | Instruction::ApplyBinaryOperatorToIndexWithResult
             | Instruction::ApplyBinaryOperatorAndMove
             | Instruction::LoadPropertyWithCachePushReference
             | Instruction::LoadPropertyWithCachePushThis
@@ -5774,6 +5797,7 @@ impl Vm {
             | Instruction::LoadBindingAtSite
             | Instruction::ApplyBinaryOperatorWithConstant
             | Instruction::ApplyBinaryOperatorToIndexWithConstant
+            | Instruction::ApplyBinaryOperatorToIndexWithResult
             | Instruction::ApplyBinaryOperatorAndMove
             | Instruction::LoadPropertyWithCachePushReference
             | Instruction::LoadPropertyWithCachePushThis

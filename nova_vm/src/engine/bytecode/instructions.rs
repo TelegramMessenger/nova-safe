@@ -829,6 +829,15 @@ pub(crate) enum Instruction {
     /// result, which is what the read would find at the place. The
     /// arguments are those of [`Instruction::PutBindingAtSite`].
     PutBindingAtSiteAndGet,
+    /// An arithmetic or bitwise Apply…BinaryOperator whose left operand is a
+    /// local and whose right operand is the result: `x * step` and
+    /// `n + f()`, where the local was pushed before the right operand was
+    /// worked out and is read by the operator now, from its stack slot.
+    /// The first argument is the description of the operation as
+    /// [`Instruction::ApplyBinaryOperatorToIndexWithConstant`] has it, the
+    /// stack slot of the left operand in its low eleven bits; the second
+    /// is not used.
+    ApplyBinaryOperatorToIndexWithResult,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
@@ -837,7 +846,6 @@ pub(crate) enum Instruction {
     // reads instructions with care, and the loop leaves the byte to the
     // general way, which ends as it did. A new instruction takes the
     // first of them.
-    Unused237,
     Unused238,
     Unused239,
     Unused240,
@@ -864,8 +872,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused237
-            | Instruction::Unused238
+        Instruction::Unused238
             | Instruction::Unused239
             | Instruction::Unused240
             | Instruction::Unused241
@@ -964,6 +971,7 @@ impl Instruction {
             | Self::LoadFromIndexStoreConstant
             | Self::ApplyBinaryOperatorWithConstant
             | Self::ApplyBinaryOperatorToIndexWithConstant
+            | Self::ApplyBinaryOperatorToIndexWithResult
             | Self::LoadFromIndexGetFromIndex
             | Self::LoadFromIndexLoadFromIndex
             | Self::JumpIfNotLessThan
@@ -1884,6 +1892,10 @@ impl Instr {
                     Self::print_operation(arg0 as usize)
                 )
             }
+            Instruction::ApplyBinaryOperatorToIndexWithResult => {
+                let (slot, _) = Instruction::fused_slot_and_operator(arg0 as usize);
+                format!("{slot}, {}", Self::print_operation(arg0 as usize))
+            }
             Instruction::BindingPatternBindNamed => {
                 format!(
                     "{{ {}: {} }}",
@@ -2067,7 +2079,8 @@ impl Instruction {
         const LOADINDEXPROPERTYWITHCACHE: u8 = Instruction::LoadIndexPropertyWithCache.as_u8();
         const PUTINDEXPROPERTYWITHCACHE: u8 = Instruction::PutIndexPropertyWithCache.as_u8();
         const PUTBINDINGATSITEANDGET: u8 = Instruction::PutBindingAtSiteAndGet.as_u8();
-        const UNUSED237: u8 = Instruction::Unused237.as_u8();
+        const APPLYBINARYOPERATORTOINDEXWITHRESULT: u8 =
+            Instruction::ApplyBinaryOperatorToIndexWithResult.as_u8();
         const UNUSED238: u8 = Instruction::Unused238.as_u8();
         const UNUSED239: u8 = Instruction::Unused239.as_u8();
         const UNUSED240: u8 = Instruction::Unused240.as_u8();
@@ -2653,7 +2666,9 @@ impl Instruction {
             LOADINDEXPROPERTYWITHCACHE => Some(Instruction::LoadIndexPropertyWithCache),
             PUTINDEXPROPERTYWITHCACHE => Some(Instruction::PutIndexPropertyWithCache),
             PUTBINDINGATSITEANDGET => Some(Instruction::PutBindingAtSiteAndGet),
-            UNUSED237 => Some(Instruction::Unused237),
+            APPLYBINARYOPERATORTOINDEXWITHRESULT => {
+                Some(Instruction::ApplyBinaryOperatorToIndexWithResult)
+            }
             UNUSED238 => Some(Instruction::Unused238),
             UNUSED239 => Some(Instruction::Unused239),
             UNUSED240 => Some(Instruction::Unused240),
@@ -2678,7 +2693,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() >= Instruction::Unused237.as_u8()
+        self.as_u8() >= Instruction::Unused238.as_u8()
     }
 }
 
@@ -2733,7 +2748,7 @@ mod tests {
             assert_eq!(kind.as_u8(), byte);
             assert_eq!(
                 kind.is_unused(),
-                byte > Instruction::PutBindingAtSiteAndGet.as_u8()
+                byte > Instruction::ApplyBinaryOperatorToIndexWithResult.as_u8()
             );
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
@@ -2747,14 +2762,15 @@ mod tests {
         assert!(!Instruction::LoadIndexPropertyWithCache.is_unused());
         assert!(!Instruction::PutIndexPropertyWithCache.is_unused());
         assert!(!Instruction::PutBindingAtSiteAndGet.is_unused());
-        assert!(Instruction::Unused237.is_unused());
+        assert!(!Instruction::ApplyBinaryOperatorToIndexWithResult.is_unused());
+        assert!(Instruction::Unused238.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused237.as_u8()];
+        let code = [Instruction::Unused238.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }

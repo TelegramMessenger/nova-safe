@@ -547,6 +547,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         }
         [
             (Instruction::ApplyBinaryOperatorToIndexWithConstant, 1),
+            (Instruction::ApplyBinaryOperatorToIndexWithResult, 1),
             (Instruction::ApplyBinaryOperatorWithConstant, 3),
         ]
         .into_iter()
@@ -560,9 +561,11 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     /// that leaves its value as the result, keeps the description of its
     /// operation.
     fn recent_fused_operation(&self) -> Option<usize> {
-        let description = if let Some(start) =
-            self.recent_instruction(0, Instruction::ApplyBinaryOperatorToIndexWithConstant)
-        {
+        let description = if let Some(start) = self
+            .recent_instruction(0, Instruction::ApplyBinaryOperatorToIndexWithConstant)
+            .or_else(|| {
+                self.recent_instruction(0, Instruction::ApplyBinaryOperatorToIndexWithResult)
+            }) {
             start + 1
         } else {
             self.recent_instruction(0, Instruction::ApplyBinaryOperatorWithConstant)? + 3
@@ -624,6 +627,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         // not to; on its own, it is the operator again.
         for (fused, description) in [
             (Instruction::ApplyBinaryOperatorToIndexWithConstant, 1),
+            (Instruction::ApplyBinaryOperatorToIndexWithResult, 1),
             (Instruction::ApplyBinaryOperatorWithConstant, 3),
         ] {
             if let Some(start) = self.recent_instruction(nth, fused) {
@@ -669,6 +673,52 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.push_instruction(Instruction::ApplyBinaryOperatorToIndexWithConstant);
         self.add_index(Instruction::fused_slot_with_operator(slot, operator));
         self.instructions.extend_from_slice(&constant);
+    }
+
+    /// An arithmetic or bitwise operator whose left operand is the local
+    /// in `slot` and whose right operand was just worked out, by code that
+    /// does not assign to the local: the local is not pushed before that
+    /// code, the operator reads it from its slot. A right operand that is
+    /// a constant or another local is what the instructions for those
+    /// take; any other is the result that
+    /// ApplyBinaryOperatorToIndexWithResult takes.
+    pub(super) fn add_operator_on_local(&mut self, slot: usize, operator: Instruction) {
+        debug_assert!(slot < Instruction::FUSED_SLOTS);
+        let Some(number) = operator.fused_operator_number() else {
+            unreachable!("an operator that no instruction is fused with")
+        };
+        let slot_bytes = (slot as IndexType).to_ne_bytes();
+        if let Some(constant) = self.recent_instruction(0, Instruction::StoreConstant) {
+            let constant_bytes = self.operand_bytes(constant);
+            self.drop_recent_instructions(constant, 1);
+            self.push_operator_on_local(number, slot_bytes, constant_bytes);
+            return;
+        }
+        if let Some(pushed) = self.recent_instruction(0, Instruction::LoadFromIndexStoreConstant) {
+            // The constant, with a local pushed before it that is no
+            // operand of this operator: the push by itself again.
+            let pushed_slot = self.operand_bytes(pushed);
+            let constant_bytes = [self.instructions[pushed + 3], self.instructions[pushed + 4]];
+            self.drop_recent_instructions(pushed, 1);
+            self.push_instruction(Instruction::LoadFromIndex);
+            self.instructions.extend_from_slice(&pushed_slot);
+            self.push_operator_on_local(number, slot_bytes, constant_bytes);
+            return;
+        }
+        if let Some(local) = self.recent_instruction(0, Instruction::GetValueFromIndex) {
+            // Two locals: both by one instruction, the operator by its own,
+            // which goes on to take what is done with its value.
+            let right = self.operand_bytes(local);
+            self.drop_recent_instructions(local, 1);
+            self.push_instruction(Instruction::LoadFromIndexGetFromIndex);
+            self.instructions.extend_from_slice(&slot_bytes);
+            self.instructions.extend_from_slice(&right);
+            self.add_instruction(operator);
+            return;
+        }
+        self.push_instruction(Instruction::ApplyBinaryOperatorToIndexWithResult);
+        self.add_index(Instruction::fused_slot_with_operator(slot, number));
+        self.add_index(0);
     }
 
     /// Removes the `count` most recent instructions, which start at `start`.

@@ -1627,6 +1627,25 @@ fn compile_concatenation_chain<'a, 's, 'gc, 'scope>(
     Some(Ok(ValueOutput::Value))
 }
 
+/// The instruction of an arithmetic or bitwise operator that other
+/// instructions are fused with ([`Instruction::fused_operator_number`]).
+fn fused_operator_instruction(operator: BinaryOperator) -> Option<Instruction> {
+    Some(match operator {
+        BinaryOperator::Addition => Instruction::ApplyAdditionBinaryOperator,
+        BinaryOperator::Subtraction => Instruction::ApplySubtractionBinaryOperator,
+        BinaryOperator::Multiplication => Instruction::ApplyMultiplicationBinaryOperator,
+        BinaryOperator::Division => Instruction::ApplyDivisionBinaryOperator,
+        BinaryOperator::Remainder => Instruction::ApplyRemainderBinaryOperator,
+        BinaryOperator::ShiftLeft => Instruction::ApplyShiftLeftBinaryOperator,
+        BinaryOperator::ShiftRight => Instruction::ApplyShiftRightBinaryOperator,
+        BinaryOperator::ShiftRightZeroFill => Instruction::ApplyShiftRightZeroFillBinaryOperator,
+        BinaryOperator::BitwiseOR => Instruction::ApplyBitwiseORBinaryOperator,
+        BinaryOperator::BitwiseXOR => Instruction::ApplyBitwiseXORBinaryOperator,
+        BinaryOperator::BitwiseAnd => Instruction::ApplyBitwiseAndBinaryOperator,
+        _ => return None,
+    })
+}
+
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::BinaryExpression<'s> {
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
@@ -1637,6 +1656,26 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Binary
         }
         // 1. Let lref be ? Evaluation of leftOperand.
         let lref = self.left.compile(ctx)?;
+        // An arithmetic or bitwise operator on a local that the right
+        // operand does not assign to: the local is what it was when the
+        // operator runs, and is read from its slot then, not pushed before
+        // the right operand is worked out (`x * step`). A literal as the
+        // right operand is left to the instructions that take a constant.
+        if let PlaceOrValue::Place(Place::Stack { stack_slot, .. }) = &lref
+            && !self.right.is_literal()
+            && let Some(operator) = fused_operator_instruction(self.operator)
+            && (*stack_slot as usize) < Instruction::FUSED_SLOTS
+            && assignment::slot_of_object_kept_through(ctx, &self.left, &self.right)
+                == Some(*stack_slot)
+        {
+            let slot = *stack_slot as usize;
+            // 3. Let rref be ? Evaluation of rightOperand.
+            // 4. Let rval be ? GetValue(rref).
+            self.right.compile(ctx)?.get_value(ctx)?;
+            // 5. Return ? ApplyStringOrNumericBinaryOperator(lval, opText, rval).
+            ctx.add_operator_on_local(slot, operator);
+            return Ok(ValueOutput::Value);
+        }
         // 2. Let lval be ? GetValue(lref).
         let _lval = lref.get_value(ctx)?;
         let lval_on_stack = ctx.load_to_stack();

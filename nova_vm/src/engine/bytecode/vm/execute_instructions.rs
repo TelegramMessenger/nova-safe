@@ -2333,6 +2333,7 @@ pub(super) fn execute_fused_instruction<'gc>(
         }
         Instruction::ApplyBinaryOperatorWithConstant
         | Instruction::ApplyBinaryOperatorToIndexWithConstant
+        | Instruction::ApplyBinaryOperatorToIndexWithResult
         | Instruction::ApplyBinaryOperatorAndMove => {
             let operation = if instr.kind == Instruction::ApplyBinaryOperatorWithConstant {
                 instr.get_second_index()
@@ -2340,7 +2341,12 @@ pub(super) fn execute_fused_instruction<'gc>(
                 instr.get_first_index()
             };
             let (slot, operator) = Instruction::fused_slot_and_operator(operation);
-            if instr.kind != Instruction::ApplyBinaryOperatorAndMove {
+            if instr.kind == Instruction::ApplyBinaryOperatorToIndexWithResult {
+                // LoadFromIndex, as it was before the right operand was
+                // worked out: the local is what it was then, and the right
+                // operand stays the result.
+                vm.stack.push(vm.stack[slot]);
+            } else if instr.kind != Instruction::ApplyBinaryOperatorAndMove {
                 let (left, constant) = if instr.kind == Instruction::ApplyBinaryOperatorWithConstant
                 {
                     // Load

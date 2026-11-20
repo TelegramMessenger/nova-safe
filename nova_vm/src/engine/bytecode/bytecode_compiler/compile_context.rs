@@ -1500,6 +1500,10 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             .add_instruction_with_cache(instruction, cache);
     }
 
+    pub(super) fn add_operator_on_local(&mut self, slot: usize, operator: Instruction) {
+        self.executable.add_operator_on_local(slot, operator);
+    }
+
     pub(super) fn add_instruction_with_identifier_cache_and_slot(
         &mut self,
         instruction: Instruction,

@@ -99,7 +99,7 @@ fn is_stack_variable<'s>(
 /// else changes such a variable in between: a function that is called has
 /// no way to it, and a direct `eval` or a `with` in the function leaves it
 /// no slot.
-fn slot_of_object_kept_through<'s>(
+pub(super) fn slot_of_object_kept_through<'s>(
     ctx: &CompileContext<'_, 's, '_, '_>,
     object: &ast::Expression<'s>,
     value: &ast::Expression<'s>,
