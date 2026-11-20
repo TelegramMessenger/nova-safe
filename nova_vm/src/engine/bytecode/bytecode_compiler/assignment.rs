@@ -8,16 +8,16 @@ use oxc_ast::{
     match_member_expression, match_simple_assignment_target,
 };
 
+use oxc_span::GetSpan;
+
 use super::CompileExpressionVariants;
 
 use crate::ecmascript::String;
-#[cfg(feature = "typescript")]
-use crate::engine::bytecode::bytecode_compiler::PlaceOrValue;
 use crate::engine::{
     Instruction,
     bytecode::bytecode_compiler::{
         CompileContext, CompileEvaluation, ExpressionError, NamedEvaluationParameter, Place,
-        ValueOutput, is_anonymous_function_definition,
+        PlaceOrValue, ValueOutput, is_anonymous_function_definition,
     },
 };
 
@@ -90,6 +90,38 @@ fn is_stack_variable<'s>(
     let symbol = ctx.scoping().get_reference(reference).symbol_id();
     (identifier.name == "arguments" && ctx.arguments_slot(symbol).is_some())
         || symbol.is_some_and(|symbol| ctx.get_variable_stack_index(symbol).is_some())
+}
+
+/// The stack slot of `object`, where it is the name of a variable that the
+/// function keeps in one and nothing in `value` assigns to the variable: the
+/// object of `object.name = value` is then what the slot holds when the
+/// assignment is made, as it was before the value was evaluated. Nothing
+/// else changes such a variable in between: a function that is called has
+/// no way to it, and a direct `eval` or a `with` in the function leaves it
+/// no slot.
+fn slot_of_object_kept_through<'s>(
+    ctx: &CompileContext<'_, 's, '_, '_>,
+    object: &ast::Expression<'s>,
+    value: &ast::Expression<'s>,
+) -> Option<u32> {
+    let ast::Expression::Identifier(identifier) = object else {
+        return None;
+    };
+    let symbol = ctx
+        .scoping()
+        .get_reference(identifier.reference_id.get()?)
+        .symbol_id()?;
+    let slot = ctx.get_variable_stack_index(symbol)?;
+    let within = value.span();
+    let nodes = ctx.nodes();
+    let assigned = ctx
+        .scoping()
+        .get_resolved_references(symbol)
+        .any(|reference| {
+            let at = nodes.get_node(reference.node_id()).kind().span();
+            reference.is_write() && within.start <= at.start && at.end <= within.end
+        });
+    (!assigned).then_some(slot)
 }
 
 /// The instruction of the operator of a compound assignment.
@@ -171,7 +203,24 @@ fn compile_named_assignment<'s, 'gc>(
 ) -> Result<ValueOutput<'gc>, ExpressionError> {
     // 1. Let baseReference be ? Evaluation of MemberExpression.
     // 2. Let baseValue be ? GetValue(baseReference).
-    target.object.compile(ctx)?.get_value(ctx)?;
+    let object = target.object.compile(ctx)?;
+    // A local that the value does not assign to stays in its slot, where
+    // the assignment finds it: it is not pushed and popped.
+    if let PlaceOrValue::Place(Place::Stack { stack_slot, .. }) = &object
+        && slot_of_object_kept_through(ctx, &target.object, right) == Some(*stack_slot)
+    {
+        let slot = *stack_slot as usize;
+        let rval = right.compile(ctx).and_then(|r| r.get_value(ctx))?;
+        let cache = ctx.create_property_lookup_cache(name.to_property_key());
+        ctx.add_instruction_with_identifier_cache_and_slot(
+            Instruction::PutIndexPropertyWithCache,
+            name,
+            cache,
+            slot,
+        );
+        return Ok(rval);
+    }
+    object.get_value(ctx)?;
     ctx.add_instruction(Instruction::Load);
     let object_on_stack = ctx.mark_stack_value();
     let rval = match right.compile(ctx).and_then(|r| r.get_value(ctx)) {
@@ -208,12 +257,30 @@ fn compile_named_compound_assignment<'s, 'gc>(
     ctx: &mut CompileContext<'_, 's, 'gc, '_>,
 ) -> Result<ValueOutput<'gc>, ExpressionError> {
     // 1. Let lref be ? Evaluation of LeftHandSideExpression: its object.
-    target.object.compile(ctx)?.get_value(ctx)?;
-    ctx.add_instruction(Instruction::Load);
-    let object_on_stack = ctx.mark_stack_value();
+    let object = target.object.compile(ctx)?;
+    // A local that the value does not assign to stays in its slot, where
+    // the assignment finds it a third time: it is not pushed and popped.
+    let slot = match &object {
+        PlaceOrValue::Place(Place::Stack { stack_slot, .. })
+            if slot_of_object_kept_through(ctx, &target.object, &this.right)
+                == Some(*stack_slot) =>
+        {
+            Some(*stack_slot as usize)
+        }
+        _ => None,
+    };
+    let object_on_stack = if slot.is_none() {
+        object.get_value(ctx)?;
+        ctx.add_instruction(Instruction::Load);
+        Some(ctx.mark_stack_value())
+    } else {
+        None
+    };
     // 2. Let lval be ? GetValue(lref).
     if let Err(err) = target.compile(ctx).and_then(|place| place.get_value(ctx)) {
-        object_on_stack.forget(ctx);
+        if let Some(object_on_stack) = object_on_stack {
+            object_on_stack.forget(ctx);
+        }
         return Err(err);
     }
     let lval_copy = ctx.load_to_stack();
@@ -221,7 +288,9 @@ fn compile_named_compound_assignment<'s, 'gc>(
     // 4. Let rval be ? GetValue(rref).
     if let Err(err) = this.right.compile(ctx).and_then(|r| r.get_value(ctx)) {
         lval_copy.forget(ctx);
-        object_on_stack.forget(ctx);
+        if let Some(object_on_stack) = object_on_stack {
+            object_on_stack.forget(ctx);
+        }
         return Err(err);
     }
     // 7. Let r be ? ApplyStringOrNumericBinaryOperator(lval, opText, rval).
@@ -230,9 +299,25 @@ fn compile_named_compound_assignment<'s, 'gc>(
         this.operator.to_binary_operator().unwrap(),
     ));
     // 8. Perform ? PutValue(lref, r).
-    object_on_stack.forget(ctx);
     let cache = ctx.create_property_lookup_cache(name.to_property_key());
-    ctx.add_instruction_with_identifier_and_cache(Instruction::PutPropertyWithCache, name, cache);
+    match slot {
+        Some(slot) => ctx.add_instruction_with_identifier_cache_and_slot(
+            Instruction::PutIndexPropertyWithCache,
+            name,
+            cache,
+            slot,
+        ),
+        None => {
+            if let Some(object_on_stack) = object_on_stack {
+                object_on_stack.forget(ctx);
+            }
+            ctx.add_instruction_with_identifier_and_cache(
+                Instruction::PutPropertyWithCache,
+                name,
+                cache,
+            );
+        }
+    }
     Ok(ValueOutput::Value)
 }
 

@@ -1500,6 +1500,22 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             .add_instruction_with_cache(instruction, cache);
     }
 
+    pub(super) fn add_instruction_with_identifier_cache_and_slot(
+        &mut self,
+        instruction: Instruction,
+        identifier: String<'gc>,
+        cache: PropertyLookupCache<'gc>,
+        slot: usize,
+    ) {
+        self.executable
+            .add_instruction_with_identifier_cache_and_slot(
+                instruction,
+                identifier.to_property_key(),
+                cache,
+                slot,
+            );
+    }
+
     pub(super) fn add_instruction_with_cache_and_immediate(
         &mut self,
         instruction: Instruction,

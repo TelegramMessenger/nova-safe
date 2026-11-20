@@ -2660,8 +2660,20 @@ pub(super) fn execute_fused_property_instruction<'gc>(
     instr: Instr,
     mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    if instr.kind == Instruction::PutPropertyWithCache {
-        if let Some(&Value::Object(object)) = vm.stack.last() {
+    if matches!(
+        instr.kind,
+        Instruction::PutPropertyWithCache | Instruction::PutIndexPropertyWithCache
+    ) {
+        // The object: on the stack, or in the stack slot that the
+        // instruction names.
+        let in_slot = instr.kind == Instruction::PutIndexPropertyWithCache;
+        let object = if in_slot {
+            let slot = Instr::wide_third_index(executable.get_instructions(agent).code(), vm.ip);
+            Some(vm.stack[slot])
+        } else {
+            vm.stack.last().copied()
+        };
+        if let Some(Value::Object(object)) = object {
             // The cache does not know the object's shape yet. What a read
             // of the property finds is what the assignment goes by (the
             // object's own property, one it inherits, or none anywhere),
@@ -2678,7 +2690,7 @@ pub(super) fn execute_fused_property_instruction<'gc>(
         // EvaluatePropertyAccessWithIdentifierKey of the object, with the
         // value kept aside, then PutValueWithCache.
         let value = vm.result.take().unwrap();
-        vm.result = vm.stack.pop();
+        vm.result = if in_slot { object } else { vm.stack.pop() };
         execute_evaluate_property_access_with_identifier_key(
             agent,
             vm,

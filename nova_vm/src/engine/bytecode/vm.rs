@@ -1191,8 +1191,9 @@ impl Vm {
                     // The getter or setter of the property that the
                     // instruction reads or assigns, called in place of it.
                     Plain::Accessor => {
-                        let setter = instr.kind == Instruction::PutPropertyWithCache;
-                        if let Some((callee, call)) = self.accessor_called_in_place(agent, setter) {
+                        if let Some((callee, call)) =
+                            self.accessor_called_in_place(agent, instr.kind)
+                        {
                             break Change::Call(callee, call);
                         }
                     }
@@ -1905,8 +1906,12 @@ impl Vm {
     fn accessor_called_in_place(
         &mut self,
         agent: &Agent,
-        setter: bool,
+        kind: Instruction,
     ) -> Option<(CalledInPlace, Instr)> {
+        let setter = matches!(
+            kind,
+            Instruction::PutPropertyWithCache | Instruction::PutIndexPropertyWithCache
+        );
         let call = Instr::new_with_arg(Instruction::EvaluateCall, u16::from(setter));
         if let Some(mut callee) = self.function_called_in_place(agent, call)
             && let Some(object) = self.result.take()
@@ -1925,7 +1930,12 @@ impl Vm {
         if setter {
             let value = self.stack.pop();
             self.stack.pop();
-            self.stack.extend(self.result.take());
+            // The object goes back on the stack where the instruction took
+            // it from there, and nowhere where it is in a slot.
+            let object = self.result.take();
+            if kind == Instruction::PutPropertyWithCache {
+                self.stack.extend(object);
+            }
             self.result = value;
         } else {
             self.stack.pop();
@@ -3769,6 +3779,38 @@ impl Vm {
                 vm.stack.pop();
                 vm.result = None;
             }
+            // `p.x = v` of a local `p`: as PutPropertyWithCache, with the
+            // object in its stack slot and nothing to pop.
+            Instruction::PutIndexPropertyWithCache => {
+                step!(PutIndexPropertyWithCache);
+                let (Some(value), Value::Object(object)) =
+                    (vm.result, vm.stack[Instr::window_third_index(window)])
+                else {
+                    return Plain::No;
+                };
+                let cache = tables.cache(instr.get_second_index(), gc);
+                match object.set_value_by_cache(agent, cache, value) {
+                    CachedSet::Done => {}
+                    CachedSet::Absent => {
+                        let key = tables.property_key(instr.get_first_index(), gc);
+                        if !ordinary_add_own_data_by_cache(agent, object, key, value, cache, gc) {
+                            return Plain::No;
+                        }
+                    }
+                    CachedSet::Unknown => {
+                        if let Some(setter) = object.setter_by_cache(agent, cache, gc) {
+                            // As there: the setter, the value and the
+                            // object are a call.
+                            vm.stack.push(Value::ECMAScriptFunction(setter.unbind()));
+                            vm.stack.push(value);
+                            vm.result = Some(Value::Object(object));
+                            return Plain::Accessor;
+                        }
+                        return Plain::No;
+                    }
+                }
+                vm.result = None;
+            }
             // `o.p = v` where the property cache knows the shape of `o` and
             // `p` is a writable data property of its own.
             Instruction::PutValueWithCache => {
@@ -5553,6 +5595,7 @@ impl Vm {
                 execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
             Instruction::PutPropertyWithCache
+            | Instruction::PutIndexPropertyWithCache
             | Instruction::GetThisPropertyWithCache
             | Instruction::GetThisPropertyWithCacheKeepReference
             | Instruction::GetIndexPropertyWithCache
@@ -5725,6 +5768,7 @@ impl Vm {
             | Instruction::LoadPropertyWithCachePushThis
             | Instruction::LoadIndexPropertyWithCachePushThis
             | Instruction::LoadIndexPropertyWithCache
+            | Instruction::PutIndexPropertyWithCache
             | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }

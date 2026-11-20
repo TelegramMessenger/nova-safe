@@ -1294,6 +1294,26 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         }
     }
 
+    /// PutIndexPropertyWithCache: the name, the cache and the stack slot of
+    /// the object, laid out as GetIndexPropertyWithCache has its own.
+    pub(super) fn add_instruction_with_identifier_cache_and_slot(
+        &mut self,
+        instruction: Instruction,
+        identifier: PropertyKey<'gc>,
+        cache: PropertyLookupCache<'gc>,
+        slot: usize,
+    ) {
+        debug_assert_eq!(instruction.argument_count(), 4);
+        debug_assert!(instruction.has_identifier_index() && instruction.has_cache_index());
+        self.push_instruction(instruction);
+        let identifier = self.add_identifier(identifier);
+        self.add_index_of(identifier, TOO_MANY_NAMES);
+        let cache = self.add_cache(cache);
+        self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
+        self.add_index(slot);
+        self.add_index(0);
+    }
+
     /// StepValueWithCache: the cache of the assignment, and which step it
     /// is and what it leaves.
     pub(super) fn add_instruction_with_cache_and_immediate(
