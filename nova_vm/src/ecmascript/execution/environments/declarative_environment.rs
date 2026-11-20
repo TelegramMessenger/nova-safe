@@ -8,8 +8,8 @@ use crate::hashing::AHashMap;
 
 use crate::{
     ecmascript::{
-        Agent, DeclarativeEnvironment, Environment, Environments, ExceptionType, JsResult,
-        OuterEnv, String, Value,
+        Agent, DeclarativeEnvironment, Environment, Environments, ExceptionType, HeapString,
+        JsResult, OuterEnv, SmallString, String, Value,
     },
     engine::{Bindable, NoGcScope},
     heap::{
@@ -34,12 +34,66 @@ pub(crate) struct DeclarativeEnvironmentRecord {
     bindings: BindingMap,
 }
 
+/// The name of a binding as its entry keeps it: eight bytes that two names
+/// have alike exactly where they are the same String, so that a name is
+/// compared with the one at a place by one comparison. Compared as the
+/// Strings they are, two names were looked at kind first and then by what
+/// the kind keeps (the seven bytes of a short name four, two and one at a
+/// time), a dozen instructions of every read and every assignment of a
+/// variable where it was found the last time.
+///
+/// The first byte says which kind of String the name is; then come the
+/// seven bytes of a short name, or three zeros and the index of a name of
+/// the heap. A name is given back as the String it was made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NameKey([u8; 8]);
+
+impl NameKey {
+    const HEAP: u8 = 0;
+    const SHORT: u8 = 1;
+
+    #[inline(always)]
+    fn of(name: String) -> Self {
+        match name {
+            String::String(name) => {
+                let index = name.get_index_u32().to_le_bytes();
+                Self([Self::HEAP, 0, 0, 0, index[0], index[1], index[2], index[3]])
+            }
+            String::SmallString(name) => {
+                let data = name.data();
+                Self([
+                    Self::SHORT,
+                    data[0],
+                    data[1],
+                    data[2],
+                    data[3],
+                    data[4],
+                    data[5],
+                    data[6],
+                ])
+            }
+        }
+    }
+
+    #[inline]
+    fn name(self) -> String<'static> {
+        let Self([kind, a, b, c, d, e, f, g]) = self;
+        if kind == Self::HEAP {
+            String::String(HeapString::from_index_u32(u32::from_le_bytes([d, e, f, g])))
+        } else {
+            let mut name = SmallString::EMPTY;
+            *name.data_mut() = [a, b, c, d, e, f, g];
+            String::SmallString(name)
+        }
+    }
+}
+
 /// Bindings in insertion order, searched linearly while there are few of
 /// them and through a hash index once there are more than
 /// [`LINEAR_BINDINGS`].
 #[derive(Debug, Clone, Default)]
 struct BindingMap {
-    entries: Vec<(String<'static>, Binding)>,
+    entries: Vec<(NameKey, Binding)>,
     index: Option<Box<BindingIndex>>,
     last_found: Cell<u32>,
 }
@@ -100,7 +154,7 @@ struct HashMapDeclarativeEnvironmentRecord {
 impl BindingMap {
     /// Bytes held by the entries and the hash index, if any.
     fn bytes(&self) -> usize {
-        let entries = self.entries.capacity() * core::mem::size_of::<(String<'static>, Binding)>();
+        let entries = self.entries.capacity() * core::mem::size_of::<(NameKey, Binding)>();
         let index = self.index.as_ref().map_or(0, |index| {
             index.map.capacity() * (core::mem::size_of::<(String<'static>, u32)>() + 8)
         });
@@ -110,12 +164,13 @@ impl BindingMap {
     #[inline]
     fn position(&self, name: String) -> Option<usize> {
         let name = name.unbind();
+        let key = NameKey::of(name);
         if let Some(index) = &self.index {
             let last_found = self.last_found.get() as usize;
             if self
                 .entries
                 .get(last_found)
-                .is_some_and(|(key, _)| *key == name)
+                .is_some_and(|(found, _)| *found == key)
             {
                 return Some(last_found);
             }
@@ -126,7 +181,7 @@ impl BindingMap {
             self.last_found.set(position);
             Some(position as usize)
         } else {
-            self.entries.iter().position(|(key, _)| *key == name)
+            self.entries.iter().position(|(found, _)| *found == key)
         }
     }
 
@@ -141,7 +196,7 @@ impl BindingMap {
     #[inline(always)]
     fn at(&self, slot: u32, name: String) -> Option<&Binding> {
         match self.entries.get(slot as usize) {
-            Some((key, binding)) if *key == name.unbind() => Some(binding),
+            Some((key, binding)) if *key == NameKey::of(name) => Some(binding),
             _ => None,
         }
     }
@@ -149,7 +204,7 @@ impl BindingMap {
     #[inline(always)]
     fn at_mut(&mut self, slot: u32, name: String) -> Option<&mut Binding> {
         match self.entries.get_mut(slot as usize) {
-            Some((key, binding)) if *key == name.unbind() => Some(binding),
+            Some((key, binding)) if *key == NameKey::of(name) => Some(binding),
             _ => None,
         }
     }
@@ -173,7 +228,7 @@ impl BindingMap {
             return;
         }
         let position = u32::try_from(self.entries.len()).expect("too many bindings");
-        self.entries.push((name, binding));
+        self.entries.push((NameKey::of(name), binding));
         if let Some(index) = &mut self.index {
             index.insert(name, position);
         } else if self.entries.len() > LINEAR_BINDINGS {
@@ -189,7 +244,10 @@ impl BindingMap {
         if let Some(index) = &mut self.index {
             index.map.remove(&name.unbind());
             if let Some((moved, _)) = self.entries.get(position) {
-                index.insert(*moved, u32::try_from(position).expect("too many bindings"));
+                index.insert(
+                    moved.name(),
+                    u32::try_from(position).expect("too many bindings"),
+                );
             }
         }
     }
@@ -202,7 +260,10 @@ impl BindingMap {
             filter: [0; 4],
         };
         for (position, (key, _)) in self.entries.iter().enumerate() {
-            index.insert(*key, u32::try_from(position).expect("too many bindings"));
+            index.insert(
+                key.name(),
+                u32::try_from(position).expect("too many bindings"),
+            );
         }
         self.index = Some(Box::new(index));
     }
@@ -211,14 +272,17 @@ impl BindingMap {
 impl HeapMarkAndSweep for BindingMap {
     fn mark_values(&self, queues: &mut WorkQueues) {
         for (key, binding) in &self.entries {
-            key.mark_values(queues);
+            key.name().mark_values(queues);
             binding.mark_values(queues);
         }
     }
 
     fn sweep_values(&mut self, compactions: &CompactionLists) {
         for (key, binding) in &mut self.entries {
-            key.sweep_values(compactions);
+            // A name of the heap is at another index after a collection.
+            let mut name = key.name();
+            name.sweep_values(compactions);
+            *key = NameKey::of(name);
             binding.sweep_values(compactions);
         }
         if self.index.is_some() {
