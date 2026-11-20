@@ -16427,3 +16427,105 @@ out.join(" ")"##;
         }
     }
 }
+
+/// What a function ends with. The loop of instructions reads every
+/// instruction with the eight bytes after it, the longest instruction
+/// there is, and an instruction of four arguments finds its third and
+/// fourth in that window; the last instruction of a code has fewer bytes
+/// of its own, which the padding after the code makes up. Functions that
+/// end in a loop's jump back, in a read of a property of a local or of a
+/// kept name, in a comparison of a local, in a `switch`, a `try`, a label
+/// or nothing at all; called once and thousands of times, by built-ins, as
+/// setters, methods and constructors; a generator's code, the body of a
+/// `Function` and of `eval`; and what throws in the last instruction. What
+/// is expected is what Node prints for the same script.
+#[test]
+fn an_instruction_is_read_whole_wherever_its_code_ends() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(whole_instructions_at_the_end_of_code)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn whole_instructions_at_the_end_of_code() {
+    let script = r##"// What a function ends with: the loop reads every instruction with the eight bytes after it, and the last
+// instruction of a code has fewer of its own. Functions that end in a loop's jump back, in a read of a
+// property of a local or of a kept name, in a comparison of a local, in nothing at all; code that is left
+// by its last instruction, jumped into at its last instruction, and run off the end of.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + f()); } catch (e) { out.push(label + "!" + e.name); } }
+(function () {
+  const cfg = { n: 3, list: [5, 6, 7], limit: 2 };
+  var sink = 0;
+  function endsInLoop(n) { for (var i = 0; i < n; i++) sink += i; }
+  function endsInLoopOverKept() { for (var i = 0; i < cfg.n; i++) sink += cfg.list[i]; }
+  function endsInWhile(n) { var i = 0; while (i < n) { sink += 2; i++; } }
+  function endsInDoWhile(n) { var i = 0; do { sink += 3; i++; } while (i < n); }
+  function endsInLocalRead(p) { sink += p.x; p.x; }
+  function endsInKeptRead() { for (var i = 0; i < 1; i++) sink += cfg.n; cfg.n; }
+  function endsInComparison(a, b) { if (a < b) sink += 1; }
+  function endsInNestedBreak(n) { outer: for (var i = 0; i < n; i++) { for (var j = 0; j < n; j++) { if (j === cfg.limit) continue outer; if (i === cfg.limit) break outer; sink += 1; } } }
+  function empty() {}
+  function onlyDeclares() { var a; let b; }
+  var arrowEndsInLoop = (n) => { for (var i = 0; i < n; i++) sink -= 1; };
+  var obj = { set v(x) { for (var i = 0; i < x; i++) sink += 10; }, m() { for (var i = 0; i < 2; i++) sink += this.k; }, k: 4 };
+  class C { constructor(n) { this.total = 0; for (var i = 0; i < n; i++) this.total += i; } }
+  var results = [endsInLoop(4), endsInLoopOverKept(), endsInWhile(2), endsInDoWhile(2), endsInLocalRead({ x: 9 }), endsInKeptRead(), endsInComparison(1, 2), endsInComparison(2, 1), endsInNestedBreak(4), empty(), onlyDeclares(), arrowEndsInLoop(3), (obj.v = 2), obj.m(), new C(5).total];
+  out.push("ends", results.map(String).join(","), sink);
+  // Zero turns, one turn, many turns; a loop that is the whole function, called many times.
+  var total = 0;
+  for (var round = 0; round < 3000; round++) { endsInLoop(round & 3); endsInLoopOverKept(); total += sink & 1; }
+  out.push(total, sink);
+  // Callbacks that end in loops, called by built-ins.
+  var acc = 0;
+  [1, 2, 3].forEach(function (x) { for (var i = 0; i < x; i++) acc += i; });
+  var mapped = [1, 2, 3].map((x) => { for (var i = 0; i < x; i++) acc += cfg.n; });
+  out.push(acc, mapped.join("|"));
+  // A generator and an async function whose code ends in a loop.
+  function* gen(n) { for (var i = 0; i < n; i++) yield i * cfg.n; }
+  var seen = []; for (var v of gen(4)) seen.push(v);
+  var it = gen(1); it.next(); out.push(seen.join("/"), JSON.stringify(it.next()), JSON.stringify(it.next()));
+  // Errors thrown by the last instruction of a function, and by a loop's test at its end.
+  function throwsAtEnd(p) { for (var i = 0; i < 2; i++) sink += 1; p.missing.deeper; }
+  function throwsInTest(p) { for (var i = 0; i < p.n.length; i++) sink += 1; }
+  note("last", function () { return throwsAtEnd({}); });
+  note("test", function () { return throwsInTest({}); });
+  note("fine", function () { return throwsInTest({ n: "ab" }); });
+  // Code made at run time: the body of a Function and of eval end where their text ends.
+  var made = new Function("n", "var s = 0; for (var i = 0; i < n; i++) s += i; this.madeTotal = s");
+  var target = {}; made.call(target, 5);
+  out.push(target.madeTotal, eval("var e = 0; for (var q = 0; q < 4; q++) e += q; e"), eval("for (var q = 0; q < 2; q++) ;"), String(eval("")));
+  // A switch at the end, a try at the end, a label at the end.
+  function endsInSwitch(k) { switch (k) { case 1: sink += 100; break; case 2: sink += 200; } }
+  function endsInTry(p) { try { for (var i = 0; i < 2; i++) sink += p.x; } catch (e) { sink -= 1; } finally { sink += 5; } }
+  function endsInLabel(n) { done: { for (var i = 0; i < n; i++) { if (i === 1) break done; sink += 7; } } }
+  var before = sink; endsInSwitch(1); endsInSwitch(2); endsInSwitch(3); endsInTry({ x: 1 }); endsInTry(null); endsInLabel(3);
+  out.push(sink - before);
+})();
+out.join(" ")"##;
+    let expected = r##"ends undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,2,undefined,10 76 750 57076 22 || 0/3/6/9 {"done":true} {"done":true} last!TypeError test!TypeError fine=undefined 10 6  undefined 318"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    // Compiled once and run by another engine: the same code, padded anew.
+    let compiled = CompiledScript::compile(script).expect("compiles");
+    let (mut other, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match other.evaluate_compiled(&compiled) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("compiled: {other:?}"),
+    }
+}
