@@ -1493,7 +1493,7 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
 
     /// The storage at `index` as mutable: all `N` slots, or the slots in use
     /// of a dynamic storage.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut [T]> {
         if self.dynamic {
             self.storages.get_mut(index).map(Vec::as_mut_slice)
@@ -1517,7 +1517,9 @@ impl<T: Copy, const N: usize> StridedVec<T, N> {
     }
 
     /// As [`StridedVec::get_sized`], as mutable.
-    #[inline]
+    // Part of whoever asks: as a call it is the one thing that makes the
+    // function that writes a property by its cache keep a frame.
+    #[inline(always)]
     pub(crate) fn get_sized_mut(&mut self, index: usize) -> Option<&mut [T]> {
         if N > DYNAMIC_STORAGE_SLOTS {
             return self.get_mut(index);
@@ -1774,7 +1776,13 @@ impl<const N: usize> ElementArray<N> {
         len: u32,
         offset: usize,
     ) -> Option<Value<'static>> {
-        self.values[index][0..len as usize]
+        // None for an index that names no storage and for a length past
+        // the storage too, where indexing would fail: whoever reads a
+        // property through this keeps no frame for a failure, and goes
+        // the general way for what is not a value here.
+        self.values
+            .get(index.get_index())?
+            .get(..len as usize)?
             .get(offset)
             .copied()
             .flatten()
@@ -1814,6 +1822,32 @@ impl<const N: usize> ElementArray<N> {
         }
         *slot = Some(value);
         true
+    }
+
+    /// [`ElementArray::set_writable_slot`] for a storage that has no
+    /// descriptors, which is nearly every storage: whether the slot held a
+    /// value and was written. None for a storage that may have
+    /// descriptors, with nothing done. Nothing here calls or can fail:
+    /// asking a described storage's descriptors is a call.
+    #[inline(always)]
+    fn set_plain_slot(
+        &mut self,
+        index: ElementIndex,
+        offset: usize,
+        value: Value<'static>,
+    ) -> Option<bool> {
+        if self.descriptors.is_described(index) {
+            return None;
+        }
+        let Some(slot @ Some(_)) = self
+            .values
+            .get_sized_mut(index.get_index())
+            .and_then(|storage| storage.get_mut(offset))
+        else {
+            return Some(false);
+        };
+        *slot = Some(value);
+        Some(true)
     }
 
     /// Sets the slot at `offset` of the storage to `value` where it holds a
@@ -4516,6 +4550,47 @@ impl ElementArrays {
         }
     }
 
+    /// As [`ElementArrays::set_writable_slot_raw`] for a storage that has
+    /// no descriptors, and None for one that may have some: see
+    /// [`ElementArray::set_plain_slot`].
+    #[inline(always)]
+    pub(crate) fn set_plain_slot_raw(
+        &mut self,
+        index: ElementIndex,
+        cap: ElementArrayKey,
+        offset: usize,
+        value: Value<'static>,
+    ) -> Option<bool> {
+        let ElementArrays {
+            e2pow1,
+            e2pow2,
+            e2pow3,
+            e2pow4,
+            e2pow6,
+            e2pow8,
+            e2pow10,
+            e2pow12,
+            e2pow16,
+            e2pow24,
+            e2pow32,
+            ..
+        } = self;
+        match cap {
+            ElementArrayKey::Empty | ElementArrayKey::EmptyIntrinsic => Some(false),
+            ElementArrayKey::E1 => e2pow1.set_plain_slot(index, offset, value),
+            ElementArrayKey::E2 => e2pow2.set_plain_slot(index, offset, value),
+            ElementArrayKey::E3 => e2pow3.set_plain_slot(index, offset, value),
+            ElementArrayKey::E4 => e2pow4.set_plain_slot(index, offset, value),
+            ElementArrayKey::E6 => e2pow6.set_plain_slot(index, offset, value),
+            ElementArrayKey::E8 => e2pow8.set_plain_slot(index, offset, value),
+            ElementArrayKey::E10 => e2pow10.set_plain_slot(index, offset, value),
+            ElementArrayKey::E12 => e2pow12.set_plain_slot(index, offset, value),
+            ElementArrayKey::E16 => e2pow16.set_plain_slot(index, offset, value),
+            ElementArrayKey::E24 => e2pow24.set_plain_slot(index, offset, value),
+            ElementArrayKey::E32 => e2pow32.set_plain_slot(index, offset, value),
+        }
+    }
+
     /// Sets the slot at `offset` of the storage at `index` of the given
     /// capacity where it is an own writable data property: see
     /// [`ElementArray::set_writable_slot`].
@@ -5106,7 +5181,7 @@ mod descriptor_table {
     impl DescriptorTable {
         /// Whether the storage at `index` may have descriptors.
         #[inline(always)]
-        fn is_described(&self, index: ElementIndex) -> bool {
+        pub(crate) fn is_described(&self, index: ElementIndex) -> bool {
             let index = index.get_index();
             self.marks
                 .get(index / 64)

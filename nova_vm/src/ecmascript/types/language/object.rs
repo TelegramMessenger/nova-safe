@@ -600,6 +600,20 @@ impl<'a> OrdinaryObject<'a> {
         self.get_direct(&agent.heap.objects).get_shape()
     }
 
+    /// [`OrdinaryObject::shape_now`] where the Object has a record: None
+    /// for a handle that names none. For what has no failure of its own to
+    /// report (see [`OrdinaryObject::value_by_cache`]).
+    #[inline(always)]
+    pub(crate) fn shape_if_any(self, agent: &Agent) -> Option<ObjectShape<'a>> {
+        Some(
+            agent
+                .heap
+                .objects
+                .get(crate::heap::HeapIndexHandle::get_index(self))?
+                .get_shape(),
+        )
+    }
+
     /// The keys of the Object's properties, in the order of its property
     /// storage.
     pub(crate) fn get_property_keys<'b>(self, agent: &'b Agent) -> &'b [PropertyKey<'a>] {
@@ -646,13 +660,12 @@ impl<'a> OrdinaryObject<'a> {
             object_shapes,
             ..
         } = &agent.heap;
-        let data = self.get_direct(objects);
-        elements.get_element_value_raw(
-            data.get_values(),
-            data.values_capacity(object_shapes),
-            data.len(object_shapes),
-            offset,
-        )
+        // None for a handle that names nothing too: the one place that
+        // asks has no failure of its own to report (see
+        // [`OrdinaryObject::value_by_cache`]).
+        let data = objects.get(crate::heap::HeapIndexHandle::get_index(self))?;
+        let (capacity, len) = data.get_shape().values_capacity_and_len(object_shapes)?;
+        elements.get_element_value_raw(data.get_values(), capacity, len, offset)
     }
 
     /// What `object.name` is where `cache`, the property cache of a place
@@ -680,44 +693,68 @@ impl<'a> OrdinaryObject<'a> {
             object_shapes,
             ..
         } = &agent.heap;
-        let data = self.get_direct(objects);
+        // Nothing here calls in the middle of its work, and nothing has a
+        // failure of its own to report: a function that does either keeps
+        // a frame, and saves and restores for it at every call, which was
+        // six instructions of every property read. What is out of the
+        // ordinary, a handle that names nothing included, is None, and
+        // [[Get]] says what is wrong. A value is handed on as the bytes it
+        // is kept as: the collector knows it for as long as `gc` says.
+        let data = objects.get(crate::heap::HeapIndexHandle::get_index(self))?;
         let (offset, prototype, capacity) = cache.find_cached_place(agent, data.get_shape())?;
         if capacity != crate::heap::ElementArrayKey::Empty {
             // A value of the Object's own, in a storage whose capacity the
             // cache has kept: the shape's record is not asked for it.
             debug_assert_eq!(capacity, data.values_capacity(object_shapes));
             debug_assert!((offset.get_property_offset() as u32) < data.len(object_shapes));
-            return elements
-                .get_slot_value_raw(
-                    data.get_values(),
-                    capacity,
-                    offset.get_property_offset() as usize,
-                )
-                .bind(gc);
+            let value: Option<Value<'gc>> = elements.get_slot_value_raw(
+                data.get_values(),
+                capacity,
+                offset.get_property_offset() as usize,
+            );
+            return value;
         }
         if offset.is_unset() {
             return Some(Value::Undefined);
         }
         let data = match prototype {
             None => data,
-            Some(Object::Object(prototype)) => prototype.get_direct(objects),
+            Some(Object::Object(prototype)) => {
+                objects.get(crate::heap::HeapIndexHandle::get_index(prototype))?
+            }
             // An object with properties of its own kind beside those of
             // its backing object.
-            Some(prototype) => {
-                return match prototype.get_own_property_at_offset(agent, offset, gc) {
-                    TryGetResult::Value(value) => Some(value),
-                    _ => None,
-                };
-            }
+            Some(prototype) => return Self::value_of_exotic_holder(agent, prototype, offset, gc),
         };
-        elements
-            .get_element_value_raw(
-                data.get_values(),
-                data.values_capacity(object_shapes),
-                data.len(object_shapes),
-                offset.get_property_offset() as usize,
-            )
-            .bind(gc)
+        let (capacity, len) = data.get_shape().values_capacity_and_len(object_shapes)?;
+        let value: Option<Value<'gc>> = elements.get_element_value_raw(
+            data.get_values(),
+            capacity,
+            len,
+            offset.get_property_offset() as usize,
+        );
+        value
+    }
+
+    /// What [`OrdinaryObject::value_by_cache`] gives for a property that
+    /// the cache places in an object with properties of its own kind
+    /// beside those of its backing object: an ordinary object that
+    /// inherits from an Array or a function. (The one call that
+    /// [`OrdinaryObject::value_by_cache`] makes, for which it keeps the
+    /// two registers of a frame; what it hands back is put together from
+    /// its parts on every other way out, so the compiler does not make
+    /// this a call that is made last.)
+    #[inline(never)]
+    fn value_of_exotic_holder<'gc>(
+        agent: &Agent,
+        holder: Object,
+        offset: PropertyOffset,
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        match holder.get_own_property_at_offset(agent, offset, gc) {
+            TryGetResult::Value(value) => Some(value),
+            _ => None,
+        }
     }
 
     /// Where `cache` places `object.name` for the shape of this Object, if
@@ -797,6 +834,14 @@ impl<'a> OrdinaryObject<'a> {
     /// and places the property in it as its own: set where it is a data
     /// property that is writable. As [`OrdinaryObject::value_by_cache`],
     /// all of it in one function.
+    ///
+    /// Nothing here calls in the middle of its work or has a failure of its
+    /// own to report, so that this function keeps no frame (see
+    /// [`OrdinaryObject::value_by_cache`]): the write of a slot of a
+    /// storage that has no descriptors, which nearly every write is, is
+    /// done here, and the two that call (a storage with descriptors, which
+    /// are asked; a storage whose capacity the shape's record gives) are
+    /// functions that are called last.
     #[inline(never)]
     pub(crate) fn set_value_by_cache(
         self,
@@ -804,7 +849,14 @@ impl<'a> OrdinaryObject<'a> {
         cache: PropertyLookupCache,
         value: Value,
     ) -> CachedSet {
-        let data = self.get_direct(&agent.heap.objects);
+        let Some(data) = agent
+            .heap
+            .objects
+            .get(crate::heap::HeapIndexHandle::get_index(self))
+        else {
+            // A handle that names nothing: the general way says so.
+            return CachedSet::Unknown;
+        };
         let (shape, values) = (data.get_shape(), data.get_values().unbind());
         let Some((offset, None, capacity)) = cache.find_cached_place(agent, shape) else {
             return CachedSet::Unknown;
@@ -814,22 +866,56 @@ impl<'a> OrdinaryObject<'a> {
             // one the cache has kept.
             debug_assert_eq!(capacity, shape.values_capacity(agent));
             debug_assert!((offset.get_property_offset() as u32) < shape.len(agent));
-            return if agent.heap.elements.set_writable_slot_raw(
+            let place = offset.get_property_offset() as usize;
+            return match agent.heap.elements.set_plain_slot_raw(
                 values,
                 capacity,
-                offset.get_property_offset() as usize,
+                place,
                 value.unbind(),
             ) {
-                CachedSet::Done
-            } else {
-                CachedSet::Unknown
+                Some(true) => CachedSet::Done,
+                Some(false) => CachedSet::Unknown,
+                None => Self::set_described_slot(agent, values, capacity, place, value.unbind()),
             };
         }
         if offset.is_unset() {
             return CachedSet::Absent;
         }
-        if self.set_writable_value_at(agent, offset.get_property_offset() as usize, value.unbind())
+        self.set_value_at_place(agent, offset.get_property_offset() as usize, value.unbind())
+    }
+
+    /// [`OrdinaryObject::set_value_by_cache`] for a slot of a storage that
+    /// may have descriptors: they are asked whether the slot is written.
+    #[cold]
+    #[inline(never)]
+    fn set_described_slot(
+        agent: &mut Agent,
+        values: crate::heap::ElementIndex<'static>,
+        capacity: crate::heap::ElementArrayKey,
+        place: usize,
+        value: Value<'static>,
+    ) -> CachedSet {
+        if agent
+            .heap
+            .elements
+            .set_writable_slot_raw(values, capacity, place, value)
         {
+            CachedSet::Done
+        } else {
+            CachedSet::Unknown
+        }
+    }
+
+    /// [`OrdinaryObject::set_value_by_cache`] for a property whose storage
+    /// the cache has no capacity for: the shape's record gives it.
+    #[inline(never)]
+    fn set_value_at_place(
+        self,
+        agent: &mut Agent,
+        place: usize,
+        value: Value<'static>,
+    ) -> CachedSet {
+        if self.set_writable_value_at(agent, place, value) {
             CachedSet::Done
         } else {
             CachedSet::Unknown

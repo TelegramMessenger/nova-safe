@@ -619,8 +619,14 @@ impl<'a> PropertyLookupCache<'a> {
         // The records of one cache, each of a few shapes, one after another.
         let mut cache = self;
         loop {
+            // A cache that names no record, and a record without its
+            // prototypes, are None like a shape the cache does not know:
+            // whoever asks goes the general way, which says what is
+            // wrong. Nothing here fails, so that the functions this is
+            // part of, one call for every property read or written by
+            // name, keep no frame for a failure.
             let index = cache.get_index();
-            let record = &caches.property_lookup_caches[index];
+            let record = caches.property_lookup_caches.get(index)?;
             let Some((i, offset)) = record.find(shape) else {
                 cache = record.next?;
                 continue;
@@ -630,7 +636,7 @@ impl<'a> PropertyLookupCache<'a> {
             // (see the invalidations above), and none of those makes one of
             // this kind.
             if offset.is_own_value() {
-                let capacity = record.capacities[i as usize];
+                let capacity = *record.capacities.get(i as usize)?;
                 debug_assert!(
                     capacity == ElementArrayKey::Empty
                         || !shape.is_intrinsic(agent) && capacity == shape.values_capacity(agent)
@@ -638,8 +644,11 @@ impl<'a> PropertyLookupCache<'a> {
                 return Some((offset, None, capacity));
             }
             let prototype = if !offset.is_unset() && offset.is_prototype_property() {
-                let prototype =
-                    caches.property_lookup_cache_prototypes[index].prototypes[i as usize].unwrap();
+                let prototype = (*caches
+                    .property_lookup_cache_prototypes
+                    .get(index)?
+                    .prototypes
+                    .get(i as usize)?)?;
                 Some(prototype)
             } else {
                 debug_assert!(

@@ -137,6 +137,19 @@ impl<'a> ObjectShape<'a> {
         self.get_direct(agent.as_ref()).len
     }
 
+    /// The capacity of the values storage and the number of keys that this
+    /// Object Shape implies, where its record is found: None for a handle
+    /// that names none. For what reads a property by its cache, which has
+    /// no failure of its own to report.
+    #[inline(always)]
+    pub(crate) fn values_capacity_and_len(
+        self,
+        object_shapes: &[ObjectShapeRecord<'static>],
+    ) -> Option<(ElementArrayKey, u32)> {
+        let record = object_shapes.get(self.get_index_u32_const() as usize)?;
+        Some((record.values_cap, record.len))
+    }
+
     /// Return true if the OrdinaryObject holder of this ObjectShape reference
     /// is extensible.
     ///

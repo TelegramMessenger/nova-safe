@@ -138,7 +138,7 @@ impl BindingMap {
     /// The binding at `slot` if it is the one for `name`: a binding keeps its
     /// place while none is deleted, so a place remembered for a name is
     /// checked with one comparison.
-    #[inline]
+    #[inline(always)]
     fn at(&self, slot: u32, name: String) -> Option<&Binding> {
         match self.entries.get(slot as usize) {
             Some((key, binding)) if *key == name.unbind() => Some(binding),
@@ -146,7 +146,7 @@ impl BindingMap {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn at_mut(&mut self, slot: u32, name: String) -> Option<&mut Binding> {
         match self.entries.get_mut(slot as usize) {
             Some((key, binding)) if *key == name.unbind() => Some(binding),
@@ -260,12 +260,14 @@ impl DeclarativeEnvironmentRecord {
     }
 
     /// The binding at `slot` if it is the one for `name`.
-    #[inline]
+    // Part of whoever asks: as a call it is the one thing that makes the
+    // read of a global variable keep a frame.
+    #[inline(always)]
     pub(super) fn binding_at(&self, slot: u32, name: String) -> Option<&Binding> {
         self.bindings.at(slot, name)
     }
 
-    #[inline]
+    #[inline(always)]
     pub(super) fn binding_at_mut(&mut self, slot: u32, name: String) -> Option<&mut Binding> {
         self.bindings.at_mut(slot, name)
     }

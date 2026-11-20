@@ -1468,6 +1468,36 @@ impl Agent {
         e
     }
 
+    /// The realm of the running execution context where there is one: None
+    /// where [`Agent::current_realm`] has nothing to return and says so.
+    /// As [`Agent::lexical_environment_if_any`], for what reads a variable
+    /// of the global scope where it was found the last time.
+    #[inline(always)]
+    pub(crate) fn realm_if_any(&self) -> Option<Realm<'static>> {
+        Some(self.execution_context_stack.last()?.realm)
+    }
+
+    /// The running execution context's LexicalEnvironment where it has
+    /// one: None where [`Agent::current_lexical_environment`] has nothing
+    /// to return and says so. For what reads a variable where it was found
+    /// the last time, which leaves everything out of the ordinary to the
+    /// general way and so has no failure of its own to report: a function
+    /// that can fail keeps a frame for it at every call.
+    #[inline(always)]
+    pub(crate) fn lexical_environment_if_any<'a>(
+        &self,
+        gc: NoGcScope<'a, '_>,
+    ) -> Option<Environment<'a>> {
+        Some(
+            self.execution_context_stack
+                .last()?
+                .ecmascript_code
+                .as_ref()?
+                .lexical_environment
+                .bind(gc),
+        )
+    }
+
     /// Returns the running execution context's VariableEnvironment.
     pub(crate) fn current_variable_environment<'a>(
         &self,

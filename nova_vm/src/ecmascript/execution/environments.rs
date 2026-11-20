@@ -870,13 +870,18 @@ impl GlobalScopeSeen {
         let heap = &agent.heap;
         // The collections first: the handles name what they did only if
         // none has run.
+        // What is not there to be asked (no running realm, a handle that
+        // names nothing) is no state the name was found in: nothing here
+        // fails, so that a read of a global variable keeps no frame for
+        // it, and the long way says what is wrong.
         if state.collections != heap.collections
             || state.key_moves != heap.intrinsic_key_moves
-            || state.realm != agent.current_realm(gc).unbind()
-            || state.object.shape_now(agent) != state.shape
+            || state.realm != agent.realm_if_any()?
+            || state.object.shape_if_any(agent)? != state.shape
             || heap
                 .environments
-                .get_declarative_environment(state.lexical)
+                .declarative
+                .get(state.lexical.get_index())?
                 .binding_count()
                 != state.declarations
         {
@@ -943,7 +948,7 @@ impl BindingSite {
             return None;
         }
         let environments = &agent.heap.environments;
-        let mut env = agent.current_lexical_environment(gc);
+        let mut env = agent.lexical_environment_if_any(gc)?;
         for _ in 0..self.outwards {
             env = environments.declarative_record(env)?.outer_env()?.bind(gc);
         }
@@ -959,27 +964,36 @@ impl BindingSite {
 
 impl Environments {
     /// The bindings of a Declarative or a Function Environment Record.
-    #[inline]
+    ///
+    /// None for a handle that names no record too: what reads or writes a
+    /// variable where it was found the last time has no failure of its
+    /// own to report (a function that can fail keeps a frame for it at
+    /// every call), and the general way, which it leaves the variable to,
+    /// says what is wrong.
+    #[inline(always)]
     fn declarative_record(&self, env: Environment) -> Option<&DeclarativeEnvironmentRecord> {
         match env {
-            Environment::Declarative(e) => Some(self.get_declarative_environment(e)),
-            Environment::Function(e) => Some(self.get_declarative_environment(
-                self.get_function_environment(e).declarative_environment(),
-            )),
+            Environment::Declarative(e) => self.declarative.get(e.get_index()),
+            Environment::Function(e) => self.declarative.get(
+                self.function
+                    .get(e.get_index())?
+                    .declarative_environment()
+                    .get_index(),
+            ),
             _ => None,
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn declarative_record_mut(
         &mut self,
         env: Environment,
     ) -> Option<&mut DeclarativeEnvironmentRecord> {
         match env {
-            Environment::Declarative(e) => Some(self.get_declarative_environment_mut(e)),
+            Environment::Declarative(e) => self.declarative.get_mut(e.get_index()),
             Environment::Function(e) => {
-                let e = self.get_function_environment(e).declarative_environment();
-                Some(self.get_declarative_environment_mut(e))
+                let e = self.function.get(e.get_index())?.declarative_environment();
+                self.declarative.get_mut(e.get_index())
             }
             _ => None,
         }
@@ -1030,13 +1044,27 @@ fn global_value_at_site<'a>(
     gc: NoGcScope<'a, '_>,
 ) -> Option<Value<'a>> {
     match site.outwards {
-        BindingSite::GLOBAL_LEXICAL => agent
-            .heap
-            .environments
-            .get_declarative_environment(global_lexical_record(agent, gc))
-            .binding_at(site.slot, name)?
-            .value
-            .bind(gc),
+        BindingSite::GLOBAL_LEXICAL => {
+            // The lexical declarations of the running realm's global
+            // scope, where every record on the way is there: nothing here
+            // fails (see [`GlobalScopeSeen::object_in`]).
+            let environments = &agent.heap.environments;
+            let global = agent
+                .heap
+                .realms
+                .get(agent.realm_if_any()?.get_index())?
+                .global_env?;
+            let lexical = environments
+                .global
+                .get(global.get_index())?
+                .declarative_record();
+            let value: Option<Value<'a>> = environments
+                .declarative
+                .get(lexical.get_index())?
+                .binding_at(site.slot, name)?
+                .value;
+            value
+        }
         BindingSite::GLOBAL_OBJECT => {
             let object = global_object_at_site(agent, site, name, gc)?;
             // An empty slot is an accessor.
@@ -1092,6 +1120,13 @@ fn set_global_value_at_site(
 
 /// The value of `name` where `site` remembers it, if the name is still found
 /// there and is initialized.
+///
+/// One of two functions, each called last: one for a place in the global
+/// scope, one for a place among the records of the enclosing functions.
+/// Called last, neither comes back here, so that neither this function
+/// nor the second, which calls nothing, keeps a frame: with the first
+/// called from the middle of the second, a read of a variable of an
+/// enclosing function saved and restored for a call it did not make.
 #[inline]
 pub(crate) fn binding_value_at_site<'a>(
     agent: &Agent,
@@ -1099,16 +1134,36 @@ pub(crate) fn binding_value_at_site<'a>(
     name: String,
     gc: NoGcScope<'a, '_>,
 ) -> Option<Value<'a>> {
-    let Some(env) = site.record(agent, gc) else {
-        return global_value_at_site(agent, site, name, gc);
-    };
-    agent
+    if site.outwards > BindingSite::FARTHEST {
+        global_value_at_site(agent, site, name, gc)
+    } else {
+        enclosing_value_at_site(agent, site, name, gc)
+    }
+}
+
+/// [`binding_value_at_site`] for a place among the records of the
+/// enclosing functions.
+#[inline(never)]
+fn enclosing_value_at_site<'a>(
+    agent: &Agent,
+    site: BindingSite,
+    name: String,
+    gc: NoGcScope<'a, '_>,
+) -> Option<Value<'a>> {
+    // A record on the way that is not declarative: the name is resolved
+    // the long way.
+    let env = site.record(agent, gc)?;
+    // The binding's value as it is kept: a value that the collector knows
+    // is one for as long as `gc` says, and handing it on as the bytes it
+    // is, not taken apart and put together again, is what this function
+    // ends with.
+    let value: Option<Value<'a>> = agent
         .heap
         .environments
         .declarative_record(env)?
         .binding_at(site.slot, name)?
-        .value
-        .bind(gc)
+        .value;
+    value
 }
 
 /// Sets `name` where `site` remembers it to `value`, if the name is still
