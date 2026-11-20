@@ -279,7 +279,8 @@ Where that leaves the two cases, with no table of a quiet machine yet: the two e
 in one binary, and the least of nine to thirteen runs of each taken, which other work on the
 machine leaves near what a quiet machine gives (QuickJS's least times are those of its quiet
 tables). A step of the particles is 1.84 to 1.92x that way, and the call of a closure 2.04x, and
-2.01 to 2.02x once the names of bindings are compared at once (area 2): the one case over 2x. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
+2.01 to 2.02x once the names of bindings are compared at once and 1.99 to 2.00x once the read of
+such a variable asks nothing twice (area 2): the one case that is not under 2x, and on it. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
 Float64Array 1.88x, a step of a generator 1.81x, a plain call 1.72x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
@@ -866,6 +867,19 @@ Counted by the instructions the cases retire, the call of a closure is 1.2% fewe
 adds to a variable of an enclosing function 2.6% and a tokenizer 0.7%; nothing else moves. With
 the two binaries run in turn under the other work that call is 0.5% less and that loop 1.1% less;
 with the two engines run in turn the call of a closure is 2.01 to 2.02x, for 2.04x before.
+
+The function that reads a variable of an enclosing function asked a second time whether its site
+is one of the enclosing functions', which whoever calls it has asked already: four instructions
+of every such read. It walks without asking now, and the read is 48 instructions for 51. Counted
+by the instructions the cases retire, the call of a closure is 0.8% fewer and a loop that adds to
+such a variable 0.9%. With the two binaries run in turn under the other work each is 1.8% less,
+and with the two engines run in turn the call of a closure is 1.99 to 2.00x.
+
+The operator and the assignment of `total += x` as one instruction, for such a variable, were
+tried and are not kept. The call of a closure was 0.35% fewer of its instructions with the
+operator found by its number, and no fewer with `+` tried first as the operator it is, each call
+two to three machine instructions longer with the arm: what one dispatch saves, finding the
+operator and one more arm cost.
 
 ### 3. Calls
 
