@@ -43,3 +43,5 @@ bench("callback/forEach", function () { var a = []; for (var k = 0; k < 1000; k+
 bench("generator/next", function () { function* g() { for (var k = 0; k < 1000000; k++) yield k; } return function () { var s = 0; for (var v of g()) s = v; return s; }; });
 bench("string/charCodeAt@base/loop", function () { var t = "abcdefghijklmnopqrstuvwxyz012345"; return function () { var last = 0; for (var i = 0; i < 1000000; i++) last = t.charCodeAt(i & 31); return last; }; });
 bench("native/Math.max@base/loop", function () { return function () { var last = 0; for (var i = 0; i < 1000000; i++) last = Math.max(i, 7); return last; }; });
+bench("arith/negate@base/loop", function () { return function () { var last = 0; for (var i = 0; i < 1000000; i++) last = -(i & 7); return last; }; });
+bench("arith/negate-float@base/float-loop", function () { return function () { var x = 0.5; for (var i = 0; i < 1000000; i++) x = -x; return x; }; });

@@ -3918,6 +3918,13 @@ impl Vm {
                 step!(Decrement);
                 return vm.step_integer(-1);
             }
+            // `-x` of a Number, which the general way was the only way
+            // for: a call from here, so that the loop has no more of it
+            // than the call.
+            Instruction::UnaryMinus => {
+                step!(UnaryMinus);
+                return vm.negate_number(agent, gc);
+            }
             Instruction::LessThan => operate_on_integers!(LessThan),
             Instruction::LessThanEquals => operate_on_integers!(LessThanEquals),
             Instruction::GreaterThan => operate_on_integers!(GreaterThan),
@@ -4740,6 +4747,21 @@ impl Vm {
                 )));
         }
         Some(array.length_value(agent))
+    }
+
+    /// UnaryMinus of a Number in the result register: Number::unaryMinus,
+    /// as the negation of the double the Number is, made the Number that
+    /// double is (an integer that is not zero stays an integer, zero is
+    /// -0 and -0 is zero). Anything else, a BigInt among it, goes the
+    /// general way.
+    #[inline(never)]
+    fn negate_number(&mut self, agent: &mut Agent, gc: NoGcScope) -> Plain {
+        let Some(double) = self.result.and_then(|value| Self::double_of(agent, value)) else {
+            return Plain::No;
+        };
+        let negated: Value = Number::from_f64(agent, -double, gc).into();
+        self.result = Some(negated.unbind());
+        Plain::Done
     }
 
     /// `++` or `--` of an integer that stays one.
