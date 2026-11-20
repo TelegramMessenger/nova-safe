@@ -17553,3 +17553,147 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// An arithmetic or bitwise operator on a local and a value that is
+/// worked out (`x * step`, `n + f()`) reads the local from its stack slot
+/// when it runs, where the local was pushed before the right operand:
+/// both give the same. Every operator with a right operand of every form
+/// (a property, an element, a getter, a variable of an enclosing function
+/// and of the global scope, a call, `this`, an operator, a conversion, a
+/// conditional, `typeof`, a template, a comma, literals) and a left
+/// operand of every kind of value, BigInts and Symbols among them; right
+/// operands that assign to the local, which are compiled as before, so
+/// that the left operand is what the local was; the order in which the
+/// right operand is worked out and the two are converted, and a
+/// conversion that throws; the value pushed, moved to a local, used as an
+/// operand and as a test; parameters, `var`, `let`, `const`, the names of
+/// functions and classes, catch parameters, loop variables and
+/// destructured names as the local, and a local beyond the 2048 that an
+/// instruction can name; a variable that is not initialized yet; a
+/// generator; twenty thousand calls of a closure. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn an_operator_reads_its_local_operand_when_it_runs_as_when_it_was_pushed() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(operators_on_locals)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn operators_on_locals() {
+    let script = r##"// An arithmetic or bitwise operator on a local and a value that is worked out (`x * step`, `n + f()`): the local is
+// not pushed before the right operand, the operator reads it from its slot. A right operand that assigns to the
+// local is compiled as before; the conversions run in the order they had.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + show(f())); } catch (e) { out.push(label + "!" + e.name); } }
+function show(v) { return typeof v === "bigint" ? v + "n" : Object.is(v, -0) ? "-0" : typeof v === "string" ? JSON.stringify(v) : typeof v === "function" ? "fn" : typeof v === "symbol" ? "sym" : v instanceof Array ? "[" + v.map(show).join() + "]" : String(v); }
+var gstep = 3;
+
+// Every operator, with the right operand of every form.
+(function () {
+  var step = 2, box = { v: 5, get g() { return 7; } }, list = [4, 8];
+  function id(v) { return v; }
+  function all(x) {
+    var r = [x + box.v, x - box.v, x * box.v, x / box.v, x % box.v, x << box.v, x >> list[0], x >>> list[0], x | box.v, x ^ box.v, x & box.v,
+      x + step, x * step, x - gstep, x + id(1), x * id(x), x - list[1], x + box.g, x * this.k, x % (step + 1), x + -step, x * +"3", x - (step ? 1 : 2), x + typeof x, x + `t${step}`,
+      x + (0, step), x * list.length, x / Math.sqrt(16), x + [1, 2], x + {}, x + null, x + undefined, x - void 0, x * (2), x + -1, x & ~1, x + !x];
+    return r.map(show).join(",");
+  }
+  var lefts = [7, -7, 0, -0, 2.5, 1e21, NaN, Infinity, 2147483647, -2147483648, 4294967295, 9007199254740991, "5", "s", "", true, false, null, undefined, [3], {}];
+  for (var i = 0; i < lefts.length; i++) { try { out.push(all.call({ k: 10 }, lefts[i])); } catch (e) { out.push("!" + e.name); } }
+  note("bigint", function () { var b = 10n; return [b + id(5n), b * id(3n), b - id(1n), b << id(2n), b % id(3n), b & id(6n)].map(show).join(); });
+  note("bigint mixed", function () { var b = 10n; return b + id(1); });
+  note("bigint mixed 2", function () { var n = 1; return n * id(2n); });
+  note("symbol left", function () { var s = Symbol("x"); return s + id(1); });
+  note("symbol right", function () { var n = 1; return n + id(Symbol("x")); });
+})();
+
+// The right operand assigns to the local: the left operand is what the local was.
+(function () {
+  function a(x) { return x + (x = 5); }
+  function b(x) { return x * x++; }
+  function c(x) { return x - --x; }
+  function d(x) { return x + (x += 2); }
+  function e(x) { return x & ([x] = [9])[0]; }
+  function f(x) { return x + ((x = 1), 2); }
+  function g(x) { return x * ({ x } = { x: 4 }).x; }
+  function h(x) { return x + (function () { return 100; })() + (x = 0); }
+  function i(x) { var y = x; return x + (y = 50) + y; }
+  function j(x) { return x + x + (x = 3) + x; }
+  function k(x) { return (x = x + 1) + x * (x = 10) + x; }
+  out.push("assigns", [a, b, c, d, e, f, g, h, i, j, k].map(function (fn) { return fn(7); }).join(","));
+})();
+
+// The order of what is called: the right operand is worked out, then the left operand is converted, then the right.
+(function () {
+  var log = [];
+  function obj(name, value) { return { valueOf: function () { log.push("v" + name); return value; }, toString: function () { log.push("s" + name); return String(value); } }; }
+  function right(name, value) { log.push("r" + name); return obj(name, value); }
+  function ops(l) { return [l + right("a", 1), l * right("b", 2), l - right("c", 3), l | right("d", 4), l << right("e", 1), l % right("f", 5)].join(","); }
+  var r1 = ops(obj("L", 10)), o1 = log.join(" "); log.length = 0;
+  var r2 = ops(10), o2 = log.join(" "); log.length = 0;
+  function mutates(o) { return o + (o.n = 5, 1); }
+  var counter = { n: 1, valueOf: function () { return this.n; } };
+  function throwsRight(l) { try { return l + (function () { throw new RangeError("r"); })(); } catch (e) { return e.message + log.length; } }
+  function throwsLeft(l) { try { return l * right("z", 1); } catch (e) { return e.message + ":" + log.join(""); } }
+  out.push("order", r1, o1, r2, o2, mutates(counter), throwsRight(obj("T", 1)), throwsLeft({ valueOf: function () { throw new EvalError("left"); } }));
+})();
+
+// What is done with the value: pushed, moved to a local, an operand again, a test.
+(function () {
+  var s = 2, o = { p: 3 };
+  function id() { return Array.prototype.join.call(arguments, "|"); }
+  function uses(x, y) {
+    var m = x * o.p, n;
+    n = x + o.p;
+    var arr = [x * o.p, y - o.p, x + y * o.p];
+    var t = x * o.p + y * o.p - (x - o.p) * (y + s);
+    var c = x * o.p > 10 ? "big" : "small";
+    var w = 0; while (w + o.p < 9) w = w + o.p;
+    var q = ""; for (var i = 0; i < 3; i++) q += i * s + ",";
+    return [m, n, arr.join("/"), id(x * o.p, y + s, x - y), t, c, w, q, x * o.p === 12, -(x * o.p), typeof (x + o.p), (x * o.p) + "", x + y, id(x + y), id(1, y + x)].join(" ");
+  }
+  out.push("uses", uses(4, 5), uses(1.5, -2), uses("3", 4));
+})();
+
+// Every kind of local as the left operand; many locals; a local beyond those an instruction can name.
+(function () {
+  var o = { p: 4 };
+  function kinds(param, def = 3, ...rest) {
+    var v = 5; let l = 6; const c = 7;
+    function fn() {} class K {}
+    var r = [param * o.p, def + o.p, rest.length - o.p, v * o.p, l - o.p, c % o.p, typeof (fn + o.p), typeof (K + o.p)];
+    try { throw 9; } catch (e) { r.push(e * o.p); }
+    for (let i = 1; i < 3; i++) r.push(i * o.p);
+    for (const k of [10]) r.push(k - o.p);
+    var { d1, d2 = 2 } = { d1: 1 }; r.push(d1 + o.p, d2 * o.p);
+    return r.join(",");
+  }
+  out.push("kinds", kinds(2), kinds(2, 1, 0, 0));
+  var names = []; for (var i = 0; i < 2100; i++) names.push("v" + i);
+  var many = new Function("o", "var " + names.map(function (n, i) { return n + " = " + i; }).join(", ") + "; return [v1 * o.p, v2046 + o.p, v2047 * o.p, v2048 - o.p, v2099 * o.p, v2099 + v2048 * o.p].join();");
+  out.push("many", many(o));
+  note("tdz", function () { var called = 0; function f() { called++; return 1; } try { return early + f(); } catch (e) { return e.name + called; } let early = 1; });
+  function* gen(x) { var a = x + (yield "first"); var b = x * (yield a); return a + b; }
+  var it = gen(10), g = [it.next().value, it.next(5).value, it.next(3).value];
+  out.push("generator", g.join(","));
+  var total = 0, step = 2;
+  function acc(x) { total += x * step; return total; }
+  var last = 0; for (var i = 0; i < 20000; i++) last = acc(i & 7);
+  out.push("closure", last, total);
+})();
+out.join(" ")"##;
+    let expected = r##"12,2,35,1.4,2,224,0,0,7,2,5,9,14,4,8,49,-1,14,70,1,5,21,6,"7number","7t2",9,14,1.75,"71,2","7[object Object]",7,NaN,NaN,14,6,6,7 -2,-12,-35,-1.4,-2,-224,-1,268435455,-3,-4,1,-5,-14,-10,-6,49,-15,0,-70,-1,-9,-21,-8,"-7number","-7t2",-5,-14,-1.75,"-71,2","-7[object Object]",-7,NaN,NaN,-14,-8,-8,-7 5,-5,0,0,0,0,0,0,5,5,0,2,0,-3,1,0,-8,7,0,0,-2,0,-1,"0number","0t2",2,0,0,"01,2","0[object Object]",0,NaN,NaN,0,-1,0,1 5,-5,-0,-0,-0,0,0,0,5,5,0,2,-0,-3,1,0,-8,7,-0,-0,-2,-0,-1,"0number","0t2",2,-0,-0,"01,2","0[object Object]",0,NaN,NaN,-0,-1,0,1 7.5,-2.5,12.5,0.5,2.5,64,0,0,7,7,0,4.5,5,-0.5,3.5,6.25,-5.5,9.5,25,2.5,0.5,7.5,1.5,"2.5number","2.5t2",4.5,5,0.625,"2.51,2","2.5[object Object]",2.5,NaN,NaN,5,1.5,2,2.5 1e+21,1e+21,5e+21,200000000000000000000,0,-738197504,-34996224,233439232,-559939579,-559939579,0,1e+21,2e+21,1e+21,1e+21,1e+42,1e+21,1e+21,1e+22,1,1e+21,3e+21,1e+21,"1e+21number","1e+21t2",1e+21,2e+21,250000000000000000000,"1e+211,2","1e+21[object Object]",1e+21,NaN,NaN,2e+21,1e+21,-559939584,1e+21 NaN,NaN,NaN,NaN,NaN,0,0,0,5,5,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,"NaNnumber","NaNt2",NaN,NaN,NaN,"NaN1,2","NaN[object Object]",NaN,NaN,NaN,NaN,NaN,0,NaN Infinity,Infinity,Infinity,Infinity,NaN,0,0,0,5,5,0,Infinity,Infinity,Infinity,Infinity,Infinity,Infinity,Infinity,Infinity,NaN,Infinity,Infinity,Infinity,"Infinitynumber","Infinityt2",Infinity,Infinity,Infinity,"Infinity1,2","Infinity[object Object]",Infinity,NaN,NaN,Infinity,Infinity,0,Infinity 2147483652,2147483642,10737418235,429496729.4,2,-32,134217727,134217727,2147483647,2147483642,5,2147483649,4294967294,2147483644,2147483648,4611686014132420600,2147483639,2147483654,21474836470,1,2147483645,6442450941,2147483646,"2147483647number","2147483647t2",2147483649,4294967294,536870911.75,"21474836471,2","2147483647[object Object]",2147483647,NaN,NaN,4294967294,2147483646,2147483646,2147483647 -2147483643,-2147483653,-10737418240,-429496729.6,-3,0,-134217728,134217728,-2147483643,-2147483643,0,-2147483646,-4294967296,-2147483651,-2147483647,4611686018427388000,-2147483656,-2147483641,-21474836480,-2,-2147483650,-6442450944,-2147483649,"-2147483648number","-2147483648t2",-2147483646,-4294967296,-536870912,"-21474836481,2","-2147483648[object Object]",-2147483648,NaN,NaN,-4294967296,-2147483649,-2147483648,-2147483648 4294967300,4294967290,21474836475,858993459,0,-32,-1,268435455,-1,-6,5,4294967297,8589934590,4294967292,4294967296,18446744065119617000,4294967287,4294967302,42949672950,0,4294967293,12884901885,4294967294,"4294967295number","4294967295t2",4294967297,8589934590,1073741823.75,"42949672951,2","4294967295[object Object]",4294967295,NaN,NaN,8589934590,4294967294,-2,4294967295 9007199254740996,9007199254740986,45035996273704950,1801439850948198.2,1,-32,-1,268435455,-1,-6,5,9007199254740992,18014398509481982,9007199254740988,9007199254740992,8.112963841460666e+31,9007199254740983,9007199254740998,90071992547409900,1,9007199254740989,27021597764222972,9007199254740990,"9007199254740991number","9007199254740991t2",9007199254740992,18014398509481982,2251799813685247.8,"90071992547409911,2","9007199254740991[object Object]",9007199254740991,NaN,NaN,18014398509481982,9007199254740990,-2,9007199254740991 "55",0,25,1,0,160,0,0,5,0,5,"52",10,2,"51",25,-3,"57",50,2,"5-2",15,4,"5string","5t2","52",10,1.25,"51,2","5[object Object]","5null","5undefined",NaN,10,"5-1",4,"5false" "s5",NaN,NaN,NaN,NaN,0,0,0,5,5,0,"s2",NaN,NaN,"s1",NaN,NaN,"s7",NaN,NaN,"s-2",NaN,NaN,"sstring","st2","s2",NaN,NaN,"s1,2","s[object Object]","snull","sundefined",NaN,NaN,"s-1",0,"sfalse" "5",-5,0,0,0,0,0,0,5,5,0,"2",0,-3,"1",0,-8,"7",0,0,"-2",0,-1,"string","t2","2",0,0,"1,2","[object Object]","null","undefined",NaN,0,"-1",0,"true" 6,-4,5,0.2,1,32,0,0,5,4,1,3,2,-2,2,1,-7,8,10,1,-1,3,0,"trueboolean","truet2",3,2,0.25,"true1,2","true[object Object]",1,NaN,NaN,2,0,0,1 5,-5,0,0,0,0,0,0,5,5,0,2,0,-3,1,0,-8,7,0,0,-2,0,-1,"falseboolean","falset2",2,0,0,"false1,2","false[object Object]",0,NaN,NaN,0,-1,0,1 5,-5,0,0,0,0,0,0,5,5,0,2,0,-3,1,0,-8,7,0,0,-2,0,-1,"nullobject","nullt2",2,0,0,"null1,2","null[object Object]",0,NaN,NaN,0,-1,0,1 NaN,NaN,NaN,NaN,NaN,0,0,0,5,5,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,"undefinedundefined","undefinedt2",NaN,NaN,NaN,"undefined1,2","undefined[object Object]",NaN,NaN,NaN,NaN,NaN,0,NaN "35",-2,15,0.6,3,96,0,0,7,6,1,"32",6,0,"31",9,-5,"37",30,0,"3-2",9,2,"3object","3t2","32",6,0.75,"31,2","3[object Object]","3null","3undefined",NaN,6,"3-1",2,"3false" "[object Object]5",NaN,NaN,NaN,NaN,0,0,0,5,5,0,"[object Object]2",NaN,NaN,"[object Object]1",NaN,NaN,"[object Object]7",NaN,NaN,"[object Object]-2",NaN,NaN,"[object Object]object","[object Object]t2","[object Object]2",NaN,NaN,"[object Object]1,2","[object Object][object Object]","[object Object]null","[object Object]undefined",NaN,NaN,"[object Object]-1",0,"[object Object]false" bigint="15n,30n,9n,40n,1n,2n" bigint mixed!TypeError bigint mixed 2!TypeError symbol left!TypeError symbol right!TypeError assigns 12,49,1,16,1,9,28,107,107,20,98 order 11,20,7,14,20,0 ra vL va rb vL vb rc vL vc rd vL vd re vL ve rf vL vf 11,20,7,14,20,0 ra va rb vb rc vc rd vd re ve rf vf 6 r0 left:rz uses 12 7 12/2/19 12|7|-1 20 big 6 0,2,4, true -12 number 12 9 9 1|9 4.5 4.5 4.5/-5/-4.5 4.5|0|3.5 -1.5 small 6 0,2,4, false -4.5 number 4.5 -0.5 -0.5 1|-0.5 9 33 9/1/312 9|6|-1 21 small 6 0,2,4, false -9 string 9 34 34 1|43 kinds 8,7,-4,20,2,3,string,string,36,4,8,6,5,8 8,5,-2,20,2,3,string,string,36,4,8,6,5,8 many 4,2050,8188,2044,8396,10291 tdz="ReferenceError0" generator first,15,45 closure 140000 140000"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
