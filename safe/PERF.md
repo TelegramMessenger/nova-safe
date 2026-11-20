@@ -90,8 +90,8 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the assignment to a global that
-makes no Reference (area 2), in machine instructions per operation:
+a million times the price of the operation. As of the round of the element of a TypedArray read
+by one function (area 6), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
@@ -112,9 +112,9 @@ makes no Reference (area 2), in machine instructions per operation:
 | `x * 0.999 + 0.25` on doubles, in place of a constant | 68 | 221 | 3.3x |
 | `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 326 | 495 / 434 / 511 | 1.6-1.9x |
 | `Math.max(i, 7)` | 271 | 373 | 1.4x |
-| Array element read / written | 56 / 53 | 135 / 176 | 2.4x / 3.3x |
-| Uint8Array element read / written | 89 / 78 | 197 / 207 | 2.2x / 2.7x |
-| Float64Array element read / written | 106 / 76 | 271 / 191 | 2.6x / 2.5x |
+| Array element read / written | 56 / 53 | 134 / 169 | 2.4x / 3.2x |
+| Uint8Array element read / written | 89 / 78 | 162 / 172 | 1.8x / 2.2x |
+| Float64Array element read / written | 106 / 76 | 231 / 172 | 2.2x / 2.3x |
 | `new` of a function / of a class, one field set | 1074 / 1130 | 2138 / 2110 | 2.0x / 1.9x |
 | an object literal of two properties | 745 | 490 | 0.66x |
 | one callback of `forEach` (the whole turn) | 395 | 742 | 1.9x |
@@ -308,6 +308,9 @@ fall on the instruction after each call returns, in the merge that does nothing 
 properties of one object and a step of the particles are the read and the write by the cache and the
 loop of instructions, where a quarter of the samples are on the three instructions that fetch the
 next one.
+
+An element of a TypedArray read and written by one function (area 6): the arithmetic of a
+Float64Array 1.75x, the pixel loop 1.87x, the fill of a Uint8Array 1.11x, by the same measure.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -2290,6 +2293,39 @@ With the two binaries run in turn: `typed/pixels-rgba` 3.4% less, `typed/float64
 that those functions were would suggest: what replaced them still looks at six things kept and at
 the buffer's record, twice, for every element. Each part of what is kept in a cell of its own or all
 of it in one made no difference.
+
+What was left of an element read was not the look at what is kept. It was three functions one inside
+the other: the one the loop of instructions calls, with a frame of six registers because the argument
+of an arguments object is read by calls there; the choice of the kind of TypedArray, a jump through
+a table to the function of that kind; and that function, with a frame of its own because the view is
+worked out by a call where it is not the one kept. The element came back as a Numeric, to be made a
+Value by the first. One function reads it now, for the nine kinds whose elements are Numbers: the
+kind is chosen there, what is kept of the view is looked at, the bytes are read from the buffer and
+the Number is made of them where it stands (a double that goes to the heap, where the heap's vector
+of Numbers has room). It calls nothing and keeps no frame: the argument of an arguments object, and
+everything of a TypedArray that is not read so (a view that is not the one kept, a BigInt kind), are
+each a function of their own, called last. A write is the same, for a value that an element is made
+of by a cast: an integer for the integer kinds, which is ToInt8 and the rest of it; an integer or a
+double for the clamped kind and for the two kinds of doubles. Any other value, and a double into an
+integer kind, is written as before.
+
+The first try had the read and the write as part of the loop of instructions, where the compiler put
+them, and every call was six instructions longer for it (the price list said so at once: the loop
+had grown by the nine kinds twice). Each is a function of its own now, and the write is called from
+what the loop had already.
+
+An element of a `Uint8Array` is read in 162 instructions for 197 and written in 172 for 207, one of
+a `Float64Array` in 231 for 271 and 172 for 191 (QuickJS: 89, 78, 106 and 76). Counted by the
+instructions the cases retire, `typed/float64-math` is 6.8% fewer, `typed/pixels-rgba` 4.3%,
+`typed/uint8-fill-loop` 4.0%; the calls are 0.2 to 0.4% more, by where the loop's arms came to lie.
+With the two binaries run in turn the fill of a `Uint8Array` is 7.6% less and the arithmetic of a
+`Float64Array` 1.4%; the pixel loop reads the same time for its fewer instructions (0.98 ms either
+way, whichever is run first), as it did when the branch on a whole double was tried without a branch.
+The test writes and reads every kind in loops with values of every sort, through two views of one
+buffer, an offset and a subarray, past the length, through collections and with more arrays than
+views are kept, and under a buffer that is resized; with any of the three things asked of what is
+kept taken out (the array, the length of the buffer, the length of the view) it fails, once its
+indices were variables: a constant index is another instruction, which had hidden two of the three.
 
 Tried on the way and not kept: the choice between an integer Number and a double that fits a Value,
 made without a branch. Samples of the pixel loop pile up behind the branch on whether a double is
