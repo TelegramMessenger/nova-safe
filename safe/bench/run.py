@@ -61,15 +61,35 @@ def build(qjs_src, nova_lib, work):
     order = os.path.join(HERE, "order.txt")
     if newer(binary, [source, nova_lib, order] + objects):
         frameworks = ["-framework", "CoreFoundation"] if sys.platform == "darwin" else ["-ldl"]
-        sh(["cc", "-O2", "-std=gnu11", "-Wall", "-I", qjs_src, "-I", os.path.join(ROOT, "nova_embed_ffi", "include"), source] + objects + [nova_lib, "-lm", "-lpthread"] + frameworks + placed_first(nova_lib, order, work) + ["-o", binary])
+        link = ["cc", "-O2", "-std=gnu11", "-Wall", "-I", qjs_src, "-I", os.path.join(ROOT, "nova_embed_ffi", "include"), source] + objects + [nova_lib, "-lm", "-lpthread"] + frameworks
+        listed = placed_first(nova_lib, order)
+        if not listed:
+            sh(link + ["-o", binary])
+        else:
+            # Linked twice: once with the functions in their order, to learn
+            # how long each is, then with what fills each up to its slot.
+            path = os.path.join(work, "order.txt")
+            with open(path, "w") as out:
+                out.write("".join(name + "\n" for name in listed))
+            sh(link + ["-Wl,-order_file," + path, "-o", binary])
+            fill = slots(binary, listed, work)
+            with open(path, "w") as out:
+                out.write("".join(name + "\n" for name in fill["order"]))
+            sh(link + [fill["object"], "-Wl,-order_file," + path, "-o", binary])
+            check_slots(binary, listed)
     return binary
 
 
-def placed_first(nova_lib, order, work):
-    """The linker arguments that put the functions order.txt names at the start
-    of the binary, in its order. Where a function is in the binary changes how
-    fast it runs by a few percent, and without this that place moves with any
-    change to what is laid out before it."""
+# Every function of order.txt starts at a multiple of this from the first of
+# them.
+SLOT = 0x1000
+
+
+def placed_first(nova_lib, order):
+    """The functions order.txt names, by their symbols, in its order: what the
+    binary is to have at its start. Where a function is in the binary changes
+    how fast it runs by a few percent, and without this that place moves with
+    any change to what is laid out before it."""
     if sys.platform != "darwin":
         return []
     symbols = subprocess.run(["nm", nova_lib], capture_output=True).stdout.decode("utf-8", "replace").split()
@@ -88,10 +108,54 @@ def placed_first(nova_lib, order, work):
         if len(found) != 1:
             print("order.txt: %s names %d functions of the library, not one" % (part, len(found)), file=sys.stderr)
         listed += found
-    path = os.path.join(work, "order.txt")
+    return listed
+
+
+def text_symbols(binary):
+    """(address, name) of what is in the text of the binary, by address."""
+    found = []
+    for line in subprocess.run(["nm", "-n", binary], capture_output=True).stdout.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[1] in "tT":
+            found.append((int(parts[0], 16), parts[2]))
+    return found
+
+
+def slots(binary, listed, work):
+    """What fills each listed function up to the next multiple of SLOT, as an
+    object file of one symbol per function, and the order with those symbols
+    in it. A function that grows or shrinks within its slot then moves no
+    other: not the listed ones after it, and not the rest of the binary, which
+    starts where the last slot ends."""
+    symbols = text_symbols(binary)
+    following = {name: symbols[at + 1][0] - address for at, (address, name) in enumerate(symbols[:-1])}
+    order, source, used = [], [".text\n"], 0
+    for at, name in enumerate(listed):
+        order.append(name)
+        if name not in following:
+            continue
+        used += following[name]
+        fill = -used % SLOT
+        if fill:
+            pad = "_nova_bench_slot_%d" % at
+            source.append(".globl %s\n.p2align 2\n%s:\n.space %d\n" % (pad, pad, fill))
+            order.append(pad)
+            used += fill
+    source.append(".subsections_via_symbols\n")
+    path = os.path.join(work, "slots.s")
     with open(path, "w") as out:
-        out.write("".join(name + "\n" for name in listed))
-    return ["-Wl,-order_file," + path]
+        out.write("".join(source))
+    obj = os.path.join(work, "slots.o")
+    sh(["cc", "-c", path, "-o", obj])
+    return {"order": order, "object": obj}
+
+
+def check_slots(binary, listed):
+    """Says so if a listed function is not at the start of a slot."""
+    where = {name: address for address, name in text_symbols(binary)}
+    placed = [where[name] for name in listed if name in where]
+    if placed and any((address - placed[0]) % SLOT for address in placed):
+        print("order.txt: not every function starts a slot of %d bytes" % SLOT, file=sys.stderr)
 
 
 def run_case(binary, engine, case, index, heap):

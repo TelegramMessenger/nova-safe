@@ -2,9 +2,12 @@
 # their symbols' names, in the order the benchmark binary is to have them at
 # its start (run.py, on macOS). At the same addresses in every build that
 # leaves them as they are, they are timed the same: see "Where a function
-# lands" in safe/PERF.md. The loop of instructions is last, so that a change
-# to it moves none of the others, and QuickJS's own are first (their names as
-# they are, with the underscore), so that no change to Nova moves them.
+# lands" in safe/PERF.md. QuickJS's own are first (their names as they are,
+# with the underscore), so that no change to Nova moves them. The loop of
+# instructions is next, so that a change to any other function of Nova's
+# leaves it where it is: it is the one that feels its address most, and the
+# others change more often than it does. A change to the loop itself moves
+# the rest, and is compared at several placings.
 _JS_CallInternal
 _JS_GetPropertyInternal
 _JS_SetPropertyInternal2
@@ -18,6 +21,7 @@ _js_call_c_function
 _JS_CallConstructorInternal
 _js_create_from_ctor
 _free_var_ref
+2vm2Vm3run17h
 6number6Number8from_f6417h
 6object14OrdinaryObject14value_by_cache17h
 6object14OrdinaryObject18set_value_by_cache17h
@@ -30,4 +34,3 @@ _free_var_ref
 12environments20global_value_at_site17h
 12environments24set_global_value_at_site17h
 20execute_instructions21execute_evaluate_call17h
-2vm2Vm3run17h
