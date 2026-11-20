@@ -3,7 +3,7 @@
 
     safe/bench/run.py --qjs-src <quickjs checkout> [--nova-lib <libnova_embed_ffi.a>]
                       [--filter TEXT] [--heap BYTES] [--out DIR] [--label NAME]
-                      [--engines qjs,nova] [--baseline results.json]
+                      [--engines qjs,nova] [--baseline results.json] [--repeat N]
 
 Both engines run embedded as the widget sandbox embeds them (bench.c): an
 8 MB heap, an interrupt callback, a 6 MB stack limit. One process runs one
@@ -12,7 +12,9 @@ case. Without --nova-lib the library is built from this checkout with cargo
 
 Writes <out>/<label>.json and prints a table: milliseconds per run (the
 minimum of the runs) and Nova's time over QuickJS's. --baseline adds a column
-against an earlier results file, for a change to Nova.
+against an earlier results file, for a change to Nova. --repeat runs every
+case in that many processes and keeps the fastest, which is what a ratio
+near a round number needs to be told from its neighbour.
 """
 import argparse
 import glob
@@ -181,6 +183,21 @@ def run_case(binary, engine, case, index, heap):
     return {"fatal": "no output"}
 
 
+def fastest(repeat, binary, engine, case, index, heap):
+    """The case in `repeat` processes, one after another: the one whose fastest
+    run is the fastest of all, or the first that the engine ended. One process
+    times a case for 300 ms, and where it lands in memory moves its time by
+    several percent: a table of single processes cannot tell 1.95x from 2.05x."""
+    best = None
+    for _ in range(max(1, repeat)):
+        row = run_case(binary, engine, case, index, heap)
+        if "min" not in row:
+            return row
+        if best is None or row["min"] < best["min"]:
+            best = row
+    return best
+
+
 def cell(row):
     if row is None:
         return "-"
@@ -199,6 +216,7 @@ def main():
     parser.add_argument("--label", default="run")
     parser.add_argument("--engines", default="qjs,nova")
     parser.add_argument("--baseline")
+    parser.add_argument("--repeat", type=int, default=1, help="processes per case and engine, of which the fastest counts")
     args = parser.parse_args()
     if not args.qjs_src or not os.path.exists(os.path.join(args.qjs_src, "quickjs.c")):
         sys.exit("--qjs-src (or QJS_SRC) must be a QuickJS checkout")
@@ -215,7 +233,7 @@ def main():
                 continue
             row = {"name": name, "file": os.path.basename(case)}
             for engine in engines:
-                row[engine] = run_case(binary, engine, case, index, args.heap)
+                row[engine] = fastest(args.repeat, binary, engine, case, index, args.heap)
             results.append(row)
             q, n = row.get("qjs"), row.get("nova")
             ratio = "%6.1fx" % (n["min"] / q["min"]) if q and n and "min" in q and "min" in n and q["min"] > 0 else "      -"
