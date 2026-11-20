@@ -18347,3 +18347,120 @@ setter later={a:1wec,b:twowec,c:nullwec,d:undefinedwec,e:5.5wec}{a:1wec,b:twowec
         other => panic!("{other:?}"),
     }
 }
+
+/// An element of a TypedArray is read and written where the view of the
+/// TypedArray was last seen, by one function that calls nothing, for the
+/// kinds whose elements are Numbers; everything else goes the way it did.
+/// Every kind with values of every sort written and read back in loops
+/// (integers past every size, halves for the clamped kind, doubles that
+/// are Numbers of the heap, negative zero, NaN and the infinities); values
+/// that are not Numbers; BigInt kinds; indices outside the length and
+/// indices that are none; views of one buffer written through one and read
+/// through another, with an offset and as a subarray; a DataView beside
+/// them; more arrays in turn than views are kept; collections between the
+/// writes and the reads; a buffer resized under a view that tracks its
+/// length and one that does not. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn an_element_of_a_typed_array_is_read_and_written_where_its_view_was_seen() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(typed_array_elements_by_the_seen_view)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn typed_array_elements_by_the_seen_view() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+function show(v) { return Object.is(v, -0) ? '-0' : String(v); }
+var kinds = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array];
+var values = [0, 1, -1, 127, 128, 255, 256, -129, 32768, 65535, 65536, 2147483647, 2147483648, 4294967295, 4294967296, -2147483649, 9007199254740991, 0.5, 1.5, 2.5, -0.5, 254.5, 255.5, 1.1, -1.9, 3.999, 1e10, -1e10, 1e300, -0, NaN, Infinity, -Infinity, 0.1 + 0.2, 16777217, 1.401298464324817e-45];
+// Every kind: each value written by an index in a loop and read back by one.
+kinds.forEach(function (K) {
+  var a = new K(values.length);
+  for (var i = 0; i < values.length; i++) a[i] = values[i];
+  var r = [];
+  for (var i = 0; i < a.length; i++) r.push(show(a[i]));
+  say(K.name + ' ' + r.join(','));
+});
+// Values that are not Numbers are converted the long way.
+note('conversions', function () { var a = new Uint8Array(8), n = 0; a[0] = '77'; a[1] = true; a[2] = null; a[3] = undefined; a[4] = { valueOf: function () { n++; return 300; } }; a[5] = [9]; a[6] = '0x10'; a[7] = 'no'; return Array.prototype.join.call(a) + ' ' + n; });
+note('bigint into numbers', function () { var a = new Int32Array(1); a[0] = 1n; return a[0]; });
+note('symbol into numbers', function () { var a = new Float64Array(1); a[0] = Symbol(); return a[0]; });
+note('bigint arrays', function () { var a = new BigInt64Array(3), b = new BigUint64Array(2); a[0] = 5n; a[1] = -1n; b[0] = -1n; for (var i = 0, r = []; i < 3; i++) r.push(a[i]); return r.join(',') + ' ' + b[0] + ' ' + typeof a[0]; });
+note('number into bigints', function () { var a = new BigInt64Array(1); a[0] = 1; return a[0]; });
+// Indices that are not within the length, or not indices.
+note('outside', function () { var a = new Int16Array(4); a[4] = 1; a[-1] = 2; a[100] = 3; a[1.5] = 4; a['2'] = 5; a[-0] = 6; var i = 4, j = -1, k = 1.5; return [a[i], a[j], a[k], a[4], a[-1], a[100], a[1.5], a['2'], a[0], a.length, Object.keys(a).join('')].join(','); });
+note('outside in loops', function () { var a = new Uint8Array(4), s = 0, u = 0; for (var i = -2; i < 8; i++) { a[i] = i + 10; } for (var i = -2; i < 8; i++) { var v = a[i]; if (v === undefined) u++; else s += v; } return s + ' ' + u + ' ' + Array.prototype.join.call(a); });
+note('empty', function () { var a = new Float32Array(0); a[0] = 1; return a[0] + ' ' + a.length; });
+// Views of one buffer: a write through one is read through another.
+note('two views', function () { var b = new ArrayBuffer(16), u8 = new Uint8Array(b), u32 = new Uint32Array(b), f64 = new Float64Array(b, 8, 1), r = []; for (var i = 0; i < 16; i++) u8[i] = i * 17; for (var i = 0; i < 4; i++) r.push(u32[i]); f64[0] = 1.5; for (var i = 8; i < 16; i++) r.push(u8[i]); u32[0] = 0xdeadbeef; r.push(u8[0], u8[3]); return r.join(','); });
+note('offset view', function () { var b = new ArrayBuffer(12), a = new Int16Array(b, 4, 3), all = new Uint8Array(b), k = 3; for (var i = 0; i < 3; i++) a[i] = -(i + 1); a[k] = 99; var r = []; for (var i = 0; i < 12; i++) r.push(all[i]); return r.join(',') + ' ' + a[k]; });
+note('subarray', function () { var a = new Float64Array(6); var s = a.subarray(2, 5), k = 3; for (var i = 0; i < 6; i++) a[i] = i + 0.25; for (var i = 0; i < 3; i++) s[i] = s[i] * 2; s[k] = 7; var r = [], past = []; for (var i = 0; i < 6; i++) r.push(a[i]); for (var i = 0; i < 6; i++) { s[i] = s[i]; past.push(s[i]); } return r.join(',') + ' ' + s[k] + ' ' + s.length + ' ' + past.join('/') + ' ' + a[5]; });
+note('data view', function () { var b = new ArrayBuffer(8), d = new DataView(b), a = new Uint16Array(b); d.setUint16(0, 0x1234, true); d.setUint16(2, 0x1234, false); a[2] = 0xabcd; return [a[0], a[1], d.getUint16(4, true), d.getUint8(4)].join(','); });
+// Many arrays read and written in turn, more than the views that are kept.
+note('many arrays', function () { var arrays = []; for (var k = 0; k < 9; k++) arrays.push(new kinds[k](5)); var s = 0; for (var round = 0; round < 50; round++) for (var k = 0; k < 9; k++) { var a = arrays[k]; a[round % 5] = round + k; s += a[(round + 1) % 5]; } return s + ' ' + arrays.map(function (a) { return Array.prototype.join.call(a, '/'); }).join(' '); });
+// Collections between the writes and the reads.
+note('through collections', function () { var a = new Float64Array(64), keep = []; for (var i = 0; i < 300000; i++) { a[i & 63] = i + 0.5; if ((i & 16383) === 0) keep.push({ v: a[(i + 1) & 63] + 0.25 }); var junk = { x: i + 0.125 }; } var s = 0; for (var i = 0; i < 64; i++) s += a[i]; return s + ' ' + keep.length + ' ' + keep[3].v; });
+// Doubles that are Numbers of the heap, small doubles and integers, read back as what they are.
+note('doubles', function () { var a = new Float64Array([1.1, 2, -0, 0.5, 1e21, 123456789.125, NaN, 4294967296.5]), r = []; for (var i = 0; i < a.length; i++) { var v = a[i]; r.push(show(v) + ':' + typeof v + ':' + (v === a[i] || v !== v)); } return r.join(','); });
+note('float32 rounding', function () { var a = new Float32Array(4); a[0] = 0.1; a[1] = 16777217; a[2] = 3.4e39; a[3] = 1e-46; var r = []; for (var i = 0; i < 4; i++) r.push(a[i]); return r.join(','); });
+note('clamped', function () { var a = new Uint8ClampedArray(12), v = [0.5, 1.5, 2.5, 254.5, 255.5, -0.5, 0.49999, 0.50001, 1e300, -1e300, NaN, 3.5]; for (var i = 0; i < 12; i++) a[i] = v[i]; return Array.prototype.join.call(a); });
+// A buffer that is resized under views that were read from.
+note('resized', function () { var b = new ArrayBuffer(8, { maxByteLength: 16 }); if (typeof b.resize !== 'function') return 'no resize'; var tracking = new Uint8Array(b), fixed = new Uint8Array(b, 0, 8), r = [], one = 1, three = 3; for (var i = 0; i < 8; i++) { tracking[i] = i + 1; fixed[i] = fixed[i]; } b.resize(4); var i = 6; r.push(tracking[i], fixed[i], fixed[one], fixed[three], tracking.length, fixed.length, tracking[three]); tracking[i] = 7; fixed[one] = 8; for (var j = 0; j < 8; j++) fixed[j] = 50 + j; r.push(tracking[one], tracking[three]); b.resize(12); r.push(tracking[i], tracking.length, fixed.length, fixed[three], tracking[one]); for (var j = 0; j < 12; j++) tracking[j] = j; r.push(fixed[7], tracking[11], fixed[one]); b.resize(2); for (var j = 0; j < 12; j++) { tracking[j] = 90 + j; r.push(tracking[j], fixed[j]); } return r.join(','); });
+// An index that is the result of arithmetic, a property of the same name on the prototype, and a frozen array.
+note('prototype element', function () { Object.defineProperty(Uint8Array.prototype, '9', { value: 'inherited', configurable: true }); var a = new Uint8Array(4), i = 9; var r = a[i] + ' ' + a[9]; delete Uint8Array.prototype[9]; return r; });
+note('strict write outside', function () { 'use strict'; var a = new Uint8Array(2), i = 5; a[i] = 1; return a[i]; });
+note('typed as prototype', function () { var o = Object.create(new Uint8Array([7, 8])), i = 1; o[i] = 3; return o[i] + ' ' + o[0] + ' ' + Object.keys(o).length; });
+// A long loop of each kind, summed.
+note('pixels', function () { var p = new Uint8ClampedArray(160 * 120 * 4), s = 0; for (var y = 0; y < 120; y++) for (var x = 0; x < 160; x++) { var at = (y * 160 + x) * 4; p[at] = x * 2; p[at + 1] = y * 2; p[at + 2] = (x + y) * 1.5; p[at + 3] = 255; } for (var i = 0; i < p.length; i += 97) s += p[i]; return s + ' ' + p[4000] + ' ' + p[40001] + ' ' + p[40002]; });
+note('float sums', function () { var a = new Float64Array(1000), b = new Float32Array(1000), s = 0, t = 0; for (var i = 0; i < 1000; i++) { a[i] = i * 0.37; b[i] = i * 0.37; } for (var i = 0; i < 1000; i++) { s += a[i]; t += b[i]; } return s + ' ' + t; });
+note('integer sums', function () { var a = new Int32Array(1000), b = new Uint32Array(1000), c = new Int16Array(1000), s = 0; for (var i = 0; i < 1000; i++) { a[i] = i * 4000037; b[i] = i * 4000037; c[i] = i * 77; } for (var i = 0; i < 1000; i++) s += a[i] + b[i] + c[i]; return s; });
+out.join("\n")"##;
+    let expected = r##"Int8Array 0,1,-1,127,-128,-1,0,127,0,-1,0,-1,0,-1,0,-1,-1,0,1,2,0,-2,-1,1,-1,3,0,0,0,0,0,0,0,0,1,0
+Uint8Array 0,1,255,127,128,255,0,127,0,255,0,255,0,255,0,255,255,0,1,2,0,254,255,1,255,3,0,0,0,0,0,0,0,0,1,0
+Uint8ClampedArray 0,1,0,127,128,255,255,0,255,255,255,255,255,255,255,0,255,0,2,2,0,254,255,1,0,4,255,0,255,0,0,255,0,0,255,0
+Int16Array 0,1,-1,127,128,255,256,-129,-32768,-1,0,-1,0,-1,0,-1,-1,0,1,2,0,254,255,1,-1,3,-7168,7168,0,0,0,0,0,0,1,0
+Uint16Array 0,1,65535,127,128,255,256,65407,32768,65535,0,65535,0,65535,0,65535,65535,0,1,2,0,254,255,1,65535,3,58368,7168,0,0,0,0,0,0,1,0
+Int32Array 0,1,-1,127,128,255,256,-129,32768,65535,65536,2147483647,-2147483648,-1,0,2147483647,-1,0,1,2,0,254,255,1,-1,3,1410065408,-1410065408,0,0,0,0,0,0,16777217,0
+Uint32Array 0,1,4294967295,127,128,255,256,4294967167,32768,65535,65536,2147483647,2147483648,4294967295,0,2147483647,4294967295,0,1,2,0,254,255,1,4294967295,3,1410065408,2884901888,0,0,0,0,0,0,16777217,0
+Float32Array 0,1,-1,127,128,255,256,-129,32768,65535,65536,2147483648,2147483648,4294967296,4294967296,-2147483648,9007199254740992,0.5,1.5,2.5,-0.5,254.5,255.5,1.100000023841858,-1.899999976158142,3.999000072479248,10000000000,-10000000000,Infinity,-0,NaN,Infinity,-Infinity,0.30000001192092896,16777216,1.401298464324817e-45
+Float64Array 0,1,-1,127,128,255,256,-129,32768,65535,65536,2147483647,2147483648,4294967295,4294967296,-2147483649,9007199254740991,0.5,1.5,2.5,-0.5,254.5,255.5,1.1,-1.9,3.999,10000000000,-10000000000,1e+300,-0,NaN,Infinity,-Infinity,0.30000000000000004,16777217,1.401298464324817e-45
+conversions=77,1,0,0,44,9,16,0 1
+bigint into numbers!TypeError
+symbol into numbers!TypeError
+bigint arrays=5,-1,0 18446744073709551615 bigint
+number into bigints!TypeError
+outside=,,,,,,,5,6,4,0123
+outside in loops=46 6 10,11,12,13
+empty=undefined 0
+two views=857870592,2003195204,3148519816,4293844428,0,0,0,0,0,0,248,63,239,222
+offset view=0,0,0,0,255,255,254,255,253,255,0,0 undefined
+subarray=0.25,1.25,4.5,6.5,8.5,5.25 undefined 3 4.5/6.5/8.5/// 5.25
+data view=4660,13330,43981,205
+many arrays=10971 45/46/47/48/49 46/47/48/49/50 47/48/49/50/51 48/49/50/51/52 49/50/51/52/53 50/51/52/53/54 51/52/53/54/55 52/53/54/55/56 53/54/55/56/57
+through collections=19197952 19 49089.75
+doubles=1.1:number:true,2:number:true,-0:number:true,0.5:number:true,1e+21:number:true,123456789.125:number:true,NaN:number:true,4294967296.5:number:true
+float32 rounding=0.10000000149011612,16777216,Infinity,0
+clamped=0,2,2,254,255,0,0,1,255,0,0,4
+resized=,,,,4,0,4,2,4,0,12,8,4,2,7,11,1,90,,91,,,,,,,,,,,,,,,,,,,,,
+prototype element=undefined undefined
+strict write outside=undefined
+typed as prototype=3 7 1
+pixels=141959 80 124 213
+float sums=184815.00000000003 184815.00003635883
+integer sums=2007467948788"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
