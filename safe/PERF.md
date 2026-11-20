@@ -48,9 +48,16 @@ does.)
 
 So the benchmark binary has those functions at its start: `safe/bench/order.txt` names them and
 `run.py` gives the linker their order (macOS). A change that leaves them as they are leaves them
-where they are, and what moves in a comparison is what the change did. The loop is last of them, so
-that a change to it moves none of the others, and the interpreter of QuickJS and a dozen functions
-around it are first, so that nothing in Nova moves them. Having them there costs nothing by itself: one commit
+where they are, and what moves in a comparison is what the change did. The interpreter of QuickJS and
+a dozen functions around it are first, so that nothing in Nova moves them, and the loop is next, so
+that a change to another function of Nova's leaves it where it is. (It was last of them at first, so
+that a change to it moved none of the others. But the others change more often than it does, and the
+first of them that grew, by 264 bytes, moved the loop: a `switch` in a loop read 5.6% slower in the
+table for a change that runs none of it, and 0.1% with the loop linked where it had been.) And each
+of them is filled up to the next 4 KB from the first, by a symbol of nothing after it that `run.py`
+makes once it knows how long the function is (the binary is linked twice): a function that grows
+or shrinks within its slot moves none of the others, and the rest of the binary starts where the
+last slot ends. Having them there costs nothing by itself: one commit
 linked both ways reads 0.03% apart on the panel of 34 cases, none of them 2% worse.
 
 This is a property of the benchmark's binary, as the old placing was. A product build has these
@@ -63,53 +70,56 @@ on the panel (area 5).
 
 A timing says that a case is slow and a profile where its time goes, by function; neither says what one
 call or one property read costs next to the other engine's, and neither can be taken while the machine
-does something else. The instructions a process retires can: `/usr/bin/time -l` reports them (macOS),
-and for one binary and one script they are the same to a few parts in ten thousand from run to run,
-under any load.
+does something else. The instructions a process retires can: `/usr/bin/time -l` reports them (macOS).
+What the script itself retires is the same from run to run under any load. The count of a process has
+the kernel's work for it in it too (its pages), which varies by some millions of instructions, so
+every case is run three times and the least count taken: two such lists of one binary then agree to
+0.3 instructions per operation.
 
 ```bash
-safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--save now.json] [--against before.json]
+safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 3] [--save now.json] [--against before.json]
 ```
 
-It runs the cases of `safe/bench/prices.js` once in each engine, in the runner that `run.py` built.
-Each is a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed
-(one operation more in a turn, or one in place of the cheapest of its kind), so the two processes
-differ by a million times the price of the operation. As of the typed-array round (area 5), in machine
-instructions per operation:
+It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
+a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
+operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
+a million times the price of the operation. As of the round of the arithmetic of doubles (area 6), in
+machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 223 / 265 / 257 | 568 / 652 / 662 | 2.5x |
-| call of a method, of one that reads `this.n`, of an inherited one | 307 / 411 / 322 | 841 / 958 / 882 | 2.3-2.7x |
+| call, no argument / one / two | 228 / 270 / 262 | 582 / 666 / 676 | 2.5x |
+| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 327 | 856 / 973 / 896 | 2.3-2.7x |
 | a callee that reads a variable of its maker, in place of its parameter | 2 | 79 | |
 | a callee that assigns one, more | 25 | 143 | |
 | read of a variable of the enclosing function, in place of a local | 2 | 10 | |
-| assignment to one, in place of a local | -2 | 64 | |
-| read of a global, in place of a local | 41 | 156 | 3.8x |
-| assignment to a global, in place of a local | 56 | 366 | 6.6x |
+| assignment to one, in place of a local | 3 | 78 | |
+| read of a global, in place of a local | 41 | 131 | 3.2x |
+| assignment to a global, in place of a local | 61 | 380 | 6.2x |
 | property read, own / inherited, in place of a local | 53 / 68 | 145 / 185 | 2.7x |
-| property assignment, in place of a local | 48 | 122 | 2.6x |
-| getter / setter | 328 / 400 | 845 / 816 | 2.6x / 2.0x |
-| integer `+` of two locals, more | 19 | 81 | 4.3x |
-| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 373 | 5.6x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 257 / 253 / 325 | 730 / 617 / 691 | 2.1-2.8x |
-| `Math.max(i, 7)` | 266 | 585 | 2.2x |
-| Array element read / written | 51 / 48 | 134 / 176 | 2.6x / 3.7x |
-| Uint8Array element read / written | 84 / 73 | 201 / 211 | 2.4x / 2.9x |
-| Float64Array element read / written | 106 / 71 | 299 / 208 | 2.8x / 2.9x |
-| `new` of a function / of a class, one field set | 1067 / 1123 | 2204 / 2176 | 2.0x |
-| an object literal of two properties | 739 | 480 | 0.65x |
+| property assignment, in place of a local | 53 | 136 | 2.6x |
+| getter / setter | 328 / 405 | 845 / 830 | 2.6x / 2.0x |
+| integer `+` of two locals, more | 24 | 95 | 4.0x |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 269 | 4.0x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 325 | 666 / 593 / 666 | 2.0-2.5x |
+| `Math.max(i, 7)` | 271 | 574 | 2.1x |
+| Array element read / written | 56 / 53 | 148 / 190 | 2.6x / 3.6x |
+| Uint8Array element read / written | 89 / 78 | 215 / 225 | 2.4x / 2.9x |
+| Float64Array element read / written | 106 / 76 | 298 / 222 | 2.8x / 2.9x |
+| `new` of a function / of a class, one field set | 1072 / 1128 | 2218 / 2190 | 2.0x |
+| an object literal of two properties | 744 | 494 | 0.66x |
 | one callback of `forEach` (the whole turn) | 394 | 806 | 2.0x |
 | one step of `for-of` over a generator (the whole turn) | 491 | 1081 | 2.2x |
-| `s.charCodeAt(i)` | 345 | 545 | 1.6x |
+| `s.charCodeAt(i)` | 350 | 559 | 1.6x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
 times its time; a loop that adds integers retires 1.9 times as many and takes the same time), so
 the table of `run.py` still decides what is kept. What the prices say is where a path is long: the
-arithmetic of doubles first (each result a Number of the heap, area 6), then the globals, then the
-calls, which are 570 to 960 instructions where QuickJS has 220 to 410 and are spread thin (entering
-the function 18% of the time of `call/closure`, leaving it 11%, taking up the code that runs next 15%).
+arithmetic of doubles was first (371 for the two operators of the table before that round; each
+result is still a Number of the heap, area 6), then the globals, then the calls, which are 580 to
+970 instructions where QuickJS has 230 to 420 and are spread thin (entering the function 18% of the
+time of `call/closure`, leaving it 11%, taking up the code that runs next 15%).
 
 Two builds are compared the same way, case by case of the benchmark: the instructions of a process
 over the runs its case reports. A change that makes a path longer shows there exactly, with the machine
@@ -124,27 +134,27 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 1.8x |
-| call | 14 | 10.4x | 1.7x |
-| math | 4 | 9.7x | 1.9x |
+| typed | 4 | 10.6x | 1.7x |
+| call | 14 | 10.4x | 1.8x |
+| math | 4 | 9.7x | 1.7x |
 | string | 26 | 10.6x | 1.3x |
 | prop | 13 | 7.1x | 1.4x |
 | map, set | 4 | 4.6x | 1.2x |
 | app | 8 | 6.1x | 1.5x |
 | array | 14 | 5.8x | 1.4x |
 | regexp | 4 | 2.4x | 1.4x |
-| loop | 11 | 11.1x | 1.3x |
+| loop | 11 | 11.1x | 1.2x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.8x |
 | all | 108 | 7.6x | 1.4x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
-was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.65x), then a step
-of a particle animation (2.5x), the sines and square roots of `math/trig-and-sqrt` (2.4x), and the
-properties of one object read and written in a loop and arithmetic on the elements of a
-`Float64Array` (2.2-2.3x). 93 to 97 of the 108 cases are at or under 2x from one run to the next (a
-dozen sit within a few hundredths of 2x, on either side of it), 16 to 19 of them at or under
-QuickJS's time.
+was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (2.7x), then a step
+of a particle animation (2.5x), a function that calls itself and the properties of one object read
+and written in a loop (2.3x), and a method inherited through three prototypes (2.2x): calls and
+properties, where the arithmetic of doubles was among them. 95 to 97 of the 108 cases are at or
+under 2x from one run to the next (half a dozen sit within a few hundredths of 2x, on either side
+of it), 18 to 20 of them at or under QuickJS's time.
 Over all cases it is 1.40x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
@@ -197,7 +207,14 @@ lands"), which moved QuickJS's own times too: its calls into its built-ins read 
 still differs from the next by a few percent on single cases of either engine. What was last found
 of where the elements of a TypedArray are, kept for the next element, took 3-4% off the loops over
 typed arrays (`typed/pixels-rgba` to 2.0x, `typed/float64-math` to 2.2x), with the mean where it was
-(1.40x, in a run where QuickJS's own times read 1.6% lower).
+(1.40x, in a run where QuickJS's own times read 1.6% lower). The arithmetic of doubles worked out
+straight through (area 6) and a global read as one slot (area 2) took a fifth off a loop of
+arithmetic on doubles (`loop/float-math` 1.9x to 1.55x) and a tenth off what calls `Math` or keeps
+doubles (`math/trig-and-sqrt` 2.4x to 2.1x, `typed/float64-math` 2.2x to 2.05x, a step of the
+particles 2.65x to 2.5x, `math/floor-round-minmax` and `typed/pixels-rgba` under 2x), with the mean
+at 1.396x from 1.401x and 97 cases at or under 2x from 95: both tables taken from the saved
+libraries with every function of `order.txt` in a slot of its own ("Where a function lands"), where
+the table of the round's checks had a `switch` in a loop 5.6% slower for no change to it.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -511,6 +528,21 @@ calls of itself, `call/recursive-fib`; a counter that closures share). A `let` o
 through the realm at every read (2.0x in a loop). A write of a global asks the descriptors of the global
 object's storage whether the property is writable, two hash lookups: its attributes change with nothing a
 site could see.
+
+A global that is a property of the global object is read in 131 instructions more than a local, from
+156 (QuickJS: 41), and with it every call of `Math.sqrt` and its like, which read `Math` first (25 of
+about 600 each). Half of the read after the state of the global scope is found as it was had been
+the slots of the global object taken as a whole (its shape for their number and their capacity, one of
+twelve vectors by the capacity, a slice of that) to read one of them; now the one slot is read, as the
+property cache reads a slot. That reader was part of the function of the cache while it was its only
+user, by the compiler's choice, and a function of its own once there were two: a property that is
+inherited was read in ten instructions more, a method of a prototype called in ten more. So the
+reader and the three small functions under it (the slot of a storage, the storage by its index, its
+range) are marked to be part of whoever asks, one at a time down to where the function of the cache was
+the instructions it had been (compared by the instructions; the price list had shown each step). An
+assignment to such a global is 380, of which a quarter is the name resolved before the right-hand
+side is worked out, a quarter the slot written after the descriptors of the global object's storage
+are asked, and a sixth the state of the global scope found as it was a second time: not changed.
 
 ### 3. Calls
 
@@ -1544,6 +1576,37 @@ made without a branch. Samples of the pixel loop pile up behind the branch on wh
 whole, which is whole at every other pixel there, and that looked like a branch mispredicted half
 of the time. Both made and one chosen, the loop was 4.8% slower with everything else at the same
 addresses: the pile is what waits for the comparison, not a misprediction.
+
+The arithmetic of doubles was the widest gap of the price list ("What an operation costs"): `x * 0.999 +
+0.25` was 371 instructions, two operators of about 200, where QuickJS has 67. An operator of the loop
+of instructions works out two integers in its arm and calls one function for everything else, and of
+its 200 that function was 137: it took the operands apart as Numbers (a chain of conditional moves
+over the three kinds, for each), asked what the operator is three times (a comparison or not; one of
+the four of doubles or not; which), read the doubles, and called for the Number of the result, which
+is 45 more. Now each operand is read as the double it is, once, the operator is found by one jump, and
+the Number of the result is made there; the remainder, the shifts, the bitwise operators and operands
+that are not Numbers are functions of their own, reached as before. The function is about 85, the
+price of the two operators 269, and of `Math.floor(i / 3)` 666 from 744 (its division; and its read of
+`Math`, area 2). Nothing in the loop of instructions is changed, which calls the function as it did.
+With the two binaries run in turn (the function linked last in both, so that nothing else moves):
+`loop/float-math` 21% less, `math/integer-to-double-mix` 15%, `math/trig-and-sqrt` 9%,
+`typed/float64-math` 9%, an easing step 5%, `typed/pixels-rgba` 3%, `math/floor-round-minmax` 3%;
+loops and calls on integers as they were, to the instruction.
+
+Tried first, and not kept as built: a double held by the Value itself, whatever its fraction. Sixteen
+more kinds of Value hold the doubles whose magnitude is from 2<sup>-63</sup> up to 2<sup>65</sup>:
+the tag says the sign and the upper seven bits of the exponent, and the other 56 bits are the data. It
+ran every test and every script, and every price went up: the two operators to 485, a call by 30 to 50,
+a typed array element by 30 to 60. Three things, none of them the idea. A Number was sixteen bytes
+there (the double in full, beside the integer of seven), which is returned through memory, its seven
+bytes stored one at a time. The sixteen kinds were put together by a `match` over the sixteen values
+of the upper byte, expanded where it is used: a table of jumps, not the addition it comes to. And their
+tags were above those of the objects, so that "a primitive" was no longer one comparison of the tag
+anywhere. Done again it keeps a Number at eight bytes, with the sixteen kinds in it as in a Value; puts
+their tags after those of the other Numbers, the objects moved up; and has the `match` in a function
+small enough to be an addition before anything reads it in. What it buys over the above is the Number
+of the heap that every result still is: 45 instructions to make, a read for every use, and the
+collector's work for it.
 
 ### 7. Building strings
 
