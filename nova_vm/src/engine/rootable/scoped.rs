@@ -102,6 +102,34 @@ impl<'scope, T: Rootable> Scoped<'scope, T> {
         }
     }
 
+    /// [`Scoped::new`] for whoever holds the Agent exclusively: nothing else
+    /// is reading the scoped values then, and the borrow of them that `new`
+    /// takes and gives back, a flag tested and written twice, is not asked
+    /// for. For the code of every function that a `Vm` runs in place of
+    /// its call.
+    #[inline(always)]
+    pub(crate) fn new_exclusive(agent: &mut Agent, value: T, _gc: NoGcScope<'_, 'scope>) -> Self {
+        let value = match T::to_root_repr(value) {
+            Ok(stack_repr) => {
+                // The value doesn't need rooting.
+                return Self {
+                    inner: stack_repr,
+                    _marker: PhantomData,
+                    _scope: PhantomData,
+                };
+            }
+            Err(heap_data) => heap_data,
+        };
+        let stack_refs = agent.stack_refs.get_mut();
+        let next_index = stack_refs.len();
+        stack_refs.push(value);
+        Self {
+            inner: T::from_heap_ref(HeapRootRef::from_index(next_index)),
+            _marker: PhantomData,
+            _scope: PhantomData,
+        }
+    }
+
     /// Returns the scoped value from the heap. If the scoped value was at the
     /// top of the scope stack, then this will drop the value from the stack.
     ///

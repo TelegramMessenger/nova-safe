@@ -256,6 +256,18 @@ struct Frame {
     derived: Option<FunctionEnvironment<'static>>,
 }
 
+/// What [`Vm::leave_function`] has to finish once the frame is left, where
+/// the frame was not that of a plain call.
+struct Left {
+    /// The generator that a step of an iteration resumed, where the loop
+    /// goes when it is done, and the caller's Reference register.
+    stepped: Option<(Generator<'static>, usize, Option<Reference<'static>>)>,
+    settled: Settled,
+    /// The record of a derived class constructor, and whether `super(…)`
+    /// called it.
+    derived: Option<(Option<FunctionEnvironment<'static>>, bool)>,
+}
+
 impl Frame {
     /// A frame that is not in use yet, for the code `executable`.
     fn new(executable: Executable<'static>, scoped: Scoped<'static, Executable<'static>>) -> Self {
@@ -1336,7 +1348,7 @@ impl Vm {
                 Change::Throw(error) => thrown = Some(error),
                 Change::Terminate => {
                     while self.depth != 0 {
-                        running = self.leave_function(agent, running, false).0;
+                        running = self.leave_function_thrown(agent, running);
                     }
                     return ExecutionResult::Throw(JsError::new(Value::Undefined));
                 }
@@ -1401,7 +1413,7 @@ impl Vm {
                         }
                         return ExecutionResult::Throw(error.bind(gc.into_nogc()));
                     }
-                    running = self.leave_function(agent, running, false).0;
+                    running = self.leave_function_thrown(agent, running);
                     if self.handle_error(agent, error) {
                         break;
                     }
@@ -2024,7 +2036,7 @@ impl Vm {
         }
         // The function's instructions and tables, held while it runs.
         let tables = callee.executable.get_tables(agent);
-        let executable = callee.executable.scope(agent, gc);
+        let executable = Scoped::new_exclusive(agent, callee.executable, gc);
         Running {
             executable,
             code: callee.executable,
@@ -2044,6 +2056,14 @@ impl Vm {
     /// an iteration ([`Vm::enter_generator`]) and returned or threw: it is
     /// completed, and where it returned (`returned`; an error is the
     /// caller's to handle) the iteration is over.
+    // Part of the loop of instructions where a function returns, which is
+    // the end of every call: as a function of its own it saved and
+    // restored the registers it works in and handed the calling code back
+    // through memory, a twentieth of a plain call. What only some returns
+    // do is in functions of its own, so that what every return does is
+    // short; a function that throws is left by
+    // [`Vm::leave_function_thrown`].
+    #[inline(always)]
     fn leave_function<'s>(
         &mut self,
         agent: &mut Agent,
@@ -2066,20 +2086,108 @@ impl Vm {
         // what has a destructor calls for the dropping of the nothing that
         // is cut off, which was a twentieth of a plain call's time with the
         // release below.
-        if self.reference_stack.len() > frame.reference_base {
-            self.reference_stack.truncate(frame.reference_base);
-        }
-        if self.iterator_stack.len() > frame.iterator_base {
-            self.iterator_stack.truncate(frame.iterator_base);
+        if self.reference_stack.len() > frame.reference_base
+            || self.iterator_stack.len() > frame.iterator_base
+        {
+            self.cut_stacks(frame.reference_base, frame.iterator_base);
         }
         self.exception_handler_stack.truncate(self.handler_base);
         self.handler_base = frame.handler_base;
-        let mut stepped = None;
-        let mut settled = Settled::Done;
-        let mut derived = None;
+        let mut left = Left {
+            stepped: None,
+            settled: Settled::Done,
+            derived: None,
+        };
         match frame.completion {
             Completion::Value => {}
             Completion::Discarded => self.result = None,
+            _ => self.leave_special(frame, &mut left),
+        }
+        if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
+            // A stack that grew large is not kept for the next function.
+            Self::shed_stack(frame);
+        }
+        self.ip = frame.ip;
+        self.reference = None;
+        let tables = frame
+            .tables
+            .take()
+            .expect("the frame of the calling code is in use");
+        let (stack_depth, collections_depth) = (frame.stack_depth, frame.collections_depth);
+        // The caller's executable, which the collector kept current in the
+        // frame, and its rooted handle: the scoped value that names was
+        // below what the function scoped, and is there still.
+        let code = frame.executable;
+        let executable = frame.scoped.clone();
+        if agent.vm_frames.in_use == 0 && agent.vm_frames.frames.len() > SPARE_FRAMES {
+            // No frame is in use: the Agent keeps a few of them, and none
+            // of a deep recursion.
+            Self::drop_spare_frames(agent);
+        }
+        agent.stack_refs.get_mut().truncate(stack_depth);
+        debug_assert_eq!(executable.get(agent), code);
+        if agent.stack_ref_collections.get_mut().len() > collections_depth {
+            release_scoped_collections(agent, collections_depth);
+        }
+        let Left {
+            stepped,
+            mut settled,
+            derived,
+        } = left;
+        if let Some((generator, done, reference)) = stepped {
+            self.end_resumed_generator(agent, generator, done, reference, returned);
+        }
+        if returned && let Some((environment, for_super)) = derived {
+            settled = self.settle_derived(agent, environment, for_super);
+        }
+        (
+            Running {
+                executable,
+                code,
+                tables,
+                stack_depth,
+                collections_depth,
+            },
+            settled,
+        )
+    }
+
+    /// [`Vm::leave_function`] for a function that threw, or that a
+    /// termination ends: the calling code, which has the error next.
+    // Not part of the loop of instructions: few functions end this way.
+    #[inline(never)]
+    fn leave_function_thrown<'s>(&mut self, agent: &mut Agent, callee: Running) -> Running<'s> {
+        self.leave_function(agent, callee, false).0
+    }
+
+    /// What a function left on the Reference stack and the iterator stack
+    /// (it returned out of a loop, or threw) is cut off.
+    #[inline(never)]
+    fn cut_stacks(&mut self, reference_base: usize, iterator_base: usize) {
+        self.reference_stack.truncate(reference_base);
+        self.iterator_stack.truncate(iterator_base);
+    }
+
+    /// The value stack of a frame that grew large is let go of.
+    #[inline(never)]
+    fn shed_stack(frame: &mut Frame) {
+        frame.stack = Vec::new();
+    }
+
+    /// The frames of a deep recursion are let go of, all but a few.
+    #[inline(never)]
+    fn drop_spare_frames(agent: &mut Agent) {
+        agent.vm_frames.frames.truncate(SPARE_FRAMES);
+    }
+
+    /// What is done where the frame that is left is not that of a plain
+    /// call: `new` takes the object the function was constructed to, a
+    /// derived constructor's result waits for [`Vm::settle_derived`], and
+    /// the generator of a step is taken out of the frame.
+    #[inline(never)]
+    fn leave_special(&mut self, frame: &mut Frame, left: &mut Left) {
+        match frame.completion {
+            Completion::Value | Completion::Discarded => {}
             Completion::Constructed | Completion::SuperConstructed => {
                 // 10. If result is a return completion, then
                 //   a. If result.[[Value]] is an Object, return it.
@@ -2089,11 +2197,11 @@ impl Vm {
                     self.result = object;
                 }
                 if frame.completion == Completion::SuperConstructed {
-                    settled = Settled::Super;
+                    left.settled = Settled::Super;
                 }
             }
             Completion::ConstructedDerived | Completion::SuperConstructedDerived => {
-                derived = Some((
+                left.derived = Some((
                     frame.derived.take(),
                     frame.completion == Completion::SuperConstructedDerived,
                 ));
@@ -2113,51 +2221,9 @@ impl Vm {
                 } else {
                     None
                 };
-                stepped = Some((generator, frame.done, reference));
+                left.stepped = Some((generator, frame.done, reference));
             }
         }
-        if frame.stack.capacity() > VM_STACK_POOL_MAX_CAPACITY {
-            // A stack that grew large is not kept for the next function.
-            frame.stack = Vec::new();
-        }
-        self.ip = frame.ip;
-        self.reference = None;
-        let tables = frame
-            .tables
-            .take()
-            .expect("the frame of the calling code is in use");
-        let (stack_depth, collections_depth) = (frame.stack_depth, frame.collections_depth);
-        // The caller's executable, which the collector kept current in the
-        // frame, and its rooted handle: the scoped value that names was
-        // below what the function scoped, and is there still.
-        let code = frame.executable;
-        let executable = frame.scoped.clone();
-        if agent.vm_frames.in_use == 0 {
-            // No frame is in use: the Agent keeps a few of them, and none
-            // of a deep recursion.
-            agent.vm_frames.frames.truncate(SPARE_FRAMES);
-        }
-        agent.stack_refs.get_mut().truncate(stack_depth);
-        debug_assert_eq!(executable.get(agent), code);
-        if agent.stack_ref_collections.get_mut().len() > collections_depth {
-            release_scoped_collections(agent, collections_depth);
-        }
-        if let Some((generator, done, reference)) = stepped {
-            self.end_resumed_generator(agent, generator, done, reference, returned);
-        }
-        if returned && let Some((environment, for_super)) = derived {
-            settled = self.settle_derived(agent, environment, for_super);
-        }
-        (
-            Running {
-                executable,
-                code,
-                tables,
-                stack_depth,
-                collections_depth,
-            },
-            settled,
-        )
     }
 
     /// What is left to do where a generator that was resumed in place of
