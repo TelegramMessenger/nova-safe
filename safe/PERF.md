@@ -90,36 +90,36 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the comparison with a constant
-(area 1), in machine instructions per operation:
+a million times the price of the operation. As of the round of the assignment that takes its
+object from a slot (area 4), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
-| call, no argument / one / two | 228 / 270 / 262 | 478 / 561 / 569 | 2.1-2.2x |
-| call of a method, of one that reads `this.n`, of an inherited one | 312 / 416 / 328 | 696 / 780 / 739 | 1.9-2.3x |
-| a callee that reads a variable of its maker, in place of its parameter | 2 | 56 | |
-| a callee that assigns one, more | 25 | 117 | |
-| read of a variable of the enclosing function, in place of a local | 2 | 2 | |
-| assignment to one, in place of a local | 3 | 58 | |
+| call, no argument / one / two | 227 / 269 / 261 | 480 / 563 / 571 | 2.1-2.2x |
+| call of a method, of one that reads `this.n`, of an inherited one | 311 / 415 / 326 | 699 / 782 / 741 | 1.9-2.3x |
+| a callee that reads a variable of its maker, in place of its parameter | 3 | 56 | |
+| a callee that assigns one, more | 25 | 118 | |
+| read of a variable of the enclosing function, in place of a local | 2 | 3 | |
+| assignment to one, in place of a local | 2 | 57 | |
 | read of a global, in place of a local | 41 | 101 | 2.5x |
-| assignment to a global, in place of a local | 61 | 329 | 5.4x |
+| assignment to a global, in place of a local | 60 | 330 | 5.5x |
 | property read, own / inherited, in place of a local | 53 / 68 | 100 / 143 | 1.9-2.1x |
-| a second property of the same object, in place of a local | 53 | 76 | 1.4x |
-| property assignment, in place of a local | 53 | 118 | 2.2x |
-| getter / setter | 328 / 405 | 725 / 760 | 2.2x / 1.9x |
-| integer `+` of two locals, more | 24 | 87 | 3.6x |
-| `-(i & 7)` / `-x` of a double, more | 23 / 9 | 121 / 111 | |
-| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 237 | 3.5x |
-| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 263 / 253 / 326 | 540 / 481 / 559 | 1.7-2.1x |
-| `Math.max(i, 7)` | 271 | 414 | 1.5x |
-| Array element read / written | 56 / 53 | 134 / 176 | 2.4x / 3.3x |
-| Uint8Array element read / written | 89 / 78 | 197 / 207 | 2.2x / 2.7x |
-| Float64Array element read / written | 106 / 76 | 271 / 191 | 2.6x / 2.5x |
-| `new` of a function / of a class, one field set | 1073 / 1129 | 2134 / 2108 | 2.0x / 1.9x |
-| an object literal of two properties | 745 | 490 | 0.66x |
+| a second property of the same object, in place of a local | 53 | 74 | 1.4x |
+| property assignment, in place of a local | 52 | 118 | 2.3x |
+| getter / setter | 329 / 405 | 730 / 764 | 2.2x / 1.9x |
+| integer `+` of two locals, more | 23 | 87 | 3.8x |
+| `-(i & 7)` / `-x` of a double, more | 22 / 9 | 121 / 111 | |
+| `x * 0.999 + 0.25` on doubles, in place of a constant | 67 | 238 | 3.5x |
+| `Math.floor(i / 3)` / `Math.sqrt(i)` / `Math.sin(i)` | 262 / 253 / 326 | 541 / 484 / 560 | 1.7-2.1x |
+| `Math.max(i, 7)` | 270 | 415 | 1.5x |
+| Array element read / written | 55 / 52 | 134 / 177 | 2.5x / 3.4x |
+| Uint8Array element read / written | 88 / 77 | 197 / 208 | 2.2x / 2.7x |
+| Float64Array element read / written | 106 / 76 | 272 / 191 | 2.6x / 2.5x |
+| `new` of a function / of a class, one field set | 1073 / 1128 | 2142 / 2110 | 2.0x / 1.9x |
+| an object literal of two properties | 743 | 490 | 0.66x |
 | one callback of `forEach` (the whole turn) | 395 | 749 | 1.9x |
-| one step of `for-of` over a generator (the whole turn) | 491 | 908 | 1.8x |
-| `s.charCodeAt(i)` | 350 | 470 | 1.3x |
+| one step of `for-of` over a generator (the whole turn) | 492 | 908 | 1.8x |
+| `s.charCodeAt(i)` | 349 | 471 | 1.3x |
 
 Instructions are not time. Nova runs more of them in a cycle than QuickJS does on this machine (over
 the benchmark's worst cases it retires 2.2 to 3.0 times QuickJS's instructions and takes 1.8 to 2.8
@@ -269,7 +269,9 @@ first, and a step of the particles 3.0% and then 6.2% fewer. The tables of their
 under that work, have the whole at 1.294x and 1.293x and the same two cases over 2x (a step of the
 particles 2.15x, a closure 2.25x); the table above is the one before them. A property stepped by
 one instruction (area 4) took 3.35% more of its instructions off a step of the particles, counted
-the same way, and a property that is pushed by the instruction that reads it 1.5% more.
+the same way, a property that is pushed by the instruction that reads it 1.5% more, and an
+assignment that takes its object from the variable's slot 3.4% more, for 0.5 to 0.9% more
+instructions in the cases that call.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1638,6 +1640,28 @@ work, the least of fifteen runs of a step of the particles is 6.0% less, and of 
 call of a closure 2.1% and of the easings 1.9% less. The table of the round's checks, one process
 for a case under that work, is the first to have a step of the particles at 2x (1.96x, where the
 one before it had 2.3x): a table of a quiet machine has to say whether it is under it.
+
+`p.x = v` and `p.x += v` of a local pushed the object before the value was evaluated and popped it
+where the assignment was made, which takes the object from the stack (`PutPropertyWithCache`).
+Where nothing in the value assigns to the variable, the object is in the variable's slot when the
+assignment is made as it was before the value, and the assignment takes it from there
+(`PutIndexPropertyWithCache`): no push and no pop, one instruction fewer. The compiler asks the
+references of the variable for a write inside the value; a function that the value calls has no
+way to a variable in a stack slot, and a direct `eval` or a `with` in the function leaves the
+variable no slot. A value that does assign to the variable (`p.x = (p = q, 1)`) is compiled as
+before. undefined or null as the object throws after the value is evaluated, as it did, and a
+variable that is not initialized yet before it.
+
+Counted by the instructions the cases retire, a step of the particles is 3.4% fewer (thirty
+instructions for a particle, from thirty-two), and the cases that call are 0.5 to 0.9% more. By
+the price list a call is three to five machine instructions longer with this arm in the loop (479
+for 476 with no argument), a getter four and a setter seven: the same with the arm at the end of
+the loop's arms, and with a setter left to the general way and not called in place. It is what the
+arm of the comparison with a constant cost (area 1), and what the property that is pushed gave
+back. With the two binaries run in turn under the other work, in three pairs of fifteen to
+twenty-one runs, a step of the particles is 0.1 to 3.4% less and the call of a closure 1.3 to 3.0%
+more, which is more than its instructions say: both are to be taken again on a quiet machine
+before this arm is counted as kept.
 
 ### 5. Array and typed array elements
 
