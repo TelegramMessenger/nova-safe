@@ -219,39 +219,35 @@ struct NamedSite {
 }
 
 impl CodeTables {
-    /// The tables of a new Executable, with `binding_sites` places that
-    /// have found nothing yet.
+    /// The tables of a new Executable, with a place that has found nothing
+    /// yet for every entry of `binding_site_names`: where the name of the
+    /// site is among the constants, as the compiler recorded it. The
+    /// tables keep the names and not where they were: kept too, that list
+    /// was a block of memory more for every function of a script in every
+    /// Agent that runs it.
     pub(crate) fn new(
         instructions: Bytecode,
         constants: Vec<Value<'static>>,
         caches: Vec<PropertyLookupCache<'static>>,
-        binding_sites: usize,
+        binding_site_names: &[u16],
     ) -> Rc<Self> {
-        // The name of every site, from the instructions that name it.
-        let mut names = vec![String::EMPTY_STRING; binding_sites];
-        let mut ip = 0;
-        while let Some(instr) = Instr::consume_instruction(instructions.code(), &mut ip) {
-            if instr.kind.names_binding_site()
-                && let Some(name) = names.get_mut(instr.get_second_index())
-                && let Some(&constant) = constants.get(instr.get_first_index())
-                && let Ok(identifier) = String::try_from(constant)
-            {
-                *name = identifier;
-            }
-        }
+        let binding_sites = binding_site_names
+            .iter()
+            .map(|&name| {
+                Cell::new(NamedSite {
+                    site: BindingSite::UNKNOWN,
+                    name: constants
+                        .get(usize::from(name))
+                        .and_then(|&constant| String::try_from(constant).ok())
+                        .unwrap_or(String::EMPTY_STRING),
+                })
+            })
+            .collect();
         Rc::new(Self {
             instructions,
             constants: constants.into_iter().map(Cell::new).collect(),
             caches: caches.into_iter().map(Cell::new).collect(),
-            binding_sites: names
-                .into_iter()
-                .map(|name| {
-                    Cell::new(NamedSite {
-                        site: BindingSite::UNKNOWN,
-                        name,
-                    })
-                })
-                .collect(),
+            binding_sites,
         })
     }
 
@@ -286,8 +282,24 @@ impl CodeTables {
         self.caches.iter().map(Cell::get)
     }
 
-    pub(crate) fn binding_sites(&self) -> usize {
-        self.binding_sites.len()
+    /// Where each binding site has its name among the constants: what
+    /// [`CodeTables::new`] takes, for the compiled form of the code, from
+    /// which every Agent makes tables of its own. Looked up again here,
+    /// once for a script that is compiled to be kept: a name is the same
+    /// String wherever it is among the constants, and a site that no
+    /// instruction names has the empty String whatever this says of it.
+    pub(crate) fn binding_site_names(&self) -> Box<[u16]> {
+        self.binding_sites
+            .iter()
+            .map(|named| {
+                let name = Value::from(named.get().name);
+                self.constants
+                    .iter()
+                    .position(|constant| constant.get() == name)
+                    .and_then(|index| u16::try_from(index).ok())
+                    .unwrap_or(u16::MAX)
+            })
+            .collect()
     }
 
     #[inline]
@@ -401,13 +413,24 @@ impl TablesView<'_> {
         identifier: usize,
         gc: NoGcScope<'gc, '_>,
     ) -> (BindingSite, String<'gc>) {
+        debug_assert!(self.binding_sites.get(index).is_none_or(|named| {
+            self.constants.get(identifier).map(Cell::get) == Some(named.get().name.into())
+        }));
+        self.binding_site_with_name(index, gc)
+    }
+
+    /// The same for an instruction that has the site and not the name
+    /// (GetKeptPropertyWithCache): the name is the one the site was given
+    /// when the code was compiled.
+    #[inline(always)]
+    pub(super) fn binding_site_with_name<'gc>(
+        self,
+        index: usize,
+        gc: NoGcScope<'gc, '_>,
+    ) -> (BindingSite, String<'gc>) {
         match self.binding_sites.get(index) {
             Some(named) => {
                 let NamedSite { site, name } = named.get();
-                debug_assert_eq!(
-                    self.constants.get(identifier).map(Cell::get),
-                    Some(name.into())
-                );
                 (site, name.bind(gc))
             }
             None => (BindingSite::ELSEWHERE, String::EMPTY_STRING),

@@ -13,9 +13,9 @@ use crate::{
         OrdinaryFunctionCreateParams, OrdinaryObject, Primitive, PrivateMethod, Promise,
         PropertyDescriptor, PropertyKey, PropertyKeySet, PropertyLookupCache, ProtoIntrinsics,
         Reference, ScriptOrModule, SetFunctionNamePrefix, SetResult, String, TryError,
-        TryGetValueContinue, TryHasResult, TryResult, Value, array_create, binding_site_of, call,
-        call_function, call_proxy_set, construct, copy_data_properties,
-        copy_data_properties_into_object, create_builtin_constructor,
+        TryGetValueContinue, TryHasResult, TryResult, Value, array_create, binding_site_of,
+        binding_value_at_site, call, call_function, call_proxy_set, construct,
+        copy_data_properties, copy_data_properties_into_object, create_builtin_constructor,
         create_data_property_or_throw, create_unmapped_arguments_object, define_property_or_throw,
         evaluate_import_call, get_this_environment, get_this_value, get_value,
         global_scope_reference, has_property, initialize_derived_instance_elements, is_constructor,
@@ -205,7 +205,23 @@ pub(super) fn execute_resolve_binding<'gc>(
     instr: Instr,
     gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
-    let identifier = executable.fetch_identifier(agent, instr.get_first_index(), gc.nogc());
+    let identifier = executable
+        .fetch_identifier(agent, instr.get_first_index(), gc.nogc())
+        .unbind();
+    resolve_binding_of(agent, vm, identifier, gc)
+}
+
+/// ResolveBinding of `identifier` into the reference register: for an
+/// instruction that has the name among its constants, and for one that has
+/// it from the BindingSite it names (GetKeptPropertyWithCache).
+#[inline(always)]
+fn resolve_binding_of<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    identifier: String,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let identifier = identifier.bind(gc.nogc());
 
     let reference = if let TryResult::Continue(reference) =
         try_resolve_binding(agent, identifier, None, gc.nogc())
@@ -2578,7 +2594,7 @@ pub(super) fn execute_fused_property_instruction<'gc>(
     vm: &mut Vm,
     executable: Scoped<Executable>,
     instr: Instr,
-    gc: GcScope<'gc, '_>,
+    mut gc: GcScope<'gc, '_>,
 ) -> JsResult<'gc, ()> {
     if instr.kind == Instruction::PutPropertyWithCache {
         if let Some(&Value::Object(object)) = vm.stack.last() {
@@ -2618,7 +2634,60 @@ pub(super) fn execute_fused_property_instruction<'gc>(
         Instruction::GetThisPropertyWithCacheKeepReference
             | Instruction::GetIndexPropertyWithCacheKeepReference
     );
-    if matches!(
+    if instr.kind == Instruction::GetKeptPropertyWithCache {
+        let instructions = executable.get_instructions(agent);
+        let slot = Instr::wide_third_index(instructions.code(), vm.ip);
+        let kept = vm.stack[slot];
+        if kept.is_undefined() {
+            // GetBindingAtSiteOnce: nothing is kept, so this is the first
+            // read of the name in the call (or its value is undefined).
+            // Read where its site remembers it, the value goes into the
+            // slot for the reads after this one, which the plain way
+            // takes; and its property is read by the cache here as the
+            // plain way reads it.
+            let site = Instr::wide_fourth_index(instructions.code(), vm.ip);
+            let tables = executable.get_tables(agent);
+            let (place, name) = tables.view().binding_site_with_name(site, gc.nogc());
+            if let Some(value) = binding_value_at_site(agent, place, name, gc.nogc()) {
+                let value = value.unbind();
+                vm.stack[slot] = value;
+                vm.result = Some(value);
+                if Vm::get_property_by_cache(agent, vm, &executable, instr, false, gc.nogc()) {
+                    return Ok(());
+                }
+            } else {
+                // The name is not there or not initialized: the general
+                // way of GetBindingAtSite by the name the site has. It is
+                // resolved through the chain, where it is found is
+                // remembered, and GetValue reads it or says why it has no
+                // value.
+                let name = name.unbind();
+                resolve_binding_of(agent, vm, name, gc.reborrow()).unbind()?;
+                if place == BindingSite::UNKNOWN
+                    && let Some(reference) = &vm.reference
+                {
+                    let found = binding_site_of(agent, reference, false, gc.nogc());
+                    if found != place {
+                        executable.set_binding_site(agent, site, found);
+                    }
+                }
+                execute_get_value(
+                    agent,
+                    vm,
+                    executable.clone(),
+                    instr,
+                    false,
+                    false,
+                    gc.reborrow(),
+                )
+                .unbind()?;
+            }
+        } else {
+            // The value that the slot keeps, which the plain way found to
+            // have no property that the cache places.
+            vm.result = Some(kept);
+        }
+    } else if matches!(
         instr.kind,
         Instruction::GetIndexPropertyWithCache
             | Instruction::GetIndexPropertyWithCacheKeepReference

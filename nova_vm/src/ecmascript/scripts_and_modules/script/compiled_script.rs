@@ -197,9 +197,10 @@ struct CompiledExecutable {
     instance_initializer: Option<u32>,
     call_environment: CallEnvironment,
     stack_parameters: Option<u16>,
-    /// How many binding sites the instructions have; what each remembers
-    /// belongs to the Agent that runs them.
-    binding_sites: usize,
+    /// The binding sites the instructions have, each by where its name is
+    /// among the constants; what each remembers belongs to the Agent that
+    /// runs them.
+    binding_site_names: Box<[u16]>,
     /// The switch tables refer to constants by index and to instructions:
     /// they are the same in every Agent.
     switch_tables: Arc<[SwitchTable]>,
@@ -420,7 +421,7 @@ impl Exporter<'_> {
         } = executable.get(self.agent).clone();
         let caches: Vec<_> = tables.caches().collect();
         let constants: Vec<_> = tables.constants().collect();
-        let binding_sites = tables.binding_sites();
+        let binding_site_names = tables.binding_site_names();
 
         let mut compiled_function_expressions = Vec::with_capacity(function_expressions.len());
         for function in function_expressions.iter() {
@@ -495,7 +496,7 @@ impl Exporter<'_> {
             instance_initializer,
             call_environment,
             stack_parameters,
-            binding_sites,
+            binding_site_names,
             switch_tables,
         });
         self.executable_ids.insert(index, id);
@@ -935,7 +936,7 @@ impl<'a> Importer<'_, 'a, '_> {
                 compiled.instructions.clone(),
                 constants,
                 caches,
-                compiled.binding_sites,
+                &compiled.binding_site_names,
             ),
             wide_constants,
             shapes,

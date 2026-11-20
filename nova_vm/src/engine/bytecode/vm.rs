@@ -3603,26 +3603,45 @@ impl Vm {
             }
             // `p.x` of a local: the stack slot, and its property by the
             // cache.
+            //
+            // Or `o.x` of a name of an enclosing function that has one
+            // value for as long as the call lasts: the stack slot is the
+            // one that keeps the value once the call has read it, and
+            // undefined there is nothing kept. The compiler emits this
+            // instruction only after a read of the same name in the same
+            // run of code that nothing jumps into, so the slot is filled
+            // when it runs, unless the value of the name is undefined;
+            // the arm does nothing for an empty slot, which has no
+            // property that the cache places and goes the general way.
+            // Every way of filling the slot from here cost what the loop
+            // does for every instruction or for every call (see PERF.md,
+            // area 4).
             Instruction::GetIndexPropertyWithCache
             | Instruction::GetIndexPropertyWithCacheKeepReference
-            | Instruction::LoadIndexPropertyWithCachePushThis => {
+            | Instruction::LoadIndexPropertyWithCachePushThis
+            | Instruction::GetKeptPropertyWithCache => {
                 step!(
                     GetIndexPropertyWithCache,
                     GetIndexPropertyWithCacheKeepReference,
-                    LoadIndexPropertyWithCachePushThis
+                    LoadIndexPropertyWithCachePushThis,
+                    GetKeptPropertyWithCache
                 );
                 let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
                 let Some(value) = Self::cached_property_value_of(agent, base, tables, instr, gc)
                 else {
-                    if instr.kind == Instruction::GetIndexPropertyWithCache
-                        && Self::getter_for_call(agent, vm, base, tables, instr, gc)
+                    if matches!(
+                        instr.kind,
+                        Instruction::GetIndexPropertyWithCache
+                            | Instruction::GetKeptPropertyWithCache
+                    ) && Self::getter_for_call(agent, vm, base, tables, instr, gc)
                     {
                         return Plain::Accessor;
                     }
                     return Plain::No;
                 };
                 match instr.kind {
-                    Instruction::GetIndexPropertyWithCache => {
+                    Instruction::GetIndexPropertyWithCache
+                    | Instruction::GetKeptPropertyWithCache => {
                         vm.reference = None;
                         vm.result = Some(value);
                     }
@@ -5369,7 +5388,8 @@ impl Vm {
             | Instruction::GetThisPropertyWithCache
             | Instruction::GetThisPropertyWithCacheKeepReference
             | Instruction::GetIndexPropertyWithCache
-            | Instruction::GetIndexPropertyWithCacheKeepReference => {
+            | Instruction::GetIndexPropertyWithCacheKeepReference
+            | Instruction::GetKeptPropertyWithCache => {
                 // Kept out of this function, whose frame every native call
                 // of a function is on top of.
                 execute_fused_property_instruction(agent, vm, executable, instr, gc)?;
@@ -5474,6 +5494,7 @@ impl Vm {
             | Instruction::GetThisPropertyWithCacheKeepReference
             | Instruction::GetIndexPropertyWithCache
             | Instruction::GetIndexPropertyWithCacheKeepReference
+            | Instruction::GetKeptPropertyWithCache
             | Instruction::PutPropertyWithCache
             | Instruction::PushReferenceAndLoad
             | Instruction::LoadFromIndexStoreConstant

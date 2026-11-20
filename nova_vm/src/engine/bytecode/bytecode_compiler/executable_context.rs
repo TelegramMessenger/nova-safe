@@ -73,9 +73,18 @@ pub(super) struct ExecutableContext<'agent, 'gc, 'scope> {
     /// Caches being built
     caches: Vec<PropertyLookupCache<'gc>>,
     cache_indexes: AHashMap<PropertyLookupCache<'gc>, usize>,
-    /// How many BindingSites the instructions use: one for each place in the
-    /// code that names a variable whose scope chain is fixed.
-    binding_sites: usize,
+    /// The stack slots of kept names (GetBindingAtSiteOnce) that the code
+    /// emitted since the last jump target has read, each with where the
+    /// instruction that read it starts: a later read in the same run of
+    /// code finds the slot filled, or the name without a value to keep.
+    kept_slots_read: Vec<(IndexType, usize)>,
+    /// Where the most recent GetBindingAtSiteOnce starts, if it reads a
+    /// slot that an earlier one of the same run of code has read.
+    kept_read_again: Option<usize>,
+    /// The BindingSites the instructions use, one for each place in the
+    /// code that names a variable whose scope chain is fixed: where the
+    /// name of each is among the constants, once an instruction names it.
+    binding_site_names: Vec<IndexType>,
     /// Switch tables being built: for each, the constant of every selector
     /// and where the statements of its case start, once that is known.
     switch_tables: Vec<Vec<(IndexType, u32)>>,
@@ -115,7 +124,9 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             recent_len: 0,
             caches: Vec::new(),
             cache_indexes: AHashMap::default(),
-            binding_sites: 0,
+            kept_slots_read: Vec::new(),
+            kept_read_again: None,
+            binding_site_names: Vec::new(),
             switch_tables: Vec::new(),
             constants: Vec::new(),
             constant_indexes: AHashMap::default(),
@@ -219,7 +230,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.current_value_stack_depth = 0;
         self.current_instruction_pointer_is_unreachable = false;
         self.instructions.clear();
-        self.recent_len = 0;
+        self.forget_recent_instructions();
         self.caches.clear();
         self.cache_indexes.clear();
         self.switch_tables.clear();
@@ -278,7 +289,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 instructions.clone(),
                 self.constants.unbind(),
                 self.caches.unbind(),
-                self.binding_sites,
+                &self.binding_site_names,
             ),
             instructions,
             wide_constants: self.wide_constants.unbind().into_boxed_slice(),
@@ -652,12 +663,19 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     fn drop_recent_instructions(&mut self, start: usize, count: usize) {
         debug_assert!(count <= self.recent_len && self.recent[count - 1] == start);
         self.instructions.truncate(start);
+        self.kept_slots_read.retain(|&(_, at)| at < start);
+        if self.kept_read_again.is_some_and(|at| at >= start) {
+            self.kept_read_again = None;
+        }
         self.recent.copy_within(count.., 0);
         self.recent_len -= count;
     }
 
     fn forget_recent_instructions(&mut self) {
         self.recent_len = 0;
+        // Code that is jumped to may be reached with no kept name read.
+        self.kept_slots_read.clear();
+        self.kept_read_again = None;
     }
 
     /// Makes the function of a method call, which was just read by its
@@ -1135,8 +1153,11 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
             _ => None,
         };
         // The stack slot of a local whose property is read, for the
-        // instruction that reads both: it goes after the cache.
+        // instruction that reads both: it goes after the cache. And the
+        // BindingSite after that, where the slot is the one that keeps a
+        // name of an enclosing function.
         let mut slot = None;
+        let mut site = [0, 0];
         if let Some(fused) = fused
             && let Some(access) =
                 self.recent_instruction(0, Instruction::EvaluatePropertyAccessWithIdentifierKey)
@@ -1161,6 +1182,25 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 slot = Some(self.operand_bytes(local));
                 self.drop_recent_instructions(local, 2);
                 self.push_instruction(of_local);
+            } else if fused == Instruction::GetPropertyWithCache
+                && let Some(kept) = self.recent_instruction(1, Instruction::GetBindingAtSiteOnce)
+                && self.kept_read_again == Some(kept)
+            {
+                // `o.x` of a name of an enclosing function that a stack
+                // slot keeps for the call once it was read, where the code
+                // has read the name before with nothing jumping in since:
+                // the slot is filled then (or the name has no value to
+                // keep), and one instruction reads the property from it,
+                // with the slot and the site where GetBindingAtSiteOnce
+                // had them. The first read of such a run stays the two
+                // instructions it was, of which the first fills the slot
+                // on the short way; an instruction that had to fill it
+                // would do so on the general way, at several times the
+                // price of both.
+                site = [self.instructions[kept + 3], self.instructions[kept + 4]];
+                slot = Some([self.instructions[kept + 5], self.instructions[kept + 6]]);
+                self.drop_recent_instructions(kept, 2);
+                self.push_instruction(Instruction::GetKeptPropertyWithCache);
             } else if let Some(locals) =
                 self.recent_instruction(1, Instruction::LoadFromIndexGetFromIndex)
             {
@@ -1184,7 +1224,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.add_index_of(cache, TOO_MANY_PROPERTY_NAMES);
         if let Some(slot) = slot {
             self.instructions.extend_from_slice(&slot);
-            self.instructions.extend_from_slice(&[0, 0]);
+            self.instructions.extend_from_slice(&site);
         }
     }
 
@@ -1206,9 +1246,18 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
     /// A new BindingSite of the executable, while an instruction can still
     /// number one.
     pub(super) fn new_binding_site(&mut self) -> Option<IndexType> {
-        let site = IndexType::try_from(self.binding_sites).ok()?;
-        self.binding_sites += 1;
+        let site = IndexType::try_from(self.binding_site_names.len()).ok()?;
+        self.binding_site_names.push(IndexType::MAX);
         Some(site)
+    }
+
+    /// Records that `site` is the place of the name at `identifier` among
+    /// the constants: the tables of the executable keep the name beside
+    /// the site, for the instructions that read a variable there.
+    fn name_binding_site(&mut self, site: IndexType, identifier: usize) {
+        if let Some(name) = self.binding_site_names.get_mut(usize::from(site)) {
+            *name = IndexType::try_from(identifier).unwrap_or(IndexType::MAX);
+        }
     }
 
     /// One of the instructions that take a name and the BindingSite that
@@ -1231,6 +1280,7 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         ));
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);
+        self.name_binding_site(site, identifier);
         self.add_index_of(identifier, TOO_MANY_NAMES);
         self.instructions.extend_from_slice(&site.to_ne_bytes());
     }
@@ -1245,8 +1295,16 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         slot: IndexType,
     ) {
         debug_assert_eq!(instruction, Instruction::GetBindingAtSiteOnce);
+        let start = self.instructions.len();
+        self.kept_read_again = if self.kept_slots_read.iter().any(|&(read, _)| read == slot) {
+            Some(start)
+        } else {
+            self.kept_slots_read.push((slot, start));
+            None
+        };
         self.push_instruction(instruction);
         let identifier = self.add_identifier(identifier);
+        self.name_binding_site(site, identifier);
         self.add_index_of(identifier, TOO_MANY_NAMES);
         self.instructions.extend_from_slice(&site.to_ne_bytes());
         self.instructions.extend_from_slice(&slot.to_ne_bytes());

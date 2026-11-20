@@ -782,14 +782,24 @@ pub(crate) enum Instruction {
     /// The error message is provided as an identifier.
     VerifyIsObject,
     Debug,
+    /// GetBindingAtSiteOnce followed by GetPropertyWithCache: a property
+    /// of a name declared outside the running function that nothing
+    /// assigns to, `o.x`, where the code has read the name before with
+    /// nothing jumping in since. The arguments are those of
+    /// [`Instruction::GetIndexPropertyWithCache`]: the identifier, the
+    /// cache, and the stack slot, which is the one that keeps the value of
+    /// the name once the call has read it; the two bytes after the slot
+    /// are the BindingSite of the name. The name is no argument: the site
+    /// has it.
+    GetKeptPropertyWithCache,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
     // and a branch before every instruction. Code that has one of these
     // bytes is no code: [`Instruction::is_unused`] says so to whoever
     // reads instructions with care, and the loop leaves the byte to the
-    // general way, which ends as it did.
-    Unused231,
+    // general way, which ends as it did. A new instruction takes the
+    // first of them.
     Unused232,
     Unused233,
     Unused234,
@@ -822,8 +832,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused231
-            | Instruction::Unused232
+        Instruction::Unused232
             | Instruction::Unused233
             | Instruction::Unused234
             | Instruction::Unused235
@@ -867,24 +876,6 @@ impl Instruction {
         1 + self.argument_count() as usize * 2
     }
 
-    /// Whether the instruction names a BindingSite of its executable, in
-    /// its second argument, for the name in its first.
-    pub(super) const fn names_binding_site(self) -> bool {
-        matches!(
-            self,
-            Self::ResolveBindingAtSite
-                | Self::GetBindingAtSite
-                | Self::LoadBindingAtSite
-                | Self::GetBindingAtSiteOnce
-                | Self::LoadBindingAtSiteOnce
-                | Self::PutBindingAtSite
-                | Self::ResolveGlobalAtSite
-                | Self::GetGlobalAtSite
-                | Self::PutGlobalAtSite
-                | Self::PutValueAtSite
-        )
-    }
-
     #[inline(always)]
     pub const fn argument_count(self) -> u8 {
         match self {
@@ -904,6 +895,7 @@ impl Instruction {
             | Self::GetIndexPropertyWithCache
             | Self::GetIndexPropertyWithCacheKeepReference
             | Self::LoadIndexPropertyWithCachePushThis
+            | Self::GetKeptPropertyWithCache
             | Self::GetBindingAtSiteOnce
             | Self::LoadBindingAtSiteOnce
             | Self::JumpIfIndexLessThanConstant
@@ -1065,6 +1057,7 @@ impl Instruction {
                 | Self::GetIndexPropertyWithCache
                 | Self::GetIndexPropertyWithCacheKeepReference
                 | Self::LoadIndexPropertyWithCachePushThis
+                | Self::GetKeptPropertyWithCache
                 | Self::PutPropertyWithCache
                 | Self::PutValueWithCache
                 | Self::ResolveBindingWithCache
@@ -1107,6 +1100,7 @@ impl Instruction {
                 | Self::GetIndexPropertyWithCache
                 | Self::GetIndexPropertyWithCacheKeepReference
                 | Self::LoadIndexPropertyWithCachePushThis
+                | Self::GetKeptPropertyWithCache
                 | Self::PutPropertyWithCache
                 | Self::MakePrivateReference
                 | Self::MakeSuperPropertyReferenceWithIdentifierKey
@@ -1512,6 +1506,20 @@ impl Instr {
         u16::from_ne_bytes(*bytes) as usize
     }
 
+    /// The fourth argument of an instruction with four, where it is an
+    /// index: the two bytes before `ip`, where the next instruction is.
+    #[inline(always)]
+    pub(crate) fn wide_fourth_index(instructions: &[u8], ip: usize) -> usize {
+        let Some(bytes) = ip
+            .checked_sub(2)
+            .and_then(|start| instructions.get(start..ip))
+            .and_then(|bytes| bytes.first_chunk::<2>())
+        else {
+            panic_invalid_instruction()
+        };
+        u16::from_ne_bytes(*bytes) as usize
+    }
+
     /// The jump target of an instruction with four arguments, which is its
     /// last two: the four bytes before `ip`, where the next instruction is.
     #[inline(always)]
@@ -1619,6 +1627,17 @@ impl Instr {
                 let slot = Self::wide_third_index(instructions.code(), ip + 9);
                 let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
                 eprintln!("  {}: {:?}({}, {}, {})", ip, self.kind, slot, key, arg1);
+            }
+            4 if self.kind == Instruction::GetKeptPropertyWithCache => {
+                let [arg0, arg1] = self.args.two_args();
+                let instructions = exe.get_instructions(agent);
+                let slot = Self::wide_third_index(instructions.code(), ip + 9);
+                let site = Self::wide_fourth_index(instructions.code(), ip + 9);
+                let key = debug_print_identifier(agent, exe, arg0 as usize, gc);
+                eprintln!(
+                    "  {}: {:?}({}, {}, of site {} kept in {})",
+                    ip, self.kind, key, arg1, site, slot
+                );
             }
             4 if matches!(
                 self.kind,
@@ -1921,7 +1940,7 @@ impl Instruction {
         const APPLYBITWISEANDBINARYOPERATOR: u8 =
             Instruction::ApplyBitwiseAndBinaryOperator.as_u8();
         const DEBUG: u8 = Instruction::Debug.as_u8();
-        const UNUSED231: u8 = Instruction::Unused231.as_u8();
+        const GETKEPTPROPERTYWITHCACHE: u8 = Instruction::GetKeptPropertyWithCache.as_u8();
         const UNUSED232: u8 = Instruction::Unused232.as_u8();
         const UNUSED233: u8 = Instruction::Unused233.as_u8();
         const UNUSED234: u8 = Instruction::Unused234.as_u8();
@@ -2507,7 +2526,7 @@ impl Instruction {
             IMPORTCALL => Some(Instruction::ImportCall),
             IMPORTMETA => Some(Instruction::ImportMeta),
             VERIFYISOBJECT => Some(Instruction::VerifyIsObject),
-            UNUSED231 => Some(Instruction::Unused231),
+            GETKEPTPROPERTYWITHCACHE => Some(Instruction::GetKeptPropertyWithCache),
             UNUSED232 => Some(Instruction::Unused232),
             UNUSED233 => Some(Instruction::Unused233),
             UNUSED234 => Some(Instruction::Unused234),
@@ -2538,7 +2557,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() > Instruction::Debug.as_u8()
+        self.as_u8() >= Instruction::Unused232.as_u8()
     }
 }
 
@@ -2591,21 +2610,25 @@ mod tests {
         for byte in 0..=u8::MAX {
             let kind = Instruction::from_u8(byte).expect("every byte is a kind");
             assert_eq!(kind.as_u8(), byte);
-            assert_eq!(kind.is_unused(), byte > Instruction::Debug.as_u8());
+            assert_eq!(
+                kind.is_unused(),
+                byte > Instruction::GetKeptPropertyWithCache.as_u8()
+            );
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
                 assert_eq!(kind.argument_count(), 0);
             }
         }
         assert!(!Instruction::Debug.is_unused());
-        assert!(Instruction::Unused231.is_unused());
+        assert!(!Instruction::GetKeptPropertyWithCache.is_unused());
+        assert!(Instruction::Unused232.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused231.as_u8()];
+        let code = [Instruction::Unused232.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }
