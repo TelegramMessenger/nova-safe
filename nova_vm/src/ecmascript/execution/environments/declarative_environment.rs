@@ -45,15 +45,19 @@ pub(crate) struct DeclarativeEnvironmentRecord {
 /// The first byte says which kind of String the name is; then come the
 /// seven bytes of a short name, or three zeros and the index of a name of
 /// the heap. A name is given back as the String it was made of.
+///
+/// A place in the code that remembers where its name was found keeps the
+/// key beside the place, made once: what reads or assigns the variable
+/// there has it ready, and compares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NameKey([u8; 8]);
+pub(crate) struct NameKey([u8; 8]);
 
 impl NameKey {
     const HEAP: u8 = 0;
     const SHORT: u8 = 1;
 
     #[inline(always)]
-    fn of(name: String) -> Self {
+    pub(crate) fn of(name: String) -> Self {
         match name {
             String::String(name) => {
                 let index = name.get_index_u32().to_le_bytes();
@@ -75,14 +79,20 @@ impl NameKey {
         }
     }
 
+    // Taken apart as the number it is: byte by byte, the seven bytes of
+    // a short name were put together again one at a time, thirteen
+    // instructions where this is seven.
     #[inline]
-    fn name(self) -> String<'static> {
-        let Self([kind, a, b, c, d, e, f, g]) = self;
-        if kind == Self::HEAP {
-            String::String(HeapString::from_index_u32(u32::from_le_bytes([d, e, f, g])))
+    pub(crate) fn name(self) -> String<'static> {
+        let bits = u64::from_le_bytes(self.0);
+        if self.0[0] == Self::HEAP {
+            String::String(HeapString::from_index_u32((bits >> 32) as u32))
         } else {
+            let data = (bits >> 8).to_le_bytes();
             let mut name = SmallString::EMPTY;
-            *name.data_mut() = [a, b, c, d, e, f, g];
+            *name.data_mut() = [
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6],
+            ];
             String::SmallString(name)
         }
     }
@@ -194,17 +204,17 @@ impl BindingMap {
     /// place while none is deleted, so a place remembered for a name is
     /// checked with one comparison.
     #[inline(always)]
-    fn at(&self, slot: u32, name: String) -> Option<&Binding> {
+    fn at(&self, slot: u32, name: NameKey) -> Option<&Binding> {
         match self.entries.get(slot as usize) {
-            Some((key, binding)) if *key == NameKey::of(name) => Some(binding),
+            Some((key, binding)) if *key == name => Some(binding),
             _ => None,
         }
     }
 
     #[inline(always)]
-    fn at_mut(&mut self, slot: u32, name: String) -> Option<&mut Binding> {
+    fn at_mut(&mut self, slot: u32, name: NameKey) -> Option<&mut Binding> {
         match self.entries.get_mut(slot as usize) {
-            Some((key, binding)) if *key == NameKey::of(name) => Some(binding),
+            Some((key, binding)) if *key == name => Some(binding),
             _ => None,
         }
     }
@@ -323,16 +333,17 @@ impl DeclarativeEnvironmentRecord {
             .and_then(|slot| u32::try_from(slot).ok())
     }
 
-    /// The binding at `slot` if it is the one for `name`.
+    /// The binding at `slot` if it is the one for the name that `name` is
+    /// the key of.
     // Part of whoever asks: as a call it is the one thing that makes the
     // read of a global variable keep a frame.
     #[inline(always)]
-    pub(super) fn binding_at(&self, slot: u32, name: String) -> Option<&Binding> {
+    pub(super) fn binding_at_key(&self, slot: u32, name: NameKey) -> Option<&Binding> {
         self.bindings.at(slot, name)
     }
 
     #[inline(always)]
-    pub(super) fn binding_at_mut(&mut self, slot: u32, name: String) -> Option<&mut Binding> {
+    pub(super) fn binding_at_key_mut(&mut self, slot: u32, name: NameKey) -> Option<&mut Binding> {
         self.bindings.at_mut(slot, name)
     }
 }

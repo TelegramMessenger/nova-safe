@@ -9,7 +9,7 @@ use crate::{
     ecmascript::{
         Agent, ArgumentsList, Array, BUILTIN_STRING_MEMORY, BigInt, BindingSite,
         BuiltinConstructorArgs, ConstructorStatus, ECMAScriptFunction, Environment, ExceptionType,
-        Function, InternalMethods, InternalSlots, JsResult, Number, Numeric, Object,
+        Function, InternalMethods, InternalSlots, JsResult, NameKey, Number, Numeric, Object,
         OrdinaryFunctionCreateParams, OrdinaryObject, Primitive, PrivateMethod, Promise,
         PropertyDescriptor, PropertyKey, PropertyKeySet, PropertyLookupCache, ProtoIntrinsics,
         Reference, ScriptOrModule, SetFunctionNamePrefix, SetResult, String, TryError,
@@ -2738,7 +2738,7 @@ pub(super) fn execute_fused_property_instruction<'gc>(
             let site = Instr::wide_fourth_index(instructions.code(), vm.ip);
             let tables = executable.get_tables(agent);
             let (place, name) = tables.view().binding_site_with_name(site, gc.nogc());
-            if let Some(value) = binding_value_at_site(agent, place, name, gc.nogc()) {
+            if let Some(value) = binding_value_at_site(agent, place, NameKey::of(name), gc.nogc()) {
                 let value = value.unbind();
                 vm.stack[slot] = value;
                 vm.result = Some(value);

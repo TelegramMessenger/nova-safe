@@ -1028,13 +1028,13 @@ fn global_lexical_record<'a>(agent: &Agent, gc: NoGcScope<'a, '_>) -> Declarativ
 fn global_object_at_site<'a>(
     agent: &Agent,
     site: BindingSite,
-    name: String,
+    name: NameKey,
     gc: NoGcScope<'a, '_>,
 ) -> Option<OrdinaryObject<'a>> {
     let object = agent.global_scope_seen.object_in(agent, site.slot, gc)?;
     debug_assert_eq!(
         object.get_property_keys(agent).get(usize::from(site.place)),
-        Some(&name.to_property_key())
+        Some(&name.name().to_property_key())
     );
     Some(object)
 }
@@ -1049,7 +1049,7 @@ fn global_object_at_site<'a>(
 fn global_value_at_site<'a>(
     agent: &Agent,
     site: BindingSite,
-    name: String,
+    name: NameKey,
     gc: NoGcScope<'a, '_>,
 ) -> Option<Value<'a>> {
     match site.outwards {
@@ -1070,7 +1070,7 @@ fn global_value_at_site<'a>(
             let value: Option<Value<'a>> = environments
                 .declarative
                 .get(lexical.get_index())?
-                .binding_at(site.slot, name)?
+                .binding_at_key(site.slot, name)?
                 .value;
             value
         }
@@ -1093,7 +1093,7 @@ fn global_value_at_site<'a>(
 fn set_global_value_at_site(
     agent: &mut Agent,
     site: BindingSite,
-    name: String,
+    name: NameKey,
     value: Value,
     gc: NoGcScope,
 ) -> bool {
@@ -1104,7 +1104,7 @@ fn set_global_value_at_site(
                 .heap
                 .environments
                 .get_declarative_environment_mut(record)
-                .binding_at_mut(site.slot, name)
+                .binding_at_key_mut(site.slot, name)
             else {
                 return false;
             };
@@ -1128,7 +1128,9 @@ fn set_global_value_at_site(
 }
 
 /// The value of `name` where `site` remembers it, if the name is still found
-/// there and is initialized.
+/// there and is initialized. The name comes as the key that a record keeps
+/// its names as ([`NameKey`]), which the tables of the code keep beside the
+/// site: it is compared with the name at the place as it is.
 ///
 /// One of two functions, each called last: one for a place in the global
 /// scope, one for a place among the records of the enclosing functions.
@@ -1140,7 +1142,7 @@ fn set_global_value_at_site(
 pub(crate) fn binding_value_at_site<'a>(
     agent: &Agent,
     site: BindingSite,
-    name: String,
+    name: NameKey,
     gc: NoGcScope<'a, '_>,
 ) -> Option<Value<'a>> {
     if site.outwards > BindingSite::FARTHEST {
@@ -1156,7 +1158,7 @@ pub(crate) fn binding_value_at_site<'a>(
 fn enclosing_value_at_site<'a>(
     agent: &Agent,
     site: BindingSite,
-    name: String,
+    name: NameKey,
     gc: NoGcScope<'a, '_>,
 ) -> Option<Value<'a>> {
     // A record on the way that is not declarative: the name is resolved
@@ -1171,7 +1173,7 @@ fn enclosing_value_at_site<'a>(
         .heap
         .environments
         .declarative_record(env)?
-        .binding_at(site.slot, name)?
+        .binding_at_key(site.slot, name)?
         .value;
     value
 }
@@ -1182,7 +1184,7 @@ fn enclosing_value_at_site<'a>(
 pub(crate) fn set_binding_value_at_site(
     agent: &mut Agent,
     site: BindingSite,
-    name: String,
+    name: NameKey,
     value: Value,
     gc: NoGcScope,
 ) -> bool {
@@ -1193,7 +1195,7 @@ pub(crate) fn set_binding_value_at_site(
         .heap
         .environments
         .declarative_record_mut(env.unbind())
-        .and_then(|record| record.binding_at_mut(site.slot, name))
+        .and_then(|record| record.binding_at_key_mut(site.slot, name))
     else {
         return false;
     };
@@ -1239,7 +1241,7 @@ pub(crate) fn try_resolve_binding_at_site<'a>(
         .heap
         .environments
         .declarative_record(env)?
-        .binding_at(site.slot, name)?;
+        .binding_at_key(site.slot, NameKey::of(name))?;
     Some(Reference::new_variable_reference(env, name, None, strict))
 }
 
@@ -1270,10 +1272,10 @@ fn try_resolve_global_at_site<'a>(
                 .heap
                 .environments
                 .get_declarative_environment(global_lexical_record(agent, gc))
-                .binding_at(site.slot, name)?;
+                .binding_at_key(site.slot, NameKey::of(name))?;
         }
         BindingSite::GLOBAL_OBJECT => {
-            global_object_at_site(agent, site, name, gc)?;
+            global_object_at_site(agent, site, NameKey::of(name), gc)?;
         }
         _ => return None,
     }

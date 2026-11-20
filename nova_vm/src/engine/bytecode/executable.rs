@@ -4,8 +4,9 @@
 
 use crate::{
     ecmascript::{
-        Agent, BindingSite, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, ObjectShape,
-        PropertyKey, PropertyLookupCache, SourceCode, String, Value, is_strictly_equal,
+        Agent, BindingSite, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, NameKey,
+        ObjectShape, PropertyKey, PropertyLookupCache, SourceCode, String, Value,
+        is_strictly_equal,
     },
     engine::{
         Bindable, NoGcScope, Scoped,
@@ -212,11 +213,16 @@ pub(crate) struct CodeTables {
 /// both by one look at one table. With the name among the constants it was
 /// a second table asked, and the name made a String of the Value it is
 /// kept as there, at every read: twelve instructions of the seventy-four.
+///
+/// The name is kept as the eight bytes a record keeps the names of its
+/// bindings as ([`NameKey`]), so that it is compared with the name at the
+/// place as it is: made such a key at every read and every assignment, it
+/// was five instructions of each.
 #[derive(Debug, Clone, Copy)]
 struct NamedSite {
     site: BindingSite,
-    /// The empty String for a site that no instruction names.
-    name: String<'static>,
+    /// The key of the empty String for a site that no instruction names.
+    name: NameKey,
 }
 
 impl CodeTables {
@@ -237,10 +243,12 @@ impl CodeTables {
             .map(|&name| {
                 Cell::new(NamedSite {
                     site: BindingSite::UNKNOWN,
-                    name: constants
-                        .get(usize::from(name))
-                        .and_then(|&constant| String::try_from(constant).ok())
-                        .unwrap_or(String::EMPTY_STRING),
+                    name: NameKey::of(
+                        constants
+                            .get(usize::from(name))
+                            .and_then(|&constant| String::try_from(constant).ok())
+                            .unwrap_or(String::EMPTY_STRING),
+                    ),
                 })
             })
             .collect();
@@ -293,7 +301,7 @@ impl CodeTables {
         self.binding_sites
             .iter()
             .map(|named| {
-                let name = Value::from(named.get().name);
+                let name = Value::from(named.get().name.name());
                 self.constants
                     .iter()
                     .position(|constant| constant.get() == name)
@@ -344,8 +352,12 @@ impl CodeTables {
             cache.set(value);
         }
         for named in self.binding_sites.iter() {
+            // A name of the heap is at another index after a collection,
+            // and its key is made again.
             let mut value = named.get();
-            value.name.sweep_values(compactions);
+            let mut name = value.name.name();
+            name.sweep_values(compactions);
+            value.name = NameKey::of(name);
             named.set(value);
         }
     }
@@ -399,28 +411,36 @@ impl TablesView<'_> {
             .map_or(BindingSite::ELSEWHERE, |named| named.get().site)
     }
 
-    /// The BindingSite at `index` and the name whose place it remembers:
-    /// see [`NamedSite`]. A place that remembers nothing, with a name that
-    /// no variable has, where the executable has no such site.
+    /// The BindingSite at `index` and the name whose place it remembers,
+    /// as its key: see [`NamedSite`]. For the instructions that read or
+    /// assign the variable at the place. A place that remembers nothing,
+    /// with the key of a name that no variable has, where the executable
+    /// has no such site.
     ///
     /// `identifier` is where the instruction that asks has the same name
     /// among the constants: the two are the same String for as long as
     /// the executable lives, through every collection, which a build with
     /// assertions checks at every use.
     #[inline(always)]
-    pub(super) fn named_binding_site<'gc>(
+    pub(super) fn keyed_binding_site(
         self,
         index: usize,
         identifier: usize,
-        gc: NoGcScope<'gc, '_>,
-    ) -> (BindingSite, String<'gc>) {
+    ) -> (BindingSite, NameKey) {
         debug_assert!(self.binding_sites.get(index).is_none_or(|named| {
-            self.constants.get(identifier).map(Cell::get) == Some(named.get().name.into())
+            self.constants.get(identifier).map(Cell::get) == Some(named.get().name.name().into())
         }));
-        self.binding_site_with_name(index, gc)
+        match self.binding_sites.get(index) {
+            Some(named) => {
+                let NamedSite { site, name } = named.get();
+                (site, name)
+            }
+            None => (BindingSite::ELSEWHERE, NameKey::of(String::EMPTY_STRING)),
+        }
     }
 
-    /// The same for an instruction that has the site and not the name
+    /// The BindingSite at `index` and its name as a String, for an
+    /// instruction that has the site and not the name
     /// (GetKeptPropertyWithCache): the name is the one the site was given
     /// when the code was compiled.
     #[inline(always)]
@@ -432,7 +452,7 @@ impl TablesView<'_> {
         match self.binding_sites.get(index) {
             Some(named) => {
                 let NamedSite { site, name } = named.get();
-                (site, name.bind(gc))
+                (site, name.name().bind(gc))
             }
             None => (BindingSite::ELSEWHERE, String::EMPTY_STRING),
         }
