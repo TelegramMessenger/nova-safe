@@ -16993,3 +16993,179 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `p.x` of a local that is pushed (the left operand of an operator, an
+/// argument of a call, an element of a literal) is one instruction, and
+/// a value that any instruction pushed is compared with a constant by the
+/// comparison that jumps: a property, a variable of an enclosing function,
+/// what an operator gave. Both give what their parts gave. Every operator
+/// with a property as its left operand, arguments at every place,
+/// elements, templates and keys; tests of properties, of variables of
+/// enclosing functions before and after they are initialized, of an
+/// undeclared name, and of what operators give, in `if`, `for`, `while`
+/// and `do`; the object and the first property read before the right
+/// operand, each getter once, and what throws thrown where it is read;
+/// a right operand that changes or replaces the object; objects of every
+/// kind and primitives as the object; shapes that change under the same
+/// code; doubles kept on the heap with garbage made between the reads;
+/// a generator, arguments, `try` and `finally`. What is expected is what
+/// Node prints for the same script.
+#[test]
+fn a_property_that_is_pushed_is_read_and_compared_as_by_its_parts() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(pushed_properties)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn pushed_properties() {
+    let script = r##"// `p.x` of a local, pushed (the left operand of an operator, an argument of a call, an element of a literal), is one
+// instruction; and a value that any instruction pushed, compared with a constant, is the comparison that jumps.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + String(f())); } catch (e) { out.push(label + "!" + e.name + (e.message.length < 12 ? ":" + e.message : "")); } }
+function show(v) { return typeof v === "bigint" ? v + "n" : Object.is(v, -0) ? "-0" : typeof v === "string" ? JSON.stringify(v) : typeof v === "function" ? "fn" : typeof v === "symbol" ? "sym" : String(v); }
+
+// The left operand of every operator, an argument at every place, elements, templates, keys.
+(function () {
+  var p = { x: 7, y: 3, s: "str", f: 2.5, n: null, u: undefined, b: true, big: 5n, o: { valueOf: function () { return 4; } } };
+  function id() { return Array.prototype.join.call(arguments, "|"); }
+  out.push("ops", p.x + p.y, p.x - p.y, p.x * p.y, p.x / p.y, p.x % p.y, p.x ** p.y, p.x & p.y, p.x | p.y, p.x ^ p.y, p.x << p.y, p.x >> p.y, p.x >>> p.y,
+    p.x < p.y, p.x <= p.y, p.x > p.y, p.x >= p.y, p.x == p.y, p.x != p.y, p.x === p.y, p.x !== p.y, p.s + p.x, p.x + p.s, p.f + p.f, p.n + p.x, p.u + p.x, p.b + p.b,
+    show(p.big * p.big), p.o + p.x, p.s in p, p.o instanceof Object, (p.x, p.y), p.x && p.y, p.n || p.s, p.u ?? p.f);
+  out.push("args", id(p.x), id(p.x, p.y), id(p.x, p.y, p.s, p.f, p.x), id(1, p.x, 2), Math.max(p.x, p.y), Math.min(p.x, p.y, p.f), String(p.x) + Number(p.s),
+    [p.x, p.y, p.s].join(), [p.x, , p.y].length, JSON.stringify({ a: p.x, b: p.y, [p.s]: p.f }), `${p.x}-${p.y}-${p.s}`, p.x + p.y * p.f - p.x / p.y, new Array(p.y).length, typeof p.x + typeof p.q);
+  // Compared with constants, where the comparison and the jump take the value as it is.
+  var r = "";
+  if (p.x < 10) r += "a"; if (p.x > 10) r += "b"; if (p.x <= 7) r += "c"; if (p.x >= 8) r += "d"; if (p.x === 7) r += "e"; if (p.x !== 7) r += "f";
+  if (p.s === "str") r += "g"; if (p.n === null) r += "h"; if (p.u === undefined) r += "i"; if (p.f < 2.5) r += "j"; if (p.q < 1) r += "k"; if (p.o > 3) r += "l";
+  r += p.x < 0 || p.x > 5 ? "m" : "-"; r += p.x >= 0 && p.x <= 7 ? "n" : "-";
+  for (var i = 0; p.y > 0; i++) p.y = p.y - 1;
+  while (p.x !== 10) p.x = p.x + 1;
+  out.push("tests", r, i, p.x, p.y);
+})();
+
+// Variables of enclosing functions, operators and calls compared with constants: the same instruction.
+(function () {
+  var outer = 5, text = "t", nothing;
+  let changing = 0;
+  const kept = { v: 9 };
+  function tests(a, b) {
+    var r = "";
+    if (outer < 6) r += "a"; if (outer > 6) r += "b"; if (outer === 5) r += "c"; if (text === "t") r += "d"; if (nothing === undefined) r += "e"; if (nothing < 1) r += "f";
+    if (changing++ < 3) r += "g"; if (changing >= 1) r += "h";
+    if (a + b < 10) r += "i"; if (a * 2 >= 6) r += "j"; if (a - b === -1) r += "k"; if ((a | 1) !== 3) r += "l"; if (a + text === "3t") r += "m"; if (-a < 0) r += "n"; if (a + 0.5 > 3) r += "o";
+    if (kept.v > 8) r += "p"; if (kept.v + 1 === 10) r += "q"; if (kept.w === undefined) r += "r";
+    for (var i = 0; outer + i < 8; i++) r += i;
+    while (changing < 4) changing++;
+    do { r += "."; } while (a + (b = b + 1) < 12);
+    return r + "/" + b;
+  }
+  out.push("outer", tests(3, 4), tests(3, 4), changing);
+  note("tdz", function () { function early() { if (later < 5) return "lt"; return "ge"; } var v = early(); let later = 1; return v; });
+  note("tdz strict", function () { function early() { if (later === 5) return "eq"; return "ne"; } var v = early(); const later = 1; return v; });
+  var late = function () { return lateValue < 5 ? "lt" : "ge"; }; let lateValue = 3; out.push(late(), (lateValue = 7, late()));
+  note("undeclared", function () { if (notDeclaredAnywhere < 5) return 1; return 2; });
+  note("undeclared typeof", function () { if (typeof notDeclaredAnywhere === "undefined") return 1; return 2; });
+})();
+
+// Order: the object and the first property before the right operand, each getter once, what throws where it is read.
+(function () {
+  var log = [];
+  var g = { get a() { log.push("a"); return 1; }, get b() { log.push("b"); return 2; }, get t() { log.push("t"); throw new RangeError("t"); } };
+  function f(v) { log.push("f" + v); return v; }
+  var sum = g.a + g.b + f(3) + g.a * f(4);
+  f(g.a, g.b, f(5));
+  note("getter throws", function () { return g.a + g.t + f(6); });
+  note("getter throws in args", function () { return f(g.b, g.t, f(7)); });
+  var u, nul = null;
+  note("undefined base", function () { return u.x + f(8); });
+  note("null base", function () { return f(nul.x, f(9)); });
+  note("undefined base compared", function () { if (u.x < 5) return 1; return 2; });
+  out.push("order", sum, log.join(""));
+  // The right operand changes the object after the left was read.
+  var m = { v: 1 };
+  function change() { m.v = 100; return 10; }
+  function swap() { m = { v: 1000 }; return 20; }
+  out.push(m.v + change(), m.v + swap(), m.v, [m.v, change(), m.v].join());
+  var c = { n: 0 }; function bump() { return ++c.n; }
+  out.push(c.n + bump() + c.n, c.n * bump(), c.n < bump(), c.n === bump() - 1);
+})();
+
+// Every kind of object and of property as the one read.
+(function () {
+  function pair(o) { return show(o.length) + ":" + (o.length + o.length) + ":" + show(o.name) + ":" + [o.missing, o.length].length; }
+  var typed = new Uint8Array(3), list = [1, 2], str = "four", fn = function named(a, b, c) {}, args = (function () { return arguments; })(1), re = /x/gi, map = new Map([[1, 2]]);
+  var proto = Object.create({ length: 11, name: "inherited" }), nullProto = Object.create(null), num = 5, sym = Symbol("s"), big = 3n, bool = false;
+  var proxy = new Proxy({ length: 6, name: "p" }, { get: function (t, k) { return typeof k === "symbol" ? undefined : t[k]; } });
+  var acc = { get length() { return 8; }, name: undefined };
+  var all = [typed, list, str, fn, args, re, map, proto, nullProto, num, sym, big, bool, proxy, acc, new Date(0), new Error("e"), class K { static length = 2; }, Math, JSON, globalThis.Object];
+  var row = [];
+  for (var round = 0; round < 2; round++) for (var i = 0; i < all.length; i++) { var o = all[i]; try { row.push(pair(o)); } catch (e) { row.push("!" + e.name); } }
+  out.push("kinds", row.join(" "));
+  function sizes(m, s) { return m.size + s.size + [m.size, s.size].join("") + (m.size < 2 ? "<" : ">="); }
+  out.push(sizes(map, new Set([1, 2, 3])), sizes(new Map(), new Set()));
+  // Shapes that change under the same code.
+  function two(o) { return [o.a, o.b].join() + "/" + (o.a + o.b) + "/" + (o.a < 2 ? "lt" : "ge"); }
+  var shapes = [{ a: 1, b: 2 }, { b: 2, a: 1 }, { a: 1 }, { b: 2 }, {}, Object.create({ a: 5, b: 6 }), { get a() { return 9; }, b: 1 }, [], "ab", 7, { a: undefined, b: null }, { a: -0, b: 0 }, { a: 2n, b: 3n }];
+  var res = [];
+  for (var round = 0; round < 3; round++) for (var i = 0; i < shapes.length; i++) { try { res.push(two(shapes[i])); } catch (e) { res.push("!" + e.name); } }
+  out.push("shapes", res.join(" "));
+  var morph = { a: 1, b: 1 }, trail = [];
+  for (var i = 0; i < 7; i++) {
+    trail.push(morph.a + morph.b, [morph.a, morph.b].join(""));
+    if (i === 0) morph.c = 1; if (i === 1) delete morph.a; if (i === 2) morph.a = "A"; if (i === 3) Object.defineProperty(morph, "b", { get: function () { return "G"; }, configurable: true });
+    if (i === 4) delete morph.b; if (i === 5) Object.setPrototypeOf(morph, { b: "P" });
+  }
+  out.push("morph", trail.join(" "));
+})();
+
+// Doubles that are kept on the heap, garbage between the reads, many turns.
+(function () {
+  function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var s = "garbage " + i; if ((i & 1023) === 0) keep.push(s); } return keep.length; }
+  var particles = [];
+  for (var i = 0; i < 50; i++) particles.push({ x: i % 320, y: (i * 7) % 240, vx: (i % 5) - 2, vy: (i % 3) - 1, life: 5 + (i & 7) });
+  var alive = 0;
+  for (var step = 0; step < 40; step++) {
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      p.vy += 0.05; p.x += p.vx; p.y += p.vy;
+      if (p.x < 0 || p.x > 320) p.vx = -p.vx;
+      if (p.y > 240) { p.y = 240; p.vy = -p.vy * 0.6; }
+      if (--p.life > 0) alive++; else p.life = 100;
+    }
+    if (step % 10 === 0) churn(20000);
+  }
+  var sx = 0, sy = 0; for (var i = 0; i < particles.length; i++) { var q = particles[i]; sx = q.x + sx; sy = q.y + sy + q.vy * q.life; }
+  out.push("particles", alive, sx, sy.toFixed(6));
+  var v = { a: 0.1, b: 0.2, c: 1e300, d: -1e300 };
+  function mix() { churn(3000); return [v.a + v.b, v.c * v.c, v.c + v.d, v.a - v.b, v.a / v.b, Math.hypot(v.a, v.b).toFixed(12), v.c > 1e299, v.a < 0.1, v.a <= 0.1].join(); }
+  out.push(mix(), mix());
+})();
+
+// A generator, arguments, try and finally around the reads.
+(function () {
+  function* gen(o) { yield o.a + o.b; yield [o.a, o.b]; while (o.a < 3) { o.a = o.a + 1; yield o.a * o.b; } return o.a; }
+  var st = { a: 1, b: 10 }, got = [];
+  for (var v of gen(st)) got.push(String(v));
+  out.push("generator", got.join(" "));
+  function strictArgs(o) { "use strict"; arguments[0] = { k: "swapped" }; return o.k + o.k + arguments[0].k; }
+  function readArgs(o) { return arguments[0].k + o.k + arguments.length; }
+  out.push(strictArgs({ k: "orig" }), readArgs({ k: "orig" }));
+  function guarded(o) { var r = ""; try { r += o.a + o.b; r += o.deep.x + 1; } catch (e) { r += "caught" + (o.a < 5 ? "lt" : "ge"); } finally { r += "|" + [o.a, o.b].join(""); } return r; }
+  out.push(guarded({ a: 1, b: 2 }), guarded({ a: 7, b: 8, deep: { x: 1 } }));
+})();
+out.join(" ")"##;
+    let expected = r##"ops 10 4 21 2.3333333333333335 1 343 3 7 4 56 0 0 false false true true false true false true str7 7str 5 7 NaN 2 25n 11 false true 3 3 str 2.5 args 7 7|3 7|3|str|2.5|7 1|7|2 7 2.5 7NaN 7,3,str 3 {"a":7,"b":3,"str":2.5} 7-3-str 12.166666666666666 3 numberundefined tests aceghilmn 3 10 0 outer acdeghijkmnopqr012...../9 acdehijkmnopqr012...../9 5 tdz!ReferenceError tdz strict!ReferenceError lt ge undeclared!ReferenceError undeclared typeof=1 getter throws!RangeError:t getter throws in args!RangeError:t undefined base!TypeError null base!TypeError undefined base compared!TypeError order 10 abf3af4abf5f1atbt 11 120 1000 1000,10,100 2 2 true true kinds 3:6:undefined:2 2:4:undefined:2 4:8:undefined:2 3:6:"named":2 1:2:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 11:22:"inherited":2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 6:12:"p":2 8:16:undefined:2 undefined:NaN:undefined:2 undefined:NaN:"Error":2 2:4:"K":2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 1:2:"Object":2 3:6:undefined:2 2:4:undefined:2 4:8:undefined:2 3:6:"named":2 1:2:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 11:22:"inherited":2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 6:12:"p":2 8:16:undefined:2 undefined:NaN:undefined:2 undefined:NaN:"Error":2 2:4:"K":2 undefined:NaN:undefined:2 undefined:NaN:undefined:2 1:2:"Object":2 413< 000< shapes 1,2/3/lt 1,2/3/lt 1,/NaN/lt ,2/NaN/ge ,/NaN/ge 5,6/11/ge 9,1/10/ge ,/NaN/ge ,/NaN/ge ,/NaN/ge ,/NaN/ge 0,0/0/lt 2,3/5/ge 1,2/3/lt 1,2/3/lt 1,/NaN/lt ,2/NaN/ge ,/NaN/ge 5,6/11/ge 9,1/10/ge ,/NaN/ge ,/NaN/ge ,/NaN/ge ,/NaN/ge 0,0/0/lt 2,3/5/ge 1,2/3/lt 1,2/3/lt 1,/NaN/lt ,2/NaN/ge ,/NaN/ge 5,6/11/ge 9,1/10/ge ,/NaN/ge ,/NaN/ge ,/NaN/ge ,/NaN/ge 0,0/0/lt 2,3/5/ge morph 2 11 2 11 NaN 1 A1 A1 AG AG Aundefined A AP AP particles 1950 2673 12177.543701 0.30000000000000004,Infinity,0,-0.1,0.5,0.223606797750,true,false,true 0.30000000000000004,Infinity,0,-0.1,0.5,0.223606797750,true,false,true generator 11 1,10 20 30 origorigswapped origorig1 3caughtlt|12 152|78"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
