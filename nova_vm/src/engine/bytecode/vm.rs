@@ -2414,16 +2414,27 @@ impl Vm {
         frame.handler_base = self.handler_base;
         self.handler_base = self.exception_handler_stack.len();
         // What the generator kept on its other stacks goes above what the
-        // caller has on the Vm's: most keep nothing.
+        // caller has on the Vm's. Most keep no Reference; one that yields
+        // in a loop keeps the one handler that every loop has, and in a
+        // loop over an iterator that iterator: one entry is moved as the
+        // entry it is, where the vector appended whole was a copy of its
+        // bytes by a call, at every step.
         if !state.vm.reference_stack.is_empty() {
             self.reference_stack.append(&mut state.vm.reference_stack);
         }
-        if !state.vm.iterator_stack.is_empty() {
-            self.iterator_stack.append(&mut state.vm.iterator_stack);
+        match state.vm.iterator_stack.len() {
+            0 => {}
+            1 => self.iterator_stack.extend(state.vm.iterator_stack.pop()),
+            _ => self.iterator_stack.append(&mut state.vm.iterator_stack),
         }
-        if !state.vm.exception_jump_target_stack.is_empty() {
-            self.exception_handler_stack
-                .append(&mut state.vm.exception_jump_target_stack);
+        match state.vm.exception_jump_target_stack.len() {
+            0 => {}
+            1 => self
+                .exception_handler_stack
+                .extend(state.vm.exception_jump_target_stack.pop()),
+            _ => self
+                .exception_handler_stack
+                .append(&mut state.vm.exception_jump_target_stack),
         }
         let execution_context = state
             .execution_context
@@ -2517,14 +2528,27 @@ impl Vm {
                 .extend(self.reference_stack.drain(frame.reference_base..));
             refit_suspended_stack(&mut state.vm.reference_stack);
         }
-        if self.iterator_stack.len() > frame.iterator_base {
+        // One entry goes back as the entry it is, into the room its vector
+        // kept from the last step: see [`Vm::enter_generator`].
+        if self.iterator_stack.len() == frame.iterator_base + 1
+            && state.vm.iterator_stack.capacity() != 0
+        {
+            state.vm.iterator_stack.extend(self.iterator_stack.pop());
+        } else if self.iterator_stack.len() > frame.iterator_base {
             state
                 .vm
                 .iterator_stack
                 .extend(self.iterator_stack.drain(frame.iterator_base..));
             refit_suspended_stack(&mut state.vm.iterator_stack);
         }
-        if self.exception_handler_stack.len() > self.handler_base {
+        if self.exception_handler_stack.len() == self.handler_base + 1
+            && state.vm.exception_jump_target_stack.capacity() != 0
+        {
+            state
+                .vm
+                .exception_jump_target_stack
+                .extend(self.exception_handler_stack.pop());
+        } else if self.exception_handler_stack.len() > self.handler_base {
             state
                 .vm
                 .exception_jump_target_stack
@@ -2547,12 +2571,17 @@ impl Vm {
         let (stack_depth, collections_depth) = (frame.stack_depth, frame.collections_depth);
         let code = frame.executable;
         let executable = frame.scoped.clone();
-        if agent.vm_frames.in_use == 0 {
-            agent.vm_frames.frames.truncate(SPARE_FRAMES);
+        // As where a function is left ([`Vm::leave_function`]): the frames
+        // of a deep recursion and the collections the generator scoped are
+        // let go of where there are any, by calls that few steps make.
+        if agent.vm_frames.in_use == 0 && agent.vm_frames.frames.len() > SPARE_FRAMES {
+            Self::drop_spare_frames(agent);
         }
         agent.stack_refs.get_mut().truncate(stack_depth);
         debug_assert_eq!(executable.get(agent), code);
-        release_scoped_collections(agent, collections_depth);
+        if agent.stack_ref_collections.get_mut().len() > collections_depth {
+            release_scoped_collections(agent, collections_depth);
+        }
         // GeneratorYield 5. Set generator.[[GeneratorState]] to
         // suspended-yield.
         state.vm.ip = ip;
