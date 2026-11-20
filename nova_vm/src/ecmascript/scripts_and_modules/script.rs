@@ -2052,4 +2052,58 @@ mod test {
             .bind(gc.nogc());
         assert_eq!(result, Value::from_static_str(&mut agent, "c", gc.nogc()));
     }
+
+    /// What a read of a global variable goes by where the variable was
+    /// found ([`GlobalScopeSeen`](crate::ecmascript::GlobalScopeSeen)) is
+    /// forgotten by whatever changes it without the read seeing so: a
+    /// collection (which moves nothing here, so that no script tells), a
+    /// property removed from the global object, a lexical declaration of a
+    /// later script. And it is seen again by the next read.
+    #[test]
+    fn the_seen_state_of_the_global_scope_is_forgotten_by_what_changes_it() {
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        fn run(agent: &mut Agent, text: &'static str, mut gc: GcScope) -> Value<'static> {
+            let source_text = String::from_static_str(agent, text, gc.nogc());
+            agent
+                .run_script(source_text.unbind(), gc.reborrow())
+                .unwrap()
+                .unbind()
+        }
+
+        let found = run(
+            &mut agent,
+            "var seen = 1; function read() { return seen; } read(); read()",
+            gc.reborrow(),
+        );
+        assert_eq!(found, 1.into());
+        assert!(agent.global_scope_seen.remembers());
+
+        agent.gc(gc.reborrow());
+        assert!(!agent.global_scope_seen.remembers());
+        assert_eq!(run(&mut agent, "read()", gc.reborrow()), 1.into());
+        assert!(agent.global_scope_seen.remembers());
+
+        let found = run(
+            &mut agent,
+            "globalThis.removable = 2; read(); delete globalThis.removable",
+            gc.reborrow(),
+        );
+        assert_eq!(found, true.into());
+        assert!(!agent.global_scope_seen.remembers());
+        assert_eq!(run(&mut agent, "read()", gc.reborrow()), 1.into());
+        assert!(agent.global_scope_seen.remembers());
+
+        run(&mut agent, "let later = 3;", gc.reborrow());
+        assert!(!agent.global_scope_seen.remembers());
+        assert_eq!(run(&mut agent, "read() + later", gc.reborrow()), 4.into());
+        assert!(agent.global_scope_seen.remembers());
+
+        run(&mut agent, "const fixed = 5;", gc.reborrow());
+        assert!(!agent.global_scope_seen.remembers());
+        assert_eq!(run(&mut agent, "read() + fixed", gc.reborrow()), 6.into());
+        assert!(agent.global_scope_seen.remembers());
+    }
 }

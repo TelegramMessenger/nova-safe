@@ -17950,3 +17950,138 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// A variable of the global scope that is a property of the global object
+/// is read and assigned where it was found while the global scope is as it
+/// was seen, and what changes the global scope says so when it does: the
+/// read asks only whether the global object has the shape it had. Three
+/// scripts of one global scope: properties added to the global object past
+/// two capacities of its storage while its variables are read; properties
+/// removed, so that those after them move; an accessor in place of a value
+/// and a value again; collections between the reads; then lexical
+/// declarations of the later scripts that come before properties of the
+/// same names, where the first thing a script does is call a function of
+/// an earlier one by a lexical name, so that no property of the global
+/// object is found anew before the old places are read. What is expected
+/// is what Node prints for the same scripts.
+#[test]
+fn a_global_variable_is_read_where_it_was_found_until_the_global_scope_changes() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(globals_through_changes_of_the_global_scope)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn globals_through_changes_of_the_global_scope() {
+    let first = r##"var out = [];
+function say(s) { out.push(String(s)); }
+var v1 = 1;
+globalThis.c1 = 10;
+globalThis.c2 = 20;
+function readC1() { return c1; }
+function readC2() { return c2; }
+function readV1() { return v1; }
+function writeC1(x) { c1 = x; }
+function writeV1(x) { v1 = x; }
+function typeofLater() { return typeof later; }
+function readLater() { return later; }
+function readMath() { return Math; }
+function callMath(x) { return Math.max(x, v1) + Math.abs(-c2); }
+for (var i = 0; i < 3; i++) { readC1(); readC2(); readV1(); writeC1(10 + i); writeV1(1); typeofLater(); readMath(); callMath(i); }
+say(readC1()); say(readC2()); say(readV1()); say(callMath(5));
+// Properties added to the global object while its variables are read where they were found:
+// the storage of its values grows past two capacities.
+var sum = 0;
+for (var i = 0; i < 1200; i++) {
+  globalThis['added' + i] = i;
+  sum += readC2() + readV1() + callMath(i);
+  if (i % 300 == 299) say(sum + ':' + readC1() + ':' + globalThis['added' + i] + ':' + (readMath() === Math));
+}
+say(typeof added777 + ' ' + added777 + ' ' + added0 + ' ' + added1199);
+function readAdded() { return added600 + added1100; }
+say(readAdded()); say(readAdded());
+// A property removed: those after it move.
+delete globalThis.added3;
+say(readAdded()); say(readC1()); say(readV1()); say(typeof added3 + ' ' + typeof added4 + ' ' + added4);
+delete globalThis.c2;
+say(typeofLater());
+try { say(readC2()); } catch (e) { say(e.name); }
+try { say(callMath(1)); } catch (e) { say(e.name); }
+say(readC1()); say(readV1()); say(added1199);
+globalThis.c2 = 21;
+say(readC2()); say(callMath(2));
+// An accessor in place of the value, and a value again.
+var gets = 0;
+Object.defineProperty(globalThis, 'c1', { get: function () { gets++; return 'got' + gets; }, set: function (v) { say('set ' + v); }, configurable: true });
+say(readC1()); say(readC1()); writeC1(5); say(gets);
+Object.defineProperty(globalThis, 'c1', { value: 30, writable: true, configurable: true });
+say(readC1()); writeC1(31); say(readC1());
+Object.defineProperty(globalThis, 'c1', { value: 40, writable: false, configurable: true });
+writeC1(41); say(readC1());
+Object.defineProperty(globalThis, 'c1', { value: 50, writable: true, configurable: true, enumerable: true });
+writeC1(51); say(readC1());
+// Collections between the reads.
+var keep = [];
+for (var i = 0; i < 600000; i++) {
+  var o = { a: i + 0.5, b: [i] };
+  if (i % 60000 == 0) { keep.push(o); writeV1(i); say(readC1() + ':' + readV1() + ':' + (readMath() === Math) + ':' + readAdded() + ':' + callMath(i)); }
+}
+say(keep.length + ' ' + keep[9].a + ' ' + keep[3].b[0]);
+writeV1(1);
+// A variable that is reassigned to another kind of value, and the global object under another name.
+var self = globalThis;
+function readSelf() { return self.c1 + self.v1; }
+say(readSelf()); self.c1 = 'text'; say(readSelf()); say(readC1()); writeC1(52);
+Math.extra = 7; say(readMath().extra); delete Math.extra; say(readMath().extra);
+// A function of this script kept under a lexical name: the next script calls it without finding any property of the
+// global object first.
+let viaLexical = function () { return readC1() + '/' + typeofLater() + '/' + readC2(); };
+say(viaLexical());
+"done""##;
+    let second = r##"// Lexical declarations of a later script come before the properties of the same names.
+let c1 = 'lexical c1';
+const later = 'now declared';
+class added5 { static get what() { return 'a class'; } }
+let first = viaLexical();
+say(first);
+say(readC1()); say(typeofLater()); say(readLater()); say(typeof added5 + ' ' + added5.what + ' ' + globalThis.added5);
+writeC1('written'); say(c1); say(globalThis.c1); say(readC1());
+say(readV1()); say(readC2()); say(callMath(3)); say(readAdded());
+let lexicalOnly = 5;
+function readLexicalOnly() { return lexicalOnly; }
+say(readLexicalOnly()); lexicalOnly++; say(readLexicalOnly()); say(typeof globalThis.lexicalOnly);
+"done""##;
+    let third = r##"// Declarations of a third script: more properties of the global object, more lexical declarations.
+var v3 = 3;
+function f3() { return v3 + v1 + lexicalOnly; }
+let c2 = 'lexical c2';
+let again = viaLexical();
+say(again);
+say(f3()); say(readC1()); say(readC2()); say(callMath === globalThis.callMath);
+try { say(callMath(4)); } catch (e) { say(e.name); }
+globalThis.c1 = 'object c1'; say(readC1()); say(globalThis.c1);
+globalThis.c2 = 22; say(readC2()); say(globalThis.c2);
+say(readLexicalOnly()); say(readAdded()); say(readSelf());
+Object.setPrototypeOf(Math, { inherited: 8 }); say(readMath().inherited); say(Math.max(1, 2));
+for (var i = 0; i < 3; i++) { writeV1(i); say(readV1() + ':' + f3()); }
+out.join(" ")"##;
+    let expected = r##"12 20 1 25 57151:12:299:true 204301:12:599:true 441451:12:899:true 768601:12:1199:true number 777 0 1199 1700 1700 1700 12 1 undefined number 4 undefined ReferenceError ReferenceError 12 1 1199 21 23 got1 got2 set 5 2 30 31 40 51 51:0:true:1700:21 51:60000:true:1700:60021 51:120000:true:1700:120021 51:180000:true:1700:180021 51:240000:true:1700:240021 51:300000:true:1700:300021 51:360000:true:1700:360021 51:420000:true:1700:420021 51:480000:true:1700:480021 51:540000:true:1700:540021 10 540000.5 180000 52 text1 text 7 undefined 52/undefined/21 lexical c1/string/21 lexical c1 string now declared function a class 5 written 52 written 1 21 24 1700 5 6 undefined written/string/lexical c2 10 written lexical c2 true NaN written object c1 lexical c2 22 6 1700 object c11 8 2 0:9 1:10 2:11"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    for script in [first, second] {
+        match engine.evaluate(script, false) {
+            Ok(Completion::String(found)) => assert_eq!(found, b"done"),
+            other => panic!("{other:?}"),
+        }
+    }
+    match engine.evaluate(third, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
