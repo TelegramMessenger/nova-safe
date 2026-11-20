@@ -947,6 +947,15 @@ impl BindingSite {
         if self.outwards > Self::FARTHEST {
             return None;
         }
+        self.record_out(agent, gc)
+    }
+
+    /// [`BindingSite::record`] for a site that is known to be among the
+    /// records of the enclosing functions: whoever asks has looked at
+    /// `outwards` already, and it is not looked at a second time. (For a
+    /// site that is not, the walk ends where the records end.)
+    #[inline(always)]
+    fn record_out<'a>(self, agent: &Agent, gc: NoGcScope<'a, '_>) -> Option<Environment<'a>> {
         let environments = &agent.heap.environments;
         let mut env = agent.lexical_environment_if_any(gc)?;
         for _ in 0..self.outwards {
@@ -1151,8 +1160,9 @@ fn enclosing_value_at_site<'a>(
     gc: NoGcScope<'a, '_>,
 ) -> Option<Value<'a>> {
     // A record on the way that is not declarative: the name is resolved
-    // the long way.
-    let env = site.record(agent, gc)?;
+    // the long way. The site is one of the enclosing functions':
+    // `binding_value_at_site` has asked.
+    let env = site.record_out(agent, gc)?;
     // The binding's value as it is kept: a value that the collector knows
     // is one for as long as `gc` says, and handing it on as the bytes it
     // is, not taken apart and put together again, is what this function
