@@ -1844,6 +1844,13 @@ impl StringPrototype {
         gc: NoGcScope<'gc, '_>,
     ) -> String<'gc> {
         let text = s.as_wtf8_(agent);
+        if let Some(text) = text.as_str() {
+            // No surrogate in it, so nothing joins where two copies meet:
+            // the copies are its bytes, `n` times, where appending them one
+            // by one looked for a surrogate at both ends of every seam (two
+            // thirds of `"-".repeat(n)`).
+            return String::from_wtf8_buf(agent, Wtf8Buf::from_string(text.repeat(n)), gc);
+        }
         let mut buf = Wtf8Buf::with_capacity(text.len().saturating_mul(n));
         for _ in 0..n {
             buf.push_wtf8(text);
@@ -3324,8 +3331,16 @@ fn string_pad<'gc>(
     if !placement_start {
         buf.push_wtf8(s.as_wtf8_(agent));
     }
-    for _ in 0..fill_count {
-        buf.push_wtf8(fill_buf);
+    if let Some(fill) = fill_buf.as_str() {
+        // A filler with no surrogate joins with nothing, at its own seams
+        // or at the String's: its bytes are appended as they are.
+        for _ in 0..fill_count {
+            buf.push_str(fill);
+        }
+    } else {
+        for _ in 0..fill_count {
+            buf.push_wtf8(fill_buf);
+        }
     }
     if overflow_len > 0 {
         for cp in char::decode_utf16(fill_buf.to_ill_formed_utf16().take(overflow_len)) {
