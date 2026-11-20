@@ -269,7 +269,7 @@ first, and a step of the particles 3.0% and then 6.2% fewer. The tables of their
 under that work, have the whole at 1.294x and 1.293x and the same two cases over 2x (a step of the
 particles 2.15x, a closure 2.25x); the table above is the one before them. A property stepped by
 one instruction (area 4) took 3.35% more of its instructions off a step of the particles, counted
-the same way.
+the same way, and a property that is pushed by the instruction that reads it 1.5% more.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1619,6 +1619,25 @@ nothing else moves: by the price list every operation is within two or three ins
 it was, the calls among them. On a quiet machine it was not timed either; with the two binaries
 run in turn under the other work, the least of fifteen runs of a step of the particles is 5.1%
 less.
+
+`p.x` of a local that is pushed, as the left operand of an operator or an argument of a call is
+(`p.x + p.vx`, `f(p.x, p.y)`), was the read and a Load. It is one instruction
+(`LoadIndexPropertyWithCache`), one more kind in the arm that reads the property of a local, which
+pushes what it found. The comparison with a constant that jumps (area 1) looked for a Load before
+the constant, and would not have found a property that pushes itself: it takes back the push of
+whichever instruction pushed the value now, as the operators with a constant do. So a variable of
+an enclosing function and what an operator gives are compared with a constant by that one
+instruction too (`count < 10`, `a + b < 10`), where they were pushed, the constant fetched and the
+two compared.
+
+Counted by the instructions the cases retire, a step of the particles is 1.5% fewer (thirty-two
+instructions for a particle, from thirty-four), an animation by easings 1.6% and the properties of
+one object read and written 1.2%; by the price list a call is two to three machine instructions
+shorter, and nothing is longer by more than two. With the two binaries run in turn under the other
+work, the least of fifteen runs of a step of the particles is 6.0% less, and of eleven runs of the
+call of a closure 2.1% and of the easings 1.9% less. The table of the round's checks, one process
+for a case under that work, is the first to have a step of the particles at 2x (1.96x, where the
+one before it had 2.3x): a table of a quiet machine has to say whether it is under it.
 
 ### 5. Array and typed array elements
 
