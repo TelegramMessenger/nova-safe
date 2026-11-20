@@ -17854,3 +17854,99 @@ out.join(" ")"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// A place in the code keeps the name it remembers as the eight bytes a
+/// record keeps its names as, and reads and assigns by them what it read
+/// and assigned by the name. Names of the global scope assigned and read
+/// by their bare names from a function, short and long: a `var`, a `let`,
+/// a property of the global object, an implicit global, a property that
+/// is not writable, a function; before and after a collection that moves
+/// the long names in the heap. A constant, an accessor, a strict
+/// assignment to what is not writable and to what is not declared, a read
+/// and a `typeof` of what is not declared; a global that is removed and
+/// made again. Variables of enclosing functions with long names made
+/// after much garbage, in two instances of one function, read and
+/// assigned before and after the names move, and ten thousand times
+/// after. What is expected is what Node prints for the same script.
+#[test]
+fn a_place_remembers_its_name_as_the_bytes_a_record_keeps_it_as() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(names_at_places)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn names_at_places() {
+    let script = r##"// A place in the code keeps the name it remembers as the eight bytes a record keeps its names as: names of the global
+// scope assigned and read by their bare names, of every kind and length, and names of enclosing functions, before
+// and after collections that move the names in the heap.
+var out = [];
+function note(label, f) { try { out.push(label + "=" + String(f())); } catch (e) { out.push(label + "!" + e.name); } }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var s = "garbage number " + i + " of " + n; if ((i & 2047) === 0) keep.push(s); } return keep.length; }
+var junk = []; for (var i = 0; i < 20000; i++) junk.push("junk string number " + i);
+var gv = 1, globalVarWithALongName = 10;
+let gl = 2, globalLetWithALongName = 20;
+const gc1 = 3, globalConstWithALongName = 30;
+globalThis.gp = 4; globalThis.globalPropertyWithALongName = 40;
+Object.defineProperty(globalThis, "ga", { get: function () { return "getter"; }, set: function (v) { gv = "set" + v; }, configurable: true });
+Object.defineProperty(globalThis, "globalLockedWithALongName", { value: "locked", writable: false, configurable: true });
+function globalFunctionWithALongName() { return "fn"; }
+
+(function () {
+  function assignAll(d) {
+    gv = gv + d; globalVarWithALongName = globalVarWithALongName + d;
+    gl = gl + d; globalLetWithALongName = globalLetWithALongName + d;
+    gp = gp + d; globalPropertyWithALongName = globalPropertyWithALongName + d;
+    implicitShort = d; implicitGlobalWithALongName = d * 100;
+    globalLockedWithALongName = "changed";
+    return [gv, globalVarWithALongName, gl, globalLetWithALongName, gp, globalPropertyWithALongName, implicitShort, implicitGlobalWithALongName, globalLockedWithALongName, typeof globalFunctionWithALongName].join(",");
+  }
+  var r = [assignAll(1), assignAll(1)];
+  junk = null; churn(60000);
+  r.push(assignAll(1), assignAll(1));
+  out.push("globals", r.join(" "));
+  note("const short", function () { gc1 = 0; });
+  note("const long", function () { globalConstWithALongName = 0; });
+  note("accessor", function () { ga = 5; return gv + ga; });
+  note("strict locked", function () { "use strict"; globalLockedWithALongName = 1; });
+  note("strict undeclared", function () { "use strict"; neverDeclaredWithALongName = 1; });
+  note("undeclared read", function () { return neverDeclaredWithALongName; });
+  note("typeof undeclared", function () { return typeof neverDeclaredWithALongName + typeof gv; });
+  // A global that is removed and made again, and one that a lexical declaration comes to shadow.
+  function removed() { deletableGlobalLongName = 1; var a = deletableGlobalLongName; var d = delete globalThis.deletableGlobalLongName; var t = typeof deletableGlobalLongName; deletableGlobalLongName = 2; return [a, d, t, deletableGlobalLongName].join("/"); }
+  out.push("removed", removed(), removed());
+  function shadowed() { return typeof laterLexicalWithALongName === "undefined" ? "none" : laterLexicalWithALongName; }
+  globalThis.laterLexicalWithALongName = "property";
+  var s1 = shadowed();
+  (0, eval)("let laterLexicalWithALongName = 'lexical';");
+  out.push("shadowed", s1, shadowed(), (function () { laterLexicalWithALongName = laterLexicalWithALongName + "!"; return laterLexicalWithALongName; })(), globalThis.laterLexicalWithALongName);
+})();
+
+// Names of enclosing functions made after much garbage, in closures called before and after the names move.
+(function () {
+  var junk2 = []; for (var i = 0; i < 30000; i++) junk2.push("more junk number " + i);
+  var make = new Function("var counterWithALongNameMadeLate = 0, stepWithALongNameMadeLate = 2, s = 1; return { add: function (x) { counterWithALongNameMadeLate += x * stepWithALongNameMadeLate; s += 1; return counterWithALongNameMadeLate + s; }, step: function (v) { stepWithALongNameMadeLate = v; return stepWithALongNameMadeLate; } };");
+  var a = make(), b = make();
+  var r = [a.add(1), b.add(2), a.step(3), a.add(1)];
+  junk2 = null; churn(80000);
+  r.push(a.add(1), b.add(2), b.step(5), b.add(1));
+  churn(80000);
+  var last = 0; for (var i = 0; i < 5000; i++) last = a.add(i & 3) + b.add(i & 1);
+  r.push(last);
+  out.push("moved", r.join(" "));
+})();
+out.join(" ")"##;
+    let expected = r##"globals 2,11,3,21,5,41,1,100,locked,function 3,12,4,22,6,42,1,100,locked,function 4,13,5,23,7,43,1,100,locked,function 5,14,6,24,8,44,1,100,locked,function const short!TypeError const long!TypeError accessor=set5getter strict locked!TypeError strict undeclared!ReferenceError undeclared read!ReferenceError typeof undeclared=undefinedstring removed 1/true/undefined/2 1/true/undefined/2 shadowed property property property! property! moved 4 6 3 8 12 11 5 17 45029"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
