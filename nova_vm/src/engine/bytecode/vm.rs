@@ -112,6 +112,9 @@ enum Plain {
     /// Not executed and nothing changed: the step of an iteration over a
     /// generator, which the Vm may resume itself.
     Resume,
+    /// Not executed and nothing changed: a `yield`, which suspends the
+    /// generator where the Vm resumed it itself.
+    Yield,
 }
 
 /// What the code that a function is run in place for makes of what the
@@ -1189,6 +1192,17 @@ impl Vm {
                     Plain::Resume => {
                         if let Some(generator) = self.generator_resumed_in_place(agent, gc.nogc()) {
                             break Change::Resume(generator, instr);
+                        }
+                    }
+                    // A `yield` of the generator that this Vm resumed
+                    // itself, in place of the step of an iteration: it is
+                    // suspended where the loop is left, without the way
+                    // through the general instructions, which only says
+                    // that it is a `yield`.
+                    Plain::Yield => {
+                        if self.runs_resumed_generator(agent) {
+                            self.ip = ip;
+                            break Change::Yield(instr.kind == Instruction::YieldValue);
                         }
                     }
                     // The end of every call, taken here where nothing is
@@ -2825,6 +2839,10 @@ impl Vm {
             Instruction::Return => {
                 step!(Return);
                 return Plain::Return;
+            }
+            Instruction::Yield | Instruction::YieldValue => {
+                step!(Yield, YieldValue);
+                return Plain::Yield;
             }
             Instruction::LoadCopy => {
                 step!(LoadCopy);
