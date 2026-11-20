@@ -1894,6 +1894,40 @@ pub(super) fn execute_evaluate_call<'gc>(
     Ok(())
 }
 
+/// EvaluateCall of a function whose this value is on the stack under it
+/// ([`Instruction::EvaluateCallOnThis`]): the call of a method, whose this
+/// value is the base of the property reference the function was read
+/// from.
+pub(super) fn execute_evaluate_call_on_this<'gc>(
+    agent: &mut Agent,
+    vm: &mut Vm,
+    instr: Instr,
+    gc: GcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    vm.reference = None;
+    let mut args = vm.get_call_args(agent, instr, gc.nogc()).unbind();
+    let func = vm.stack.pop().unwrap().unbind();
+    // 1.a.i. Let thisValue be GetThisValue(ref).
+    let this_value = vm.stack.pop().unwrap().unbind();
+    let result = with_vm_gc(
+        agent,
+        vm,
+        |agent, gc| {
+            call(
+                agent,
+                func,
+                this_value,
+                Some(ArgumentsList::from_mut_slice(args.as_mut_slice())),
+                gc,
+            )
+        },
+        gc,
+    );
+    return_pooled_arguments_vec(agent, args);
+    vm.result = Some(result?.unbind());
+    Ok(())
+}
+
 pub(super) fn execute_evaluate_new<'gc>(
     agent: &mut Agent,
     vm: &mut Vm,
@@ -2342,6 +2376,36 @@ pub(super) fn execute_fused_instruction<'gc>(
             execute_get_value(agent, vm, executable, get_value, true, true, gc)?;
             // PushReference, Load
             vm.execute_push_reference(agent);
+            vm.execute_load();
+            Ok(())
+        }
+        Instruction::LoadPropertyWithCachePushThis
+        | Instruction::LoadIndexPropertyWithCachePushThis => {
+            if instr.kind == Instruction::LoadIndexPropertyWithCachePushThis {
+                // GetValueFromIndex
+                let slot =
+                    Instr::wide_third_index(executable.get_instructions(agent).code(), vm.ip);
+                vm.result = Some(vm.stack[slot]);
+            }
+            // EvaluatePropertyAccessWithIdentifierKey,
+            // GetValueWithCacheKeepReference: as above.
+            execute_evaluate_property_access_with_identifier_key(
+                agent,
+                vm,
+                executable.clone(),
+                instr,
+                gc.nogc(),
+            );
+            let get_value = Instr::new_with_arg(
+                Instruction::GetValueWithCacheKeepReference,
+                instr.get_second_index() as u16,
+            );
+            execute_get_value(agent, vm, executable, get_value, true, true, gc)?;
+            // The this value of the call that follows is GetThisValue of
+            // the Reference, which is its base: pushed, and the function
+            // after it.
+            let reference = vm.reference.take().unwrap();
+            vm.stack.push(get_this_value(&reference));
             vm.execute_load();
             Ok(())
         }

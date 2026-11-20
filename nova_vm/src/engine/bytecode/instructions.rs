@@ -158,6 +158,13 @@ pub(crate) enum Instruction {
     /// function of `o.m(x)`, pushed with its Reference before the
     /// arguments. The immediates are the identifier and the cache.
     LoadPropertyWithCachePushReference,
+    /// The function of `o.m(x)` as
+    /// [`Instruction::LoadPropertyWithCachePushReference`] finds it, pushed
+    /// after `o`, which is the this value of the call: the call
+    /// ([`Instruction::EvaluateCallOnThis`]) finds both under its
+    /// arguments, and no Reference is made, pushed and popped for the this
+    /// value. The immediates are the identifier and the cache.
+    LoadPropertyWithCachePushThis,
     /// ResolveThisBinding followed by GetPropertyWithCache: `this.x`. The
     /// immediates are the identifier and the cache.
     GetThisPropertyWithCache,
@@ -172,6 +179,11 @@ pub(crate) enum Instruction {
     /// GetValueFromIndex followed by GetPropertyWithCacheKeepReference: the
     /// function of `p.m()`.
     GetIndexPropertyWithCacheKeepReference,
+    /// GetValueFromIndex followed by
+    /// [`Instruction::LoadPropertyWithCachePushThis`]: the function of
+    /// `p.m(x)` where `p` is a local, pushed after `p`. The arguments are
+    /// those of [`Instruction::GetIndexPropertyWithCache`].
+    LoadIndexPropertyWithCachePushThis,
     /// `object.name = value` with the object on the stack and the value as
     /// the result, where the value of the assignment is not used: what
     /// EvaluatePropertyAccessWithIdentifierKey of the object and
@@ -376,6 +388,10 @@ pub(crate) enum Instruction {
     EvaluateCall,
     /// PopReference followed by EvaluateCall.
     PopReferenceAndEvaluateCall,
+    /// EvaluateCall of a function whose this value is on the stack under
+    /// it, where [`Instruction::LoadPropertyWithCachePushThis`] pushed it:
+    /// the arguments, the function and the this value are popped.
+    EvaluateCallOnThis,
     /// Store EvaluateNew() as the result value.
     ///
     /// This instruction has the number of argument values that need to be
@@ -802,6 +818,7 @@ impl Instruction {
             | Self::JumpIfIndexStrictlyEqualIndex
             | Self::GetIndexPropertyWithCache
             | Self::GetIndexPropertyWithCacheKeepReference
+            | Self::LoadIndexPropertyWithCachePushThis
             | Self::GetBindingAtSiteOnce
             | Self::LoadBindingAtSiteOnce
             | Self::JumpIfIndexLessThanConstant
@@ -863,6 +880,7 @@ impl Instruction {
             | Self::GetPropertyWithCache
             | Self::GetPropertyWithCacheKeepReference
             | Self::LoadPropertyWithCachePushReference
+            | Self::LoadPropertyWithCachePushThis
             | Self::GetThisPropertyWithCache
             | Self::GetThisPropertyWithCacheKeepReference
             | Self::PutPropertyWithCache
@@ -895,6 +913,7 @@ impl Instruction {
             | Self::EnterPrivateEnvironment
             | Self::EvaluateCall
             | Self::PopReferenceAndEvaluateCall
+            | Self::EvaluateCallOnThis
             | Self::EvaluateNew
             | Self::EvaluatePropertyAccessWithIdentifierKey
             | Self::EvaluateSuper
@@ -955,10 +974,12 @@ impl Instruction {
                 | Self::GetPropertyWithCache
                 | Self::GetPropertyWithCacheKeepReference
                 | Self::LoadPropertyWithCachePushReference
+                | Self::LoadPropertyWithCachePushThis
                 | Self::GetThisPropertyWithCache
                 | Self::GetThisPropertyWithCacheKeepReference
                 | Self::GetIndexPropertyWithCache
                 | Self::GetIndexPropertyWithCacheKeepReference
+                | Self::LoadIndexPropertyWithCachePushThis
                 | Self::PutPropertyWithCache
                 | Self::PutValueWithCache
                 | Self::ResolveBindingWithCache
@@ -995,10 +1016,12 @@ impl Instruction {
                 | Self::GetPropertyWithCache
                 | Self::GetPropertyWithCacheKeepReference
                 | Self::LoadPropertyWithCachePushReference
+                | Self::LoadPropertyWithCachePushThis
                 | Self::GetThisPropertyWithCache
                 | Self::GetThisPropertyWithCacheKeepReference
                 | Self::GetIndexPropertyWithCache
                 | Self::GetIndexPropertyWithCacheKeepReference
+                | Self::LoadIndexPropertyWithCachePushThis
                 | Self::PutPropertyWithCache
                 | Self::MakePrivateReference
                 | Self::MakeSuperPropertyReferenceWithIdentifierKey
@@ -1500,6 +1523,7 @@ impl Instr {
                 self.kind,
                 Instruction::GetIndexPropertyWithCache
                     | Instruction::GetIndexPropertyWithCacheKeepReference
+                    | Instruction::LoadIndexPropertyWithCachePushThis
             ) =>
             {
                 let [arg0, arg1] = self.args.two_args();
@@ -1709,6 +1733,7 @@ impl Instr {
             | Instruction::GetPropertyWithCache
             | Instruction::GetPropertyWithCacheKeepReference
             | Instruction::LoadPropertyWithCachePushReference
+            | Instruction::LoadPropertyWithCachePushThis
             | Instruction::GetThisPropertyWithCache
             | Instruction::GetThisPropertyWithCacheKeepReference
             | Instruction::PutPropertyWithCache => {
@@ -1828,9 +1853,12 @@ impl Instruction {
         const GETINDEXPROPERTYWITHCACHE: u8 = Instruction::GetIndexPropertyWithCache.as_u8();
         const GETINDEXPROPERTYWITHCACHEKEEPREFERENCE: u8 =
             Instruction::GetIndexPropertyWithCacheKeepReference.as_u8();
+        const LOADINDEXPROPERTYWITHCACHEPUSHTHIS: u8 =
+            Instruction::LoadIndexPropertyWithCachePushThis.as_u8();
         const PUTPROPERTYWITHCACHE: u8 = Instruction::PutPropertyWithCache.as_u8();
         const PUSHREFERENCEANDLOAD: u8 = Instruction::PushReferenceAndLoad.as_u8();
         const POPREFERENCEANDEVALUATECALL: u8 = Instruction::PopReferenceAndEvaluateCall.as_u8();
+        const EVALUATECALLONTHIS: u8 = Instruction::EvaluateCallOnThis.as_u8();
         const ISSTRICTLYEQUALCONSTANT: u8 = Instruction::IsStrictlyEqualConstant.as_u8();
         const EVALUATENEW: u8 = Instruction::EvaluateNew.as_u8();
         const EVALUATESUPER: u8 = Instruction::EvaluateSuper.as_u8();
@@ -1992,6 +2020,8 @@ impl Instruction {
         const APPLYBINARYOPERATORANDMOVE: u8 = Instruction::ApplyBinaryOperatorAndMove.as_u8();
         const LOADPROPERTYWITHCACHEPUSHREFERENCE: u8 =
             Instruction::LoadPropertyWithCachePushReference.as_u8();
+        const LOADPROPERTYWITHCACHEPUSHTHIS: u8 =
+            Instruction::LoadPropertyWithCachePushThis.as_u8();
         const PUTBINDINGATSITE: u8 = Instruction::PutBindingAtSite.as_u8();
         const RESOLVEGLOBALATSITE: u8 = Instruction::ResolveGlobalAtSite.as_u8();
         const GETGLOBALATSITE: u8 = Instruction::GetGlobalAtSite.as_u8();
@@ -2108,9 +2138,13 @@ impl Instruction {
             GETINDEXPROPERTYWITHCACHEKEEPREFERENCE => {
                 Some(Instruction::GetIndexPropertyWithCacheKeepReference)
             }
+            LOADINDEXPROPERTYWITHCACHEPUSHTHIS => {
+                Some(Instruction::LoadIndexPropertyWithCachePushThis)
+            }
             PUTPROPERTYWITHCACHE => Some(Instruction::PutPropertyWithCache),
             PUSHREFERENCEANDLOAD => Some(Instruction::PushReferenceAndLoad),
             POPREFERENCEANDEVALUATECALL => Some(Instruction::PopReferenceAndEvaluateCall),
+            EVALUATECALLONTHIS => Some(Instruction::EvaluateCallOnThis),
             ISSTRICTLYEQUALCONSTANT => Some(Instruction::IsStrictlyEqualConstant),
             EVALUATENEW => Some(Instruction::EvaluateNew),
             EVALUATESUPER => Some(Instruction::EvaluateSuper),
@@ -2286,6 +2320,7 @@ impl Instruction {
             LOADPROPERTYWITHCACHEPUSHREFERENCE => {
                 Some(Instruction::LoadPropertyWithCachePushReference)
             }
+            LOADPROPERTYWITHCACHEPUSHTHIS => Some(Instruction::LoadPropertyWithCachePushThis),
             PUTBINDINGATSITE => Some(Instruction::PutBindingAtSite),
             RESOLVEGLOBALATSITE => Some(Instruction::ResolveGlobalAtSite),
             GETGLOBALATSITE => Some(Instruction::GetGlobalAtSite),

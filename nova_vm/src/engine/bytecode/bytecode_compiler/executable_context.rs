@@ -660,6 +660,70 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         self.recent_len = 0;
     }
 
+    /// Makes the function of a method call, which was just read by its
+    /// cache with its Reference kept and loaded for the call, be pushed
+    /// after the value it is read from instead: that value is the this
+    /// value of the call, and the call finds it under the function
+    /// ([`Instruction::EvaluateCallOnThis`]) where it took the base of a
+    /// Reference that was made, pushed before the arguments and popped
+    /// after them for nothing else. Returns whether it did; nothing is
+    /// changed where it did not.
+    ///
+    /// `o.m(x)`, `p.m(x)` of a local and `this.m(x)`, with arguments or
+    /// without: a property by a name that is known when the code is
+    /// compiled, of a call that is not optional.
+    pub(super) fn keep_this_under_function(&mut self) -> bool {
+        // With arguments, of a value in the result register: one
+        // instruction found the function, kept and pushed its Reference
+        // and loaded it.
+        if let Some(start) =
+            self.recent_instruction(0, Instruction::LoadPropertyWithCachePushReference)
+        {
+            self.instructions[start] = Instruction::LoadPropertyWithCachePushThis.as_u8();
+            return true;
+        }
+        // Otherwise the load is an instruction of its own, with the push
+        // of the Reference where there are arguments.
+        let Some(load) = self
+            .recent_instruction(0, Instruction::PushReferenceAndLoad)
+            .or_else(|| self.recent_instruction(0, Instruction::Load))
+        else {
+            return false;
+        };
+        if let Some(property) =
+            self.recent_instruction(1, Instruction::GetIndexPropertyWithCacheKeepReference)
+        {
+            self.instructions[property] = Instruction::LoadIndexPropertyWithCachePushThis.as_u8();
+            self.drop_recent_instructions(load, 1);
+            return true;
+        }
+        if let Some(property) =
+            self.recent_instruction(1, Instruction::GetPropertyWithCacheKeepReference)
+        {
+            self.instructions[property] = Instruction::LoadPropertyWithCachePushThis.as_u8();
+            self.drop_recent_instructions(load, 1);
+            return true;
+        }
+        if let Some(property) =
+            self.recent_instruction(1, Instruction::GetThisPropertyWithCacheKeepReference)
+        {
+            // `this.m(x)`: the this value by its own instruction again,
+            // then the function pushed after it.
+            let identifier = self.operand_bytes(property);
+            let cache = [
+                self.instructions[property + 3],
+                self.instructions[property + 4],
+            ];
+            self.drop_recent_instructions(property, 2);
+            self.push_instruction(Instruction::ResolveThisBinding);
+            self.push_instruction(Instruction::LoadPropertyWithCachePushThis);
+            self.instructions.extend_from_slice(&identifier);
+            self.instructions.extend_from_slice(&cache);
+            return true;
+        }
+        false
+    }
+
     pub(super) fn add_instruction_with_jump_slot(&mut self, instruction: Instruction) -> JumpIndex {
         debug_assert_eq!(instruction.argument_count(), 2);
         debug_assert!(instruction.has_jump_slot());

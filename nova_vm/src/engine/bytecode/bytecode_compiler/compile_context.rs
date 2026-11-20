@@ -1399,6 +1399,19 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
         self.executable.add_instruction(instruction);
     }
 
+    /// The function of a method call, just loaded for the call, is pushed
+    /// after its this value instead of with a Reference: see
+    /// [`ExecutableContext::keep_this_under_function`]. Returns the this
+    /// value's place on the stack, which the call takes with the function,
+    /// where that was done.
+    pub(super) fn keep_this_under_function(&mut self) -> Option<StackValue> {
+        if self.executable.keep_this_under_function() {
+            Some(self.mark_stack_value())
+        } else {
+            None
+        }
+    }
+
     /// Makes `jump` go to `target`, a place the code has already passed.
     pub(super) fn set_jump_target(&mut self, jump: JumpIndex, target: JumpIndex) {
         self.executable.set_jump_target(jump, target);

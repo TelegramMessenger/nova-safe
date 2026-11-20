@@ -2156,6 +2156,13 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ArrayE
 }
 
 const MAX_STATIC_ARG_COUNT: usize = (IndexType::MAX - 1) as usize;
+/// Whether the number of `arguments` is not stated by the code of their
+/// call but counted when it runs ([`prep_arguments`]): one of them is
+/// spread, or there are more than an instruction can state.
+fn has_dynamic_arguments(arguments: &[ast::Argument]) -> bool {
+    arguments.len() > MAX_STATIC_ARG_COUNT || arguments.iter().any(|arg| arg.is_spread())
+}
+
 fn prep_arguments<'s>(
     ctx: &mut CompileContext<'_, 's, '_, '_>,
     arguments: &'s [ast::Argument<'s>],
@@ -2338,6 +2345,16 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::CallEx
         } else {
             ctx.load_to_stack()
         };
+        // A method call by a name, with a number of arguments that the
+        // code states: the this value of the call, which is the value the
+        // function was read from, is kept on the stack under the function,
+        // and no Reference is made for it. (A call that spreads arguments
+        // has their count on the stack, under them, and goes as before.)
+        let this_on_stack = if !self.optional && !has_dynamic_arguments(&self.arguments) {
+            ctx.keep_this_under_function()
+        } else {
+            None
+        };
         // If we're in an optional chain, we need to pluck it out while we're
         // compiling the parameters: They do not join our chain.
         let optional_chain = ctx.optional_chains.take();
@@ -2349,14 +2366,23 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::CallEx
         }
 
         // Note: func on stack and the possible dynamic arg count are consumed
-        // by EvaluateCall.
+        // by EvaluateCall; the this value under the function, where it was
+        // kept there, by EvaluateCallOnThis.
         if let Some(v) = dynamic_arg_count {
             v.forget(ctx);
         }
         func_on_stack.forget(ctx);
+        let on_this = this_on_stack.is_some();
+        if let Some(v) = this_on_stack {
+            v.forget(ctx);
+        }
 
         let num_arguments = result?;
 
+        if on_this {
+            ctx.add_instruction_with_immediate(Instruction::EvaluateCallOnThis, num_arguments);
+            return Ok(ValueOutput::Value);
+        }
         if need_pop_reference {
             ctx.add_instruction(Instruction::PopReference);
         }

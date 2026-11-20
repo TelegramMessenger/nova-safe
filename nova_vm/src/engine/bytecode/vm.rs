@@ -1520,7 +1520,11 @@ impl Vm {
         let reference =
             Reference::new_property_reference(bound.bound_this(agent).bind(gc), key, false)
                 .unbind();
-        if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+        if instr.kind == Instruction::EvaluateCallOnThis {
+            // The this value of this call is under the function: the bound
+            // one takes its place.
+            *self.stack.get_mut(at.checked_sub(1)?)? = bound.bound_this(agent).unbind();
+        } else if instr.kind == Instruction::PopReferenceAndEvaluateCall {
             *self.reference_stack.last_mut()? = reference;
         } else {
             self.reference = Some(reference);
@@ -1936,19 +1940,33 @@ impl Vm {
         // that was written just before, together with its neighbour, waits
         // for the write to be done.
         core::mem::swap(&mut self.stack, &mut frame.stack);
-        // EvaluateCall: the this value of the call, from its Reference.
-        let reference = if instr.kind == Instruction::PopReferenceAndEvaluateCall {
+        // EvaluateCall: the this value of the call, from its Reference; or
+        // from under the function, where a method call keeps it and makes
+        // no Reference. `cut` is where the caller's stack ends once the
+        // arguments are taken off it with the function, and with that
+        // this value. (Decided in one place, the plain call first: asked
+        // again further down, a call that is no method call was twelve
+        // instructions longer for it.)
+        let first = frame.stack.len() - instr.get_first_index();
+        let (reference, kept_this, cut) = if instr.kind == Instruction::EvaluateCall {
+            (self.reference.take(), Value::Undefined, first - 1)
+        } else if instr.kind == Instruction::PopReferenceAndEvaluateCall {
             self.reference = None;
-            self.reference_stack.pop()
+            (self.reference_stack.pop(), Value::Undefined, first - 1)
         } else {
-            self.reference.take()
+            self.reference = None;
+            let this = frame.stack.get(first.wrapping_sub(2)).copied();
+            (
+                None,
+                this.unwrap_or(Value::Undefined),
+                first.saturating_sub(2),
+            )
         };
         // The other stacks go on where the caller left them.
         frame.reference_base = self.reference_stack.len();
         frame.iterator_base = self.iterator_stack.len();
         frame.handler_base = self.handler_base;
         self.handler_base = self.exception_handler_stack.len();
-        let first = frame.stack.len() - instr.get_first_index();
         let arguments = &frame.stack[first..];
         let list = if let Some(parameters) = callee.parameters {
             // The arguments go where the function keeps its parameters:
@@ -1968,7 +1986,7 @@ impl Vm {
             list.extend_from_slice(arguments);
             Some(list)
         };
-        frame.stack.truncate(first - 1);
+        frame.stack.truncate(cut);
         frame.ip = ip;
         frame.executable = code;
         frame.tables = Some(caller.tables);
@@ -1988,7 +2006,7 @@ impl Vm {
                 .with_base_object(agent)
                 .map_or(Value::Undefined, |object| object.into())
                 .bind(gc),
-            None => Value::Undefined,
+            None => kept_this.bind(gc),
         };
         // PrepareForOrdinaryCall and OrdinaryCallBindThis.
         if callee.environment == CallEnvironment::Function {
@@ -3414,8 +3432,14 @@ impl Vm {
             }
             // A call of a built-in function that only computes a value from
             // arguments like these: computed here, with no call made.
-            Instruction::EvaluateCall | Instruction::PopReferenceAndEvaluateCall => {
-                step!(EvaluateCall, PopReferenceAndEvaluateCall);
+            Instruction::EvaluateCall
+            | Instruction::PopReferenceAndEvaluateCall
+            | Instruction::EvaluateCallOnThis => {
+                step!(
+                    EvaluateCall,
+                    PopReferenceAndEvaluateCall,
+                    EvaluateCallOnThis
+                );
                 let count = instr.get_first_index();
                 let Some(first) = vm.stack.len().checked_sub(count) else {
                     return Plain::No;
@@ -3432,9 +3456,13 @@ impl Vm {
                     return Plain::No;
                 };
                 // The this value of the call, for the functions that take
-                // it: the base of the Reference the call is made through.
+                // it: the base of the Reference the call is made through,
+                // or the value that a method call keeps under the function.
+                let on_this = instr.kind == Instruction::EvaluateCallOnThis;
                 let this = if !direct.takes_this() {
                     None
+                } else if on_this {
+                    first.checked_sub(2).map(|at| vm.stack[at])
                 } else if instr.kind == Instruction::PopReferenceAndEvaluateCall {
                     vm.reference_stack
                         .last()
@@ -3448,7 +3476,8 @@ impl Vm {
                     return Plain::No;
                 };
                 let result = result.unbind();
-                vm.stack.truncate(first - 1);
+                vm.stack
+                    .truncate((first - 1).saturating_sub(usize::from(on_this)));
                 if instr.kind == Instruction::PopReferenceAndEvaluateCall {
                     vm.reference_stack.pop();
                 }
@@ -3477,22 +3506,41 @@ impl Vm {
             }
             // The function of a method call, pushed with its Reference
             // before the arguments.
-            Instruction::LoadPropertyWithCachePushReference => {
-                step!(LoadPropertyWithCachePushReference);
+            //
+            // Or pushed after the value it is read from, which is the this
+            // value of the call: no Reference is made for that, and the
+            // call finds it under the function. (One arm for the two, and
+            // one with the reads of a local's property below: an arm of
+            // its own for each made the loop of instructions 440
+            // instructions longer, by the search of the cache read into
+            // each, and every instruction of a script five slower.)
+            Instruction::LoadPropertyWithCachePushReference
+            | Instruction::LoadPropertyWithCachePushThis => {
+                step!(
+                    LoadPropertyWithCachePushReference,
+                    LoadPropertyWithCachePushThis
+                );
                 let Some(value) = Self::cached_property_value(agent, vm, tables, instr, gc) else {
                     return Plain::No;
                 };
-                Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
-                vm.execute_push_reference(agent);
+                if instr.kind == Instruction::LoadPropertyWithCachePushReference {
+                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                    vm.execute_push_reference(agent);
+                } else {
+                    vm.reference = None;
+                    vm.stack.extend(vm.result.take());
+                }
                 vm.stack.push(value);
             }
             // `p.x` of a local: the stack slot, and its property by the
             // cache.
             Instruction::GetIndexPropertyWithCache
-            | Instruction::GetIndexPropertyWithCacheKeepReference => {
+            | Instruction::GetIndexPropertyWithCacheKeepReference
+            | Instruction::LoadIndexPropertyWithCachePushThis => {
                 step!(
                     GetIndexPropertyWithCache,
-                    GetIndexPropertyWithCacheKeepReference
+                    GetIndexPropertyWithCacheKeepReference,
+                    LoadIndexPropertyWithCachePushThis
                 );
                 let base = vm.stack[Instr::wide_third_index(instructions, *ip)];
                 let Some(value) = Self::cached_property_value_of(agent, base, tables, instr, gc)
@@ -3504,13 +3552,25 @@ impl Vm {
                     }
                     return Plain::No;
                 };
-                if instr.kind == Instruction::GetIndexPropertyWithCacheKeepReference {
-                    vm.result = Some(base);
-                    Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
-                } else {
-                    vm.reference = None;
+                match instr.kind {
+                    Instruction::GetIndexPropertyWithCache => {
+                        vm.reference = None;
+                        vm.result = Some(value);
+                    }
+                    Instruction::GetIndexPropertyWithCacheKeepReference => {
+                        vm.result = Some(base);
+                        Self::property_reference_with_identifier_key(agent, vm, tables, instr, gc);
+                        vm.result = Some(value);
+                    }
+                    // The function of `p.m(x)`, pushed after `p`, the this
+                    // value of the call.
+                    _ => {
+                        vm.result = None;
+                        vm.reference = None;
+                        vm.stack.push(base);
+                        vm.stack.push(value);
+                    }
                 }
-                vm.result = Some(value);
             }
             // `this.p`: the this value that the call keeps, and its
             // property by the cache.
@@ -5208,7 +5268,9 @@ impl Vm {
             | Instruction::ApplyBinaryOperatorWithConstant
             | Instruction::ApplyBinaryOperatorToIndexWithConstant
             | Instruction::ApplyBinaryOperatorAndMove
-            | Instruction::LoadPropertyWithCachePushReference => {
+            | Instruction::LoadPropertyWithCachePushReference
+            | Instruction::LoadPropertyWithCachePushThis
+            | Instruction::LoadIndexPropertyWithCachePushThis => {
                 execute_fused_instruction(agent, vm, executable, instr, gc)?;
             }
             Instruction::PutPropertyWithCache
@@ -5376,6 +5438,8 @@ impl Vm {
             | Instruction::ApplyBinaryOperatorToIndexWithConstant
             | Instruction::ApplyBinaryOperatorAndMove
             | Instruction::LoadPropertyWithCachePushReference
+            | Instruction::LoadPropertyWithCachePushThis
+            | Instruction::LoadIndexPropertyWithCachePushThis
             | Instruction::BindArguments => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }
@@ -5454,6 +5518,7 @@ impl Vm {
                 vm.execute_pop_reference();
                 execute_evaluate_call(agent, vm, instr, gc)?
             }
+            Instruction::EvaluateCallOnThis => execute_evaluate_call_on_this(agent, vm, instr, gc)?,
             Instruction::EvaluateNew => execute_evaluate_new(agent, vm, instr, gc)?,
             Instruction::EvaluateSuper => return Ok(ContinuationKind::Super),
             Instruction::MakePrivateReference => {
