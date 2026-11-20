@@ -301,6 +301,14 @@ With the assignment to a global that asks the state once and makes no Reference 
 that adds to a global is 1.49x by that measure; the call of a closure reads 1.95x, a step of the
 particles 1.85x, objects spread and assigned 1.90x.
 
+`Object.assign` to an empty object by the shape of its source (area 4) took objects spread and
+assigned from 1.90x to 0.90x. Looked for in the other cases nearest 2x and not found, a cost in one
+place as that was: a sort with a comparator is the calls of the comparator (a fifth of its samples
+fall on the instruction after each call returns, in the merge that does nothing else), and the
+properties of one object and a step of the particles are the read and the write by the cache and the
+loop of instructions, where a quarter of the samples are on the three instructions that fetch the
+next one.
+
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
 of each block, a counter and a thread-local read): the cases that allocate most pay for it (a linked list
@@ -1666,6 +1674,23 @@ extensible whatever the source is). `Object.assign` assigns the properties of su
 with no list of keys and no descriptors, where the target takes each without a setter or a trap; where
 it does not, the steps do all of it from the first key, and what was assigned is assigned again, which
 nothing can see. The case went to 1.9x.
+
+One by one, each of those assignments still looked for the key in the target, then in the object the
+target inherits from, and took the target from one shape to the next: the descriptors made of
+properties that are not there were a tenth of the case, and the assignments were most of it. For a
+target that has no properties yet, of the prototype the source has, `Object.assign` now makes the same
+copy as the spread, of the shape and the values, where it is the same thing. It is not always:
+`Object.assign` assigns where the spread defines, so a property of the same key on an object the
+target inherits from has its say (a setter is called and the target gets no property; one that is not
+writable throws). So the keys of the source are looked for on the objects the target inherits from,
+which are few and have few keys (`Object.prototype` has seven here), and the copy is made only where
+none has any of them and each is an ordinary object; otherwise it is the assignments one by one as
+before. The test has a setter and a property that is not writable on `Object.prototype`, a setter on
+a prototype under a property of the source's own, a class field over a setter, a Proxy and an Array
+for the prototype, targets and sources of every other kind, and a setter that `Object.prototype` gets
+after copies were made; with the look at the inherited keys taken out it fails.
+`prop/object-spread-assign` retires half the instructions it did and is 0.90x with the two engines
+run in turn, from 1.90x: faster than QuickJS, which goes property by property.
 
 `key in object` looked for the key among the object's own keys one by one, where every other lookup of
 an object with 32 keys or more uses the table of its shape's keys. An object used as a dictionary of 500
