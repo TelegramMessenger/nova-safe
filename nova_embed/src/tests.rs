@@ -20590,3 +20590,887 @@ many turns=[373266,20000]"##;
         Ok(Completion::Undefined)
     );
 }
+
+/// A host that ends the script at one of the polls it is asked at, and
+/// counts them.
+struct StopsAtPoll {
+    at: u32,
+    polls: Rc<core::cell::Cell<u32>>,
+}
+
+impl Host for StopsAtPoll {
+    fn call(&self, _id: u32, _args: Vec<HostArg>) -> HostReturn {
+        HostReturn::Undefined
+    }
+    fn should_interrupt(&self) -> bool {
+        self.polls.set(self.polls.get() + 1);
+        self.polls.get() == self.at
+    }
+}
+
+/// Runs `script`, which counts the statements it has run in the global `n`,
+/// with a host that ends it at its poll number `at` (never for 0): how the
+/// evaluation ended, how far it got (None before its first statement: a
+/// long script is compiled first, and the host is asked meanwhile too),
+/// and how often the host was asked.
+fn stopped_at_poll(script: &str, at: u32) -> (Result<Completion, Error>, Option<f64>, u32) {
+    let polls = Rc::new(core::cell::Cell::new(0));
+    let mut engine = Engine::new(
+        EngineOptions {
+            memory_limit: 0,
+            stack_limit: 0,
+        },
+        Box::new(StopsAtPoll {
+            at,
+            polls: polls.clone(),
+        }),
+    )
+    .unwrap();
+    let ended = engine.evaluate(script, false);
+    let asked = polls.get();
+    // The engine is usable after the interruption: what the script counted
+    // is read from it.
+    let reached = match engine.evaluate("typeof n === 'number' ? n : -1", false) {
+        Ok(Completion::Number(reached)) => (reached >= 0.0).then_some(reached),
+        other => panic!("the count of statements is {other:?} after {ended:?}"),
+    };
+    (ended, reached, asked)
+}
+
+/// The host is asked whether to interrupt after a bounded run of
+/// instructions, whatever their shape: in a straight line, where no jump
+/// back and no call counted any, in a loop of a long body, which counted
+/// for a few steps a turn, in calls, and in a loop of nothing else. Each
+/// script counts its statements, a statement being an instruction at
+/// least: a host that says yes at its poll number k ends the evaluation
+/// there, and how far the script got from one k to the next is what ran
+/// between two polls. That is never more than the interval the header
+/// promises (4096 instructions), and the script that is not stopped is
+/// asked as often as its length says.
+#[test]
+fn the_host_is_asked_within_a_bounded_run_of_instructions() {
+    const INTERVAL: f64 = 4096.0;
+    /// The statements that ran between each two of the first polls of the
+    /// running `script`, of which `first` is one: the evaluation ends at
+    /// each.
+    fn check_polls_from(name: &str, script: &str, first: u32, count: u32, end: Option<f64>) {
+        let mut before = 0.0;
+        for at in first..first + count {
+            let (ended, reached, asked) = stopped_at_poll(script, at);
+            assert_eq!(ended, Err(Error::Interrupted), "{name}: poll {at}");
+            assert_eq!(asked, at, "{name}: asked again after the host said yes");
+            let reached = reached.unwrap_or_else(|| panic!("{name}: poll {at} is no poll of it"));
+            assert!(
+                end.is_none_or(|end| reached < end),
+                "{name}: the script ran to its end past poll {at}"
+            );
+            assert!(
+                reached - before <= INTERVAL,
+                "{name}: {} statements before poll {at}, after the one before it",
+                reached - before
+            );
+            assert!(
+                at == first || reached > before,
+                "{name}: nothing ran before poll {at}, after the one before it"
+            );
+            before = reached;
+        }
+    }
+    let straight = format!("var n = 0; {}", "n++; ".repeat(16_000));
+    let in_a_function = format!(
+        "var n = 0; (function () {{ var a = 0; {} }})()",
+        "a = a + 1; n++; ".repeat(12_000)
+    );
+    let long_body = format!(
+        "var n = 0; for (var i = 0; i < 8; i++) {{ {} }}",
+        "n++; ".repeat(2_000)
+    );
+    let passed_over = format!(
+        "var n = 0; for (var i = 0; i < 40000; i++) {{ if (i < 0) {{ {} }} n++; }}",
+        "n--; ".repeat(1_000)
+    );
+    let calls = format!(
+        "var n = 0; function f() {{ n++; }} {}",
+        "f(); ".repeat(16_000)
+    );
+    let native_calls = format!("var n = 0; {}", "n = Math.abs(n) + 1; ".repeat(16_000));
+    let turns = "var n = 0; for (var i = 0; i < 40000; i++) { n++; }".to_string();
+    for (name, script, statements) in [
+        ("a straight line", &straight, 16_000.0),
+        ("a straight line in a function", &in_a_function, 12_000.0),
+        ("a loop of a long body", &long_body, 16_000.0),
+        (
+            "a loop that passes over most of its body",
+            &passed_over,
+            40_000.0,
+        ),
+        ("calls", &calls, 16_000.0),
+        ("calls of a native function", &native_calls, 16_000.0),
+        ("turns of a loop", &turns, 40_000.0),
+    ] {
+        // Not stopped, it runs to its end.
+        let (ended, reached, asked) = stopped_at_poll(script, 0);
+        assert!(ended.is_ok(), "{name}: {ended:?}");
+        assert_eq!(reached, Some(statements), "{name}");
+        // The first poll of the running script, after those of compiling
+        // it.
+        let (mut compiling, mut first) = (0, asked + 1);
+        while first - compiling > 1 {
+            let at = compiling + (first - compiling) / 2;
+            if stopped_at_poll(script, at).1.is_some() {
+                first = at;
+            } else {
+                compiling = at;
+            }
+        }
+        let running = asked + 1 - first;
+        assert!(
+            f64::from(running) >= statements / INTERVAL,
+            "{name}: asked {running} times in {statements} statements"
+        );
+        // And not at every other instruction either.
+        assert!(
+            f64::from(running) <= statements / 16.0,
+            "{name}: asked {running} times in {statements} statements"
+        );
+        check_polls_from(name, script, first, running.min(8), Some(statements));
+    }
+    // A loop of nothing but its jump back, one that only calls, the steps
+    // of a generator, and a loop in a function that a native one calls:
+    // none ends unless the host ends it.
+    for script in [
+        "var n = 0; for (;;) { n++; }",
+        "var n = 0; function f() { n++; } for (;;) { f(); }",
+        "var n = 0; function* g() { for (;;) { n++; yield n; } } for (var v of g()) { }",
+        "var n = 0; [1].forEach(function spin() { for (;;) { n++; } });",
+    ] {
+        check_polls_from(script, script, 1, 6, None);
+    }
+}
+
+/// Evaluates `script`, whose value is the lines it gathered, and holds them
+/// to `expected`: what Node prints for the same script.
+fn evaluates_to_lines(name: &str, script: &str, expected: &str) {
+    let (mut engine, _) = engine();
+    let value = match engine.evaluate(script, false) {
+        Ok(Completion::String(value)) => std::string::String::from_utf8(value).expect("text"),
+        other => panic!("{name}: {other:?}"),
+    };
+    if value != expected {
+        let (got, want): (Vec<_>, Vec<_>) = (value.lines().collect(), expected.lines().collect());
+        for index in 0..got.len().max(want.len()) {
+            let (got, want) = (got.get(index), want.get(index));
+            if got != want {
+                eprintln!(
+                    "{name}, line {}:\n  is   {got:?}\n  for  {want:?}",
+                    index + 1
+                );
+            }
+        }
+        panic!("{name}: not what the steps give");
+    }
+}
+
+/// Runs `test` on a thread with room for the scripts of these tests.
+fn on_a_deep_stack(test: fn()) {
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(test)
+        .expect("thread")
+        .join()
+        .expect("the test passes");
+}
+
+/// A Reference that was kept for an assignment or a call which is then
+/// not made is not left in the register: the left side of `o.p ||= v`
+/// that decides, the function of `o.f?.()` that is null or undefined.
+/// What follows took it for its own: a strict function called by a name
+/// that had been found before got the object as its this value (and so
+/// did, before any of the instructions that read a name where it was last
+/// found, a function called as a local, as an expression, as a tag), and
+/// `typeof` of a value gave the type of the property. Every way of
+/// leaving such a Reference by every way of taking one, cold and warm,
+/// with the receiver of a method call as it is.
+#[test]
+fn a_reference_kept_for_what_is_not_made_is_not_left_for_what_follows() {
+    on_a_deep_stack(
+        a_reference_kept_for_what_is_not_made_is_not_left_for_what_follows_on_this_thread,
+    );
+}
+
+fn a_reference_kept_for_what_is_not_made_is_not_left_for_what_follows_on_this_thread() {
+    evaluates_to_lines(
+        "receivers",
+        r##"var out = [];
+var print = function (s) { out.push(String(s)); };
+var output = print;
+function getReceiver() { "use strict"; return this; }
+const receiver = { p: "present", q: null, getReceiver };
+function show(name, f) {
+  const seen = [];
+  for (let i = 0; i < 4; i++) {
+    let r;
+    try { r = f(receiver, getReceiver); } catch (e) { r = "threw " + e; }
+    seen.push(r === receiver ? "OBJECT" : r === undefined ? "undefined" : r === globalThis ? "global" : String(r));
+  }
+  output(name + ": " + seen.join(","));
+}
+show("||= then name", function (o) { o.p ||= 1; return getReceiver(); });
+show("&&= then name", function (o) { o.q &&= 1; return getReceiver(); });
+show("??= then name", function (o) { o.p ??= 1; return getReceiver(); });
+show("||= then local", function (o, f) { o.p ||= 1; return f(); });
+show("||= then local2", function (o, f) { var g = f; o.p ||= 1; return g(); });
+show("||= then iife", function (o) { o.p ||= 1; return (function () { "use strict"; return this; })(); });
+show("||= then arrow iife", function (o) { o.p ||= 1; return (() => getReceiver())(); });
+show("||= then comma", function (o, f) { o.p ||= 1; return (0, f)(); });
+show("||= then call of call", function (o, f) { o.p ||= 1; return (function () { return f; })()(); });
+show("||= then cond", function (o, f) { o.p ||= 1; return (o ? f : null)(); });
+show("||= then tagged", function (o, f) { o.p ||= 1; return (function () { "use strict"; return this; })``; });
+show("||= then new.target-less call in arg", function (o, f) { o.p ||= 1; return [f()][0]; });
+show("||= computed then name", function (o) { o["p"] ||= 1; return getReceiver(); });
+show("||= computed key then local", function (o, f) { var k = "p"; o[k] ||= 1; return f(); });
+show("throw in value then name", function (o) { try { o.p = (function () { throw 1; })(); } catch (e) {} return getReceiver(); });
+show("throw in value then local", function (o, f) { try { o.p = (function () { throw 1; })(); } catch (e) {} return f(); });
+show("throw in compound then name", function (o) { try { o.p += (function () { throw 1; })(); } catch (e) {} return getReceiver(); });
+show("throw in call args then name", function (o) { try { o.getReceiver((function () { throw 1; })()); } catch (e) {} return getReceiver(); });
+show("throw in call args then local", function (o, f) { try { o.getReceiver((function () { throw 1; })()); } catch (e) {} return f(); });
+show("delete then name", function (o) { delete o.zz; return getReceiver(); });
+show("typeof prop then name", function (o) { typeof o.p; return getReceiver(); });
+show("optional then name", function (o) { o?.p; return getReceiver(); });
+show("optional call miss then name", function (o) { o.none?.(); return getReceiver(); });
+show("optional call miss then local", function (o, f) { o.none?.(); return f(); });
+show("in then name", function (o) { "p" in o; return getReceiver(); });
+show("update then name", function (o) { o.n = 1; o.n++; return getReceiver(); });
+show("destructure target then name", function (o) { [o.t] = [1]; ({ a: o.t } = { a: 2 }); return getReceiver(); });
+show("for-in target then name", function (o) { for (o.t in { a: 1 }) { } return getReceiver(); });
+show("genuine method", function (o) { o.p ||= 1; return o.getReceiver(); });
+show("genuine method after name", function (o) { getReceiver(); return o.getReceiver(); });
+show("with-less global fn", function (o) { o.p ||= 1; return globalFn(); });
+function globalFn() { "use strict"; return this; }
+var viaVar = getReceiver;
+show("||= then var global", function (o) { o.p ||= 1; return viaVar(); });
+show("||= in loop then name", function (o) { let r; for (let i = 0; i < 3; i++) { o.p ||= i; r = getReceiver(); } return r; });
+show("||= then name arg", function (o) { o.p ||= 1; return [getReceiver()][0]; });
+show("super-less class method", function (o) { class K { m() { o.p ||= 1; return getReceiver(); } } return new K().m(); });
+
+out.join("\n")
+"##,
+        r##"||= then name: undefined,undefined,undefined,undefined
+&&= then name: undefined,undefined,undefined,undefined
+??= then name: undefined,undefined,undefined,undefined
+||= then local: undefined,undefined,undefined,undefined
+||= then local2: undefined,undefined,undefined,undefined
+||= then iife: undefined,undefined,undefined,undefined
+||= then arrow iife: undefined,undefined,undefined,undefined
+||= then comma: undefined,undefined,undefined,undefined
+||= then call of call: undefined,undefined,undefined,undefined
+||= then cond: undefined,undefined,undefined,undefined
+||= then tagged: undefined,undefined,undefined,undefined
+||= then new.target-less call in arg: undefined,undefined,undefined,undefined
+||= computed then name: undefined,undefined,undefined,undefined
+||= computed key then local: undefined,undefined,undefined,undefined
+throw in value then name: undefined,undefined,undefined,undefined
+throw in value then local: undefined,undefined,undefined,undefined
+throw in compound then name: undefined,undefined,undefined,undefined
+throw in call args then name: undefined,undefined,undefined,undefined
+throw in call args then local: undefined,undefined,undefined,undefined
+delete then name: undefined,undefined,undefined,undefined
+typeof prop then name: undefined,undefined,undefined,undefined
+optional then name: undefined,undefined,undefined,undefined
+optional call miss then name: undefined,undefined,undefined,undefined
+optional call miss then local: undefined,undefined,undefined,undefined
+in then name: undefined,undefined,undefined,undefined
+update then name: undefined,undefined,undefined,undefined
+destructure target then name: undefined,undefined,undefined,undefined
+for-in target then name: undefined,undefined,undefined,undefined
+genuine method: OBJECT,OBJECT,OBJECT,OBJECT
+genuine method after name: OBJECT,OBJECT,OBJECT,OBJECT
+with-less global fn: undefined,undefined,undefined,undefined
+||= then var global: undefined,undefined,undefined,undefined
+||= in loop then name: undefined,undefined,undefined,undefined
+||= then name arg: undefined,undefined,undefined,undefined
+super-less class method: undefined,undefined,undefined,undefined"##,
+    );
+    evaluates_to_lines(
+        "typeof",
+        r##"var out = [];
+var print = function (s) { out.push(String(s)); };
+var output = print;
+const o = { p: "present", none: null, f() { return 1; } };
+function show(name, f) { const seen = []; for (let i = 0; i < 3; i++) { let r; try { r = f(o, 5); } catch (e) { r = "threw " + e; } seen.push(String(r)); } output(name + ": " + seen.join(",")); }
+show("typeof local", function (o, x) { o.p ||= 1; return typeof x; });
+show("typeof literal", function (o, x) { o.p ||= 1; return typeof 5; });
+show("typeof paren", function (o, x) { o.p ||= 1; return typeof (x + 1); });
+show("typeof after optional call miss", function (o, x) { o.none?.(); return typeof x; });
+show("delete local-ish", function (o, x) { o.p ||= 1; return delete x; });
+show("void", function (o, x) { o.p ||= 1; return void x; });
+show("typeof this", function (o, x) { o.p ||= 1; return typeof this; });
+show("update after", function (o, x) { o.p ||= 1; x++; return x; });
+show("new after", function (o, x) { o.p ||= 1; return typeof new (function () { return this; })(); });
+show("template after", function (o, x) { o.p ||= 1; return `${x}`; });
+show("in after", function (o, x) { o.p ||= 1; return "p" in o; });
+show("assign local after", function (o, x) { o.p ||= 1; x = 7; return x; });
+show("assign prop after", function (o, x) { o.p ||= 1; o.k = 7; return o.k; });
+show("compound prop after", function (o, x) { o.p ||= 1; o.k += 1; return o.k; });
+show("destructure after", function (o, x) { o.p ||= 1; var { k } = o; return k; });
+show("yield-less arrow after", function (o, x) { o.p ||= 1; return (() => typeof x)(); });
+show("with name typeof", function (o, x) { o.p ||= 1; return typeof undefinedName; });
+show("typeof global fn", function (o, x) { o.p ||= 1; return typeof show; });
+
+out.join("\n")
+"##,
+        r##"typeof local: number,number,number
+typeof literal: number,number,number
+typeof paren: number,number,number
+typeof after optional call miss: number,number,number
+delete local-ish: false,false,false
+void: undefined,undefined,undefined
+typeof this: object,object,object
+update after: 6,6,6
+new after: object,object,object
+template after: 5,5,5
+in after: true,true,true
+assign local after: 7,7,7
+assign prop after: 7,7,7
+compound prop after: 8,9,10
+destructure after: 10,10,10
+yield-less arrow after: number,number,number
+with name typeof: undefined,undefined,undefined
+typeof global fn: function,function,function"##,
+    );
+    evaluates_to_lines(
+        "every kept reference by every taker",
+        r##"var out = [];
+var print = function (s) { out.push(String(s)); };
+var output = print;
+var g = "global-value", gz = 0, gn = null;
+function fresh() {
+  return { p: "present", z: 0, n: null, u: undefined, num: 1, none: null, t: 0,
+    f() { return 1; }, get acc() { return "got"; }, set acc(v) { }, inner: { q: "deep", none: null, m() { return 2; } }, arr: [1, 2, 3] };
+}
+const shapes = [
+  "o.p ||= 1", "o.z ||= 1", "o.p &&= 1", "o.z &&= 1", "o.p ??= 1", "o.n ??= 1",
+  "o[k] ||= 1", "o[k] &&= 1", "o[k] ??= 1", "o.inner.q ||= 1", "o.inner.q ??= 1", "o.acc ||= 1", "o.acc ??= 1",
+  "o.p ||= x", "o.p ||= o.z", "o.p ||= o.f()", "o.p ??= o.f()", "o.z &&= o.f()",
+  "g ||= 1", "gz &&= 1", "g ??= 1", "gn ??= 1; gn = null", "c ||= 1", "cz &&= 1", "c ??= 1", "x ||= 1", "x ??= 1",
+  "var y = (o.p ||= 1)", "if (o.p ||= 1) { }", "if (o.z &&= 1) { }", "(o.p ||= 1) + 1", "void (o.p ||= 1)", "[o.p ||= 1]", "o.t = (o.p ||= 1)",
+  "o.none?.()", "o.none?.(1)", "o.none?.(x, x)", "o.f?.()", "o.f?.(1)", "o?.f()", "o?.none?.()", "o.inner.none?.()", "o.inner?.m()", "o.none?.x", "o.none?.x.y", "o.none?.[k]", "o.none?.x()", "o.none?.x.y()", "o.none?.x?.()",
+  "o.u?.()", "gn?.()", "cn?.()", "x?.none", "o.none?.x ?? 1", "(o.none?.())", "o.none?.() ?? o.none?.()", "o.inner.m?.()", "o['none']?.()", "o['none']?.(1)",
+  "o.p", "o.p, 1", "(o.p)", "o[k]", "o.acc", "o.inner.q", "delete o.zz", "delete o[k + 'zz']", "o.num++", "++o.num", "o.num--", "o.num += 1", "o.num **= 1", "o[k] += ''",
+  "typeof o.p", "typeof o.none?.x", "void o.p", "!o.p", "-o.num", "o.p ? 1 : 2", "o.p && 1", "o.z || 1", "o.n ?? 1", "o.p in o", "o.p instanceof Object", "o.p === o.z",
+  "o.f()", "o.f(1)", "o['f']()", "o.f`x`", "o.inner.m()", "o.f(o.f())", "o.f(...o.arr)", "getG()", "getG(1)", "(0, o.f)()", "(o.f)()",
+  "for (o.t of [1]) { }", "for (o.t in { a: 1 }) { }", "[o.t] = [1]", "({ a: o.t } = { a: 1 })", "[o.t = 5] = []", "({ a: o.t = 5 } = {})", "[...o.arr2] = [1]",
+  "o.x1 = o.y1 = 1", "o.t = o.p", "o.t = o.f()", "o.t = g", "o.t = c", "o[k] = o.p", "g = o.p", "c = o.p",
+  "try { o.t = thrower(); } catch (e) { }", "try { o.f(thrower()); } catch (e) { }", "try { o.num += thrower(); } catch (e) { }", "try { o.p ||= thrower(); } catch (e) { }", "try { o.z ||= thrower(); } catch (e) { }",
+  "try { o.none.x; } catch (e) { }", "try { o.none(); } catch (e) { }", "try { missingName; } catch (e) { }", "try { missingName(); } catch (e) { }", "try { o.p = 1; } finally { }",
+  "switch (o.p) { case 'present': break; }", "while (o.z) { }", "do { } while (o.z)", "for (; o.z; ) { }", "if (o.p) { }", "if (o.z) { } else { }",
+  "`${o.p}`", "o.p + o.z", "[o.p, o.z]", "({ a: o.p })", "typeof g", "typeof missingName", "typeof c", "g", "c", "g + c",
+  "label: { o.p ||= 1; break label; }", "for (var i = 0; i < 2; i++) { o.p ||= 1; }", "for (var i = 0; i < 2; i++) { o.none?.(); }", "for (var i = 0; i < 2; i++) { if (i) continue; o.p ||= 1; }",
+  "(() => o.p ||= 1)()", "(function () { o.p ||= 1; })()",
+];
+const consumers = [
+  ["typeof 5", "number"],
+  ["typeof x", "number"],
+  ["typeof (function () { 'use strict'; return this; })()", "undefined"],
+  ["typeof strictThis()", "undefined"],
+  ["typeof lf()", "undefined"],
+  ["typeof (0, lf)()", "undefined"],
+  ["typeof [lf][0]()", "object"],
+  ["typeof (x, 5)", "number"],
+  ["typeof this", "undefined"],
+  ["typeof void 0", "undefined"],
+  ["typeof lf`t`", "undefined"],
+];
+function strictThis() { "use strict"; return this; }
+function getG() { return g; }
+function thrower() { throw new Error("thrown"); }
+let bad = 0, total = 0;
+(function () {
+  "use strict";
+  var c = "captured-value", cz = 0, cn = null;
+  for (const shape of shapes) {
+    for (const [consumer, expected] of consumers) {
+      let f;
+      try {
+        f = eval("(function (o, x, k, lf) { " + shape + "; return " + consumer + "; })");
+      } catch (e) { output("DOES NOT COMPILE " + shape + " / " + consumer + ": " + e); continue; }
+      const seen = [];
+      for (let turn = 0; turn < 3; turn++) {
+        g = "global-value"; gz = 0; gn = null; c = "captured-value"; cz = 0; cn = null;
+        let r;
+        try { r = f(fresh(), 5, "p", strictThis); } catch (e) { r = "threw " + e; }
+        seen.push(r);
+      }
+      total++;
+      if (seen.some(r => r !== expected)) { bad++; output("WRONG " + shape + " ; " + consumer + " -> " + seen.join(",") + " (expected " + expected + ")"); }
+    }
+  }
+})();
+output(bad + " wrong of " + total);
+
+out.join("\n")
+"##,
+        r##"0 wrong of 1573"##,
+    );
+}
+
+/// The value of a class field is code of the constructor that sets the
+/// field, run before its body: an arrow function in it reads `this`
+/// through the Function Environment Record of the call, which a
+/// constructor whose own body needs none was called without
+/// (`read = () => this.marker; constructor() {}` read the marker of the
+/// global object). With a constructor that is written out and one that
+/// is not, in a base class and a derived one, private and computed
+/// fields, `super`, a direct eval, and what must stay as it was.
+#[test]
+fn an_arrow_function_in_a_class_field_reads_this_of_the_instance() {
+    on_a_deep_stack(an_arrow_function_in_a_class_field_reads_this_of_the_instance_on_this_thread);
+}
+
+fn an_arrow_function_in_a_class_field_reads_this_of_the_instance_on_this_thread() {
+    evaluates_to_lines(
+        "class fields",
+        r##"var out = [];
+var print = function (s) { out.push(String(s)); };
+var output = print;
+function show(name, f) { let r; try { r = f(); } catch (e) { r = "threw " + (e && e.name); } output(name + ": " + JSON.stringify(r)); }
+globalThis.marker = "global-marker";
+show("explicit empty ctor", () => { class C { marker = 37; read = () => this.marker; constructor() {} } const c = new C(); return [c.read(), c.read.call({ marker: 1 })]; });
+show("implicit ctor", () => { class C { marker = 37; read = () => this.marker; } return new C().read(); });
+show("ctor with body using this", () => { class C { marker = 37; read = () => this.marker; constructor(x) { this.x = x; } } const c = new C(5); return [c.read(), c.x]; });
+show("ctor with body not using this", () => { class C { read = () => this; constructor(x) { var y = x + 1; } } const c = new C(5); return c.read() === c; });
+show("ctor with params and defaults", () => { class C { read = () => this.marker; marker = 1; constructor(a = 2, ...rest) { } } return new C().read(); });
+show("arrow in arrow", () => { class C { m = 7; read = () => () => this.m; constructor() {} } return new C().read()(); });
+show("arrow returning this identity", () => { class C { self = () => this; constructor() {} } const c = new C(); return c.self() === c; });
+show("two instances", () => { class C { read = () => this.v; constructor(v) { this.v = v; } } const a = new C(1), b = new C(2); return [a.read(), b.read()]; });
+show("private field arrow", () => { class C { #p = 9; read = () => this.#p; constructor() {} } return new C().read(); });
+show("private arrow field", () => { class C { v = 3; #read = () => this.v; constructor() {} get() { return this.#read(); } } return new C().get(); });
+show("computed field arrow", () => { const k = "read"; class C { v = 4; [k] = () => this.v; constructor() {} } return new C().read(); });
+show("field uses this directly", () => { class C { a = 1; b = this.a + 1; constructor() {} } return new C().b; });
+show("field arrow with super", () => { class C { read = () => super.toString === Object.prototype.toString; constructor() {} } return new C().read(); });
+show("field direct super", () => { class C { s = super.hasOwnProperty === Object.prototype.hasOwnProperty; constructor() {} } return new C().s; });
+show("field eval arrow", () => { class C { v = 6; read = eval("() => this.v"); constructor() {} } return new C().read(); });
+show("field eval this", () => { class C { v = 6; w = eval("this.v"); constructor() {} } return new C().w; });
+show("field function not arrow", () => { class C { v = 8; read = function () { return this && this.v; }; constructor() {} } const c = new C(); return [c.read(), (0, c.read)()]; });
+show("field object method", () => { class C { v = 8; o = { m() { return this.v; }, v: 2 }; constructor() {} } return new C().o.m(); });
+show("field nested class field", () => { class C { v = 8; K = class { w = 5; read = () => this.w; }; constructor() {} } return new (new C().K)().read(); });
+show("field nested class computed key", () => { class C { k = "name"; K = class { [this.k]() { return 1; } }; constructor() {} } return typeof new (new C().K)().name; });
+show("field async arrow", () => { class C { v = 2; read = async () => this.v; constructor() {} } return typeof new C().read().then; });
+show("field arrow called later", () => { class C { v = 1; inc = () => ++this.v; constructor() {} } const c = new C(); c.inc(); c.inc(); return c.v; });
+show("derived explicit", () => { class A { a = 1; } class B extends A { read = () => this.a + this.b; b = 2; constructor() { super(); } } return new B().read(); });
+show("derived implicit", () => { class A { a = 1; constructor() {} } class B extends A { read = () => this.a; } return new B().read(); });
+show("derived of base with arrow", () => { class A { ra = () => this.tag; constructor() {} } class B extends A { tag = "b"; constructor() { super(); } } return new B().ra(); });
+show("base called via Reflect.construct", () => { class A { read = () => this.tag; constructor() {} } class B { }; B.prototype.tag = "bp"; return Reflect.construct(A, [], B).read(); });
+show("ctor returns object", () => { class C { read = () => this.v; v = 1; constructor() { return { other: true }; } } return new C().other; });
+show("ctor that throws after fields", () => { let saved; class C { read = (saved = () => this.v); v = 3; constructor() { throw new Error("x"); } } try { new C(); } catch (e) { } return saved(); });
+show("static field arrow", () => { class C { static v = 5; static read = () => this.v; constructor() {} } return C.read(); });
+show("getter with arrow", () => { class C { v = 1; get g() { return (() => this.v)(); } constructor() {} } return new C().g; });
+show("method arrow", () => { class C { v = 1; m() { return (() => this.v)(); } constructor() {} } return new C().m(); });
+show("ctor arrow", () => { class C { constructor() { this.v = 2; this.read = () => this.v; } } return new C().read(); });
+show("field arrow and ctor arrow", () => { class C { a = () => this.v; constructor() { this.v = 4; this.b = () => this.v; } } const c = new C(); return [c.a(), c.b()]; });
+show("many fields", () => { class C { a = 1; b = () => this.a; c = 2; d = () => this.c + this.b(); constructor() {} } return new C().d(); });
+show("field with destructuring arrow", () => { class C { v = [1, 2]; read = ([x] = this.v) => x; constructor() {} } return new C().read(); });
+show("class expression in function", () => { const make = () => class { v = 11; read = () => this.v; constructor() {} }; const K = make(); return new K().read(); });
+show("class in strict function", () => { "use strict"; class C { read = () => this === undefined ? "undef" : typeof this; constructor() {} } return new C().read(); });
+show("warm", () => { class C { marker = 37; read = () => this.marker; constructor() {} } let s = 0; for (let i = 0; i < 50; i++) s += new C().read(); return s; });
+
+out.join("\n")
+"##,
+        r##"explicit empty ctor: [37,37]
+implicit ctor: 37
+ctor with body using this: [37,5]
+ctor with body not using this: true
+ctor with params and defaults: 1
+arrow in arrow: 7
+arrow returning this identity: true
+two instances: [1,2]
+private field arrow: 9
+private arrow field: 3
+computed field arrow: 4
+field uses this directly: 2
+field arrow with super: true
+field direct super: true
+field eval arrow: 6
+field eval this: 6
+field function not arrow: [8,null]
+field object method: 2
+field nested class field: 5
+field nested class computed key: "function"
+field async arrow: "function"
+field arrow called later: 3
+derived explicit: 3
+derived implicit: 1
+derived of base with arrow: "b"
+base called via Reflect.construct: "bp"
+ctor returns object: true
+ctor that throws after fields: 3
+static field arrow: 5
+getter with arrow: 1
+method arrow: 1
+ctor arrow: 2
+field arrow and ctor arrow: [4,4]
+many fields: 3
+field with destructuring arrow: 1
+class expression in function: 11
+class in strict function: "object"
+warm: 1850"##,
+    );
+}
+
+/// A loop that steps a local and tests it against itself compares the
+/// local as the step leaves it on both sides (`for (; i >= i; i--)`
+/// compared it with what it was before the step, and ended). Every test
+/// of two operands by every step, in the three loops, from integers,
+/// doubles, a string and the ends of the safe integers, against the
+/// same loop worked out on an object.
+#[test]
+fn a_loop_that_steps_and_tests_one_local_compares_it_as_stepped() {
+    on_a_deep_stack(a_loop_that_steps_and_tests_one_local_compares_it_as_stepped_on_this_thread);
+}
+
+fn a_loop_that_steps_and_tests_one_local_compares_it_as_stepped_on_this_thread() {
+    evaluates_to_lines(
+        "loops",
+        r##"var out = [];
+var print = function (s) { out.push(String(s)); };
+// Every loop of a local that is stepped and tested, against the same loop
+// worked out on an object, where no instruction steps and tests at once.
+var compare = { "<": function (a, b) { return a < b; }, "<=": function (a, b) { return a <= b; }, ">": function (a, b) { return a > b; }, ">=": function (a, b) { return a >= b; } };
+var operands = { "i": function (s) { return s.i; }, "j": function (s) { return s.j; }, "5": function () { return 5; }, "n": function (s) { return s.n; }, "i + 0": function (s) { return s.i + 0; }, "(i)": function (s) { return s.i; } };
+var steps = {
+  "i++": function (s) { s.i = Number(s.i) + 1; }, "++i": function (s) { s.i = Number(s.i) + 1; },
+  "i--": function (s) { s.i = Number(s.i) - 1; }, "--i": function (s) { s.i = Number(s.i) - 1; },
+  "i += 1": function (s) { s.i = s.i + 1; }, "i = i + 1": function (s) { s.i = s.i + 1; }, "i -= 1": function (s) { s.i = s.i - 1; },
+  "j++": function (s) { s.j = s.j + 1; }, "j--": function (s) { s.j = s.j - 1; }
+};
+function expected(form, op, left, right, step, start) {
+  var s = { i: start, j: 2, n: 4 }, turns = 0;
+  function holds() { return compare[op](operands[left](s), operands[right](s)); }
+  if (form === "for") {
+    while (holds()) { turns = turns + 1; if (turns === 6) { break; } steps[step](s); }
+  } else if (form === "do") {
+    do { turns = turns + 1; if (turns === 6) { break; } steps[step](s); } while (holds());
+  } else {
+    while (true) { steps[step](s); if (!holds()) { break; } turns = turns + 1; if (turns === 6) { break; } }
+  }
+  return [turns, s.i, s.j];
+}
+var wrong = [], total = 0;
+var pairs = [["i", "i"], ["i", "j"], ["j", "i"], ["i", "5"], ["5", "i"], ["i", "n"], ["i", "i + 0"], ["i", "(i)"]];
+var starts = [0, 3, -2, 1.5, "4", 9007199254740991, -9007199254740991];
+for (var op in compare) {
+  for (var step in steps) {
+    for (var p = 0; p < pairs.length; p++) {
+      var left = pairs[p][0], right = pairs[p][1], test = left + " " + op + " " + right;
+      var loops = {
+        "for": new Function("i", "n", "let turns = 0; let j = 2; for (; " + test + "; " + step + ") { if (++turns === 6) break; } return [turns, i, j];"),
+        "do": new Function("i", "n", "let turns = 0; let j = 2; do { if (++turns === 6) break; " + step + "; } while (" + test + "); return [turns, i, j];"),
+        "while": new Function("i", "n", "let turns = 0; let j = 2; while (true) { " + step + "; if (!(" + test + ")) break; if (++turns === 6) break; } return [turns, i, j];")
+      };
+      for (var form in loops) {
+        for (var k = 0; k < starts.length; k++) {
+          // Twice: the second run is of code that has run.
+          for (var run = 0; run < 2; run++) {
+            var got = JSON.stringify(loops[form](starts[k], 4)), want = JSON.stringify(expected(form, op, left, right, step, starts[k]));
+            total++;
+            if (got !== want) { wrong.push(form + " (" + test + "; " + step + ") from " + JSON.stringify(starts[k]) + ": " + got + ", not " + want); }
+          }
+        }
+      }
+    }
+  }
+}
+function loop(i) { let turns = 0; for (; i >= i; i--) { if (++turns === 3) break; } return turns; }
+function loopUp(i) { let turns = 0; for (; i <= i; i++) { if (++turns === 4) break; } return [turns, i]; }
+print(JSON.stringify([loop(0), loop(0), loop(5), loop(0.5), loop("7"), loop(NaN), loop(undefined)]));
+print(JSON.stringify([loopUp(0), loopUp(9007199254740991), loopUp(1.5), loopUp("3"), loopUp(NaN)]));
+print(wrong.length + " wrong of " + total);
+for (var w = 0; w < wrong.length && w < 20; w++) { print(wrong[w]); }
+
+out.join("\n")
+"##,
+        r##"[3,3,3,3,3,0,0]
+[[4,3],[4,9007199254740992],[4,4.5],[4,6],[0,null]]
+0 wrong of 12096"##,
+    );
+}
+
+/// An element that `push`, `unshift` or `fill` makes in an Array that
+/// is the prototype of an object is read through that object: what had
+/// read no such element through the Array before (and remembered that)
+/// read none after, where an assignment to the index showed it. An
+/// ordinary Array made the prototype, read through one object and
+/// through two, by every method that makes or moves elements.
+#[test]
+fn an_element_made_in_an_array_that_is_a_prototype_is_read_through_it() {
+    on_a_deep_stack(
+        an_element_made_in_an_array_that_is_a_prototype_is_read_through_it_on_this_thread,
+    );
+}
+
+fn an_element_made_in_an_array_that_is_a_prototype_is_read_through_it_on_this_thread() {
+    evaluates_to_lines(
+        "prototype arrays",
+        r##"var out = [];
+var print = function (s) { out.push(String(s)); };
+var output = print;
+function readIndex(object, index) { return object[index]; }
+function hasIndex(object, index) { return index in object; }
+function show(name, make, mutate, index = 0) {
+  const seen = [];
+  for (let turn = 0; turn < 2; turn++) {
+    const proto = make();
+    const mid = Object.create(proto);
+    const child = Object.create(mid);
+    const direct = {};
+    Object.setPrototypeOf(direct, proto);
+    // warm misses
+    const before = [];
+    for (let i = 0; i < 4; i++) before.push(readIndex(child, index), readIndex(direct, index), hasIndex(child, index));
+    let threw = null;
+    try { mutate(proto); } catch (e) { threw = e.name; }
+    const after = [readIndex(child, index), readIndex(direct, index), hasIndex(child, index), child[index], index in direct, proto.length];
+    seen.push(JSON.stringify([before.slice(0, 3), after, threw]));
+  }
+  output(name + ": " + seen.join(" | "));
+}
+show("push", () => [], p => p.push("v"));
+show("push two", () => [], p => p.push("v", "w"), 1);
+show("push call", () => [], p => Array.prototype.push.call(p, "v"));
+show("push apply", () => [], p => Array.prototype.push.apply(p, ["v"]));
+show("push in loop", () => [], p => { for (let i = 0; i < 3; i++) p.push(i); }, 2);
+show("fill hole", () => new Array(1), p => p.fill("v"));
+show("fill holes range", () => new Array(4), p => p.fill("v", 1, 3), 2);
+show("fill dense", () => ["a"], p => p.fill("v"));
+show("unshift", () => [], p => p.unshift("v"));
+show("unshift onto one", () => ["a"], p => p.unshift("v"), 1);
+show("splice insert", () => [], p => p.splice(0, 0, "v"));
+show("index assign", () => [], p => { p[0] = "v"; });
+show("index assign at length", () => ["a"], p => { p[p.length] = "v"; }, 1);
+show("index assign far", () => [], p => { p[3] = "v"; }, 3);
+show("length then assign", () => [], p => { p.length = 2; p[1] = "v"; }, 1);
+show("length only", () => [], p => { p.length = 2; });
+show("defineProperty", () => [], p => Object.defineProperty(p, 0, { value: "v", configurable: true, enumerable: true, writable: true }));
+show("copyWithin", () => { const a = new Array(2); a[1] = "v"; return a; }, p => p.copyWithin(0, 1));
+show("reverse", () => { const a = new Array(2); a[1] = "v"; return a; }, p => p.reverse());
+show("sort", () => { const a = new Array(2); a[1] = "v"; return a; }, p => p.sort());
+show("concat result is new", () => [], p => p.concat(["v"]));
+show("Object.assign", () => [], p => Object.assign(p, { 0: "v" }));
+show("Array.prototype.push on args-like", () => [], p => [].push.call(p, "v"));
+show("pop then push", () => ["a"], p => { p.pop(); p.push("v"); });
+show("shift then unshift", () => ["a"], p => { p.shift(); p.unshift("v"); });
+show("with", () => [], p => p.with === undefined ? 0 : 0);
+show("spread into", () => [], p => p.push(...["v", "w"]), 1);
+show("frozen push", () => Object.freeze([]), p => p.push("v"));
+show("sealed fill", () => Object.seal(new Array(1)), p => p.fill("v"));
+show("typed fill n/a", () => [], p => p.fill("v"));
+show("push then delete", () => [], p => { p.push("v"); delete p[0]; });
+show("Array.prototype itself", () => Array.prototype, p => { p.push("v"); try { } finally { } }, 0);
+Array.prototype.length = 0;
+show("array child of array", () => [], p => p.push("v"));
+function ownChild() { const proto = []; const child = []; Object.setPrototypeOf(child, proto); child.length = 1; const b = [readIndex(child, 0), readIndex(child, 0)]; proto.push("v"); return [b, readIndex(child, 0), child[0]]; }
+output("array with array proto: " + JSON.stringify([ownChild(), ownChild()]));
+function holes() { const proto = []; const a = [, , 3]; Object.setPrototypeOf(a, proto); const b = [a[0], a[1]]; proto.push("p0"); proto.push("p1"); return [b, a[0], a[1], a.indexOf("p1"), a.includes("p0"), a.join("-")]; }
+output("holes read through: " + JSON.stringify([holes(), holes()]));
+
+out.join("\n")
+"##,
+        r##"push: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+push two: [[null,null,false],["w","w",true,"w",true,2],null] | [[null,null,false],["w","w",true,"w",true,2],null]
+push call: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+push apply: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+push in loop: [[null,null,false],[2,2,true,2,true,3],null] | [[null,null,false],[2,2,true,2,true,3],null]
+fill hole: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+fill holes range: [[null,null,false],["v","v",true,"v",true,4],null] | [[null,null,false],["v","v",true,"v",true,4],null]
+fill dense: [["a","a",true],["v","v",true,"v",true,1],null] | [["a","a",true],["v","v",true,"v",true,1],null]
+unshift: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+unshift onto one: [[null,null,false],["a","a",true,"a",true,2],null] | [[null,null,false],["a","a",true,"a",true,2],null]
+splice insert: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+index assign: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+index assign at length: [[null,null,false],["v","v",true,"v",true,2],null] | [[null,null,false],["v","v",true,"v",true,2],null]
+index assign far: [[null,null,false],["v","v",true,"v",true,4],null] | [[null,null,false],["v","v",true,"v",true,4],null]
+length then assign: [[null,null,false],["v","v",true,"v",true,2],null] | [[null,null,false],["v","v",true,"v",true,2],null]
+length only: [[null,null,false],[null,null,false,null,false,2],null] | [[null,null,false],[null,null,false,null,false,2],null]
+defineProperty: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+copyWithin: [[null,null,false],["v","v",true,"v",true,2],null] | [[null,null,false],["v","v",true,"v",true,2],null]
+reverse: [[null,null,false],["v","v",true,"v",true,2],null] | [[null,null,false],["v","v",true,"v",true,2],null]
+sort: [[null,null,false],["v","v",true,"v",true,2],null] | [[null,null,false],["v","v",true,"v",true,2],null]
+concat result is new: [[null,null,false],[null,null,false,null,false,0],null] | [[null,null,false],[null,null,false,null,false,0],null]
+Object.assign: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+Array.prototype.push on args-like: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+pop then push: [["a","a",true],["v","v",true,"v",true,1],null] | [["a","a",true],["v","v",true,"v",true,1],null]
+shift then unshift: [["a","a",true],["v","v",true,"v",true,1],null] | [["a","a",true],["v","v",true,"v",true,1],null]
+with: [[null,null,false],[null,null,false,null,false,0],null] | [[null,null,false],[null,null,false,null,false,0],null]
+spread into: [[null,null,false],["w","w",true,"w",true,2],null] | [[null,null,false],["w","w",true,"w",true,2],null]
+frozen push: [[null,null,false],[null,null,false,null,false,0],"TypeError"] | [[null,null,false],[null,null,false,null,false,0],"TypeError"]
+sealed fill: [[null,null,false],[null,null,false,null,false,1],"TypeError"] | [[null,null,false],[null,null,false,null,false,1],"TypeError"]
+typed fill n/a: [[null,null,false],[null,null,false,null,false,0],null] | [[null,null,false],[null,null,false,null,false,0],null]
+push then delete: [[null,null,false],[null,null,false,null,false,1],null] | [[null,null,false],[null,null,false,null,false,1],null]
+Array.prototype itself: [[null,null,false],["v","v",true,"v",true,1],null] | [["v","v",true],["v","v",true,"v",true,2],null]
+array child of array: [[null,null,false],["v","v",true,"v",true,1],null] | [[null,null,false],["v","v",true,"v",true,1],null]
+array with array proto: [[[null,null],"v","v"],[[null,null],"v","v"]]
+holes read through: [[[null,null],"p0","p1",1,true,"p0-p1-3"],[[null,null],"p0","p1",1,true,"p0-p1-3"]]"##,
+    );
+}
+
+/// Object.assign assigns in the order of the own keys of the source:
+/// the array indices ascending, then the other keys as they were made.
+/// An Array given `{ length: 0, 0: "a" }` has its element first and is
+/// then cut to nothing (it kept the element); setters and a Proxy see
+/// that order; and what was assigned before an assignment that throws
+/// is what came before it in that order.
+#[test]
+fn object_assign_assigns_in_the_order_of_the_own_keys() {
+    on_a_deep_stack(object_assign_assigns_in_the_order_of_the_own_keys_on_this_thread);
+}
+
+fn object_assign_assigns_in_the_order_of_the_own_keys_on_this_thread() {
+    evaluates_to_lines(
+        "Object.assign",
+        r##"var out = [];
+var print = function (s) { out.push(String(s)); };
+var output = print;
+function show(name, f) { let r; try { r = f(); } catch (e) { r = "threw " + (e && e.name); } output(name + ": " + JSON.stringify(r)); }
+show("array length then index", () => Object.assign([], { length: 0, 0: "a" }));
+show("array index then length", () => Object.assign([], { 0: "a", length: 0 }));
+show("array length 3 then indices", () => { const t = Object.assign([], { length: 3, 5: "f", 1: "b" }); return [t, t.length]; });
+show("array b then 0", () => { const t = Object.assign(["x", "y"], { b: 1, 1: "one", 0: "zero", length: 1 }); return [t, t.b, t.length]; });
+show("order observed by setters", () => { const log = []; const t = {}; for (const k of ["b", "2", "a", "0", "1", "c"]) Object.defineProperty(t, k, { set(v) { log.push(k + "=" + v); }, configurable: true }); Object.assign(t, { b: 1, 2: 2, a: 3, 0: 4, 1: 5, c: 6 }); return log; });
+show("order observed by proxy", () => { const log = []; const t = new Proxy({}, { set(o, k, v) { log.push(String(k)); o[k] = v; return true; } }); Object.assign(t, { z: 1, 10: 2, y: 3, 2: 4, 4294967295: 5, "-1": 6, 4294967294: 7, "01": 8, 1.5: 9 }); return log; });
+show("result key order", () => Object.keys(Object.assign({}, { z: 1, 10: 2, y: 3, 2: 4 })));
+show("result key order onto existing", () => Object.keys(Object.assign({ q: 0, 5: 0 }, { z: 1, 10: 2, y: 3, 2: 4 })));
+show("big integer-like keys", () => { const log = []; const t = {}; const src = { b: 1, 4294967295: 2, 4294967294: 3, 9007199254740991: 4, a: 5, 0: 6, "-5": 7 }; for (const k of Object.keys(src)) Object.defineProperty(t, k, { set(v) { log.push(k); }, configurable: true }); Object.assign(t, src); return [log, Object.keys(src)]; });
+show("partial write: frozen index", () => { const t = []; t[0] = "old"; Object.defineProperty(t, 0, { writable: false }); let threw = false; try { Object.assign(t, { b: 1, 0: "new", c: 2 }); } catch (e) { threw = e.name; } return [threw, t[0], t.b, t.c]; });
+show("partial write: frozen string key", () => { const t = {}; Object.defineProperty(t, "m", { value: 0, writable: false }); let threw = false; try { Object.assign(t, { a: 1, 3: "x", m: 2, 1: "y", z: 3 }); } catch (e) { threw = e.name; } return [threw, t.a, t[3], t[1], t.z, t.m]; });
+show("partial write: non-extensible", () => { const t = Object.preventExtensions({ a: 0 }); let threw = false; try { Object.assign(t, { z: 1, 2: "x", a: 5 }); } catch (e) { threw = e.name; } return [threw, t.a, t.z, t[2]]; });
+show("partial write: array length readonly", () => { const t = ["x"]; Object.defineProperty(t, "length", { writable: false }); let threw = false; try { Object.assign(t, { k: 1, 0: "new", 1: "more", z: 2 }); } catch (e) { threw = e.name; } return [threw, t, t.k, t.z]; });
+show("partial write: inherited setter throws", () => { const p = { set 1(v) { throw new RangeError("no"); } }; const t = Object.create(p); let threw = false; try { Object.assign(t, { b: 1, 2: "two", 1: "one", 0: "zero" }); } catch (e) { threw = e.name; } return [threw, t.b, t[0], Object.hasOwn(t, 1), t[2]]; });
+show("partial write: inherited readonly index", () => { const p = {}; Object.defineProperty(p, 1, { value: "ro", writable: false }); const t = Object.create(p); let threw = false; try { Object.assign(t, { b: 1, 2: "two", 1: "one", 0: "zero" }); } catch (e) { threw = e.name; } return [threw, t.b, t[0], t[1], t[2]]; });
+show("source is target", () => { const t = { b: 1, 0: 2 }; return Object.assign(t, t); });
+show("source array", () => Object.assign({}, ["a", "b"]));
+show("source string", () => Object.assign({}, "ab"));
+show("several sources", () => Object.assign([], { length: 2 }, { 1: "b", 0: "a" }, { length: 1 }));
+show("typed array target", () => Array.from(Object.assign(new Uint8Array(2), { 1: 7, 0: 300 })));
+show("arguments target", () => { function f() { return Object.assign(arguments, { length: 1, 1: "b", 0: "a" }); } const a = f(9, 8, 7); return [a.length, a[0], a[1], a[2]]; });
+show("index then length on array-like with setter length", () => { const log = []; const t = { set length(v) { log.push("length"); }, set 0(v) { log.push("0"); } }; Object.assign(t, { length: 0, 0: "a" }); return log; });
+show("symbols last", () => { const s = Symbol("s"); const log = []; const t = new Proxy({}, { set(o, k, v) { log.push(typeof k === "symbol" ? "sym" : k); o[k] = v; return true; } }); Object.assign(t, { [s]: 1, b: 2, 0: 3 }); return log; });
+show("empty target copies", () => { const t = Object.assign({}, { b: 1, 3: "c", a: 2, 1: "d" }); return [Object.keys(t), JSON.stringify(t)]; });
+show("null proto target", () => Object.keys(Object.assign(Object.create(null), { b: 1, 3: "c", a: 2, 1: "d" })));
+show("class instance target", () => { class K { set 0(v) { this.z = "set0:" + v; } } const t = Object.assign(new K(), { b: 1, 0: "zero" }); return [Object.keys(t), t.z]; });
+show("warm array", () => { let r; for (let i = 0; i < 20; i++) r = Object.assign([], { length: 0, 0: "a", x: i }); return [r, r.x]; });
+
+out.join("\n")
+"##,
+        r##"array length then index: []
+array index then length: []
+array length 3 then indices: [[null,"b",null],3]
+array b then 0: [["zero"],1,1]
+order observed by setters: ["0=4","1=5","2=2","b=1","a=3","c=6"]
+order observed by proxy: ["2","10","4294967294","z","y","4294967295","-1","01","1.5"]
+result key order: ["2","10","z","y"]
+result key order onto existing: ["2","5","10","q","z","y"]
+big integer-like keys: [["0","4294967294","b","4294967295","9007199254740991","a","-5"],["0","4294967294","b","4294967295","9007199254740991","a","-5"]]
+partial write: frozen index: ["TypeError","old",null,null]
+partial write: frozen string key: ["TypeError",1,"x","y",null,0]
+partial write: non-extensible: ["TypeError",0,null,null]
+partial write: array length readonly: ["TypeError",["new"],null,null]
+partial write: inherited setter throws: ["RangeError",null,"zero",false,null]
+partial write: inherited readonly index: ["TypeError",null,"zero","ro",null]
+source is target: {"0":2,"b":1}
+source array: {"0":"a","1":"b"}
+source string: {"0":"a","1":"b"}
+several sources: ["a"]
+typed array target: [44,7]
+arguments target: [1,"a","b",7]
+index then length on array-like with setter length: ["0","length"]
+symbols last: ["0","b","sym"]
+empty target copies: [["1","3","b","a"],"{\"1\":\"d\",\"3\":\"c\",\"b\":1,\"a\":2}"]
+null proto target: ["1","3","b","a"]
+class instance target: [["z","b"],"set0:zero"]
+warm array: [[],19]"##,
+    );
+}
+
+/// The checks of the review that found these, as they were written, with
+/// what they print gathered: each passes. (The one of another realm needs
+/// a second realm, which the embedding has none of: it is held where the
+/// engine has one, in `nova_vm`.)
+#[test]
+fn the_checks_of_the_optimization_review_pass() {
+    let (mut engine, _) = engine();
+    let script = concat!(
+        "var lines = []; function print(line) { lines.push(String(line)); }\n",
+        r##"const output = typeof print === "function" ? print : __emit;
+
+function check(name, actual, expected) {
+  const observed = JSON.stringify(actual);
+  const wanted = JSON.stringify(expected);
+  output((observed === wanted ? "PASS " : "FAIL ") + name
+    + "  observed " + observed + "  expected " + wanted);
+}
+
+function getReceiver() { "use strict"; return this; }
+function plainCall(object, value) {
+  object.p ||= value;
+  return getReceiver() === object;
+}
+const receiver = { p: "present" };
+check("strict plain call", [plainCall(receiver, 1), plainCall(receiver, 1)], [false, false]);
+
+function classField() {
+  class C {
+    marker = 37;
+    read = () => this.marker;
+    constructor() {}
+  }
+  return new C().read();
+}
+check("class field receiver", classField(), 37);
+
+function loop(i) {
+  let turns = 0;
+  for (; i >= i; i--) {
+    if (++turns === 3) break;
+  }
+  return turns;
+}
+check("loop comparing the updated slot to itself", loop(0), 3);
+
+function readIndex(object) { return object[0]; }
+for (const operation of ["push", "fill"]) {
+  const proto = operation === "fill" ? new Array(1) : [];
+  const child = {};
+  Object.setPrototypeOf(child, proto);
+  const before = readIndex(child);
+  if (operation === "push") proto.push("v");
+  else proto.fill("v");
+  check("inherited index after " + operation, [before, readIndex(child)], [undefined, "v"]);
+}
+
+const target = Object.assign([], { length: 0, 0: "a" });
+check("Object.assign index before length", target, []);
+
+if (typeof __nova__ !== "undefined") {
+  const foreign = __nova__.createRealm();
+  const array = foreign.eval("[]");
+  let observed = 0;
+  Object.defineProperty(foreign.Array.prototype, "0", {
+    configurable: true,
+    set(value) { observed = value; }
+  });
+  foreign.Array.prototype.push.call(array, 7);
+  check("cross-realm inherited setter", [observed, array.length, Object.hasOwn(array, "0")], [7, 1, false]);
+}
+"##,
+        "\nlines.join('\\n')"
+    );
+    let Ok(Completion::String(value)) = engine.evaluate(script, false) else {
+        panic!("the checks do not run");
+    };
+    let value = std::string::String::from_utf8(value).expect("text");
+    let lines: Vec<&str> = value.lines().collect();
+    assert_eq!(lines.len(), 6, "{value}");
+    for line in lines {
+        assert!(line.starts_with("PASS "), "{line}");
+    }
+}
