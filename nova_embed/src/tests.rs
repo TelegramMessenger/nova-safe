@@ -18614,3 +18614,116 @@ long run=2100048"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// Two Strings are found the same or not at once, before the steps that
+/// ask what kinds of values they are: by `===`, `==`, Object.is, a
+/// `switch`, the searches of an Array and the keys of a Map and a Set.
+/// Strings of every length around what a Value keeps in itself, each made
+/// in five ways and compared with the literal; every pair of them; a
+/// character and a word compared with constants in loops; Strings against
+/// what is no String. And `instanceof` of a function of the script reads
+/// the function's "prototype" by its cache: replaced between two tests,
+/// a number, of a bound function, with a method of its own for the test,
+/// in a hierarchy of classes, and of what is no function. What is
+/// expected is what Node prints for the same script.
+#[test]
+fn two_strings_are_compared_at_once_and_instanceof_reads_the_prototype_as_it_is() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(strings_compared_and_instanceof)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn strings_compared_and_instanceof() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+// Strings of every length around what a Value keeps in itself, made in different ways.
+var texts = ['', 'a', 'ab', 'abcdefg', 'abcdefgh', 'abcdefghi', 'item999', 'item1000', 'é', 'ééé', 'éééé', '\u{1F600}', 'a\u0000b', '0', '-0', 'NaN', 'undefined', 'null', 'true', '1', ' 1', 'the quick brown fox jumps over the lazy dog'];
+function rebuild(s) { var r = ''; for (var i = 0; i < s.length; i++) r += s[i]; return r; }
+function viaCodes(s) { var r = []; for (var i = 0; i < s.length; i++) r.push(s.charCodeAt(i)); return String.fromCharCode.apply(null, r); }
+function viaSlice(s) { return ('xx' + s + 'yy').slice(2, 2 + s.length); }
+function viaJoin(s) { return s.split('').join(''); }
+function viaTemplate(s) { var half = s.length >> 1; return `${s.substring(0, half)}${s.substring(half)}`; }
+note('made', function () {
+  var bad = [];
+  texts.forEach(function (s, i) {
+    [rebuild, viaCodes, viaSlice, viaJoin, viaTemplate].forEach(function (make, m) {
+      var t = make(s);
+      if (!(t === s) || t !== s || !(t == s) || !Object.is(t, s) || [s].indexOf(t) !== 0 || ![s].includes(t) || [t].lastIndexOf(s) !== 0 || !new Set([s]).has(t) || new Map([[s, 1]]).get(t) !== 1) bad.push(i + ':' + m);
+    });
+  });
+  return bad.length + ' ' + texts.length;
+});
+note('table', function () {
+  var r = [];
+  for (var i = 0; i < texts.length; i++) { var row = ''; for (var j = 0; j < texts.length; j++) row += (texts[i] === texts[j] ? 1 : 0) + (texts[i] == texts[j] ? 1 : 0) + (Object.is(texts[i], texts[j]) ? 1 : 0); r.push(parseInt(row.replace(/000/g, '').length / 3)); }
+  return r.join('');
+});
+// A character compared with constants in a loop, by every operator that there is for it.
+note('characters', function () {
+  var s = '', n = [0, 0, 0, 0, 0, 0];
+  for (var i = 0; i < 300; i++) s += 'abcdefghijklmnopqrstuvwxyz0123456789 éü';
+  for (var i = 0; i < s.length; i++) { var c = s[i]; if (c === 'a' || c === 'e' || c === 'i' || c === 'o' || c === 'u') n[0]++; if (c !== ' ') n[1]++; if (c == '7') n[2]++; if (c != 'é') n[3]++; if (c === 'ab') n[4]++; if (c === 'abcdefgh') n[5]++; }
+  return n.join(',');
+});
+note('words', function () {
+  var words = [], hits = [0, 0, 0, 0];
+  for (var i = 0; i < 3000; i++) words.push('item' + i);
+  for (var i = 0; i < words.length; i++) { var w = words[i]; if (w === 'item999') hits[0]++; if (w === 'item1000') hits[1]++; if (w === 'item' + (i ^ 1)) hits[2]++; if (w !== words[(i * 7) % 3000]) hits[3]++; }
+  return hits.join(',') + ' ' + words.indexOf('item2500') + ' ' + words.indexOf('item') + ' ' + words.includes('item12') + ' ' + words.includes('missing') + ' ' + words.lastIndexOf('item7') + ' ' + words.indexOf('item' + 1234);
+});
+// Strings against what is no String: nothing is equal that was not, and nothing is searched for differently.
+note('mixed', function () {
+  var values = ['1', 1, '0', 0, -0, '', null, undefined, NaN, 'NaN', true, 'true', 1n, '1n', [1], { toString: function () { return '1'; } }, Symbol.for('1')], r = [];
+  values.forEach(function (x) { var row = ''; values.forEach(function (y) { var loose; try { loose = x == y ? 1 : 0; } catch (e) { loose = 'x'; } row += (x === y ? 1 : 0) + '' + loose + (Object.is(x, y) ? 1 : 0); }); r.push(row.replace(/000/g, '.')); });
+  return r.join(' ');
+});
+note('searches', function () { var a = ['1', 1, 'NaN', NaN, '', 0, -0, null, 'null', undefined, 'x'.repeat(40), 'x'.repeat(40) + 'y']; return [a.indexOf('1'), a.indexOf(1), a.indexOf(NaN), a.includes(NaN), a.indexOf(''), a.indexOf(-0), a.includes('null'), a.indexOf(null), a.indexOf('x'.repeat(40)), a.indexOf('x'.repeat(39) + 'x' + 'y'), a.lastIndexOf('1'), a.includes('x'.repeat(41))].join(','); });
+note('switch', function () { function kind(s) { switch (s) { case 'a': return 1; case 'abcdefgh': return 2; case 'item1000': return 3; case '': return 4; case 1: return 5; default: return 0; } } return ['a', 'abcdefgh', 'item' + 1000, '', 1, '1', 'b', 'abcdefg' + 'h', rebuild('a')].map(kind).join(''); });
+note('keys', function () { var m = new Map(), s = new Set(); for (var i = 0; i < 2000; i++) { m.set('k' + i, i); s.add('k' + (i % 100)); } var sum = 0; for (var i = 0; i < 2000; i++) sum += m.get('k' + i) + (s.has('k' + i) ? 1 : 0); return sum + ' ' + m.size + ' ' + s.size + ' ' + m.has('k') + ' ' + s.has('k100'); });
+// instanceof: the function's "prototype" as it is at each test.
+function P() {} function Q() {} Q.prototype = Object.create(P.prototype);
+note('instanceof', function () {
+  var p = new P(), q = new Q(), r = [];
+  for (var i = 0; i < 3; i++) r.push((p instanceof P) + '' + (q instanceof P) + (q instanceof Q) + (p instanceof Q) + ({} instanceof P) + (1 instanceof P) + ('s' instanceof P) + (null instanceof P) + (P instanceof Function) + (Object.create(null) instanceof Object));
+  var old = P.prototype; P.prototype = {}; r.push((p instanceof P) + '' + (q instanceof P) + (new P() instanceof P)); P.prototype = old; r.push(p instanceof P);
+  return r.join(' ');
+});
+note('instanceof oddities', function () {
+  var r = [];
+  function N() {} N.prototype = 5; try { r.push({} instanceof N); } catch (e) { r.push(e.name); } try { r.push(1 instanceof N); } catch (e) { r.push(e.name); }
+  var bound = P.bind(null); r.push(new P() instanceof bound, new bound() instanceof P);
+  var custom = { [Symbol.hasInstance]: function (v) { return v === 7; } }; r.push(7 instanceof custom, 8 instanceof custom);
+  class A {} class B extends A {} class C extends B { static [Symbol.hasInstance](v) { return 'always'; } } r.push(new B() instanceof A, new A() instanceof B, 1 instanceof C, new C() instanceof B);
+  var proxy = new Proxy(new P(), {}); r.push(proxy instanceof P);
+  try { r.push({} instanceof {}); } catch (e) { r.push(e.name); } try { r.push({} instanceof (function () {}).bind().bind()); } catch (e) { r.push(e.name); }
+  var arrow = function () { return 1; }; arrow.prototype = P.prototype; r.push(new P() instanceof arrow, [] instanceof Array, [] instanceof Object, (function () {}) instanceof Function, new Date(0) instanceof Date, /x/ instanceof RegExp, new Map() instanceof Map, Object(1) instanceof Number);
+  return r.join(',');
+});
+note('instanceof in a loop', function () { var things = [new P(), new Q(), {}, [], 1, 's', null, function () {}], n = 0; for (var i = 0; i < 40000; i++) { var t = things[i & 7]; if (t instanceof P) n += 1; if (t instanceof Q) n += 10; if (t instanceof Array) n += 100; if (t instanceof Object) n += 1000; } return n; });
+out.join("\n")"##;
+    let expected = r##"made=0 22
+table=0110110110110110110110
+characters=1500,11400,300,11400,0,0
+words=1,1,0,2994 2500 -1 true false 7 1234
+mixed=11101........001.001.001001.0 010111........01.001.001001.0 ..11101001............0 ..01011111001...........0 ..01011011101...........0 ...010010111........... ......11101.........0 ......010111......... ........001........ .........111....... 01001........0111.01.001001.0 ...........111..... 01001........001.0111.01001.0 .............111... 01001........001.001.0111.. 01001........001.001..0111. ................111
+searches=0,1,-1,true,4,5,true,7,10,11,0,false
+switch=123450021
+keys=1999100 2000 100 false false
+instanceof=truetruetruefalsefalsefalsefalsefalsetruefalse truetruetruefalsefalsefalsefalsefalsetruefalse truetruetruefalsefalsefalsefalsefalsetruefalse falsefalsetrue true
+instanceof oddities=TypeError,false,true,true,true,false,true,false,true,true,true,TypeError,false,true,true,true,true,true,true,true,true
+instanceof in a loop=25560000"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
