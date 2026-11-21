@@ -1180,7 +1180,7 @@ fn text_joined_on_reading_counts_against_the_memory_limit() {
     );
     // More of them than the limit has room for cost little to make, sharing
     // their pieces, but cannot all be read: the joins stop at the limit,
-    // and with them the engine.
+    // and with them the script.
     let mut engine = fatal(8 << 20);
     let made = engine.evaluate(
         "var keep = []; var s = 'x'.repeat(300); for (var i = 0; i < 3000; i++) { s += 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'; keep.push(s); } keep.length",
@@ -1199,13 +1199,13 @@ fn text_joined_on_reading_counts_against_the_memory_limit() {
             Err(Error::OutOfMemory)
         );
         // What stopped it is the host's poll, which finds the heap over
-        // its limit by the texts joined so far and ends the script, or a
-        // join that the limit has no room for, which ends the engine: the
-        // poll comes within a bounded run of instructions, and mostly
-        // first.
+        // its limit by the texts joined so far, or the call that is given
+        // a text which the limit has no room to join: either ends the
+        // script, and the engine goes on.
+        assert!(engine.dead_reason().is_none());
         assert!(matches!(
             engine.evaluate("1", false),
-            Ok(Completion::Number(_)) | Err(Error::Dead(_)) | Err(Error::OutOfMemory)
+            Ok(Completion::Number(_)) | Err(Error::OutOfMemory)
         ));
     }
     // A text of half the limit is built and read: the pieces and the joined
@@ -21526,4 +21526,125 @@ fn a_script_entered_after_the_limit_ended_one_is_collected_before_it_is_judged()
         Ok(Completion::Number(150000.0))
     );
     assert!(engine.memory_used() < 4 << 20);
+}
+
+/// Texts that share their pieces cost little to make and all of their
+/// length to read. Where a script gives more of them to a function than
+/// the memory limit leaves room to read, the call is refused as an
+/// allocation that the limit has no room for is: with a RangeError that
+/// the script can catch, after which it and the engine go on, or by
+/// ending the script with OutOfMemory where that is what a refusal does.
+/// The engine is not ended either way: a later call and a job that was
+/// waiting run. (Reading such texts used to stop inside what read them,
+/// which ended the engine for good, whatever a refusal was to do.)
+#[test]
+fn texts_that_the_limit_cannot_read_are_refused_and_the_engine_goes_on() {
+    // Three thousand texts of up to 90 KB, of 90 KB of pieces in all.
+    let make = "var keep = []; var s = 'x'.repeat(300); for (var i = 0; i < 3000; i++) { s += 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'; keep.push(s); } keep.length";
+    // Four hundred of them, about 14 MB to read, in one call.
+    let many = "''.concat.apply('', keep.slice(1000, 1400))";
+    let recorder = Rc::new(Recorder::default());
+    let mut engine = engine_with(recorder.clone());
+    engine.set_memory_limit(8 << 20).unwrap();
+    engine
+        .register_function("__take", 7, 0, ArgumentMode::Values)
+        .unwrap();
+    assert_eq!(engine.evaluate(make, false), Ok(Completion::Number(3000.0)));
+    assert!(engine.memory_used() < 4 << 20);
+    engine
+        .evaluate(
+            "Promise.resolve().then(function () { globalThis.later = keep[5].charCodeAt(0); });",
+            false,
+        )
+        .unwrap();
+    // Caught, by a function of the engine and by one of the host, which is
+    // not called.
+    for call in [many, "__take.apply(null, keep.slice(1000, 1400))"] {
+        let script = format!(
+            "var caught = 'none'; try {{ {call}; }} catch (e) {{ caught = e.name + ':' + (e instanceof RangeError); }} caught"
+        );
+        assert_eq!(
+            engine.evaluate(&script, false),
+            Ok(Completion::String("RangeError:true".into())),
+            "{call}"
+        );
+    }
+    assert!(recorder.calls.borrow().is_empty());
+    // Uncaught, the script ends as with any allocation that was refused.
+    assert_eq!(engine.evaluate(many, false), Err(Error::OutOfMemory));
+    assert!(engine.dead_reason().is_none());
+    // The script and the engine go on: what has room is read, by a method,
+    // by the host, as a number, in a comparison and as what a script comes
+    // to.
+    assert_eq!(
+        engine.evaluate(
+            "__take(keep[20], keep[21]); keep[10].charCodeAt(0) + keep[11].indexOf('y') + (isNaN(Number(keep[12])) ? 1 : 0) + (keep[13] < keep[14] ? 1 : 0)",
+            false
+        ),
+        Ok(Completion::Number(120.0 + 300.0 + 1.0 + 1.0))
+    );
+    {
+        let calls = recorder.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        let lengths: Vec<usize> = calls[0]
+            .1
+            .iter()
+            .map(|arg| match arg {
+                HostArg::String(text) => text.len(),
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(lengths, [300 + 30 * 21, 300 + 30 * 22]);
+    }
+    assert_eq!(
+        engine.evaluate("keep[30]", false),
+        Ok(Completion::String(
+            format!("{}{}", "x".repeat(300), "y".repeat(30 * 31)).into_bytes()
+        ))
+    );
+    // The job that was waiting runs.
+    assert_eq!(engine.run_pending_job(), Ok(true));
+    assert_eq!(
+        engine.evaluate("later", false),
+        Ok(Completion::Number(120.0))
+    );
+    // All of them read one by one: refused where the texts read since the
+    // last collection have left no room, unless the host's poll finds the
+    // heap over its limit first, which ends the script. The engine lives.
+    let read_all = "var caught = 'none'; try { for (var k = 0; k < keep.length; k++) keep[k].charCodeAt(0); } catch (e) { caught = e.name; } caught";
+    let read = engine.evaluate(read_all, false);
+    assert!(
+        read == Ok(Completion::String("RangeError".into())) || read == Err(Error::OutOfMemory),
+        "{read:?}"
+    );
+    assert!(engine.dead_reason().is_none());
+    assert_eq!(
+        engine.evaluate("keep = null; 1 + 1", false),
+        Ok(Completion::Number(2.0))
+    );
+    engine.collect_garbage().unwrap();
+    assert!(engine.memory_used() < 4 << 20);
+
+    // Where a refusal ends the script, it ends there, and no `catch` has
+    // it: with OutOfMemory, and the engine goes on.
+    let mut engine = fatal(8 << 20);
+    assert_eq!(engine.evaluate(make, false), Ok(Completion::Number(3000.0)));
+    assert_eq!(
+        engine.evaluate(
+            &format!("try {{ {many}; }} catch (e) {{ }} globalThis.ran = 1;"),
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    assert!(engine.dead_reason().is_none());
+    assert_eq!(
+        engine.evaluate("typeof ran + ':' + keep[3].charCodeAt(0)", false),
+        Ok(Completion::String("undefined:120".into()))
+    );
+    assert_eq!(engine.evaluate(read_all, false), Err(Error::OutOfMemory));
+    assert!(engine.dead_reason().is_none());
+    assert_eq!(
+        engine.evaluate("keep = null; 1 + 1", false),
+        Ok(Completion::Number(2.0))
+    );
 }
