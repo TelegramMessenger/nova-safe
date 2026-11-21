@@ -2708,6 +2708,42 @@ operand read once, and the value wherever a value goes; with either jump taken t
 jumps of two operators exchanged, or null taken for a value by `??`, it fails. (The register
 emptied where the jump is not taken is not seen by anything: `b` writes it next.)
 
+`if (x)` of a variable in a stack slot was two instructions, the slot read into the result
+register and the jump on what the register holds, where the comparison of such a variable with a
+constant has long been one (`if (n < 4)` with its `else` is 44 machine instructions more than the
+assignment alone; `if (n)` was 107, QuickJS 36). It is one now, for `if (x)`, `while (x)`,
+`x ? a : b`, `!x` and each operand that is a local in a test joined by `&&` or `||`: JumpIfIndexNot
+and JumpIfIndexTrue, whose arm reads the slot, answers what a tested variable mostly holds where
+it stands (a Boolean, undefined, null, an integer, an object) and asks ToBoolean for anything
+else. `if (n)` is 76 instructions for 107, of null or undefined 40 for 85, of an object 66 for 107
+(QuickJS 69), `if (a && b)` 113 for 186 (95), a `while (k)` of three turns 819 for 944; a String
+or a double is the read shorter, 18. (With ToBoolean called for everything but a Boolean the
+instruction was 64 machine instructions for an integer, a third of them the call; answered in the
+arm, a Boolean is five longer than it was so, by the jump on the kind.) The case of the suite that
+tests values retires 2.5% less, and twenty-two others what they did (each within 0.25%).
+
+The instruction leaves the result register empty, as the two it stands for left it: by that the
+value of `'first'; if (q) { }` is undefined and not `'first'`, which the test asks. Every loop
+whose test is a local is compiled with the test before the body and a jump forward out of it, and
+goes back by a plain jump, so as the code is compiled today this instruction never jumps back;
+the lines that say so if it does (every jump of the loop has them: that is where the interrupt is
+asked and the heap collected) are kept, and no script can tell them from their absence.
+
+The test has a value of every kind tested eighteen ways (each form of statement, as a `let`, a
+`const`, the second parameter and the ninth) against Boolean; one local holding every kind in
+turn; a missing argument and a variable not yet assigned; a `let` and a `const` tested before
+their declarations, which throw as before; the value of statements that test and do nothing
+more; a list walked by its links, a count run down, a text eaten; tests nested and joined;
+locals that are in no stack slot; a generator and a `finally`. A second has the loops that a
+local ends interrupted, and one that leaves 60 MB behind it run in 16. With any of these they
+fail: the jump taken the other way, in the loop or where it is compiled; zero taken for true, or
+a negative integer for false; undefined and null taken for true; an object or a Boolean taken for
+its opposite; whatever the arm does not answer itself taken for true; the register left as it
+was; the slot read from the other argument. They pass with the fusion not made, and with the read
+of the local left before it, which change nothing but the time. (The loops of the script that the
+tested local ends have a count beside it that ends them too: with the jump taken the other way a
+`while (q) { }` of the first draft never ended.)
+
 `base ** exponent` left the loop for every pair of operands, and Number::exponentiate asked the
 two Numbers what they are step by step (whether NaN, a zero of either sign, an infinity, an odd
 integer: each step asking again of which kind the Number is, and reading a Number of the heap
