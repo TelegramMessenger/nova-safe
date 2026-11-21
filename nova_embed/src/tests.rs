@@ -19832,3 +19832,81 @@ strict=true,true,false,true,true,false"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `p.x += 1` of a local `p`, with a value that is a constant, a local or
+/// arithmetic of them, reads the property and assigns it by the slot of
+/// `p`, with no Reference made, as `p.x += p.vx` already did; where the
+/// value assigns to `p` the object is kept on the stack as before. Every
+/// compound operator with a constant and with a local; values that are
+/// computed, and of every kind; a getter and a setter in their order,
+/// once each; a property that cannot be written, in sloppy and strict
+/// code; inherited accessors and values; a Proxy's traps; a base that is
+/// no object; the object changed by the value; a property made or
+/// removed in between; an Array's length; objects that are in no stack
+/// slot; the value of the assignment; many turns. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn a_compound_assignment_to_a_property_of_a_local_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(properties_of_locals_assigned_compoundly)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn properties_of_locals_assigned_compoundly() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'string') return '"' + v + '"'; if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).map(function (k) { return k + ':' + fmt(v[k]); }).join(',') + '}'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+// Every operator, with a value that is a constant, a local, and arithmetic of them.
+note('operators with a constant', function () { var p = { a: 7, b: 7, c: 7, d: 7, e: 7, f: 2, g: 7, h: -7, i: -7, j: 7, k: 7, l: 7 }; p.a += 3; p.b -= 3; p.c *= 3; p.d /= 2; p.e %= 4; p.f **= 5; p.g <<= 2; p.h >>= 1; p.i >>>= 28; p.j &= 5; p.k |= 8; p.l ^= 2; return p; });
+note('operators with a local', function () { var p = { a: 7, b: 7, c: 7, d: 7, e: 7, f: 2, g: 7, h: -7, i: -7, j: 7, k: 7, l: 7 }, v = 3, w = 2.5; p.a += v; p.b -= w; p.c *= v; p.d /= w; p.e %= v; p.f **= v; p.g <<= v; p.h >>= v; p.i >>>= v; p.j &= v; p.k |= v; p.l ^= v; return p; });
+note('values that are computed', function () { var p = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 'g', h: 8 }, v = 4, w = 0.5, t = true; p.a += v * 2 + 1; p.b -= -v; p.c *= v - w; p.d += !t; p.e += ~v; p.f += t ? v : w; p.g += v + 'x'; p.h += (v || w) + (t && 1) + (null ?? 2); return p; });
+note('values of every kind', function () { function plus(left, right) { var p = { x: left }; try { p.x += right; return p.x; } catch (e) { return e.name; } } var lefts = [1, 0.5, 'a', '', null, undefined, true, 1n, NaN, -0], r = []; for (var i = 0; i < lefts.length; i++) { var left = lefts[i]; var p = { x: left }, q = { x: left }, s = { x: left }, t = { x: left }, u = { x: left }; try { p.x += 1; r.push(p.x); } catch (e) { r.push(e.name); } try { q.x += 'z'; r.push(q.x); } catch (e) { r.push(e.name); } try { s.x -= 0.5; r.push(s.x); } catch (e) { r.push(e.name); } try { t.x += 1n; r.push(t.x); } catch (e) { r.push(e.name); } try { u.x *= -1; r.push(u.x); } catch (e) { r.push(e.name); } } return r; });
+// What is read and what is assigned, in their order, once each.
+note('getters and setters', function () { var log = [], store = 5; var p = { get x() { log.push('get'); return store; }, set x(v) { log.push('set ' + v); store = v; } }; p.x += 1; p.x *= 2; var v = 3; p.x -= v; p.x += v * 2; return [store, log.join(',')]; });
+note('a getter only, and a value that cannot be written', function () { var p = { get x() { return 1; } }, q = Object.freeze({ x: 1 }), r = {}; Object.defineProperty(r, 'x', { value: 1, writable: false }); p.x += 1; q.x += 1; r.x += 1; var strict = (function () { 'use strict'; var s = Object.freeze({ x: 1 }), res = []; try { s.x += 1; res.push('set'); } catch (e) { res.push(e.name); } var g = { get x() { return 1; } }; try { g.x += 1; res.push('set'); } catch (e) { res.push(e.name); } return res; })(); return [p.x, q.x, r.x, strict]; });
+note('inherited', function () { var log = []; var proto = { get x() { log.push('g'); return 10; }, set x(v) { log.push('s' + v); }, y: 1 }; var p = Object.create(proto); p.x += 1; p.y += 1; p.z += 1; return [Object.keys(p).join(), p.y, proto.y, String(p.z), log.join('')]; });
+note('through a Proxy', function () { var log = []; var p = new Proxy({ x: 1 }, { get: function (t, k) { log.push('get ' + String(k)); return t[k]; }, set: function (t, k, v) { log.push('set ' + String(k) + ' ' + v); t[k] = v; return true; } }); p.x += 5; var v = 2; p.x *= v; return [p.x, log.join(',')]; });
+note('what is no object', function () { var r = []; var n = 5; n.x += 1; r.push(n, String(n.x)); var s = 'abc'; s.length += 1; r.push(s.length); var u; try { u.x += 1; r.push('set'); } catch (e) { r.push(e.name); } var nul = null; try { nul.x -= 1; r.push('set'); } catch (e) { r.push(e.name); } var strict = (function () { 'use strict'; var m = 5; try { m.x += 1; return 'set'; } catch (e) { return e.name; } })(); r.push(strict); return r; });
+note('the object changed by the value', function () { var a = { x: 1 }, b = { x: 100 }, p = a; p.x += (p = b, 1); var q = a, r = []; q.x += (q = b, q.x); r.push(a.x, b.x, p === b, q === b); var s = a; s.x += s === a ? 10 : 20; r.push(a.x); var t = a; t.x += (function () { t = b; return 1; })(); r.push(a.x, b.x, t === b); return r; });
+note('a property made or removed in between', function () { var p = { get x() { delete this.y; this.z = 5; return 1; }, set x(v) { this.got = v; }, y: 2 }; p.x += 1; var q = { n: 1 }; q.m += 1; q.n += 1; delete q.n; q.n += 1; return [Object.keys(p).join(), p.got, String(q.m), String(q.n)]; });
+note('arrays and their length', function () { var a = [1, 2, 3]; a.length -= 1; a.length += 2; var b = [1, 2, 3]; b.length *= 0; var c = [1]; c.extra += 1; return [a.length, a.join(), b.length, String(c.extra)]; });
+// The object in other places than a slot of the stack.
+var topObject = { x: 1 };
+note('other objects', function () { var outer = { x: 1 }, list = [{ x: 1 }], n = 0; function inner() { outer.x += 1; outer.x += n; return outer.x; } function par(p) { p.x += 2; p.x += n + 1; return p.x; } function self() { this.x += 3; this.x *= 2; return this.x; } topObject.x += 4; list[0].x += 5; ({ x: 1 }).x += 1; return [inner(), par({ x: 1 }), self.call({ x: 1 }), topObject.x, list[0].x, (function () { var o = arguments[0]; o.x += 1; return o.x; })({ x: 1 })]; });
+note('the value of the assignment', function () { var p = { x: 1, s: 'a' }, v = 2; var a = (p.x += 1), b = (p.x *= v), c = (p.s += 'b'), d = (p.x -= v) + (p.x += v); return [a, b, c, d, p.x, (p.x += 1, p.x), [p.x += 1, p.x -= 1].join()]; });
+note('many times', function () { var p = { x: 0, y: 1, f: 0.5, s: '', n: 0 }, v = 3; for (var i = 0; i < 3000; i++) { p.x += 1; p.y *= 1.001; p.f += 0.05; p.n += v; p.n -= i & 1; if ((i & 255) === 0) p.s += i; p.x ^= i & 3; } return [p.x, p.y.toFixed(6), p.f.toFixed(4), p.s, p.n]; });
+note('with other locals written in between', function () { var p = { x: 1 }, a = 1, b = 2; p.x += a++; p.x += ++b; p.x += (a = 10); p.x += a + (b = 20); return [p.x, a, b]; });
+note('strict', function () { 'use strict'; var p = { x: 1, s: 's' }, v = 2; p.x += 1; p.x *= v; p.s += v; p.y += 1; return p; });
+out.join("\n")"##;
+    let expected = r##"operators with a constant={a:10,b:4,c:21,d:3.5,e:3,f:32,g:28,h:-4,i:15,j:5,k:15,l:5}
+operators with a local={a:10,b:4.5,c:21,d:2.8,e:1,f:8,g:56,h:-1,i:536870911,j:3,k:7,l:4}
+values that are computed={a:10,b:6,c:10.5,d:4,e:0,f:10,g:"g4x",h:15}
+values of every kind=[2,"1z",0.5,"TypeError",-1,1.5,"0.5z",0,"TypeError",-0.5,"a1","az",NaN,"a1",NaN,"1","z",-0.5,"1",-0,1,"nullz",-0.5,"TypeError",-0,NaN,"undefinedz",NaN,"TypeError",NaN,2,"truez",0.5,"TypeError",-1,"TypeError","1z","TypeError",2n,"TypeError",NaN,"NaNz",NaN,"TypeError",NaN,1,"0z",-0.5,"TypeError",0]
+getters and setters=[15,"get,set 6,get,set 12,get,set 9,get,set 15"]
+a getter only, and a value that cannot be written=[1,1,1,["TypeError","TypeError"]]
+inherited=["y,z",2,1,"NaN","gs11"]
+through a Proxy=[12,"get x,set x 6,get x,set x 12,get x"]
+what is no object=[5,"undefined",3,"TypeError","TypeError","TypeError"]
+the object changed by the value=[102,100,true,true,112,113,100,true]
+a property made or removed in between=["x,z,got",2,"NaN","NaN"]
+arrays and their length=[4,"1,2,,",0,"NaN"]
+other objects=[2,4,8,5,6,2]
+the value of the assignment=[2,4,"ab",6,4,5,"6,5"]
+many times=[3000,"20.055451","150.5000","025651276810241280153617922048230425602816",7500]
+with other locals written in between=[45,10,20]
+strict={x:4,s:"s2",y:NaN}"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
