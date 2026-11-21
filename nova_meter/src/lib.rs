@@ -36,6 +36,7 @@
 use core::{
     alloc::{GlobalAlloc, Layout},
     cell::Cell,
+    marker::PhantomData,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::alloc::System;
@@ -109,8 +110,28 @@ impl Account {
     /// Makes this the account allocations on this thread go to, until the
     /// guard is dropped (then the account before it is back: calls nest when
     /// a host function calls into another engine).
-    pub fn enter(&self) -> Entered {
-        Entered(CURRENT.with(|current| current.replace(self.0)))
+    ///
+    /// The guard holds the account, which cannot be given up (its index taken
+    /// by another engine) while it is entered:
+    ///
+    /// ```compile_fail,E0505
+    /// let account = nova_meter::Account::new();
+    /// let entered = account.enter();
+    /// drop(account);
+    /// drop(entered);
+    /// ```
+    ///
+    /// and it stays on the thread whose allocations it directs:
+    ///
+    /// ```compile_fail,E0277
+    /// let account = nova_meter::Account::new();
+    /// let entered = account.enter();
+    /// std::thread::scope(|scope| {
+    ///     scope.spawn(move || drop(entered));
+    /// });
+    /// ```
+    pub fn enter(&self) -> Entered<'_> {
+        Entered(CURRENT.with(|current| current.replace(self.0)), PhantomData)
     }
 }
 
@@ -123,9 +144,15 @@ impl Drop for Account {
 }
 
 /// An entered account ([`Account::enter`]); dropping it leaves the account.
-pub struct Entered(usize);
+/// It borrows the account, and is neither `Send` nor `Sync`: it sets the
+/// account of the thread that entered it, and puts back that thread's.
+/// Guards nest when they are dropped in the reverse order of entering (as
+/// locals are); dropped out of order, they leave the thread in the wrong
+/// account (a miscount, never more).
+#[must_use = "the account is left as soon as the guard is dropped"]
+pub struct Entered<'a>(usize, PhantomData<(&'a Account, *const ())>);
 
-impl Drop for Entered {
+impl Drop for Entered<'_> {
     fn drop(&mut self) {
         CURRENT.with(|current| current.set(self.0));
     }
