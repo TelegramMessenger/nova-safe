@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::hashing::AHashMap;
 use crate::{
     ecmascript::{
         Agent, BindingSite, CompileFunctionBodyData, FunctionAstRef, FunctionTemplate, NameKey,
@@ -297,7 +298,35 @@ impl CodeTables {
     /// once for a script that is compiled to be kept: a name is the same
     /// String wherever it is among the constants, and a site that no
     /// instruction names has the empty String whatever this says of it.
+    ///
+    /// The constants are looked through once, for where each String among
+    /// them stands first: looked through for every site, a function of
+    /// many names took the product of the two to export.
     pub(crate) fn binding_site_names(&self) -> Box<[u16]> {
+        let mut first_places: AHashMap<String<'static>, u16> = AHashMap::default();
+        for (index, constant) in self.constants.iter().enumerate() {
+            if let Ok(name) = String::try_from(constant.get()) {
+                // A place past what a site can say is none.
+                first_places
+                    .entry(name)
+                    .or_insert_with(|| u16::try_from(index).unwrap_or(u16::MAX));
+            }
+        }
+        self.binding_sites
+            .iter()
+            .map(|named| {
+                first_places
+                    .get(&named.get().name.name())
+                    .copied()
+                    .unwrap_or(u16::MAX)
+            })
+            .collect()
+    }
+
+    /// [`CodeTables::binding_site_names`] as it was worked out, a search
+    /// of the constants for every site: what the one above is held to.
+    #[cfg(test)]
+    pub(crate) fn binding_site_names_by_search(&self) -> Box<[u16]> {
         self.binding_sites
             .iter()
             .map(|named| {

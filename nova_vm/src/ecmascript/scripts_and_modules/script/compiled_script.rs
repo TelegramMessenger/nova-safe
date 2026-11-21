@@ -422,6 +422,10 @@ impl Exporter<'_> {
         let caches: Vec<_> = tables.caches().collect();
         let constants: Vec<_> = tables.constants().collect();
         let binding_site_names = tables.binding_site_names();
+        // In the tests, held to the search of the constants for every site
+        // that this was: the same place for every name.
+        #[cfg(test)]
+        assert_eq!(binding_site_names, tables.binding_site_names_by_search());
 
         let mut compiled_function_expressions = Vec::with_capacity(function_expressions.len());
         for function in function_expressions.iter() {
@@ -1049,6 +1053,47 @@ out.map(String).join('\n')
             assert!(export(source, Some(&compiled)) == compiled, "{source}");
             assert_eq!(run(source, Some(&compiled)), run(source, None), "{source}");
         }
+    }
+
+    /// The binding sites of a compiled script have their names where every
+    /// Agent finds them: functions that read and assign many variables of
+    /// the script and of the functions around them, some by one name many
+    /// times and some by many names, run from the compiled script in an
+    /// engine of their own as they run from the source. (Every export
+    /// here also holds the place of each name to what a search of the
+    /// constants gives.)
+    #[test]
+    fn binding_sites_keep_their_names_through_a_compiled_script() {
+        let mut source = std::string::String::from("var out = [];\n");
+        for index in 0..40 {
+            source += &format!("var g{index} = {index}; let l{index} = {index} * 2;\n");
+        }
+        for index in 0..40 {
+            let (next, other) = ((index + 1) % 40, (index * 7 + 3) % 40);
+            // One name many times, and names that other functions use too.
+            source += &format!(
+                "function f{index}(x) {{ g{index} = g{index} + g{next} + x; l{other} += g{index}; \
+                 return g{index} + l{other} + g{index} + g{next} + l{index}; }}\n"
+            );
+        }
+        source += "function counter(start) { var count = start, step = 1, unused = 0; \
+                   return { next: function () { count = count + step; step = step + count % 3; return count + g5 + l7; }, \
+                   reset: function (to) { count = to; step = 1; return count + step + unused; } }; }\n\
+                   var a = counter(3), b = counter(10);\n";
+        for index in 0..40 {
+            source += &format!(
+                "out.push(f{index}({index}), a.next(), b.next() + f{}(1));\n",
+                (index * 3) % 40
+            );
+        }
+        source += "out.push(a.reset(5), a.next(), typeof missing, g0, g39, l0, l39);\nout.join()";
+        let compiled = export(&source, None);
+        assert!(export(&source, Some(&compiled)) == compiled);
+        let expected = run(&source, None);
+        assert!(expected.len() > 400, "{expected}");
+        // In two engines of their own, from the one compiled script.
+        assert_eq!(run(&source, Some(&compiled)), expected);
+        assert_eq!(run(&source, Some(&compiled)), expected);
     }
 
     #[test]
