@@ -4,7 +4,10 @@
 
 //! An estimate of the bytes the heap holds, for the heap limit.
 
-use core::mem::{size_of, size_of_val};
+use core::{
+    mem::{size_of, size_of_val},
+    num::Saturating,
+};
 
 use super::Heap;
 use crate::ecmascript::{GeneratorState, PropertyKey, Value};
@@ -18,7 +21,11 @@ impl Heap {
     /// ArrayBuffer data. Called after a garbage collection, when the vectors
     /// only hold live data.
     pub(crate) fn estimate_live_bytes(&self) -> usize {
-        let mut total = 0usize;
+        // Added up without wrapping: the texts of built strings count in
+        // full though they share their pieces, so their sum is no memory
+        // that is there, and is more than an address has bits for where
+        // that is 32. A total that wrapped was a heap found small.
+        let mut total = Saturating(0usize);
         total += self.arrays.len() as usize * 16;
         total += vec_bytes(&self.array_iterators);
         total += vec_bytes(&self.async_generators);

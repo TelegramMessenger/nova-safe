@@ -460,6 +460,17 @@ impl BuiltText {
     }
 }
 
+/// What a built text of `len` bytes counts for against the heap limit, with
+/// the one buffer it was joined into where it was: its text, the buffer and
+/// its record. The texts of built strings are no memory that is there (one
+/// that doubles itself thirty times over has a gigabyte of text in a few
+/// pieces), and what they come to is not let wrap: the same text again
+/// came to a few bytes where an address has 32 bits.
+fn built_text_counted_bytes(len: usize, joined: bool) -> usize {
+    len.saturating_add(if joined { len } else { 0 })
+        .saturating_add(core::mem::size_of::<BuiltText>())
+}
+
 impl StringRecord {
     /// The maximum UTf-16 length of a JS string, according to the spec (2^53 - 1);
     /// on a 32-bit target, what a `usize` can hold.
@@ -767,12 +778,7 @@ impl StringRecord {
     pub(crate) fn counted_bytes(&self) -> usize {
         match &self.data {
             StringBuffer::Built(text) => {
-                let joined = if text.joined.get().is_some() {
-                    text.len
-                } else {
-                    0
-                };
-                text.len + joined + core::mem::size_of::<BuiltText>()
+                built_text_counted_bytes(text.len, text.joined.get().is_some())
             }
             _ => self.len(),
         }
@@ -1306,6 +1312,29 @@ mod tests {
     /// a loop that builds a text again makes, at every step, the string it
     /// made before. Texts are compared by their pieces: none is joined for
     /// it, however they were put together.
+    /// What built texts count for is added up without wrapping: a text of
+    /// nearly all that an address can count, with the buffer it was joined
+    /// into, is that much and not a few bytes.
+    #[test]
+    fn the_bytes_a_built_text_counts_for_do_not_wrap() {
+        use super::{BuiltText, built_text_counted_bytes};
+        let record = core::mem::size_of::<BuiltText>();
+        assert_eq!(built_text_counted_bytes(0, false), record);
+        assert_eq!(built_text_counted_bytes(1000, false), 1000 + record);
+        assert_eq!(built_text_counted_bytes(1000, true), 2000 + record);
+        let half = usize::MAX / 2;
+        assert_eq!(built_text_counted_bytes(half, false), half + record);
+        assert_eq!(built_text_counted_bytes(half, true), usize::MAX);
+        assert_eq!(built_text_counted_bytes(half + 1, true), usize::MAX);
+        assert_eq!(built_text_counted_bytes(usize::MAX - 1, false), usize::MAX);
+        assert_eq!(built_text_counted_bytes(usize::MAX, true), usize::MAX);
+        // As where an address has 32 bits: two texts of three quarters of
+        // what it counts.
+        let quarter = (u32::MAX / 4) as usize;
+        let two = built_text_counted_bytes(3 * quarter, true);
+        assert!(two >= 6 * quarter && two > u32::MAX as usize / 2);
+    }
+
     #[test]
     fn built_texts_are_compared_without_being_joined() {
         let hasher = TextHasher::new();

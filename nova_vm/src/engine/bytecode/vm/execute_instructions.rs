@@ -3487,6 +3487,16 @@ fn concat_short_text<'gc>(
     Some(agent.heap.alloc_wtf8(text).bind(gc))
 }
 
+/// The bytes of a text with `part` more bytes after `bytes`: added up
+/// without wrapping. The lengths of built strings are no memory that is
+/// there, and a few of them come to more than an address counts where it
+/// has 32 bits; a few bytes added to a total that had been brought to the
+/// top came to a few bytes, a text that nothing was asked for.
+#[inline(always)]
+fn text_bytes(bytes: usize, part: usize) -> usize {
+    bytes.saturating_add(part)
+}
+
 /// The Strings that a chain of `+` or a template literal left on the stack,
 /// as one String. Strings that are not being built are put together at once,
 /// with no String made of those before them. One that is being built takes
@@ -3507,10 +3517,10 @@ fn concat_strings<'gc>(
     let mut being_built = false;
     for value in values {
         match string_part(*value) {
-            String::SmallString(part) => bytes += part.len(),
+            String::SmallString(part) => bytes = text_bytes(bytes, part.len()),
             String::String(part) => {
                 let record = part.get(agent);
-                bytes = bytes.saturating_add(record.len());
+                bytes = text_bytes(bytes, record.len());
                 being_built |= record.is_being_built();
             }
         }
@@ -4503,4 +4513,31 @@ fn handle_get_value_break<'a>(
         },
         gc,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::text_bytes;
+
+    /// The bytes of the parts of a concatenation are added up without
+    /// wrapping, whatever the order of long parts and short ones.
+    #[test]
+    fn the_bytes_of_a_concatenation_do_not_wrap() {
+        assert_eq!(text_bytes(0, 0), 0);
+        assert_eq!(text_bytes(3, 4), 7);
+        let long = usize::MAX / 3 + 1;
+        let lengths = [long, long, long, 3, 7];
+        let total = lengths
+            .iter()
+            .fold(0, |bytes, &part| text_bytes(bytes, part));
+        assert_eq!(total, usize::MAX);
+        let total = lengths
+            .iter()
+            .rev()
+            .fold(0, |bytes, &part| text_bytes(bytes, part));
+        assert_eq!(total, usize::MAX);
+        assert_eq!(text_bytes(usize::MAX, 1), usize::MAX);
+        assert_eq!(text_bytes(usize::MAX - 7, 7), usize::MAX);
+        assert_eq!(text_bytes(usize::MAX - 8, 7), usize::MAX - 1);
+    }
 }
