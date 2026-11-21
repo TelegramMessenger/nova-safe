@@ -635,6 +635,39 @@ fn accounts_do_not_drift_between_engines() {
     }
 }
 
+/// A host function's name is interned for the process and kept for good,
+/// on no engine: the engine that registers a name first counts what one
+/// that registers it after counts.
+#[test]
+fn a_host_function_name_counts_on_no_engine() {
+    let registered = |name: &str| {
+        let engine = quiet_engine(0);
+        let before = unsafe { nova_engine_memory_used(engine) };
+        let mut out = blank();
+        assert_eq!(
+            unsafe {
+                nova_engine_register(
+                    engine,
+                    name.as_ptr(),
+                    name.len(),
+                    0,
+                    1,
+                    NOVA_ARGS_VALUES,
+                    &mut out,
+                )
+            },
+            NOVA_OK
+        );
+        unsafe { nova_result_free(&mut out) };
+        let after = unsafe { nova_engine_memory_used(engine) };
+        unsafe { nova_engine_free(engine) };
+        after - before
+    };
+    let name = "a_name_only_the_meter_test_registers";
+    let first = registered(name);
+    assert_eq!(registered(name), first);
+}
+
 /// A script that builds the same text again, step by step, makes at every
 /// step the string it made the time before, and the string table finds it.
 /// Finding it joined both texts, the whole text copied at every step: with

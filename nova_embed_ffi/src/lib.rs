@@ -181,6 +181,11 @@ impl Host for CHost {
         self.account.bytes()
     }
 
+    fn for_the_process(&self, work: &mut dyn FnMut()) {
+        let _process = Account::uncounted().enter();
+        work();
+    }
+
     fn local_time_zone_offset(&self, epoch_seconds: i64) -> i32 {
         match self.time_zone.get() {
             // SAFETY: `nova_engine_set_time_zone` requires the function to

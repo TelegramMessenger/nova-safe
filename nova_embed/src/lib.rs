@@ -83,6 +83,15 @@ pub trait Host {
     fn allocated_bytes(&self) -> Option<usize> {
         None
     }
+
+    /// Runs `work`, which allocates what the process keeps for every engine
+    /// (a host function's name, interned once and never freed). An embedder
+    /// that counts each engine's allocations runs it off this engine's count:
+    /// kept for good, those bytes would stay on whichever engine came first,
+    /// and on the next engine its count is handed to. The default runs it.
+    fn for_the_process(&self, work: &mut dyn FnMut()) {
+        work();
+    }
 }
 
 /// Limits fixed when the engine is created.
@@ -289,7 +298,11 @@ impl Engine {
                 "more than {MAX_HOST_FUNCTIONS} host functions"
             )));
         };
-        let Some(static_name) = names::intern(name) else {
+        let mut interned = None;
+        self.shared
+            .host
+            .for_the_process(&mut || interned = names::intern(name));
+        let Some(static_name) = interned else {
             return Err(Error::Invalid(
                 "a host function name must be 1 to 64 bytes".to_owned(),
             ));
