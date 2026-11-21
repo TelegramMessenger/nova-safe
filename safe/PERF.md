@@ -1371,6 +1371,35 @@ and goes as before. A loop of `typeof v === "number"` tests went from 9.7 to 8.0
 (`loop/typeof-and-truthy`, 1.52x to 1.28x), and the plain loops and the calls are where they were:
 this arm, unlike the one for `yield` (the defects), moved nothing.
 
+`typeof v === "number"` was still two instructions and a String: Typeof put the name of the type in
+the result register, and the comparison with the constant read the two Strings to find them the
+same. The profile of every case of the interpreter showed the two at 30% of
+`loop/typeof-and-truthy`: the operator is one jump by the kind of the value, which the processor
+does not guess where the kinds change every turn. Where the constant names a type, the comparison
+that jumps is now of the value's type itself: the same instruction
+(`JumpIfResultComparesWithConstant`) with two more of its comparisons, the type and not the type,
+whose second argument is the type in place of a constant, and no Typeof before it. The type of a
+primitive is told by the kind of the value; "object" and "function" by the operator, which asks an
+object whether it is called. `==` and `!=` of `typeof` and such a constant are the same test, two
+Strings being loosely equal where they are strictly equal. What Typeof takes as a Reference (a name
+that may not be bound, a property) the instruction takes the same way: it leaves it to the general
+way, which is Typeof and the comparison as they were. A test whose value is used
+(`var isNumber = typeof v === "number"`), the name on the left, and a `switch` on `typeof` are as
+before.
+
+`loop/typeof-and-truthy` retires 16.8% fewer instructions and is 0.83x for 1.05x with the two
+engines run in turn. By the price list nothing else moved: a call with no argument is 478.9
+instructions for 479.3, the plain loop 212.9 for 214.0. The test has every type by every operator
+on seventy values of every kind, the tests of `if`, `?:`, `&&`, `||` and the three loops, Strings
+that name no type, a value that is itself the name of a type compared with no `typeof`, what goes
+as a Reference with something computed just before it, and the value of a statement that ends in
+the test, which is what the instruction leaves in the result register. With any of these it
+fails: a Reference not left to the general way, a kind of value left out of a type, the jump the
+other way in the loop or in the general way, another type's name there, the register not emptied,
+a constant taken for the name of a type that only starts like one, or the comparison made of a
+value that no Typeof was before. (Three of them made a loop of the first script endless, which
+fails nothing in a time anyone waits: its loops now end by a count too.)
+
 The call of a closure is the second worst case now (`call/closure`, 2.7x), and nothing single is
 left in it to take out. Its body is eight instructions. Entering the function is a fifth of the time
 in some twenty pieces of 1-2% each (the execution context pushed, the stacks exchanged, the
