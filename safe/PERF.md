@@ -2772,6 +2772,50 @@ base with an exponent that is no integer, which `pow` answers NaN as well here),
 the loop leaving every power to the general way, which gives the same. The steps that `pow`
 would also answer stay as the specification has them, for a library that answers otherwise.
 
+The quotient of two integers was a quotient of doubles, whatever the integers: the two were made
+doubles and divided, and the result was asked what every double is asked (whether it is a Number
+of the heap, whether whole, in the range of the integers, not -0) before it was the integer that
+`n / 2` is for every other `n`. `i / 1` was 76 instructions more than `i & 7` (QuickJS 12),
+`(i & 6) / 2` 138 more (33), `(i + n) / 2` 162 more (41).
+
+Two integers that divide give their quotient as the integer it is now, where the division is one
+of the instructions that have the operator as an argument (a local or the value just worked out,
+by a constant or by the value just worked out: `i / 2`, `(a + b) / 2`, `n / (i + 1)`, `x /= 4`).
+Those ask whether their operands are two integers whatever the operator is, and the division was
+the one operator that then had nothing for them. A zero divisor, two integers that do not divide,
+and zero by a negative divisor, which is -0, go on to the doubles as before. A division that comes
+out even is 9 instructions more than `i & 7` for 76, and one that does not 6 more than it was (the
+division that was tried): `i / 2` 41 for 72 with `i` even and odd in turn, `(i & 6) / 2` 70 for
+138, `i / 3` 54 for 73, `(i + n) / 2` 129 for 162, `(i & 7) * 5 / n` 154 for 224,
+`Math.floor(i / 3)` 476 for 495.
+
+Three other shapes were measured and dropped, and each says something of the loop. A quotient that
+does not come out even, kept in the Value where its bits are few (the halves and the quarters),
+made in the same place: `i / 2` was 18 instructions; but a second kind of value leaving the code
+that all the operators on two integers share made each of them two to four instructions longer
+(`i & 7`, `i + n`, `i * n`), and a loop of nothing else a hundredth. The two integers divided in
+the function that operates on doubles, in its arm for the division: nothing else moved, and the
+division was eleven instructions longer than it had been (83 for 72), the function keeping a
+frame where it kept none. And the same try in the arm of the division that has no operator as an
+argument (`a.x / b.y`, `0.25 / (i + 1)`): every division of doubles there was nine instructions
+longer, and every one of two integers that do not divide fifteen. That arm asks for nothing but
+the doubles, as it did before (`divide_numbers`); a case that divides a double in every turn
+would have been 1.5% longer.
+
+As it is, twenty-one cases of every kind retire what they did (each within 0.17%), and of the
+loops of one operation only `i + 7` is longer, by one instruction of 182. The test has each of
+the four instructions with pairs of every kind (integers that divide and that do not, of every
+sign, the ends of the safe integers, zero as the dividend and as the divisor, doubles, the
+infinities, NaN, -0 and what is no Number), the quotient used as a key, an index, a length and
+a count, and found as the Number it is in a Map, a Set and an Array, and two grids, one against
+the remainder and the product and one against the same division made of doubles. With any of
+these it fails: zero by a negative divisor given as the integer zero, or zero by a positive one
+left to the doubles in its place; two integers that do not divide given their quotient cut short;
+the operands exchanged, among the integers or among the doubles; the quotient with its sign
+changed; a zero divisor not asked for (the engine stops). Which way a division goes it does not
+say, and cannot: with the try at two integers taken out, or put into the arm that has none, it
+passes, the quotients being the same.
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
