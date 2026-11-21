@@ -2624,6 +2624,30 @@ pair meets U+E000 and up, and those are decoded as before; a test compares every
 around that boundary with the order of their code units). `string/equality-and-compare` went from 2.15x
 to 1.8x, sorting objects by a number and then a name from 1.85x to 1.6x.
 
+Whether two Strings are the same was still asked the whole way of the specification: whether the two
+values are of one type, whether either is a Number, whether either is null or undefined or a BigInt,
+and then whether both are Strings, each of those a look at both values. A profile of every case, one
+after the other, for the function with the most samples that is not the loop, showed it three times:
+88% of an Array of Strings searched by `indexOf` and `includes`, a third of a loop that compares
+each character of a text with five vowels, a tenth of a text escaped character by character. Two
+Strings are answered before any of that now, by `===`, by SameValue and by SameValueZero: two that
+are kept in their Values are the same where they are the same bytes, one of those is never the same
+as a String of the heap (which is never as short: the comparison at the end of the steps says the
+same), and two of the heap are the same where they are one and are compared by their text where
+they are not. It is in the three functions and not in the loop, which is as it was.
+
+`array/index-of-includes` retires 59% fewer instructions and is 0.67x for 1.7x with the two engines
+run in turn; `string/bracket-index-ascii` 17% fewer (0.66x for 0.77x), `string/equality-and-compare`
+12% (1.11x), a text escaped by its characters 8% (0.89x); the calls are the same. The test compares Strings of every
+length around the seven bytes a Value keeps, each made in five ways, with the literal, and every
+pair of them, by every way of comparing; a wrong answer for two short Strings or for a short one
+and one of the heap fails it. For two of the heap no script tells the comparison of the texts from
+none: two with the same text were one String in everything it made.
+
+The same profile showed `instanceof` reading the function's "prototype" by Get, as `new` did (area
+3), and it reads it by its cache now; the case that tests it is 1% fewer instructions, so that was
+not what it spends.
+
 Replacing by a RegExp was the one built-in that stood out in the application cases (escaping HTML: a fifth of
 the list that is rendered to HTML). `RegExp.prototype[Symbol.replace]` is written against the RegExp's
 properties: it read `flags` through nine accessors, looked `exec` up for every match, and had each result made
@@ -2946,6 +2970,10 @@ tokenizer, where most of what is swept lives, are the same to 0.2%.
   under a heap limit the script ends for it (out of memory), here and in the build this started
   from, where another engine keeps such an Array sparse. Without a limit the slots are asked for and
   never touched. Seen in the script for the writing of elements, which leaves it out. Not changed.
+- `x instanceof p`, where `p` is a Proxy of a function, is false for an `x` the function made, here
+  and in the build this started from (and by the general way, with the loop's own answer taken
+  out); it is true by the specification and in Node. Seen in the script for `instanceof`, which
+  leaves it out. Not changed.
 
 ## Checking a change
 
