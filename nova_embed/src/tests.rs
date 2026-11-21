@@ -20384,3 +20384,90 @@ many turns=[1089854,566718,30000]"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// A property that a Map, a Set, a Date, a RegExp, a Promise, a
+/// TypedArray or an Array inherits is read from the slot of the object
+/// that has it, where its cache places it. The methods of each kind,
+/// read and called; a property of the receiver's own beside them, and
+/// one that shadows an inherited one; a method replaced on the
+/// prototype, a property added to it and removed, an accessor there
+/// (called once for each read, with the receiver as its this value; one
+/// with no getter; a value made an accessor in its place and back);
+/// another prototype given to the receiver, and none; subclasses of Map
+/// and of Array, and a method that comes to shadow one of Array's;
+/// ordinary objects that inherit from the two prototypes; the names a
+/// TypedArray never looks for in its prototype; a frozen prototype and
+/// a Proxy in the chain; twelve kinds of receiver through one read.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn a_property_that_an_exotic_object_inherits_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(inherited_properties_of_exotic_objects)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn inherited_properties_of_exotic_objects() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'function') return 'fn:' + v.name; if (typeof v === 'string') return '"' + v + '"'; if (typeof v === 'symbol') return String(v); if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).map(function (k) { return k + ':' + fmt(v[k]); }).join(',') + '}'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+// One function reads one name from many receivers, many times: the read finds the place by its cache.
+function readGet(o) { return o.get; }
+function readHas(o) { return o.has; }
+function readPush(o) { return o.push; }
+function readTime(o) { return o.getTime; }
+function readTest(o) { return o.test; }
+function readThen(o) { return o.then; }
+function readSub(o) { return o.subarray; }
+function readX(o) { return o.x; }
+function readExtra(o) { return o.extra; }
+function many(f, o) { var r, turns = 0; for (var i = 0; i < 40; i = i + 1) { r = f(o); turns = turns + 1; } return r; }
+note('methods of each kind', function () { var m = new Map(), s = new Set(), a = [1], d = new Date(0), re = /x/, p = Promise.resolve(1), t = new Uint8Array(2); return [many(readGet, m) === Map.prototype.get, many(readHas, m) === Map.prototype.has, many(readHas, s) === Set.prototype.has, many(readPush, a) === Array.prototype.push, many(readTime, d) === Date.prototype.getTime, many(readTest, re) === RegExp.prototype.test, many(readThen, p) === Promise.prototype.then, many(readSub, t) === Object.getPrototypeOf(Uint8Array.prototype).subarray, many(readGet, s), many(readPush, m), many(readTime, a)]; });
+note('methods called', function () { var m = new Map([[1, 'one'], ['k', 'key']]), s = new Set([1, 'two']), a = [3, 1, 2], d = new Date(86400000), re = /b+/, t = new Uint8Array([5, 6, 7, 8]), r = []; for (var i = 0; i < 30; i = i + 1) { r = [m.get(1), m.get('k'), m.get(2), m.has('k'), m.size, s.has('two'), s.has(3), s.size, a.indexOf(2), a.includes(9), a.slice(1).join(), a.concat([4]).length, d.getTime(), d.getUTCDate(), re.test('abbc'), re.source, t.subarray(1, 3).join(), t.indexOf(7), t.length, t.byteLength]; } return r; });
+// A property of the receiver's own, beside what it inherits.
+note('own properties beside inherited ones', function () { var m = new Map(), a = [1, 2], d = new Date(0), r = []; r.push(many(readX, m), many(readX, a), many(readX, d)); m.x = 1; a.x = 2; d.x = 3; r.push(many(readX, m), many(readX, a), many(readX, d)); m.get = 'own'; a.push = 'own push'; r.push(many(readGet, m), many(readPush, a), many(readGet, new Map()) === Map.prototype.get, many(readPush, [0]) === Array.prototype.push); delete m.get; delete a.push; r.push(many(readGet, m) === Map.prototype.get, many(readPush, a) === Array.prototype.push); return r; });
+// The prototype changed under a read that has found its place: a value replaced, a property added, removed, made an accessor.
+note('a method replaced on the prototype', function () { var m = new Map(), was = Map.prototype.get, r = []; r.push(many(readGet, m) === was); Map.prototype.get = function replaced() { return 'r'; }; r.push(many(readGet, m).name, m.get(1)); Map.prototype.get = was; r.push(many(readGet, m) === was); return r; });
+note('a property added to the prototype and removed', function () { var s = new Set(), a = [1], r = []; r.push(many(readExtra, s), many(readExtra, a)); Set.prototype.extra = 'set extra'; Array.prototype.extra = 'array extra'; r.push(many(readExtra, s), many(readExtra, a)); Object.prototype.extra = 'object extra'; delete Set.prototype.extra; delete Array.prototype.extra; r.push(many(readExtra, s), many(readExtra, a), many(readExtra, new Date(0))); delete Object.prototype.extra; r.push(many(readExtra, s), many(readExtra, a)); return r; });
+note('an accessor on the prototype', function () { var m = new Map([[1, 2]]), a = [7, 8], calls = 0, seen = [], r = []; Object.defineProperty(Map.prototype, 'extra', { get: function () { calls = calls + 1; seen.push(this === m); return 'got ' + this.size; }, configurable: true }); r.push(many(readExtra, m), calls); Object.defineProperty(Array.prototype, 'extra', { get: function () { calls = calls + 1; return 'len ' + this.length; }, configurable: true }); r.push(many(readExtra, a), calls); Object.defineProperty(Map.prototype, 'extra', { get: undefined, set: function () {}, configurable: true }); r.push(many(readExtra, m)); Object.defineProperty(Map.prototype, 'extra', { value: 'plain', configurable: true }); r.push(many(readExtra, m)); delete Map.prototype.extra; delete Array.prototype.extra; r.push(many(readExtra, m), many(readExtra, a), seen.indexOf(false)); return r; });
+note('a data property made an accessor in its place', function () { var d = new Date(0), n = 0, r = []; Date.prototype.extra = 'value'; r.push(many(readExtra, d)); Object.defineProperty(Date.prototype, 'extra', { get: function () { n = n + 1; return 'getter'; }, configurable: true }); r.push(many(readExtra, d), n > 0); Object.defineProperty(Date.prototype, 'extra', { value: 'value again', writable: true, configurable: true }); r.push(many(readExtra, d)); delete Date.prototype.extra; r.push(many(readExtra, d)); return r; });
+// Another prototype given to the receiver, and prototypes in between.
+note('the prototype of the receiver changed', function () { var m = new Map(), a = [1], r = []; r.push(many(readGet, m) === Map.prototype.get); Object.setPrototypeOf(m, { get: 'from another', x: 5 }); r.push(many(readGet, m), many(readX, m)); Object.setPrototypeOf(m, null); r.push(many(readGet, m)); Object.setPrototypeOf(a, { push: 'not a function' }); r.push(many(readPush, a), Array.isArray(a), a.length); Object.setPrototypeOf(a, Array.prototype); r.push(many(readPush, a) === Array.prototype.push); return r; });
+note('subclasses', function () { class M extends Map { get extra() { return 'm extra'; } own() { return 'own'; } } class A extends Array { last() { return this[this.length - 1]; } } var m = new M([[1, 2]]), a = A.from([4, 5, 6]), r = []; function readOwn(o) { return o.own; } function readLast(o) { return o.last; } r.push(many(readGet, m) === Map.prototype.get, many(readOwn, m) === M.prototype.own, many(readExtra, m), m.get(1), many(readPush, a) === Array.prototype.push, many(readLast, a) === A.prototype.last, a.last(), a.push(7), a.last(), a instanceof A); A.prototype.push = function () { return 'shadowed'; }; r.push(many(readPush, a) === A.prototype.push, a.push(1)); return r; });
+note('objects that inherit from an Array and a Map prototype', function () { var o = Object.create(Array.prototype), q = Object.create(Map.prototype), r = []; r.push(many(readPush, o) === Array.prototype.push, many(readGet, q) === Map.prototype.get); o.push(1, 2); r.push(o.length, o[1]); try { q.get(1); r.push('no throw'); } catch (e) { r.push(e.name); } return r; });
+// The names a TypedArray never looks for in its prototype, and its own length.
+note('a typed array', function () { var t = new Uint8Array([9, 8, 7]), r = []; function r0(o) { return o['0']; } function rNeg(o) { return o['-1']; } function rInf(o) { return o.Infinity; } function rNaN(o) { return o.NaN; } function rLen(o) { return o.length; } function rSet(o) { return o.set; } Object.prototype['-1'] = 'proto minus'; Object.prototype.Infinity = 'proto inf'; Object.prototype.NaN = 'proto nan'; r.push(many(r0, t), many(rNeg, t), many(rInf, t), many(rNaN, t), many(rLen, t), many(rSet, t) === Object.getPrototypeOf(Uint8Array.prototype).set, many(rNeg, {}), many(rInf, [])); delete Object.prototype['-1']; delete Object.prototype.Infinity; delete Object.prototype.NaN; return r; });
+// A frozen prototype, a Proxy in the chain, a function's inherited methods.
+note('other chains', function () { var f = function () {}, r = [], p = new Proxy(new Map(), {}), frozen = Object.freeze({ get: 'frozen get' }), m = new Map(); function readCall(o) { return o.call; } function readBind(o) { return o.bind; } r.push(many(readCall, f) === Function.prototype.call, many(readBind, f) === Function.prototype.bind, many(readGet, p) === Map.prototype.get); Object.setPrototypeOf(m, frozen); r.push(many(readGet, m)); var q = Object.create(new Proxy({ get: 'through a proxy' }, {})); r.push(many(readGet, q)); return r; });
+// Many receivers in turn through one read.
+note('many kinds through one read', function () { var things = [new Map(), new Set(), [1], new Date(0), /x/, {}, { has: 'own has' }, new Uint8Array(1), 'text', 5, function () {}, Promise.resolve(0)], r = []; for (var turn = 0; turn < 6; turn = turn + 1) { for (var i = 0; i < things.length; i = i + 1) { var v = readHas(things[i]); if (turn === 5) { r.push(typeof v === 'function' ? v.name : v); } } } return r; });
+note('many turns', function () { var m = new Map([[1, 10], [2, 20]]), s = new Set([1, 3]), a = [], sum = 0, turns = 0; for (var i = 0; i < 20000; i = i + 1) { sum = sum + m.get(1 + (i & 1)) + (s.has(i & 3) ? 1 : 0); a.push(i); if (a.length > 8) { sum = sum + a.shift(); } turns = turns + 1; } return [sum, a.length, turns]; });
+out.join("\n")"##;
+    let expected = r##"methods of each kind=[true,true,true,true,true,true,true,true,undefined,undefined,undefined]
+methods called=["one","key",undefined,true,2,true,false,2,2,false,"1,2",4,86400000,2,true,"b+","6,7",2,4,4]
+own properties beside inherited ones=[undefined,undefined,undefined,1,2,3,"own","own push",true,true,true,true]
+a method replaced on the prototype=[true,"replaced","r",true]
+a property added to the prototype and removed=[undefined,undefined,"set extra","array extra","object extra","object extra","object extra",undefined,undefined]
+an accessor on the prototype=["got 1",40,"len 2",80,undefined,"plain",undefined,undefined,-1]
+a data property made an accessor in its place=["value","getter",true,"value again",undefined]
+the prototype of the receiver changed=[true,"from another",5,undefined,"not a function",true,1,true]
+subclasses=[true,true,"m extra",2,true,true,6,4,7,true,true,"shadowed"]
+objects that inherit from an Array and a Map prototype=[true,true,2,2,"TypeError"]
+a typed array=[9,undefined,undefined,undefined,3,true,"proto minus","proto inf"]
+other chains=[true,true,true,"frozen get","through a proxy"]
+many kinds through one read=["has","has",undefined,undefined,undefined,undefined,"own has",undefined,undefined,undefined,undefined,undefined]
+many turns=[200140036,8,20000]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
