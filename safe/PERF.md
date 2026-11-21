@@ -1075,6 +1075,24 @@ value has it from the Reference the call is made through. So are `sin`, `cos` an
 and the instruction share, so that zeros and NaN come out the same either way. Trigonometry in a loop went
 from 3.85x to 3.53x.
 
+The six functions that ask what a number is were not among them, and each was the whole call for
+one test of a double: 680 instructions for `isNaN(x)` and `isFinite(x)`, 815 for `Number.isNaN`,
+`Number.isFinite` and `Number.isInteger` (QuickJS 190 to 245; found by pricing what ordinary code
+does, area 6). They are marked now. `isNaN` and `isFinite` of a Number are answered in place, and
+of anything else called, since the call converts its argument and may run a script for that. The
+four of the Number constructor convert nothing, and are answered in place for any value: what is
+no Number is none of them. Each of the four is one function for the call and for the instruction,
+so that the two cannot come apart. `isNaN(x)` is 215 instructions and `isFinite(x)` 217 (QuickJS
+188 and 198), `Number.isInteger(x)` 379 and the other two of a double 400 (235 to 245: what is
+left is the read of `Number` and of the function off it). Nothing else is changed, by the
+instructions that fifteen cases of every kind retire. The test has each of the six on values of
+every kind, with no argument and with more than one, the conversions in their order and those
+that throw, each function called through a variable, `call`, `apply`, another object and as a
+callback, and a function replaced or shadowed; with any of these it fails: one of the two answers
+given for the other, a value that is no Number answered by `isNaN` unconverted, or taken for one
+by the four, a safe integer taken for any integer, one function marked as another, or the last
+argument asked in place of the first.
+
 A call of any other built-in function still cost several times what the function did: by profile, a loop
 that takes two substrings of a String was a tenth in the substrings and most of the rest in getting to them
 (the arguments copied to a list, the `Vm` put aside for the collector, the execution context, the depth of
