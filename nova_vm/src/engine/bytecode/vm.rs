@@ -3104,6 +3104,26 @@ impl Vm {
                     return Plain::Looped;
                 }
             }
+            // `a || b`, `a && b` and `a ?? b` whose value is used: the jump
+            // over `b` that leaves the value of `a` where it is, or the
+            // register emptied for `b`.
+            Instruction::JumpIfTrueKeep
+            | Instruction::JumpIfNotKeep
+            | Instruction::JumpIfNotNullishKeep => {
+                step!(JumpIfTrueKeep, JumpIfNotKeep, JumpIfNotNullishKeep);
+                let Some(value) = vm.result else {
+                    return Plain::No;
+                };
+                if Self::keeps_and_jumps(agent, instr.kind, value) {
+                    let from = *ip;
+                    *ip = instr.get_jump_slot();
+                    if *ip < from {
+                        return Plain::Looped;
+                    }
+                } else {
+                    vm.result = None;
+                }
+            }
             // The test of most loops, on two Numbers: before the body with
             // the jump out where it fails, or after it with the jump back
             // where it holds.
@@ -5242,6 +5262,22 @@ impl Vm {
         Plain::Done
     }
 
+    /// Whether JumpIfTrueKeep, JumpIfNotKeep or JumpIfNotNullishKeep, as
+    /// `kind` is, jumps for `value` and leaves it as the result: the value
+    /// of `a || b` is `a` where `a` is true, of `a && b` where it is not,
+    /// and of `a ?? b` where it is neither undefined nor null.
+    #[inline(never)]
+    fn keeps_and_jumps(agent: &Agent, kind: Instruction, value: Value) -> bool {
+        if kind == Instruction::JumpIfNotNullishKeep {
+            return !matches!(value, Value::Undefined | Value::Null);
+        }
+        let truthy = match value {
+            Value::Boolean(value) => value,
+            _ => to_boolean(agent, value),
+        };
+        truthy == (kind == Instruction::JumpIfTrueKeep)
+    }
+
     /// StepIndex of an integer that stays one: the slot stepped, and the
     /// value before the step or after it left in the result register, as
     /// the instruction's argument says above the slot. Anything else, a
@@ -6065,7 +6101,13 @@ impl Vm {
             | Instruction::LoadIndexPropertyWithCachePushThis
             | Instruction::LoadIndexPropertyWithCache
             | Instruction::PutIndexPropertyWithCache
-            | Instruction::BindArguments => {
+            | Instruction::BindArguments
+            // The loop runs these three for any value of the left operand,
+            // and leaves them to nothing: they come after an expression,
+            // which has left its value in the result register.
+            | Instruction::JumpIfTrueKeep
+            | Instruction::JumpIfNotKeep
+            | Instruction::JumpIfNotNullishKeep => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }
             Instruction::Return => return Ok(ContinuationKind::Return),
