@@ -187,17 +187,29 @@ impl<'a> Array<'a> {
         self.get_elements(agent).is_empty()
     }
 
+    /// Whether the Array is an intrinsic object, as %Array.prototype% is. A
+    /// new element of one is told to the caches that did not find its key
+    /// there (`invalidate_array_index_caches`): the steps that define an
+    /// element do that, and what writes an element in place does not.
+    pub(crate) fn is_intrinsic(self, agent: &Agent) -> bool {
+        self.get_backing_object(agent)
+            .is_some_and(|properties| properties.shape_now(agent).is_intrinsic(agent))
+    }
+
     /// Whether an element defined right after the Array's last one is made
     /// there as a plain one and nothing else happens:
     /// `CreateDataProperty(A, length, value)`, which defines and asks no
     /// prototype. The Array has no element descriptors and can grow: its
-    /// length is writable, and it takes new properties.
+    /// length is writable, and it takes new properties. And it is not an
+    /// intrinsic object ([`Array::is_intrinsic`]): %Array.prototype% is an
+    /// Array, and a species can give it as the Array to fill.
     pub(crate) fn takes_plain_elements(self, agent: &Agent) -> bool {
         self.is_trivial(agent)
             && self.length_writable(agent)
-            && self
-                .get_backing_object(agent)
-                .is_none_or(|properties| properties.internal_extensible(agent))
+            && self.get_backing_object(agent).is_none_or(|properties| {
+                properties.internal_extensible(agent)
+                    && !properties.shape_now(agent).is_intrinsic(agent)
+            })
     }
 
     /// An array is dense if it contains no holes or getters.

@@ -593,8 +593,12 @@ impl ArrayPrototype {
         {
             // Fast path: Array with integer parameters, array is trivial
             // (no descriptors). Holes can exist, we'll just copy them
-            // equivalently.
-            if array.is_trivial(agent) {
+            // equivalently. Not in an intrinsic Array, where a value
+            // copied to a hole is a new element that the caches are told
+            // of (Array::is_intrinsic): `Array.prototype.copyWithin(0, 1)`
+            // left what had read no element 0 through %Array.prototype%
+            // reading none.
+            if array.is_trivial(agent) && !array.is_intrinsic(agent) {
                 let len = array.len(agent) as i64;
 
                 let relative_target = target.into_i64();
