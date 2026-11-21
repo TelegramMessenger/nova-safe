@@ -263,11 +263,25 @@ impl<'a> ObjectShape<'a> {
         prototype: Option<Object<'gc>>,
     ) -> ObjectShape<'gc> {
         if let Some(prototype) = prototype {
-            if let Some(base_shape) = agent
-                .heap
-                .prototype_shapes
-                .get_shape_for_prototype(prototype)
+            // The shape found the last time, where the prototype is the
+            // same ordinary object and no collection has run since: the
+            // table is not asked ([`Heap::prototype_shape_seen`]).
+            let heap = &agent.heap;
+            if let Object::Object(ordinary) = prototype
+                && let Some((seen, shape, collections)) = heap.prototype_shape_seen.get()
+                && seen == ordinary
+                && collections == heap.collections
             {
+                return shape;
+            }
+            if let Some(base_shape) = heap.prototype_shapes.get_shape_for_prototype(prototype) {
+                if let Object::Object(ordinary) = prototype {
+                    heap.prototype_shape_seen.set(Some((
+                        ordinary.unbind(),
+                        base_shape.unbind(),
+                        heap.collections,
+                    )));
+                }
                 return base_shape;
             }
             // The property lookup caches are kept right by the shapes of
@@ -348,9 +362,33 @@ impl<'a> ObjectShape<'a> {
             return Ok(self);
         }
         let frozen = !self.extensible();
+        // The shape arrived at the last time from this one by this key,
+        // where no collection has run since: the table of the shape's
+        // transitions is not asked ([`Heap::child_shapes_seen`]).
+        let heap = &agent.heap;
+        let seen = &heap.child_shapes_seen[self.get_index() % heap.child_shapes_seen.len()];
+        if !frozen
+            && heap.child_shapes_seen_collections.get() == heap.collections
+            && let Some((parent, with, child)) = seen.get()
+            && parent == self
+            && with == key
+        {
+            return Ok(child);
+        }
         if let Some(mut next_shape) = self.get_transition_to(agent, key) {
             if frozen {
                 next_shape.set_extensible(false);
+            } else {
+                let heap = &agent.heap;
+                if heap.child_shapes_seen_collections.get() != heap.collections {
+                    // What was kept is of another collection.
+                    for seen in &heap.child_shapes_seen {
+                        seen.set(None);
+                    }
+                    heap.child_shapes_seen_collections.set(heap.collections);
+                }
+                heap.child_shapes_seen[self.get_index() % heap.child_shapes_seen.len()]
+                    .set(Some((self.unbind(), key.unbind(), next_shape.unbind())));
             }
             return Ok(next_shape);
         }

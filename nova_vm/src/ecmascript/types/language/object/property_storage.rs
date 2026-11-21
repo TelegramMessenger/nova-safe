@@ -429,23 +429,34 @@ impl<'a> PropertyStorage<'a> {
             } else {
                 0
             };
-        let ElementStorageMut {
-            values,
-            descriptors,
-        } = elements_vector.get_storage_mut(agent);
-        debug_assert!(
-            values[old_len as usize].is_none()
-                && match &descriptors {
-                    Entry::Occupied(e) => {
-                        !e.get().contains_key(&old_len)
-                    }
-                    Entry::Vacant(_) => true,
-                }
-        );
-        values[old_len as usize] = value.unbind();
         if let Some(desc) = desc {
+            let ElementStorageMut {
+                values,
+                descriptors,
+            } = elements_vector.get_storage_mut(agent);
+            debug_assert!(
+                values[old_len as usize].is_none()
+                    && match &descriptors {
+                        Entry::Occupied(e) => {
+                            !e.get().contains_key(&old_len)
+                        }
+                        Entry::Vacant(_) => true,
+                    }
+            );
+            values[old_len as usize] = value.unbind();
             let descriptors = descriptors.or_insert_with(|| ElementDescriptorMap::with_capacity(1));
             descriptors.insert(old_len, desc.unbind());
+        } else {
+            // A plain data property has no descriptor: the table of them is
+            // not asked for the place of this storage's, which it was for
+            // every property added, to have nothing put there.
+            debug_assert!(match elements_vector.get_storage_mut(agent).descriptors {
+                Entry::Occupied(e) => !e.get().contains_key(&old_len),
+                Entry::Vacant(_) => true,
+            });
+            let values = agent.heap.elements.get_values_mut(&elements_vector);
+            debug_assert!(values[old_len as usize].is_none());
+            values[old_len as usize] = value.unbind();
         }
         if old_shape == new_shape {
             // Intrinsic shape! Adding a new property to an intrinsic needs to

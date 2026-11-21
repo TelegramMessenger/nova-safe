@@ -1630,12 +1630,31 @@ impl Vm {
         //       "%Object.prototype%").
         let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
         let cache = PropertyLookupCache::new(agent, key);
-        let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
-            crate::ecmascript::try_get(agent, function, key, Some(cache), gc)
-        else {
-            return None;
+        // The function's own "prototype", read as a property is read by
+        // its cache in the loop of instructions: one look at the storage
+        // of the function's properties. Where that does not answer (the
+        // cache has not seen the shape, or the property is none of the
+        // function's own values), Get does, and the cache sees the shape.
+        let prototype = match function
+            .get_backing_object(agent)
+            .and_then(|properties| properties.value_by_cache(agent, cache, gc))
+        {
+            Some(prototype) => prototype,
+            None => {
+                let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
+                    crate::ecmascript::try_get(agent, function, key, Some(cache), gc)
+                else {
+                    return None;
+                };
+                prototype.unbind()
+            }
         };
-        let prototype = Object::try_from(prototype).ok()?;
+        // An ordinary object, nearly always: asked first, and what other
+        // kind of object it is only then.
+        let prototype = match prototype {
+            Value::Object(prototype) => Object::Object(prototype),
+            prototype => Object::try_from(prototype).ok()?,
+        };
         let object: Value = Self::object_with_prototype(agent, prototype, gc)?.into();
         self.stack.insert(at, object.unbind());
         self.result = None;
@@ -1755,12 +1774,31 @@ impl Vm {
         // OrdinaryCreateFromConstructor(newTarget, "%Object.prototype%").
         let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
         let cache = PropertyLookupCache::new(agent, key);
-        let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
-            crate::ecmascript::try_get(agent, new_target, key, Some(cache), gc)
-        else {
-            return None;
+        // The new target's own "prototype" by its cache, as `new` of a
+        // function reads it ([`Vm::constructor_called_in_place`]).
+        let own = match new_target {
+            Function::ECMAScriptFunction(new_target) => new_target
+                .get_backing_object(agent)
+                .and_then(|properties| properties.value_by_cache(agent, cache, gc)),
+            _ => None,
         };
-        let prototype = Object::try_from(prototype).ok()?;
+        let prototype = match own {
+            Some(prototype) => prototype,
+            None => {
+                let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
+                    crate::ecmascript::try_get(agent, new_target, key, Some(cache), gc)
+                else {
+                    return None;
+                };
+                prototype.unbind()
+            }
+        };
+        // An ordinary object, nearly always: asked first, and what other
+        // kind of object it is only then.
+        let prototype = match prototype {
+            Value::Object(prototype) => Object::Object(prototype),
+            prototype => Object::try_from(prototype).ok()?,
+        };
         let object: Value = Self::object_with_prototype(agent, prototype, gc)?.into();
         // The object and the parent under the arguments, as `new` of the
         // parent leaves them.

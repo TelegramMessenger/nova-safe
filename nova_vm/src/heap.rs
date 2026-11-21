@@ -210,6 +210,37 @@ pub(crate) struct Heap {
     /// of their own: see [`BareShapeSeen`](crate::ecmascript::BareShapeSeen).
     /// Its handles are of the collection it counted, and are not read
     /// after another.
+    /// The shape last found for the objects that have a given ordinary
+    /// object for their prototype and nothing of their own, with that
+    /// prototype and the collections that had run: what `new` of one
+    /// function, again and again, asks the table of such shapes for at
+    /// every object it makes. The table gives one prototype one such shape
+    /// for as long as both live, and the handles are of the collection
+    /// counted: they are not read after another.
+    pub(crate) prototype_shape_seen: core::cell::Cell<
+        Option<(
+            crate::ecmascript::OrdinaryObject<'static>,
+            crate::ecmascript::ObjectShape<'static>,
+            u64,
+        )>,
+    >,
+    /// The shapes last arrived at from a shape by a key added
+    /// ([`ObjectShape::get_child_shape`](crate::ecmascript::ObjectShape)):
+    /// the shape, the key and the shape with it, a few at once by the
+    /// place of the first, and the collections that had run when they were
+    /// kept. A constructor adds the same keys to the same shapes at every
+    /// object it makes, and asked the table of each shape's transitions for
+    /// each. A shape that is not an intrinsic object's has one shape for a
+    /// key for as long as both live, and the handles are of the collection
+    /// counted: they are not read after another.
+    pub(crate) child_shapes_seen: [core::cell::Cell<
+        Option<(
+            crate::ecmascript::ObjectShape<'static>,
+            crate::ecmascript::PropertyKey<'static>,
+            crate::ecmascript::ObjectShape<'static>,
+        )>,
+    >; 8],
+    pub(crate) child_shapes_seen_collections: core::cell::Cell<u64>,
     pub(crate) bare_shape_seen: core::cell::Cell<
         Option<
             crate::ecmascript::BareShapeSeen<
@@ -412,6 +443,9 @@ impl Heap {
             alloc_counter: 0,
             collections: 0,
             intrinsic_shape_changes: 0,
+            prototype_shape_seen: core::cell::Cell::new(None),
+            child_shapes_seen: Default::default(),
+            child_shapes_seen_collections: core::cell::Cell::new(0),
             bare_shape_seen: core::cell::Cell::new(None),
             #[cfg(feature = "array-buffer")]
             typed_array_views: Default::default(),

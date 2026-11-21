@@ -176,6 +176,9 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             data_bytes_since_gc: _,
             collections: _,
             intrinsic_shape_changes: _,
+            prototype_shape_seen: _,
+            child_shapes_seen: _,
+            child_shapes_seen_collections: _,
             bare_shape_seen: _,
             #[cfg(feature = "array-buffer")]
                 typed_array_views: _,
@@ -942,6 +945,9 @@ fn sweep(
         gc_alloc_limit,
         collections: _,
         intrinsic_shape_changes: _,
+        prototype_shape_seen: _,
+        child_shapes_seen: _,
+        child_shapes_seen_collections: _,
         bare_shape_seen: _,
         #[cfg(feature = "array-buffer")]
             typed_array_views: _,
