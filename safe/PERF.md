@@ -2541,6 +2541,37 @@ function that the loop calls now (the negation of the double it is, made the Num
 an integer stays an integer, zero is -0 and -0 zero); a BigInt and what is to be made a number first
 go as before. `-(i & 7)` is 127 instructions for 181, `x = -x` of a double 115 for 202.
 
+The operators of one operand were still far from what they do. `-x` was two instructions, ToNumeric
+and UnaryMinus, and the negation made a double of an integer and a Number of the double again; `~x`
+and `+x` went the general way every time, some two hundred instructions for a complement or for
+nothing at all; and a numeric literal with a sign was no constant: `-1` was the constant 1 negated
+where the code runs, every time it runs, so that `x === -1`, `return -1` and `i + -1` each paid for
+a negation, and none of them was the comparison or the operator with a constant that the same
+expression is with a literal that has no sign.
+
+A numeric literal with a sign is a constant of the code now, Number::unaryMinus of it worked out
+where it is compiled (`-0` is the constant -0; a BigInt literal is negated as before). `-x` and `~x`
+are one instruction each, which is ToNumeric too: the loop runs it for a Number, and the general
+way makes anything else a numeric value first and then does what it did. An integer that is not
+zero is negated as the integer it is, a double that is kept in the Value by its sign (but -0,
+whose negation is the integer zero), an integer complemented by its low 32 bits; a Number of the
+heap is negated and any other double complemented as before. `+x` of a Number is its instruction
+done in the loop, which is nothing.
+
+By the instructions a million turns retire: `-(i & 7)` is 65 for 120 (QuickJS 22), `~(i & 7)`
+64 for 211 (9), `+(i & 7)` 23 for 195 (9), `~~(i & 7)` 130 for 422 (19), `(i & 7) + -1`
+65 for 201 (25); of a double, `-x` 65 for 110 (11), `+x` 24 for 195 (10), `~~x` 190
+for 469 (97). No case of the suite is made of these, and none moves by more than its noise; by the
+price list a call is two to five instructions shorter (559 for 562 with one argument) and nothing
+is longer. The test has literals of every spelling with either sign and the zeros, each operator
+and each two of them on values of every kind, the conversions in the order they are asked with
+those that throw, the operands as locals, properties, calls and names not yet declared, and the
+zero that the negation of -0 is, used as a key and compared. With any of these it fails: the sign
+of a literal left out or put in, zero negated as an integer, an integer negated or complemented
+wrong, -0 negated into a double, a text taken for a Number by `+x`, the complement of a double
+taken as its negation, or the general way without its ToNumeric (where the engine stops at a value
+it took for a numeric one).
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
