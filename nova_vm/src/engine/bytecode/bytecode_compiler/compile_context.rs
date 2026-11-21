@@ -137,6 +137,11 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     /// Script or eval code, so the result register may be left empty or stale
     /// between statements.
     pub(super) discard_completion: bool,
+    /// The addition that is the left operand of one whose chain of
+    /// additions was looked through for a String
+    /// (`compile_concatenation_chain`): its own chain is what was looked
+    /// through, less the last operand, and is not looked through again.
+    pub(super) addition_looked_through: Option<oxc_span::Span>,
     /// Where the code assigns to each variable that was asked about
     /// ([`CompileContext::assigns_within`]): the spans of the references
     /// that write it, in the order of the source.
@@ -145,6 +150,10 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
 
 #[cfg(test)]
 thread_local! {
+    /// The additions that `compile_concatenation_chain` looked at on this
+    /// thread: counted for the test that holds the work to their number.
+    pub(super) static ADDITIONS_LOOKED_AT: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
     /// The references of variables that [`CompileContext::assigns_within`]
     /// looked at on this thread: counted for the test that holds the work
     /// to the number of references.
@@ -176,6 +185,7 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             runtime_strict: false,
             unsupported: None,
             discard_completion: false,
+            addition_looked_through: None,
             writes_of_variables: AHashMap::default(),
         }
     }

@@ -1646,6 +1646,8 @@ fn compile_concatenation_chain<'a, 's, 'gc, 'scope>(
         additions.push(left);
         first = &left.left;
     }
+    #[cfg(test)]
+    compile_context::ADDITIONS_LOOKED_AT.with(|looked| looked.set(looked.get() + additions.len()));
     additions.reverse();
     let string_at = if is_string_whatever(first) {
         0
@@ -1661,6 +1663,7 @@ fn compile_concatenation_chain<'a, 's, 'gc, 'scope>(
     }
     // What stands before with the String operand: the left operand of the
     // addition after it.
+    note_addition_looked_through(ctx, &additions[0].left);
     if let Err(err) = additions[0]
         .left
         .compile(ctx)
@@ -1690,6 +1693,25 @@ fn compile_concatenation_chain<'a, 's, 'gc, 'scope>(
     Some(Ok(ValueOutput::Value))
 }
 
+/// Notes that `left`, where it is an addition, is the left operand of an
+/// addition whose chain was looked through for a String operand
+/// ([`compile_concatenation_chain`]). Its own chain is that one less the
+/// last operand, and has no chain to compile as one concatenation: either
+/// no operand of it is a String whatever is evaluated, or the only one is
+/// its last or the one before that. Compiled next, it does not look
+/// through its chain again: each addition of `a + b + ... + z` looking
+/// through what stands before it made the work the square of the operands.
+fn note_addition_looked_through<'s>(
+    ctx: &mut CompileContext<'_, 's, '_, '_>,
+    left: &'s ast::Expression<'s>,
+) {
+    if let ast::Expression::BinaryExpression(left) = unparenthesized(left)
+        && left.operator == BinaryOperator::Addition
+    {
+        ctx.addition_looked_through = Some(left.span);
+    }
+}
+
 /// The instruction of an arithmetic or bitwise operator that other
 /// instructions are fused with ([`Instruction::fused_operator_number`]).
 fn fused_operator_instruction(operator: BinaryOperator) -> Option<Instruction> {
@@ -1712,10 +1734,15 @@ fn fused_operator_instruction(operator: BinaryOperator) -> Option<Instruction> {
 impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::BinaryExpression<'s> {
     type Output = Result<ValueOutput<'gc>, ExpressionError>;
     fn compile(&'s self, ctx: &mut CompileContext<'a, 's, 'gc, 'scope>) -> Self::Output {
-        if self.operator == BinaryOperator::Addition
-            && let Some(result) = compile_concatenation_chain(self, ctx)
-        {
-            return result;
+        if self.operator == BinaryOperator::Addition {
+            // An addition that is the left operand of one whose chain was
+            // looked through is part of that chain, which was found to be
+            // none to compile as one concatenation.
+            let looked_through = ctx.addition_looked_through.take() == Some(self.span);
+            if !looked_through && let Some(result) = compile_concatenation_chain(self, ctx) {
+                return result;
+            }
+            note_addition_looked_through(ctx, &self.left);
         }
         // 1. Let lref be ? Evaluation of leftOperand.
         let lref = self.left.compile(ctx)?;
@@ -5904,4 +5931,164 @@ fn compile_enum_with_computed_members<'s>(
     ctx.add_instruction(Instruction::Store);
     // Now initialize the binding (reference is on stack, value is in result)
     ctx.add_instruction(Instruction::InitializeReferencedBinding);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compile_context::ADDITIONS_LOOKED_AT;
+    use crate::{
+        ecmascript::{
+            Agent, AgentOptions, DefaultHostHooks, String, Value, initialize_default_realm,
+        },
+        engine::{Bindable, GcScope},
+    };
+
+    /// Runs `source` and returns its value as text, with the additions that
+    /// compiling it looked at for a String operand.
+    fn additions_looked_at(source: &str) -> (std::string::String, usize) {
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        let before = ADDITIONS_LOOKED_AT.with(|looked| looked.get());
+        let source_text = String::from_string(&mut agent, source.to_string(), gc.nogc());
+        let result = agent
+            .run_script(source_text.unbind(), gc.reborrow())
+            .unwrap_or_else(|_| panic!("the script throws: {source}"));
+        let text = match result {
+            Value::Integer(number) => number.into_i64().to_string(),
+            other => match String::try_from(other) {
+                Ok(text) => text.to_string_lossy(&agent).into_owned(),
+                Err(_) => panic!("neither an integer nor a string: {source}"),
+            },
+        };
+        (
+            text,
+            ADDITIONS_LOOKED_AT.with(|looked| looked.get()) - before,
+        )
+    }
+
+    /// `a + a + ... + a` of `terms` operands in a function, with `last` in
+    /// place of the last one and `first` in place of the first.
+    fn sum_of(terms: usize, first: &str, last: &str) -> std::string::String {
+        let mut operands = vec!["a"; terms];
+        operands[0] = first;
+        operands[terms - 1] = last;
+        format!("(function (a) {{ return {}; }})(1)", operands.join(" + "))
+    }
+
+    /// A chain of additions is looked through for a String operand once,
+    /// from its last addition: twice the operands are about twice the
+    /// additions looked at, and not four times, whether no operand is a
+    /// String or the last one is, which leaves nothing to compile as one
+    /// concatenation either.
+    #[test]
+    fn a_chain_of_additions_is_looked_through_once() {
+        let (few, many) = (60, 120);
+        let shapes: [(&str, &str, fn(usize) -> std::string::String); 3] = [
+            ("a", "a", |terms| terms.to_string()),
+            ("a", "'x'", |terms| format!("{}x", terms - 1)),
+            ("(a + a)", "(a + a)", |terms| (terms + 2).to_string()),
+        ];
+        for (first, last, value) in shapes {
+            let (result, looked_few) = additions_looked_at(&sum_of(few, first, last));
+            assert_eq!(result, value(few));
+            let (result, looked_many) = additions_looked_at(&sum_of(many, first, last));
+            assert_eq!(result, value(many));
+            assert!(
+                looked_few >= few - 1 && looked_few <= 2 * few,
+                "{looked_few} additions looked at for {few} operands ({first}, {last})"
+            );
+            assert!(
+                looked_many <= 2 * looked_few + 8,
+                "{looked_many} additions looked at for {many} operands, {looked_few} for {few}"
+            );
+        }
+        // A String operand at the start or in the middle makes one
+        // concatenation of what follows it, which is looked through once as
+        // well.
+        let (result, looked) = additions_looked_at(&sum_of(many, "'x'", "a"));
+        assert_eq!(result, format!("x{}", "1".repeat(many - 1)));
+        assert!(looked <= 2 * many, "{looked} additions looked at");
+    }
+
+    /// The operands of additions are evaluated and made primitives in the
+    /// order they are written, each once, wherever a String stands among
+    /// them, and a chain of many is what its additions give one by one.
+    /// What is expected is what Node prints for the same script.
+    #[test]
+    fn additions_with_a_string_among_them_are_what_the_steps_give() {
+        const SCRIPT: &str = r##"var log = [];
+function v(name, value) { return { valueOf: function () { log.push(name + ".v"); return value; }, toString: function () { log.push(name + ".s"); return String(value); } }; }
+function t(f) { log = []; var r; try { r = f(); } catch (e) { r = "threw " + e.name; } return String(r) + " [" + log.join(",") + "]"; }
+var out = [];
+out.push(t(function () { return v("a", 1) + v("b", 2) + v("c", 3); }));
+out.push(t(function () { return v("a", 1) + v("b", 2) + "x" + v("c", 3) + v("d", 4); }));
+out.push(t(function () { return "x" + v("a", 1) + v("b", 2) + v("c", 3); }));
+out.push(t(function () { return v("a", 1) + v("b", 2) + v("c", 3) + "x"; }));
+out.push(t(function () { return v("a", 1) + v("b", 2) + v("c", 3) + "x" + v("d", 4); }));
+out.push(t(function () { return v("a", 1) + (v("b", 2) + "y" + v("c", 3)) + v("d", 4) + "x" + v("e", 5) + v("f", 6); }));
+out.push(t(function () { return (v("a", 1) + v("b", 2)) + (v("c", 3) + v("d", 4)) + "x" + v("e", 5) + v("f", 6); }));
+out.push(t(function () { return ((v("a", 1) + v("b", 2))) + v("c", 3) + ("x") + v("e", 5) + v("f", 6); }));
+out.push(t(function () { return 1 + 2 + "3" + 4 + 5; }));
+out.push(t(function () { return 1 + 2 + 3 + 4 + "5"; }));
+out.push(t(function () { return "" + 1 + 2 + 3; }));
+out.push(t(function () { return 1 + 2 + `t${v("a", 7)}` + 3 + 4; }));
+out.push(t(function () { return v("a", 1n) + v("b", 2n) + "x" + v("c", 3n) + v("d", 4n); }));
+out.push(t(function () { return v("a", 1) + v("b", 2n) + "x" + 1 + 2; }));
+out.push(t(function () { return "x" + v("a", Symbol()) + v("b", 1) + 2; }));
+out.push(t(function () { return v("a", 1) + v("b", 2) + "x" + v("c", Symbol()) + v("d", 4); }));
+out.push(t(function () { var i = 0; return i++ + i++ + i++ + "x" + i++ + i++ + i; }));
+out.push(t(function () { var i = 0; return (i = 5) + i + (i = 7) + i + "x" + (i = 9) + i; }));
+out.push(t(function () { var o = { get p() { log.push("p"); return 2; } }; return o.p + o.p + o.p + "x" + o.p + o.p; }));
+out.push(t(function () { return null + undefined + "x" + true + null + 1.5; }));
+out.push(t(function () { return 0.1 + 0.2 + 0.3 + "x" + 0.1 + 0.2; }));
+out.push(t(function () { return [1] + [2] + 3 + "x" + [4] + {} + 5; }));
+// Long chains: many numbers before a String, after one, around several.
+function chain(parts) { return new Function("a", "b", "s", "return " + parts.join(" + ") + ";"); }
+function many(n, at, what) { var parts = []; for (var i = 0; i < n; i++) parts.push(i === at ? what : (i % 3 === 0 ? "a" : i % 3 === 1 ? "b" : String(i))); return parts; }
+out.push(String(chain(many(240, -1, ""))(1, 2, "S")));
+out.push(String(chain(many(240, 0, '"x"'))(1, 2, "S")).length + ":" + String(chain(many(240, 0, '"x"'))(1, 2, "S")).slice(0, 40));
+out.push(String(chain(many(240, 239, '"x"'))(1, 2, "S")));
+out.push(String(chain(many(240, 238, '"x"'))(1, 2, "S")));
+out.push(String(chain(many(240, 120, '"x"'))(1, 2, "S")).slice(0, 60));
+out.push(String(chain(many(240, 120, "s"))(1, 2, "S")).slice(0, 60));
+out.push(String(chain(many(240, 1, "s"))(1.5, 2n === 2n ? 2 : 0, "S")).slice(0, 60));
+out.join("\n")
+"##;
+        const EXPECTED: &str = r##"6 [a.v,b.v,c.v]
+3x34 [a.v,b.v,c.v,d.v]
+x123 [a.v,b.v,c.v]
+6x [a.v,b.v,c.v]
+6x4 [a.v,b.v,c.v,d.v]
+12y34x56 [b.v,c.v,a.v,d.v,e.v,f.v]
+10x56 [a.v,b.v,c.v,d.v,e.v,f.v]
+6x56 [a.v,b.v,c.v,e.v,f.v]
+3345 []
+105 []
+123 []
+3t734 [a.s]
+3x34 [a.v,b.v,c.v,d.v]
+threw TypeError [a.v,b.v]
+threw TypeError [a.v]
+threw TypeError [a.v,b.v,c.v]
+3x345 []
+24x99 []
+6x22 [p,p,p,p,p]
+NaNxtruenull1.5 []
+0.6000000000000001x0.10.2 []
+123x4[object Object]5 []
+9880
+364:x221251281211121412171220122312261229123
+9641x
+9639x239
+2540x2122121251212812131121341213712140121431214612149121521
+2540S2122121251212812131121341213712140121431214612149121521
+1.5S21.5251.5281.52111.52141.52171.52201.52231.52261.52291.5"##;
+        let (result, _) = additions_looked_at(SCRIPT);
+        for (index, (found, expected)) in result.lines().zip(EXPECTED.lines()).enumerate() {
+            assert_eq!(found, expected, "line {}", index + 1);
+        }
+        assert_eq!(result.lines().count(), EXPECTED.lines().count());
+    }
 }
