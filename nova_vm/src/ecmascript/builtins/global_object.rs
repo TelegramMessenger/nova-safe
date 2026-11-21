@@ -12,11 +12,11 @@ use wtf8::{CodePoint, Wtf8Buf};
 
 use crate::{
     ecmascript::{
-        Agent, BUILTIN_STRING_MEMORY, Contains, ContainsSymbol, ECMAScriptCodeEvaluationState,
-        Environment, ExceptionType, ExecutionContext, Function, JsResult,
-        LexicallyScopedDeclaration, ParseResult, Primitive, PrivateEnvironment, Realm,
-        SMALL_STRING_DISCRIMINANT, STRING_DISCRIMINANT, SourceCode, SourceCodeType, String, Value,
-        VarScopedDeclaration, builders::BuiltinFunctionBuilder, get_this_environment,
+        Agent, BUILTIN_STRING_MEMORY, Contains, ContainsSymbol, DirectBuiltin,
+        ECMAScriptCodeEvaluationState, Environment, ExceptionType, ExecutionContext, Function,
+        JsResult, LexicallyScopedDeclaration, Number, ParseResult, Primitive, PrivateEnvironment,
+        Realm, SMALL_STRING_DISCRIMINANT, STRING_DISCRIMINANT, SourceCode, SourceCodeType, String,
+        Value, VarScopedDeclaration, builders::BuiltinFunctionBuilder, get_this_environment,
         instantiate_function_object, is_trimmable_whitespace, new_declarative_environment,
         script_lexically_scoped_declarations, script_var_declared_names,
         script_var_scoped_declarations, to_int32, to_int32_number, to_number, to_number_primitive,
@@ -943,6 +943,35 @@ fn eval_declaration_instantiation<'a>(
 }
 
 impl GlobalObject {
+    /// `isNaN` or `isFinite`, if `function` is one of them: of a Number
+    /// either is an answer and nothing else, which the interpreter gives
+    /// in place of the call.
+    pub(crate) fn direct_builtin(function: crate::ecmascript::RegularFn) -> Option<DirectBuiltin> {
+        if core::ptr::fn_addr_eq(function, Self::is_nan as crate::ecmascript::RegularFn) {
+            Some(DirectBuiltin::IsNaN)
+        } else if core::ptr::fn_addr_eq(function, Self::is_finite as crate::ecmascript::RegularFn) {
+            Some(DirectBuiltin::IsFinite)
+        } else {
+            None
+        }
+    }
+
+    /// `isNaN(value)` or `isFinite(value)`, as `direct` names it, where
+    /// the value is a Number: ToNumber of it is the value. None for
+    /// anything else, which the call converts.
+    pub(crate) fn is_one_directly(
+        agent: &Agent,
+        direct: DirectBuiltin,
+        arguments: &[Value],
+    ) -> Option<bool> {
+        let number = Number::try_from(*arguments.first()?).ok()?;
+        Some(if direct == DirectBuiltin::IsNaN {
+            number.is_nan_(agent)
+        } else {
+            number.is_finite_(agent)
+        })
+    }
+
     /// ### [19.2.1 eval ( x )](https://tc39.es/ecma262/#sec-eval-x)
     ///
     /// This function is the %eval% intrinsic object.

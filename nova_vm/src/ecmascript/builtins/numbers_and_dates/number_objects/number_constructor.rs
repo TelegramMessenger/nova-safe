@@ -5,10 +5,10 @@
 use crate::{
     ecmascript::{
         Agent, ArgumentsList, BUILTIN_STRING_MEMORY, Behaviour, BigIntMathematicalValue, Builtin,
-        BuiltinIntrinsicConstructor, Function, JsResult, Number, Numeric, Object, Primitive,
-        PrimitiveObject, PrimitiveObjectData, ProtoIntrinsics, Realm, SmallInteger, String, Value,
-        builders::BuiltinFunctionBuilder, is_integral_number, ordinary_create_from_constructor,
-        to_numeric_primitive,
+        BuiltinIntrinsicConstructor, DirectBuiltin, Function, JsResult, Number, Numeric, Object,
+        Primitive, PrimitiveObject, PrimitiveObjectData, ProtoIntrinsics, Realm, SmallInteger,
+        String, Value, builders::BuiltinFunctionBuilder, is_integral_number,
+        ordinary_create_from_constructor, to_numeric_primitive,
     },
     engine::{Bindable, GcScope, NoGcScope, Scopable},
     heap::{ArenaAccessMut, CreateHeapData, IntrinsicConstructorIndexes},
@@ -175,15 +175,7 @@ impl NumberConstructor {
     ) -> JsResult<'gc, Value<'gc>> {
         let gc = gc.into_nogc();
         let maybe_number = arguments.get(0).bind(gc);
-
-        // 1. If number is not a Number, return false.
-        let Ok(number) = Number::try_from(maybe_number) else {
-            return Ok(false.into());
-        };
-
-        // 2. If number is not finite, return false.
-        // 3. Otherwise, return true.
-        Ok(number.is_finite_(agent).into())
+        Ok(Self::is_one_directly(agent, DirectBuiltin::NumberIsFinite, maybe_number).into())
     }
 
     /// ### [21.1.2.3 Number.isInteger ( number )](https://tc39.es/ecma262/#sec-number.isinteger)
@@ -195,9 +187,7 @@ impl NumberConstructor {
     ) -> JsResult<'gc, Value<'gc>> {
         let gc = gc.into_nogc();
         let maybe_number = arguments.get(0).bind(gc);
-
-        // 1. Return IsIntegralNumber(number).
-        Ok(is_integral_number(agent, maybe_number).into())
+        Ok(Self::is_one_directly(agent, DirectBuiltin::NumberIsInteger, maybe_number).into())
     }
 
     /// ### [21.1.2.4 Number.isNaN ( number )](https://tc39.es/ecma262/#sec-number.isnan)
@@ -209,15 +199,7 @@ impl NumberConstructor {
     ) -> JsResult<'gc, Value<'gc>> {
         let gc = gc.into_nogc();
         let maybe_number = arguments.get(0).bind(gc);
-
-        // 1. If number is not a Number, return false.
-        let Ok(number) = Number::try_from(maybe_number) else {
-            return Ok(false.into());
-        };
-
-        // 2. If number is NaN, return true.
-        // 3. Otherwise, return false.
-        Ok(number.is_nan_(agent).into())
+        Ok(Self::is_one_directly(agent, DirectBuiltin::NumberIsNaN, maybe_number).into())
     }
 
     /// ### [21.1.2.5 Number.isSafeInteger ( number )](https://tc39.es/ecma262/#sec-number.issafeinteger)
@@ -229,13 +211,57 @@ impl NumberConstructor {
     ) -> JsResult<'gc, Value<'gc>> {
         let gc = gc.into_nogc();
         let maybe_number = arguments.get(0).bind(gc);
+        Ok(Self::is_one_directly(agent, DirectBuiltin::NumberIsSafeInteger, maybe_number).into())
+    }
 
-        // 1. If IsIntegralNumber(number) is true, then
-        //    a. If abs(ℝ(number)) ≤ 2**53 - 1, return true.
-        // 2. Return false.
-        // NOTE: Integers must be stored in `Value::Integer`, but negative zero
-        // is also a safe integer.
-        Ok((matches!(maybe_number, Value::Integer(_)) || maybe_number.is_neg_zero(agent)).into())
+    /// The function of `function` among the four of the Number constructor
+    /// that ask what a value is (`isFinite`, `isInteger`, `isNaN`,
+    /// `isSafeInteger`): none converts its argument or does anything else,
+    /// so the interpreter answers a call of one in place.
+    pub(crate) fn direct_builtin(function: crate::ecmascript::RegularFn) -> Option<DirectBuiltin> {
+        let functions: [(crate::ecmascript::RegularFn, DirectBuiltin); 4] = [
+            (Self::is_finite, DirectBuiltin::NumberIsFinite),
+            (Self::is_integer, DirectBuiltin::NumberIsInteger),
+            (Self::is_nan, DirectBuiltin::NumberIsNaN),
+            (Self::is_safe_integer, DirectBuiltin::NumberIsSafeInteger),
+        ];
+        functions
+            .into_iter()
+            .find(|(candidate, _)| core::ptr::fn_addr_eq(*candidate, function))
+            .map(|(_, direct)| direct)
+    }
+
+    /// What the one of the four that `direct` names answers for `value`:
+    /// the steps of the function, which the call of it and the interpreter
+    /// both come to.
+    pub(crate) fn is_one_directly(agent: &mut Agent, direct: DirectBuiltin, value: Value) -> bool {
+        match direct {
+            // 1. Return IsIntegralNumber(number).
+            DirectBuiltin::NumberIsInteger => is_integral_number(agent, value),
+            // 1. If IsIntegralNumber(number) is true, then
+            //    a. If abs(ℝ(number)) ≤ 2**53 - 1, return true.
+            // 2. Return false.
+            // NOTE: Integers must be stored in `Value::Integer`, but negative zero
+            // is also a safe integer.
+            DirectBuiltin::NumberIsSafeInteger => {
+                matches!(value, Value::Integer(_)) || value.is_neg_zero(agent)
+            }
+            _ => {
+                // 1. If number is not a Number, return false.
+                let Ok(number) = Number::try_from(value) else {
+                    return false;
+                };
+                if direct == DirectBuiltin::NumberIsNaN {
+                    // 2. If number is NaN, return true.
+                    // 3. Otherwise, return false.
+                    number.is_nan_(agent)
+                } else {
+                    // 2. If number is not finite, return false.
+                    // 3. Otherwise, return true.
+                    number.is_finite_(agent)
+                }
+            }
+        }
     }
 
     pub(crate) fn create_intrinsic(agent: &mut Agent, realm: Realm<'static>, gc: NoGcScope) {
