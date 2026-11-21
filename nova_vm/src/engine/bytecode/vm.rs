@@ -3216,16 +3216,23 @@ impl Vm {
                 step_local_compare_and_jump!(DecrementIndexJumpIfGreaterThanEqualsIndex)
             }
             // `i++` and `i--` of an integer in a stack slot.
-            Instruction::IncrementIndex | Instruction::DecrementIndex => {
-                step!(IncrementIndex, DecrementIndex);
+            Instruction::IncrementIndex | Instruction::DecrementIndex | Instruction::StepIndex => {
+                step!(IncrementIndex, DecrementIndex, StepIndex);
+                let step = match instr.kind {
+                    Instruction::IncrementIndex => 1,
+                    Instruction::DecrementIndex => -1,
+                    // `q++` or `++q` of a variable in a stack slot whose
+                    // value is used: the step of an integer that stays
+                    // one, and the value before or after it, by a
+                    // function that the loop calls from the arm of the
+                    // step whose value is not used. (Asked first, before
+                    // which of the two that is, it made every `i++` a
+                    // comparison longer.)
+                    _ => return vm.step_local(instr),
+                };
                 let slot = instr.get_first_index();
                 let Value::Integer(value) = vm.stack[slot] else {
                     return Plain::No;
-                };
-                let step = if instr.kind == Instruction::IncrementIndex {
-                    1
-                } else {
-                    -1
                 };
                 let Ok(value) = SmallInteger::try_from(value.into_i64() + step) else {
                     return Plain::No;
@@ -5235,6 +5242,36 @@ impl Vm {
         Plain::Done
     }
 
+    /// StepIndex of an integer that stays one: the slot stepped, and the
+    /// value before the step or after it left in the result register, as
+    /// the instruction's argument says above the slot. Anything else, a
+    /// value that is to be made a number first among it, goes the general
+    /// way.
+    #[inline(never)]
+    fn step_local(&mut self, instr: Instr) -> Plain {
+        let slot = instr.get_first_index() & ((1 << Instruction::STEP_INDEX_SLOT_BITS) - 1);
+        let which = instr.get_first_index() >> Instruction::STEP_INDEX_SLOT_BITS;
+        let Some(&Value::Integer(old)) = self.stack.get(slot) else {
+            return Plain::No;
+        };
+        let step = if which & Instruction::STEP_DOWN != 0 {
+            -1
+        } else {
+            1
+        };
+        let Ok(new) = SmallInteger::try_from(old.into_i64() + step) else {
+            return Plain::No;
+        };
+        self.stack[slot] = Value::Integer(new);
+        let kept = if which & Instruction::STEP_KEEPS_OLD != 0 {
+            old
+        } else {
+            new
+        };
+        self.result = Some(Value::Integer(kept));
+        Plain::Done
+    }
+
     /// `++` or `--` of an integer that stays one.
     #[inline(always)]
     fn step_integer(&mut self, step: i64) -> Plain {
@@ -5834,6 +5871,7 @@ impl Vm {
             | Instruction::DecrementIndexJumpIfGreaterThanEqualsIndex
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
+            | Instruction::StepIndex
             | Instruction::GetValueWithExpressionKey
             | Instruction::GetValueWithIndexKey
             | Instruction::PutValueWithExpressionKey
@@ -6013,6 +6051,7 @@ impl Vm {
             | Instruction::JumpToCase
             | Instruction::IncrementIndex
             | Instruction::DecrementIndex
+            | Instruction::StepIndex
             | Instruction::GetValueWithExpressionKey
             | Instruction::GetValueWithIndexKey
             | Instruction::PutValueWithExpressionKey

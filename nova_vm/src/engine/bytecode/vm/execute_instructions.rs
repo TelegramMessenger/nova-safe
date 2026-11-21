@@ -2473,6 +2473,31 @@ pub(super) fn execute_fused_instruction<'gc>(
             vm.stack[slot] = vm.result.take().unwrap();
             Ok(())
         }
+        Instruction::StepIndex => {
+            let slot = instr.get_first_index() & ((1 << Instruction::STEP_INDEX_SLOT_BITS) - 1);
+            let which = instr.get_first_index() >> Instruction::STEP_INDEX_SLOT_BITS;
+            // GetValueFromIndex, ToNumeric
+            vm.result = Some(vm.stack[slot]);
+            execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+            // LoadCopy of the value before the step, where that is the
+            // value of the expression
+            let old = vm.result;
+            // Increment or Decrement
+            if which & Instruction::STEP_DOWN == 0 {
+                execute_increment(agent, vm, gc.into_nogc());
+            } else {
+                execute_decrement(agent, vm, gc.into_nogc());
+            }
+            // PutValueToIndex, and the Store of the value that was kept
+            let new = vm.result.take().unwrap();
+            vm.stack[slot] = new;
+            vm.result = if which & Instruction::STEP_KEEPS_OLD != 0 {
+                old
+            } else {
+                Some(new)
+            };
+            Ok(())
+        }
         Instruction::PutBindingAtSiteAndGet => {
             // PutBindingAtSite, then GetBindingAtSite of the same name:
             // what the variable has then, which is not what was assigned

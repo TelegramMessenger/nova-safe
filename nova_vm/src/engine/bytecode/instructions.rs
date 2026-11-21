@@ -847,6 +847,19 @@ pub(crate) enum Instruction {
     /// makes it when it has to go the long way. A name that is not found at
     /// its place is resolved as ResolveGlobalAtSite resolves it.
     CheckGlobalAtSite,
+    /// `q++`, `++q`, `q--` or `--q` of a variable in a stack slot where the
+    /// value of the expression is used: GetValueFromIndex, ToNumeric, the
+    /// LoadCopy that keeps the value before the step where the operator
+    /// stands after its operand, Increment or Decrement, PutValueToIndex
+    /// and the Store, as one instruction. The argument is the slot in its
+    /// low bits ([`Instruction::STEP_INDEX_SLOT_BITS`] of them), and above
+    /// them which step it is and which value is left in the result
+    /// register, as the second argument of
+    /// [`Instruction::StepValueWithCache`] has them. One argument, as
+    /// IncrementIndex has: the loop of instructions runs the three in one
+    /// arm (an arm of its own made every turn of a loop a machine
+    /// instruction and a half longer, and a call two to three).
+    StepIndex,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
@@ -855,7 +868,6 @@ pub(crate) enum Instruction {
     // reads instructions with care, and the loop leaves the byte to the
     // general way, which ends as it did. A new instruction takes the
     // first of them.
-    Unused239,
     Unused240,
     Unused241,
     Unused242,
@@ -880,8 +892,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused239
-            | Instruction::Unused240
+        Instruction::Unused240
             | Instruction::Unused241
             | Instruction::Unused242
             | Instruction::Unused243
@@ -1021,6 +1032,7 @@ impl Instruction {
             Self::PutValueToIndex
             | Self::IncrementIndex
             | Self::DecrementIndex
+            | Self::StepIndex
             | Self::GetValueFromIndex
             | Self::ArrayCreate
             | Self::ArrayFromStack
@@ -1437,6 +1449,9 @@ impl Instruction {
     /// There: the value before the step, as a Number, is left in the result
     /// register (`o.p--` whose value is used).
     pub(crate) const STEP_KEEPS_OLD: usize = 4;
+    /// The bits of the argument of [`Instruction::StepIndex`] that are the
+    /// stack slot; the step and what it keeps are above them.
+    pub(crate) const STEP_INDEX_SLOT_BITS: u32 = 13;
 
     /// The instruction that makes the comparison and jump of `self` on a
     /// local and a constant, or on two locals.
@@ -1861,6 +1876,13 @@ impl Instr {
                     expr.template.span
                 )
             }
+        } else if kind == Instruction::StepIndex {
+            // The slot, and the step above it.
+            format!(
+                "{}, {}",
+                index & ((1 << Instruction::STEP_INDEX_SLOT_BITS) - 1),
+                Self::print_step(index >> Instruction::STEP_INDEX_SLOT_BITS)
+            )
         } else if kind == Instruction::ApplyBinaryOperatorAndMove {
             let (slot, _) = Instruction::fused_slot_and_operator(index);
             if Instruction::fused_pushes(index) {
@@ -1878,6 +1900,24 @@ impl Instr {
             // Immediate
             arg.to_string()
         }
+    }
+
+    /// The step of StepValueWithCache or StepIndex and which value it
+    /// keeps, as `which` has them.
+    fn print_step(which: usize) -> std::string::String {
+        let step = if which & Instruction::STEP_DOWN != 0 {
+            "--"
+        } else {
+            "++"
+        };
+        let keeps = if which & Instruction::STEP_KEEPS_NEW != 0 {
+            ", keeps the new value"
+        } else if which & Instruction::STEP_KEEPS_OLD != 0 {
+            ", keeps the value before"
+        } else {
+            ""
+        };
+        format!("{step}{keeps}")
     }
 
     fn print_two_args(
@@ -1973,19 +2013,7 @@ impl Instr {
                 format!("{{ var count: {arg0}, strict: {arg1_equals} }}")
             }
             Instruction::StepValueWithCache => {
-                let step = if arg1 as usize & Instruction::STEP_DOWN != 0 {
-                    "--"
-                } else {
-                    "++"
-                };
-                let keeps = if arg1 as usize & Instruction::STEP_KEEPS_NEW != 0 {
-                    ", keeps the new value"
-                } else if arg1 as usize & Instruction::STEP_KEEPS_OLD != 0 {
-                    ", keeps the value before"
-                } else {
-                    ""
-                };
-                format!("{arg0}, {step}{keeps}")
+                format!("{arg0}, {}", Self::print_step(arg1 as usize))
             }
             Instruction::ObjectDefineGetter => "get function() {}".to_string(),
             Instruction::ObjectDefineMethod => "function() {}".to_string(),
@@ -2114,7 +2142,7 @@ impl Instruction {
         const APPLYBINARYOPERATORTOINDEXWITHRESULT: u8 =
             Instruction::ApplyBinaryOperatorToIndexWithResult.as_u8();
         const CHECKGLOBALATSITE: u8 = Instruction::CheckGlobalAtSite.as_u8();
-        const UNUSED239: u8 = Instruction::Unused239.as_u8();
+        const STEPINDEX: u8 = Instruction::StepIndex.as_u8();
         const UNUSED240: u8 = Instruction::Unused240.as_u8();
         const UNUSED241: u8 = Instruction::Unused241.as_u8();
         const UNUSED242: u8 = Instruction::Unused242.as_u8();
@@ -2702,7 +2730,7 @@ impl Instruction {
                 Some(Instruction::ApplyBinaryOperatorToIndexWithResult)
             }
             CHECKGLOBALATSITE => Some(Instruction::CheckGlobalAtSite),
-            UNUSED239 => Some(Instruction::Unused239),
+            STEPINDEX => Some(Instruction::StepIndex),
             UNUSED240 => Some(Instruction::Unused240),
             UNUSED241 => Some(Instruction::Unused241),
             UNUSED242 => Some(Instruction::Unused242),
@@ -2725,7 +2753,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() >= Instruction::Unused239.as_u8()
+        self.as_u8() >= Instruction::Unused240.as_u8()
     }
 }
 
@@ -2778,10 +2806,7 @@ mod tests {
         for byte in 0..=u8::MAX {
             let kind = Instruction::from_u8(byte).expect("every byte is a kind");
             assert_eq!(kind.as_u8(), byte);
-            assert_eq!(
-                kind.is_unused(),
-                byte > Instruction::CheckGlobalAtSite.as_u8()
-            );
+            assert_eq!(kind.is_unused(), byte > Instruction::StepIndex.as_u8());
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
                 assert_eq!(kind.argument_count(), 0);
@@ -2796,14 +2821,15 @@ mod tests {
         assert!(!Instruction::PutBindingAtSiteAndGet.is_unused());
         assert!(!Instruction::ApplyBinaryOperatorToIndexWithResult.is_unused());
         assert!(!Instruction::CheckGlobalAtSite.is_unused());
-        assert!(Instruction::Unused239.is_unused());
+        assert!(!Instruction::StepIndex.is_unused());
+        assert!(Instruction::Unused240.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused239.as_u8()];
+        let code = [Instruction::Unused240.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }
