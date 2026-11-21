@@ -294,7 +294,12 @@ pub(crate) fn to_number_primitive<'gc>(
         // 5. If argument is true, return 1𝔽.
         Primitive::Boolean(true) => Ok(Number::from(1)),
         // 6. If argument is a String, return StringToNumber(argument).
-        Primitive::String(str) => Ok(string_to_number(agent, str.into(), gc)),
+        Primitive::String(str) => {
+            // Its text is read: one that the heap limit leaves no room to
+            // join is refused here, where that can be said.
+            agent.check_text_joins(Some(str.into()), &[], gc)?;
+            Ok(string_to_number(agent, str.into(), gc))
+        }
         Primitive::SmallString(str) => Ok(string_to_number(agent, str.into(), gc)),
         // 2. If argument is either a Symbol or a BigInt, throw a TypeError exception.
         Primitive::Symbol(_) => Err(agent.throw_exception_with_static_message(

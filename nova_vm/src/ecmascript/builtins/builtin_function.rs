@@ -538,6 +538,28 @@ impl DirectBuiltin {
         matches!(self, Self::ArrayPush)
     }
 
+    /// Whether the function reads the text of a String that it is given:
+    /// the methods of a String, `Number(text)`, and a property name.
+    #[inline(always)]
+    const fn reads_text(self) -> bool {
+        matches!(
+            self,
+            Self::StringCharCodeAt
+                | Self::StringCharAt
+                | Self::StringSlice
+                | Self::StringSubstring
+                | Self::StringStartsWith
+                | Self::StringEndsWith
+                | Self::StringIndexOf
+                | Self::StringIncludes
+                | Self::StringRepeat
+                | Self::StringPadStart
+                | Self::StringPadEnd
+                | Self::NumberCall
+                | Self::ObjectHasOwnProperty
+        )
+    }
+
     /// What a call of `function`, which is this one, with `this` (where
     /// the function takes it) and `arguments` returns, with what the call
     /// does done, where it needs nothing but them; None where the call is
@@ -583,6 +605,11 @@ impl DirectBuiltin {
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
         if self.asks_realm() && function.get(agent).realm != agent.current_realm(gc) {
+            return None;
+        }
+        // A text that the heap limit leaves no room to read is refused by
+        // the call, which can throw.
+        if self.reads_text() && !agent.text_joins_admitted(this, arguments) {
             return None;
         }
         self.run_own(agent, this, arguments, gc)
@@ -1034,6 +1061,14 @@ fn builtin_call_or_construct<'gc>(
     };
     // 9. Push calleeContext onto the execution context stack; calleeContext is now the running execution context.
     agent.push_execution_context(callee_context);
+    // The texts that the function is given are held to the heap limit before
+    // it reads them: it reads them where nothing can be refused.
+    if let Err(error) = agent.check_text_joins(this_argument, arguments_list.as_slice(), gc.nogc())
+    {
+        let error = error.unbind();
+        agent.pop_execution_context();
+        return Err(error.bind(gc.into_nogc()));
+    }
     // 10. Let result be the Completion Record that is the result of evaluating F in a manner that conforms to
     // the specification of F. If thisArgument is uninitialized, the this value is uninitialized; otherwise,
     // thisArgument provides the this value. argumentsList provides the named parameters. newTarget provides the NewTarget value.

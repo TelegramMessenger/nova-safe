@@ -167,6 +167,20 @@ impl JoinBudget {
     pub(crate) fn set_cap(&self, cap: Option<usize>) {
         self.cap.store(cap.unwrap_or(0), Ordering::Relaxed);
     }
+
+    /// Whether there is a cap at all: with none every join happens.
+    #[inline]
+    pub(crate) fn has_cap(&self) -> bool {
+        self.cap.load(Ordering::Relaxed) != 0
+    }
+
+    /// Whether texts of `bytes` in all can be joined now: what
+    /// [`BuiltText::joined`] asks of each as it joins it.
+    #[inline]
+    pub(crate) fn admits(&self, bytes: usize) -> bool {
+        let cap = self.cap.load(Ordering::Relaxed);
+        cap == 0 || self.joined().saturating_add(bytes) <= cap
+    }
 }
 
 /// The payload a join past the heap limit unwinds with ([`JoinBudget`]): an
@@ -433,13 +447,16 @@ impl BuiltText {
     fn joined(&self) -> Wtf8Str<'_> {
         self.joined
             .get_or_init(|| {
-                let joined = self.budget.joined.fetch_add(self.len, Ordering::Relaxed);
-                let cap = self.budget.cap.load(Ordering::Relaxed);
-                if cap != 0 && joined.saturating_add(self.len) > cap {
+                // Whoever gives a text to what reads it has asked first
+                // where it could say no (`Agent::check_text_joins`): what
+                // is refused here was reached some other way, through an
+                // object or a list, by code that cannot be told no.
+                if !self.budget.admits(self.len) {
                     // Without the panic hook: this is the heap limit at
                     // work, not a fault to report.
                     std::panic::resume_unwind(Box::new(TextJoinOverLimit));
                 }
+                self.budget.joined.fetch_add(self.len, Ordering::Relaxed);
                 let mut text = Wtf8Buf::with_capacity(self.len);
                 for bytes in self.chunks() {
                     text.push_wtf8(Wtf8Str::from_wtf8_bytes(bytes));
@@ -757,6 +774,16 @@ impl StringRecord {
             data,
             mapping: OnceCell::new(),
             hash,
+        }
+    }
+
+    /// The bytes that reading the text joins into one buffer: those of a
+    /// built text that has not been joined, none of any other.
+    #[inline]
+    pub(crate) fn bytes_to_join(&self) -> usize {
+        match &self.data {
+            StringBuffer::Built(text) if text.joined.get().is_none() => text.len,
+            _ => 0,
         }
     }
 

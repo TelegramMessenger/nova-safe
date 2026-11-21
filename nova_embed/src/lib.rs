@@ -107,9 +107,14 @@ pub enum Error {
     NotAFunction(String),
     /// [`Host::should_interrupt`] ended the script.
     Interrupted,
-    /// The script went past the memory limit. When reading its strings did
-    /// (text that was appended to is joined when it is read), the engine is
-    /// dead as well: every later call returns [`Error::Dead`].
+    /// The script went past the memory limit, or was refused an allocation
+    /// that the limit had no room for and did not catch that. Text that was
+    /// appended to is joined when it is read, which takes room as an
+    /// allocation does: a call that is given more of it than the limit can
+    /// read is refused the same way, and the engine goes on. Only where a
+    /// function reaches such a text through an object or a list, and cannot
+    /// read it, is the engine dead as well: every later call returns
+    /// [`Error::Dead`].
     OutOfMemory,
     /// The engine panicked, now or earlier; it never runs again.
     Dead(String),
@@ -257,8 +262,12 @@ impl Engine {
         match result {
             Ok(result) => result,
             // Reading the script's strings would have taken more than the
-            // memory limit: the unwind went through the engine as a panic
-            // does, so it never runs again, but this is the limit at work.
+            // memory limit, where nothing could be refused: a function was
+            // reading a text that it reached through an object or a list
+            // (one it is given itself is held to the limit before it
+            // runs, and refused as an allocation is). The unwind went
+            // through the engine as a panic does, so it never runs again,
+            // but this is the limit at work.
             Err(payload) if payload.is::<TextJoinOverLimit>() => {
                 self.kill("out of memory".to_owned());
                 Err(Error::OutOfMemory)

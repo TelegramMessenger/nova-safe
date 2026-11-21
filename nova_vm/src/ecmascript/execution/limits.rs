@@ -17,9 +17,10 @@
 //! [`GcAgent::run_job`]: crate::ecmascript::GcAgent::run_job
 
 use crate::{
-    ecmascript::{Agent, ExceptionType, JsError, JsResult, String},
+    ecmascript::{Agent, ExceptionType, JsError, JsResult, String, Value},
     engine::NoGcScope,
     engine::{HeapRootCollection, HeapRootData},
+    heap::ArenaAccess,
 };
 
 /// Why a script was terminated.
@@ -551,6 +552,46 @@ impl Agent {
             return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
         }
         Ok(())
+    }
+
+    /// Whether the texts among a this value and arguments can be read:
+    /// reading a built text joins it into one buffer of its length, which
+    /// takes room under the heap limit as any allocation does (see
+    /// `JoinBudget`). A text that shares its pieces with others costs
+    /// little to make and all of its length to read.
+    #[inline]
+    pub(crate) fn text_joins_admitted(&self, this: Option<Value>, arguments: &[Value]) -> bool {
+        let budget = &self.heap.text_join_budget;
+        if !budget.has_cap() {
+            return true;
+        }
+        let mut bytes = 0usize;
+        for value in this.iter().chain(arguments) {
+            if let Value::String(text) = value {
+                bytes = bytes.saturating_add(text.get(self).bytes_to_join());
+            }
+        }
+        bytes == 0 || budget.admits(bytes)
+    }
+
+    /// Refuses a call whose this value and arguments have texts among them
+    /// that the heap limit leaves no room to read, as it refuses one
+    /// allocation that it has no room for: with a RangeError, or by ending
+    /// the script where a refusal does
+    /// ([`Agent::set_heap_limit_refusal_terminates`]). The function called
+    /// reads them where it cannot be told no; asked here, before it runs,
+    /// the script is told, and the engine goes on.
+    pub fn check_text_joins<'a>(
+        &mut self,
+        this: Option<Value>,
+        arguments: &[Value],
+        gc: NoGcScope<'a, '_>,
+    ) -> JsResult<'a, ()> {
+        if self.text_joins_admitted(this, arguments) {
+            Ok(())
+        } else {
+            Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc))
+        }
     }
 
     /// Whether `bytes` more cannot fit under the heap limit. The estimate
