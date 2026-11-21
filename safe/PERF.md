@@ -2094,6 +2094,24 @@ longer way, and without the question whether the place is one of the holder's ow
 keeps such a place today, and the general way that the question leads to stops the engine if one
 ever does, where the slot read would answer with whatever is there.
 
+`var { x, y } = o` makes what it destructures an object first, and that one instruction went the
+general way of the loop for an object as for anything else: 194 machine instructions for nothing,
+a quarter of the statement, which a turn stepped one instruction at a time shows as the one step
+that is longer than the reads of the two properties together. An object is itself where the loop
+stands now, and anything else is made one or refused as before. A pattern of two names is 424
+instructions for 572 (QuickJS 233), of one 266 for 415 (160), an assignment by a pattern 247 for
+395 (120), a pattern in a pattern 502 for 799 (223), one with defaults 772 for 922 (335). The
+test has a value of every kind through fourteen forms of pattern, getters and a Proxy asked in
+their order, and the value of each statement that declares by a pattern, which is how the object
+that such a statement used to leave behind was found (Defects). It fails with an object sent the
+general way and everything else taken for an object, with everything taken for one (the engine
+stops at a property of null), with the object left in the register again, and with the object
+dropped where a rest element still needs it.
+
+Found on the way, and by far the larger thing: a call of a function whose parameter is a pattern,
+`f(o)` of `function ({ x, y }) { … }`, is 3872 instructions where QuickJS has 488, the call not
+being one the loop runs itself. It is the next thing to take up.
+
 ### 5. Array and typed array elements
 
 `a[i]` was 11-19x through the same Reference path with a generic property key.
@@ -3542,6 +3560,19 @@ tokenizer, where most of what is swept lives, are the same to 0.2%.
   16677181699666570), and a negative exponent gave the reciprocal of a product of doubles
   (`Math.pow(10, -23)` was `1.0000000000000001e-23`). Seen in the script for the power, which asks
   that the two agree. Fixed: Math.pow is the operator (area 6).
+- A statement that declares by an object pattern left the object it destructured as its value:
+  `for (var { k } of list) { }` and a script ending with `var { a } = o` gave the object where
+  there is nothing to give. The instructions of a pattern with expressions in it have always ended
+  so (`var { d = 2 } = {}` in the build this started from), and since every object pattern is
+  compiled by them (area 4) the simple ones did too. Seen through `eval` only: the embedding hands
+  its host undefined for an object. Found by the script for ToObject. Fixed: without a rest
+  element the object is dropped, not put in the result register.
+- A getter that a destructured primitive inherits is called with the object made of the primitive
+  as its this value, not the primitive (`var { me } = 5` with a strict getter `me` on
+  %Number.prototype% sees an object): the pattern makes the value an object and reads the
+  properties of that. Here and in the build this started from. Not fixed.
+- A declaration has a value: `eval("'first'; var s = 5")` is undefined where it is `'first'`,
+  the declaration having none of its own. Here and in the build this started from. Not fixed.
 
 ## Checking a change
 
