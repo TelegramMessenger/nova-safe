@@ -459,7 +459,7 @@ impl ObjectConstructor {
             return false;
         }
         // The properties as they are now: the target may be the source.
-        let properties: Vec<(PropertyKey, Value)> = storage
+        let mut properties: Vec<(PropertyKey, Value)> = storage
             .keys
             .iter()
             .zip(storage.values)
@@ -467,6 +467,25 @@ impl ObjectConstructor {
             .collect();
         if properties.len() != storage.keys.len() {
             return false;
+        }
+        // In the order of [[OwnPropertyKeys]], which is the order the steps
+        // assign in: the array indices ascending, then the other keys as
+        // they were made (`ordinary_own_property_keys`). The object keeps
+        // them as they were made, and a target can tell: an Array given
+        // `length: 0` before its element 0 kept the element, and what was
+        // assigned before an assignment that throws is what came before
+        // it in that order.
+        let array_index = |key: &PropertyKey| match key {
+            PropertyKey::Integer(index) => {
+                Some(index.into_i64()).filter(|index| (0..i64::from(u32::MAX)).contains(index))
+            }
+            _ => None,
+        };
+        if properties.iter().any(|(key, _)| array_index(key).is_some()) {
+            properties.sort_by_key(|(key, _)| match array_index(key) {
+                Some(index) => (0, index),
+                None => (1, 0),
+            });
         }
         for (key, value) in properties {
             if !matches!(
