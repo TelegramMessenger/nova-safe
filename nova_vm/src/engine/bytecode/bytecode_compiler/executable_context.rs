@@ -1054,6 +1054,23 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 return self.add_result_comparison(comparison, constant);
             }
         }
+        // A local tested for being true, and the jump: the slot by the
+        // instruction that jumps.
+        let of_local = match instruction {
+            Instruction::JumpIfNot => Some(Instruction::JumpIfIndexNot),
+            Instruction::JumpIfTrue => Some(Instruction::JumpIfIndexTrue),
+            _ => None,
+        };
+        if let Some(fused) = of_local
+            && let Some(local) = self.recent_instruction(0, Instruction::GetValueFromIndex)
+        {
+            let slot = self.operand_bytes(local);
+            self.drop_recent_instructions(local, 1);
+            self.push_instruction(fused);
+            self.instructions.extend_from_slice(&slot);
+            self.instructions.extend_from_slice(&[0, 0]);
+            return self.add_jump_index();
+        }
         self.push_instruction(instruction);
         self.add_jump_index()
     }
