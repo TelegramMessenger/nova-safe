@@ -1976,6 +1976,29 @@ Agent and back for it), inside an exception handler that pops the Array where an
 values go to the stack now, as the arguments of a call do, and one instruction makes the Array of them.
 A literal with a hole or a spread element is made as before. `array/literal-alloc` went from 3.7x to 0.9x.
 
+A spread element of a literal, and `concat`, still went the whole way of the specification for every
+element (the profile of every case, area 8, showed both in `array/slice-concat-spread`: a third of
+it each). A literal with a spread took each element of the iteration by CreateDataPropertyOrThrow: a
+descriptor made of the value, the key and the length looked for, and the descriptor applied. `concat`
+asked whether the source has each element, read it and defined it in the result, each by the
+general way, 700 instructions an element. Both append now where that is all the steps come to. The
+Array of a literal takes its next element as a plain one where it has no element descriptors and can
+grow, which defining asks and no more (a prototype is not asked). `concat` appends the elements of a
+source that is an Array with every element there as a plain value (no hole, under which the
+prototypes are asked; no accessor, which is called) to a result that is such an Array as the literal
+is, and as long as what was put in it so far. A source with a hole, an accessor or an element that
+is not writable, a result that a species made otherwise (an object, an Array with an element
+already, a frozen one, one that takes no properties or whose length is fixed), and whatever is not
+an Array go through the steps as before.
+
+`array/slice-concat-spread` retires 53% fewer instructions and is 0.68x for 1.6x with the two engines
+run in turn; nothing else is changed. The test has each of those sources and results, the literals
+with spreads between elisions and of other iterables, and a source that changes under the spread;
+with any of the four things `concat` asks left out (every element there, no descriptors, the result
+as long as what it holds, the result one that takes plain elements) it fails. The last of them did
+not at first: the length set at the end threw for a frozen result as the first element should
+have, and only a look at the result afterwards tells that nothing was put in it.
+
 A method that calls a callback for every element (`forEach`, `map`, `filter`, `some`, `every`, `reduce`,
 the find methods, the comparator of `sort`, the mapper of Array.from) made a call from native code each
 time, and that is the costliest way to call: a `Vm` made for the call and let go of after, the kind of
