@@ -2510,6 +2510,19 @@ pub(super) fn execute_fused_instruction<'gc>(
         Instruction::JumpIfResultComparesWithConstant => {
             let target = Instr::wide_jump_target(executable.get_instructions(agent).code(), vm.ip);
             let comparison = instr.get_first_index();
+            if comparison >= Instruction::RESULT_COMPARISON_TYPE {
+                // Typeof
+                execute_typeof(agent, vm, gc.reborrow()).unbind()?;
+                // Load, StoreConstant, IsStrictlyEqual of two Strings that
+                // `typeof` gives, which are the same String or are not;
+                // JumpIfTrue or JumpIfNot
+                let name = Vm::type_name(instr.get_second_index()).map(Value::from);
+                let is_type = vm.result.take() == name;
+                if is_type == (comparison == Instruction::RESULT_COMPARISON_TYPE) {
+                    vm.ip = target;
+                }
+                return Ok(());
+            }
             let strict = comparison >= Instruction::RESULT_COMPARISON_STRICT;
             // Load, StoreConstant
             vm.execute_load();
