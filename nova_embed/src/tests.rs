@@ -19503,3 +19503,102 @@ zero from minus zero=[true,true,Infinity,0,true,"zero","key","0","0",1,0,"number
         other => panic!("{other:?}"),
     }
 }
+
+/// The length of a String is not counted anew at every read (a short text
+/// of ASCII is remembered to be one, a string kept in the Value is looked
+/// at as a word), ToBoolean is answered by the kind of the value, and
+/// `undefined`, `NaN` and `Infinity` of the global scope are constants of
+/// the code. Strings of every make (ASCII and not, of every length around
+/// the limits, with surrogate pairs and lone surrogates, built, sliced,
+/// joined, parsed), their lengths read more than once, and what is read
+/// of a string after and before its length; lengths of other things; what
+/// is true of values of every kind, in each test, operator and loop, and
+/// of values just computed; the three values compared, shadowed by
+/// parameters, locals and declarations of every kind, read in code of
+/// `eval` and of Function, assigned to in sloppy and strict code, and as
+/// defaults, keys and cases. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn lengths_truth_and_the_three_global_values_are_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(lengths_truth_and_global_values)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn lengths_truth_and_global_values() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'symbol') return 'symbol'; if (typeof v === 'string') return '"' + v + '"'; if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+// The length of Strings of every make, read more than once, and what is read of them after.
+var ascii = 'abcdefghij';
+function texts() {
+  var built = ''; for (var i = 0; i < 30; i++) built += 'ab';
+  var mixed = ''; for (var j = 0; j < 12; j++) mixed += j % 3 ? 'x' : 'é';
+  return ['', 'a', 'abcdefg', 'abcdefgh', ascii.repeat(6) + 'abcd', ascii.repeat(6) + 'abcde', ascii.repeat(20), 'é', '€', '😀', 'aé', 'ab😀', '\ud800', '\udc00\ud800', 'ab\ud800', 'привет мир!', 'привет'.repeat(20), 'tail 😀', '😀'.repeat(15), '😀'.repeat(40), built, mixed, built.slice(3, 40), mixed.slice(1, 8), ascii.substring(2), String.fromCharCode(104, 105, 233), String.fromCharCode(0xd83d) + String.fromCharCode(0xde00), JSON.parse('"text \\u00e9 \\ud83d\\ude00"'), `t${ascii}t`, [1, 2, 3].join(), String(123456789012), (12345.678).toFixed(2), ascii + 'é', 'é' + ascii, ascii.toUpperCase(), ' pad '.trim(), 'x'.padStart(20, 'ab'), 'a,b,c'.split(',')[1], 'abc'[1], ascii.charAt(9), '\0\0', 'a\0b', '\x7f\x80'];
+}
+note('lengths', function () { return texts().map(function (t) { return t.length; }); });
+note('lengths again', function () { return texts().map(function (t) { var a = t.length, b = t.length, c = t['length'], k = 'length'; return a === b && b === c && c === t[k] && a === Array.from({ length: t.length }).length ? a : 'differs'; }); });
+note('after the length', function () { return texts().map(function (t) { var n = t.length, r = n; r += t.charCodeAt(0) || 0; r += t.charCodeAt(n - 1) || 0; r += (t.codePointAt(0) || 0) % 1000; r += t.indexOf('b') + t.lastIndexOf('😀'); r += t.slice(1, -1).length + t.substring(2, 5).length; r += (t[n - 1] || '').length + t.split('').length + Array.from(t).length; r += (t + 'z').length + ('z' + t).length + (t + t).length + t.repeat(2).length; r += t.toUpperCase().length + t.padEnd(n + 2).length + t.at(-1 < n ? 0 : 0) === undefined ? 0 : 1; return r; }); });
+note('before the length', function () { return texts().map(function (t) { var c = t.charCodeAt(1), s = t.slice(0, 3), n = t.length; return [c, s.length, n, t.length === n]; }); });
+note('length in loops', function () { var total = 0, list = texts(); for (var k = 0; k < list.length; k++) { var t = list[k]; for (var i = 0; i < t.length; i++) total += t.charCodeAt(i) & 15; var j = 0; while (j < t.length) { j += 2; total++; } } return total; });
+note('length of other things', function () { var o = { length: 'own' }, f = function (a, b) {}; return [[1, 2, 3].length, new Array(5).length, o.length, f.length, new String('boxed').length, Object('été').length, new Uint8Array(4).length, (function () { return arguments.length; })(1, 2), 'x'.length.length, (5).length, true.length, Symbol().length, [].concat('ab').length]; });
+note('length of nothing', function () { var r = []; try { r.push(undefined.length); } catch (e) { r.push(e.name); } try { r.push(null.length); } catch (e) { r.push(e.name); } return r; });
+note('a length that is changed', function () { 'use strict'; var s = 'abc', r = []; try { s.length = 5; r.push('set'); } catch (e) { r.push(e.name); } r.push(s.length, Object.getOwnPropertyDescriptor('abc', 'length').writable, 'length' in Object('abc'), Object.keys('ab').join(), delete Object('ab').foo); String.prototype.extra = 7; r.push('abc'.extra, 'abc'.length); delete String.prototype.extra; return r; });
+// What is true and what is not.
+var kinds = [true, false, undefined, null, 0, -0, 0 * -1, 0 / 0, NaN, 1, -1, 0.5, -0.5, 5e-324, Infinity, -Infinity, 2 ** 53, 0.1 + 0.2, 1e300, 0.3 - 0.1 - 0.2, '', 'a'.slice(1), String(), [].join(), '' + '', ' ', '0', 'false', 'a', ascii.repeat(10), 'é', '\0', 0n, -0n, 1n, -1n, 2n ** 64n, 2n ** 64n - 2n ** 64n, 0n * 5n, Symbol(), Symbol.iterator, {}, [], [0], function () {}, new Boolean(false), new Number(0), new String(''), Object(0n), new Date(0), new Proxy({}, {}), Object.create(null), /x/, new Map(), Math, null ?? 0];
+function each(f) { return kinds.map(function (v) { return f(v) ? 1 : 0; }).join(''); }
+note('if', function () { return each(function (v) { if (v) return true; return false; }); });
+note('if not', function () { return each(function (v) { if (!v) return true; else return false; }); });
+note('conditional', function () { return each(function (v) { return v ? 1 : 0; }); });
+note('not', function () { return each(function (v) { return !v; }) + ' ' + each(function (v) { return !!v; }); });
+note('or and', function () { return kinds.map(function (v) { return ((v || 'o') === 'o' ? 'o' : 'v') + ((v && 'a') === 'a' ? 'a' : 'v') + ((v ?? 'n') === 'n' ? 'n' : 'v'); }).join(' '); });
+note('loops', function () { return each(function (v) { var n = 0; while (v) { n++; break; } for (; v;) { n += 2; break; } do { n += 4; if (n > 40) break; } while (!v && n < 12); return n === 15 || n === 7 ? n === 7 : 'odd'; }); });
+note('by functions', function () { return each(Boolean) + ' ' + kinds.filter(Boolean).length + ' ' + kinds.filter(function (v) { return v; }).length + ' ' + each(function (v) { return [v].some(function (x) { return x; }); }) + ' ' + kinds.findIndex(function (v) { return !v; }) + ' ' + each(function (v) { return new Boolean(v).valueOf(); }); });
+note('tests of computed values', function () { var r = '', zero = 0, t = 'abc', e = t.slice(3), n = 5, f = 0.5; if (zero * -1) r += 'a'; if (n - 5) r += 'b'; if (n - 4) r += 'c'; if (f - 0.5) r += 'd'; if (f * 2) r += 'e'; if (e) r += 'f'; if (e + e) r += 'g'; if (e + ' ') r += 'h'; if (t.length - 3) r += 'i'; if (t.length) r += 'j'; if (t.indexOf('z') + 1) r += 'k'; if (0 / zero) r += 'l'; if (n / zero) r += 'm'; if (10n - 10n) r += 'n'; if (10n - 9n) r += 'o'; if (t[5]) r += 'p'; if (t[0]) r += 'q'; return r; });
+// undefined, NaN and Infinity.
+note('the three values', function () { return [undefined, NaN, Infinity, -Infinity, typeof undefined, typeof NaN, typeof Infinity, void 0 === undefined, NaN !== NaN, NaN === NaN, Object.is(NaN, NaN), Object.is(0 / 0, NaN), isNaN(NaN), Infinity > 1e308, 1 / Infinity, 1 / -Infinity, Infinity - Infinity, Infinity === 1 / 0, -Infinity === -1 / 0, [undefined, NaN, Infinity], JSON.stringify({ u: undefined, n: NaN, i: Infinity, a: [undefined] }), String(undefined) + NaN + Infinity, undefined + 1, `${undefined}${NaN}${Infinity}`, Math.max(NaN, 1), Math.min(Infinity, 1), [NaN].includes(NaN), [NaN].indexOf(NaN), [undefined].indexOf(undefined), new Map([[NaN, 'n']]).get(NaN), Number.isFinite(Infinity), Number.MAX_VALUE < Infinity]; });
+note('compared with them', function () { function f(x) { var r = ''; if (x === undefined) r += 'a'; if (x !== undefined) r += 'b'; if (x == undefined) r += 'c'; if (x != undefined) r += 'd'; if (undefined === x) r += 'e'; if (x === NaN) r += 'f'; if (x !== NaN) r += 'g'; if (x === Infinity) r += 'h'; if (x < Infinity) r += 'i'; if (x > -Infinity) r += 'j'; if (x == Infinity) r += 'k'; if (x <= NaN) r += 'l'; if (x === void 0) r += 'm'; if (typeof x === 'undefined') r += 'n'; return r + (x === undefined ? 1 : 2) + (x === undefined) + (x == undefined) + (x === Infinity); } return [undefined, null, 0, NaN, Infinity, -Infinity, '', 'undefined', 'Infinity', false, 1e308 * 10, {}, [], 1n].map(f); });
+note('names that stand before them', function () { var r = []; r.push((function (undefined) { return [undefined, undefined === 5]; })(5)); r.push((function () { var undefined = 6, NaN = 7, Infinity = 8; return [undefined, NaN, Infinity, NaN === NaN, undefined === void 0]; })()); r.push((function () { var undefined = 1; return (function () { return [undefined, typeof undefined]; })(); })()); r.push((function () { { let NaN = 2; const Infinity = 3; return [NaN, Infinity, NaN === NaN]; } })()); r.push((function (NaN, Infinity) { return [NaN, Infinity]; })('n', 'i')); r.push((function () { function undefined() {} return typeof undefined; })()); r.push((function () { try { throw 4; } catch (undefined) { return undefined; } })()); r.push((function () { class Infinity {} return typeof Infinity; })()); return r; });
+note('eval', function () { var r = []; r.push((function () { eval('var undefined = 3, Infinity = 4'); return [undefined, Infinity, NaN]; })()); r.push((function (code) { eval(code); return [typeof undefined, undefined]; })('')); r.push((0, eval)('let NaN = 1; let Infinity = 2; [NaN, Infinity, undefined]')); r.push((0, eval)('[undefined, NaN, Infinity, typeof undefined]')); r.push(eval('undefined')); r.push(new Function('return [undefined, NaN, Infinity]')()); r.push(new Function('undefined', 'NaN', 'return [undefined, NaN]')(1, 2)); return r; });
+note('assigned to', function () { var r = []; undefined = 5; NaN = 6; Infinity = 7; r.push(undefined, NaN, Infinity); r.push(undefined++, NaN--, ++Infinity, undefined += 1, delete undefined, delete NaN); r.push(typeof undefined, undefined, NaN, Infinity); r.push((function () { 'use strict'; try { undefined = 1; return 'set'; } catch (e) { return e.name; } })()); r.push((function () { 'use strict'; try { NaN++; return 'set'; } catch (e) { return e.name; } })()); r.push(Object.getOwnPropertyDescriptor(globalThis, 'undefined').writable, 'NaN' in globalThis, globalThis.Infinity, globalThis['undefined']); try { Object.defineProperty(globalThis, 'NaN', { value: 1 }); r.push('defined'); } catch (e) { r.push(e.name); } r.push(NaN, [undefined, NaN, Infinity].length); return r; });
+note('defaults and returns', function () { function d(a = undefined, b = NaN, c = Infinity) { return [a, b, c]; } function u() { return undefined; } function n() { return NaN; } var o = { u: undefined, n: NaN, i: Infinity, [undefined]: 'key', [NaN]: 'nan' }; return [d(), d(1, 2, 3), u(), n(), o.u, o.n, o.i, o.undefined, o.NaN, 'u' in o, o[undefined], u() === undefined, n() !== n(), [undefined, , NaN].length, (function () { switch (undefined) { case undefined: return 'case'; } return 'none'; })(), (function (x) { switch (x) { case NaN: return 'nan'; case Infinity: return 'inf'; case undefined: return 'und'; } return 'none'; })(Infinity)]; });
+note('strict', function () { 'use strict'; var s = 'strict text', e = ''; return [s.length, e.length, !e, !s, e ? 1 : 2, s ? 1 : 2, undefined === void 0, NaN !== NaN, Infinity > 0, e || 'o', s && 'a', 0 || NaN, typeof undefined]; });
+out.join("\n")"##;
+    let expected = r##"lengths=[0,1,7,8,64,65,200,1,1,2,2,4,1,2,3,11,120,7,30,80,60,12,37,7,8,3,2,9,12,5,12,8,11,11,10,3,20,1,1,1,2,3,2]
+lengths again=[0,1,7,8,64,65,200,1,1,2,2,4,1,2,3,11,120,7,30,80,60,12,37,7,8,3,2,9,12,5,12,8,11,11,10,3,20,1,1,1,2,3,2]
+after the length=[1,302,372,383,939,950,2305,710,17103,112721,447,57072,110899,111956,55523,1320,3467,57142,113018,113543,897,709,668,433,387,472,112721,57164,474,202,271,237,542,688,307,355,519,306,306,329,20,326,402]
+before the length=[[NaN,0,0,true],[NaN,1,1,true],[98,3,7,true],[98,3,8,true],[98,3,64,true],[98,3,65,true],[98,3,200,true],[NaN,1,1,true],[NaN,1,1,true],[56832,2,2,true],[233,2,2,true],[98,3,4,true],[NaN,1,1,true],[55296,2,2,true],[98,3,3,true],[1088,3,11,true],[1088,3,120,true],[97,3,7,true],[56832,3,30,true],[56832,3,80,true],[98,3,60,true],[120,3,12,true],[97,3,37,true],[120,3,7,true],[100,3,8,true],[105,3,3,true],[56832,2,2,true],[101,3,9,true],[97,3,12,true],[44,3,5,true],[50,3,12,true],[50,3,8,true],[98,3,11,true],[97,3,11,true],[66,3,10,true],[97,3,3,true],[98,3,20,true],[NaN,1,1,true],[NaN,1,1,true],[NaN,1,1,true],[0,2,2,true],[0,3,3,true],[128,2,2,true]]
+length in loops=4673
+length of other things=[3,5,"own",2,5,3,4,2,undefined,undefined,undefined,undefined,1]
+length of nothing=["TypeError","TypeError"]
+a length that is changed=["TypeError",3,false,true,"0,1",true,7,3]
+if="10000000011111111111000001111111001110011111111111111110"
+if not="01111111100000000000111110000000110001100000000000000001"
+conditional="10000000011111111111000001111111001110011111111111111110"
+not="01111111100000000000111110000000110001100000000000000001 10000000011111111111000001111111001110011111111111111110"
+or and="vav ovv ovn ovn ovv ovv ovv ovv ovv vav vav vav vav vav vav vav vav vav vav vav ovv ovv ovv ovv ovv vav vav vav vav vav vav vav ovv ovv vav vav vav ovv ovv vav vav vav vav vav vav vav vav vav vav vav vav vav vav vav vav ovv"
+loops="11111111111111111111111111111111111111111111111111111111"
+by functions="10000000011111111111000001111111001110011111111111111110 38 38 10000000011111111111000001111111001110011111111111111110 1 10000000011111111111000001111111001110011111111111111110"
+tests of computed values="cehjmoq"
+the three values=[undefined,NaN,Infinity,-Infinity,"undefined","number","number",true,true,false,true,true,true,true,0,-0,NaN,true,true,[undefined,NaN,Infinity],"{"n":null,"i":null,"a":[null]}","undefinedNaNInfinity",NaN,"undefinedNaNInfinity",NaN,1,true,-1,0,"n",false,true]
+compared with them=["acegmn1truetruefalse","bcgij2falsetruefalse","bdgij2falsefalsefalse","bdg2falsefalsefalse","bdghjk2falsefalsetrue","bdgi2falsefalsefalse","bdgij2falsefalsefalse","bdg2falsefalsefalse","bdgjk2falsefalsefalse","bdgij2falsefalsefalse","bdghjk2falsefalsetrue","bdg2falsefalsefalse","bdgij2falsefalsefalse","bdgij2falsefalsefalse"]
+names that stand before them=[[5,true],[6,7,8,true,false],[1,"number"],[2,3,true],["n","i"],"function",4,"function"]
+eval=[[3,4,NaN],["undefined",undefined],[1,2,undefined],[undefined,NaN,Infinity,"undefined"],undefined,[undefined,NaN,Infinity],[1,2]]
+assigned to=[undefined,NaN,Infinity,NaN,NaN,Infinity,NaN,false,false,"undefined",undefined,NaN,Infinity,"TypeError","TypeError",false,true,Infinity,undefined,"TypeError",NaN,3]
+defaults and returns=[[undefined,NaN,Infinity],[1,2,3],undefined,NaN,undefined,NaN,Infinity,"key","nan",true,"key",true,true,3,"case","inf"]
+strict=[11,0,true,false,2,1,true,true,true,"o","a",NaN,"undefined"]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
