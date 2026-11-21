@@ -1198,9 +1198,14 @@ fn text_joined_on_reading_counts_against_the_memory_limit() {
             ),
             Err(Error::OutOfMemory)
         );
+        // What stopped it is the host's poll, which finds the heap over
+        // its limit by the texts joined so far and ends the script, or a
+        // join that the limit has no room for, which ends the engine: the
+        // poll comes within a bounded run of instructions, and mostly
+        // first.
         assert!(matches!(
             engine.evaluate("1", false),
-            Err(Error::Dead(_)) | Err(Error::OutOfMemory)
+            Ok(Completion::Number(_)) | Err(Error::Dead(_)) | Err(Error::OutOfMemory)
         ));
     }
     // A text of half the limit is built and read: the pieces and the joined
@@ -21473,4 +21478,52 @@ if (typeof __nova__ !== "undefined") {
     for line in lines {
         assert!(line.starts_with("PASS "), "{line}");
     }
+}
+
+/// A script that the host enters after the memory limit ended one is over
+/// the limit from its first instruction, by what the last collection
+/// found. It is collected once before it is held to that: it may have let
+/// go of what the other one kept (`pad.length = 4`), with nothing
+/// allocated since, and was ended at its first poll for what was no longer
+/// there. One that lets go of nothing and makes more is ended as before.
+#[test]
+fn a_script_entered_after_the_limit_ended_one_is_collected_before_it_is_judged() {
+    let fill = "var pad = []; for (;;) pad.push(new Array(16384).fill(1.5));";
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    assert_eq!(engine.evaluate(fill, false), Err(Error::OutOfMemory));
+    assert_eq!(
+        engine.evaluate(
+            "pad.length = 4; var n = 0; for (var i = 0; i < 300000; i++) { n += i & 1; } n",
+            false
+        ),
+        Ok(Completion::Number(150000.0))
+    );
+    assert!(engine.memory_used() < 4 << 20);
+    // And it goes on to use what it has made room for.
+    assert_eq!(
+        engine.evaluate(
+            "for (var k = 0; k < 6; k++) pad.push(new Array(16384).fill(2.5)); pad.length",
+            false
+        ),
+        Ok(Completion::Number(10.0))
+    );
+    // One that lets go of nothing and makes more is ended as the first
+    // was, and the engine goes on when the next one lets go.
+    let (mut engine, _, _) = limited(8 << 20, 0);
+    assert_eq!(engine.evaluate(fill, false), Err(Error::OutOfMemory));
+    assert_eq!(
+        engine.evaluate(
+            "var more = []; for (;;) more.push(new Array(16384).fill(3.5));",
+            false
+        ),
+        Err(Error::OutOfMemory)
+    );
+    assert_eq!(
+        engine.evaluate(
+            "pad = null; more = null; var n = 0; for (var i = 0; i < 300000; i++) { n += i & 1; } n",
+            false
+        ),
+        Ok(Completion::Number(150000.0))
+    );
+    assert!(engine.memory_used() < 4 << 20);
 }
