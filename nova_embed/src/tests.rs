@@ -20283,3 +20283,104 @@ fn loops_that_test_a_local_are_interrupted_and_collected() {
         Ok(Completion::Number(300000.0))
     );
 }
+
+/// A value that is tested where it was worked out (a property, the
+/// result of a call, an element, a variable of an enclosing function or
+/// of the script) is answered by the jump or the `!` that tests it, for
+/// what is mostly tested, and by ToBoolean for anything else. A value of
+/// every kind by twenty-five ways of testing one, against Boolean; `!x`
+/// of every kind, which is a Boolean, used as a value; one property
+/// holding every kind in turn; the value of statements that test; the
+/// loops a value ends; tests joined; a getter asked once, and one that
+/// throws; many turns. What is expected is what Node prints for the same
+/// script.
+#[test]
+fn a_value_tested_for_being_true_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(values_tested_for_being_true)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn values_tested_for_being_true() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'string') return '"' + v + '"'; if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).map(function (k) { return k + ':' + fmt(v[k]); }).join(',') + '}'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+var long = 'a string that is too long to be kept in a value';
+function kinds() { return [true, false, 0, -0, 1, -1, 7, -7, NaN, Infinity, -Infinity, 0.5, -0.5, 0.1, 1e300, 5e-324, 9007199254740991, -9007199254740991, 9007199254740993, '', 'a', ' ', '0', 'false', long, null, undefined, {}, [], [0], function () {}, Symbol('s'), 0n, 1n, -1n, 12345678901234567890n, new Boolean(false), new Number(0), new String(''), new Date(0), /x/, new Map(), new Proxy({}, {}), Object.create(null), Math, globalThis]; }
+function id(v) { return v; }
+// Each way a value that is in no stack slot is tested: 't' where it is taken for true.
+function byProperty(v) { var o = { v: v }; if (o.v) { return 't'; } return 'f'; }
+function byPropertyElse(v) { var o = { v: v }, r; if (o.v) { r = 't'; } else { r = 'f'; } return r; }
+function byPropertyNot(v) { var o = { v: v }; if (!o.v) { return 'f'; } return 't'; }
+function byPropertyTernary(v) { var o = { v: v }; return o.v ? 't' : 'f'; }
+function byCall(v) { if (id(v)) { return 't'; } return 'f'; }
+function byCallNot(v) { if (!id(v)) { return 'f'; } return 't'; }
+function byElement(v) { var a = [v]; if (a[0]) { return 't'; } return 'f'; }
+function byKey(v) { var o = { v: v }, k = 'v'; return o[k] ? 't' : 'f'; }
+function byCaptured(v) { var f = function () { if (v) { return 't'; } return 'f'; }; return f(); }
+function byCapturedNot(v) { var f = function () { return !v ? 'f' : 't'; }; return f(); }
+function byGlobal(v) { globalThis.tested101 = v; if (tested101) { return 't'; } return 'f'; }
+function byThis(v) { var o = { v: v, test: function () { if (this.v) { return 't'; } return 'f'; } }; return o.test(); }
+function byNotValue(v) { var n = !v; return n === false ? 't' : n === true ? 'f' : '?'; }
+function byNotNotValue(v) { var o = { v: v }, n = !!o.v; return n === true ? 't' : n === false ? 'f' : '?'; }
+function byNotOfCall(v) { var n = !id(v); return n === false ? 't' : n === true ? 'f' : '?'; }
+function byWhile(v) { var o = { v: v }, r = 'f', turns = 0; while (o.v) { r = 't'; turns = turns + 1; if (turns > 0) { break; } } return r; }
+function byDoWhile(v) { var turns = 0; do { turns = turns + 1; if (turns > 1) { break; } } while (id(v)); return turns > 1 ? 't' : 'f'; }
+function byFor(v) { var a = [v], r = 'f', turns = 0; for (; a[0]; turns = turns + 1) { r = 't'; if (turns >= 0) { break; } } return r; }
+function byAnd(v) { var o = { v: v, one: 1 }; if (o.v && o.one) { return 't'; } return 'f'; }
+function byOr(v) { var o = { v: v, zero: 0 }; if (o.zero || o.v) { return 't'; } return 'f'; }
+function byGetter(v) { var calls = 0, o = { get v() { calls = calls + 1; return v; } }; var r = o.v ? 't' : 'f'; return calls === 1 ? r : '?'; }
+function byProxy(v) { var p = new Proxy({}, { get: function () { return v; } }); return p.anything ? 't' : 'f'; }
+function byArgument(v) { function f() { if (arguments[0]) { return 't'; } return 'f'; } return f(v); }
+function byComma(v) { var o = { v: v }; if ((0, o.v)) { return 't'; } return 'f'; }
+function byAssignment(v) { var w; if ((w = id(v))) { return 't'; } return 'f'; }
+var ways = [byProperty, byPropertyElse, byPropertyNot, byPropertyTernary, byCall, byCallNot, byElement, byKey, byCaptured, byCapturedNot, byGlobal, byThis, byNotValue, byNotNotValue, byNotOfCall, byWhile, byDoWhile, byFor, byAnd, byOr, byGetter, byProxy, byArgument, byComma, byAssignment];
+note('every kind by every way', function () { var k = kinds(), rows = []; for (var w = 0; w < ways.length; w = w + 1) { var row = ''; for (var i = 0; i < k.length; i = i + 1) { row += ways[w](k[i]); } rows.push(row); } return rows; });
+note('the ways agree with Boolean', function () { var k = kinds(), bad = []; for (var w = 0; w < ways.length; w = w + 1) { for (var i = 0; i < k.length; i = i + 1) { if ((ways[w](k[i]) === 't') !== Boolean(k[i])) { bad.push(w + ':' + i); } } } return bad; });
+// The value of `!x`, which is a Boolean whatever x is.
+note('not of every kind', function () { var k = kinds(), r = ''; for (var i = 0; i < k.length; i = i + 1) { var o = { v: k[i] }, n = !o.v, m = !k[i], d = !!o.v; r += (n === m && d === !n && typeof n === 'boolean') ? (n ? 'T' : 'F') : '?'; } return r; });
+note('not used as a value', function () { var o = { a: 0, b: 'x', c: null, d: {} }; return [!o.a, !o.b, !o.c, !o.d, !o.e, !!o.a, !!o.b, !o.a + 1, !o.b + 1, String(!o.c), [!o.d].length, !o.a === true, !o.b === false, !(o.a + 1), !(o.a - 0), !-o.a, !~o.a, !typeof o.e, !void 0, !o.a ? 'y' : 'n', !o.b ? 'y' : 'n']; });
+// One property that holds every kind in turn, tested by one instruction all the while.
+note('one property of every kind in turn', function () { var k = kinds(), o = { v: 0 }, r = '', turns = 0; for (var i = 0; i < k.length * 3; i = i + 1) { o.v = k[i % k.length]; if (o.v) { r += 't'; } else { r += 'f'; } if (!o.v) { r += 'F'; } else { r += 'T'; } turns = turns + 1; } return [r.length, r.slice(0, k.length * 2), turns]; });
+// What a test leaves behind, and the value of a statement that tests.
+note('the value of statements that test a value', function () { var o = { t: 5, f: 0, n: null }; globalThis.o101 = o; return [eval("'first'; if (o101.t) { }"), eval("'first'; if (o101.f) { }"), eval("'first'; if (o101.t) { 'then'; }"), eval("'first'; if (o101.f) { 'then'; } else { 'else'; }"), eval("'first'; if (!o101.n) { }"), eval("'first'; o101.t ? 'yes' : 'no';"), eval("'first'; o101.n ? 'yes' : 'no';"), eval("'first'; !o101.t;"), eval("'first'; !o101.f;"), eval("'first'; var t101 = 0; while (o101.t) { t101 = t101 + 1; if (t101 > 2) break; }"), eval("'first'; var u101 = 0; while (o101.f) { u101 = u101 + 1; if (u101 > 2) break; }")]; });
+// The loops a value ends, each with a count beside it.
+note('a count in a property run down', function () { var o = { n: 10 }, turns = 0, sum = 0; while (o.n) { sum = sum + o.n; o.n = o.n - 1; turns = turns + 1; if (turns > 100) { break; } } return [sum, o.n, turns]; });
+note('a queue emptied', function () { var q = [3, 2, 1], got = [], turns = 0; while (q.length) { got.push(q.shift()); turns = turns + 1; if (turns > 100) { break; } } return [got, q.length, turns]; });
+note('a list walked by a call', function () { var list = null, turns = 0, n = 0; for (var i = 0; i < 20; i = i + 1) { list = { next: list }; } var cur = { at: list }; while (id(cur.at)) { cur.at = cur.at.next; n = n + 1; turns = turns + 1; if (turns > 100) { break; } } return [n, cur.at, turns]; });
+note('a text eaten by its length', function () { var o = { s: 'abcdef' }, n = 0, turns = 0; do { o.s = o.s.slice(1); n = n + 1; turns = turns + 1; if (turns > 100) { break; } } while (o.s); return [n, o.s, turns]; });
+note('tests joined', function () { function f(o) { var r = ''; if (o.a && o.b || o.c) { r += '1'; } if (o.a || o.b && o.c) { r += '2'; } if (!(o.a && o.b) || !o.c) { r += '3'; } if (!o.a && !o.b && !o.c) { r += '4'; } r += o.a ? (o.b ? 'x' : 'y') : (o.c ? 'z' : 'w'); return r; } var r = []; for (var i = 0; i < 8; i = i + 1) { r.push(f({ a: i & 4, b: i & 2 ? 'yes' : '', c: i & 1 ? {} : null })); } return r; });
+note('a test that throws nothing for any value', function () { var k = kinds(), n = 0; for (var i = 0; i < k.length; i = i + 1) { var o = { v: k[i] }; try { if (o.v) { n = n + 1; } if (!o.v) { n = n + 100; } } catch (e) { n = n - 10000; } } return n; });
+note('a getter that throws is not a test', function () { var o = { get v() { throw new RangeError('v'); } }; if (o.v) { return 1; } return 2; });
+// Many turns, with sums that say each test went the right way.
+note('many turns', function () { var o = { n: 0, p: null, s: '', b: false }, t = 0, f = 0, turns = 0; for (var i = 0; i < 30000; i = i + 1) { o.n = i % 3; o.p = i % 5 ? o : null; o.s = i % 7 ? 'x' : ''; o.b = i % 2 === 0; if (o.n) { t = t + 1; } else { f = f + 1; } if (o.p) { t = t + 3; } if (!o.p) { f = f + 7; } if (o.s) { t = t + 11; } if (!o.s) { f = f + 13; } if (o.b) { t = t + 17; } if (!o.b) { f = f + 19; } if (id(o.n)) { t = t + 23; } if (!id(o.p)) { f = f + 29; } turns = turns + 1; } return [t, f, turns]; });
+out.join("\n")"##;
+    let expected = r##"every kind by every way=["tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt","tfffttttfttttttttttftttttfftttttfttttttttttttt"]
+the ways agree with Boolean=[]
+not of every kind="FTTTFFFFTFFFFFFFFFFTFFFFFTTFFFFFTFFFFFFFFFFFFF"
+not used as a value=[true,false,true,false,true,false,true,2,1,"true",1,true,true,false,true,true,false,false,true,"y","n"]
+one property of every kind in turn=[276,"tTfFfFfFtTtTtTtTfFtTtTtTtTtTtTtTtTtTtTfFtTtTtTtTtTfFfFtTtTtTtTtTfFtTtTtTtTtTtTtTtTtTtTtTtTtT",138]
+the value of statements that test a value=[undefined,undefined,"then","else",undefined,"yes","no",false,true,undefined,undefined]
+a count in a property run down=[55,0,10]
+a queue emptied=[[3,2,1],0,3]
+a list walked by a call=[20,null,20]
+a text eaten by its length=[6,"",6]
+tests joined=["34w","13z","3w","123z","23y","123y","123x","12x"]
+a test that throws nothing for any value=838
+a getter that throws is not a test!RangeError
+many turns=[1089854,566718,30000]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
