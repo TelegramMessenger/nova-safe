@@ -3133,13 +3133,7 @@ impl Vm {
                 let value = vm.stack[instr.get_first_index()];
                 // What a variable that is tested mostly holds is answered
                 // here: a call for it was a third of the instruction.
-                let truthy = match value {
-                    Value::Boolean(value) => value,
-                    Value::Undefined | Value::Null => false,
-                    Value::Integer(integer) => integer.into_i64() != 0,
-                    Value::Object(_) => true,
-                    _ => to_boolean(agent, value),
-                };
+                let truthy = tested_true(agent, value);
                 vm.result = None;
                 if truthy == (instr.kind == Instruction::JumpIfIndexTrue) {
                     let from = *ip;

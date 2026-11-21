@@ -2902,15 +2902,27 @@ pub(super) fn execute_jump(agent: &Agent, ip: &mut usize, instr: Instr) {
     *ip = target;
 }
 
+/// Whether a value that is tested is true: ToBoolean of it, answered here
+/// for what a test is mostly of (the Boolean a comparison left, undefined,
+/// null, an integer, an object) and asked for anything else. Every
+/// `if (o.k)`, `while (n--)` and `!x` of a value that is no Boolean made a
+/// call for it, a third of what the test is.
+#[inline(always)]
+pub(super) fn tested_true(agent: &Agent, value: Value) -> bool {
+    match value {
+        Value::Boolean(value) => value,
+        Value::Undefined | Value::Null => false,
+        Value::Integer(integer) => integer.into_i64() != 0,
+        Value::Object(_) => true,
+        _ => to_boolean(agent, value),
+    }
+}
+
 #[inline(always)]
 pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, ip: &mut usize, instr: Instr) {
     let result = vm.result.take().unwrap();
     let target = instr.get_jump_slot();
-    // A comparison left a Boolean: no conversion to make.
-    let truthy = match result {
-        Value::Boolean(value) => value,
-        _ => to_boolean(agent, result),
-    };
+    let truthy = tested_true(agent, result);
     if !truthy {
         if agent.options.print_internals {
             eprintln!("Comparison failed, jumping to {target}");
@@ -2922,10 +2934,7 @@ pub(super) fn execute_jump_if_not(agent: &Agent, vm: &mut Vm, ip: &mut usize, in
 #[inline(always)]
 pub(super) fn execute_jump_if_true(agent: &Agent, vm: &mut Vm, ip: &mut usize, instr: Instr) {
     let result = vm.result.take().unwrap();
-    let truthy = match result {
-        Value::Boolean(value) => value,
-        _ => to_boolean(agent, result),
-    };
+    let truthy = tested_true(agent, result);
     if truthy {
         let target = instr.get_jump_slot();
         if agent.options.print_internals {
@@ -3185,7 +3194,7 @@ pub(super) fn execute_is_constructor(agent: &Agent, vm: &mut Vm) {
 #[inline(always)]
 pub(super) fn execute_logical_not(agent: &Agent, vm: &mut Vm) {
     // 2. Let oldValue be ToBoolean(? GetValue(expr)).
-    let old_value = to_boolean(agent, vm.result.take().unwrap());
+    let old_value = tested_true(agent, vm.result.take().unwrap());
 
     // 3. If oldValue is true, return false.
     // 4. Return true.
