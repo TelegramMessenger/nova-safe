@@ -2106,4 +2106,110 @@ mod test {
         assert_eq!(run(&mut agent, "read() + fixed", gc.reborrow()), 6.into());
         assert!(agent.global_scope_seen.remembers());
     }
+
+    /// What is kept of the shapes that were found (the shape of an object
+    /// of a prototype, the shape arrived at from a shape by a key) is of
+    /// the collection it was found in: after another, the handles name what
+    /// took the places of the things they named. Here things die in front
+    /// of the ones that were kept, so that those move and others come to
+    /// where they were: prototypes of other makers, and shapes with other
+    /// keys. How many must die for one to land exactly there is the
+    /// heap's own business, so every number of them up to a dozen is
+    /// tried, each in an agent of its own.
+    #[test]
+    fn the_shapes_that_are_kept_are_not_read_after_a_collection() {
+        fn run(
+            agent: &mut Agent,
+            text: std::string::String,
+            mut gc: GcScope,
+        ) -> std::string::String {
+            let text: &'static str = std::boxed::Box::leak(text.into_boxed_str());
+            let source_text = String::from_static_str(agent, text, gc.nogc());
+            let value = agent
+                .run_script(source_text.unbind(), gc.reborrow())
+                .unwrap()
+                .unbind();
+            let Ok(text) = String::try_from(value) else {
+                panic!("the script ends with a String");
+            };
+            text.to_string_lossy_(agent).into_owned()
+        }
+        // The shape of an object of a prototype: objects die in front of
+        // the prototypes of two makers, the first of which made the last
+        // object before the collection.
+        for garbage in 0..12 {
+            let (mut gc, mut scope) = GcScope::create_root();
+            let mut gc = GcScope::new(&mut gc, &mut scope);
+            let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+            initialize_default_realm(&mut agent, gc.reborrow());
+            let made = run(
+                &mut agent,
+                format!(
+                    "function maker(id, first, second) {{ var M = new Function('v', 'this.' + first + ' = v; this.' + second + ' = v;'); M.prototype.id = id; return M; }}
+                     function show(o) {{ return o.id + ':' + Object.keys(o).join(','); }}
+                     var warm = maker('W', 'w', 'x'); show(new warm(0)); show(new warm(1));
+                     var junk = []; for (var i = 0; i < {garbage}; i++) junk.push({{}});
+                     var B = maker('B', 'c', 'd'), C = maker('C', 'e', 'f'), D = maker('D', 'g', 'h');
+                     var made = show(new D(0)) + show(new D(1)) + show(new C(0)) + show(new C(1));
+                     var last = new B(1); last = new B(2); made"
+                ),
+                gc.reborrow(),
+            );
+            assert_eq!(made, "D:g,hD:g,hC:e,fC:e,f");
+            run(
+                &mut agent,
+                "junk = null; last = null; 'dropped'".into(),
+                gc.reborrow(),
+            );
+            agent.gc(gc.reborrow());
+            assert_eq!(
+                run(
+                    &mut agent,
+                    "var c = new C(2), d = new D(2), b = new B(3); show(c) + ' ' + show(d) + ' ' + show(b)".into(),
+                    gc.reborrow()
+                ),
+                "C:e,f D:g,h B:c,d",
+                "with {garbage} objects dead in front"
+            );
+        }
+        // The shape arrived at by a key: shapes that no cache holds die in
+        // front of two chains of shapes with a shape of another kind
+        // between the links of the second.
+        for garbage in 0..12 {
+            let (mut gc, mut scope) = GcScope::create_root();
+            let mut gc = GcScope::new(&mut gc, &mut scope);
+            let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+            initialize_default_realm(&mut agent, gc.reborrow());
+            let made = run(
+                &mut agent,
+                format!(
+                    "var junk = []; for (var i = 0; i < {garbage}; i++) junk.push(JSON.parse('{{\"g' + i + '\":1}}'));
+                     function s() {{ var o = {{}}; o.k1 = 1; o.zz = 2; return o; }}
+                     function t() {{ var o = {{}}; o.k2 = 1; return o; }}
+                     function u() {{ var o = {{}}; o.other = 1; return o; }}
+                     function zz(o) {{ o.zz = 2; return o; }}
+                     s(); s();
+                     var w = t(); u(); zz(w); zz(t()); u();
+                     s(); s(); Object.keys(zz(t())).join(',')"
+                ),
+                gc.reborrow(),
+            );
+            assert_eq!(made, "k2,zz");
+            run(
+                &mut agent,
+                "junk = null; w = null; 'dropped'".into(),
+                gc.reborrow(),
+            );
+            agent.gc(gc.reborrow());
+            assert_eq!(
+                run(
+                    &mut agent,
+                    "var a = zz(t()), b = s(), c = u(); Object.keys(a).join(',') + ' ' + Object.keys(b).join(',') + ' ' + Object.keys(c).join(',') + ' ' + a.k2 + a.zz + b.k1 + b.zz + c.other".into(),
+                    gc.reborrow()
+                ),
+                "k2,zz k1,zz other 12121",
+                "with {garbage} shapes dead in front"
+            );
+        }
+    }
 }

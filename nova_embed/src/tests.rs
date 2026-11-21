@@ -18464,3 +18464,153 @@ integer sums=2007467948788"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `new` of a function reads the function's "prototype" by its cache,
+/// finds the shape of an object of that prototype where it found it the
+/// last time, and arrives at the shape of each field added where it
+/// arrived the last time, each for as long as no collection has run. The
+/// prototype replaced, defined again, made a number, null, an Array, a
+/// function and a Proxy between two `new`; makers and Object.create in
+/// turn; fields added in orders that differ by a condition; many shapes
+/// that give way to one another where they are kept; collections between,
+/// and makers that are dropped with their prototypes and the shapes of
+/// what they made, so that others take their places in the heap;
+/// properties removed and added again, objects that take no more, private
+/// names on a frozen one; classes, a parent that makes the object for a
+/// new target, Reflect.construct and a bound function. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn new_makes_an_object_of_the_prototype_and_the_shapes_as_they_are_now() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(objects_made_by_new)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn objects_made_by_new() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+function keys(o) { return Object.keys(o).join(''); }
+function churn(n) { var keep = []; for (var i = 0; i < n; i++) { var o = { a: i + 0.5, s: 'garbage ' + i }; if ((i & 4095) === 0) keep.push(o); } return keep.length; }
+// The prototype of what `new` makes is the function's "prototype" as it is at each `new`.
+function P(x) { this.x = x; }
+P.prototype.kind = 'first';
+note('prototype replaced', function () {
+  var r = []; for (var i = 0; i < 3; i++) r.push(new P(i).kind);
+  var old = P.prototype; P.prototype = { kind: 'second' }; for (var i = 0; i < 3; i++) r.push(new P(i).kind + (new P(i) instanceof P));
+  P.prototype = old; r.push(new P(7).kind, new P(7).x, Object.getPrototypeOf(new P(1)) === old);
+  P.prototype = 5; var o = new P(8); r.push(Object.getPrototypeOf(o) === Object.prototype, o.x, o.kind);
+  P.prototype = null; r.push(Object.getPrototypeOf(new P(9)) === Object.prototype);
+  P.prototype = old; r.push(new P(10).kind);
+  return r.join(',');
+});
+note('prototype defined', function () {
+  function Q() { this.q = 1; } var a = new Q(), b = new Q();
+  Object.defineProperty(Q, 'prototype', { value: { from: 'defined' } }); var c = new Q();
+  Object.defineProperty(Q, 'prototype', { writable: false }); Q.prototype = { from: 'ignored' }; var d = new Q();
+  return [a.from, b.from, c.from, d.from, c.q, Object.getPrototypeOf(a) === Object.getPrototypeOf(b)].join(',');
+});
+note('prototype is an array, a function, a proxy', function () {
+  function R() { this.r = 1; } var r = [];
+  R.prototype = [1, 2]; var a = new R(); r.push(Array.isArray(a), a.length, a[1], a.r);
+  R.prototype = function named() {}; var f = new R(); r.push(typeof f, f.name, f.r);
+  var log = []; R.prototype = new Proxy({ viaProxy: 3 }, { get: function (t, k) { log.push(String(k)); return t[k]; } }); var p = new R(); r.push(p.viaProxy, p.r, log.join('/'));
+  R.prototype = { plain: true }; r.push(new R().plain, new R().plain);
+  return r.join(',');
+});
+// Two functions, and Object.create, in turn: each object has its maker's prototype.
+function A(v) { this.v = v; this.tag = 'a'; } A.prototype.who = function () { return 'A' + this.v; };
+function B(v) { this.tag = 'b'; this.v = v; this.more = v * 2; } B.prototype.who = function () { return 'B' + this.v; };
+note('in turn', function () {
+  var r = [], protoC = { who: function () { return 'C' + this.v; } };
+  for (var i = 0; i < 6; i++) { var a = new A(i), b = new B(i), c = Object.create(protoC); c.v = i; r.push(a.who() + b.who() + c.who() + keys(a) + keys(b) + keys(c)); }
+  return r[0] + ' ' + r[5] + ' ' + r.length;
+});
+// Fields added in orders that differ by a condition: every shape arrived at by its own keys.
+function Branchy(i) { if (i & 1) this.odd = i; this.always = i; if (i & 2) this.two = i; if (i & 4) { this.four = i; this.odd = -i; } this.last = i; }
+note('branches', function () { var r = []; for (var i = 0; i < 16; i++) { var o = new Branchy(i); r.push(keys(o) + ':' + o.odd + ':' + o.last); } return r.join(' '); });
+note('branches again', function () { var s = 0, k = ''; for (var round = 0; round < 500; round++) for (var i = 0; i < 8; i++) { var o = new Branchy(i); s += o.last + (o.two || 0) + (o.four || 0); if (round === 499) k += Object.keys(o).length; } return s + ' ' + k; });
+// Many shapes, so that those kept give way to one another, and the same keys under different prototypes.
+note('many shapes', function () {
+  var makers = [], r = [];
+  for (var m = 0; m < 20; m++) makers.push(new Function('v', 'this.k' + m + ' = v; this.shared = v + 1; this.z' + (m % 3) + ' = ' + m + ';'));
+  for (var round = 0; round < 30; round++) for (var m = 0; m < 20; m++) { var o = new makers[m](round); if (round === 29) r.push(keys(o) + o.shared + (Object.getPrototypeOf(o) === makers[m].prototype)); }
+  return r.join(' ');
+});
+// Through collections: the handles that were kept name other things after.
+note('through collections', function () {
+  var r = [];
+  for (var round = 0; round < 6; round++) { var a = new A(round), b = new B(round), br = new Branchy(round); churn(60000); var a2 = new A(round + 10), b2 = new B(round + 10), br2 = new Branchy(round); r.push(a.who() + a2.who() + b.who() + b2.who() + keys(br) + (keys(br) === keys(br2)) + (Object.getPrototypeOf(a) === Object.getPrototypeOf(a2))); }
+  return r.join(' ');
+});
+// Makers that come and go between collections: their prototypes and the shapes of what they made die, and
+// others take their places in the heap.
+note('makers that come and go', function () {
+  var r = [];
+  for (var round = 0; round < 40; round++) {
+    var junk = []; for (var j = 0; j < 50; j++) junk.push({ pad: j });
+    var T = new Function('v', 'this.f' + (round % 5) + ' = v; this.second = v + 1; this.g' + (round % 3) + ' = v + 2;'); T.prototype.id = 'T' + round;
+    var U = function (v) { this.second = v; this.f0 = v; }; U.prototype.id = 'U' + round;
+    var t = new T(round), u = new U(round), t2 = new T(1), viaCreate = Object.create(T.prototype); viaCreate.second = 0;
+    r.push(t.id + keys(t) + (t.second - round) + u.id + keys(u) + (Object.getPrototypeOf(t2) === T.prototype) + viaCreate.id + keys(viaCreate));
+    junk = null; T = null; U = null; t = u = t2 = viaCreate = null; churn(40000);
+  }
+  return r[0] + ' ' + r[7] + ' ' + r[23] + ' ' + r[39] + ' ' + r.filter(function (x, i) { return x.indexOf('T' + i + 'f') !== 0 || x.indexOf('U' + i + 'secondf0true') < 0; }).length;
+});
+// Properties removed and added again, objects that take no more, and private names on one that is frozen.
+note('removed and added', function () { var r = []; for (var i = 0; i < 4; i++) { var o = new B(i); delete o.v; o.v = 'again'; o.extra = i; delete o.tag; o.tag = 't'; r.push(keys(o) + o.v + o.more); } return r.join(' '); });
+note('hidden then plain', function () { var r = []; for (var i = 0; i < 3; i++) { var o = new A(i); Object.defineProperty(o, 'h', { value: 1, enumerable: false, configurable: true }); delete o.h; o.h = 2; o.i = 3; r.push(keys(o) + Object.getOwnPropertyDescriptor(o, 'h').enumerable + Object.getOwnPropertyDescriptor(o, 'i').writable); } return r.join(' '); });
+note('not extensible', function () { 'use strict'; function N() { this.a = 1; Object.preventExtensions(this); this.b = 2; } try { new N(); } catch (e) { var first = e.name; } function M() { this.a = 1; Object.freeze(this); } var m = new M(), n = new M(); try { m.c = 1; } catch (e) { var second = e.name; } return first + ' ' + second + ' ' + keys(m) + keys(n) + Object.isFrozen(n); });
+note('private names', function () { class Base { constructor(freeze) { this.pub = 1; if (freeze) Object.freeze(this); } } class Derived extends Base { #secret = 7; #other = 8; reveal() { return this.#secret + this.#other; } } var r = []; for (var i = 0; i < 4; i++) { var d = new Derived(i & 1); r.push(d.reveal() + keys(d) + Object.isFrozen(d)); } return r.join(' '); });
+// Classes: fields, a parent that makes the object for a new target, and the new target's prototype changed between.
+note('classes', function () {
+  class Shape { constructor(n) { this.name = n; } describe() { return this.name + ':' + this.area(); } area() { return 0; } }
+  class Sq extends Shape { side = 2; constructor(s) { super('sq'); this.side = s; } area() { return this.side * this.side; } }
+  class Ci extends Shape { constructor(r) { super('ci'); this.r = r; } area() { return 3 * this.r * this.r; } }
+  var r = []; for (var i = 1; i < 5; i++) r.push(new Sq(i).describe() + new Ci(i).describe() + keys(new Sq(i)) + keys(new Ci(i)));
+  var moved = { describe: function () { return 'moved ' + this.name; } }; Object.setPrototypeOf(Sq.prototype, moved); r.push(new Sq(9).describe(), new Ci(9).describe());
+  Object.setPrototypeOf(Sq.prototype, Shape.prototype); r.push(new Sq(3).describe());
+  return r.join(' ');
+});
+note('new target', function () {
+  function Base() { this.made = new.target === undefined ? 'call' : new.target.name; } function Other() {} Other.prototype.mark = 'other';
+  var a = Reflect.construct(Base, [], Other), b = new Base(), c = Reflect.construct(Base, [], Other);
+  var bound = Base.bind(null), d = new bound();
+  return [a.mark, a.made, b.mark, b.made, c.mark, d.made, d instanceof Base, Object.getPrototypeOf(a) === Other.prototype].join(',');
+});
+// Object.create with the same and with other prototypes, null among them, and literals beside them.
+note('create', function () { var p = { p: 1 }, q = { q: 2 }, r = []; for (var i = 0; i < 4; i++) { var a = Object.create(p), b = Object.create(q), n = Object.create(null), l = { own: i }; a.own = i; b.own = i; n.own = i; r.push(a.p + ',' + b.q + ',' + (Object.getPrototypeOf(n) === null) + ',' + l.own + keys(a) + keys(n)); } return r.join(' '); });
+// A long run: a million objects of three makers, summed.
+note('long run', function () { var s = 0; for (var i = 0; i < 300000; i++) { var a = new A(i & 7), b = new B(i & 3), p = new P(i & 1); s += a.v + b.more + p.x + (i % 50000 === 0 ? keys(b).length : 0); } return s; });
+out.join("\n")"##;
+    let expected = r##"prototype replaced=first,first,first,secondtrue,secondtrue,secondtrue,first,7,true,true,8,,true,first
+prototype defined=,,defined,defined,1,true
+prototype is an array, a function, a proxy=false,2,2,1,object,named,1,3,1,viaProxy,true,true
+in turn=A0B0C0vtagtagvmorev A5B5C5vtagtagvmorev 6
+branches=alwayslast:undefined:0 oddalwayslast:1:1 alwaystwolast:undefined:2 oddalwaystwolast:3:3 alwaysfouroddlast:-4:4 oddalwaysfourlast:-5:5 alwaystwofouroddlast:-6:6 oddalwaystwofourlast:-7:7 alwayslast:undefined:8 oddalwayslast:9:9 alwaystwolast:undefined:10 oddalwaystwolast:11:11 alwaysfouroddlast:-12:12 oddalwaysfourlast:-13:13 alwaystwofouroddlast:-14:14 oddalwaystwofourlast:-15:15
+branches again=34000 23344455
+many shapes=k0sharedz030true k1sharedz130true k2sharedz230true k3sharedz030true k4sharedz130true k5sharedz230true k6sharedz030true k7sharedz130true k8sharedz230true k9sharedz030true k10sharedz130true k11sharedz230true k12sharedz030true k13sharedz130true k14sharedz230true k15sharedz030true k16sharedz130true k17sharedz230true k18sharedz030true k19sharedz130true
+through collections=A0A10B0B10alwayslasttruetrue A1A11B1B11oddalwayslasttruetrue A2A12B2B12alwaystwolasttruetrue A3A13B3B13oddalwaystwolasttruetrue A4A14B4B14alwaysfouroddlasttruetrue A5A15B5B15oddalwaysfourlasttruetrue
+makers that come and go=T0f0secondg01U0secondf0trueT0second T7f2secondg11U7secondf0trueT7second T23f3secondg21U23secondf0trueT23second T39f4secondg01U39secondf0trueT39second 0
+removed and added=morevextratagagain0 morevextratagagain2 morevextratagagain4 morevextratagagain6
+hidden then plain=vtaghitruetrue vtaghitruetrue vtaghitruetrue
+not extensible=TypeError TypeError aatrue
+private names=15pubfalse 15pubtrue 15pubfalse 15pubtrue
+classes=sq:1ci:3namesidenamer sq:4ci:12namesidenamer sq:9ci:27namesidenamer sq:16ci:48namesidenamer moved sq ci:243 sq:9
+new target=other,Other,,Base,other,Base,true,true
+create=1,2,true,0ownown 1,2,true,1ownown 1,2,true,2ownown 1,2,true,3ownown
+long run=2100048"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
