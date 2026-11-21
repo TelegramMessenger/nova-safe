@@ -1468,16 +1468,24 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
             // https://tc39.es/ecma262/#sec-unary-minus-operator-runtime-semantics-evaluation
             // UnaryExpression : - UnaryExpression
             UnaryOperator::UnaryNegation => {
+                // A numeric literal with a minus sign (`-1`, `-0.5`) is
+                // the constant it writes: Number::unaryMinus of it, done
+                // here once. (It was done where the code runs, every
+                // time, and `x === -1` was no comparison with a constant.)
+                if let ast::Expression::NumericLiteral(literal) = unparenthesized(&self.argument) {
+                    let constant = ctx.create_number(-literal.value);
+                    ctx.add_instruction_with_constant(Instruction::StoreConstant, constant);
+                    return Ok(ValueOutput::Value);
+                }
                 // 1. Let expr be ? Evaluation of UnaryExpression.
                 // 2. Let oldValue be ? ToNumeric(? GetValue(expr)).
                 self.argument.compile(ctx)?.get_value(ctx)?;
-                ctx.add_instruction(Instruction::ToNumeric);
-
                 // 3. If oldValue is a Number, then
                 //    a. Return Number::unaryMinus(oldValue).
                 // 4. Else,
                 //    a. Assert: oldValue is a BigInt.
                 //    b. Return BigInt::unaryMinus(oldValue).
+                // ToNumeric is the instruction's own first step.
                 ctx.add_instruction(Instruction::UnaryMinus);
                 Ok(ValueOutput::Value)
             }
@@ -1485,6 +1493,12 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
             // https://tc39.es/ecma262/#sec-unary-plus-operator
             // UnaryExpression : + UnaryExpression
             UnaryOperator::UnaryPlus => {
+                // A numeric literal with a plus sign is the literal.
+                if let ast::Expression::NumericLiteral(literal) = unparenthesized(&self.argument) {
+                    let constant = ctx.create_number(literal.value);
+                    ctx.add_instruction_with_constant(Instruction::StoreConstant, constant);
+                    return Ok(ValueOutput::Value);
+                }
                 // 1. Let expr be ? Evaluation of UnaryExpression.
                 // 2. Return ? ToNumber(? GetValue(expr)).
                 self.argument.compile(ctx)?.get_value(ctx)?;
@@ -1510,13 +1524,12 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
                 // 1. Let expr be ? Evaluation of UnaryExpression.
                 // 2. Let oldValue be ? ToNumeric(? GetValue(expr)).
                 self.argument.compile(ctx)?.get_value(ctx)?;
-                ctx.add_instruction(Instruction::ToNumeric);
-
                 // 3. If oldValue is a Number, then
                 //    a. Return Number::bitwiseNOT(oldValue).
                 // 4. Else,
                 //    a. Assert: oldValue is a BigInt.
                 //    b. Return BigInt::bitwiseNOT(oldValue).
+                // ToNumeric is the instruction's own first step.
                 ctx.add_instruction(Instruction::BitwiseNot);
                 Ok(ValueOutput::Value)
             }

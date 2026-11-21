@@ -4108,9 +4108,9 @@ impl Vm {
                 vm.result = Some(string.into());
             }
             // A Number is its own numeric value: the counter of nearly every
-            // loop.
-            Instruction::ToNumeric => {
-                step!(ToNumeric);
+            // loop. And it is what ToNumber gives for it: `+x` of a Number.
+            Instruction::ToNumeric | Instruction::ToNumber => {
+                step!(ToNumeric, ToNumber);
                 if !matches!(
                     vm.result,
                     Some(Value::Integer(_) | Value::SmallF64(_) | Value::Number(_))
@@ -4132,6 +4132,11 @@ impl Vm {
             Instruction::UnaryMinus => {
                 step!(UnaryMinus);
                 return vm.negate_number(agent, gc);
+            }
+            // `~x` of a Number, the same way.
+            Instruction::BitwiseNot => {
+                step!(BitwiseNot);
+                return vm.complement_number(agent);
             }
             Instruction::LessThan => operate_on_integers!(LessThan),
             Instruction::LessThanEquals => operate_on_integers!(LessThanEquals),
@@ -5175,14 +5180,58 @@ impl Vm {
     /// as the negation of the double the Number is, made the Number that
     /// double is (an integer that is not zero stays an integer, zero is
     /// -0 and -0 is zero). Anything else, a BigInt among it, goes the
-    /// general way.
+    /// general way, which makes it a numeric value first: the instruction
+    /// is ToNumeric too, as a Number is its own.
     #[inline(never)]
     fn negate_number(&mut self, agent: &mut Agent, gc: NoGcScope) -> Plain {
+        // An integer that is not zero, with no double made of it.
+        if let Some(Value::Integer(value)) = self.result
+            && value.into_i64() != 0
+            && let Ok(negated) = SmallInteger::try_from(-value.into_i64())
+        {
+            self.result = Some(Value::Integer(negated));
+            return Plain::Done;
+        }
+        // A double that is kept in the Value is one with its sign changed
+        // too: it is no safe integer either way, and its bits are the
+        // same but for the sign. But for -0, whose negation is the
+        // integer zero.
+        if let Some(Value::SmallF64(value)) = self.result {
+            let negated = -value.into_f64();
+            if negated == 0.0 {
+                self.result = Some(Value::Integer(SmallInteger::zero()));
+                return Plain::Done;
+            }
+            if let Ok(negated) = SmallF64::try_from(negated) {
+                self.result = Some(Value::SmallF64(negated));
+                return Plain::Done;
+            }
+        }
         let Some(double) = self.result.and_then(|value| Self::double_of(agent, value)) else {
             return Plain::No;
         };
         let negated: Value = Number::from_f64(agent, -double, gc).into();
         self.result = Some(negated.unbind());
+        Plain::Done
+    }
+
+    /// BitwiseNot of a Number in the result register: Number::bitwiseNOT,
+    /// the complement of its ToInt32, which is an integer. Anything else, a
+    /// BigInt among it, goes the general way, which makes it a numeric
+    /// value first as for UnaryMinus.
+    #[inline(never)]
+    fn complement_number(&mut self, agent: &mut Agent) -> Plain {
+        // An integer's ToInt32 is its low 32 bits.
+        if let Some(Value::Integer(value)) = self.result {
+            let complement = !(value.into_i64() as i32);
+            self.result = Some(Value::Integer(SmallInteger::from(complement)));
+            return Plain::Done;
+        }
+        let Some(Ok(number)) = self.result.map(Number::try_from) else {
+            return Plain::No;
+        };
+        let complement: Value = Number::bitwise_not(agent, number).into();
+        self.result = Some(complement.unbind());
         Plain::Done
     }
 
@@ -5868,7 +5917,7 @@ impl Vm {
         vm: &mut Vm,
         executable: Scoped<Executable>,
         instr: Instr,
-        gc: GcScope<'a, '_>,
+        mut gc: GcScope<'a, '_>,
     ) -> JsResult<'a, ContinuationKind> {
         let _: () = match instr.kind {
             Instruction::Load
@@ -6040,7 +6089,11 @@ impl Vm {
             }
             Instruction::ArrayPush => execute_array_push(agent, vm, gc)?,
             Instruction::ArrayElision => execute_array_elision(agent, vm, gc)?,
-            Instruction::BitwiseNot => execute_bitwise_not(agent, vm, gc.into_nogc())?,
+            Instruction::BitwiseNot => {
+                // ToNumeric, which may run a script, then the complement.
+                execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+                execute_bitwise_not(agent, vm, gc.into_nogc())?
+            }
             Instruction::CreateUnmappedArgumentsObject => {
                 execute_create_unmapped_arguments_object(agent, vm, gc.into_nogc())?
             }
@@ -6159,7 +6212,11 @@ impl Vm {
             Instruction::ToNumber => execute_to_number(agent, vm, gc)?,
             Instruction::ToObject => execute_to_object(agent, vm, gc.into_nogc())?,
             Instruction::Typeof => execute_typeof(agent, vm, gc)?,
-            Instruction::UnaryMinus => execute_unary_minus(agent, vm, gc.into_nogc()),
+            Instruction::UnaryMinus => {
+                // ToNumeric, which may run a script, then the negation.
+                execute_to_numeric(agent, vm, gc.reborrow()).unbind()?;
+                execute_unary_minus(agent, vm, gc.into_nogc())
+            }
             Instruction::InitializeVariableEnvironment => {
                 execute_initialize_variable_environment(agent, vm, instr, gc.into_nogc())
             }
