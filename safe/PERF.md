@@ -145,25 +145,25 @@ below.
 
 | Group | Cases | Before | Now |
 |---|---|---|---|
-| typed | 4 | 10.6x | 1.6x |
+| typed | 4 | 10.6x | 1.5x |
 | call | 14 | 10.4x | 1.5x |
-| math | 4 | 9.7x | 1.6x |
-| string | 26 | 10.6x | 1.3x |
-| prop | 13 | 7.1x | 1.3x |
+| math | 4 | 9.7x | 1.5x |
+| string | 26 | 10.6x | 1.2x |
+| prop | 13 | 7.1x | 1.2x |
 | map, set | 4 | 4.6x | 1.1x |
 | app | 8 | 6.1x | 1.4x |
-| array | 14 | 5.8x | 1.4x |
-| regexp | 4 | 2.4x | 1.4x |
-| loop | 11 | 11.1x | 1.2x |
+| array | 14 | 5.8x | 1.2x |
+| regexp | 4 | 2.4x | 1.3x |
+| loop | 11 | 11.1x | 1.1x |
 | gc | 3 of 5 | 3.6x | 0.9x |
 | json | 2 | 1.0x | 0.8x |
-| all | 108 | 7.6x | 1.3x |
+| all | 108 | 7.6x | 1.23x |
 
 The worst case was 303x (appending to a string 100,000 times); that one is 1.6x, and prepending, which
-was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure and a step of a
-particle animation (2.3x): the two that are over 2x. 106 of the 108 cases are at or under it, 21 of
-them at or under QuickJS's time.
-Over all cases it is 1.31x: 2.12x before the round of patterns, Array iteration and
+was the worst after it (38x, area 7), 1.7x. The worst is now the call of a closure (1.97x), and no
+case is over 2x: of the 107 that both engines run, 26 are at or under QuickJS's time and 40 over
+1.5x ("now" is the tables of a quiet machine at the end of this section).
+Over all cases it is 1.23x: 2.12x before the round of patterns, Array iteration and
 array literals, 2.05x after it, 2.03x after the round of `for`-`in` and of the caches of names, 2.01x
 after the round of entering and leaving a function, 1.96x after the round of callbacks, 1.91x after the
 round of what an appended text keeps of its end, 1.89x after the round of the text of a Number, and
@@ -285,8 +285,9 @@ bytes that are compared (area 2). By this measure no case is over 2x: the cases 
 table had nearest to it are, on that build, the call of a closure 1.96x, trigonometry 1.91 to
 1.97x, the arithmetic of a Float64Array 1.87x, objects spread and assigned 1.86x, the properties
 of one object 1.83x, a step of the particles 1.81x, a sort with a comparator 1.81x, and the rest
-1.79x and under. A table of a quiet machine has still to say so. The properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a
-Float64Array 1.88x, a step of a generator 1.81x, a plain call 1.72x.
+1.79x and under. (The tables of a quiet machine, at the end of this section, say the same.) The
+properties of one object are 1.82x, trigonometry 1.91x, the arithmetic of a Float64Array 1.88x, a
+step of a generator 1.81x, a plain call 1.72x.
 
 With the global scope saying when it changes and the sweep by the words of the marks (areas 2 and
 9), by the same measure: trigonometry 1.71x, calls of `Math` functions 1.52x for 1.68x, a loop
@@ -314,6 +315,24 @@ Float64Array 1.75x, the pixel loop 1.87x, the fill of a Uint8Array 1.11x, by the
 
 The shapes that `new` keeps (area 3): `new` of a class 1.50x, a derived class 1.62x, a tree built
 and walked 1.30x. The call of a closure is where it was, 1.96x, and is the case nearest 2x.
+
+The tables of a quiet machine, at last, after the rounds of an Array's plain elements, `typeof`,
+the operators of one operand, the length of a String, ToBoolean and the three constants: two of
+the whole suite from the last round's saved library, eight minutes apart, each the fastest of five
+processes for a case. The wait for them had gone by the load average, which on this machine stays
+near twenty while one process of the desktop spins in the kernel on four of its eighteen
+processors, and says nothing: the processors were 70% idle all morning but for the builds and
+checks of the rounds themselves. Taken while they were idle but for that process, over the 107
+cases that both engines run: 1.226x and 1.227x, the worst 1.98x and 1.96x (the call of a closure).
+After it a step of the particles 1.86x in both, a sort with a comparator 1.82x, and eleven more
+between 1.7x and 1.8x (a function that calls itself, a method through three prototypes, a step of
+a generator, the properties of one object, the pixel loop, an arrow as a callback, padding a text,
+numbers appended to one, trigonometry, a slice of a text that is not ASCII, a method); 26 cases at
+or under QuickJS's time. Two older saved libraries measured in the same quarter of an hour: the
+one the table at the top of this section was last taken with reads 1.302x with the worst 2.35x (a
+step of the particles), and the one from before the global scope said when it changes 1.289x with
+the worst 1.95x. So what the two engines run in turn had said holds: no case is over 2x, and none
+was at that earlier round either; the mean has come down by a twentieth since.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
