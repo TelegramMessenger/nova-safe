@@ -959,7 +959,12 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                 .find_map(|(update, step)| {
                     let start = self.recent_instruction(0, update)?;
                     let fused = comparison.as_loop_test(step, constant)?;
-                    (self.operand_bytes(start) == first).then_some((start, fused))
+                    // The instruction reads its other operand before it
+                    // makes the step: that is not the local it steps
+                    // (`i >= i` after `i--`), which is compared as the
+                    // step leaves it, by the comparison alone.
+                    (self.operand_bytes(start) == first && (constant || second != first))
+                        .then_some((start, fused))
                 });
                 let fused = match step {
                     Some((update, fused)) => {
