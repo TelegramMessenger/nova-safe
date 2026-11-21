@@ -18727,3 +18727,64 @@ instanceof in a loop=25560000"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// JSON.stringify quotes a String by the stretches of it that go as they
+/// are, copied at once, and the code points between them that are escaped
+/// or looked at one by one. Every code unit below 0x100 together and each
+/// alone; the code points around the surrogates and the ones whose first
+/// byte the surrogates share; pairs, lone surrogates in every order, and
+/// two quoted texts joined; escapes at the ends of a text and next to one
+/// another; long texts; keys and nested values; every text read back by
+/// JSON.parse. What is printed is the code units of the JSON text, and
+/// what is expected is what Node prints for the same script.
+#[test]
+fn a_string_is_quoted_for_json_by_its_stretches_as_by_its_code_points() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(strings_quoted_for_json)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn strings_quoted_for_json() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+// What is printed is the code units of the JSON text, so that nothing depends on how a lone surrogate is printed.
+function units(s) { var r = []; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); r.push(c < 128 && c > 31 ? s[i] : '<' + c.toString(16) + '>'); } return r.join(''); }
+function q(s) { return units(JSON.stringify(s)); }
+note('every code unit below 0x100', function () { var all = ''; for (var i = 0; i < 256; i++) all += String.fromCharCode(i); return q(all); });
+note('each alone', function () { var r = []; for (var i = 0; i < 130; i++) r.push(q(String.fromCharCode(i))); return r.join(''); });
+note('around the surrogates', function () { return [0xD7FE, 0xD7FF, 0xD800, 0xD801, 0xDBFF, 0xDC00, 0xDFFF, 0xE000, 0xE001, 0xFFFD, 0xFFFF, 0xCFFF, 0xD000, 0xD001, 0x7FF, 0x800].map(function (c) { return q('a' + String.fromCharCode(c) + 'b'); }).join(' '); });
+note('pairs and lone ones', function () { var lead = '\uD83D', trail = '\uDE00'; return [lead + trail, trail + lead, lead, trail, lead + lead + trail, lead + 'x' + trail, 'x' + lead, trail + 'x', lead + trail + lead, '\u{10000}\u{10FFFF}', lead + '"' + trail, lead + '\\' + trail + '\n'].map(q).join(' '); });
+note('joined after quoting', function () { var a = JSON.stringify('\uD83D'), b = JSON.stringify('\uDE00'); return units(a + b) + ' ' + units(JSON.stringify(['\uD83D', '\uDE00'])) + ' ' + units(JSON.stringify({ '\uD83D': '\uDE00' })); });
+note('escapes at the ends and together', function () { return ['"', '\\', '\n', '""', '\\\\', '"a', 'a"', '"a"', 'a\\b', '\n\n\n', 'a\tb\tc', '\u0000', 'x\u0000y', '\u001f', '\u007f', ' ', '  ', 'é"é', 'é\\', '\\é', '日本語"テスト"', '\b\f\r'].map(q).join(' '); });
+note('long', function () { var plain = 'the quick brown fox jumps over the lazy dog. '.repeat(50), r = []; r.push(JSON.stringify(plain).length, JSON.stringify(plain + '"').length, JSON.stringify('"' + plain).length, JSON.stringify(plain + '\n' + plain).length, JSON.stringify('é'.repeat(300) + '"' + '\uD800'.repeat(3) + 'z'.repeat(300)).length); var s = JSON.stringify(plain.replace(/o/g, '"')); r.push(s.length, s.split('\\"').length, JSON.parse(s) === plain.replace(/o/g, '"')); return r.join(','); });
+note('keys and nesting', function () { var o = {}; o['pl"ain'] = 'v"al'; o['new\nline'] = ['a\\b', { 'k\u0001': '\u0002', '': '', 'é': 'ü', '\uD800': '\uDFFF' }]; o[7] = '7'; return units(JSON.stringify(o)) + ' ' + units(JSON.stringify(o, null, 2).replace(/\n/g, '|')); });
+note('round trip', function () { var bad = 0, n = 0; for (var c = 0; c < 0x3000; c += 7) { for (var d = 0; d < 3; d++) { var s = 'a' + String.fromCharCode(c) + (d ? String.fromCharCode(c + d) + '"' : '') + 'z'; n++; if (JSON.parse(JSON.stringify(s)) !== s) bad++; if (JSON.parse(JSON.stringify({ k: [s] })).k[0] !== s) bad++; } } for (var c = 0xD700; c < 0xE100; c += 3) { var s = String.fromCharCode(c, 0x41, c + 1); n++; if (JSON.parse(JSON.stringify(s)) !== s) bad++; } return bad + ' of ' + n; });
+note('other values', function () { return units(JSON.stringify(['', 'a', 1, null, true, undefined, 'x'.repeat(7), 'x'.repeat(8), new String('boxed"'), { toJSON: function () { return 'from\ttoJSON'; } }, String.fromCharCode(0x61, 0x22, 0x62)])); });
+note('a list of small objects', function () { var list = []; for (var i = 0; i < 400; i++) list.push({ id: i, name: 'item "' + i + '"', tags: ['a', 'b\\c', 'd\ne'], note: i % 7 ? 'plain text of some length' : 'with é and   and 😀' }); var s = JSON.stringify(list), back = JSON.parse(s); return s.length + ' ' + back.length + ' ' + (back[6].name === list[6].name) + ' ' + (back[7].note === list[7].note) + ' ' + units(s.slice(0, 120)); });
+out.join("\n")"##;
+    let expected = r##"every code unit below 0x100="\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~<80><81><82><83><84><85><86><87><88><89><8a><8b><8c><8d><8e><8f><90><91><92><93><94><95><96><97><98><99><9a><9b><9c><9d><9e><9f><a0><a1><a2><a3><a4><a5><a6><a7><a8><a9><aa><ab><ac><ad><ae><af><b0><b1><b2><b3><b4><b5><b6><b7><b8><b9><ba><bb><bc><bd><be><bf><c0><c1><c2><c3><c4><c5><c6><c7><c8><c9><ca><cb><cc><cd><ce><cf><d0><d1><d2><d3><d4><d5><d6><d7><d8><d9><da><db><dc><dd><de><df><e0><e1><e2><e3><e4><e5><e6><e7><e8><e9><ea><eb><ec><ed><ee><ef><f0><f1><f2><f3><f4><f5><f6><f7><f8><f9><fa><fb><fc><fd><fe><ff>"
+each alone="\u0000""\u0001""\u0002""\u0003""\u0004""\u0005""\u0006""\u0007""\b""\t""\n""\u000b""\f""\r""\u000e""\u000f""\u0010""\u0011""\u0012""\u0013""\u0014""\u0015""\u0016""\u0017""\u0018""\u0019""\u001a""\u001b""\u001c""\u001d""\u001e""\u001f"" ""!""\"""#""$""%""&""'""("")""*""+"",""-"".""/""0""1""2""3""4""5""6""7""8""9"":"";""<""="">""?""@""A""B""C""D""E""F""G""H""I""J""K""L""M""N""O""P""Q""R""S""T""U""V""W""X""Y""Z""[""\\""]""^""_""`""a""b""c""d""e""f""g""h""i""j""k""l""m""n""o""p""q""r""s""t""u""v""w""x""y""z""{""|""}""~""""<80>""<81>"
+around the surrogates="a<d7fe>b" "a<d7ff>b" "a\ud800b" "a\ud801b" "a\udbffb" "a\udc00b" "a\udfffb" "a<e000>b" "a<e001>b" "a<fffd>b" "a<ffff>b" "a<cfff>b" "a<d000>b" "a<d001>b" "a<7ff>b" "a<800>b"
+pairs and lone ones="<d83d><de00>" "\ude00\ud83d" "\ud83d" "\ude00" "\ud83d<d83d><de00>" "\ud83dx\ude00" "x\ud83d" "\ude00x" "<d83d><de00>\ud83d" "<d800><dc00><dbff><dfff>" "\ud83d\"\ude00" "\ud83d\\\ude00\n"
+joined after quoting="\ud83d""\ude00" ["\ud83d","\ude00"] {"\ud83d":"\ude00"}
+escapes at the ends and together="\"" "\\" "\n" "\"\"" "\\\\" "\"a" "a\"" "\"a\"" "a\\b" "\n\n\n" "a\tb\tc" "\u0000" "x\u0000y" "\u001f" "" " " "<2028><2029>" "<e9>\"<e9>" "<e9>\\" "\\<e9>" "<65e5><672c><8a9e>\"<30c6><30b9><30c8>\"" "\b\f\r"
+long=2252,2254,2254,4504,622,2452,201,true
+keys and nesting={"7":"7","pl\"ain":"v\"al","new\nline":["a\\b",{"k\u0001":"\u0002","":"","<e9>":"<fc>","\ud800":"\udfff"}]} {|  "7": "7",|  "pl\"ain": "v\"al",|  "new\nline": [|    "a\\b",|    {|      "k\u0001": "\u0002",|      "": "",|      "<e9>": "<fc>",|      "\ud800": "\udfff"|    }|  ]|}
+round trip=0 of 6122
+other values=["","a",1,null,true,null,"xxxxxxx","xxxxxxxx","boxed\"","from\ttoJSON","a\"b"]
+a list of small objects=37433 400 true true [{"id":0,"name":"item \"0\"","tags":["a","b\\c","d\ne"],"note":"with <e9> and <2028> and <d83d><de00>"},{"id":1,"name":"item \"1\"","tags""##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
