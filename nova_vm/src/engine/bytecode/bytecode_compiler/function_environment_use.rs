@@ -44,6 +44,24 @@ impl FunctionEnvironmentUse {
         finder.found
     }
 
+    /// Whether the value of a class field needs the Function Environment
+    /// Record of the constructor that sets the field: the value is code of
+    /// that constructor, run before its body, and what the body alone
+    /// needs of its call says nothing of it. An arrow function in the value
+    /// that refers to this (`read = () => this.marker`) finds it through
+    /// that record, as do `super` and `new.target`, and what a function
+    /// named eval is called with may have any of them.
+    pub(super) fn field_value_needs_function_environment<'s>(
+        value: &'s ast::Expression<'s>,
+    ) -> bool {
+        let mut finder = Finder {
+            arrow_depth: 0,
+            found: Self::default(),
+        };
+        finder.visit_expression(value);
+        finder.found.this_environment || finder.found.arguments
+    }
+
     /// Whether an expression among `formals` makes a function: a function
     /// expression, an arrow function or a class, each of which closes over
     /// the Environment Record that the parameters are in.

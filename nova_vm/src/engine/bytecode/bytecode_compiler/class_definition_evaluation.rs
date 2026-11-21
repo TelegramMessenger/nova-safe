@@ -20,6 +20,8 @@ use crate::{
 use oxc_ast::ast::{self, MethodDefinitionKind};
 
 use super::CompileExpressionVariants;
+use super::function_environment_use::FunctionEnvironmentUse;
+use crate::engine::CallEnvironment;
 use oxc_ecmascript::{BoundNames, PrivateBoundIdentifiers, PropName};
 
 use super::is_anonymous_function_definition;
@@ -613,6 +615,17 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
             if has_instance_private_fields_or_methods {
                 constructor_ctx.add_instruction(Instruction::ClassInitializePrivateElements);
             }
+            // The values of the fields are code of the constructor as its
+            // body is, and may need more of its call than the body does.
+            let fields_need_function_environment = instance_fields.iter().any(|field| {
+                let (PropertyInitializerField::Field((_, value))
+                | PropertyInitializerField::Private((_, _, value))
+                | PropertyInitializerField::Computed((_, value))) = field
+                else {
+                    return false;
+                };
+                value.is_some_and(FunctionEnvironmentUse::field_value_needs_function_environment)
+            });
             for ele in instance_fields {
                 match ele {
                     PropertyInitializerField::Field((property_key, value)) => {
@@ -680,9 +693,15 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Class<
                 };
                 // What the body needs of its call, as for a constructor
                 // without fields: the initializers before it read `this`
-                // as the body does.
+                // as the body does. But an arrow function among them that
+                // reads `this` looks for the Function Environment Record of
+                // the call, which a body that needs none does not ask for.
                 let call_environment = constructor_ctx.compile_function_body(constructor_data);
-                constructor_ctx.set_call_environment(call_environment);
+                constructor_ctx.set_call_environment(if fields_need_function_environment {
+                    CallEnvironment::Function
+                } else {
+                    call_environment
+                });
                 let executable = constructor_ctx.finish();
                 ctx.set_function_expression_bytecode(constructor_index, executable);
             } else {
