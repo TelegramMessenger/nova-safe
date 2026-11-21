@@ -4752,13 +4752,7 @@ impl Vm {
                 if offset.is_unset() {
                     return Some(Value::Undefined);
                 }
-                match prototype
-                    .unwrap_or(object)
-                    .get_own_property_at_offset(agent, offset, gc)
-                {
-                    TryGetResult::Value(value) => Some(value.unbind()),
-                    _ => None,
-                }
+                Self::holder_value_at_offset(agent, prototype.unwrap_or(object), offset, gc)
             }
             // A String value: its length, or what \[\[Get]] of the
             // %String.prototype% of the running realm finds in the cache
@@ -5169,7 +5163,41 @@ impl Vm {
         if offset.is_unset() {
             return Some(Value::Undefined);
         }
-        match holder?.get_own_property_at_offset(agent, offset, gc) {
+        Self::holder_value_at_offset(agent, holder?, offset, gc)
+    }
+
+    /// The value of the property that a cache places at `offset` of
+    /// `holder`, where it is a value: what \[\[GetOwnProperty]] of the
+    /// holder by that offset gives. Of an ordinary object, and of an
+    /// Array, which has its named properties in one, it is read from the
+    /// slot, as a property that an ordinary object inherits is; any other
+    /// holder is asked the general way, and so is a property of the
+    /// holder's own kind.
+    ///
+    /// Every `map.get`, `set.has`, `date.getTime`, `regexp.test` and
+    /// `array.push` asked the general way, a hundred instructions for a
+    /// slot: the kind of the holder found, its storage and the length of
+    /// that taken by three functions, and the value handed back as one of
+    /// two things it could be. (Not the function that reads a property of
+    /// an ordinary object by its cache: that one is part of every such
+    /// read, and stays what it is.)
+    #[inline(never)]
+    fn holder_value_at_offset(
+        agent: &Agent,
+        holder: Object,
+        offset: crate::ecmascript::PropertyOffset,
+        gc: NoGcScope,
+    ) -> Option<Value<'static>> {
+        let ordinary = match holder {
+            _ if offset.is_custom_property() => None,
+            Object::Object(ordinary) => Some(ordinary),
+            Object::Array(array) => array.get_backing_object(agent),
+            _ => None,
+        };
+        if let Some(ordinary) = ordinary {
+            return ordinary.value_at_offset(agent, offset);
+        }
+        match holder.get_own_property_at_offset(agent, offset, gc) {
             TryGetResult::Value(value) => Some(value.unbind()),
             _ => None,
         }
