@@ -2708,6 +2708,70 @@ operand read once, and the value wherever a value goes; with either jump taken t
 jumps of two operators exchanged, or null taken for a value by `??`, it fails. (The register
 emptied where the jump is not taken is not seen by anything: `b` writes it next.)
 
+`base ** exponent` left the loop for every pair of operands, and Number::exponentiate asked the
+two Numbers what they are step by step (whether NaN, a zero of either sign, an infinity, an odd
+integer: each step asking again of which kind the Number is, and reading a Number of the heap
+again), made a Number of the absolute value of the base on the way, and made its result a Number
+the slow way. `(i & 7) ** 2` was 537 instructions (QuickJS 248), `x ** 2` of a double 581 (278),
+`x ** y` of two doubles 613 (184).
+
+The loop calls one function for the operator now. Two integers give their product, by the
+multiplications that the bits of the exponent ask for, where the exponent is not negative and the
+product is a safe integer: that is what the power of the doubles is wherever a double holds the
+result as it is. Any other two Numbers are read as the doubles they are, once; the steps of
+Number::exponentiate are taken on the doubles (the same steps in the same order, the last of them
+the `pow` of the C library), and the result is made a Number as a product's is. The general way,
+which makes a Number of what is none first, takes the same steps on doubles. `(i & 7) ** 2` is 129
+instructions, `2 ** (i & 15)` 169 for 545, `x ** 2` 283, `(i & 7) ** 0.5` 274 for 563, `x ** y`
+286, `x **= 2` of an integer 220 for 628 (QuickJS 276).
+
+The arm is a call and nothing else, as the negation's is. Written as one more of the operators of
+the loop, with the power of two integers asked where they ask for their integers and the power of
+two doubles where they ask for their doubles, it made the whole loop longer: nearly three
+instructions a turn on a loop of three, 2.3% on the case that adds integers, 1.8% on the `switch`,
+0.9% on the property reads, and six instructions on a product of two integers, which has nothing
+of a power but the shape of its arm. As a call, nineteen cases of every kind retire what they did
+(each within 0.12%; the empty loop and the tokenizer half a percent less).
+
+Math.pow did not say what the operator says. Of two integers it multiplied step by step: exactly,
+and rounded once, where the product is past the safe integers, which is the nearest double, and
+where two are as near not always the one that `pow` gives (`Math.pow(3, 34)` was
+16677181699666568 where `3 ** 34` is 16677181699666570, as in Node); and for a negative exponent
+it took the reciprocal of a product of doubles, every multiplication of it rounded
+(`Math.pow(10, -23)` was `1.0000000000000001e-23` where `10 ** -23` is `1e-23`; of the bases to
+2000 with the exponents from -1 to -40, nearly half the pairs differed). It is the operator now:
+the product of the integers where that is a safe integer, the steps on the doubles otherwise. Over
+a grid of 641 values by 641 (the special values, integers and halves, the ends of 32 and of 53
+bits, doubles of every size) the operator gives the bits it gave before, and Math.pow the bits of
+the operator, where 8758 pairs differed. `Math.pow(x, 2)` of a double is 610 instructions for 734;
+with a negative integer exponent it is 715 for 604, which is what the operator's answer costs.
+(That answer is not everywhere the nearer one: `pow` is within a unit of the last place and not
+always the nearest double, so that `9007199254740991 ** -1` is 1.1102230246251565e-16 where
+`1 / 9007199254740991` is 1.1102230246251568e-16, and 31 of the reciprocals of the integers to
+20000 differ so, in Node the same 31. Math.pow gave the division's there, and gives the
+operator's now.) What is left of both is the call: `Math.sqrt(i & 7)` is 428 instructions (QuickJS 249), of which the read
+of `Math` is some 90, of its method some 150 and the call some 190.
+
+What a script can expect of a power is less than it seems. A result that no double holds is
+rounded by the C library, and where two doubles are as near each library chooses for itself; so
+the test asks for such results within a distance of what they are, for the rest as Node prints
+them, and that Math.pow gives what the operator gives. It has small integers with their signs,
+negative exponents, zero and one to exponents past 32 bits, results at the end of the safe
+integers and past it to the infinities, both zeros, both infinities and NaN as either operand one
+by one and as a table of nineteen values by nineteen, 1 and -1 to an exponent that is not finite,
+the result used as an index, a length and an operand, operands that are converted, BigInts and
+Symbols, and the forms the operator is written in. With any of these it fails: a negative exponent
+or a product past 64 bits or past the safe integers taken for an integer power; the steps for a
+NaN exponent, a zero exponent or a NaN base left out (in a build that asserts, as the tests are:
+the assertions of steps 8 and 11 stop the engine there; without them the first two are wrong
+answers, and the third is what `pow` says too); a wrong answer in any of the steps for an
+infinite or a zero base or an infinite exponent, each taken in turn, or an exponent that is no
+integer taken for an odd one; every negative base given NaN; and the operands exchanged, in the
+loop, in the general way or in Math.pow. Two things it cannot tell: step 12 left out (a negative
+base with an exponent that is no integer, which `pow` answers NaN as well here), and the arm of
+the loop leaving every power to the general way, which gives the same. The steps that `pow`
+would also answer stay as the specification has them, for a library that answers otherwise.
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
@@ -3273,6 +3337,12 @@ tokenizer, where most of what is swept lives, are the same to 0.2%.
   it, so a name in the body is never a property of the object (`with ({ x: 9 }) { x }` is a
   ReferenceError, or the `x` outside). Strict code, which the engine runs by default, has no
   `with`. Seen in the script for `undefined` as a constant, which leaves it out. Not changed.
+- `Math.pow` of two integers was not `**` of them, here and in the build this started from: it
+  multiplied step by step, so that a product past the safe integers was rounded another way than
+  the power of the C library rounds it (`Math.pow(3, 34)` 16677181699666568, `3 ** 34`
+  16677181699666570), and a negative exponent gave the reciprocal of a product of doubles
+  (`Math.pow(10, -23)` was `1.0000000000000001e-23`). Seen in the script for the power, which asks
+  that the two agree. Fixed: Math.pow is the operator (area 6).
 
 ## Checking a change
 
