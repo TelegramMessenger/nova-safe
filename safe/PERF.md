@@ -1999,6 +1999,25 @@ as long as what it holds, the result one that takes plain elements) it fails. Th
 not at first: the length set at the end threw for a frozen result as the first element should
 have, and only a look at the result afterwards tells that nothing was put in it.
 
+`map` and `filter` went on defining each element of their result by CreateDataPropertyOrThrow (the
+profile of every case showed it in `array/map-filter-reduce`): a descriptor made of the value and
+applied, to an Array that was made for the result a moment before. Both write the element now where
+that is all the steps come to. The Array to fill is asked whether it takes plain elements, as the
+result of `concat` is, and at every element, since the callback has run in between and can have
+done anything to it; the index is then one of its elements (a hole of the `new Array(n)` that `map`
+starts from, or a value that is plain as every element of such an Array is), which is written, or
+the one after its last, which is appended. Anything else is defined as before.
+
+`array/map-filter-reduce` retires 7.7% fewer instructions and is 1.64x with the two engines run in
+turn; no call and no other case is changed. The test has results that a species makes (objects,
+Arrays with elements already, frozen ones, ones that take no properties, with a fixed length, with
+an element that is not writable) and callbacks that do each of those things to the result while it
+is filled; with the question left out, with any of its three parts left out, or with an index past
+the end taken for the one to append, it fails. The script for it found two defects that were there
+before: an accessor element made a data element was left a hole, and an element made in
+%Array.prototype% in place was not told to the caches (by `concat` of the round before too). Both
+are with the defects, below.
+
 A method that calls a callback for every element (`forEach`, `map`, `filter`, `some`, `every`, `reduce`,
 the find methods, the comparator of `sort`, the mapper of Array.from) made a call from native code each
 time, and that is the costliest way to call: a `Vm` made for the call and let go of after, the kind of
@@ -3012,6 +3031,23 @@ tokenizer, where most of what is swept lives, are the same to 0.2%.
   and in the build this started from (and by the general way, with the loop's own answer taken
   out); it is true by the specification and in Node. Seen in the script for `instanceof`, which
   leaves it out. Not changed.
+- An element of an Array that is an accessor, defined again as a data property with every attribute
+  true, was left a hole, here and in the build this started from: such an element has no
+  descriptor, so the accessor's was taken away, and the value was not put in the slot.
+  `Object.defineProperty(a, 0, { value: 1, writable: true, enumerable: true, configurable: true })`
+  does it, and so does CreateDataProperty over an accessor, as `map` does where the callback made
+  one in the Array a species gave. Seen in the script for `map` and `filter`. Fixed: the element is
+  given its fields as a data element is.
+- %Array.prototype% is an Array, and a new element of it has to be told to the caches of property
+  reads that did not find its key there; the steps that define an element do that. What writes an
+  element in place did not: `copyWithin` copying a value to a hole, here and in the build this
+  started from, and `concat` since the round that made it append (a species can give
+  %Array.prototype% as the Array to fill; `map` and `filter` had it too until the script for them
+  asked). After it a function that had read `x[0]` of an object that inherits from
+  %Array.prototype% went on reading undefined. `unshift` had the same in the build this started
+  from, and not here since it asks whether the Array appends plainly. Fixed: an intrinsic Array
+  takes no element in place (`Array::is_intrinsic`), in `takes_plain_elements` and in `copyWithin`;
+  the test has every way an element of %Array.prototype% is made.
 
 ## Checking a change
 
