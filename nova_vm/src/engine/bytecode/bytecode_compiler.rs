@@ -1798,34 +1798,22 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::Logica
         let lref = self.left.compile(ctx)?;
         let lval = lref.get_value(ctx)?;
 
-        // We store the left value on the stack, because we'll need to restore
-        // it later.
-        let lval_copy = ctx.load_copy_to_stack();
-
-        match self.operator {
-            oxc_syntax::operator::LogicalOperator::Or => {
-                ctx.add_instruction(Instruction::LogicalNot);
-            }
-            oxc_syntax::operator::LogicalOperator::And => {}
-            oxc_syntax::operator::LogicalOperator::Coalesce => {
-                ctx.add_instruction(Instruction::IsNullOrUndefined);
-            }
-        }
-        let jump_to_return_left = ctx.add_instruction_with_jump_slot(Instruction::JumpIfNot);
-
-        // We're returning the right expression, so we discard the left value
-        // at the top of the stack.
-        lval_copy.pop(ctx);
+        // The left value is the value of the expression where it decides
+        // it: one instruction jumps over the right operand then and
+        // leaves the value in the result register, and empties the
+        // register where the right operand is to be worked out. (A copy
+        // of the left value was pushed for the test and popped again
+        // either way, around a jump on the test and another over the
+        // Store: four instructions or five for the one.)
+        let jump_to_end = ctx.add_instruction_with_jump_slot(match self.operator {
+            oxc_syntax::operator::LogicalOperator::Or => Instruction::JumpIfTrueKeep,
+            oxc_syntax::operator::LogicalOperator::And => Instruction::JumpIfNotKeep,
+            oxc_syntax::operator::LogicalOperator::Coalesce => Instruction::JumpIfNotNullishKeep,
+        });
 
         let rref = self.right.compile(ctx);
         let rval = rref.and_then(|r| r.get_value(ctx));
 
-        let jump_to_end = ctx.add_instruction_with_jump_slot(Instruction::Jump);
-
-        ctx.set_jump_target_here(jump_to_return_left);
-        // Return the result of the left expression.
-        let lval_copy = ctx.mark_stack_value();
-        lval_copy.store(ctx);
         ctx.set_jump_target_here(jump_to_end);
         combine_value_results(Ok(lval), rval)
     }
