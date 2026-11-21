@@ -345,6 +345,16 @@ impl<'s, 'gc> Place<'s, 'gc> {
                 Ok(ValueOutput::Value)
             }
             Place::GlobalSite { name, site, .. } => {
+                // `undefined`, `NaN` and `Infinity` of the global scope are
+                // the values they name: properties of the global object
+                // that are not writable and not configurable, which no
+                // declaration of a Script can stand before (it is a
+                // SyntaxError). Each is a constant of the code, so that
+                // `x === undefined` is a comparison with one.
+                if let Some(constant) = restricted_global_value(ctx, *name) {
+                    ctx.add_instruction_with_constant(Instruction::StoreConstant, constant);
+                    return Ok(ValueOutput::Value);
+                }
                 ctx.add_instruction_with_identifier_and_site(
                     Instruction::GetGlobalAtSite,
                     name.to_property_key(),
@@ -1576,6 +1586,26 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::UnaryE
             }
         }
     }
+}
+
+/// The value of the name `name` of the global scope where it is one of the
+/// three value properties of the global object that nothing can change:
+/// `undefined`, `NaN` and `Infinity`.
+fn restricted_global_value<'gc>(
+    ctx: &mut CompileContext<'_, '_, 'gc, '_>,
+    name: String<'gc>,
+) -> Option<Value<'gc>> {
+    let which = match &*name.to_string_lossy_(ctx.get_agent()) {
+        "undefined" => 0,
+        "NaN" => 1,
+        "Infinity" => 2,
+        _ => return None,
+    };
+    Some(match which {
+        0 => Value::Undefined,
+        1 => ctx.create_number(f64::NAN).into(),
+        _ => ctx.create_number(f64::INFINITY).into(),
+    })
 }
 
 /// `expression` without the parentheses around it.
