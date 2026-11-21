@@ -113,6 +113,11 @@ pub(crate) struct Limits {
     /// ([`HostHooks::allocated_bytes`](crate::ecmascript::HostHooks::allocated_bytes))
     /// when it keeps one, else the estimate.
     live_bytes_after_gc: usize,
+    /// What the last collection found live is of a script that it ended:
+    /// the heap was over its limit then. The script that the host has
+    /// entered since may have let go of some of that, which only a
+    /// collection of its own finds out: it is not ended by the old count.
+    live_bytes_of_an_ended_script: bool,
     /// With the embedder's count: how many counted bytes one estimated byte
     /// stood for at the last garbage collection, in 256ths.
     counted_per_estimated: Option<usize>,
@@ -134,6 +139,7 @@ impl Default for Limits {
             heap_limit: None,
             refusal_terminates: false,
             live_bytes_after_gc: 0,
+            live_bytes_of_an_ended_script: false,
             counted_per_estimated: None,
             gc_threshold: GC_ALLOCATION_INTERVAL,
             stack_base: 0,
@@ -492,8 +498,17 @@ impl Agent {
             // since then: the collection lets go of the pieces it was
             // joined from.
             let joined = self.heap.text_join_budget.joined();
-            if (self.heap.alloc_counter == 0 && self.heap.data_bytes_since_gc == 0 && joined == 0)
-                || uncollectable > limit
+            // A script entered after one that the limit ended is over the
+            // limit from its first instruction, by what the last collection
+            // found: that says nothing of what it has let go of since
+            // (`pad.length -= 4`, with nothing allocated), so it is collected
+            // once before it is held to the count.
+            let known = !self.limits.live_bytes_of_an_ended_script;
+            if (known
+                && ((self.heap.alloc_counter == 0
+                    && self.heap.data_bytes_since_gc == 0
+                    && joined == 0)
+                    || uncollectable > limit))
                 // A native loop that allocates never reaches the collection
                 // the next instruction would run.
                 || self.heap_size() > limit.saturating_mul(2)
@@ -552,7 +567,11 @@ impl Agent {
         if bytes == 0 || size.saturating_add(bytes) <= limit {
             return false;
         }
-        if self.limits.live_bytes_after_gc.saturating_add(bytes) > limit {
+        if self.limits.live_bytes_after_gc.saturating_add(bytes) > limit
+            && (!self.limits.live_bytes_of_an_ended_script
+                || bytes > limit
+                || size.saturating_add(bytes) > limit.saturating_mul(2))
+        {
             // What became garbage since the last collection is not known
             // here. A refusal a script can catch may err on that; one that
             // ends the script must not, so unless no collection could make
@@ -729,11 +748,28 @@ impl Agent {
         self.limits.termination = None;
         self.limits.countdown = POLL_INTERVAL;
         self.limits.lent = 0;
+        // The heap as the last collection left it is over the limit: that
+        // collection ended a script, and this is another.
+        self.limits.live_bytes_of_an_ended_script = self
+            .limits
+            .heap_limit
+            .is_some_and(|limit| self.limits.live_bytes_after_gc > limit);
+    }
+
+    /// Whether a collection could bring a heap that is over its limit under
+    /// it again: something was allocated since the last one, or the last
+    /// one was of a script that it ended, and what the script entered since
+    /// has let go of is not known.
+    pub(crate) fn collection_may_make_room(&self) -> bool {
+        self.heap.alloc_counter != 0
+            || self.heap.data_bytes_since_gc != 0
+            || self.limits.live_bytes_of_an_ended_script
     }
 
     /// Called after a garbage collection: records the live heap size and
     /// terminates the running script if it is over the heap limit.
     pub(crate) fn after_gc(&mut self) {
+        self.limits.live_bytes_of_an_ended_script = false;
         self.heap.data_bytes_since_gc = 0;
         self.heap.text_join_budget.settled();
         let estimated = self.heap.estimate_live_bytes();

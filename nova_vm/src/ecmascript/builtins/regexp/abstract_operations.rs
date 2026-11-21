@@ -1022,7 +1022,7 @@ fn search(
     sticky: bool,
 ) -> Result<Option<regress::Match>, RegExpExecError> {
     let heap_size = agent.heap_size();
-    let collectable = agent.heap.alloc_counter != 0 || agent.heap.data_bytes_since_gc != 0;
+    let collectable = agent.collection_may_make_room();
     // What the search may put on its backtracking stacks is what the heap
     // limit has room for: the poll below sees the heap as it was before.
     let room = agent
