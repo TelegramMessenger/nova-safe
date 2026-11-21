@@ -18788,3 +18788,110 @@ a list of small objects=37433 400 true true [{"id":0,"name":"item \"0\"","tags":
         other => panic!("{other:?}"),
     }
 }
+
+/// `concat` appends the elements of an Array whose elements are all plain
+/// values to an Array that takes them as plain elements, and an array
+/// literal takes each element of a spread the same way; everything else is
+/// the steps one by one. Arrays with holes, with elements that the
+/// prototype has under a hole, with accessors and with elements that are
+/// not writable, a getter that changes its Array; what is and is not spread
+/// by Symbol.isConcatSpreadable, on an Array and on the prototype; an
+/// Array of a subclass, a species that makes an object, an Array with an
+/// element already, a frozen one; Proxies, arguments objects and
+/// TypedArrays; literals with spreads of Arrays, of holes, between
+/// elisions, of other iterables, with the iterator of Arrays replaced, of
+/// a source that changes under the spread, and of what is not iterable.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn concat_and_a_spread_append_plain_elements_as_the_steps_define_them() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arrays_concatenated_and_spread)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arrays_concatenated_and_spread() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+function show(a) {
+  if (!Array.isArray(a)) return typeof a + ':' + String(a);
+  var parts = [];
+  for (var i = 0; i < a.length; i++) parts.push(i in a ? (Object.getOwnPropertyDescriptor(a, i).writable === false ? '!' : '') + String(a[i]) : '_');
+  var extra = Object.keys(a).filter(function (k) { return String(k >>> 0) !== k; });
+  return '[' + parts.join(',') + ']' + a.length + (extra.length ? '+' + extra.join('') : '') + (Object.getPrototypeOf(a) === Array.prototype ? '' : '~');
+}
+// concat of plain Arrays, and what is left of the sources.
+note('plain', function () { var a = [1, 2, 3], b = ['x', null, undefined, 4.5], c = a.concat(b, [], [7]); c[0] = 'changed'; c.push(9); return show(c) + show(a) + show(b) + (c !== a); });
+note('itself and nothing', function () { var a = [1, 2]; return show(a.concat(a, a)) + show(a.concat()) + show([].concat()) + show([].concat([])) + (a.concat() !== a); });
+note('values that are no Arrays', function () { return show([1].concat(2, 'three', null, undefined, { length: 2, 0: 'a' }, [[4]], true)); });
+note('holes', function () { var a = [1, , 3], b = new Array(3), c = [, , ]; var r = a.concat(b, c, [4]); return show(r) + ' ' + show([].concat(new Array(2))) + ' ' + (1 in r) + (3 in r); });
+note('holes with inherited elements', function () { Array.prototype[1] = 'proto'; try { var r = [1, , 3].concat([, 5]); return show(r) + r.hasOwnProperty(1) + r.hasOwnProperty(3); } finally { delete Array.prototype[1]; } });
+note('accessors and fixed elements', function () { var n = 0, a = [1, 2, 3]; Object.defineProperty(a, 1, { get: function () { n++; return 'got' + n; }, enumerable: true, configurable: true }); var f = Object.freeze([7, 8]); var h = [1, 2]; Object.defineProperty(h, 0, { value: 'hidden', enumerable: false }); var r = a.concat(f, h); r[3] = 'writable'; return show(r) + n + show(f) + Object.keys(r).length; });
+note('a getter that changes the source', function () { var a = [1, 2, 3, 4]; Object.defineProperty(a, 1, { get: function () { a.pop(); a.pop(); return 'g'; }, configurable: true }); return show(a.concat(['t'])) + show(a.slice(0, 1)); });
+note('spreadable or not', function () { var a = [1, 2], o = { length: 2, 0: 'a', 1: 'b' }; a[Symbol.isConcatSpreadable] = false; o[Symbol.isConcatSpreadable] = true; var r = [0].concat(a, o); var t = a.concat([9]); return show(r.map(function (x) { return Array.isArray(x) ? 'arr' : x; })) + show(t.map(function (x) { return Array.isArray(x) ? 'arr' : x; })); });
+note('spreadable on the prototype', function () { Array.prototype[Symbol.isConcatSpreadable] = false; try { return show([1].concat([2, 3]).map(function (x) { return Array.isArray(x) ? 'arr' + x.length : x; })); } finally { delete Array.prototype[Symbol.isConcatSpreadable]; } });
+note('subclass', function () { class Mine extends Array { sum() { return this.reduce(function (s, v) { return s + v; }, 0); } } var m = Mine.from([1, 2, 3]); var r = m.concat([4], Mine.of(5)); return show(r) + (r instanceof Mine) + r.sum() + show([0].concat(m)); });
+note('species', function () {
+  var a = [1, 2]; a.constructor = { [Symbol.species]: function (n) { return { made: 'object', length: 0 }; } }; var r = a.concat([3]); var b = [1, 2]; b.constructor = { [Symbol.species]: function (n) { var x = ['pre']; return x; } }; var s = b.concat([3]);
+  var c = [1]; c.constructor = { [Symbol.species]: function () { return Object.freeze([]); } }; var t; try { c.concat([2]); t = 'no error'; } catch (e) { t = e.name; }
+  var d = [1]; d.constructor = undefined; var e = [1]; e.constructor = { [Symbol.species]: null };
+  return r.made + r.length + r[0] + r[2] + ' ' + show(s) + ' ' + t + ' ' + show(d.concat([2])) + show(e.concat([2]));
+});
+note('targets that take nothing', function () {
+  var frozen = Object.freeze([]), fixedLength = [], closed = Object.preventExtensions([]), hidden = [0]; Object.defineProperty(fixedLength, 'length', { writable: false }); Object.defineProperty(hidden, 0, { value: 'fixed', writable: false, configurable: false });
+  var r = [];
+  [frozen, fixedLength, closed, hidden].forEach(function (target) { var s = [1, 2]; s.constructor = { [Symbol.species]: function () { return target; } }; try { var made = s.concat([3]); r.push(made === target ? 'same' : 'other'); } catch (e) { r.push(e.name); } r.push(show(target)); });
+  return r.join(' ');
+});
+note('other array likes', function () { function args() { return arguments; } var p = new Proxy([1, 2], {}), r = [0].concat(p, args(7, 8), new Uint8Array([3, 4]), 'ab'); return show(r.map(function (x) { return typeof x === 'object' ? Object.prototype.toString.call(x).slice(8, -1) : x; })); });
+note('with properties', function () { var a = [1, 2]; a.name = 'named'; var b = [3]; b.extra = 1; Object.preventExtensions(b); var r = a.concat(b); return show(r) + show(a) + Object.isExtensible(r) + r.name; });
+note('long', function () { var a = [], b = []; for (var i = 0; i < 5000; i++) { a.push(i); b.push(-i); } var r = a.concat(b, a.slice(100, 200)), s = 0; for (var i = 0; i < r.length; i++) s += r[i]; return r.length + ' ' + s + ' ' + r[4999] + ' ' + r[5000] + ' ' + r[10099] + ' ' + a.length; });
+note('in a loop', function () { var a = []; for (var i = 0; i < 1000; i++) a.push(i); var n = 0; for (var r = 0; r < 200; r++) { var b = a.slice(100, 900).concat(a.slice(0, 50)); var c = [...b, r]; n += c.length + c[849] + c[850] + b[0]; } return n; });
+// An array literal with spreads: every element after the last, whatever it is spread from.
+note('spread arrays', function () { var a = [1, 2, 3], e = []; return show([...a]) + show([...a, 4]) + show([0, ...a, ...e, ...a, 9]) + show([...e]) + show([...[...a, ...[...a]]]) + ([...a] !== a); });
+note('spread holes', function () { var a = [1, , 3], b = new Array(2); return show([...a]) + show([...b, 'x']) + (1 in [...a]); });
+note('spread with elisions', function () { var a = [7, 8]; return show([1, , 3, ...a]) + show([, ...a]) + show([...a, , 1]) + show([...a, , ]) + show([, , ...a, , ...a, ]); });
+note('spread other iterables', function () { function* gen() { yield 1; yield 2; } function args() { return [...arguments, 'end']; } var it = { [Symbol.iterator]: function () { var i = 0; return { next: function () { return { done: i >= 3, value: i++ * 10 }; } }; } }; return show([...'héllo\u{1F600}']) + show([...new Set([1, 1, 2])]) + show([...new Map([[1, 'a']])].map(String)) + show([...gen(), ...gen()]) + show(args(5, 6)) + show([...it, ...new Uint8Array([9, 8])]); });
+note('spread with a changed iterator', function () { var saved = Array.prototype[Symbol.iterator]; Array.prototype[Symbol.iterator] = function () { var a = this, i = a.length; return { next: function () { return i > 0 ? { done: false, value: a[--i] } : { done: true, value: undefined }; } }; }; try { return show([...[1, 2, 3], 4]); } finally { Array.prototype[Symbol.iterator] = saved; } });
+note('spread a source that grows and shrinks', function () { var a = [1, 2, 3], n = 0; Object.defineProperty(a, 1, { get: function () { if (n++ === 0) a.push('late'); return 'g'; }, configurable: true, enumerable: true }); var r = [...a]; var b = [1, 2, 3, 4]; Object.defineProperty(b, 0, { get: function () { b.length = 2; return 'first'; }, configurable: true }); return show(r) + show([...b]); });
+note('spread errors', function () { var r = []; [null, undefined, 5, {}].forEach(function (v) { try { r.push(show([...v])); } catch (e) { r.push(e.name); } }); function* thrower() { yield 1; throw new RangeError('stop'); } try { r.push(show([0, ...thrower()])); } catch (e) { r.push(e.name); } return r.join(','); });
+note('literals keep their kinds', function () { var a = [1, 2]; var r = [...a, 'x']; r.extra = 1; Object.freeze(a); var f = [...a, 3]; f[0] = 'w'; return show(r) + show(f) + Object.isFrozen(f) + show([...Object.freeze([1])].concat(Object.freeze([2]))); });
+out.join("\n")"##;
+    let expected = r##"plain=[changed,2,3,x,null,undefined,4.5,7,9]9[1,2,3]3[x,null,undefined,4.5]4true
+itself and nothing=[1,2,1,2,1,2]6[1,2]2[]0[]0true
+values that are no Arrays=[1,2,three,null,undefined,[object Object],4,true]8
+holes=[1,_,3,_,_,_,_,_,4]9 [_,_]2 falsefalse
+holes with inherited elements=[1,proto,3,_,5]5truefalse
+accessors and fixed elements=[1,got1,3,writable,8,hidden,2]71[!7,!8]27
+a getter that changes the source=[1,g,_,_,t]5[1]1
+spreadable or not=[0,arr,a,b]4[arr,9]2
+spreadable on the prototype=[arr1,arr2]2
+subclass=[1,2,3,4,5]5~true15[0,1,2,3]4
+species=object313 [1,2,3]3 TypeError [1,2]2[1,2]2
+targets that take nothing=TypeError []0 TypeError []0 TypeError []0 TypeError [!fixed]1
+other array likes=[0,1,2,Arguments,Uint8Array,ab]6
+with properties=[1,2,3]3[1,2]2+nametrueundefined
+long=10100 14950 4999 0 199 5000
+in a loop=219900
+spread arrays=[1,2,3]3[1,2,3,4]4[0,1,2,3,1,2,3,9]8[]0[1,2,3,1,2,3]6true
+spread holes=[1,undefined,3]3[undefined,undefined,x]3true
+spread with elisions=[1,_,3,7,8]5[_,7,8]3[7,8,_,1]4[7,8,_]3[_,_,7,8,_,7,8]7
+spread other iterables=[h,é,l,l,o,😀]6[1,2]2[1,a]1[1,2,1,2]4[5,6,end]3[0,10,20,9,8]5
+spread with a changed iterator=[3,2,1,4]4
+spread a source that grows and shrinks=[1,g,3,late]4[first,2]2
+spread errors=TypeError,TypeError,TypeError,TypeError,RangeError
+literals keep their kinds=[1,2,x]3+extra[w,2,3]3false[1,2]2"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
