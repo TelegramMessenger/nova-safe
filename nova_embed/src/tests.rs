@@ -19910,3 +19910,110 @@ strict={x:4,s:"s2",y:NaN}"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `base ** exponent` of two Numbers is answered in the loop: two integers
+/// by their product where that is an integer again, any others by the
+/// steps of Number::exponentiate taken on the doubles they are; and
+/// `Math.pow` says what the operator says. Small integers with their
+/// signs; negative exponents; zero and one to exponents past 32 bits;
+/// results at the edge of the safe integers and past it, to the
+/// infinities; doubles with exact powers; a negative base with an
+/// exponent that is no integer; both zeroes, both infinities and NaN as
+/// the base and as the exponent, one by one and as a table of nineteen
+/// values by nineteen; a base of 1 or -1 with an exponent that is not
+/// finite (NaN, where the power of the C library is 1); the result used
+/// as an index, a length and an operand; operands that are converted, in
+/// their order and once; BigInts, a BigInt with a Number, Symbols; the
+/// forms the operator is written in, `**=` among them; many turns. What
+/// is expected is what Node prints for the same script.
+#[test]
+fn a_power_of_two_numbers_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(numbers_raised_to_powers)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn numbers_raised_to_powers() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'string') return '"' + v + '"'; if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).map(function (k) { return k + ':' + fmt(v[k]); }).join(',') + '}'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+function pow(a, b) { return a ** b; }
+function near(found, wanted) { return Math.abs(found - wanted) <= Math.abs(wanted) * 4e-16; }
+// Two integers: every result that is an integer, the signs, the zeroes and the exponents that are none.
+note('small integers', function () { var r = []; for (var b = -3; b <= 3; b = b + 1) { for (var e = 0; e <= 5; e = e + 1) { r.push(pow(b, e)); } } return r; });
+note('negative exponents', function () { return [pow(2, -1), pow(2, -2), pow(4, -1), pow(1, -5), pow(-1, -5), pow(-1, -4), pow(-2, -1), pow(-2, -2), pow(0, -1), pow(0, -2), pow(8, -3), pow(1, -1000000)]; });
+note('zero and one', function () { return [pow(0, 0), pow(0, 1), pow(0, 7), pow(1, 0), pow(1, 1000000), pow(-1, 1000000), pow(-1, 1000001), pow(1, 4294967295), pow(-1, 4294967295), pow(-1, 4294967296), pow(0, 4294967296), pow(1, 9007199254740991), pow(-1, 9007199254740991), pow(0, 9007199254740991)]; });
+note('to the edge of the integers', function () { return [pow(2, 30), pow(2, 31), pow(2, 32), pow(2, 52), pow(2, 53), pow(2, 53) - 1, pow(2, 53) + 2, pow(2, 54), pow(2, 62), pow(2, 63), pow(2, 64), pow(2, 100), pow(2, 1023), pow(2, 1024), pow(-2, 53), pow(-2, 63), pow(-2, 64), pow(-2, 1024), pow(-2, 1025), pow(3, 33), near(pow(3, 34), 16677181699666569), pow(-3, 33), pow(7, 18), near(pow(7, 19), 11398895185373143), pow(10, 15), pow(10, 16), pow(10, 21), pow(10, 22), pow(94906265, 2), pow(94906266, 2), pow(-94906265, 2), pow(208063, 3), pow(-208063, 3), near(pow(3037000499, 2), 9223372030926249001), near(pow(3037000500, 2), 9223372037000250000), near(pow(2097151, 3), 9223358842721533951), pow(2097152, 3), pow(9007199254740991, 1), pow(-9007199254740991, 1), pow(9007199254740991, 2) > 8e31]; });
+note('exponents past any integer power', function () { return [pow(2, 4294967295), pow(2, 4294967296), pow(2, 9007199254740991), pow(-2, 4294967295), pow(-2, 4294967297), pow(3, 2147483648), pow(-3, 2147483649), pow(2, -4294967296), pow(2, -1074), pow(2, -1076), pow(-2, -1077)]; });
+// Doubles: exact powers, the roots of squares, and every special value.
+note('doubles', function () { return [pow(0.5, 2), pow(0.5, -2), pow(1.5, 2), pow(2.5, 3), pow(-1.5, 3), pow(-0.5, 2), pow(4, 0.5), pow(9, 0.5), pow(0.25, 0.5), pow(8, 1 / 3) > 1.99, pow(27, -0.5) < 0.2, pow(pow(2, 511), 2) === pow(2, 1022), pow(pow(2, 512), 2), pow(-pow(2, 512), 3), pow(pow(2, -537), 2), pow(pow(2, -538), 2), pow(-pow(2, -538), 3), near(pow(2, 0.5), Math.SQRT2), near(pow(10, -7), 1e-7), near(pow(3, -1), 1 / 3), pow(1.1, 1), pow(-1.1, 1), pow(0.1, 0), pow(-0.1, -0)]; });
+note('a negative base and an exponent that is no integer', function () { return [pow(-1, 0.5), pow(-8, 1 / 3), pow(-2, 1.5), pow(-2, -1.5), pow(-0.5, 0.5), pow(-4, 0.5), pow(-1e300, 0.5), pow(-1, 1e300), pow(-1, 9007199254740992), pow(-1, 9007199254740993), pow(-2, 4503599627370495.5), pow(-2, 4503599627370497)]; });
+note('zeroes', function () { var z = -0; return [pow(0, 0.5), pow(0, -0.5), pow(z, 3), pow(z, 2), pow(z, 0.5), pow(z, -3), pow(z, -2), pow(z, -0.5), pow(z, 0), pow(z, z), pow(0, z), pow(5, z), pow(z, 1), pow(z, 4294967297), pow(z, 4294967296), pow(z, -4294967297), pow(0, Infinity), pow(0, -Infinity), pow(z, Infinity), pow(z, -Infinity)]; });
+note('infinities', function () { var z = -0; return [pow(Infinity, 1), pow(Infinity, 0.1), pow(Infinity, -1), pow(Infinity, -0.1), pow(Infinity, 0), pow(Infinity, z), pow(-Infinity, 1), pow(-Infinity, 2), pow(-Infinity, 3), pow(-Infinity, 0.5), pow(-Infinity, -1), pow(-Infinity, -2), pow(-Infinity, -3), pow(-Infinity, -0.5), pow(-Infinity, 0), pow(Infinity, Infinity), pow(Infinity, -Infinity), pow(-Infinity, Infinity), pow(-Infinity, -Infinity), pow(2, Infinity), pow(2, -Infinity), pow(-2, Infinity), pow(-2, -Infinity), pow(0.5, Infinity), pow(0.5, -Infinity), pow(-0.5, Infinity), pow(-0.5, -Infinity), pow(1.0000001, Infinity), pow(0.9999999, Infinity)]; });
+note('one and an exponent that is not finite', function () { return [pow(1, Infinity), pow(1, -Infinity), pow(-1, Infinity), pow(-1, -Infinity), pow(1, NaN), pow(-1, NaN), pow(1, 0 / 0)]; });
+note('NaN', function () { var z = -0; return [pow(NaN, 0), pow(NaN, z), pow(NaN, 1), pow(NaN, NaN), pow(0, NaN), pow(2, NaN), pow(Infinity, NaN), pow(NaN, Infinity), pow(NaN, -Infinity), pow(NaN, 0.5), pow(z, NaN), pow(2.5, NaN)]; });
+note('Math.pow of integers', function () { return [Math.pow(2, 10), Math.pow(2, -2), Math.pow(10, 15), Math.pow(-2, 3), Math.pow(-2, 4), Math.pow(0, 0), Math.pow(0, 5), Math.pow(0, -5), Math.pow(2, 53), Math.pow(2, 64), Math.pow(2, 1024), Math.pow(-2, 1025), Math.pow(1, -5), Math.pow(-1, -5), Math.pow(3, 33), Math.pow(94906265, 2), Math.pow(7, 0), Math.pow(1, 4294967296), Math.pow(10, -23) === 10 ** -23, Math.pow(10000000000, -3) === 10000000000 ** -3, Math.pow(3, 34) === 3 ** 34, Math.pow(7, 19) === 7 ** 19, Math.pow(-207, 7) === (-207) ** 7, Math.pow(5, -23) === 5 ** -23, typeof Math.pow(2, 2), Math.pow(), Math.pow(2), Math.pow(2, '3'), Math.pow('2', 3), Math.pow(null, 2), Math.pow(2, undefined)]; });
+// The kinds of the result: an integer that a double gives, and what is read of it after.
+note('the result used', function () { var a = pow(2, 10), b = pow(4, 0.5), c = pow(2, -1), d = pow(-0.0, 3); return [a | 0, a === 1024, typeof a, [1, 2, 3][b], b === 2, c + c, 1 / d, Object.is(d, -0), String(pow(10, 21)), String(pow(2, -7)), pow(2, 3).toString(2), [pow(3, 2)].indexOf(9), new Array(pow(2, 2)).length, 'abc'.charAt(pow(1, 5)), pow(2, 5) >>> 3, ~pow(2, 31), pow(2, 32) | 0, pow(2, 31) | 0]; });
+// Operands that are no Numbers go the steps: conversions in their order, once, BigInts, Symbols.
+note('conversions', function () { var log = []; var a = { valueOf: function () { log.push('a'); return 3; } }, b = { valueOf: function () { log.push('b'); return 2; } }; var r = a ** b; return [r, log.join(''), '3' ** 2, 2 ** '3', '' ** 1, ' 2 ' ** 2, 'x' ** 2, 'x' ** 0, null ** 2, 2 ** null, undefined ** 2, 2 ** undefined, undefined ** 0, true ** 5, 2 ** true, 2 ** false, [] ** 2, [3] ** 2, [1, 2] ** 2, ({}) ** 0, ({}) ** 1, new Date(8) ** 2, new Number(3) ** new Number(3), new String('4') ** 0.5]; });
+note('BigInts', function () { return [2n ** 3n, (-2n) ** 3n, 0n ** 0n, 2n ** 64n, 7n ** 0n, (-1n) ** 5n, typeof (2n ** 2n)]; });
+note('a BigInt and a Number', function () { return 2n ** 2; });
+note('a Number and a BigInt', function () { return 2 ** 2n; });
+note('a negative BigInt exponent', function () { return 2n ** -1n; });
+note('a Symbol', function () { return Symbol() ** 2; });
+note('a Symbol exponent', function () { return 2 ** Symbol(); });
+note('a conversion that throws', function () { var log = []; try { ({ valueOf: function () { log.push('l'); throw new RangeError('l'); } }) ** ({ valueOf: function () { log.push('r'); return 1; } }); } catch (e) { log.push(e.name); } return log; });
+note('the right one throws', function () { var log = []; try { ({ valueOf: function () { log.push('l'); return 1; } }) ** ({ valueOf: function () { log.push('r'); throw new RangeError('r'); } }); } catch (e) { log.push(e.name); } return log; });
+note('a conversion to a BigInt and a Number', function () { var log = []; try { ({ valueOf: function () { log.push('l'); return 2n; } }) ** ({ valueOf: function () { log.push('r'); return 2; } }); } catch (e) { log.push(e.name); } return log; });
+// The forms the operator is written in.
+note('forms', function () { var x = 3, o = { p: 2, q: 2.5 }, a = [2, 3]; var r = [2 ** 3 ** 2, (2 ** 3) ** 2, (-2) ** 2, -(2 ** 2), 2 ** -1, x ** 2, 2 ** x, x ** x, o.p ** o.p, o.q ** 2, a[0] ** a[1], x++ ** 2, x, ++x ** 2, x, (x -= 2) ** 2, 2 ** 3 * 2, 2 * 3 ** 2, 2 ** 3 + 1, 1 + 2 ** 3, 2 ** -2 * 4 === 1, 2 ** 10 % 1000]; x **= 2; r.push(x); o.p **= 3; r.push(o.p); o.q **= 2; r.push(o.q); a[1] **= a[0]; r.push(a[1]); var k = 'p'; o[k] **= 0.5; r.push(o[k] > 2.82 && o[k] < 2.83); x **= 0.5; r.push(x); x = 4; x **= -1; r.push(x); return r; });
+note('Math.pow says the same', function () { var bases = [0, -0, 1, -1, 2, -2, 3, 5, 10, 0.5, -0.5, 2.5, 1e10, Infinity, -Infinity, NaN, 7, 255, -255, 65536, -207, -285, 94906266, 9007199254740991], exps = [0, -0, 1, -1, 2, -2, 3, -3, 7, 9, 10, 19, -23, 31, 32, 34, -35, 53, 64, 0.5, -0.5, Infinity, -Infinity, NaN, 1000, -1000, 4294967295, 4294967296, -4294967296], bad = []; for (var i = 0; i < bases.length; i = i + 1) { for (var j = 0; j < exps.length; j = j + 1) { var p = bases[i] ** exps[j], q = Math.pow(bases[i], exps[j]); if (!Object.is(p, q)) { bad.push(fmt(bases[i]) + '**' + fmt(exps[j])); } } } return bad; });
+note('the table of special values', function () { var v = [0, -0, 1, -1, 2, -2, 0.5, -0.5, 3, -3, Infinity, -Infinity, NaN, 4294967296, -4294967297, 1e300, -1e300, 1e-300, 9007199254740992], r = []; for (var i = 0; i < v.length; i = i + 1) { var row = ''; for (var j = 0; j < v.length; j = j + 1) { var p = v[i] ** v[j]; row += Object.is(p, -0) ? 'z' : p !== p ? 'N' : p === Infinity ? 'I' : p === -Infinity ? 'i' : p === 0 ? '0' : p === 1 ? '1' : p === -1 ? 'm' : p > 0 ? '+' : '-'; } r.push(row); } return r; });
+// Many turns, with integers and doubles in turn, and a sum that says every result was right.
+note('many turns', function () { var sum = 0, f = 0, turns = 0; for (var i = 0; i < 20000; i = i + 1) { sum = (sum + (i & 7) ** 2 + (i % 5) ** (i & 3)) % 1000003; f = f + (i % 4) ** 0.5 * (i % 4) ** 0.5 + 0.5 ** (i & 3); turns = turns + 1; } return [sum, Math.round(f), turns]; });
+note('many turns with a result past the integers', function () { var big = 0, turns = 0; for (var i = 0; i < 5000; i = i + 1) { var p = (i + 94906260) ** 2; if (p > 9007199254740991) { big = big + 1; } turns = turns + 1; } return [big, turns, 94906266 ** 2 === 94906266 * 94906266, 94906267 ** 2 === 94906267 * 94906267]; });
+out.join("\n")"##;
+    let expected = r##"small integers=[1,-3,9,-27,81,-243,1,-2,4,-8,16,-32,1,-1,1,-1,1,-1,1,0,0,0,0,0,1,1,1,1,1,1,1,2,4,8,16,32,1,3,9,27,81,243]
+negative exponents=[0.5,0.25,0.25,1,-1,1,-0.5,0.25,Infinity,Infinity,0.001953125,1]
+zero and one=[1,0,0,1,1,1,-1,1,-1,1,0,1,-1,0]
+to the edge of the integers=[1073741824,2147483648,4294967296,4503599627370496,9007199254740992,9007199254740991,9007199254740994,18014398509481984,4611686018427388000,9223372036854776000,18446744073709552000,1.2676506002282294e+30,8.98846567431158e+307,Infinity,-9007199254740992,-9223372036854776000,18446744073709552000,Infinity,-Infinity,5559060566555523,true,-5559060566555523,1628413597910449,true,1000000000000000,10000000000000000,1e+21,1e+22,9007199136250225,9007199326062756,9007199136250225,9007091372906047,-9007091372906047,true,true,true,9223372036854776000,9007199254740991,-9007199254740991,true]
+exponents past any integer power=[Infinity,Infinity,Infinity,-Infinity,-Infinity,Infinity,-Infinity,0,5e-324,0,-0]
+doubles=[0.25,4,2.25,15.625,-3.375,0.25,2,3,0.5,true,true,true,Infinity,-Infinity,5e-324,0,-0,true,true,true,1.1,-1.1,1,1]
+a negative base and an exponent that is no integer=[NaN,NaN,NaN,NaN,NaN,NaN,NaN,1,1,1,NaN,-Infinity]
+zeroes=[0,Infinity,-0,0,0,-Infinity,Infinity,Infinity,1,1,1,1,-0,-0,0,-Infinity,0,Infinity,0,Infinity]
+infinities=[Infinity,Infinity,0,0,1,1,-Infinity,Infinity,-Infinity,Infinity,-0,0,-0,0,1,Infinity,0,Infinity,0,Infinity,0,Infinity,0,0,Infinity,0,Infinity,Infinity,0]
+one and an exponent that is not finite=[NaN,NaN,NaN,NaN,NaN,NaN,NaN]
+NaN=[1,1,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN]
+Math.pow of integers=[1024,0.25,1000000000000000,-8,16,1,0,Infinity,9007199254740992,18446744073709552000,Infinity,-Infinity,1,-1,5559060566555523,9007199136250225,1,1,true,true,true,true,true,true,"number",NaN,NaN,8,8,0,NaN]
+the result used=[1024,true,"number",3,true,1,-Infinity,true,"1e+21","0.0078125","1000",0,4,"b",4,2147483647,0,-2147483648]
+conversions=[9,"ab",9,8,0,4,NaN,1,0,1,NaN,NaN,1,1,2,1,0,9,NaN,1,NaN,64,27,2]
+BigInts=[8n,-8n,1n,18446744073709551616n,1n,-1n,"bigint"]
+a BigInt and a Number!TypeError
+a Number and a BigInt!TypeError
+a negative BigInt exponent!RangeError
+a Symbol!TypeError
+a Symbol exponent!TypeError
+a conversion that throws=["l","RangeError"]
+the right one throws=["l","r","RangeError"]
+a conversion to a BigInt and a Number=["l","r","TypeError"]
+forms=[512,64,4,-4,0.5,9,8,27,4,6.25,8,9,4,25,5,9,16,18,9,9,true,24,9,8,6.25,9,true,3,0.25]
+Math.pow says the same=[]
+the table of special values=["110I0I0I0I0IN0I0I00","11zi0I0Izi0IN0i0I00","1111111111NNN111111","11mm11NNmmNNN1m11N1","11++++++++I0NI0I01I","11--++NN--I0NIzI0NI","11++++++++0IN0I0I10","11--++NN--0IN0i0IN0","11++++++++I0NI0I01I","11--++NN--I0NIzI0NI","11I0I0I0I0I0NI0I0II","11izI0I0izI0NIzI0II","11NNNNNNNNNNNNNNNNN","11++++++++I0NI0I01I","11--++NN--I0NIzI0NI","11++I0++I0I0NI0I01I","11--I0NNizI0NIzI0NI","11++0I++0I0IN0I0I10","11++++++++I0NI0I01I"]
+many turns=[495000,39375,20000]
+many turns with a result past the integers=[4994,5000,true,true]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
