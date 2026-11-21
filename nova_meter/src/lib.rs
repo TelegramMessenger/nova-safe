@@ -80,6 +80,15 @@ impl Account {
         Account(0)
     }
 
+    /// The uncounted account, which nobody reads. Entered around code that
+    /// runs inside an engine's call but is not the engine's (a host function
+    /// of an embedder in Rust), it keeps what that code allocates off the
+    /// engine's account, as code in another language is.
+    pub fn uncounted() -> &'static Account {
+        static UNCOUNTED: Account = Account(0);
+        &UNCOUNTED
+    }
+
     /// Bytes held by the live blocks allocated while this account's engine
     /// ran, or `None` for the uncounted account.
     pub fn bytes(&self) -> Option<usize> {
@@ -380,6 +389,27 @@ mod tests {
         drop((first, second, third));
         assert_eq!(outer.bytes(), Some(outer_before));
         assert_eq!(inner.bytes(), Some(inner_before));
+    }
+
+    /// Inside an engine's account, the uncounted one keeps what is allocated
+    /// off it, and leaving it is back in the engine's.
+    #[test]
+    fn the_uncounted_account_keeps_blocks_off_the_engine() {
+        let engine = Account::new();
+        let before = engine.bytes().unwrap();
+        assert_eq!(Account::uncounted().bytes(), None);
+        let in_engine = engine.enter();
+        let first = vec![1u8; 100];
+        let in_host = Account::uncounted().enter();
+        let host = vec![2u8; 5000];
+        drop(in_host);
+        let second = vec![3u8; 300];
+        drop(in_engine);
+        assert_eq!(engine.bytes(), Some(before + 100 + 300 + 2 * HEADER));
+        drop(host);
+        assert_eq!(engine.bytes(), Some(before + 100 + 300 + 2 * HEADER));
+        drop((first, second));
+        assert_eq!(engine.bytes(), Some(before));
     }
 
     /// A size that leaves no room for the header is refused, not wrapped
