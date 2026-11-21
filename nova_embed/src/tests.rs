@@ -19765,3 +19765,70 @@ the value of a statement=[5,0,"d",7,0,-0,undefined,undefined,5]"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `isNaN` and `isFinite` of a Number, and `Number.isNaN`, `Number.isFinite`,
+/// `Number.isInteger` and `Number.isSafeInteger` of any value, are answered
+/// by the interpreter in place of a call, by the steps the call itself
+/// comes to. Each of the six on values of every kind (the integers at
+/// their ends, doubles that are whole and that are not, NaN and the
+/// infinities computed and written, Strings, objects that convert,
+/// BigInts and Symbols); with no argument and with more than one; the
+/// conversions in the order they are asked, and those that throw; each
+/// function called through a variable, `call`, `apply`, a property of
+/// another object and as a callback; a function replaced or shadowed; in
+/// loops and tests; strict code. What is expected is what Node prints for
+/// the same script.
+#[test]
+fn the_predicates_of_numbers_answered_in_place_are_what_a_call_gives() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(numbers_asked_what_they_are)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn numbers_asked_what_they_are() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+function kinds() { var calls = 0; return [0, -0, 1, -1, 7, 0.5, -0.5, 1.0, 5e-324, 2147483647, 2147483648, 4294967296, 9007199254740991, 9007199254740992, -9007199254740991, -9007199254740992, 9007199254740993, 1e21, 1e300, 1.5e300, 0.1 + 0.2, 3 * 1.5, 4.5 * 2, NaN, 0 / 0, Infinity, -Infinity, 1 / 0, '', ' ', '0', '5', '5.5', 'abc', 'NaN', 'Infinity', '1e3', '0x10', null, undefined, true, false, 0n, 1n, [], [5], [1, 2], ['x'], {}, new Number(5), new Number(NaN), new String('7'), new Date(0), new Date(NaN), { valueOf: function () { calls++; return 3; } }, { valueOf: function () { return NaN; } }, { toString: function () { return '9'; } }, function () {}, Symbol.iterator]; }
+function row(f) { return kinds().map(function (v) { try { var r = f(v); return r === true ? 't' : r === false ? 'f' : '?' + typeof r; } catch (e) { return e.name.charAt(0); } }).join(''); }
+note('isNaN', function () { return row(function (v) { return isNaN(v); }); });
+note('isFinite', function () { return row(function (v) { return isFinite(v); }); });
+note('Number.isNaN', function () { return row(function (v) { return Number.isNaN(v); }); });
+note('Number.isFinite', function () { return row(function (v) { return Number.isFinite(v); }); });
+note('Number.isInteger', function () { return row(function (v) { return Number.isInteger(v); }); });
+note('Number.isSafeInteger', function () { return row(function (v) { return Number.isSafeInteger(v); }); });
+note('no argument, and more than one', function () { return [isNaN(), isFinite(), Number.isNaN(), Number.isFinite(), Number.isInteger(), Number.isSafeInteger(), isNaN(1, NaN), isFinite(Infinity, 1), Number.isNaN(NaN, 1), Number.isInteger(1.5, 2), Number.isSafeInteger(2, 1.5), Number.isFinite(1, Infinity)].join(); });
+note('conversions', function () { var log = []; var o = { valueOf: function () { log.push('v'); return NaN; } }, p = { toString: function () { log.push('s'); return '4'; } }, q = { [Symbol.toPrimitive]: function (hint) { log.push(hint); return Infinity; } }; var r = [isNaN(o), isFinite(o), isNaN(p), isFinite(p), isNaN(q), isFinite(q), Number.isNaN(o), Number.isFinite(p), Number.isInteger(p), Number.isSafeInteger(q)]; return r.join() + ' ' + log.join(''); });
+note('what throws', function () { var r = []; [function () { return isNaN(Symbol()); }, function () { return isFinite(Symbol()); }, function () { return isNaN(1n); }, function () { return isFinite(1n); }, function () { return isNaN({ valueOf: function () { throw new RangeError('v'); } }); }, function () { return Number.isNaN(Symbol()); }, function () { return Number.isInteger(1n); }, function () { return Number.isFinite({ valueOf: function () { throw new RangeError('v'); } }); }].forEach(function (f) { try { r.push(f()); } catch (e) { r.push(e.name); } }); return r.join(); });
+note('called other ways', function () { var n = isNaN, f = isFinite, N = Number, i = Number.isInteger, o = { isNaN: isNaN, isInteger: Number.isInteger, isSafeInteger: Number.isSafeInteger }; return [n(NaN), f(1), N.isNaN(NaN), i(5), i.call(null, 5.5), n.call(undefined, 'x'), f.apply(null, [Infinity]), o.isNaN(NaN), o.isInteger(3), o.isSafeInteger(2 ** 53), Number['isFinite'](1), globalThis.isNaN(NaN), [1, NaN, 2].filter(isNaN).length, [1, 1.5, 2].filter(Number.isInteger).length, [1, NaN, 'x'].map(Number.isNaN).join(), [0, 1, 2 ** 53].every(Number.isSafeInteger), isNaN.length + Number.isInteger.length, isNaN.name + Number.isFinite.name, typeof isFinite, Number.isNaN === Number.isNaN].join(); });
+note('replaced', function () { var keepNaN = Number.isNaN, keepGlobal = globalThis.isNaN, r = []; Number.isNaN = function () { return 'mine'; }; r.push(Number.isNaN(NaN)); Number.isNaN = keepNaN; r.push(Number.isNaN(NaN)); globalThis.isNaN = function (v) { return 'global ' + v; }; r.push(isNaN(5)); globalThis.isNaN = keepGlobal; r.push(isNaN(5)); var Number2 = { isInteger: function () { return 'other'; } }; r.push(Number2.isInteger(1)); function shadow(isFinite) { return isFinite(1); } r.push(shadow(function () { return 'param'; })); return r.join(); });
+note('in loops and tests', function () { var a = [1, NaN, 2.5, Infinity, 3, -0, '4', null], nan = 0, fin = 0, int = 0, safe = 0, s = ''; for (var k = 0; k < 400; k++) { var v = a[k % 8]; if (isNaN(v)) nan = nan + 1; if (isFinite(v)) fin = fin + 1; if (Number.isInteger(v)) int = int + 1; if (Number.isSafeInteger(v) && !Number.isNaN(v)) safe = safe + 1; s = Number.isFinite(v) ? 'y' : 'n'; } var x = 0.5, count = 0; while (!Number.isInteger(x)) { x = x * 2; count = count + 1; if (count > 60) break; } return [nan, fin, int, safe, s, x, count, isNaN(x / 0 - x / 0) ? 'nan' : 'num', isFinite(x) && 'fin'].join(); });
+note('strict', function () { 'use strict'; return [isNaN(NaN), isFinite('1'), Number.isNaN('NaN'), Number.isInteger(-0), Number.isSafeInteger(-0), Number.isFinite(-Infinity)].join(); });
+out.join("\n")"##;
+    let expected = r##"isNaN=fffffffffffffffffffffffttffffffffttfffftffTTfftttftfftftftT
+isFinite=tttttttttttttttttttttttffffftttttffftttfttTTttffftfttftftfT
+Number.isNaN=fffffffffffffffffffffffttffffffffffffffffffffffffffffffffff
+Number.isFinite=tttttttttttttttttttttttffffffffffffffffffffffffffffffffffff
+Number.isInteger=tttttfftftttttttttttfftffffffffffffffffffffffffffffffffffff
+Number.isSafeInteger=tttttfftfttttftffffffftffffffffffffffffffffffffffffffffffff
+no argument, and more than one=true,false,false,false,false,false,false,false,true,false,true,true
+conversions=true,false,false,true,false,false,false,false,false,false vvssnumbernumber
+what throws=TypeError,TypeError,TypeError,TypeError,RangeError,false,false,false
+called other ways=true,true,true,true,false,true,false,true,true,false,true,true,1,2,false,true,false,false,2,isNaNisFinite,function,true
+replaced=mine,true,global 5,false,other,param
+in loops and tests=50,300,150,150,n,1,1,nan,fin
+strict=true,true,false,true,true,false"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
