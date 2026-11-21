@@ -334,6 +334,18 @@ step of the particles), and the one from before the global scope said when it ch
 the worst 1.95x. So what the two engines run in turn had said holds: no case is over 2x, and none
 was at that earlier round either; the mean has come down by a twentieth since.
 
+Seven rounds later (the steps and the tests of values, the operators that choose, the power, the
+quotient of two integers), two tables within one quarter of an hour of a quiet machine, the newer
+library first: 1.221x for it and 1.229x for the library of the tables above, over the same 107
+cases, 26 of them at or under QuickJS's time in both. The case that tests values is 9% faster
+(0.73x for 0.79x), an emitter of events 7%, a sort of objects by a key 6%, numbers mixed with
+doubles 6%. What reads slower is 3% to 5%, and nothing these rounds touched: two loops of `while`
+with one in each, which retires the instructions it did, `find` and `some`, a grid of two
+dimensions. The call of a closure reads 2.00x in the newer table and 1.95x in the older, with a
+tenth of a percent fewer instructions in the newer: it is where it was, at the line, and which
+side of the line a table puts it on is where its code lies. After it a step of the particles
+1.92x and a sort with a comparator 1.84x.
+
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
 of each block, a counter and a thread-local read): the cases that allocate most pay for it (a linked list
