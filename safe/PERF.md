@@ -2744,6 +2744,38 @@ of the local left before it, which change nothing but the time. (The loops of th
 tested local ends have a count beside it that ends them too: with the jump taken the other way a
 `while (q) { }` of the first draft never ended.)
 
+A value tested where it was worked out (`if (o.k)`, `if (f(x))`, `while (q.length)`, a variable
+of an enclosing function, `!x`) is tested by the jump on the result register or by LogicalNot,
+and those asked whether it is a Boolean and called ToBoolean for anything else: the value put
+together out of the pieces it is kept in, the call, and in it the jump on the kind that the
+caller could have made. They answer the five kinds as the instruction for a local does now, by
+the same function. `if (o.k)` of an integer or an object is 57 instructions for 74 (QuickJS 12
+and 41), of null 34 for 52, `if (i & 1)` 80 for 95, `!x` as a value 4 for 16 more than the read
+of `x`, a property tested for being true 156 for 173.
+
+It is not free for everything. The five kinds are told apart by one jump on the kind where a
+Boolean was told from the rest by one comparison, and a Boolean tested this way is four to seven
+instructions longer than it was (59 for 55 where it is true, 38 for 31 where it is not), a String
+and a double five to eight (81 for 76, 101 for 95), having the jump and the call both. Three
+other shapes were measured for that. The Boolean asked for first in the source and the others
+after it is the same machine code: the compiler joins them. Three kinds in place of five is two
+instructions better for a Boolean and loses the objects. And the Boolean asked for by itself with
+one call for everything else, which takes the value from the register where it is, keeps a
+Boolean at what it was and gains two to eight for the rest where this gains fourteen to
+eighteen, with a String thirteen longer. Of twenty cases of the suite none retires more than it
+did by this (the most 0.12% more, most a tenth to a whole percent less), and the loops of one
+operation are each an instruction a turn shorter.
+
+The test has a value of every kind tested twenty-five ways that are no stack slot (a property by
+its name and by a key, through `this`, a getter and a Proxy, an element, an argument, the result
+of a call and of an assignment, a variable of an enclosing function and of the script, each in
+the statements that test) against Boolean, `!x` of every kind as a value, one property holding
+every kind in turn, the value of statements that test, and the loops a value ends, each with a
+count beside it. With any of these it fails, and most fail the test of the locals with it:
+undefined and null taken for true, zero taken for true or a negative integer for false, an
+object or a Boolean taken for its opposite, what is asked of ToBoolean taken for true or for
+false, either jump taken the other way, and `!x` given the value of `x`.
+
 `base ** exponent` left the loop for every pair of operands, and Number::exponentiate asked the
 two Numbers what they are step by step (whether NaN, a zero of either sign, an infinity, an odd
 integer: each step asking again of which kind the Number is, and reading a Number of the heap
