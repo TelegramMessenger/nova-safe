@@ -3619,6 +3619,32 @@ fn compile_update_expression<'s, 'gc>(
             );
             return Ok(ValueOutput::Value);
         }
+        // The same where the value is used: one instruction too, which
+        // says which value it leaves (`a[n++] = v`, `while (n--)`,
+        // `return ++count`), above the slot in its one argument.
+        if keep_value
+            && let Place::Stack {
+                stack_slot,
+                mutable: true,
+                ..
+            } = lref
+            && (stack_slot as usize) < 1 << Instruction::STEP_INDEX_SLOT_BITS
+        {
+            let step = match this.operator {
+                oxc_syntax::operator::UpdateOperator::Increment => 0,
+                oxc_syntax::operator::UpdateOperator::Decrement => Instruction::STEP_DOWN,
+            };
+            let keeps = if this.prefix {
+                Instruction::STEP_KEEPS_NEW
+            } else {
+                Instruction::STEP_KEEPS_OLD
+            };
+            ctx.add_instruction_with_immediate(
+                Instruction::StepIndex,
+                stack_slot as usize | (step | keeps) << Instruction::STEP_INDEX_SLOT_BITS,
+            );
+            return Ok(ValueOutput::Value);
+        }
         let lref = lref.assignment_target(ctx, true);
         lref.get_value_keep_reference(ctx)?;
         // `++` and `--` of a property by its name: one instruction for the
