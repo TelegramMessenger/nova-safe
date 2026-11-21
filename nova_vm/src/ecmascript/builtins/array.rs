@@ -212,6 +212,30 @@ impl<'a> Array<'a> {
             })
     }
 
+    /// CreateDataProperty(A, index, value) where it comes to the element
+    /// written and nothing else: the Array takes plain elements
+    /// ([`Array::takes_plain_elements`]), and the index is one of its
+    /// elements (a hole, or a value that is plain as every element of such
+    /// an Array is) or the one after its last. False with nothing done for
+    /// anything else, which the steps do.
+    pub(crate) fn define_plain_element(self, agent: &mut Agent, index: i64, value: Value) -> bool {
+        if index < 0 || !self.takes_plain_elements(agent) {
+            return false;
+        }
+        let len = i64::from(self.len(agent));
+        if index < len {
+            match self.as_mut_slice(agent).get_mut(index as usize) {
+                Some(slot) => {
+                    *slot = Some(value.unbind());
+                    true
+                }
+                None => false,
+            }
+        } else {
+            index == len && len < i64::from(u32::MAX) - 1 && self.push(agent, value).is_ok()
+        }
+    }
+
     /// An array is dense if it contains no holes or getters.
     ///
     /// Whether an element assigned at or past the Array's length is made
