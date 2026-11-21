@@ -682,3 +682,91 @@ fn a_text_built_again_is_not_out_of_memory() {
     }
     unsafe { nova_engine_free(engine) };
 }
+
+/// A C caller may place a nova_result at only 4-byte alignment (a stack local
+/// of 32-bit MSVC), so every call that takes one reads and writes it
+/// unaligned. Debug test builds check every typed dereference or reference of
+/// a misaligned pointer in this crate, which catches `nova_result_free`.
+/// `write_result`'s write goes through core's `ptr::write`, whose alignment
+/// check only a core built with debug assertions has.
+#[test]
+fn results_need_no_alignment() {
+    #[repr(C, align(8))]
+    struct Slot([u8; size_of::<NovaResult>() + 8]);
+    let mut slot = Slot([0; size_of::<NovaResult>() + 8]);
+    let out = slot.0.as_mut_ptr().wrapping_add(4).cast::<NovaResult>();
+    assert_eq!(out.addr() % 8, 4);
+    let result = || unsafe { out.read_unaligned() };
+    let free = || {
+        unsafe { nova_result_free(out) };
+        let freed = result();
+        assert!(freed.bytes.is_null());
+        assert_eq!(freed.len, 0);
+    };
+    unsafe {
+        out.write_unaligned(blank());
+        let engine = nova_engine_new(0, 0, Some(quiet_host), None, ptr::null_mut(), out);
+        assert!(!engine.is_null(), "{}", text(&result()));
+        assert_eq!(result().kind, NOVA_VALUE_UNDEFINED);
+        free();
+        assert_eq!(
+            nova_engine_register(engine, b"host".as_ptr(), 4, 1, 0, NOVA_ARGS_VALUES, out),
+            NOVA_OK
+        );
+        assert_eq!(result().kind, NOVA_VALUE_UNDEFINED);
+        free();
+        assert_eq!(eval(engine, "host()"), NOVA_OK);
+        let source = "function probe(a) { return a.length }";
+        assert_eq!(
+            nova_engine_eval(engine, source.as_ptr(), source.len(), false, out),
+            NOVA_OK
+        );
+        assert_eq!(result().kind, NOVA_VALUE_UNDEFINED);
+        free();
+        let source = "probe('abcd')";
+        let script = nova_script_compile(source.as_ptr(), source.len(), out);
+        assert!(!script.is_null(), "{}", text(&result()));
+        assert_eq!(result().kind, NOVA_VALUE_UNDEFINED);
+        free();
+        assert_eq!(nova_engine_eval_script(engine, script, out), NOVA_OK);
+        let value = result();
+        assert_eq!(value.kind, NOVA_VALUE_NUMBER);
+        assert_eq!(value.number, 4.0);
+        free();
+        nova_script_free(script);
+        let mut captured = false;
+        assert_eq!(
+            nova_engine_capture(engine, b"probe".as_ptr(), 5, &mut captured, out),
+            NOVA_OK
+        );
+        assert!(captured);
+        free();
+        let args = [NovaStr {
+            ptr: b"abc".as_ptr(),
+            len: 3,
+        }];
+        assert_eq!(
+            nova_engine_call(engine, b"probe".as_ptr(), 5, args.as_ptr(), args.len(), out),
+            NOVA_OK
+        );
+        let value = result();
+        assert_eq!(value.kind, NOVA_VALUE_NUMBER);
+        assert_eq!(value.number, 3.0);
+        free();
+        let mut ran = true;
+        assert_eq!(nova_engine_run_job(engine, &mut ran, out), NOVA_OK);
+        assert!(!ran);
+        assert_eq!(result().kind, NOVA_VALUE_UNDEFINED);
+        free();
+        assert_eq!(
+            nova_engine_eval(engine, b"(".as_ptr(), 1, false, out),
+            NOVA_EXCEPTION
+        );
+        let copy = result();
+        assert_eq!(copy.kind, NOVA_VALUE_STRING);
+        assert!(text(&copy).starts_with("SyntaxError: "), "{}", text(&copy));
+        free();
+        free();
+        nova_engine_free(engine);
+    }
+}

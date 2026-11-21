@@ -226,16 +226,18 @@ fn owned_bytes(bytes: Vec<u8>) -> (*mut u8, usize) {
 /// Writes a result to `out` if it is not null.
 ///
 /// # Safety
-/// `out` must be null or valid for writes of a NovaResult.
+/// `out` must be null or valid for writes of a NovaResult, at any alignment.
 unsafe fn write_result(out: *mut NovaResult, kind: i32, number: f64, bytes: Vec<u8>) {
     if out.is_null() {
         return;
     }
     let (bytes, len) = owned_bytes(bytes);
-    // SAFETY: non-null and writable by the caller's contract; `write` does not
-    // read or drop what was there (it may be uninitialized).
+    // SAFETY: non-null and writable by the caller's contract. A C caller's
+    // nova_result may be only 4-aligned (a stack local of 32-bit MSVC), and
+    // `write_unaligned` needs no alignment; like `write`, it does not read or
+    // drop what was there (it may be uninitialized).
     unsafe {
-        out.write(NovaResult {
+        out.write_unaligned(NovaResult {
             kind,
             number,
             bytes,
@@ -801,22 +803,38 @@ pub unsafe extern "C" fn nova_engine_set_time_zone(
 ///
 /// # Safety
 /// `result` must be null, or a NovaResult this library filled (or one whose
-/// `bytes` is null).
+/// `bytes` is null), at any alignment.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nova_result_free(result: *mut NovaResult) {
     if result.is_null() {
         return;
     }
-    // SAFETY: non-null and a valid NovaResult by the contract.
-    let result = unsafe { &mut *result };
-    if !result.bytes.is_null() && result.len > 0 {
-        let slice = core::ptr::slice_from_raw_parts_mut(result.bytes, result.len);
-        // SAFETY: `bytes`/`len` came from Box::into_raw of a Box<[u8]> of that
-        // length in `owned_bytes`, and are reset below so they are freed once.
-        drop(unsafe { Box::from_raw(slice) });
+    // SAFETY: non-null and, by the contract, a NovaResult this library filled
+    // (or one whose `bytes` is null), which a C caller may place at only
+    // 4-byte alignment: the two fields are reached through raw place pointers,
+    // which need no alignment, and no reference to the result is made.
+    let (bytes, len) = unsafe { (&raw mut (*result).bytes, &raw mut (*result).len) };
+    // SAFETY: points into the caller's result; read unaligned. `kind` and
+    // `number` are never read (they may be uninitialized).
+    let data = unsafe { bytes.read_unaligned() };
+    if !data.is_null() {
+        // SAFETY: as for `bytes`, and read only when `bytes` is set: in a
+        // result whose `bytes` is null, `len` may be uninitialized too.
+        let size = unsafe { len.read_unaligned() };
+        if size > 0 {
+            let slice = core::ptr::slice_from_raw_parts_mut(data, size);
+            // SAFETY: `bytes`/`len` came from Box::into_raw of a Box<[u8]> of
+            // that length in `owned_bytes`, and are reset below so they are
+            // freed once.
+            drop(unsafe { Box::from_raw(slice) });
+        }
     }
-    result.bytes = core::ptr::null_mut();
-    result.len = 0;
+    // SAFETY: as for the reads; written unaligned, and neither a pointer nor
+    // a usize has anything to drop.
+    unsafe {
+        bytes.write_unaligned(core::ptr::null_mut());
+        len.write_unaligned(0);
+    }
 }
 
 /// # Safety

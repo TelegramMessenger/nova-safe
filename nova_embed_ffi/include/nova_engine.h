@@ -17,6 +17,11 @@
  *   allowed. On NOVA_OK it holds the value (NOVA_VALUE_UNDEFINED, _STRING or
  *   _NUMBER); on any other status a NOVA_VALUE_STRING with the error text
  *   (the exception's "name: message", the missing function's name, a reason).
+ * - A nova_result may sit at any address: the library reads and writes it
+ *   unaligned, so a local that the C compiler aligns to 4 bytes only (MSVC on
+ *   32-bit Windows) is valid. Every other pointer needs only the alignment C
+ *   gives its type; engine handles, scripts and `ret` are only ever the
+ *   library's own, passed back unchanged.
  * - The engine calls back only into its callbacks (host function, interrupt,
  *   time zone), on the calling thread, inside a call. A call into the same
  *   engine from a callback returns NOVA_REFUSED; nova_engine_free from there
