@@ -2620,6 +2620,37 @@ BigInt is asked further. `if (x)`, `x ? a : b`, `!x`, `x || y` and `x && y` of a
 ten instructions shorter (99 for 109 the `if` with its `else`); what is left of them is the jump
 and the constant, as before.
 
+`q++` whose value is used was seven instructions, of a variable in a stack slot too: the slot
+read, ToNumeric, a copy pushed, the step, the slot written, the copy popped. Where the value is
+not used it has long been one (`i++` as a statement). It is one now where the value is used as
+well (`a[n++] = v`, `while (n--)`, `return ++count`): StepIndex, whose one argument is the slot
+with the step and which value it leaves above it, and which the loop of instructions runs in the
+arm of the step whose value is not used, for an integer that stays one; anything else is made a
+numeric value the general way, once, and stepped there. `last = q++` is 69 instructions for 189
+(QuickJS 17), and a `while (k--)` of three turns 925 for 1411 (277). A variable of an enclosing
+function stepped for its value is as before (`a[n++ & 7] = i` with `n` outside, 454 for 83). The
+arm asks which of the three it is by one look at the kind: asked first whether it is the new one,
+before which way the old one steps, every `i++` that is a statement was a comparison longer, and
+two loops of `while` with one in each 1.2% more instructions. As it is that case is 0.2% more, and
+a call one machine instruction more by the price list (559.7 for 558.9 with one argument), which
+is where the loop's code lies and no step of it.
+
+The price list read every turn of a loop a machine instruction and a half longer with it, and with
+an arm of its own for the instruction. It was neither: the list had grown by fourteen rows the
+round before, and a case whose price is "the whole process, start included" pays for the
+compiling of the file it is in, in both engines. A case priced over another does not, and those
+were where they had been (a call with one argument 558.9 for 558.5). The test has each of the four
+on values of every kind with the variable after it, the conversions once, the value as an index,
+an operand, an argument, a test and a return, variables that are in no slot, declared later or
+constant, the integers at their ends, and a function of more variables than the argument has bits
+for, whose last ones are stepped the old way. With any of these it fails: the step the other way,
+in the loop, in the general way or where it is compiled; the value after taken for the value
+before, in any of the three; an integer left where it was past the largest, or the slot not
+written; the step read a bit off the slot; a constant stepped; a slot too large for the argument
+compiled so; the general way without its ToNumeric, and the instruction run as the step whose
+value is not used (in both the engine stops). (The loops of the test are ended by counts that
+are not themselves such a step: where they were, four of these never ended.)
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
