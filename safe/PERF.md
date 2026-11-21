@@ -2651,6 +2651,33 @@ compiled so; the general way without its ToNumeric, and the instruction run as t
 value is not used (in both the engine stops). (The loops of the test are ended by counts that
 are not themselves such a step: where they were, four of these never ended.)
 
+`a || b` whose value is used was the left operand, a copy of it pushed, the test of the copy and
+a jump on it, and then either the copy popped, `b` and a jump over what follows, or the copy
+stored back as the result: four instructions where `a` decides and five where it does not, for an
+operator that does nothing but choose. (In the test of an `if` or a loop the same operators are
+jumps and nothing else, and were.) It is one instruction after `a` now: a jump over `b` that
+leaves the value of `a` as the result where `a` decides the expression (it is true for `||`, not
+true for `&&`, neither undefined nor null for `??`), and otherwise the register emptied for `b`.
+`x = a || 9` is 71 instructions for 130 (QuickJS 27) and `x = a && 9` 91 for 169 (37); nothing
+else is changed, by the price list or by the instructions that fourteen cases of every kind
+retire (each within a thousandth).
+
+These three have no general way: the loop runs them for any value and leaves them to nothing,
+and what was written for them there at first was code that nothing ran, and that no test could
+tell from its opposite. That came out of taking each piece out in turn, and with it that an Agent
+which prints what it executes does not take the general way for every instruction, as the notes
+of earlier rounds took it to: it reads each instruction with care and prints it, and the loop
+then runs it as it runs any other. So a script run that way and compared with Node says that the
+reading and the printing are right, and nothing of the general way, which only what the loop
+leaves to it takes (a `typeof` of a Reference, a value that is no Number, a local that is no
+integer: the tests of those rounds have each, and fail without it). A test of the engine now runs
+one script in an Agent of each kind and expects of both what Node gives. The test of the
+embedding has each operator for a left operand of every kind with whether the right one was
+worked out, the values kept as they are, chains, what the right operand does and throws, the left
+operand read once, and the value wherever a value goes; with either jump taken the other way, the
+jumps of two operators exchanged, or null taken for a value by `??`, it fails. (The register
+emptied where the jump is not taken is not seen by anything: `b` writes it next.)
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
