@@ -4279,8 +4279,16 @@ fn complex_object_pattern<'s>(
         return Err(err);
     }
 
-    // Don't keep the object on the stack.
-    value_on_stack.store(ctx);
+    // Don't keep the object on the stack: the rest of the pattern takes
+    // it from the result register, and without one it is dropped. (Stored
+    // there for nothing, it was what the statement left behind: the value
+    // of `for (var { k } of list) { }`, and of a script that ends with
+    // `var { a } = o`, was the object.)
+    if object_pattern.rest.is_some() {
+        value_on_stack.store(ctx);
+    } else {
+        value_on_stack.pop(ctx);
+    }
 
     if let Some(rest) = &object_pattern.rest {
         let ast::BindingPattern::BindingIdentifier(identifier) = &rest.argument else {
