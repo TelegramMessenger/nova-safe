@@ -871,12 +871,28 @@ impl StringRecord {
         if let StringBuffer::Built(text) = &self.data {
             return text.utf16_len;
         }
+        // A text whose indices are known says its length by them.
+        match self.mapping.get() {
+            Some(IndexMapping::Ascii) => return self.len(),
+            Some(IndexMapping::NonAscii { mapping }) => return mapping.len(),
+            None => {}
+        }
         // A short text that was not asked for its indices yet is counted.
         // The table of them is an allocation of eight bytes for every code
         // unit, made here to answer once what a look at the bytes answers:
         // the length of a substring, which is all that many are asked for.
-        if self.mapping.get().is_none() && self.len() <= Self::COUNTED_LENGTH {
-            return utf16_len_of(self.as_bytes());
+        // A text of ASCII is as long as its bytes, and that is all there
+        // is to know of its indices, with nothing allocated for it: it is
+        // remembered, so that the text is not looked through at every
+        // `s.length` (counted each time, a text of sixty characters was
+        // four hundred instructions a read).
+        if self.len() <= Self::COUNTED_LENGTH {
+            let bytes = self.as_bytes();
+            if bytes.is_ascii() {
+                let _ = self.mapping.set(IndexMapping::Ascii);
+                return bytes.len();
+            }
+            return utf16_len_of(bytes);
         }
         match self.index_mapping() {
             IndexMapping::Ascii => self.len(),

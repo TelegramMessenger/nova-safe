@@ -111,8 +111,17 @@ impl SmallString {
     ///
     /// This is equivalent to the JavaScript `string.length` property.
     pub fn utf16_len(&self) -> usize {
-        if self.is_ascii() {
-            return self.len();
+        // The seven bytes as one word, with a byte of padding after them.
+        // The first byte that has its high bit is where the padding
+        // starts if the text is ASCII, and that many bytes is its length;
+        // it is ASCII where everything from there on is padding. (Asked
+        // byte by byte, twice over, this was half of `s.length` of a
+        // short string.)
+        let [a, b, c, d, e, f, g] = self.bytes;
+        let word = u64::from_le_bytes([a, b, c, d, e, f, g, 0xFF]);
+        let len = (word & 0x8080_8080_8080_8080).trailing_zeros() / 8;
+        if word >> (8 * len) == u64::MAX >> (8 * len) {
+            return len as usize;
         }
         self.as_wtf8()
             .code_points()
