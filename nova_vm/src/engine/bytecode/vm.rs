@@ -4184,6 +4184,15 @@ impl Vm {
             Instruction::ApplyRemainderBinaryOperator => {
                 operate_on_integers!(ApplyRemainderBinaryOperator)
             }
+            // `**` of two Numbers, which the general way was the only way
+            // for: a call from here, as the negation is. (As one more of
+            // the operators of this loop, with the power asked where they
+            // ask for their integers and their doubles, it made every
+            // instruction of a script one longer.)
+            Instruction::ApplyExponentialBinaryOperator => {
+                step!(ApplyExponentialBinaryOperator);
+                return vm.raise_number(agent, gc);
+            }
             Instruction::ApplyShiftLeftBinaryOperator => {
                 operate_on_integers!(ApplyShiftLeftBinaryOperator)
             }
@@ -5240,6 +5249,34 @@ impl Vm {
         let negated: Value = Number::from_f64(agent, -double, gc).into();
         self.result = Some(negated.unbind());
         Plain::Done
+    }
+
+    /// `base ** exponent` of two Numbers, the base on the stack and the
+    /// exponent in the result register: Number::exponentiate. Two integers
+    /// give their product where that is an integer again; any other two
+    /// Numbers are read as the doubles they are, once, and the steps taken
+    /// on those. (By the operator of two Numbers, which the remainder is
+    /// asked by, the way to the power was longer than the power: the
+    /// Numbers taken apart again, and the result made a Number the slow
+    /// way.) Anything else, a BigInt among it, goes the general way.
+    #[inline(never)]
+    fn raise_number(&mut self, agent: &mut Agent, gc: NoGcScope) -> Plain {
+        let (Some(&base), Some(exponent)) = (self.stack.last(), self.result) else {
+            return Plain::No;
+        };
+        if let (Value::Integer(base), Value::Integer(exponent)) = (base, exponent)
+            && let Some(power) = Number::integer_power(base.into_i64(), exponent.into_i64())
+        {
+            return self.finish_operation(Value::Integer(power));
+        }
+        let (Some(base), Some(exponent)) = (
+            Self::double_of(agent, base),
+            Self::double_of(agent, exponent),
+        ) else {
+            return Plain::No;
+        };
+        let power = Number::power_of_doubles(base, exponent);
+        self.finish_operation(Value::from_f64(agent, power, gc).unbind())
     }
 
     /// BitwiseNot of a Number in the result register: Number::bitwiseNOT,

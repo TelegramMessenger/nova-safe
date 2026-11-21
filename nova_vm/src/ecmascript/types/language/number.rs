@@ -717,139 +717,107 @@ impl<'a> Number<'a> {
     }
 
     /// ### [6.1.6.1.3 Number::exponentiate ( base, exponent )](https://tc39.es/ecma262/#sec-numeric-types-number-exponentiate)
+    ///
+    /// Each Number is read as the double it is once, and the steps are
+    /// taken on the doubles: taken on the Numbers, every step asked again
+    /// what kind of Number each one is.
     pub fn exponentiate(agent: &mut Agent, base: Self, exponent: Self) -> Self {
+        let power = Self::power_of_doubles(base.into_f64_(agent), exponent.into_f64_(agent));
+        agent.heap.create(power)
+    }
+
+    /// The steps of [`Number::exponentiate`] for the doubles that the base
+    /// and the exponent are.
+    pub(crate) fn power_of_doubles(base: f64, exponent: f64) -> f64 {
         // 1. If exponent is NaN, return NaN.
-        if exponent.is_nan_(agent) {
-            return Number::nan();
+        if exponent.is_nan() {
+            return f64::NAN;
         }
-
         // 2. If exponent is either +0𝔽 or -0𝔽, return 1𝔽.
-        if exponent.is_pos_zero_(agent) || exponent.is_neg_zero_(agent) {
-            return Number::from(1);
+        if exponent == 0.0 {
+            return 1.0;
         }
-
         // 3. If base is NaN, return NaN.
-        if base.is_nan_(agent) {
-            return Number::nan();
+        if base.is_nan() {
+            return f64::NAN;
         }
-
+        // Whether exponent is an odd integral Number, which neither
+        // infinity is: asked where a step asks it.
+        let odd = || exponent.rem_euclid(2.0) == 1.0;
         // 4. If base is +∞𝔽, then
-        if base.is_pos_infinity_(agent) {
+        if base == f64::INFINITY {
             // a. If exponent > +0𝔽, return +∞𝔽. Otherwise, return +0𝔽.
-            return if Number::greater_than(agent, exponent, Number::from(0)).unwrap_or(false) {
-                Number::pos_inf()
-            } else {
-                Number::pos_zero()
-            };
+            return if exponent > 0.0 { f64::INFINITY } else { 0.0 };
         }
-
         // 5. If base is -∞𝔽, then
-        if base.is_neg_infinity_(agent) {
-            // a. If exponent > +0𝔽, then
-            return if Number::greater_than(agent, exponent, 0.into()).unwrap_or(false) {
+        if base == f64::NEG_INFINITY {
+            return match (exponent > 0.0, odd()) {
+                // a. If exponent > +0𝔽, then
                 // i. If exponent is an odd integral Number, return -∞𝔽. Otherwise, return +∞𝔽.
-                if exponent.is_odd_integer(agent) {
-                    Number::neg_inf()
-                } else {
-                    Number::pos_inf()
-                }
-            }
-            // b. Else,
-            else {
+                (true, true) => f64::NEG_INFINITY,
+                (true, false) => f64::INFINITY,
+                // b. Else,
                 // i. If exponent is an odd integral Number, return -0𝔽. Otherwise, return +0𝔽.
-                if exponent.is_odd_integer(agent) {
-                    Number::neg_zero()
-                } else {
-                    Number::pos_zero()
-                }
+                (false, true) => -0.0,
+                (false, false) => 0.0,
             };
         }
-
-        // 6. If base is +0𝔽, then
-        if base.is_pos_zero_(agent) {
-            // a. If exponent > +0𝔽, return +0𝔽. Otherwise, return +∞𝔽.
-            return if Number::greater_than(agent, exponent, Number::pos_zero()).unwrap_or(false) {
-                Number::pos_zero()
-            } else {
-                Number::pos_inf()
-            };
-        }
-
-        // 7. If base is -0𝔽, then
-        if base.is_neg_zero_(agent) {
-            // a. If exponent > +0𝔽, then
-            return if Number::greater_than(agent, exponent, Number::pos_zero()).unwrap_or(false) {
-                // i. If exponent is an odd integral Number, return -0𝔽. Otherwise, return +0𝔽.
-                if exponent.is_odd_integer(agent) {
-                    Number::neg_zero()
-                } else {
-                    Number::pos_zero()
-                }
+        if base == 0.0 {
+            // 6. If base is +0𝔽, then
+            if base.is_sign_positive() {
+                // a. If exponent > +0𝔽, return +0𝔽. Otherwise, return +∞𝔽.
+                return if exponent > 0.0 { 0.0 } else { f64::INFINITY };
             }
-            // b. Else,
-            else {
+            // 7. If base is -0𝔽, then
+            return match (exponent > 0.0, odd()) {
+                // a. If exponent > +0𝔽, then
+                // i. If exponent is an odd integral Number, return -0𝔽. Otherwise, return +0𝔽.
+                (true, true) => -0.0,
+                (true, false) => 0.0,
+                // b. Else,
                 // i. If exponent is an odd integral Number, return -∞𝔽. Otherwise, return +∞𝔽.
-                if exponent.is_odd_integer(agent) {
-                    Number::neg_inf()
-                } else {
-                    Number::pos_inf()
-                }
+                (false, true) => f64::NEG_INFINITY,
+                (false, false) => f64::INFINITY,
             };
         }
-
         // 8. Assert: base is finite and is neither +0𝔽 nor -0𝔽.
-        debug_assert!(base.is_finite_(agent) && base.is_nonzero_(agent));
-
-        // 9. If exponent is +∞𝔽, then
-        if exponent.is_pos_infinity_(agent) {
-            let base = base.abs(agent);
-
+        debug_assert!(base.is_finite() && base != 0.0);
+        if exponent.is_infinite() {
+            let size = base.abs();
+            // 9.b. and 10.b. If abs(ℝ(base)) = 1, return NaN.
+            if size == 1.0 {
+                return f64::NAN;
+            }
+            // 9. If exponent is +∞𝔽, then
             // a. If abs(ℝ(base)) > 1, return +∞𝔽.
-            return if Number::greater_than(agent, base, Number::from(1)).unwrap_or(false) {
-                Number::pos_inf()
-            }
-            // b. If abs(ℝ(base)) = 1, return NaN.
-            else if Number::is(agent, base, Number::from(1)) {
-                Number::nan()
-            }
             // c. If abs(ℝ(base)) < 1, return +0𝔽.
-            else {
-                Number::pos_zero()
-            };
-        }
-
-        // 10. If exponent is -∞𝔽, then
-        if exponent.is_neg_infinity_(agent) {
-            let base = base.into_f64_(agent).abs();
-
+            // 10. If exponent is -∞𝔽, then
             // a. If abs(ℝ(base)) > 1, return +0𝔽.
-            return if base > 1.0 {
-                Number::pos_zero()
-            }
-            // b. If abs(ℝ(base)) = 1, return NaN.
-            else if base == 1.0 {
-                Number::nan()
-            }
             // c. If abs(ℝ(base)) < 1, return +∞𝔽.
-            else {
-                Number::pos_inf()
+            return if (size > 1.0) == (exponent > 0.0) {
+                f64::INFINITY
+            } else {
+                0.0
             };
         }
-
         // 11. Assert: exponent is finite and is neither +0𝔽 nor -0𝔽.
-        debug_assert!(exponent.is_finite_(agent) && exponent.is_nonzero_(agent));
-
+        debug_assert!(exponent.is_finite() && exponent != 0.0);
         // 12. If base < -0𝔽 and exponent is not an integral Number, return NaN.
-        if Number::less_than(agent, base, Number::neg_zero()).unwrap_or(false)
-            && !exponent.is_integer_(agent)
-        {
-            return Number::nan();
+        if base < 0.0 && exponent.fract() != 0.0 {
+            return f64::NAN;
         }
-
         // 13. Return an implementation-approximated Number value representing the result of raising ℝ(base) to the ℝ(exponent) power.
-        agent
-            .heap
-            .create(base.into_f64_(agent).powf(exponent.into_f64_(agent)))
+        base.powf(exponent)
+    }
+
+    /// `base ** exponent` of two integers where the result is an integer
+    /// again: the product itself, which is what the power of the doubles
+    /// is where a double holds the result as it is. None for a negative
+    /// exponent, and for a result past the safe integers, which the power
+    /// of the doubles says.
+    pub(crate) fn integer_power(base: i64, exponent: i64) -> Option<SmallInteger> {
+        let exponent = u32::try_from(exponent).ok()?;
+        SmallInteger::try_from(base.checked_pow(exponent)?).ok()
     }
 
     /// ### [6.1.6.1.4 Number::multiply ( x, y )](https://tc39.es/ecma262/#sec-numeric-types-number-multiply)
