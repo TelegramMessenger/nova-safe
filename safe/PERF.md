@@ -132,6 +132,15 @@ time of `call/closure`, leaving it 11%, taking up the code that runs next 15%). 
 profile cannot: that a function was fifteen instructions longer than its work, at every call of it,
 for a frame it had no use for (area 1).
 
+Where the instructions of one turn go is found by stepping it. The debugger runs the build that
+has its line tables, with a breakpoint at the head of the loop of instructions that lets a few
+thousand passes by (each pass through a breakpoint is a third of a millisecond, so not millions);
+then it steps one machine instruction at a time for some thousands of them and writes down where
+each is. Cut at the head of the loop, that is the instructions of every bytecode instruction of a
+turn, in order, each with the function and the source line it was compiled from: a count, where
+the profile of the same build is a time, and exact, where the price of an operation is a
+difference of two loops.
+
 Two builds are compared the same way, case by case of the benchmark: the instructions of a process
 over the runs its case reports. A change that makes a path longer shows there exactly, with the machine
 busy, before any timing can be trusted; that is how the loss of the calls in the try at the loop's
@@ -1556,6 +1565,20 @@ the tables of the code taken to hand each time (fifty); leaving it is ninety. Ha
 another frame: one value stack with a base for each call in place of a stack exchanged at every
 call, and an execution context that is not made for a call the loop runs itself until something
 asks for it.
+
+A turn of `call/closure` stepped one machine instruction at a time (below, "What an operation
+costs") says the same to the instruction: 1056 of them, where QuickJS runs the turn in 477. The
+call is 342 and the return 141; the three reads and writes of the variables of the enclosing
+function 81, 72 and 78; the two operators that have their operands 70 and 72, the addition 52;
+the function and the result moved 37 and 31, and the step of the loop 80. In the 342 nothing is
+longer than the fourteen instructions that write the execution context: asking what the function
+is and whether the loop may run it is fifty, the frame and the stacks sixty, the parameters
+twenty, the context fifty-five, the code rooted and its tables taken twenty-five, the loop
+entered again thirty. A read of a variable of the enclosing function is as thin: the instruction
+found nineteen, its site seven, the record out from the running one ten, the record itself twelve,
+the binding at its place ten, the value pushed twelve. So the case stays where the tables put it,
+at 1.95x to 2.00x by where its code lies, until the frame is another one; no round that shortens
+one thing in it takes it clearly under.
 
 ### 4. Properties
 
