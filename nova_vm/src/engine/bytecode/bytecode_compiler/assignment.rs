@@ -236,9 +236,10 @@ fn compile_named_assignment<'s, 'gc>(
     Ok(rval)
 }
 
-/// `p.name op= value` with the object kept on the stack, for a `p` that the
-/// function keeps in a stack slot and a value whose code does not leave the
-/// reference register alone (`p.x += p.vx`): the Reference way reads the
+/// `p.name op= value` with the object kept on the stack or in its slot, for
+/// a `p` that the function keeps in a stack slot, and a value whose code
+/// does not leave the reference register alone (`p.x += p.vx`) or through
+/// which `p` stays in its slot (`p.x += 1`): the Reference way reads the
 /// property with its Reference kept, pushes the Reference for as long as
 /// the value is evaluated, pops it, and assigns through it. Here the object
 /// is pushed, its property read as any other, and the assignment made as
@@ -357,15 +358,20 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
         }
         // `p.x += p.vx` likewise, for a local `p`: see
         // `compile_named_compound_assignment`. With a value that leaves the
-        // reference register alone, the Reference way has no push and no
-        // pop, and is the shorter one.
+        // reference register alone (`p.x += 1`, `p.x += i`) the Reference
+        // way has no push and no pop, and as many instructions; but they
+        // are the ones that make a Reference and assign through it, a
+        // tenth to a seventh more than reading the property and assigning
+        // it by the slot of `p`, which is taken where `p` stays in its
+        // slot through the value.
         if !keep_value
             && !this.operator.is_assign()
             && this.operator.to_logical_operator().is_none()
             && let ast::AssignmentTarget::StaticMemberExpression(target) = &this.left
             && !target.optional
             && is_stack_variable(ctx, &target.object)
-            && !leaves_reference_register(ctx, &this.right)
+            && (!leaves_reference_register(ctx, &this.right)
+                || slot_of_object_kept_through(ctx, &target.object, &this.right).is_some())
             && ctx.optional_chains.is_none()
         {
             let name = ctx.create_string(target.property.name.as_str());
