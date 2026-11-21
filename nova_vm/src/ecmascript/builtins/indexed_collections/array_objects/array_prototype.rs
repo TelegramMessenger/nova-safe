@@ -1127,14 +1127,20 @@ impl ArrayPrototype {
                 // iii. If selected is true, then
                 if selected {
                     // 1. Perform ? CreateDataPropertyOrThrow(A, ! ToString(𝔽(to)), kValue).
-                    create_data_property_or_throw(
-                        agent,
-                        a.get(agent),
-                        to.into(),
-                        scoped_k_value.get(agent),
-                        gc.reborrow(),
-                    )
-                    .unbind()?;
+                    // Appended as the element it is where A is an Array
+                    // that takes it so (see `map`).
+                    let selected_value = scoped_k_value.get(agent);
+                    if !matches!(a.get(agent), Object::Array(array) if array.define_plain_element(agent, i64::from(to), selected_value))
+                    {
+                        create_data_property_or_throw(
+                            agent,
+                            a.get(agent),
+                            to.into(),
+                            selected_value,
+                            gc.reborrow(),
+                        )
+                        .unbind()?;
+                    }
                     // 2. Set to to to + 1.
                     to += 1;
                 }
@@ -2135,14 +2141,23 @@ impl ArrayPrototype {
                     )
                     .unbind()?;
                 // iii. Perform ? CreateDataPropertyOrThrow(A, Pk, mappedValue).
-                create_data_property_or_throw(
-                    agent,
-                    a.get(agent),
-                    pk,
-                    mapped_value.unbind(),
-                    gc.reborrow(),
-                )
-                .unbind()?;
+                // Written as the element it is where A is an Array that
+                // takes it so: the Array that ArraySpeciesCreate makes for
+                // an Array is one, asked again at every element since the
+                // callback has run in between. Defined the general way, a
+                // descriptor was made of each value and applied.
+                let mapped_value = mapped_value.unbind();
+                if !matches!(a.get(agent), Object::Array(array) if array.define_plain_element(agent, k, mapped_value))
+                {
+                    create_data_property_or_throw(
+                        agent,
+                        a.get(agent),
+                        pk,
+                        mapped_value,
+                        gc.reborrow(),
+                    )
+                    .unbind()?;
+                }
             }
             // d. Set k to k + 1.
             k += 1;
