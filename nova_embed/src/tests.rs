@@ -20136,3 +20136,150 @@ many turns compounded=[1,20,0.00390625,8.673617379884035e-19,1]"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// A variable in a stack slot that is tested for being true (`if (x)`,
+/// `while (x)`, `x ? a : b`, `!x`, and the operands of `&&` and `||` in a
+/// test) is tested by the instruction that jumps, with no read of it
+/// before. A value of every kind by every way of testing one, against
+/// Boolean; one local that holds every kind in turn; a missing argument
+/// and a variable not yet assigned; a `let` and a `const` tested before
+/// their declarations, which throw; the value of a statement that tests
+/// and does nothing more, which says what the test left in the result
+/// register; a list walked by its links, a count run down, a text
+/// eaten; tests nested and joined; locals that are in no stack slot; a
+/// generator, and a `finally`; many turns. What is expected is what Node
+/// prints for the same script.
+#[test]
+fn a_local_tested_for_being_true_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(locals_tested_for_being_true)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn locals_tested_for_being_true() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'string') return '"' + v + '"'; if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).map(function (k) { return k + ':' + fmt(v[k]); }).join(',') + '}'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+var long = 'a string that is too long to be kept in a value';
+function kinds() { return [true, false, 0, -0, 1, -1, 7, NaN, Infinity, -Infinity, 0.5, -0.5, 0.1, 1e300, 5e-324, 9007199254740991, 9007199254740993, '', 'a', ' ', '0', 'false', long, null, undefined, {}, [], [0], function () {}, Symbol('s'), 0n, 1n, -1n, 12345678901234567890n, new Boolean(false), new Number(0), new String(''), new Date(0), /x/, new Map(), new Proxy({}, {}), Object.create(null), Math, globalThis]; }
+// Each way a local is tested, for a value of every kind: 't' where it is taken for true.
+function byIf(v) { if (v) { return 't'; } return 'f'; }
+function byIfElse(v) { var r; if (v) { r = 't'; } else { r = 'f'; } return r; }
+function byIfNot(v) { if (!v) { return 'f'; } return 't'; }
+function byNotNot(v) { if (!!v) { return 't'; } return 'f'; }
+function byTernary(v) { return v ? 't' : 'f'; }
+function byNotTernary(v) { return !v ? 'f' : 't'; }
+function byWhile(v) { var r = 'f', turns = 0; while (v) { r = 't'; turns = turns + 1; if (turns > 0) { break; } } return r; }
+function byWhileNot(v) { var r = 't', turns = 0; while (!v) { r = 'f'; turns = turns + 1; if (turns > 0) { break; } } return r; }
+function byDoWhile(v) { var turns = 0; do { turns = turns + 1; if (turns > 1) { break; } } while (v); return turns > 1 ? 't' : 'f'; }
+function byFor(v) { var r = 'f', turns = 0; for (; v; turns = turns + 1) { r = 't'; if (turns >= 0) { break; } } return r; }
+function byAnd(v) { var one = 1; if (v && one) { return 't'; } return 'f'; }
+function byAndSecond(v) { var one = 1; if (one && v) { return 't'; } return 'f'; }
+function byOr(v) { var zero = 0; if (v || zero) { return 't'; } return 'f'; }
+function byOrSecond(v) { var zero = 0; if (zero || v) { return 't'; } return 'f'; }
+function byLet(v) { let w = v; if (w) { return 't'; } return 'f'; }
+function byConst(v) { const w = v; return w ? 't' : 'f'; }
+function bySecond(a, v) { if (v) { return 't'; } return 'f'; }
+function byNinth(a, b, c, d, e, f, g, h, v) { var x1 = 1, x2 = 2; if (v) { return 't'; } return 'f'; }
+var ways = [byIf, byIfElse, byIfNot, byNotNot, byTernary, byNotTernary, byWhile, byWhileNot, byDoWhile, byFor, byAnd, byAndSecond, byOr, byOrSecond, byLet, byConst, function (v) { return bySecond(1, v); }, function (v) { return byNinth(1, 2, 3, 4, 5, 6, 7, 8, v); }];
+note('every kind by every way', function () { var k = kinds(), rows = []; for (var w = 0; w < ways.length; w = w + 1) { var row = ''; for (var i = 0; i < k.length; i = i + 1) { row += ways[w](k[i]); } rows.push(row); } return rows; });
+note('the ways agree with Boolean', function () { var k = kinds(), bad = []; for (var w = 0; w < ways.length; w = w + 1) { for (var i = 0; i < k.length; i = i + 1) { if ((ways[w](k[i]) === 't') !== Boolean(k[i])) { bad.push(w + ':' + i); } } } return bad; });
+// A local that changes its kind from turn to turn, tested by one instruction all the while.
+note('one local of every kind in turn', function () { var k = kinds(), v, r = '', turns = 0; for (var i = 0; i < k.length * 3; i = i + 1) { v = k[i % k.length]; if (v) { r += 't'; } else { r += 'f'; } turns = turns + 1; } return [r.length, r.slice(0, k.length), turns]; });
+// A missing argument, a variable not yet assigned, one assigned in the test's own statement.
+note('undefined in its forms', function () { function f(a, b) { var c; var r = []; if (a) { r.push('a'); } if (b) { r.push('b'); } if (c) { r.push('c'); } c = 1; if (c) { r.push('c now'); } var d = c && b; if (d) { r.push('d'); } if (!d) { r.push('no d'); } return r; } return f(1); });
+note('a let before its declaration', function () { function f() { if (x) { return 1; } let x = 1; return 2; } return f(); });
+note('a const before its declaration', function () { function f() { var r = y ? 1 : 2; const y = 1; return r; } return f(); });
+note('a let before its declaration in a loop', function () { function f() { var turns = 0; while (!z) { turns = turns + 1; if (turns > 2) { break; } } let z = 1; return turns; } return f(); });
+// What a test leaves behind: the value of a statement that tests and does nothing.
+note('the value of statements that test a local', function () { return [eval("'first'; { let q = 5; if (q) { } }"), eval("'first'; { let q = 0; if (q) { } }"), eval("'first'; { let q = 5; if (q) { 'then'; } }"), eval("'first'; { let q = 0; if (q) { 'then'; } else { 'else'; } }"), eval("'first'; { let q = 0; if (!q) { } }"), eval("'first'; { let q = 0, t = 0; while (q) { t = t + 1; if (t > 3) break; } }"), eval("'first'; { let q = 1, t = 0; while (q) { t = t + 1; if (t > 3) break; q = 0; } }"), eval("'first'; { let q = 1, t = 0; while (q) { t = t + 1; if (t > 3) break; q = 0; 'body'; } }"), eval("'first'; { let q = 1, t = 0; do { t = t + 1; if (t > 5) break; if (t > 1) q = 0; } while (q); }"), eval("'first'; { let q = 5; q ? 'yes' : 'no'; }"), eval("'first'; { let q = 0; q ? 'yes' : 'no'; }"), eval("{ let q = 5; 'kept'; if (q) { } }"), eval("{ let q = 5; if (q) 'a'; if (!q) 'b'; }"), eval("{ let q = 0; if (q) 'a'; if (!q) 'b'; }"), eval("'first'; { let q = 2, n = 0; for (; q; q = q - 1) { if (n > 5) break; n = n + 1; } }"), eval("'first'; { let q = 2, n = 0; for (; q; q = q - 1) { if (n > 5) break; n = n + 1; 'turn' + n; } }")]; });
+// The loops a local ends.
+note('a list walked by its links', function () { var list = null, n = 0, sum = 0; for (var i = 1; i <= 50; i = i + 1) { list = { value: i, next: list }; } for (var p = list; p; p = p.next) { sum = sum + p.value; n = n + 1; if (n > 60) { break; } } var q = list, m = 0; while (q) { q = q.next; m = m + 1; if (m > 60) { break; } } return [n, sum, m]; });
+note('a count run down', function () { function f(k) { var n = 0, turns = 0; while (k) { k = k - 1; n = n + 2; turns = turns + 1; if (turns > 1000) { break; } } return [n, k, turns]; } return [f(0), f(1), f(10), f(0.5).length, f(-3)[2]]; });
+note('a text eaten', function () { var s = 'abcdef', n = 0, turns = 0; while (s) { s = s.slice(1); n = n + 1; turns = turns + 1; if (turns > 20) { break; } } return [n, s, turns]; });
+note('a flag found', function () { var a = [0, '', null, 5, 0, 'x'], found = 0, at = -1, turns = 0; for (var i = 0; !found; i = i + 1) { found = a[i]; at = i; turns = turns + 1; if (turns > 20) { break; } } return [found, at, turns]; });
+note('nested tests', function () { function f(a, b, c) { if (a) { if (b) { if (c) { return 'abc'; } return 'ab'; } else if (c) { return 'ac'; } return 'a'; } else if (b) { return c ? 'bc' : 'b'; } else if (!c) { return 'none'; } return 'c'; } var r = []; for (var i = 0; i < 8; i = i + 1) { r.push(f(i & 4, i & 2, i & 1)); } return r; });
+note('tests joined', function () { function f(a, b, c) { var r = ''; if (a && b || c) { r += '1'; } if (a || b && c) { r += '2'; } if (!(a && b) || !c) { r += '3'; } if (!a && !b && !c) { r += '4'; } if ((a || b) && (b || c) && (a || c)) { r += '5'; } r += a ? (b ? 'x' : 'y') : (c ? 'z' : 'w'); return r; } var r = []; for (var i = 0; i < 8; i = i + 1) { r.push(f(i & 4, i & 2, i & 1)); } return r; });
+note('a test and what it guards', function () { function f(o) { var r = []; if (o) { r.push(o.x); } var p = o && o.next; if (p) { r.push(p.x); } var q = p && p.next; if (q) { r.push('deep'); } else { r.push('shallow'); } return r; } return [f(null), f({ x: 1 }), f({ x: 1, next: { x: 2 } }), f({ x: 1, next: { x: 2, next: {} } })]; });
+// Locals that are not in a stack slot are tested as before.
+note('a local kept by a function', function () { function f(v) { var g = function () { return v; }; var r = []; if (v) { r.push('t'); } else { r.push('f'); } v = !v; if (v) { r.push('t'); } else { r.push('f'); } r.push(g()); return r; } return [f(1), f(0), f('')]; });
+note('a name of the script', function () { var r = []; globalThis.flag100 = 0; if (flag100) { r.push('t'); } else { r.push('f'); } flag100 = 'x'; if (flag100) { r.push('t'); } else { r.push('f'); } return r; });
+note('arguments and this', function () { function f() { var r = []; if (arguments[0]) { r.push('arg'); } if (this) { r.push('this'); } var a = arguments; if (a) { r.push('object'); } var n = a.length; if (n) { r.push('some'); } else { r.push('none'); } return r; } return [f.call(null), f.call(0, 0), f.call('s', 1, 2)]; });
+// In a generator and with a finally in the way.
+note('a generator that tests its local', function () { function* g(n) { var turns = 0; while (n) { var back = yield n; if (back) { n = back; } else { n = n - 1; } turns = turns + 1; if (turns > 20) { break; } } return 'done'; } var it = g(3), r = []; r.push(it.next().value, it.next().value, it.next(5).value, it.next(0).value, it.next(1).value, it.next().value, it.next().done); return r; });
+note('a test under a finally', function () { function f(v) { var r = []; try { if (v) { r.push('t'); return r; } r.push('f'); } finally { if (!v) { r.push('last f'); } else { r.push('last t'); } } return r; } return [f(1), f(0)]; });
+note('a test that throws nothing for any value', function () { var k = kinds(), n = 0; for (var i = 0; i < k.length; i = i + 1) { var v = k[i]; try { if (v) { n = n + 1; } } catch (e) { n = n - 100; } } return n; });
+// Many turns, with a sum that says each test went the right way.
+note('many turns', function () { var t = 0, f = 0, n = 0, o = null, turns = 0; for (var i = 0; i < 30000; i = i + 1) { n = i % 3; o = i % 5 ? { i: i } : null; if (n) { t = t + 1; } else { f = f + 1; } if (o) { t = t + 3; } if (!o) { f = f + 7; } t = t + (n ? 0 : 11); if (n && o) { t = t + 13; } if (n || o) { f = f + 17; } turns = turns + 1; } return [t, f, turns]; });
+out.join("\n")"##;
+    let expected = r##"every kind by every way=["tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt","tffftttftttttttttftttttfftttttfttttttttttttt"]
+the ways agree with Boolean=[]
+one local of every kind in turn=[132,"tffftttftttttttttftttttfftttttfttttttttttttt",132]
+undefined in its forms=["a","c now","no d"]
+a let before its declaration!ReferenceError
+a const before its declaration!ReferenceError
+a let before its declaration in a loop!ReferenceError
+the value of statements that test a local=[undefined,undefined,"then","else",undefined,undefined,0,"body",0,"yes","no",undefined,undefined,"b",2,"turn2"]
+a list walked by its links=[50,1275,50]
+a count run down=[[0,0,0],[2,0,1],[20,0,10],3,1001]
+a text eaten=[6,"",6]
+a flag found=[5,3,4]
+nested tests=["none","c","b","bc","a","ac","ab","abc"]
+tests joined=["34w","13z","3w","1235z","23y","1235y","1235x","125x"]
+a test and what it guards=[["shallow"],[1,"shallow"],[1,2,"shallow"],[1,2,"deep"]]
+a local kept by a function=[["t","f",false],["f","t",true],["f","t",true]]
+a name of the script=["f","t"]
+arguments and this=[["this","object","none"],["this","object","some"],["arg","this","object","some"]]
+a generator that tests its local=[3,2,5,4,1,"done",true]
+a test under a finally=[["t","last t"],["f","last f"]]
+a test that throws nothing for any value=36
+many turns=[410000,528000,30000]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A loop whose test is a local is interrupted as any other loop is, and
+/// what it leaves behind is collected: the jump that tests the local is
+/// one of those that say when the code has gone back.
+#[test]
+fn loops_that_test_a_local_are_interrupted_and_collected() {
+    let (mut engine, stop, polls) = limited(0, 0);
+    stop.set(true);
+    for script in [
+        "(function () { var x = 1; while (x) { } })()",
+        "(function () { var x = 1; do { } while (x); })()",
+        "(function () { var x = 0; while (!x) { } })()",
+        "(function (x) { for (; x; ) { } })({})",
+        "(function () { for (var p = 1; p; p = p) { } })()",
+        "(function () { var x = 1; for (;;) { if (x) { continue; } break; } })()",
+    ] {
+        assert_eq!(
+            engine.evaluate(script, false),
+            Err(Error::Interrupted),
+            "{script}"
+        );
+    }
+    assert!(polls.get() >= 6);
+    stop.set(false);
+    assert_eq!(engine.evaluate("1 + 1", false), Ok(Completion::Number(2.0)));
+    let (mut engine, _, _) = limited(16 << 20, 0);
+    assert_eq!(
+        engine.evaluate(
+            "(function () { var n = 300000, keep = null, made = 0; while (n) { keep = { a: [n, n], b: 'x' + n }; n = n - 1; made = made + 1; if (made > 400000) { break; } } return made; })()",
+            false
+        ),
+        Ok(Completion::Number(300000.0))
+    );
+}
