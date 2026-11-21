@@ -1,0 +1,7 @@
+[package]
+name = "nova_meter"
+description = "The allocator that counts the bytes each Nova engine's allocations hold, for the memory limit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false

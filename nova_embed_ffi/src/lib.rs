@@ -14,7 +14,7 @@
 //!
 //! The header is `include/nova_engine.h`; its comments are the contract.
 //!
-//! The library's allocator (`meter.rs`) counts the bytes each engine's
+//! The library's allocator (`nova_meter`) counts the bytes each engine's
 //! allocations hold; the memory limit bounds that count and
 //! `nova_engine_memory_used` returns it.
 //!
@@ -22,8 +22,6 @@
 //! start with `nova_`), so no other symbol of the process is replaced.
 
 #![deny(unsafe_op_in_unsafe_fn)]
-
-mod meter;
 
 use core::{
     cell::{Cell, RefCell},
@@ -36,6 +34,10 @@ use nova_embed::{
     ArgumentMode, CompiledScript, Completion, Engine, EngineOptions, Error, Host, HostArg,
     HostReturn,
 };
+use nova_meter::{Account, Metered};
+
+#[global_allocator]
+static METERED: Metered = Metered;
 
 pub const NOVA_OK: i32 = 0;
 pub const NOVA_EXCEPTION: i32 = 1;
@@ -106,7 +108,7 @@ pub struct NovaEngine {
     engine: RefCell<Engine>,
     /// What the engine's allocations are counted on: entered by every call
     /// that runs the engine.
-    account: Rc<meter::Account>,
+    account: Rc<Account>,
     time_zone: Rc<Cell<NovaTimeZoneFn>>,
     free_requested: Cell<bool>,
 }
@@ -115,7 +117,7 @@ struct CHost {
     call: unsafe extern "C" fn(*mut c_void, u32, *const NovaArg, usize, *mut NovaReturn),
     interrupt: NovaInterruptFn,
     time_zone: Rc<Cell<NovaTimeZoneFn>>,
-    account: Rc<meter::Account>,
+    account: Rc<Account>,
     context: *mut c_void,
 }
 
@@ -364,7 +366,7 @@ pub unsafe extern "C" fn nova_engine_new(
     };
     let time_zone = Rc::new(Cell::new(None));
     let host_time_zone = time_zone.clone();
-    let account = Rc::new(meter::Account::new());
+    let account = Rc::new(Account::new());
     let host_account = account.clone();
     let entered = account.enter();
     let created = catch_unwind(AssertUnwindSafe(|| {

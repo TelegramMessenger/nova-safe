@@ -11,14 +11,16 @@ file states what protects the process from a hostile script, what is trusted, an
    `unsafe` in them (`nova_vm` only allows it with the opt-in `probes` feature, for DTrace probe macros; release
    builds for the app leave it off). A logic bug in the engine can make a script compute a wrong value, throw, or
    panic; it cannot read or write memory it does not own. `safe/tools/unsafe_report.py` counts what is left: 0.
-2. **A small, audited C ABI.** `nova_embed_ffi` is the only crate with `unsafe` (`#![deny(unsafe_op_in_unsafe_fn)]`,
-   every block commented with its precondition): byte buffers are copied into owned Rust values at once, results are
-   owned by the caller and freed once, re-entry from a host callback is refused, every entry point that runs the
-   engine does so under `catch_unwind` and a panic marks the engine dead (never touched again); the ones that only
-   fill a host function's return slot, free a result or set the time zone callback run none of the engine. Only
-   `nova_*` symbols are exported. The crate also holds the allocator that counts each engine's bytes for the memory
-   limit (`meter.rs`, from the Android line): a header in front of every block names the account of the engine it was
-   allocated for. What is read from a header picks a counter; it is never used as an address or a size.
+2. **A small, audited C ABI.** `nova_embed_ffi` and its allocator `nova_meter` are the only crates with `unsafe`
+   (`#![deny(unsafe_op_in_unsafe_fn)]`, every block commented with its precondition): byte buffers are copied into
+   owned Rust values at once, results are owned by the caller and freed once, re-entry from a host callback is
+   refused, every entry point that runs the engine does so under `catch_unwind` and a panic marks the engine dead
+   (never touched again); the ones that only fill a host function's return slot, free a result or set the time zone
+   callback run none of the engine. Only `nova_*` symbols are exported. The allocator that counts each engine's
+   bytes for the memory limit (`nova_meter`, from the Android line, installed by `nova_embed_ffi`) is a crate of its
+   own, so that an embedder in safe Rust links it without the C ABI: a header in front of every block names the
+   account of the engine it was allocated for. What is read from a header picks a counter; it is never used as an
+   address or a size.
 3. **One engine per widget, no shared state between engines.** Each widget has its own Agent and heap. Host function
    ids live in Rust, never in the JS heap; the hook stack is per call and per thread.
 4. **Resource limits** (so a script can only hurt itself): an interrupt polled every 4096 instructions, inside
@@ -37,7 +39,7 @@ Of the engine's Rust code, nothing but `std`, `rustc`/LLVM and the C ABI crate i
 - `rustc`/LLVM and Rust's `std` (including std's copy of `hashbrown` behind `HashMap`). No crate of the widget build
   uses the `hashbrown` crate: the engine's hash tables with caller-supplied hashes are the in-tree `table.rs`, and
   the parser's maps wrap std's `HashMap`.
-- `nova_embed_ffi`, the C ABI and its counting allocator (layer 2).
+- `nova_embed_ffi`, the C ABI, and `nova_meter`, its counting allocator (layer 2).
 
 Every other crate the engine links (28 in the widget build, `safe/TCB.md`) has no `unsafe`, and the compiler checks
 that: the parser stack (oxc 0.124.0, vendored in `oxc/crates`, `safe/OXC.md`), our forks, and four small registry

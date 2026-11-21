@@ -5,8 +5,8 @@ is not checked by the compiler is Rust's std and the `unsafe` inside the crates 
 those crates, how much `unsafe` each has, whether input from a script reaches it, and what was done about it.
 
 Now (2026-11-15): the widget build links 28 crates and none of them has `unsafe` ("Widget build now" below). What
-is left unchecked by the compiler is Rust's std (with its own copy of hashbrown behind `HashMap`), rustc/LLVM and the
-C ABI crate `nova_embed_ffi`.
+is left unchecked by the compiler is Rust's std (with its own copy of hashbrown behind `HashMap`), rustc/LLVM, the
+C ABI crate `nova_embed_ffi` and the counting allocator `nova_meter`.
 
 ## Method
 
@@ -75,7 +75,8 @@ Performance (release builds, best of several runs on a machine shared with five 
 - **std**: the base everything stands on, with its own copy of **hashbrown** behind `HashMap` and `HashSet`. No
   crate of the widget build depends on the hashbrown crate any more: nova_vm's tables with caller-supplied hashes
   are the in-tree `table.rs`, and oxc's `HashMap`/`HashSet` wrap std's.
-- **rustc/LLVM**, and **`nova_embed_ffi`**, the C ABI (SECURITY.md, layer 2).
+- **rustc/LLVM**, **`nova_embed_ffi`**, the C ABI, and **`nova_meter`**, its counting allocator (SECURITY.md,
+  layer 2).
 - **oxc** is vendored (`oxc/crates`) and every crate of it forbids `unsafe_code`; `safe/OXC.md` records how each
   part was replaced. The four registry crates left in the widget build have no `unsafe`: rustc-hash (oxc's
   FxHash), num-integer (num-bigint), tinyvec (unicode-normalization) and xsum (Math.sumPrecise).

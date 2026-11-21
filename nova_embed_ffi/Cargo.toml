@@ -10,3 +10,4 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 nova_embed = { path = "../nova_embed" }
+nova_meter = { path = "../nova_meter" }

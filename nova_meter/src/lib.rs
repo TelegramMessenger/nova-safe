@@ -25,6 +25,13 @@
 //! allocation, never through the block's pointer: `core::hint::black_box` is
 //! not for correctness, and `#[inline(never)]` does not help (argument
 //! promotion hoists the read back into the caller).
+//!
+//! An embedder installs it as the process's allocator,
+//! `#[global_allocator] static METERED: nova_meter::Metered = nova_meter::Metered;`
+//! (nova_embed_ffi does), creates an [`Account`] per engine and enters it
+//! around every call that runs the engine.
+
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use core::{
     alloc::{GlobalAlloc, Layout},
@@ -55,11 +62,11 @@ thread_local! {
 /// An engine's count of allocated bytes. Dropping it frees the account for
 /// another engine; blocks still alive then (a result the caller has not
 /// freed) go on counting on it, and leave it as they are freed.
-pub(crate) struct Account(usize);
+pub struct Account(usize);
 
 impl Account {
     /// A free account, or the uncounted one when every account is taken.
-    pub(crate) fn new() -> Account {
+    pub fn new() -> Account {
         for _ in 0..ACCOUNTS {
             let index = NEXT.fetch_add(1, Ordering::Relaxed) % ACCOUNTS;
             if index != 0
@@ -75,7 +82,7 @@ impl Account {
 
     /// Bytes held by the live blocks allocated while this account's engine
     /// ran, or `None` for the uncounted account.
-    pub(crate) fn bytes(&self) -> Option<usize> {
+    pub fn bytes(&self) -> Option<usize> {
         if self.0 == 0 {
             return None;
         }
@@ -93,7 +100,7 @@ impl Account {
     /// Makes this the account allocations on this thread go to, until the
     /// guard is dropped (then the account before it is back: calls nest when
     /// a host function calls into another engine).
-    pub(crate) fn enter(&self) -> Entered {
+    pub fn enter(&self) -> Entered {
         Entered(CURRENT.with(|current| current.replace(self.0)))
     }
 }
@@ -106,7 +113,8 @@ impl Drop for Account {
     }
 }
 
-pub(crate) struct Entered(usize);
+/// An entered account ([`Account::enter`]); dropping it leaves the account.
+pub struct Entered(usize);
 
 impl Drop for Entered {
     fn drop(&mut self) {
@@ -124,7 +132,7 @@ fn outer(layout: Layout) -> Option<(usize, Layout)> {
     Some((offset, outer))
 }
 
-struct Metered;
+pub struct Metered;
 
 impl Metered {
     /// # Safety
@@ -247,6 +255,8 @@ unsafe impl GlobalAlloc for Metered {
     }
 }
 
+// The crate's own tests run on it.
+#[cfg(test)]
 #[global_allocator]
 static METERED: Metered = Metered;
 
