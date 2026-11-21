@@ -4164,6 +4164,16 @@ impl Vm {
                     return Plain::No;
                 }
             }
+            // What is destructured is nearly always an object already, and
+            // ToObject of an object is the object: nothing to do. Anything
+            // else is made one, or refused, the general way, which every
+            // `var { x, y } = o` took for its two hundred instructions.
+            Instruction::ToObject => {
+                step!(ToObject);
+                if !vm.result.is_some_and(|value| value.is_object()) {
+                    return Plain::No;
+                }
+            }
             Instruction::Increment => {
                 step!(Increment);
                 return vm.step_integer(1);
