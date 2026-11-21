@@ -100,7 +100,7 @@ fn is_stack_variable<'s>(
 /// no way to it, and a direct `eval` or a `with` in the function leaves it
 /// no slot.
 pub(super) fn slot_of_object_kept_through<'s>(
-    ctx: &CompileContext<'_, 's, '_, '_>,
+    ctx: &mut CompileContext<'_, 's, '_, '_>,
     object: &ast::Expression<'s>,
     value: &ast::Expression<'s>,
 ) -> Option<u32> {
@@ -112,16 +112,7 @@ pub(super) fn slot_of_object_kept_through<'s>(
         .get_reference(identifier.reference_id.get()?)
         .symbol_id()?;
     let slot = ctx.get_variable_stack_index(symbol)?;
-    let within = value.span();
-    let nodes = ctx.nodes();
-    let assigned = ctx
-        .scoping()
-        .get_resolved_references(symbol)
-        .any(|reference| {
-            let at = nodes.get_node(reference.node_id()).kind().span();
-            reference.is_write() && within.start <= at.start && at.end <= within.end
-        });
-    (!assigned).then_some(slot)
+    (!ctx.assigns_within(symbol, value.span())).then_some(slot)
 }
 
 /// The instruction of the operator of a compound assignment.
@@ -1448,5 +1439,100 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope>
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::compile_context::REFERENCES_VISITED;
+    use crate::{
+        ecmascript::{
+            Agent, AgentOptions, DefaultHostHooks, String, Value, initialize_default_realm,
+        },
+        engine::{Bindable, GcScope},
+    };
+
+    /// Runs `source` and returns its value with the references of
+    /// variables that compiling it looked at to learn where they are
+    /// assigned to.
+    fn references_visited(source: &str) -> (Value<'static>, usize) {
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        let before = REFERENCES_VISITED.with(|visited| visited.get());
+        let source_text = String::from_string(&mut agent, source.to_string(), gc.nogc());
+        let result = agent
+            .run_script(source_text.unbind(), gc.reborrow())
+            .unwrap_or_else(|_| panic!("the script throws: {source}"))
+            .unbind();
+        (
+            result,
+            REFERENCES_VISITED.with(|visited| visited.get()) - before,
+        )
+    }
+
+    /// A function that uses one local `uses` times in each of the places
+    /// that ask whether their value assigns to it: the object of an
+    /// assignment to a property, of a compound one, and the left operand
+    /// of an operator.
+    fn uses_of_a_local(uses: usize) -> std::string::String {
+        format!(
+            "(function (o, n) {{ var s = 0; {} return s + o.a + o.b; }})({{ a: 0, b: 0 }}, 3)",
+            "o.a = n; o.b += n; s = s + n * o.b; ".repeat(uses)
+        )
+    }
+
+    /// Where a local is assigned to is looked up once for the function, not
+    /// by every expression that asks: twice the uses are about twice the
+    /// references looked at, and not four times.
+    #[test]
+    fn asking_where_a_local_is_assigned_is_not_the_square_of_its_uses() {
+        let (few, many) = (200, 400);
+        let (value, visited_few) = references_visited(&uses_of_a_local(few));
+        // o.a is 3, o.b 3 for each use, s the sum of 9 * k for k up to them.
+        let expected = |uses: usize| (3 + 3 * uses + 9 * uses * (uses + 1) / 2) as i64;
+        assert_eq!(value, Value::from(expected(few) as i32));
+        let (value, visited_many) = references_visited(&uses_of_a_local(many));
+        assert_eq!(value, Value::from(expected(many) as i32));
+        // Every use asks, of three locals: each of their references is
+        // looked at once.
+        assert!(visited_few >= few, "{visited_few} references looked at");
+        assert!(
+            visited_few <= 16 * few,
+            "{visited_few} references looked at for {few} uses"
+        );
+        assert!(
+            visited_many <= visited_few * 2 + 64,
+            "{visited_many} references looked at for {many} uses, {visited_few} for {few}"
+        );
+    }
+
+    /// The answer is the same as looking at every reference gave: a value
+    /// that assigns to the local is found among many that do not, before
+    /// and after it, and the expression then uses the local as it was.
+    #[test]
+    fn a_value_that_assigns_to_the_local_is_found_among_many_uses() {
+        let plain = "o.n = o.n + 1; ".repeat(150);
+        let source = format!(
+            "(function () {{ var a = {{ n: 0 }}, b = {{ n: 100 }}, o = a; {plain} \
+             o.n = (o = b, 7); {plain} o.n += (o = a, 1000); {plain} \
+             var k = 2, m = k * (k = 5); return [a.n, b.n, k, m].join(); }})()"
+        );
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        let source_text = String::from_string(&mut agent, source, gc.nogc());
+        let result = agent
+            .run_script(source_text.unbind(), gc.reborrow())
+            .unwrap();
+        let Ok(result) = String::try_from(result) else {
+            panic!("not a string");
+        };
+        // a.n: 150 turns, then 7 by the object as it was; b: 100 and 150
+        // turns, then 1000 more by the object as it was; a again: 150
+        // turns from 7.
+        assert_eq!(result.to_string_lossy(&agent), "157,1250,5,10");
     }
 }

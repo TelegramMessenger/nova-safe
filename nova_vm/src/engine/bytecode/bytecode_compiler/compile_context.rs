@@ -3,10 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::engine::CallEnvironment;
+use crate::hashing::AHashMap;
 #[cfg(feature = "regexp")]
 use oxc_ast::ast::RegExpFlags;
 use oxc_ast::ast::{self, LabelIdentifier, Statement};
 use oxc_semantic::{AstNodes, ScopeId, Scoping};
+use oxc_span::GetSpan;
 use wtf8::Wtf8Buf;
 
 #[cfg(feature = "regexp")]
@@ -135,6 +137,19 @@ pub(crate) struct CompileContext<'agent, 'script, 'gc, 'scope> {
     /// Script or eval code, so the result register may be left empty or stale
     /// between statements.
     pub(super) discard_completion: bool,
+    /// Where the code assigns to each variable that was asked about
+    /// ([`CompileContext::assigns_within`]): the spans of the references
+    /// that write it, in the order of the source.
+    writes_of_variables: AHashMap<oxc_semantic::SymbolId, Box<[(u32, u32)]>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The references of variables that [`CompileContext::assigns_within`]
+    /// looked at on this thread: counted for the test that holds the work
+    /// to the number of references.
+    pub(super) static REFERENCES_VISITED: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
 }
 
 impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> {
@@ -161,7 +176,48 @@ impl<'agent, 'script, 'gc, 'scope> CompileContext<'agent, 'script, 'gc, 'scope> 
             runtime_strict: false,
             unsupported: None,
             discard_completion: false,
+            writes_of_variables: AHashMap::default(),
         }
+    }
+
+    /// Whether the code assigns to the variable `symbol` anywhere within
+    /// the span `within`: an assignment, an update, a pattern or a loop
+    /// head that writes it there.
+    ///
+    /// The references of the variable are looked at once, the first time
+    /// it is asked about, and those that write it kept in the order of the
+    /// source; every question after that is a search among them. Looking
+    /// at all of them for each question made compiling a function the
+    /// square of the uses of one local: `o.a = 1` a few thousand times
+    /// over asked a few thousand times about a few thousand references.
+    pub(super) fn assigns_within(
+        &mut self,
+        symbol: oxc_semantic::SymbolId,
+        within: oxc_span::Span,
+    ) -> bool {
+        let (scoping, nodes) = (self.scoping, self.nodes);
+        let writes = self.writes_of_variables.entry(symbol).or_insert_with(|| {
+            let mut writes: Vec<(u32, u32)> = scoping
+                .get_resolved_references(symbol)
+                .filter_map(|reference| {
+                    #[cfg(test)]
+                    REFERENCES_VISITED.with(|visited| visited.set(visited.get() + 1));
+                    reference.is_write().then(|| {
+                        let at = nodes.get_node(reference.node_id()).kind().span();
+                        (at.start, at.end)
+                    })
+                })
+                .collect();
+            writes.sort_unstable();
+            writes.into_boxed_slice()
+        });
+        // The first that starts in the span and those after it that start
+        // there too: each is a name, and none of them holds another.
+        let first = writes.partition_point(|&(start, _)| start < within.start);
+        writes[first..]
+            .iter()
+            .take_while(|&&(start, _)| start <= within.end)
+            .any(|&(_, end)| end <= within.end)
     }
 
     /// Set the strictness of the running execution context while this code
