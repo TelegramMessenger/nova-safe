@@ -2247,6 +2247,21 @@ Node. Numbers joined went from 1.9x to 1.3x, the three conversions from 3.3x to 
 animation (which writes its values with `toFixed`) from 2.9x to 2.1x, template literals from 1.9x to 1.5x,
 `JSON.stringify` from 1.2x to 1.0x, serializing a list of operations from 1.4x to 1.2x.
 
+A String was quoted for JSON one code point at a time: each taken apart from its bytes, asked whether
+it is one of the seven that have an escape of their own, a control character or a surrogate, and put
+together again as bytes at the end of the text, a quarter of serializing a list of small objects
+(the profile of every case, area 8, showed it). The code points that are not escaped go as the bytes
+they are, so a text is copied by its stretches now: every byte goes as it is but those of the code
+points that are escaped (below 0x20, the quotation mark, the reverse solidus, which are one byte
+each) and 0xED, the first byte of every surrogate and of U+D000 to U+D7FF, and the code point at
+each of those is looked at as before. `json/stringify` retires 6.8% fewer instructions and a list
+of operations serialized 10.5%, with 12% fewer cycles each (0.89x and 0.81x with the two engines
+run in turn). The test prints the code units of the
+JSON text of every code unit below 0x100, of the code points around the surrogates, of pairs and
+lone surrogates in every order, of escapes at the ends of a text and next to one another, and
+reads every text back; with any of the four things the copy goes by left out (the surrogates' byte,
+the quotation mark, the control characters, the three bytes that 0xED begins) it fails.
+
 Left of it: a string of eight bytes or more is looked up in the string table (a tenth of the three
 conversions now), and std's shortest digits of a double are still what `{:e}` writes.
 
