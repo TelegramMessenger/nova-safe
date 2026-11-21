@@ -717,6 +717,34 @@ impl<'a> OrdinaryObject<'a> {
         )
     }
 
+    /// The value in the slot at `offset` of this Object, where a cache
+    /// places a property that another object inherits from it: as
+    /// [`OrdinaryObject::value_by_cache`] reads the slot of a prototype,
+    /// for an object that is no ordinary one and so is not read by that
+    /// function. None for a slot that holds no value (an accessor) or is
+    /// not there.
+    #[inline]
+    pub(crate) fn value_at_offset(
+        self,
+        agent: &Agent,
+        offset: PropertyOffset,
+    ) -> Option<Value<'static>> {
+        let Heap {
+            elements,
+            objects,
+            object_shapes,
+            ..
+        } = &agent.heap;
+        let data = objects.get(crate::heap::HeapIndexHandle::get_index(self))?;
+        let (capacity, len) = data.get_shape().values_capacity_and_len(object_shapes)?;
+        elements.get_element_value_raw(
+            data.get_values(),
+            capacity,
+            len,
+            offset.get_property_offset() as usize,
+        )
+    }
+
     /// What [`OrdinaryObject::value_by_cache`] gives for a property that
     /// the cache places in an object with properties of its own kind
     /// beside those of its backing object: an ordinary object that
