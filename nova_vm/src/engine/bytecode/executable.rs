@@ -354,9 +354,23 @@ impl CodeTables {
         }
     }
 
-    /// Bytes of the heap that the constants and the caches take.
+    /// How many constants, caches and binding sites the tables have.
+    #[cfg(test)]
+    pub(crate) fn lengths(&self) -> (usize, usize, usize) {
+        (
+            self.constants.len(),
+            self.caches.len(),
+            self.binding_sites.len(),
+        )
+    }
+
+    /// Bytes of the heap that the constants, the caches and the binding
+    /// sites take: what the estimate of the live heap counts for the tables
+    /// of an Executable, where no allocator counts for the Agent.
     pub(crate) fn heap_bytes(&self) -> usize {
-        core::mem::size_of_val::<[_]>(&self.constants) + core::mem::size_of_val::<[_]>(&self.caches)
+        core::mem::size_of_val::<[_]>(&self.constants)
+            + core::mem::size_of_val::<[_]>(&self.caches)
+            + core::mem::size_of_val::<[_]>(&self.binding_sites)
     }
 
     fn mark_values(&self, queues: &mut WorkQueues) {
@@ -503,6 +517,16 @@ pub(crate) struct SwitchTable {
 }
 
 impl SwitchTable {
+    /// Bytes that the table holds besides itself: its cases, and the
+    /// places of the integers of a dense one.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        core::mem::size_of_val::<[_]>(&self.cases)
+            + self
+                .dense
+                .as_ref()
+                .map_or(0, |(_, places)| core::mem::size_of_val::<[_]>(places))
+    }
+
     /// How far apart the selectors of a table with a `dense` part may be.
     const DENSE_RANGE: i64 = 256;
 
@@ -1052,4 +1076,70 @@ impl HeapMarkAndSweep for ExecutableHeapData<'static> {
 #[cold]
 fn handle_identifier_failure() -> ! {
     panic!("Invalid identifier index: Value was not a String")
+}
+
+/// The bytes that a constant, a cache and a binding site take in the tables
+/// of an Executable ([`CodeTables`]).
+#[cfg(test)]
+pub(crate) fn table_entry_sizes() -> (usize, usize, usize) {
+    (
+        core::mem::size_of::<Cell<Value<'static>>>(),
+        core::mem::size_of::<Cell<PropertyLookupCache<'static>>>(),
+        core::mem::size_of::<Cell<NamedSite>>(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Bytecode, CodeTables, SwitchTable, table_entry_sizes};
+    use crate::ecmascript::Value;
+    use core::mem::size_of;
+
+    /// The bytes of the tables are those of the constants, the caches and
+    /// the binding sites: none of the three is left out.
+    #[test]
+    fn the_bytes_of_the_tables_count_their_binding_sites() {
+        let bytes = |constants: usize, sites: &[u16]| {
+            CodeTables::new(
+                Bytecode::new(Vec::new()),
+                vec![Value::Undefined; constants],
+                Vec::new(),
+                sites,
+            )
+            .heap_bytes()
+        };
+        let (value, _, site) = table_entry_sizes();
+        assert_eq!(bytes(0, &[]), 0);
+        assert_eq!(bytes(3, &[]), 3 * value);
+        assert_eq!(bytes(3, &[0, 1, 2, 0, u16::MAX]), 3 * value + 5 * site);
+        assert_eq!(bytes(0, &[u16::MAX]), site);
+    }
+
+    /// The bytes of a `switch` table are those of its cases, and of the
+    /// places that one of integers close to one another has for them.
+    #[test]
+    fn the_bytes_of_a_switch_table_are_its_cases_and_its_places() {
+        assert_eq!(SwitchTable::default().heap_bytes(), 0);
+        let constants = [
+            Value::from(5),
+            Value::from(7),
+            Value::from(10),
+            Value::from(1000),
+            Value::Undefined,
+        ];
+        // Integers from 5 to 10: six places.
+        let close = SwitchTable::new(vec![(0, 11), (1, 22), (2, 33)], &constants);
+        assert!(close.dense.is_some());
+        assert_eq!(
+            close.heap_bytes(),
+            3 * size_of::<(u16, u32)>() + 6 * size_of::<u32>()
+        );
+        // Integers too far apart, and a selector that is no integer.
+        for cases in [vec![(0, 11), (3, 22)], vec![(0, 11), (4, 22), (1, 33)]] {
+            let count = cases.len();
+            let table = SwitchTable::new(cases, &constants);
+            assert!(table.dense.is_none());
+            assert_eq!(table.heap_bytes(), count * size_of::<(u16, u32)>());
+        }
+    }
 }

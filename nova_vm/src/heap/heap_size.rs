@@ -84,6 +84,13 @@ impl Heap {
                 + vec_bytes(&executable.function_expressions)
                 + vec_bytes(&executable.arrow_function_expressions)
                 + vec_bytes(&executable.class_initializer_bytecodes);
+            // The tables of its `switch` statements: counted with every
+            // Executable that holds them, as its instructions are, which
+            // the Agents that run one compiled script share too.
+            total += vec_bytes(&executable.switch_tables);
+            for table in executable.switch_tables.iter() {
+                total += table.heap_bytes();
+            }
         }
         let environments = &self.environments;
         total += vec_bytes(&environments.declarative)
@@ -155,6 +162,90 @@ impl Heap {
             e2pow24, k2pow24, 1usize << 24;
             e2pow32, k2pow32, crate::heap::element_array::LARGEST_CLASS_SLOTS;
         }
-        total
+        total.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::size_of;
+
+    use crate::{
+        ecmascript::{Agent, AgentOptions, DefaultHostHooks, String, initialize_default_realm},
+        engine::{Bindable, GcScope},
+    };
+
+    /// What the estimate finds live after `source` has run and the heap was
+    /// collected, with no allocator counting for the Agent, and what the
+    /// tables of its Executables hold: constants, caches, binding sites,
+    /// and the bytes of their instructions.
+    fn live_bytes(source: &str) -> (usize, [usize; 4]) {
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        let source_text = String::from_string(&mut agent, source.to_string(), gc.nogc());
+        agent
+            .run_script(source_text.unbind(), gc.reborrow())
+            .unwrap_or_else(|_| panic!("the script throws: {source}"));
+        agent.gc(gc.reborrow());
+        let mut held = [0usize; 4];
+        for executable in agent.heap.executables.iter() {
+            let (constants, caches, sites) = executable.tables.lengths();
+            held[0] += constants;
+            held[1] += caches;
+            held[2] += sites;
+            held[3] += executable.instructions.padded().len();
+        }
+        (agent.heap.estimate_live_bytes(), held)
+    }
+
+    /// The estimate counts the binding sites of the code that lives: two
+    /// scripts of one length, a function that adds up a parameter and one
+    /// that adds up a variable of the script, which it reads by three
+    /// binding sites, differ by what their tables and instructions hold,
+    /// each entry of its size, and by nothing else.
+    #[test]
+    fn the_estimate_counts_binding_sites() {
+        let script = |name: &str| {
+            format!("var g = 1; function f(a) {{ return {name} + {name} + {name}; }} f(1) + f(2)")
+        };
+        let (local, held_local) = live_bytes(&script("a"));
+        let (global, held_global) = live_bytes(&script("g"));
+        let more = |index: usize| held_global[index] as isize - held_local[index] as isize;
+        assert!(more(2) >= 3, "{held_local:?} {held_global:?}");
+        let (value, cache, site) = crate::engine::table_entry_sizes();
+        assert_eq!(
+            global as isize - local as isize,
+            more(0) * value as isize + more(1) * cache as isize + more(2) * site as isize + more(3),
+            "{held_local:?} {held_global:?}"
+        );
+    }
+
+    /// And the tables of `switch` statements: four cases whose last is
+    /// near the others, far from them, and too far for a place of its own
+    /// (a table then has its cases alone), in scripts that differ in
+    /// nothing else.
+    #[test]
+    fn the_estimate_counts_the_tables_of_switches() {
+        let script = |last: &str| {
+            format!(
+                "function f(x) {{ switch (x) {{ case 100: return 1; case 101: return 2; \
+                 case 102: return 3; case {last}: return 4; }} return 0; }} f(100) + f({last}) + f(7)"
+            )
+        };
+        let (near, held_near) = live_bytes(&script("103"));
+        let (far, held_far) = live_bytes(&script("300"));
+        let (none, held_none) = live_bytes(&script("900"));
+        assert_eq!(held_near, held_far);
+        assert_eq!(held_near, held_none);
+        // Places for 100 to 103, for 100 to 300, and none.
+        assert_eq!(far - near, (201 - 4) * size_of::<u32>());
+        assert_eq!(near - none, 4 * size_of::<u32>());
+        // The cases themselves, against a function with no `switch`.
+        let (plain, _) = live_bytes(
+            "function f(x) { if (x === 100) return 1; return 0; } f(100) + f(900) + f(7)",
+        );
+        assert!(none > plain);
     }
 }
