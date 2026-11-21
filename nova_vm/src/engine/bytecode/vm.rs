@@ -4178,8 +4178,11 @@ impl Vm {
             Instruction::ApplyMultiplicationBinaryOperator => {
                 operate_on_integers!(ApplyMultiplicationBinaryOperator)
             }
+            // The division whose operands are not a local or a constant:
+            // by the doubles alone (see `divide_numbers`).
             Instruction::ApplyDivisionBinaryOperator => {
-                operate_on_integers!(ApplyDivisionBinaryOperator)
+                step!(ApplyDivisionBinaryOperator);
+                return vm.divide_numbers(agent, gc);
             }
             Instruction::ApplyRemainderBinaryOperator => {
                 operate_on_integers!(ApplyRemainderBinaryOperator)
@@ -5376,6 +5379,26 @@ impl Vm {
         self.finish_operation(value)
     }
 
+    /// The division of two Numbers, the left one on the stack and the right
+    /// one the result: by the doubles they are, with no try at two
+    /// integers that divide before it, which [`Vm::operate_on_integers`]
+    /// would make. In this arm the try costs every division of doubles
+    /// nine instructions and every one of two integers that do not divide
+    /// fifteen; the instructions that have the operator as an argument
+    /// ask for two integers anyway, whatever the operator, and there the
+    /// try costs only the division it fails for.
+    #[inline(always)]
+    fn divide_numbers(&mut self, agent: &mut Agent, gc: NoGcScope) -> Plain {
+        let (Some(&left), Some(right)) = (self.stack.last(), self.result) else {
+            return Plain::No;
+        };
+        let kind = Instruction::ApplyDivisionBinaryOperator;
+        let Some(value) = Self::float_operation(agent, kind, left, right, gc) else {
+            return Plain::No;
+        };
+        self.finish_operation(value)
+    }
+
     /// What a comparison or an arithmetic operator gives for two operands
     /// that no conversion that could run a script comes into: in place for
     /// two integers whose result is a Boolean or an integer again.
@@ -5779,6 +5802,15 @@ impl Vm {
                     return None;
                 }
                 product
+            }
+            Instruction::ApplyDivisionBinaryOperator => {
+                // Two integers that divide; no quotient by zero is an
+                // integer, and zero by a negative divisor is -0.
+                let quotient = left.checked_div(right)?;
+                if quotient * right != left || (left == 0 && right < 0) {
+                    return None;
+                }
+                quotient
             }
             Instruction::ApplyRemainderBinaryOperator => {
                 // A zero remainder of a negative dividend is -0, and the
