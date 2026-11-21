@@ -19602,3 +19602,90 @@ strict=[11,0,true,false,2,1,true,true,true,"o","a",NaN,"undefined"]"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `q++`, `++q`, `q--` and `--q` of a variable in a stack slot whose value
+/// is used are one instruction, which the loop of instructions runs for
+/// an integer that stays one; anything else is made a numeric value the
+/// general way first, once. Each of the four on values of every kind,
+/// with the value of the expression and the variable after it; on
+/// parameters; what throws, which leaves the variable as it was; the
+/// conversions, each asked once; the value used as an index, an operand,
+/// an argument, a test of every loop, a return, a throw and a `yield`;
+/// the value discarded; variables that are in no stack slot (of an
+/// enclosing function, of the global scope, properties, elements);
+/// variables declared later, constants and names not declared; the
+/// largest and smallest integers, and zero from either side; many steps
+/// in a loop; strict code; the value of a statement. What is expected is
+/// what Node prints for the same script.
+#[test]
+fn a_step_of_a_local_whose_value_is_used_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(locals_stepped_for_their_values)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn locals_stepped_for_their_values() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'symbol') return 'symbol'; if (typeof v === 'string') return '"' + v + '"'; if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (v && typeof v === 'object') return 'object'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+function kinds() { var calls = 0; var counted = { valueOf: function () { calls++; return 10 * calls; } }; return [0, -0, 1, -1, 7, 2147483647, -2147483648, 4294967295, 9007199254740991, -9007199254740991, 9007199254740992, 0.5, -0.5, 1e21, 5e-324, 0.1 + 0.2, NaN, Infinity, -Infinity, '5', '', 'abc', ' 12 ', '0x10', '1e3', '-0', null, undefined, true, false, 0n, 1n, -1n, 2n ** 64n, [], [5], [1, 2], {}, new Date(1000), counted, { toString: function () { return '41'; } }, { [Symbol.toPrimitive]: function (hint) { return hint === 'number' ? 3 : 'no'; } }, { valueOf: function () { return 2n; } }, Object(4), new String('6'), function () {}]; }
+// Each of the four on a local, with the value of the expression and the local after it.
+note('after increment', function () { return kinds().map(function (v) { var q = v; try { var r = q++; return [r, q, typeof r]; } catch (e) { return e.name; } }); });
+note('before increment', function () { return kinds().map(function (v) { var q = v; try { var r = ++q; return [r, q, typeof r]; } catch (e) { return e.name; } }); });
+note('after decrement', function () { return kinds().map(function (v) { var q = v; try { var r = q--; return [r, q, typeof r]; } catch (e) { return e.name; } }); });
+note('before decrement', function () { return kinds().map(function (v) { var q = v; try { var r = --q; return [r, q, typeof r]; } catch (e) { return e.name; } }); });
+note('of a parameter', function () { function a(p) { return [p++, p]; } function b(p) { return [++p, p]; } function c(p) { return [p--, p]; } function d(p) { return [--p, p]; } function e(p) { 'use strict'; var r = p++; return [r, p, arguments[0]]; } function f(p) { var r = p++; return [r, p, arguments.length]; } function g(p = 5) { return [p++, ++p]; } function h(...rest) { var n = rest.length; return [n++, n]; } return [a(1), b(1), c('7'), d(null), e(3), f(3), g(), g(1), h(1, 2), a(), b(undefined)]; });
+note('what fails leaves the local', function () { var r = []; var s = Symbol(); try { s++; } catch (e) { r.push(e.name, typeof s); } var t = Symbol(); try { r.push(--t); } catch (e) { r.push(e.name, typeof t); } var o = { valueOf: function () { throw new RangeError('v'); } }; try { r.push(o++); } catch (e) { r.push(e.name, typeof o); } var p = { valueOf: function () { return {}; }, toString: function () { return {}; } }; try { r.push(++p); } catch (e) { r.push(e.name, typeof p); } var b = 1n; try { r.push(b++ + 1); } catch (e) { r.push(e.name, b); } return r; });
+note('conversions once', function () { var log = []; var o = { valueOf: function () { log.push('v'); return 5; } }; var a = o++; var p = { valueOf: function () { log.push('w'); return 5; } }; var b = ++p; var q = { toString: function () { log.push('s'); return '7'; } }; var c = q--; var u = { [Symbol.toPrimitive]: function (hint) { log.push(hint); return 1; } }; var d = --u; return [a, o, b, p, c, q, d, u, log.join('')]; });
+// Where the value is used.
+note('as an index', function () { var a = [], n = 0; a[n++] = 'a'; a[n++] = 'b'; a[n++] = 'c'; var back = a[--n] + a[--n] + a[--n]; var m = 0; var got = a[m++] + a[m++] + a[m++]; var text = 'hello', at = 0, codes = [], guard = 0; while (at < text.length) { codes.push(text.charCodeAt(at++)); guard = guard + 1; if (guard > 20) break; } return [a, n, back, m, got, codes]; });
+note('as operands', function () { var i = 1; var r = []; r.push(i++ + i++); r.push(i); r.push(i++ + ++i); r.push(i); r.push(i-- - --i); r.push(i); r.push(i++ * i--); r.push(i); r.push(++i + i++ + i); r.push(i); r.push(i++ === 5, i === 6, i-- > i, ++i < i++, i); r.push(-i++, +i--, ~i++, !i--, typeof i++, i); return r; });
+note('as arguments', function () { function three(a, b, c) { return [a, b, c]; } var i = 0; var r = [three(i++, i++, i++), i, three(++i, i--, --i), i, Math.max(i++, i++, i--), i, [i++, i++, ++i], i, { [i++]: i++ }[5] === 6, i]; var s = ''; s += i++; s += `${i++}${++i}`; return r.concat([s, i]); });
+note('in tests', function () { var r = '', n = 3, turns = 0; while (n--) { r += n; turns = turns + 1; if (turns > 20) break; } r += '|' + n; var m = 0; while (m++ < 3) { r += m; turns = turns + 1; if (turns > 40) break; } r += '|' + m; var k = 0; do { r += k; turns = turns + 1; if (turns > 60) break; } while (++k < 3); r += '|' + k; for (var i = 0, j = 5; i++ < j--;) { r += i + '' + j; turns = turns + 1; if (turns > 80) break; } r += '|' + i + j; var c = 0; if (c++) r += 'no'; if (c++) r += 'yes'; r += c++ ? 'a' : 'b'; r += --c > 1 ? 'c' : 'd'; switch (c++) { case 2: r += 'two'; break; case 3: r += 'three'; break; } return r + c; });
+note('returned and thrown', function () { function a() { var i = 5; return i++; } function b() { var i = 5; return ++i; } function c() { var i = 5; try { return i--; } finally { i = 100; } } function d() { var i = 1; try { throw i++; } catch (e) { return [e, i]; } } function* g() { var i = 0; yield i++; yield ++i; yield i--; return i; } var it = g(); return [a(), b(), c(), d(), it.next().value, it.next().value, it.next().value, it.next().value, ((x) => x++)(4), ((x) => ++x)(4)]; });
+note('discarded', function () { var i = 0, j = 0; i++; ++i; i--; --i; void i++; (i++, i++); var x = (i++, i); for (var k = 0; k < 3; k++) j++; for (var m = 3; m > 0; m--) ++j; return [i, x, j, k, m]; });
+// Variables that are not in a slot of the stack.
+var topLevel = 1;
+note('other variables', function () { var shared = 1, o = { x: 1, y: '2' }, a = [1, 2, 3]; function inner() { return [shared++, ++shared, shared--, --shared]; } var r = [inner(), shared, topLevel++, ++topLevel, topLevel, o.x++, ++o.x, o.x, o.y++, o.y, a[1]++, ++a[1], a, o['x']--, --o['x'], o.x]; let block = 5; { let block = 1; r.push(block++, ++block); } r.push(block++, block); return r; });
+note('declared later', function () { var r = []; r.push(early++, early); var early = 3; r.push(early++, ++early); try { late++; r.push('no'); } catch (e) { r.push(e.name); } let late = 1; r.push(late++, late); const fixed = 1; try { r.push(fixed++); } catch (e) { r.push(e.name, fixed); } try { r.push(++fixed); } catch (e) { r.push(e.name, fixed); } try { missing94++; r.push('made'); } catch (e) { r.push(e.name); } return r; });
+note('at the edges', function () { var r = [], big = 9007199254740991, small = -9007199254740991, max32 = 2147483647, min32 = -2147483648, zero = 0, nz = -0, one = 1, m1 = -1; r.push(big++, big, big++, big, ++big, big); r.push(small--, small, --small, small); r.push(max32++, max32, min32--, min32); r.push(zero--, zero, zero++, zero, Object.is(zero, 0)); r.push(nz++, nz, Object.is(nz, 1)); nz = -0; r.push(nz--, nz); r.push(one--, one, Object.is(one, 0), m1++, m1, Object.is(m1, 0), 1 / m1); var f = 0.5; r.push(f++, f, f--, f, --f, f); return r; });
+note('many times', function () { var n = 0, s = 0, t = 0, u = 0, w = 0, a = []; for (var i = 0; i < 3000; i++) { s += n++; t += ++n; u += n--; w += --n; a[n % 7] = n++; } var down = 3000, hits = 0, guard = 0; while (down--) { if (down % 3 === 0) hits++; guard = guard + 1; if (guard > 5000) break; } var f = 0.25, fs = 0; for (var j = 0; j < 100; j++) fs += f++; return [n, s, t, u, w, a, down, hits, f, fs]; });
+note('strict', function () { 'use strict'; var i = 1, t = '4', o = { valueOf: function () { return 2; } }; return [i++, ++i, i--, --i, i, t++, t, ++o, o, typeof t]; });
+note('the value of a statement', function () { return [eval('var e1 = 5; e1++'), eval('var e2 = 5; ++e2'), eval("'first'; { let q = 5; q++; }"), eval("'first'; { let q = 5; --q; }"), eval("'first'; { let q = '5'; q--; }"), eval("'first'; { let q = 5; if (q++) { } }"), eval("'first'; { let q = 0, g = 0; while (q++ < 2) { g = g + 1; if (g > 50) break; } }")]; });
+note('very many variables', function () { var names = []; for (var i = 0; i < 8300; i++) names.push('v' + i + ' = ' + (i % 100)); var code = '(function () { var ' + names.join(', ') + '; var r = [v0++, ++v1, v2--, --v3, v8190++, ++v8191, v8192++, ++v8193, v8194--, --v8195, v8298++, ++v8299, v4095++, v4096--]; return r.concat([v0, v1, v2, v3, v8190, v8191, v8192, v8193, v8194, v8195, v8298, v8299, v4095, v4096, v5, v8189, v8196]); })()'; return eval(code); });
+out.join("\n")"##;
+    let expected = r##"after increment=[[0,1,"number"],[-0,1,"number"],[1,2,"number"],[-1,0,"number"],[7,8,"number"],[2147483647,2147483648,"number"],[-2147483648,-2147483647,"number"],[4294967295,4294967296,"number"],[9007199254740991,9007199254740992,"number"],[-9007199254740991,-9007199254740990,"number"],[9007199254740992,9007199254740992,"number"],[0.5,1.5,"number"],[-0.5,0.5,"number"],[1e+21,1e+21,"number"],[5e-324,1,"number"],[0.30000000000000004,1.3,"number"],[NaN,NaN,"number"],[Infinity,Infinity,"number"],[-Infinity,-Infinity,"number"],[5,6,"number"],[0,1,"number"],[NaN,NaN,"number"],[12,13,"number"],[16,17,"number"],[1000,1001,"number"],[-0,1,"number"],[0,1,"number"],[NaN,NaN,"number"],[1,2,"number"],[0,1,"number"],[0n,1n,"bigint"],[1n,2n,"bigint"],[-1n,0n,"bigint"],[18446744073709551616n,18446744073709551617n,"bigint"],[0,1,"number"],[5,6,"number"],[NaN,NaN,"number"],[NaN,NaN,"number"],[1000,1001,"number"],[10,11,"number"],[41,42,"number"],[3,4,"number"],[2n,3n,"bigint"],[4,5,"number"],[6,7,"number"],[NaN,NaN,"number"]]
+before increment=[[1,1,"number"],[1,1,"number"],[2,2,"number"],[0,0,"number"],[8,8,"number"],[2147483648,2147483648,"number"],[-2147483647,-2147483647,"number"],[4294967296,4294967296,"number"],[9007199254740992,9007199254740992,"number"],[-9007199254740990,-9007199254740990,"number"],[9007199254740992,9007199254740992,"number"],[1.5,1.5,"number"],[0.5,0.5,"number"],[1e+21,1e+21,"number"],[1,1,"number"],[1.3,1.3,"number"],[NaN,NaN,"number"],[Infinity,Infinity,"number"],[-Infinity,-Infinity,"number"],[6,6,"number"],[1,1,"number"],[NaN,NaN,"number"],[13,13,"number"],[17,17,"number"],[1001,1001,"number"],[1,1,"number"],[1,1,"number"],[NaN,NaN,"number"],[2,2,"number"],[1,1,"number"],[1n,1n,"bigint"],[2n,2n,"bigint"],[0n,0n,"bigint"],[18446744073709551617n,18446744073709551617n,"bigint"],[1,1,"number"],[6,6,"number"],[NaN,NaN,"number"],[NaN,NaN,"number"],[1001,1001,"number"],[11,11,"number"],[42,42,"number"],[4,4,"number"],[3n,3n,"bigint"],[5,5,"number"],[7,7,"number"],[NaN,NaN,"number"]]
+after decrement=[[0,-1,"number"],[-0,-1,"number"],[1,0,"number"],[-1,-2,"number"],[7,6,"number"],[2147483647,2147483646,"number"],[-2147483648,-2147483649,"number"],[4294967295,4294967294,"number"],[9007199254740991,9007199254740990,"number"],[-9007199254740991,-9007199254740992,"number"],[9007199254740992,9007199254740991,"number"],[0.5,-0.5,"number"],[-0.5,-1.5,"number"],[1e+21,1e+21,"number"],[5e-324,-1,"number"],[0.30000000000000004,-0.7,"number"],[NaN,NaN,"number"],[Infinity,Infinity,"number"],[-Infinity,-Infinity,"number"],[5,4,"number"],[0,-1,"number"],[NaN,NaN,"number"],[12,11,"number"],[16,15,"number"],[1000,999,"number"],[-0,-1,"number"],[0,-1,"number"],[NaN,NaN,"number"],[1,0,"number"],[0,-1,"number"],[0n,-1n,"bigint"],[1n,0n,"bigint"],[-1n,-2n,"bigint"],[18446744073709551616n,18446744073709551615n,"bigint"],[0,-1,"number"],[5,4,"number"],[NaN,NaN,"number"],[NaN,NaN,"number"],[1000,999,"number"],[10,9,"number"],[41,40,"number"],[3,2,"number"],[2n,1n,"bigint"],[4,3,"number"],[6,5,"number"],[NaN,NaN,"number"]]
+before decrement=[[-1,-1,"number"],[-1,-1,"number"],[0,0,"number"],[-2,-2,"number"],[6,6,"number"],[2147483646,2147483646,"number"],[-2147483649,-2147483649,"number"],[4294967294,4294967294,"number"],[9007199254740990,9007199254740990,"number"],[-9007199254740992,-9007199254740992,"number"],[9007199254740991,9007199254740991,"number"],[-0.5,-0.5,"number"],[-1.5,-1.5,"number"],[1e+21,1e+21,"number"],[-1,-1,"number"],[-0.7,-0.7,"number"],[NaN,NaN,"number"],[Infinity,Infinity,"number"],[-Infinity,-Infinity,"number"],[4,4,"number"],[-1,-1,"number"],[NaN,NaN,"number"],[11,11,"number"],[15,15,"number"],[999,999,"number"],[-1,-1,"number"],[-1,-1,"number"],[NaN,NaN,"number"],[0,0,"number"],[-1,-1,"number"],[-1n,-1n,"bigint"],[0n,0n,"bigint"],[-2n,-2n,"bigint"],[18446744073709551615n,18446744073709551615n,"bigint"],[-1,-1,"number"],[4,4,"number"],[NaN,NaN,"number"],[NaN,NaN,"number"],[999,999,"number"],[9,9,"number"],[40,40,"number"],[2,2,"number"],[1n,1n,"bigint"],[3,3,"number"],[5,5,"number"],[NaN,NaN,"number"]]
+of a parameter=[[1,2],[2,2],[7,6],[-1,-1],[3,4,3],[3,4,1],[5,7],[1,3],[2,3],[NaN,NaN],[NaN,NaN]]
+what fails leaves the local=["TypeError","symbol","TypeError","symbol","RangeError","object","TypeError","object","TypeError",2n]
+conversions once=[5,6,6,6,7,6,0,0,"vwsnumber"]
+as an index=[["a","b","c"],0,"cba",3,"abc",[104,101,108,108,111]]
+as operands=[3,3,8,5,2,3,12,3,13,5,true,true,true,false,7,-7,8,-8,false,"number",8]
+as arguments=[[0,1,2],3,[4,4,2],2,4,3,[3,4,6],6,false,8,"8911",11]
+in tests="210|-1123|4012|3142332|41yesactwo3"
+returned and thrown=[5,6,5,[1,2],0,2,2,1,4,5]
+discarded=[4,4,6,3,0]
+other variables=[[1,3,3,1],1,1,3,3,1,3,3,2,3,2,4,[1,4,3],3,1,1,1,3,5,6]
+declared later=[NaN,NaN,3,5,"ReferenceError",1,2,"TypeError",1,"TypeError",1,"ReferenceError"]
+at the edges=[9007199254740991,9007199254740992,9007199254740992,9007199254740992,9007199254740992,9007199254740992,-9007199254740991,-9007199254740992,-9007199254740992,-9007199254740992,2147483647,2147483648,-2147483648,-2147483649,0,-1,-1,0,true,-0,1,true,-0,-1,1,0,true,-1,0,true,Infinity,0.5,1.5,1.5,0.5,-0.5,-0.5]
+many times=[3000,4498500,4504500,4504500,4498500,[2996,2997,2998,2999,2993,2994,2995],-1,1000,100.25,4975]
+strict=[1,3,3,1,1,4,5,3,3,"number"]
+the value of a statement=[5,6,5,4,5,undefined,undefined]
+very many variables=[0,2,2,2,90,92,92,94,94,94,98,100,95,96,1,2,1,2,91,92,93,94,93,94,99,100,96,95,5,89,96]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
