@@ -237,12 +237,37 @@ pub(crate) fn is_integral_number<'a>(
     argument.to_real(agent).fract() == 0.0
 }
 
+/// Whether two Strings are the same String, where both values are Strings:
+/// what SameValueNonNumber comes to for them, asked before anything else.
+/// Two that are kept in their Values are the same where they are the same
+/// bytes, and one of them is never the same as a String of the heap, which
+/// is never as short ([`String::eq_`] says so); two of the heap are the
+/// same where they are one, and are compared by their text where they are
+/// not. None where either is no String.
+#[inline(always)]
+fn same_strings(agent: &impl PrimitiveHeapAccess, x: Value, y: Value) -> Option<bool> {
+    match (x, y) {
+        (Value::SmallString(x), Value::SmallString(y)) => Some(x == y),
+        (Value::SmallString(_), Value::String(_)) | (Value::String(_), Value::SmallString(_)) => {
+            Some(false)
+        }
+        (Value::String(x), Value::String(y)) => {
+            Some(x == y || String::eq_(agent, String::String(x), String::String(y)))
+        }
+        _ => None,
+    }
+}
+
 /// ### [7.2.10 SameValue ( x, y )](https://tc39.es/ecma262/#sec-samevalue)
 pub(crate) fn same_value<'a, V1: Copy + Into<Value<'a>>, V2: Copy + Into<Value<'a>>>(
     agent: &impl PrimitiveHeapAccess,
     x: V1,
     y: V2,
 ) -> bool {
+    // Two Strings, at once (see [`is_strictly_equal`]).
+    if let Some(same) = same_strings(agent, x.into(), y.into()) {
+        return same;
+    }
     // 1. If Type(x) is not Type(y), return false.
     if !is_same_type(x, y) {
         return false;
@@ -272,6 +297,13 @@ pub(crate) fn same_value_zero<'a>(
     y: impl Copy + Into<Value<'a>>,
 ) -> bool {
     let (x, y) = (Into::<Value>::into(x), Into::<Value>::into(y));
+
+    // Two Strings, at once (see [`is_strictly_equal`]): an Array of
+    // Strings searched by `includes` asked all of the steps below for
+    // every element.
+    if let Some(same) = same_strings(agent, x, y) {
+        return same;
+    }
 
     // 1. If Type(x) is not Type(y), return false.
     if !is_same_type(x, y) {
@@ -714,6 +746,14 @@ pub(crate) fn is_strictly_equal<'a>(
     // Two integers are Numbers that are equal where they are the same.
     if let (Value::Integer(x), Value::Integer(y)) = (x, y) {
         return x.into_i64() == y.into_i64();
+    }
+    // Two Strings, at once: `c === "a"` of a character of a String came
+    // here for every character and went through all the steps below
+    // (whether the types are the same, whether either is a Number or a
+    // BigInt, whether both are Strings), a third of a loop over the
+    // characters of a text.
+    if let Some(same) = same_strings(agent, x, y) {
+        return same;
     }
 
     // 1. If Type(x) is not Type(y), return false.

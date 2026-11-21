@@ -5295,19 +5295,42 @@ impl Vm {
         }
         // OrdinaryHasInstance ( C, O )
         // 3. If O is not an Object, return false.
-        let Ok(mut object) = Object::try_from(value) else {
-            return Some(false);
+        // An ordinary object nearly always, here and for the prototype:
+        // asked first, and what other kind of object it is only then.
+        let mut object = match value {
+            Value::Object(object) => Object::Object(object),
+            value => match Object::try_from(value) {
+                Ok(object) => object,
+                Err(_) => return Some(false),
+            },
         };
-        // 4. Let P be ? Get(C, "prototype").
+        // 4. Let P be ? Get(C, "prototype"): the function's own, by its
+        // cache, as `new` of it reads it
+        // ([`Vm::constructor_called_in_place`]).
         let key = BUILTIN_STRING_MEMORY.prototype.to_property_key();
         let cache = PropertyLookupCache::new(agent, key);
-        let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
-            crate::ecmascript::try_get(agent, target, key, Some(cache), gc)
-        else {
-            return None;
+        let own = match target {
+            Function::ECMAScriptFunction(target) => target
+                .get_backing_object(agent)
+                .and_then(|properties| properties.value_by_cache(agent, cache, gc)),
+            _ => None,
+        };
+        let prototype = match own {
+            Some(prototype) => prototype,
+            None => {
+                let core::ops::ControlFlow::Continue(TryGetResult::Value(prototype)) =
+                    crate::ecmascript::try_get(agent, target, key, Some(cache), gc)
+                else {
+                    return None;
+                };
+                prototype.unbind()
+            }
         };
         // 5. If P is not an Object, throw a TypeError exception.
-        let prototype = Object::try_from(prototype).ok()?;
+        let prototype = match prototype {
+            Value::Object(prototype) => Object::Object(prototype),
+            prototype => Object::try_from(prototype).ok()?,
+        };
         // 6. Repeat: an ordinary chain ends, and a Proxy is not asked here.
         loop {
             let core::ops::ControlFlow::Continue(next) = object.try_get_prototype_of(agent, gc)
