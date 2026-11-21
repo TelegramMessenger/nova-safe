@@ -1880,6 +1880,18 @@ With the two binaries run in turn, a method that adds its argument to a property
 Left: `this.x op= this.y` is as many instructions either way and was left; a compound assignment whose
 value is used, and one to an element, still make the Reference.
 
+What that left on the Reference way for being as many instructions was not as cheap: `p.x += 1`
+and `p.x += i`, whose value leaves the reference register alone, read the property with its
+Reference kept and assigned through it, and each was dearer than the same assignment written out
+(`p.x = p.x + 1`), which reads the property and assigns it by the slot of `p`: 314 instructions
+for 283, and 362 for 308 with a local for the value. They are compiled as the written form now,
+where `p` stays in its slot through the value, which for such a value it always does. A step of
+the particles, which has one of these for each particle (`p.vy += 0.05`), retires 1.1% fewer
+instructions; nothing else moved. The test has every compound operator with a constant and with a
+local, a getter and a setter in their order, what cannot be written, inherited and proxied
+properties, a base that is no object, and the object replaced by the value, which fails where the
+object is taken from the slot regardless.
+
 The read and the write of a property by its cache were each a function with a frame, for the
 handles they read through and for the descriptors a write asks of a storage that has any. Neither
 has a failure of its own now, and the write asks the descriptors by a function called last (area
