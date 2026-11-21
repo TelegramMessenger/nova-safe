@@ -199,27 +199,27 @@ pub(crate) fn ordinary_to_primitive<'gc>(
 
 /// ### [7.1.2 ToBoolean ( argument )](https://tc39.es/ecma262/#sec-toboolean)
 pub(crate) fn to_boolean(agent: &Agent, argument: Value) -> bool {
-    // 1. If argument is a Boolean, return argument.
-    if let Value::Boolean(ret) = argument {
-        return ret;
+    // Answered by the kind of the value, asked once: the steps as they
+    // are written asked a Number three times whether it is one (for +0,
+    // for -0, for NaN) and every other value as often, at every `if (x)`,
+    // `x || y` and `!x` of a value that is no Boolean.
+    match argument {
+        // 1. If argument is a Boolean, return argument.
+        Value::Boolean(ret) => ret,
+        // 2. If argument is one of undefined, null, +0𝔽, -0𝔽, NaN, 0ℤ, or
+        //    the empty String, return false.
+        Value::Undefined | Value::Null => false,
+        // An integer is -0 and NaN never.
+        Value::Integer(integer) => integer.into_i64() != 0,
+        // The empty String is one that is kept in the Value.
+        Value::SmallString(string) => !string.is_empty(),
+        Value::SmallF64(_) | Value::Number(_) | Value::BigInt(_) | Value::SmallBigInt(_) => {
+            !(argument.is_pos_zero(agent) || argument.is_neg_zero(agent) || argument.is_nan(agent))
+        }
+        // 3. NOTE: This step is replaced in section B.3.6.1.
+        // 4. Return true.
+        _ => true,
     }
-
-    // 2. If argument is one of undefined, null, +0𝔽, -0𝔽, NaN, 0ℤ, or the empty String, return false.
-    // TODO: checks for 0ℤ
-    if argument.is_undefined()
-        || argument.is_null()
-        || argument.is_pos_zero(agent)
-        || argument.is_neg_zero(agent)
-        || argument.is_nan(agent)
-        || argument.is_empty_string()
-    {
-        return false;
-    }
-
-    // 3. NOTE: This step is replaced in section B.3.6.1.
-
-    // 4. Return true.
-    true
 }
 
 /// ### [7.1.3 ToNumeric ( value )](https://tc39.es/ecma262/#sec-tonumeric)
