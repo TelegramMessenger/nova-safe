@@ -263,8 +263,15 @@ impl<'a> Array<'a> {
         // the Array each time, the realm was asked for the prototype of
         // its kind and two objects of any kind were compared, at every
         // `push`.)
+        // And it is no intrinsic object ([`Array::is_intrinsic`]), which an
+        // Array that is the prototype of an object is as %Array.prototype%
+        // is: a new element of one is told to the caches that did not find
+        // its key there, by the steps that define it. Appended in place
+        // (`push`, `unshift`, `fill` of a hole), it left what had read no
+        // element through the Array reading none.
         if let Some(properties) = self.get_backing_object(agent)
             && !(properties.internal_extensible(agent)
+                && !properties.shape_now(agent).is_intrinsic(agent)
                 && matches!(
                     properties.internal_prototype(agent),
                     Some(Object::Array(prototype)) if prototype == array_prototype
