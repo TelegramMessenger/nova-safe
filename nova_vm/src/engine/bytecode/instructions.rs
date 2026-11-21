@@ -1315,7 +1315,14 @@ impl Instruction {
     }
 
     /// The operator that a fused instruction has as an argument: the number
-    /// of an arithmetic or bitwise operator among them.
+    /// of an arithmetic or bitwise operator among them, which is its place
+    /// among the kinds of the operators. (Numbered in an order of their
+    /// own, eleven of the twelve, the number was looked up in one table
+    /// for its kind and the kind in another for what it does: a dozen
+    /// instructions of every fused operation. In the order of the kinds
+    /// the number is the kind less a constant, and one table is left.)
+    /// The power has its place among them and is never fused
+    /// ([`Instruction::fused_operator_number`]).
     #[inline(always)]
     pub(crate) const fn fused_operator(number: usize) -> Option<Self> {
         Some(match number {
@@ -1324,17 +1331,19 @@ impl Instruction {
             2 => Self::ApplyMultiplicationBinaryOperator,
             3 => Self::ApplyDivisionBinaryOperator,
             4 => Self::ApplyRemainderBinaryOperator,
-            5 => Self::ApplyShiftLeftBinaryOperator,
-            6 => Self::ApplyShiftRightBinaryOperator,
-            7 => Self::ApplyShiftRightZeroFillBinaryOperator,
-            8 => Self::ApplyBitwiseORBinaryOperator,
-            9 => Self::ApplyBitwiseXORBinaryOperator,
-            10 => Self::ApplyBitwiseAndBinaryOperator,
+            5 => Self::ApplyExponentialBinaryOperator,
+            6 => Self::ApplyShiftLeftBinaryOperator,
+            7 => Self::ApplyShiftRightBinaryOperator,
+            8 => Self::ApplyShiftRightZeroFillBinaryOperator,
+            9 => Self::ApplyBitwiseORBinaryOperator,
+            10 => Self::ApplyBitwiseXORBinaryOperator,
+            11 => Self::ApplyBitwiseAndBinaryOperator,
             _ => return None,
         })
     }
 
-    /// The number that the fused instructions have for this operator.
+    /// The number that the fused instructions have for this operator, if
+    /// they are made for it.
     pub(crate) const fn fused_operator_number(self) -> Option<usize> {
         Some(match self {
             Self::ApplyAdditionBinaryOperator => 0,
@@ -1342,12 +1351,12 @@ impl Instruction {
             Self::ApplyMultiplicationBinaryOperator => 2,
             Self::ApplyDivisionBinaryOperator => 3,
             Self::ApplyRemainderBinaryOperator => 4,
-            Self::ApplyShiftLeftBinaryOperator => 5,
-            Self::ApplyShiftRightBinaryOperator => 6,
-            Self::ApplyShiftRightZeroFillBinaryOperator => 7,
-            Self::ApplyBitwiseORBinaryOperator => 8,
-            Self::ApplyBitwiseXORBinaryOperator => 9,
-            Self::ApplyBitwiseAndBinaryOperator => 10,
+            Self::ApplyShiftLeftBinaryOperator => 6,
+            Self::ApplyShiftRightBinaryOperator => 7,
+            Self::ApplyShiftRightZeroFillBinaryOperator => 8,
+            Self::ApplyBitwiseORBinaryOperator => 9,
+            Self::ApplyBitwiseXORBinaryOperator => 10,
+            Self::ApplyBitwiseAndBinaryOperator => 11,
             _ => return None,
         })
     }
@@ -2862,6 +2871,46 @@ mod tests {
         assert!(!Instruction::JumpIfIndexTrue.is_unused());
         assert!(Instruction::Unused245.is_unused());
         assert!(Instruction::Unused255.is_unused());
+    }
+
+    /// The number of a fused operator is its kind less a constant, which
+    /// is what lets the loop find what an operator does by one table; the
+    /// power has its place among the kinds and no number, and nothing else
+    /// has one.
+    #[test]
+    fn the_fused_operators_are_numbered_in_the_order_of_their_kinds() {
+        let first = Instruction::ApplyAdditionBinaryOperator.as_u8();
+        for number in 0..=16usize {
+            let kind = Instruction::fused_operator(number);
+            if number > 11 {
+                assert!(kind.is_none());
+                continue;
+            }
+            let kind = kind.expect("an operator");
+            assert_eq!(usize::from(kind.as_u8() - first), number);
+            assert_eq!(
+                kind.fused_operator_number(),
+                (kind != Instruction::ApplyExponentialBinaryOperator).then_some(number)
+            );
+        }
+        let mut numbered = 0;
+        for byte in 0..=u8::MAX {
+            let kind = Instruction::from_u8(byte).expect("every byte is a kind");
+            if let Some(number) = kind.fused_operator_number() {
+                assert_eq!(Instruction::fused_operator(number), Some(kind));
+                numbered += 1;
+            }
+        }
+        assert_eq!(numbered, 11);
+        // The largest number, with the largest slot, in the description of
+        // a fused operation.
+        let description = Instruction::fused_slot_with_operator(Instruction::FUSED_SLOTS - 1, 11);
+        assert_eq!(
+            Instruction::fused_slot_and_operator(description),
+            (Instruction::FUSED_SLOTS - 1, 11)
+        );
+        assert!(!Instruction::fused_pushes(description));
+        assert!(description <= usize::from(u16::MAX));
     }
 
     #[test]
