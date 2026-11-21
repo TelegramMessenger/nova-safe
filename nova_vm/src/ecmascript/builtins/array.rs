@@ -1185,7 +1185,14 @@ fn ordinary_define_own_property_for_array(
         //      enumerable, respectively, and whose [[Value]] and [[Writable]] attributes are
         //      set to the value of the corresponding field in Desc if Desc has that field, or
         //      to the attribute's default value otherwise.
-        mutate_element_descriptor(
+        // (Done as a data element is given its fields: with every
+        // attribute true there is no descriptor to keep, and the value
+        // goes into the slot, which held none while the element was an
+        // accessor. The value was not written then, and the element was
+        // gone: `Object.defineProperty(a, 0, { value: 1, writable: true,
+        // enumerable: true, configurable: true })` over an accessor left a
+        // hole.)
+        mutate_data_descriptor(
             agent,
             &elements,
             index,
@@ -1236,28 +1243,6 @@ fn mutate_data_descriptor(
             if descs.is_empty() {
                 descriptors.remove();
             }
-        }
-    }
-}
-
-fn mutate_element_descriptor(
-    agent: &mut Agent,
-    elements: &ElementsVector,
-    index: u32,
-    descriptor_value: Option<Value>,
-    elem_descriptor: Option<ElementDescriptor>,
-) {
-    if let Some(descriptor) = elem_descriptor {
-        insert_element_descriptor(agent, elements, index, descriptor_value, descriptor);
-    } else if let ElementStorageMut {
-        descriptors: Entry::Occupied(mut descriptors),
-        ..
-    } = agent.heap.elements.get_element_storage_mut(elements)
-    {
-        let descs = descriptors.get_mut();
-        descs.remove(&index);
-        if descs.is_empty() {
-            descriptors.remove();
         }
     }
 }
