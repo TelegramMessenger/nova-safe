@@ -18895,3 +18895,306 @@ literals keep their kinds=[1,2,x]3+extra[w,2,3]3false[1,2]2"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `map` writes each value, and `filter` appends each, as the plain element
+/// it is where the Array to fill is one that takes it so, asked again at
+/// every element since the callback has run in between; everything else is
+/// CreateDataPropertyOrThrow. Sources with holes, with elements that the
+/// prototype has under a hole, and that change under the walk; Arrays that
+/// a species makes: objects, Arrays with elements already, shorter ones,
+/// frozen ones, ones that take no new properties, with a length that is
+/// not writable, with an element that is not writable or not configurable;
+/// a callback that freezes the Array being filled, makes an element of it
+/// an accessor or a fixed value, changes its length, pushes to it, or
+/// stops it taking properties; subclasses, array-likes, a Proxy, errors.
+/// What is expected is what Node prints for the same script.
+#[test]
+fn map_and_filter_write_plain_elements_as_the_steps_define_them() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(arrays_mapped_and_filtered)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn arrays_mapped_and_filtered() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+function show(a) {
+  if (!Array.isArray(a)) return typeof a + ':' + (a && a.length !== undefined ? 'len' + a.length + ':' + Object.keys(a).join('') : String(a));
+  var parts = [];
+  for (var i = 0; i < a.length; i++) { if (!(i in a)) { parts.push('_'); continue; } var d = Object.getOwnPropertyDescriptor(a, i); parts.push((d.writable === false ? '!' : '') + (d.enumerable === false ? '~' : '') + ('value' in d ? String(d.value) : 'acc')); }
+  return '[' + parts.join(',') + ']' + a.length + (Object.isExtensible(a) ? '' : 'x') + (Object.getPrototypeOf(a) === Array.prototype ? '' : '~');
+}
+function double(v) { return v * 2; }
+function odd(v) { return v % 2 === 1; }
+// The results of plain Arrays, and what is left of the sources.
+note('plain', function () { var a = [1, 2, 3, 4, 5], m = a.map(double), f = a.filter(odd); m[0] = 'changed'; f.push('more'); return show(m) + show(f) + show(a) + show([].map(double)) + show([].filter(odd)) + show(a.filter(function () { return false; })); });
+note('arguments of the callback', function () { var seen = []; var a = ['a', 'b']; var r = a.map(function (v, i, all) { seen.push(v + i + (all === a) + (this === seen)); return i; }, seen); a.filter(function (v, i, all) { seen.push(typeof this + i); return true; }); return show(r) + seen.join(','); });
+note('holes', function () { var a = [1, , 3, , ], calls = 0; var m = a.map(function (v) { calls++; return v + 1; }); var f = a.filter(function () { calls++; return true; }); return show(m) + show(f) + calls + show(new Array(3).map(double)) + show(new Array(3).filter(odd)); });
+note('holes with inherited elements', function () { Array.prototype[1] = 10; try { return show([1, , 3].map(double)) + show([1, , 3].filter(function () { return true; })); } finally { delete Array.prototype[1]; } });
+note('values of every kind', function () { var a = [0, -0, NaN, null, undefined, 'x', [1], { k: 1 }, 1.5, 2n, true]; return show(a.map(function (v) { return v; }).map(function (v) { return Object.is(v, -0) ? '-0' : typeof v; })) + a.filter(function (v) { return v; }).length; });
+note('the source changes under it', function () { var a = [1, 2, 3, 4], b = [1, 2, 3, 4], c = [1, 2, 3]; var m = a.map(function (v, i) { if (i === 0) { a.pop(); a[1] = 'new'; } return v; }); var f = b.filter(function (v, i) { if (i === 1) b.push(9); if (i === 0) delete b[2]; return true; }); var g = c.map(function (v, i) { c.length = 1; return v; }); return show(m) + show(f) + show(g); });
+// Results that a species makes.
+function withSpecies(source, make) { source.constructor = { [Symbol.species]: make }; return source; }
+note('species objects', function () { var o = withSpecies([1, 2, 3], function (n) { return { made: n }; }); var m = o.map(double), f = o.filter(odd); return m.made + ',' + m[0] + m[2] + m.length + ' ' + f.made + ',' + f[0] + f[1] + f.length; });
+note('species arrays with elements', function () { var m = withSpecies([1, 2, 3], function (n) { return ['p', 'q', 'r', 's']; }).map(double); var f = withSpecies([1, 2, 3], function (n) { return ['p', 'q', 'r', 's']; }).filter(odd); var short = withSpecies([1, 2, 3], function (n) { return []; }).map(double); return show(m) + show(f) + show(short); });
+note('species that take nothing', function () {
+  var r = [];
+  [function () { return Object.freeze([]); }, function (n) { return Object.freeze(new Array(n)); }, function (n) { return Object.preventExtensions(new Array(n)); }, function (n) { var x = new Array(n); Object.defineProperty(x, 'length', { writable: false }); return x; }, function (n) { var x = [0, 0, 0]; Object.defineProperty(x, 1, { value: 'fixed', writable: false, configurable: false }); return x; }, function (n) { var x = [0, 0, 0]; Object.defineProperty(x, 1, { value: 'soft', writable: false, configurable: true, enumerable: false }); return x; }].forEach(function (make, i) {
+    var kept; var wrapped = function (n) { kept = make(n); return kept; };
+    try { r.push('m' + i + show(withSpecies([1, 2, 3], wrapped).map(double))); } catch (e) { r.push('m' + i + e.name + show(kept)); }
+    try { r.push('f' + i + show(withSpecies([1, 2, 3], wrapped).filter(odd))); } catch (e) { r.push('f' + i + e.name + show(kept)); }
+  });
+  return r.join(' ');
+});
+note('the callback changes the result', function () {
+  var r = [], leaked;
+  function leak(n) { leaked = new Array(n); return leaked; }
+  function leakEmpty() { leaked = []; return leaked; }
+  function attempt(f) { try { r.push(show(f())); } catch (e) { r.push(e.name + show(leaked)); } }
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 1) Object.freeze(leaked); return v * 2; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 0) Object.defineProperty(leaked, 2, { get: function () { return 'acc'; }, configurable: true }); return v * 2; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 1) Object.defineProperty(leaked, 3, { value: 'fixed', writable: false, configurable: false }); return v * 2; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 1) Object.defineProperty(leaked, 3, { value: 'soft', writable: false, enumerable: false, configurable: true }); return v * 2; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 1) leaked.length = 0; return v * 2; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 1) leaked.length = 2; if (i === 2) leaked.length = 10; return v * 2; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 0) leaked.extra = 1; if (i === 2) Object.preventExtensions(leaked); return v; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leak).map(function (v, i) { if (i === 2) Object.defineProperty(leaked, 'length', { writable: false }); return v; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leakEmpty).filter(function (v, i) { if (i === 1) leaked.push('pushed'); if (i === 2) leaked.length = 0; return true; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leakEmpty).filter(function (v, i) { if (i === 2) Object.freeze(leaked); return true; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leakEmpty).filter(function (v, i) { if (i === 1) Object.defineProperty(leaked, 'length', { writable: false }); return true; }); });
+  attempt(function () { return withSpecies([1, 2, 3, 4], leakEmpty).filter(function (v, i) { if (i === 0) leaked[5] = 'far'; return i !== 1; }); });
+  return r.join(' ');
+});
+note('subclass and array likes', function () { class Mine extends Array {} var m = Mine.from([1, 2, 3]); var r = m.map(double), f = m.filter(odd); var like = { length: 3, 0: 'a', 2: 'c' }; return show(r) + (r instanceof Mine) + show(f) + (f instanceof Mine) + show(Array.prototype.map.call(like, function (v) { return v + v; })) + show(Array.prototype.filter.call('abc', function (c) { return c !== 'b'; })) + show(Array.prototype.map.call(new Uint8Array([1, 2]), double)); });
+note('errors', function () { var r = []; try { [1].map(); } catch (e) { r.push(e.name); } try { [1].filter(5); } catch (e) { r.push(e.name); } try { [1, 2, 3].map(function (v) { if (v === 2) throw new RangeError('stop'); return v; }); } catch (e) { r.push(e.name); } var p = new Proxy([1, 2], {}); r.push(show(p.map(double))); return r.join(','); });
+note('long', function () { var a = []; for (var i = 0; i < 5000; i++) a.push(i); var total = 0; for (var r = 0; r < 10; r++) total += a.map(function (v) { return v * 2; }).filter(function (v) { return v % 3 === 0; }).reduce(function (s, v) { return s + v; }, 0); var m = a.map(function (v, i) { return i & 1 ? v : -v; }); return total + ' ' + m.length + ' ' + m[4999] + ' ' + m[4998] + ' ' + a.filter(function (v) { return v > 4990; }).join('') + ' ' + a.length; });
+out.join("\n")"##;
+    let expected = r##"plain=[changed,4,6,8,10]5[1,3,5,more]4[1,2,3,4,5]5[]0[]0[]0
+arguments of the callback=[0,1]2a0truetrue,b1truetrue,object0,object1
+holes=[2,_,4,_]4[1,3]24[_,_,_]3[]0
+holes with inherited elements=[2,20,6]3[1,10,3]3
+values of every kind=[number,-0,number,object,undefined,string,object,object,number,bigint,boolean]116
+the source changes under it=[1,new,3,_]4[1,2,4]3[1,_,_]3
+species objects=3,26undefined 0,13undefined
+species arrays with elements=[2,4,6,s]4[1,3,r,s]4[2,4,6]3
+species that take nothing=m0TypeError[]0x f0TypeError[]0x m1TypeError[_,_,_]3x f1TypeError[]0x m2TypeError[_,_,_]3x f2TypeError[]0x m3[2,4,6]3 f3TypeError[]0 m4TypeError[2,!fixed,0]3 f4TypeError[1,!fixed,0]3 m5[2,4,6]3 f5[1,3,0]3
+the callback changes the result=TypeError[!2,_,_,_]4x [2,4,6,8]4 TypeError[2,4,6,!~fixed]4 [2,4,6,8]4 [_,4,6,8]4 [2,4,6,8,_,_,_,_,_,_]10 TypeError[1,2,_,_]4x [1,2,3,4]4 [_,_,3,4]4 TypeError[!1,!2]2x TypeError[1]1 [1,3,4,_,_,far]6
+subclass and array likes=[2,4,6]3~true[1,3]2~true[aa,_,cc]3[a,c]2[2,4]2
+errors=TypeError,TypeError,RangeError,[2,4]2
+long=83316660 5000 4999 -4998 499149924993499449954996499749984999 5000"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// An element that is an accessor, defined again as a data property with
+/// every attribute true, has the value: such an element has no descriptor,
+/// and the value was not put in its slot, which left a hole. With the
+/// other ways an accessor becomes a data property (attributes that are
+/// not all true, no value given), and the same of a property of a plain
+/// object. What is expected is what Node prints for the same script.
+#[test]
+fn an_accessor_element_made_a_plain_data_element_has_its_value() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(accessor_elements_made_data)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn accessor_elements_made_data() {
+    let script = r##"var out = [];
+function print(s) { out.push(String(s)); }
+var a = [1, 2, 3, 4];
+Object.defineProperty(a, 2, { get: function () { return 'acc'; }, configurable: true });
+Object.defineProperty(a, 2, { value: 6, writable: true, enumerable: true, configurable: true });
+print((2 in a) + ' ' + a[2] + ' ' + JSON.stringify(Object.getOwnPropertyDescriptor(a, 2)) + ' ' + a.length);
+var b = new Array(4);
+Object.defineProperty(b, 2, { get: function () { return 'acc'; }, configurable: true });
+Object.defineProperty(b, 2, { value: 6, writable: true, enumerable: true, configurable: true });
+print((2 in b) + ' ' + b[2] + ' ' + JSON.stringify(Object.getOwnPropertyDescriptor(b, 2)));
+var leaked; var s = [1, 2, 3, 4]; s.constructor = { [Symbol.species]: function (n) { leaked = new Array(n); return leaked; } };
+var r = s.map(function (v, i) { if (i === 0) Object.defineProperty(leaked, 2, { get: function () { return 'acc'; }, configurable: true }); return v * 2; });
+print((2 in r) + ' ' + r[2] + ' ' + JSON.stringify(Object.getOwnPropertyDescriptor(r, 2)) + ' ' + r.join());
+var o = { a: 1 };
+Object.defineProperty(o, 'x', { get: function () { return 'acc'; }, configurable: true });
+Object.defineProperty(o, 'x', { value: 6, writable: true, enumerable: true, configurable: true });
+print(('x' in o) + ' ' + o.x + ' ' + JSON.stringify(Object.getOwnPropertyDescriptor(o, 'x')) + ' ' + Object.keys(o).join());
+var c = [1, 2, 3];
+Object.defineProperty(c, 1, { get: function () { return 'acc'; }, enumerable: true, configurable: true });
+Object.defineProperty(c, 1, { value: 7, writable: false, enumerable: true, configurable: true });
+Object.defineProperty(c, 0, { get: function () { return 'acc'; }, set: function () {}, enumerable: false, configurable: true });
+Object.defineProperty(c, 0, { value: 8 });
+print(JSON.stringify([Object.getOwnPropertyDescriptor(c, 0), Object.getOwnPropertyDescriptor(c, 1)]) + ' ' + c.join());
+var d = [1, 2, 3];
+Object.defineProperty(d, 2, { get: function () { return 'acc'; }, configurable: true });
+Object.defineProperty(d, 2, { value: undefined, writable: true, enumerable: true, configurable: true });
+print((2 in d) + ' ' + d[2] + ' ' + d.length + ' ' + Object.keys(d).join());
+out.join("\n")"##;
+    let expected = r##"true 6 {"value":6,"writable":true,"enumerable":true,"configurable":true} 4
+true 6 {"value":6,"writable":true,"enumerable":true,"configurable":true}
+true 6 {"value":6,"writable":true,"enumerable":true,"configurable":true} 2,4,6,8
+true 6 {"value":6,"writable":true,"enumerable":true,"configurable":true} a,x
+[{"value":8,"writable":false,"enumerable":false,"configurable":true},{"value":7,"writable":false,"enumerable":true,"configurable":true}] 8,7,3
+true undefined 3 0,1,2"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// %Array.prototype% is an Array, and a new element of it is found by
+/// what read no such element through it before: a function that has read
+/// `x[0]` of an object, of an Array with holes, two hundred times. The
+/// element made by `map`, `filter`, `concat` and `slice` filling
+/// %Array.prototype% as the Array a species gave, by `push`, by
+/// assignments in a hole and past the end, by `fill`, `unshift`, `splice`,
+/// `copyWithin` and `reverse`, by Object.defineProperty and Object.assign,
+/// by `Array.from` and `Array.of` of a constructor that gives it, by
+/// `flat` and `flatMap`; elements removed and made again. (`concat`,
+/// `map` and `filter` wrote the element in place, and `copyWithin` copied
+/// in place, with no word to the caches.) What is expected is what Node
+/// prints for the same script.
+#[test]
+fn an_element_of_the_array_prototype_is_found_by_what_did_not_find_it() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(elements_of_the_array_prototype)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn elements_of_the_array_prototype() {
+    let script = r##"var out = [];
+function print(s) { out.push(String(s)); }
+function read0(x) { return x[0]; }
+function read1(x) { return x[1]; }
+function has0(x) { return 0 in x; }
+function tidy() { Array.prototype.length = 0; }
+function viaSpecies(src) { src.constructor = { [Symbol.species]: function () { return Array.prototype; } }; return src; }
+var o = Object.create(Array.prototype), holes = [, , ], plain = {};
+Object.setPrototypeOf(plain, Array.prototype);
+function warm() { var s = ''; for (var i = 0; i < 200; i++) s = String(read0(o)) + read1(o) + read0(holes) + read1(holes) + read0(plain) + has0(o) + has0(holes); return s; }
+print('before ' + warm());
+var r = viaSpecies([7, 8]).map(function (v) { return v * 10; });
+print('map ' + (r === Array.prototype) + ' ' + warm() + ' ' + Array.prototype.length + ' ' + [, , 5].join() + ' ' + (0 in []));
+tidy();
+print('tidy ' + warm());
+r = viaSpecies([7, 8]).filter(function (v) { return true; });
+print('filter ' + (r === Array.prototype) + ' ' + warm() + ' ' + Array.prototype.length);
+tidy();
+print('tidy ' + warm());
+r = viaSpecies([7, 8]).concat([9]);
+print('concat ' + (r === Array.prototype) + ' ' + warm() + ' ' + Array.prototype.length);
+tidy();
+print('tidy ' + warm());
+r = viaSpecies([7, 8]).slice(0);
+print('slice ' + (r === Array.prototype) + ' ' + warm() + ' ' + Array.prototype.length);
+tidy();
+print('tidy ' + warm());
+Array.prototype.push(4, 5);
+print('push ' + warm() + ' ' + Array.prototype.length);
+tidy();
+Array.prototype[0] = 'set';
+print('set ' + warm() + ' ' + Array.prototype.length);
+tidy();
+print('end ' + warm() + ' ' + [].length + ' ' + [1, 2].map(function (v) { return v; }).join());
+// Holes of %Array.prototype% filled in other ways, and elements of it
+// removed and made again.
+function step(label, f) { var note; try { note = String(f()); } catch (e) { note = e.name; } print(label + ' ' + note + ' ' + warm() + ' ' + Array.prototype.length); tidy(); print(label + ' tidy ' + warm()); }
+step('index', function () { Array.prototype.length = 2; for (var i = 0; i < 2; i++) Array.prototype[i] = 'i' + i; });
+step('constant', function () { Array.prototype.length = 2; Array.prototype[1] = 'c1'; Array.prototype[0] = 'c0'; });
+step('past', function () { var p = Array.prototype; for (var i = 0; i < 2; i++) p[p.length] = 'p' + i; });
+step('fill', function () { Array.prototype.length = 2; Array.prototype.fill('f'); });
+step('unshift', function () { Array.prototype.unshift('u0', 'u1'); });
+step('splice', function () { Array.prototype.splice(0, 0, 's0', 's1'); });
+step('define', function () { Object.defineProperty(Array.prototype, 0, { value: 'd0', writable: true, enumerable: true, configurable: true }); Object.defineProperty(Array.prototype, 1, { get: function () { return 'd1'; }, configurable: true }); });
+step('accessor to data', function () { Object.defineProperty(Array.prototype, 0, { get: function () { return 'g0'; }, configurable: true }); var first = read0(o); Object.defineProperty(Array.prototype, 0, { value: 'v0', writable: true, enumerable: true, configurable: true }); return first; });
+step('delete and again', function () { Array.prototype[0] = 'a'; var first = read0(o); delete Array.prototype[0]; var second = String(read0(o)); Array.prototype[0] = 'b'; return first + second; });
+step('reverse', function () { Array.prototype.length = 2; Array.prototype[1] = 'r1'; var first = String(read0(o)) + read1(o); Array.prototype.reverse(); return first; });
+step('copyWithin', function () { Array.prototype.length = 2; Array.prototype[1] = 'w1'; Array.prototype.copyWithin(0, 1); });
+step('assign', function () { Object.assign(Array.prototype, { 0: 'o0', 1: 'o1' }); });
+step('from', function () { function Make() { return Array.prototype; } return Array.from.call(Make, ['m0', 'm1']) === Array.prototype; });
+step('of', function () { function Make() { return Array.prototype; } return Array.of.call(Make, 'x0', 'x1') === Array.prototype; });
+step('flat', function () { return viaSpecies([['t0'], ['t1']]).flat() === Array.prototype; });
+step('flatMap', function () { return viaSpecies(['q0', 'q1']).flatMap(function (v) { return [v]; }) === Array.prototype; });
+step('spread literal', function () { var made = [...['l0', 'l1']]; return made.join() + (0 in Array.prototype); });
+print('last ' + warm() + ' ' + [].length + ' ' + [1, 2].concat([3]).join() + [, 1].map(function (v) { return v; }).length);
+out.join("\n")"##;
+    let expected = r##"before undefinedundefinedundefinedundefinedundefinedfalsefalse
+map true 7080708070truetrue 2 70,80,5 true
+tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+filter true 78787truetrue 2
+tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+concat true 78787truetrue 3
+tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+slice true 78787truetrue 2
+tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+push 45454truetrue 2
+set setundefinedsetundefinedsettruetrue 1
+end undefinedundefinedundefinedundefinedundefinedfalsefalse 0 1,2
+index undefined i0i1i0i1i0truetrue 2
+index tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+constant undefined c0c1c0c1c0truetrue 2
+constant tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+past undefined p0p1p0p1p0truetrue 2
+past tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+fill undefined ffffftruetrue 2
+fill tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+unshift undefined u0u1u0u1u0truetrue 2
+unshift tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+splice undefined s0s1s0s1s0truetrue 2
+splice tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+define undefined d0d1d0d1d0truetrue 2
+define tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+accessor to data g0 v0undefinedv0undefinedv0truetrue 1
+accessor to data tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+delete and again aundefined bundefinedbundefinedbtruetrue 1
+delete and again tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+reverse undefinedr1 r1undefinedr1undefinedr1truetrue 2
+reverse tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+copyWithin undefined w1w1w1w1w1truetrue 2
+copyWithin tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+assign undefined o0o1o0o1o0truetrue 2
+assign tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+from true m0m1m0m1m0truetrue 2
+from tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+of true x0x1x0x1x0truetrue 2
+of tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+flat true t0t1t0t1t0truetrue 2
+flat tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+flatMap true q0q1q0q1q0truetrue 2
+flatMap tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+spread literal l0,l1false undefinedundefinedundefinedundefinedundefinedfalsefalse 0
+spread literal tidy undefinedundefinedundefinedundefinedundefinedfalsefalse
+last undefinedundefinedundefinedundefinedundefinedfalsefalse 0 1,2,32"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
