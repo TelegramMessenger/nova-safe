@@ -16,6 +16,15 @@
 //!
 //! Blocks allocated with no engine running (a compiled script shared by
 //! engines, the standard library's own) go to account 0, which nobody reads.
+//!
+//! The headers in front of a block (this allocator's, and on some targets the
+//! system's own) are outside the block it returns, and the compiler may take
+//! every block for a new object (since Rust 1.92), so a header read through
+//! the block's pointer may be read as uninitialized. The allocator therefore
+//! reaches the headers through the exposed provenance of the system's
+//! allocation, never through the block's pointer: `core::hint::black_box` is
+//! not for correctness, and `#[inline(never)]` does not help (argument
+//! promotion hoists the read back into the caller).
 
 use core::{
     alloc::{GlobalAlloc, Layout},
@@ -127,12 +136,21 @@ impl Metered {
         // SAFETY: `offset >= HEADER`, so both pointers are inside the
         // allocation, and `base + offset - HEADER` is aligned to 16 (`base`
         // is aligned to `offset`, a power of two of at least 16), which a
-        // usize needs at most.
+        // usize needs at most. The allocation's provenance is exposed, so
+        // that `behind` can reach the headers from the block.
         unsafe {
             let block = base.add(offset);
             block.sub(HEADER).cast::<usize>().write(account);
+            base.expose_provenance();
             block
         }
+    }
+
+    /// `block - back` with the provenance `open` (or `realloc`) exposed; the
+    /// block's own provenance is exposed too, so that what the system reads
+    /// through the result (a realloc's copy) stays tied to the caller's bytes.
+    fn behind(block: *mut u8, back: usize) -> *mut u8 {
+        core::ptr::with_exposed_provenance_mut(block.expose_provenance().wrapping_sub(back))
     }
 
     /// The account in the header of `block`.
@@ -140,8 +158,9 @@ impl Metered {
     /// # Safety
     /// `block` must have come from [`Metered::open`] and still be allocated.
     unsafe fn account_of(block: *mut u8) -> usize {
-        // SAFETY: `open` wrote a usize there, inside the allocation.
-        let account = unsafe { block.sub(HEADER).cast::<usize>().read() };
+        // SAFETY: `open` wrote a usize there, inside the allocation, whose
+        // provenance it exposed for `behind`.
+        let account = unsafe { Metered::behind(block, HEADER).cast::<usize>().read() };
         // Never index out of the table, whatever a damaged header says.
         if account < ACCOUNTS { account } else { 0 }
     }
@@ -188,11 +207,11 @@ unsafe impl GlobalAlloc for Metered {
         };
         // SAFETY: the caller's block came from `alloc`, `alloc_zeroed` or
         // `realloc` here, all of which return `base + offset` of an `outer`
-        // allocation with the header written.
+        // allocation with the header written and the provenance exposed.
         unsafe {
             let account = Metered::account_of(block);
             BYTES[account].fetch_sub(outer.size(), Ordering::Relaxed);
-            System.dealloc(block.sub(offset), outer);
+            System.dealloc(Metered::behind(block, offset), outer);
         }
     }
 
@@ -209,13 +228,15 @@ unsafe impl GlobalAlloc for Metered {
         // SAFETY: as in `dealloc` for the block; the new size is non-zero and
         // fits a layout of the same alignment (checked above). The system
         // keeps the first bytes, the header among them, so the block stays on
-        // the account that allocated it.
+        // the account that allocated it; the provenance of the allocation it
+        // returns, which may be a new one, is exposed as `open` exposes it.
         unsafe {
             let account = Metered::account_of(block);
-            let base = System.realloc(block.sub(offset), outer, new_outer_size);
+            let base = System.realloc(Metered::behind(block, offset), outer, new_outer_size);
             if base.is_null() {
                 return base;
             }
+            base.expose_provenance();
             if new_outer_size >= outer.size() {
                 BYTES[account].fetch_add(new_outer_size - outer.size(), Ordering::Relaxed);
             } else {
