@@ -1005,6 +1005,18 @@ is written by the capacity), a plain call 0.3% and the call of a closure 0.2% fe
 more. The write of the slot made part of the function that asks, where it is a call, was 162
 and is not kept.
 
+`undefined`, `NaN` and `Infinity` were read as any name of the global scope is: sixty
+instructions each to find a property of the global object where it was found before, and
+`x === undefined` was no comparison with a constant, nor a test and a jump in one. All three are
+properties of the global object that are not writable and not configurable, and a Script cannot
+declare any of them (it is a SyntaxError), so where the scope chain of the name is fixed all the
+way out, which is where a global is read at its site, the name is the value: a constant of the
+code. A parameter, a variable or a declaration of that name in a function, the code of an `eval`
+and of `Function`, and an assignment to the name are as they were (an assignment does nothing, and
+throws in strict code). `x === undefined` of a local is one instruction with its jump, and of a
+variable of an enclosing function 111 instructions for 209 (QuickJS 99); `this === undefined` is
+106 for 229 (108); a read of one of the three is a constant put in a register.
+
 ### 3. Calls
 
 A JavaScript call was 13-20x. Each one made a new `Vm`, an execution context and a function environment record,
@@ -2572,6 +2584,23 @@ wrong, -0 negated into a double, a text taken for a Number by `+x`, the compleme
 taken as its negation, or the general way without its ToNumeric (where the engine stops at a value
 it took for a numeric one).
 
+What the operators of one operand cost was found by pricing them one by one, which the price list
+had no rows for; the same was then done for eighty things that ordinary code does in every line (a
+case file of loops of a million turns, each with one of them, run in both engines). Most are where
+the price list says a thing of their kind is. The ones that were not, and are now: the length of a
+String, the tests of a value that is no Boolean, and `undefined` (below, and in areas 2 and 8).
+Those that still are not have rows in the price list from here on: `q++` and `++q` whose value is
+used (189 instructions, QuickJS 18), `a || b` and `a && b` whose value is used (149 and 168 for 31
+and 44), `o.x += 1` and `o.x++` (339 and 302 for 129 and 116), `a[i]++` (526 for 173).
+
+ToBoolean asked a value that is no Boolean what it is five times over: whether undefined, null,
++0, -0 (each of the two asking whether it is a Number, and of which kind), NaN, the empty String.
+It is one look at the kind of the value now: an integer is true unless it is zero, undefined and
+null are false, a String kept in the Value is true unless it is empty, and only a double or a
+BigInt is asked further. `if (x)`, `x ? a : b`, `!x`, `x || y` and `x && y` of an integer are each
+ten instructions shorter (99 for 109 the `if` with its `else`); what is left of them is the jump
+and the constant, as before.
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
@@ -2832,6 +2861,30 @@ appended the careful way (`"\uDC00\uD800".repeat(2)` has a pair at its seam). A 
 long for a String or for the heap is refused before any of it is made, as it was.
 `string/pad-and-repeat` executes 6.8% fewer instructions and reads 7.5% less time, the two binaries
 run in turn.
+
+`s.length` counted the String at every read. A text of up to 64 bytes that was never asked for
+an index has no table of its indices (which is eight bytes a code unit, made for a text that is
+indexed), and its length was counted from its bytes each time, in "a few instructions" that were
+six a byte: 190 instructions for eleven characters and 417 for sixty, at every turn of
+`for (i = 0; i < s.length; i++)`; a string kept in the Value was looked through twice, a byte at
+a time, for 116. A short text of ASCII is found to be one by words now, and remembered to be one:
+that is all there is to know of its indices, and nothing is allocated for it. A text whose
+indices are known says its length by them before anything else is asked. A string kept in the
+Value is looked at as one word: the first byte with its high bit is where its padding starts if
+it is ASCII, and it is ASCII where everything from there on is padding. The length is 74 to 76
+instructions whatever the text (QuickJS 7; an Array's is 50), but for a short text that is not
+ASCII, which is still counted (225 for eleven characters) and waits for somewhere to keep the
+count.
+
+The test of the three (the length, the tests of a value, the three values of the global scope)
+has Strings of every make and length around the limits, with what is read of a string after and
+before its length; what is true of sixty values of every kind in each test and loop; and the
+three values compared, shadowed in every way, read in code of `eval`, assigned to and used as
+defaults, keys and cases. With any of these it fails: zero, null, the empty String, NaN, -0 or
+the BigInt zero taken for true; a short text taken for ASCII unseen, or the length of one that is
+not taken from its bytes once its indices are known; a string kept in the Value taken for ASCII
+unseen, or its padding found a byte late; `NaN` or `undefined` made another of the three. (Where
+a length comes out wrong the engine stops at the next thing that is cut by it.)
 
 ### 9. Garbage
 
@@ -3108,6 +3161,11 @@ tokenizer, where most of what is swept lives, are the same to 0.2%.
   from, and not here since it asks whether the Array appends plainly. Fixed: an intrinsic Array
   takes no element in place (`Array::is_intrinsic`), in `takes_plain_elements` and in `copyWithin`;
   the test has every way an element of %Array.prototype% is made.
+- The `with` statement is not there, here and in the build this started from: its object is
+  evaluated and made an object, and the body then runs with no Object Environment Record made of
+  it, so a name in the body is never a property of the object (`with ({ x: 9 }) { x }` is a
+  ReferenceError, or the `x` outside). Strict code, which the engine runs by default, has no
+  `with`. Seen in the script for `undefined` as a constant, which leaves it out. Not changed.
 
 ## Checking a change
 
