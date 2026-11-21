@@ -90,8 +90,8 @@ safe/bench/prices.py [--bench target/bench/work/bench] [--filter call/] [--runs 
 It runs the cases of `safe/bench/prices.js` in each engine, in the runner that `run.py` built. Each is
 a loop of a million turns, and a case named `x@y` is the case `y` with one statement changed (one
 operation more in a turn, or one in place of the cheapest of its kind), so the two processes differ by
-a million times the price of the operation. As of the round of the element of a TypedArray read
-by one function (area 6), in machine instructions per operation:
+a million times the price of the operation. As of the round of the shapes that `new` keeps
+(area 3), in machine instructions per operation:
 
 | operation | QuickJS | Nova | |
 | --- | ---: | ---: | --- |
@@ -115,7 +115,7 @@ by one function (area 6), in machine instructions per operation:
 | Array element read / written | 56 / 53 | 134 / 169 | 2.4x / 3.2x |
 | Uint8Array element read / written | 89 / 78 | 162 / 172 | 1.8x / 2.2x |
 | Float64Array element read / written | 106 / 76 | 231 / 172 | 2.2x / 2.3x |
-| `new` of a function / of a class, one field set | 1074 / 1130 | 2138 / 2110 | 2.0x / 1.9x |
+| `new` of a function / of a class, one field set | 1073 / 1129 | 1840 / 1812 | 1.7x / 1.6x |
 | an object literal of two properties | 745 | 490 | 0.66x |
 | one callback of `forEach` (the whole turn) | 395 | 742 | 1.9x |
 | one step of `for-of` over a generator (the whole turn) | 491 | 911 | 1.9x |
@@ -311,6 +311,9 @@ next one.
 
 An element of a TypedArray read and written by one function (area 6): the arithmetic of a
 Float64Array 1.75x, the pixel loop 1.87x, the fill of a Uint8Array 1.11x, by the same measure.
+
+The shapes that `new` keeps (area 3): `new` of a class 1.50x, a derived class 1.62x, a tree built
+and walked 1.30x. The call of a closure is where it was, 1.96x, and is the case nearest 2x.
 
 Joining the Android line left it where it was, at 1.91x then, by two things that cancel. That line counts what the
 engine allocates for the memory limit, in an allocator of its own under every allocation (a header in front
@@ -1316,6 +1319,50 @@ each time, where the first object made with a prototype sees to it once. It is m
 the objects that have that prototype at once, which is the shape the other way arrived at. `new` of a
 class went from 22.9 to 21.7 ms with the two binaries run in turn (`call/new-class-instance`, 1.86x to
 1.84x in runs where QuickJS's own time moved as much), and with `super(…)` 3% less.
+
+`new` of a function that sets one field was still 2,138 instructions where QuickJS has 1,074, and
+the profile of it had no one thing over a twentieth: but half a dozen of them were the same three
+questions, asked the long way at every object made.
+
+What the function's "prototype" is: by Get, which went through the function's own way of reading a
+property and read the slots of its properties as a whole for the one, 270 instructions with the
+descriptor of what it found. It is read as a property is read by its cache in the loop of
+instructions, one look at the storage; Get answers where that does not, and the cache sees the
+shape then. The parent of a derived class reads the new target's the same way.
+
+What shape an object of that prototype has: by a table of such shapes, keyed by the prototype,
+whose keys are compared kind by kind. The shape found the last time is kept with its prototype
+(an ordinary object, compared as the handle it is) and is the answer while no collection has run.
+
+What shape an object comes to when a key is added to it: by the table of the shape's transitions,
+under a hash of the key, for every field of every object. The shapes arrived at the last time are
+kept, eight of them by the place of the shape they start from, with the key, for as long as no
+collection has run: a constructor adds the same keys to the same shapes every time. And adding a
+plain property asked the table of descriptors for the place of the storage's own, to put nothing
+there.
+
+Each of the two things kept is of the collection it was found in, and the tests of that took three
+tries. In a runtime nothing that is kept is ever found where another thing was: a prototype that has
+had an object made of it does not die (the table of shapes by prototype holds it), a shape that a
+property cache has seen does not either, and the first object made after a collection is rarely of
+the prototype whose place moved. So a test of the engine makes things die in front of the ones kept
+(objects in front of the prototypes of three makers; shapes that no cache holds, made by
+`JSON.parse`, in front of two chains of shapes with one of another kind between), collects, and
+makes objects of the others; how many must die for one to land in the place of another is the
+heap's business, so it tries every number up to a dozen, each in an agent of its own. Without the
+count of collections on the first, an object of one maker has another's prototype; without it on
+the second, an object has the keys of another kind. The other three things asked of what is kept
+(the prototype, the shape, the key) are caught by the script that is checked against Node.
+
+`new` of a function is 1,840 instructions for 2,138 and of a class 1,812 for 2,110 (QuickJS: 1,074
+and 1,130). Counted by the instructions the cases retire, `call/new-class-instance` is 8.4% fewer,
+`call/class-inheritance-super` 5.1%, `json/parse` 3.3% and `prop/object-spread-assign` 3.2% (their
+objects come to their shapes by the same keys), a tree built and walked 0.8%; the calls are the
+same. What is left of adding the field is making its storage, which is the general way of growing
+one from nothing (some 200 instructions for two slots), and the cache told of the new shape.
+With the two binaries run in turn a derived class is 3 to 5% less (whichever is run first), and
+with the two engines run in turn `new` of a class is 1.50x for 1.80x and a derived class 1.62x for
+1.76x.
 
 `typeof` of a value was an instruction of the general way, every time: the loop left for it, and came
 back with the String. It is done in the loop where the value is in the result register and the
