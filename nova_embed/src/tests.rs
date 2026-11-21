@@ -20471,3 +20471,122 @@ many turns=[200140036,8,20000]"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// What an object pattern destructures is made an object where it is
+/// none, refused where it is undefined or null, and is itself where it is
+/// an object already, which the loop of instructions says without leaving
+/// its work; and the pattern leaves nothing behind it in the result
+/// register. A value of every kind (objects of each sort, a String, a
+/// Number, a Boolean, a Symbol, a BigInt, undefined, null) through
+/// fourteen forms of pattern: `var`, `let`, `const`, an assignment, the
+/// empty pattern, a parameter, an arrow's, defaults, a rest, computed
+/// names, a nested pattern, the head of `for`-`of`, the parameter of a
+/// `catch`; getters called once and in their order, a Proxy asked in
+/// order; the value read once; what refuses, with what came before it;
+/// the value of a destructuring assignment, and of the statements that
+/// declare by a pattern. What is expected is what Node prints for the
+/// same script.
+#[test]
+fn what_an_object_pattern_destructures_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(values_destructured_by_object_patterns)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn values_destructured_by_object_patterns() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'function') return 'fn:' + v.name; if (typeof v === 'string') return '"' + v + '"'; if (typeof v === 'symbol') return String(v); if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).map(function (k) { return k + ':' + fmt(v[k]); }).join(',') + '}'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+var long = 'a string that is too long to be kept in a value';
+// What is destructured, of every kind: objects are themselves, primitives are made objects, undefined and null are refused.
+function byVar(v) { var { length, x } = v; return [length, x]; }
+function byLet(v) { let { length, x } = v; return [length, x]; }
+function byConst(v) { const { length: l, x: y } = v; return [l, y]; }
+function byAssign(v) { var length, x; ({ length, x } = v); return [length, x]; }
+function byEmpty(v) { var {} = v; return 'empty'; }
+function byEmptyAssign(v) { ({} = v); return 'empty'; }
+function byParameter({ length, x }) { return [length, x]; }
+function byArrow(v) { return (({ length, x }) => [length, x])(v); }
+function byDefault(v) { var { length = 'no length', x = 'no x' } = v; return [length, x]; }
+function byRest(v) { var { length, ...rest } = v; return [length, Object.keys(rest).length]; }
+function byComputed(v) { var k = 'length', { [k]: l, ['x']: y } = v; return [l, y]; }
+function byNested(v) { var { length: { constructor: c } = 0, x } = v; return [c === Number, x]; }
+function byForOf(v) { var r = []; for (var { length, x } of [v]) { r.push(length, x); } return r; }
+function byCatch(v) { try { throw v; } catch ({ length, x }) { return [length, x]; } }
+var ways = [byVar, byLet, byConst, byAssign, byEmpty, byEmptyAssign, byParameter, byArrow, byDefault, byRest, byComputed, byNested, byForOf, byCatch];
+function each(v) { var r = []; for (var w = 0; w < ways.length; w = w + 1) { try { r.push(fmt(ways[w](v))); } catch (e) { r.push('!' + e.name); } } return r.join(' '); }
+note('an object', function () { return each({ length: 7, x: 'x of object' }); });
+note('an object with neither', function () { return each({}); });
+note('an Array', function () { var a = [1, 2, 3]; a.x = 'x of array'; return each(a); });
+note('a function', function () { var f = function (p, q) {}; f.x = 'x of function'; return each(f); });
+note('a Map', function () { var m = new Map(); m.x = 'x of map'; return each(m); });
+note('a Date and a RegExp', function () { var d = new Date(0); d.length = 'date length'; return [each(d), each(/re/)]; });
+note('a class instance', function () { class C { get length() { return 'getter'; } } var c = new C(); c.x = 1; return each(c); });
+note('a typed array', function () { return each(new Uint8Array(4)); });
+note('an object with no prototype', function () { var o = Object.create(null); o.length = 0; return each(o); });
+note('a String', function () { return [each('abc'), each(''), each(long).slice(0, 40)]; });
+note('a String object', function () { return each(new String('four')); });
+note('a Number', function () { Number.prototype.x = 'x of numbers'; var r = [each(5), each(0.5), each(-0), each(NaN), each(1e300)]; delete Number.prototype.x; return r; });
+note('a Boolean', function () { Boolean.prototype.length = 'length of booleans'; var r = [each(true), each(false)]; delete Boolean.prototype.length; return r; });
+note('a Symbol and a BigInt', function () { return [each(Symbol('s')), each(10n), each(12345678901234567890n)]; });
+note('undefined', function () { return each(undefined); });
+note('null', function () { return each(null); });
+note('a missing argument', function () { return [fmt((function () { try { return byParameter(); } catch (e) { return '!' + e.name; } })()), (function ({ a } = { a: 'default object' }) { return a; })()]; });
+// The order of what a destructuring does, and how often.
+note('getters once and in order', function () { var log = [], o = { get b() { log.push('b'); return 2; }, get a() { log.push('a'); return 1; }, get c() { log.push('c'); return undefined; } }; var { a, c = (log.push('default c'), 3), b } = o; return [a, b, c, log.join()]; });
+note('a Proxy asked in order', function () { var log = [], p = new Proxy({ a: 1, b: 2 }, { get: function (t, k) { log.push('get ' + String(k)); return t[k]; }, has: function (t, k) { log.push('has ' + String(k)); return k in t; }, ownKeys: function (t) { log.push('keys'); return Reflect.ownKeys(t); }, getOwnPropertyDescriptor: function (t, k) { log.push('desc ' + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); } }); var { b, a } = p; var { a: a2, ...rest } = p; return [a, b, a2, Object.keys(rest).join(), log.join()]; });
+note('the value is read once', function () { var n = 0; function make() { n = n + 1; return { p: n, q: n * 10 }; } var { p, q } = make(); return [p, q, n]; });
+note('a value that refuses, with what came before it', function () { var log = []; try { var { a } = (log.push('value'), null); log.push('not reached'); } catch (e) { log.push(e.name); } try { var b, c; ({ b, c } = (log.push('second'), undefined)); } catch (e) { log.push(e.name); } return log; });
+note('the value of a destructuring assignment', function () { var a, b, o = { a: 1, b: 2 }, r = ({ a, b } = o); return [r === o, a, b, eval("var u107; ({ u107 } = { u107: 7 });").u107, eval("'a'; ({ z107: globalThis.g107 } = { z107: 4 });").z107]; });
+note('what a destructuring declaration leaves behind', function () { return [eval("var { w107 } = { w107: 3 };"), eval("let { t107 } = { t107: 3 };"), eval("{ let { b107, c107 } = { b107: 1 }; }"), eval("var { d107 = 2 } = {};"), eval("var { e107: { f107 } } = { e107: { f107: 1 } };"), eval("for (var { k107 } of [{ k107: 1 }]) { }"), eval("'before'; for (var { m107 } of [{ m107: 1 }, { m107: 2 }]) { }"), eval("for (var { n107 } of [{ n107: 5 }]) { n107; }"), eval("var { p107, ...q107 } = { p107: 1, r: 2 };"), eval("try { throw { s107: 1 }; } catch ({ s107 }) { }"), eval("(function ({ a }) { })({ a: 1 })"), eval("var { v107 } = { v107: 3 }; 'last';")]; });
+// Many turns, with objects of several kinds in turn.
+note('many turns', function () { var things = [{ x: 1, y: 2 }, [5, 6], 'str', function (a, b, c) {}, { x: 3 }, 7], sum = 0, turns = 0; for (var i = 0; i < 20000; i = i + 1) { var { x = 100, length = 1000 } = things[i % things.length]; sum = (sum + x + length) % 1000003; turns = turns + 1; } return [sum, turns]; });
+out.join("\n")"##;
+    let expected = r##"an object="[7,"x of object"] [7,"x of object"] [7,"x of object"] [7,"x of object"] "empty" "empty" [7,"x of object"] [7,"x of object"] [7,"x of object"] [7,1] [7,"x of object"] [true,"x of object"] [7,"x of object"] [7,"x of object"]"
+an object with neither="[undefined,undefined] [undefined,undefined] [undefined,undefined] [undefined,undefined] "empty" "empty" [undefined,undefined] [undefined,undefined] ["no length","no x"] [undefined,0] [undefined,undefined] [true,undefined] [undefined,undefined] [undefined,undefined]"
+an Array="[3,"x of array"] [3,"x of array"] [3,"x of array"] [3,"x of array"] "empty" "empty" [3,"x of array"] [3,"x of array"] [3,"x of array"] [3,4] [3,"x of array"] [true,"x of array"] [3,"x of array"] [3,"x of array"]"
+a function="[2,"x of function"] [2,"x of function"] [2,"x of function"] [2,"x of function"] "empty" "empty" [2,"x of function"] [2,"x of function"] [2,"x of function"] [2,1] [2,"x of function"] [true,"x of function"] [2,"x of function"] [2,"x of function"]"
+a Map="[undefined,"x of map"] [undefined,"x of map"] [undefined,"x of map"] [undefined,"x of map"] "empty" "empty" [undefined,"x of map"] [undefined,"x of map"] ["no length","x of map"] [undefined,1] [undefined,"x of map"] [true,"x of map"] [undefined,"x of map"] [undefined,"x of map"]"
+a Date and a RegExp=["["date length",undefined] ["date length",undefined] ["date length",undefined] ["date length",undefined] "empty" "empty" ["date length",undefined] ["date length",undefined] ["date length","no x"] ["date length",0] ["date length",undefined] [false,undefined] ["date length",undefined] ["date length",undefined]","[undefined,undefined] [undefined,undefined] [undefined,undefined] [undefined,undefined] "empty" "empty" [undefined,undefined] [undefined,undefined] ["no length","no x"] [undefined,0] [undefined,undefined] [true,undefined] [undefined,undefined] [undefined,undefined]"]
+a class instance="["getter",1] ["getter",1] ["getter",1] ["getter",1] "empty" "empty" ["getter",1] ["getter",1] ["getter",1] ["getter",1] ["getter",1] [false,1] ["getter",1] ["getter",1]"
+a typed array="[4,undefined] [4,undefined] [4,undefined] [4,undefined] "empty" "empty" [4,undefined] [4,undefined] [4,"no x"] [4,4] [4,undefined] [true,undefined] [4,undefined] [4,undefined]"
+an object with no prototype="[0,undefined] [0,undefined] [0,undefined] [0,undefined] "empty" "empty" [0,undefined] [0,undefined] [0,"no x"] [0,0] [0,undefined] [true,undefined] [0,undefined] [0,undefined]"
+a String=["[3,undefined] [3,undefined] [3,undefined] [3,undefined] "empty" "empty" [3,undefined] [3,undefined] [3,"no x"] [3,3] [3,undefined] [true,undefined] [3,undefined] [3,undefined]","[0,undefined] [0,undefined] [0,undefined] [0,undefined] "empty" "empty" [0,undefined] [0,undefined] [0,"no x"] [0,0] [0,undefined] [true,undefined] [0,undefined] [0,undefined]","[47,undefined] [47,undefined] [47,undefi"]
+a String object="[4,undefined] [4,undefined] [4,undefined] [4,undefined] "empty" "empty" [4,undefined] [4,undefined] [4,"no x"] [4,4] [4,undefined] [true,undefined] [4,undefined] [4,undefined]"
+a Number=["[undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] "empty" "empty" [undefined,"x of numbers"] [undefined,"x of numbers"] ["no length","x of numbers"] [undefined,0] [undefined,"x of numbers"] [true,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"]","[undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] "empty" "empty" [undefined,"x of numbers"] [undefined,"x of numbers"] ["no length","x of numbers"] [undefined,0] [undefined,"x of numbers"] [true,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"]","[undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] "empty" "empty" [undefined,"x of numbers"] [undefined,"x of numbers"] ["no length","x of numbers"] [undefined,0] [undefined,"x of numbers"] [true,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"]","[undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] "empty" "empty" [undefined,"x of numbers"] [undefined,"x of numbers"] ["no length","x of numbers"] [undefined,0] [undefined,"x of numbers"] [true,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"]","[undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"] "empty" "empty" [undefined,"x of numbers"] [undefined,"x of numbers"] ["no length","x of numbers"] [undefined,0] [undefined,"x of numbers"] [true,"x of numbers"] [undefined,"x of numbers"] [undefined,"x of numbers"]"]
+a Boolean=["["length of booleans",undefined] ["length of booleans",undefined] ["length of booleans",undefined] ["length of booleans",undefined] "empty" "empty" ["length of booleans",undefined] ["length of booleans",undefined] ["length of booleans","no x"] ["length of booleans",0] ["length of booleans",undefined] [false,undefined] ["length of booleans",undefined] ["length of booleans",undefined]","["length of booleans",undefined] ["length of booleans",undefined] ["length of booleans",undefined] ["length of booleans",undefined] "empty" "empty" ["length of booleans",undefined] ["length of booleans",undefined] ["length of booleans","no x"] ["length of booleans",0] ["length of booleans",undefined] [false,undefined] ["length of booleans",undefined] ["length of booleans",undefined]"]
+a Symbol and a BigInt=["[undefined,undefined] [undefined,undefined] [undefined,undefined] [undefined,undefined] "empty" "empty" [undefined,undefined] [undefined,undefined] ["no length","no x"] [undefined,0] [undefined,undefined] [true,undefined] [undefined,undefined] [undefined,undefined]","[undefined,undefined] [undefined,undefined] [undefined,undefined] [undefined,undefined] "empty" "empty" [undefined,undefined] [undefined,undefined] ["no length","no x"] [undefined,0] [undefined,undefined] [true,undefined] [undefined,undefined] [undefined,undefined]","[undefined,undefined] [undefined,undefined] [undefined,undefined] [undefined,undefined] "empty" "empty" [undefined,undefined] [undefined,undefined] ["no length","no x"] [undefined,0] [undefined,undefined] [true,undefined] [undefined,undefined] [undefined,undefined]"]
+undefined="!TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError"
+null="!TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError !TypeError"
+a missing argument=[""!TypeError"","default object"]
+getters once and in order=[1,2,3,"a,c,default c,b"]
+a Proxy asked in order=[1,2,1,"b","get b,get a,get a,keys,desc b,get b"]
+the value is read once=[1,10,1]
+a value that refuses, with what came before it=["value","TypeError","second","TypeError"]
+the value of a destructuring assignment=[true,1,2,7,4]
+what a destructuring declaration leaves behind=[undefined,undefined,undefined,undefined,undefined,undefined,undefined,5,undefined,undefined,undefined,"last"]
+many turns=[373266,20000]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    // What a script that ends with such a declaration gives its host.
+    assert_eq!(
+        engine.evaluate("var { ended107 } = { ended107: 1 };", false),
+        Ok(Completion::Undefined)
+    );
+    assert_eq!(
+        engine.evaluate("for (var { looped107 } of [{ looped107: 1 }]) { }", false),
+        Ok(Completion::Undefined)
+    );
+}
