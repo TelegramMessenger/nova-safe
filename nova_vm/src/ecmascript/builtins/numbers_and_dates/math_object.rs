@@ -1374,37 +1374,23 @@ impl MathObject {
         Ok(Self::pow_numbers(agent, base, exponent, gc.into_nogc()))
     }
 
-    /// Math.pow of two Numbers.
+    /// Math.pow of two Numbers: what `base ** exponent` is. (It multiplied
+    /// two integers step by step where the result is past the safe
+    /// integers or the exponent negative, and said `1.0000000000000001e-23`
+    /// for `Math.pow(10, -23)`, which is `1e-23` by the operator.)
     fn pow_numbers<'gc>(
         agent: &mut Agent,
         base: Number<'gc>,
         exponent: Number<'gc>,
         gc: NoGcScope<'gc, '_>,
     ) -> Value<'gc> {
-        if let (Number::Integer(base), Number::Integer(exponent)) = (base, exponent) {
-            let base = base.into_i64();
-            let exponent = exponent.into_i64();
-            if let Ok(exponent) = u32::try_from(exponent) {
-                if let Some(result) = base.checked_pow(exponent) {
-                    if let Ok(result) = Number::try_from(result) {
-                        return result.into();
-                    } else {
-                        return Value::from_f64(agent, result as f64, gc);
-                    }
-                } else if let Some(result) = (base as i128).checked_pow(exponent) {
-                    return Value::from_f64(agent, result as f64, gc);
-                } else {
-                    return Value::from_f64(agent, (base as f64).powf(exponent as f64), gc);
-                }
-            } else if let Ok(exponent) = i32::try_from(exponent) {
-                let result = (base as f64).powi(exponent);
-                return Value::from_f64(agent, result, gc);
-            } else {
-                let result = (base as f64).powf(exponent as f64);
-                return Value::from_f64(agent, result, gc);
-            }
+        if let (Number::Integer(base), Number::Integer(exponent)) = (base, exponent)
+            && let Some(power) = Number::integer_power(base.into_i64(), exponent.into_i64())
+        {
+            return Value::Integer(power);
         }
-        Number::exponentiate(agent, base, exponent).bind(gc).into()
+        let power = Number::power_of_doubles(base.into_f64_(agent), exponent.into_f64_(agent));
+        Value::from_f64(agent, power, gc)
     }
 
     /// Math.max of arguments that are all Numbers, and there is one: None
