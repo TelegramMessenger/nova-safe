@@ -19689,3 +19689,79 @@ very many variables=[0,2,2,2,90,92,92,94,94,94,98,100,95,96,1,2,1,2,91,92,93,94,
         other => panic!("{other:?}"),
     }
 }
+
+/// `a || b`, `a && b` and `a ?? b` whose value is used are one instruction
+/// after `a`: a jump over `b` that leaves the value of `a` as the result
+/// where `a` decides the expression, and otherwise the result register
+/// emptied for `b`. Each operator for a left operand of every kind, with
+/// whether the right one was worked out; the values kept as they are
+/// (-0, NaN, the empty String, the same object); chains and
+/// parentheses; the order of what both operands do; a right operand that
+/// throws, in a list, a call and a sum, under `try` and `finally`; the
+/// left operand read once; the value as an argument, an element, an
+/// operand, a key, a default and a return; the operators in tests and
+/// loops; many turns; the logical assignments; optional chains; strict
+/// code; generators; the value of a statement. What is expected is what
+/// Node prints for the same script.
+#[test]
+fn a_logical_operator_whose_value_is_used_is_what_the_steps_give() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(logical_operators_for_their_values)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn logical_operators_for_their_values() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function fmt(v) { if (typeof v === 'bigint') return v + 'n'; if (typeof v === 'symbol') return 'symbol'; if (typeof v === 'string') return '"' + v + '"'; if (Object.is(v, -0)) return '-0'; if (Array.isArray(v)) return '[' + v.map(fmt).join(',') + ']'; if (typeof v === 'function') return 'function'; if (v && typeof v === 'object') return 'object'; return String(v); }
+function note(label, f) { try { say(label + '=' + fmt(f())); } catch (e) { say(label + '!' + e.name); } }
+var obj = { k: 1 }, arr = [], fn = function () {};
+function kinds() { return [true, false, undefined, null, 0, -0, NaN, 1, -1, 0.5, 5e-324, Infinity, 0.1 + 0.2, 0 / 0, 0 * -1, '', ' ', '0', 'false', 'a', 'a longer text than seven', 'x'.slice(1), 0n, 1n, -1n, 2n ** 64n, 10n - 10n, Symbol.iterator, obj, arr, fn, new Boolean(false), new Number(0), new String(''), Object(0n), { valueOf: function () { return false; } }]; }
+// The value of each operator for a left operand of every kind, and whether the right one was worked out.
+note('or', function () { return kinds().map(function (v) { var ran = 0; var r = v || (ran++, 'R'); return (Object.is(r, v) ? 'L' : r === 'R' ? 'R' : '?') + ran; }).join(' '); });
+note('and', function () { return kinds().map(function (v) { var ran = 0; var r = v && (ran++, 'R'); return (Object.is(r, v) ? 'L' : r === 'R' ? 'R' : '?') + ran; }).join(' '); });
+note('coalesce', function () { return kinds().map(function (v) { var ran = 0; var r = v ?? (ran++, 'R'); return (Object.is(r, v) ? 'L' : r === 'R' ? 'R' : '?') + ran; }).join(' '); });
+note('values kept as they are', function () { return [0 || -0, -0 || 0, NaN || -0, '' || NaN, null || undefined, undefined || null, 0 && 1, -0 && 1, NaN && 1, '' && 1, null && 1, undefined && 1, 0n && 1, 1 && -0, 'a' && '', 1 && null, 0 ?? 1, -0 ?? 1, NaN ?? 1, '' ?? 1, false ?? 1, null ?? undefined, undefined ?? null, null ?? -0, (obj || 1) === obj, (obj && arr) === arr, (null ?? fn) === fn, (arr ?? 1) === arr, typeof (0 || 0n), typeof (1 && Symbol()), 1 / (0 || -0), 1 / (-0 ?? 5)]; });
+note('chains', function () { var a = 0, b = '', c = 'c', d = null, e = 5, u; return [a || b || c, a || b || d, a || e || c, e || a || c, a && b && c, e && c && a, e && c && d, c && e && obj.k, d ?? u ?? c, u ?? d ?? null, a ?? d ?? c, d ?? a ?? c, (a || e) && c, a || (e && c), (a && e) || c, a && (e || c), (d ?? a) || c, d ?? (a || c), (a || d) ?? c, a || b || c || d || e, e && c && obj && arr && a, u ?? d ?? u ?? d ?? e, (a || b) === '', (e && c) === 'c', !(a || b), !(e && c), -(a || e), typeof (d ?? u)]; });
+note('what the right operand does', function () { var log = []; function mark(name, v) { log.push(name); return v; } var r = [mark('a', 0) || mark('b', 1), mark('c', 1) || mark('d', 2), mark('e', 0) && mark('f', 1), mark('g', 1) && mark('h', 2), mark('i', null) ?? mark('j', 1), mark('k', 0) ?? mark('l', 2), mark('m', 0) || mark('n', '') || mark('o', 3) || mark('p', 4), mark('q', 1) && mark('r', 0) && mark('s', 3), mark('t', null) ?? mark('u', undefined) ?? mark('v', 0) ?? mark('w', 1)]; return r.concat([log.join('')]); });
+note('what throws', function () { function thrower() { throw new RangeError('t'); } var r = [], n = 0; r.push(1 || thrower(), 0 && thrower(), 5 ?? thrower()); try { r.push(0 || thrower()); } catch (e) { r.push(e.name); } try { r.push(1 && thrower()); } catch (e) { r.push(e.name); } try { r.push(null ?? thrower()); } catch (e) { r.push(e.name); } try { r.push([1, 0 || thrower(), 3]); } catch (e) { r.push('in a list'); } try { r.push(Math.max(1, 2, 0 || thrower(), 4)); } catch (e) { r.push('in a call'); } try { r.push(1 + (2 * (null ?? thrower()))); } catch (e) { r.push('in a sum'); } function f() { try { return 0 || thrower(); } catch (e) { return 'caught'; } finally { n++; } } function g() { try { return 1 || thrower(); } finally { n += 10; } } r.push(f(), g(), n); var o = { get t() { throw new SyntaxError('g'); } }; try { r.push(o.t || 1); } catch (e) { r.push(e.name); } try { r.push(notDeclaredAnywhere || 1); } catch (e) { r.push(e.name); } return r; });
+note('the left operand once', function () { var n = 0, calls = 0, o = { get g() { calls++; return 0; }, get h() { calls++; return 'h'; } }; var r = [(n++, 0) || n, (n++, 1) && n, (n++, null) ?? n, o.g || 'x', o.h || 'x', o.g && 'x', o.h && 'x', o.g ?? 'x', n, calls]; var i = 0; r.push(i++ || i++, i, i++ && i++, i, --i ?? 9, i); return r; });
+note('where the value goes', function () { function three(a, b, c) { return [a, b, c]; } function C(v) { this.v = v; } var a = 0, b = 'b', n = null, o = { k: function (v) { return 'k' + v; }, b: 'prop' }; var x = a || b, y = b && a, z = n ?? b; var s = 0; s += a || 1; s += b && 2; s -= n ?? 3; var t = `${a || 'A'}${b && 'B'}${n ?? 'N'}`; return [x, y, z, s, t, three(a || 1, b && 2, n ?? 3), [1, a || 2, 3, b && 4, n ?? 5].join(), 1 + (a || 2) * (b && 3) - (n ?? 4), o[a || 'k'](b && 1), o[n ?? 'b'], new C(a || 7).v, { [a || 'key']: b && 'value' }.key, (a || b).length, (b && o).b, (n ?? o).k(2), (function () { return a || b; })(), (function () { return b && a; })(), (function (p = a || 'dflt', q = p && 'second') { return p + q; })(), a || b ? 'yes' : 'no', (a || b) === 'b' ? 1 : 2, [a || b, b && a].length, void (a || b), typeof (b && fn)]; });
+note('in tests and loops', function () { var r = '', a = 0, b = 2, turns = 0; if (a || b) r += 'a'; if (a && b) r += 'b'; if ((a || b) === 2) r += 'c'; if ((a && b) === 0) r += 'd'; if ((null ?? a) === 0) r += 'e'; if (!(a || 0)) r += 'f'; var list = [3, 0, 2, null, 1], i = 0, v; while ((v = list[i] || -1) !== undefined) { r += v; i = i + 1; turns = turns + 1; if (turns > 4) break; } for (var j = 0; (list[j] ?? 'end') !== 'end'; j = j + 1) { r += j; turns = turns + 1; if (turns > 20) break; } do { b = b - 1; r += (b && 'n') || 'z'; turns = turns + 1; if (turns > 30) break; } while (b || a); return r + turns; });
+note('many times', function () { var s = 0, t = 0, u = 0, w = '', objs = [null, obj, undefined, arr, 0, 'x']; for (var i = 0; i < 4000; i++) { s += (i & 1) || 7; t += (i & 3) && i; u += (i % 5 ? null : i) ?? -1; var o = objs[i % 6] || fn; w = (o === fn ? 'f' : 'o') + (w && w.length < 5 ? w : ''); } return [s, t, u, w]; });
+note('assignments that are logical', function () { var a = 0, b = 1, n = null, o = { p: 0, q: 'q', r: undefined }, log = []; function mark(v) { log.push(v); return v; } a ||= mark(5); b ||= mark(6); a &&= mark(7); n ??= mark(8); n ??= mark(9); o.p ||= mark('p'); o.q &&= mark('Q'); o.r ??= mark('r'); o.r ??= mark('no'); var x = (a ||= 1) + (b &&= 2); return [a, b, n, o.p, o.q, o.r, x, log.join()]; });
+note('with other short forms', function () { var o = { a: { b: 0 }, n: null }, u; return [o.a?.b ?? 'd', o.n?.b ?? 'd', u?.b || 'e', o.a?.b || 'f', o?.a && 'g', u?.[0] ?? o.a.b ?? 'h', (o.n ?? o.a).b, (u || o).n, o.a.b || o.n || u || 'last', typeof (u?.x ?? u)]; });
+note('strict', function () { 'use strict'; var a = 0, b = 'b', n; return [a || b, b && a, n ?? b, a || n, n && a, a ?? n, (a || b) + (b && 1) + (n ?? 2)]; });
+note('generators', function () { function* g(a, b) { var got = (yield a || b) || 'none'; yield got && 'sent'; yield (yield null) ?? 'empty'; return a && b; } var it = g(0, 'B'), r = [it.next().value, it.next().value, it.next().value, it.next(undefined).value, it.next().value]; var it2 = g(1, 0); r.push(it2.next().value, it2.next('s').value, it2.next().value, it2.next(0).value, it2.next().value); return r; });
+note('the value of a statement', function () { return [eval('0 || 5'), eval("'x' && 0"), eval("null ?? 'd'"), eval("'first'; { let q = 0; q || 7; }"), eval("'first'; { let q = 3; q && 0; }"), eval("'first'; { let q = null; q ?? -0; }"), eval("'first'; { let q = 1; if (q || 0) { } }"), eval("'first'; { let q = 0; q || undefined; }"), eval("'first'; { let q = 5; q && q; }")]; });
+out.join("\n")"##;
+    let expected = r##"or="L0 R1 R1 R1 R1 R1 R1 L0 L0 L0 L0 L0 L0 R1 R1 R1 L0 L0 L0 L0 L0 R1 R1 L0 L0 L0 R1 L0 L0 L0 L0 L0 L0 L0 L0 L0"
+and="R1 L0 L0 L0 L0 L0 L0 R1 R1 R1 R1 R1 R1 L0 L0 L0 R1 R1 R1 R1 R1 L0 L0 R1 R1 R1 L0 R1 R1 R1 R1 R1 R1 R1 R1 R1"
+coalesce="L0 L0 R1 R1 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0 L0"
+values kept as they are=[-0,0,-0,NaN,undefined,null,0,-0,NaN,"",null,undefined,0n,-0,"",null,0,-0,NaN,"",false,undefined,null,-0,true,true,true,true,"bigint","symbol",-Infinity,-Infinity]
+chains=["c",null,5,5,0,0,null,1,"c",null,0,0,"c","c","c",0,"c","c","c","c",0,5,true,true,true,false,-5,"undefined"]
+what the right operand does=[1,1,0,2,1,0,3,0,0,"abceghijkmnoqrtuv"]
+what throws=[1,0,5,"RangeError","RangeError","RangeError","in a list","in a call","in a sum","caught",1,11,"SyntaxError","ReferenceError"]
+the left operand once=[1,2,3,"x","h",0,"x",0,3,5,1,2,3,4,3,3]
+where the value goes=["b",0,"b",0,"ABN",[1,2,3],"1,2,3,4,5",3,"k1","prop",7,"value",1,"prop","k2","b",0,"dfltsecond","yes",1,2,undefined,"function"]
+in tests and loops="acdef3-12-11012nz10"
+many times=[16000,6000000,1594800,"ofofo"]
+assignments that are logical=[7,2,8,"p","Q","r",9,"5,7,8,p,Q,r"]
+with other short forms=[0,"d","e","f","g",0,0,null,"last","undefined"]
+strict=["b",0,"b",undefined,undefined,0,"b12"]
+generators=["B","sent",null,"empty",0,1,"sent",null,0,0]
+the value of a statement=[5,0,"d",7,0,-0,undefined,undefined,5]"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}

@@ -2212,4 +2212,54 @@ mod test {
             );
         }
     }
+
+    /// An Agent that prints what it executes reads every instruction with
+    /// care and prints it with its arguments before the loop of
+    /// instructions runs it as it runs any other. The same script in such
+    /// an Agent and in one that prints nothing gives the same, which is
+    /// what Node gives for it: `typeof` compared with the name of a type,
+    /// the operators of one operand and a numeric literal with a sign, a
+    /// step of a local whose value is used, and the logical operators
+    /// whose value is used, on values of every kind. Each of those is an
+    /// instruction, or an argument of one, that is printed its own way.
+    #[test]
+    fn an_agent_that_prints_what_it_executes_gives_the_same() {
+        fn run(print_internals: bool, text: &'static str) -> std::string::String {
+            let (mut gc, mut scope) = GcScope::create_root();
+            let mut gc = GcScope::new(&mut gc, &mut scope);
+            let mut agent = Agent::new(
+                AgentOptions {
+                    print_internals,
+                    ..AgentOptions::default()
+                },
+                &DefaultHostHooks,
+            );
+            initialize_default_realm(&mut agent, gc.reborrow());
+            let source_text = String::from_static_str(&mut agent, text, gc.nogc());
+            let value = agent
+                .run_script(source_text.unbind(), gc.reborrow())
+                .unwrap()
+                .unbind();
+            let Ok(text) = String::try_from(value) else {
+                panic!("the script ends with a String");
+            };
+            text.to_string_lossy_(&agent).into_owned()
+        }
+        let script = r#"
+            function t(v) { var r = ''; if (typeof v === 'number') r += 'n'; if (typeof v !== 'string') r += 's'; if (typeof v == 'object') r += 'o'; if (typeof v != 'function') r += 'f'; return r; }
+            function u(v) { return [-v, ~v, +v, - -v, ~~v, 1 / -v].join(); }
+            function s(v) { var q = v, a = q++, b = ++q, c = q--, d = --q; return [a, b, c, d, q].join(); }
+            function l(v, w) { return [v || w, v && w, v ?? w].map(String).join(); }
+            function k(v) { var n = 0; var r = v || (n++, 'r'); r = v && (n++, 'r'); r = v ?? (n++, 'r'); return n + String(r); }
+            var vals = [0, 1, -0, 2.5, 9007199254740991, '7', '', 'x', null, undefined, true, false, NaN], out = [];
+            for (var i = 0; i < vals.length; i++) { var v = vals[i]; out.push(t(v) + '|' + u(v) + '|' + s(v) + '|' + l(v, 'R') + '|' + k(v)); }
+            out.push(t(function () {}) + t({}) + t(Symbol.iterator) + t(1n) + (typeof missingName === 'undefined') + (typeof missingName !== 'undefined'));
+            out.push([-1n, ~1n, (function () { var b = 5n; return [b++, ++b, b]; })()].join());
+            out.push((function () { try { return +1n; } catch (e) { return e.name; } })() + (function () { var y = Symbol(); try { return y++; } catch (e) { return e.name; } })());
+            out.join(';');
+        "#;
+        let expected = "nsf|0,-1,0,0,0,-Infinity|0,2,2,0,0|R,0,0|10;nsf|-1,-2,1,1,1,-1|1,3,3,1,1|1,R,1|11;nsf|0,-1,0,0,0,Infinity|0,2,2,0,0|R,0,0|10;nsf|-2.5,-3,2.5,2.5,2,-0.4|2.5,4.5,4.5,2.5,2.5|2.5,R,2.5|12.5;nsf|-9007199254740991,0,9007199254740991,9007199254740991,-1,-1.1102230246251568e-16|9007199254740991,9007199254740992,9007199254740992,9007199254740990,9007199254740990|9007199254740991,R,9007199254740991|19007199254740991;f|-7,-8,7,7,7,-0.14285714285714285|7,9,9,7,7|7,R,7|17;f|0,-1,0,0,0,-Infinity|0,2,2,0,0|R,,|1;f|NaN,-1,NaN,NaN,0,NaN|NaN,NaN,NaN,NaN,NaN|x,R,x|1x;sof|0,-1,0,0,0,-Infinity|0,2,2,0,0|R,null,R|2r;sf|NaN,-1,NaN,NaN,0,NaN|NaN,NaN,NaN,NaN,NaN|R,undefined,R|2r;sf|-1,-2,1,1,1,-1|1,3,3,1,1|true,R,true|1true;sf|0,-1,0,0,0,-Infinity|0,2,2,0,0|R,false,false|1false;nsf|NaN,-1,NaN,NaN,0,NaN|NaN,NaN,NaN,NaN,NaN|R,NaN,NaN|1NaN;ssofsfsftruefalse;-1,-2,5,7,7;TypeErrorTypeError";
+        assert_eq!(run(false, script), expected, "printing nothing");
+        assert_eq!(run(true, script), expected, "printing what it executes");
+    }
 }
