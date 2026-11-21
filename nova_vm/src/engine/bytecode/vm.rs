@@ -3788,7 +3788,7 @@ impl Vm {
                         .as_ref()
                         .and_then(Reference::named_property_base)
                 };
-                let Some(result) = direct.run(agent, this, &vm.stack[first..], gc) else {
+                let Some(result) = direct.run(agent, function, this, &vm.stack[first..], gc) else {
                     return Plain::No;
                 };
                 let result = result.unbind();

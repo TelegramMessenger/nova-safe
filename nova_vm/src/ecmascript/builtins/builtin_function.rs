@@ -523,20 +523,36 @@ impl DirectBuiltin {
         )
     }
 
-    /// What a call of the function with `this` (where the function takes
-    /// it) and `arguments` returns, with what the call does done, where it
-    /// needs nothing but them; None where the call is to be made, with
-    /// nothing done.
+    /// Whether what the function does depends on the realm it runs in. A
+    /// call of a function runs it in the function's realm, and no call is
+    /// made here: such a function is run only where its realm is the
+    /// running one ([`DirectBuiltin::run`]). `push` asks the running realm
+    /// for %Array.prototype% and %Object.prototype%, which an Array with
+    /// no properties of its own inherits from
+    /// ([`Array::appends_plainly`](crate::ecmascript::Array)): the `push`
+    /// of another realm, called on an Array of that realm, found none of
+    /// what that realm's prototypes have under an index, a setter among
+    /// it. A function that asks the realm for anything belongs here.
+    #[inline(always)]
+    const fn asks_realm(self) -> bool {
+        matches!(self, Self::ArrayPush)
+    }
+
+    /// What a call of `function`, which is this one, with `this` (where
+    /// the function takes it) and `arguments` returns, with what the call
+    /// does done, where it needs nothing but them; None where the call is
+    /// to be made, with nothing done.
     #[inline]
     pub(crate) fn run<'gc>(
         self,
         agent: &mut Agent,
+        function: BuiltinFunction<'gc>,
         this: Option<Value<'gc>>,
         arguments: &[Value<'gc>],
         gc: NoGcScope<'gc, '_>,
     ) -> Option<Value<'gc>> {
         if self != Self::FunctionCall {
-            return self.run_own(agent, this, arguments, gc);
+            return self.run_in_realm_of(agent, function, this, arguments, gc);
         }
         // The function is the this value of `call`, and its this value the
         // first argument.
@@ -551,7 +567,25 @@ impl DirectBuiltin {
             Some((this, arguments)) => (*this, arguments),
             None => (Value::Undefined, arguments),
         };
-        called.run_own(agent, Some(this), arguments, gc)
+        // `call` of whichever realm calls the function in the function's.
+        called.run_in_realm_of(agent, function, Some(this), arguments, gc)
+    }
+
+    /// [`DirectBuiltin::run_own`] where running `function` here is running
+    /// it in its realm.
+    #[inline(always)]
+    fn run_in_realm_of<'gc>(
+        self,
+        agent: &mut Agent,
+        function: BuiltinFunction<'gc>,
+        this: Option<Value<'gc>>,
+        arguments: &[Value<'gc>],
+        gc: NoGcScope<'gc, '_>,
+    ) -> Option<Value<'gc>> {
+        if self.asks_realm() && function.get(agent).realm != agent.current_realm(gc) {
+            return None;
+        }
+        self.run_own(agent, this, arguments, gc)
     }
 
     /// [`DirectBuiltin::run`] of a function that is not
@@ -1201,5 +1235,86 @@ impl HeapMarkAndSweep for BuiltinFunctionHeapData<'static> {
         realm.sweep_values(compactions);
         initial_name.sweep_values(compactions);
         object_index.sweep_values(compactions);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        ecmascript::{
+            Agent, AgentOptions, DefaultHostHooks, Object, PropertyKey, String,
+            create_data_property_or_throw, initialize_default_realm,
+        },
+        engine::{Bindable, GcScope},
+    };
+
+    /// Runs `source` in a realm whose global object has the global object
+    /// of a second realm as `foreign`, and returns its value, a string.
+    fn with_a_second_realm(source: &'static str) -> std::string::String {
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        let none: Option<for<'a> fn(&mut Agent, GcScope<'a, '_>) -> Object<'a>> = None;
+        let initialize: Option<fn(&mut Agent, Object, GcScope)> = None;
+        let foreign = agent
+            .create_realm(none, none, initialize, gc.reborrow())
+            .unbind();
+        let foreign = foreign.global_object(&mut agent).unbind();
+        let global = agent.current_global_object(gc.nogc()).unbind();
+        let key = PropertyKey::from_static_str(&mut agent, "foreign", gc.nogc()).unbind();
+        create_data_property_or_throw(&mut agent, global, key, foreign.into(), gc.reborrow())
+            .unwrap();
+        let source_text = String::from_static_str(&mut agent, source, gc.nogc());
+        let result = agent
+            .run_script(source_text.unbind(), gc.reborrow())
+            .unwrap_or_else(|_| panic!("the script throws: {source}"));
+        let Ok(result) = String::try_from(result) else {
+            panic!("the value of the script is no string: {source}");
+        };
+        result.to_string_lossy(&agent).into_owned()
+    }
+
+    /// `push` of another realm, called here on an Array of that realm, is
+    /// run in that realm: an Array with no properties of its own inherits
+    /// from the %Array.prototype% of the realm that runs, and a setter that
+    /// the other realm's has under an index takes the element. Run in
+    /// place of the call it asked this realm's prototypes, found none, and
+    /// made the element the Array's own. By `call` of either realm, with
+    /// the setter on %Object.prototype%, and a property that cannot be
+    /// written, whose TypeError is the other realm's.
+    #[test]
+    fn a_function_of_another_realm_is_run_in_its_realm() {
+        const SCRIPT: &str = r#"
+var seen = [];
+function show(name, f) { var r; try { r = f(); } catch (e) { r = "threw " + (e && e.name); } seen.push(name + ": " + JSON.stringify(r)); }
+function setterOn(object) { var box = { observed: 0 }; Object.defineProperty(object, "0", { configurable: true, set: function (value) { box.observed = value; } }); return box; }
+function fresh() { delete foreign.Array.prototype[0]; delete foreign.Object.prototype[0]; return foreign.eval("[]"); }
+show("push.call", function () { var array = fresh(), box = setterOn(foreign.Array.prototype); foreign.Array.prototype.push.call(array, 7); return [box.observed, array.length, Object.hasOwn(array, "0")]; });
+show("push.call again", function () { var out = []; for (var i = 0; i < 4; i++) { var array = fresh(), box = setterOn(foreign.Array.prototype); foreign.Array.prototype.push.call(array, i + 1); out.push(box.observed, array.length, Object.hasOwn(array, "0")); } return out; });
+show("call of the other realm", function () { var array = fresh(), box = setterOn(foreign.Array.prototype); foreign.Function.prototype.call.call(foreign.Array.prototype.push, array, 7); return [box.observed, array.length, Object.hasOwn(array, "0")]; });
+show("call of this realm", function () { var array = fresh(), box = setterOn(foreign.Array.prototype); Function.prototype.call.call(foreign.Array.prototype.push, array, 7); return [box.observed, array.length, Object.hasOwn(array, "0")]; });
+show("setter of Object.prototype", function () { var array = fresh(), box = setterOn(foreign.Object.prototype); foreign.Array.prototype.push.call(array, 7); return [box.observed, array.length, Object.hasOwn(array, "0")]; });
+show("no setter", function () { var array = fresh(); array = foreign.eval("[1]"); var n = foreign.Array.prototype.push.call(array, 7); return [n, array.length, array[1], Object.hasOwn(array, "1")]; });
+show("read-only", function () { var array = fresh(); Object.defineProperty(foreign.Array.prototype, "0", { configurable: true, value: "ro", writable: false }); var threw = null; try { foreign.Array.prototype.push.call(array, 7); } catch (e) { threw = e instanceof foreign.TypeError ? "their TypeError" : e instanceof TypeError ? "our TypeError" : String(e); } return [threw, array.length, Object.hasOwn(array, "0")]; });
+show("this realm's push, this realm's setter", function () { var array = [], box = setterOn(Array.prototype); try { array.push(7); return [box.observed, array.length, Object.hasOwn(array, "0")]; } finally { delete Array.prototype[0]; } });
+show("this realm's push", function () { var array = [1]; return [array.push(7), array.length, array[1], Object.hasOwn(array, "1")]; });
+show("their other functions", function () { fresh(); var m = new foreign.Map(); foreign.Map.prototype.set.call(m, 1, 2); return [foreign.Math.abs(-3), foreign.String.prototype.charCodeAt.call("a", 0), foreign.Number.isInteger(2), foreign.String(5), foreign.Array.isArray([]), m.get(1), foreign.Array.prototype.pop.call(foreign.eval("[1, 2]"))]; });
+seen.join("\n")
+"#;
+        let expected = [
+            "push.call: [7,1,false]",
+            "push.call again: [1,1,false,2,1,false,3,1,false,4,1,false]",
+            "call of the other realm: [7,1,false]",
+            "call of this realm: [7,1,false]",
+            "setter of Object.prototype: [7,1,false]",
+            "no setter: [2,2,7,true]",
+            "read-only: [\"their TypeError\",0,false]",
+            "this realm's push, this realm's setter: [7,1,false]",
+            "this realm's push: [2,2,7,true]",
+            "their other functions: [3,97,true,\"5\",true,2,2]",
+        ]
+        .join("\n");
+        assert_eq!(with_a_second_realm(SCRIPT), expected);
     }
 }
