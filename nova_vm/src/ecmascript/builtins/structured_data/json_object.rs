@@ -844,69 +844,103 @@ fn quote_json_string(agent: &Agent, product: &mut Wtf8Buf, value: String) {
     //    0x0022 (QUOTATION MARK).
     product.push(CodePoint::from_char('"'));
     // 2. For each code point C of StringToCodePoints(value), do
-    for c in value.as_wtf8_(agent).code_points() {
-        match c.to_u32() {
-            // a. If C is listed in the “Code Point” column of Table 81, then
-            // i. Set product to the string-concatenation of product and the
-            //    escape sequence for C as specified in the “Escape Sequence”
-            //    column of the corresponding row.
-
-            // Table 81. JSON Single Character Escape Sequences
-            // +------------+------------------------+-----------------+
-            // | Code Point | Unicode Character Name | Escape Sequence |
-            // +------------+------------------------+-----------------+
-            // | U+0008     | Backspace              | \b              |
-            0x0008 => product.push_str("\\b"),
-            // | U+0009     | CHARACTER TABULATION   | \t              |
-            0x0009 => product.push_str("\\t"),
-            // | U+000A     | LINE FEED (LF)         | \n              |
-            0x000A => product.push_str("\\n"),
-            // | U+000C     | FORM FEED (FF)         | \f              |
-            0x000C => product.push_str("\\f"),
-            // | U+000D     | CARRIAGE RETURN (CR)   | \r              |
-            0x000D => product.push_str("\\r"),
-            // | U+0022     | QUOTATION MARK         | \"              |
-            0x0022 => product.push_str("\\\""),
-            // | U+005C     | REVERSE SOLIDUS        | \\              |
-            0x005C => product.push_str("\\\\"),
-            // +------------+------------------------+-----------------+
-            // b. Else if C has a numeric value less than 0x0020 (SPACE) or C
-            //    has the same numeric value as a leading surrogate or trailing
-            //    surrogate, then
-            _ if c.to_u32() < u32::from('\u{0020}') || c.to_char().is_none() => {
-                // i. Let unit be the code unit whose numeric value is the
-                //    numeric value of C.
-                let unit = c.to_u32();
-                // ii. Set product to the string-concatenation of product and
-                //     UnicodeEscape(unit).
-                debug_assert!(unit <= 0xFFFF);
-                let unit = unit as u16;
-                let mut buf = [0u8; 6];
-
-                fn u16_to_char_code(v: u16) -> u8 {
-                    if v < 10 { v as u8 + 48 } else { v as u8 + 87 }
-                }
-
-                buf[0] = b'\\';
-                buf[1] = b'u';
-                buf[5] = u16_to_char_code(unit % 16);
-                buf[4] = u16_to_char_code((unit >> 4) % 16);
-                buf[3] = u16_to_char_code((unit >> 8) % 16);
-                buf[2] = u16_to_char_code(unit >> 12);
-                let byte_buf = str::from_utf8(&buf).expect("the buffer holds only ASCII");
-
-                product.push_str(byte_buf);
-            }
-            // c. Else,
-            // i. Set product to the string-concatenation of product and
-            //    UTF16EncodeCodePoint(C).
-            _ => product.push(c),
+    //
+    // The code points that are not escaped are copied as the bytes they
+    // are, a stretch of them at once: every byte goes as it is but those
+    // of the code points that Table 81 and step b escape (below 0x20, the
+    // quotation mark, the reverse solidus, and the surrogates, whose first
+    // byte is 0xED), and each of those is looked at as the code point it
+    // begins, which the steps then escape or not. One code point at a time,
+    // each taken apart and put together again, was a quarter of
+    // serializing a list of small objects.
+    let text = value.as_wtf8_(agent);
+    let bytes = text.as_bytes();
+    let (mut plain_from, mut at) = (0, 0);
+    while let Some(&byte) = bytes.get(at) {
+        if byte >= 0x20 && byte != b'"' && byte != b'\\' && byte != 0xED {
+            at += 1;
+            continue;
         }
+        if plain_from < at {
+            product.push_wtf8(text.slice(plain_from, at));
+        }
+        // An ASCII byte is a code point, and 0xED begins one of three
+        // bytes (U+D000 to U+DFFF).
+        let Some(c) = text.slice_from(at).code_points().next() else {
+            break;
+        };
+        quote_json_code_point(product, c);
+        at += if byte == 0xED { 3 } else { 1 };
+        plain_from = at;
+    }
+    if plain_from < bytes.len() {
+        product.push_wtf8(text.slice_from(plain_from));
     }
     // 3. Set product to the string-concatenation of product and the code unit
     //    0x0022 (QUOTATION MARK).
     product.push(CodePoint::from_char('"'));
     // 4. Return product.
+}
+
+/// Steps 2.a to 2.c of QuoteJSONString for one code point.
+fn quote_json_code_point(product: &mut Wtf8Buf, c: CodePoint) {
+    match c.to_u32() {
+        // a. If C is listed in the “Code Point” column of Table 81, then
+        // i. Set product to the string-concatenation of product and the
+        //    escape sequence for C as specified in the “Escape Sequence”
+        //    column of the corresponding row.
+
+        // Table 81. JSON Single Character Escape Sequences
+        // +------------+------------------------+-----------------+
+        // | Code Point | Unicode Character Name | Escape Sequence |
+        // +------------+------------------------+-----------------+
+        // | U+0008     | Backspace              | \b              |
+        0x0008 => product.push_str("\\b"),
+        // | U+0009     | CHARACTER TABULATION   | \t              |
+        0x0009 => product.push_str("\\t"),
+        // | U+000A     | LINE FEED (LF)         | \n              |
+        0x000A => product.push_str("\\n"),
+        // | U+000C     | FORM FEED (FF)         | \f              |
+        0x000C => product.push_str("\\f"),
+        // | U+000D     | CARRIAGE RETURN (CR)   | \r              |
+        0x000D => product.push_str("\\r"),
+        // | U+0022     | QUOTATION MARK         | \"              |
+        0x0022 => product.push_str("\\\""),
+        // | U+005C     | REVERSE SOLIDUS        | \\              |
+        0x005C => product.push_str("\\\\"),
+        // +------------+------------------------+-----------------+
+        // b. Else if C has a numeric value less than 0x0020 (SPACE) or C
+        //    has the same numeric value as a leading surrogate or trailing
+        //    surrogate, then
+        _ if c.to_u32() < u32::from('\u{0020}') || c.to_char().is_none() => {
+            // i. Let unit be the code unit whose numeric value is the
+            //    numeric value of C.
+            let unit = c.to_u32();
+            // ii. Set product to the string-concatenation of product and
+            //     UnicodeEscape(unit).
+            debug_assert!(unit <= 0xFFFF);
+            let unit = unit as u16;
+            let mut buf = [0u8; 6];
+
+            fn u16_to_char_code(v: u16) -> u8 {
+                if v < 10 { v as u8 + 48 } else { v as u8 + 87 }
+            }
+
+            buf[0] = b'\\';
+            buf[1] = b'u';
+            buf[5] = u16_to_char_code(unit % 16);
+            buf[4] = u16_to_char_code((unit >> 4) % 16);
+            buf[3] = u16_to_char_code((unit >> 8) % 16);
+            buf[2] = u16_to_char_code(unit >> 12);
+            let byte_buf = str::from_utf8(&buf).expect("the buffer holds only ASCII");
+
+            product.push_str(byte_buf);
+        }
+        // c. Else,
+        // i. Set product to the string-concatenation of product and
+        //    UTF16EncodeCodePoint(C).
+        _ => product.push(c),
+    }
 }
 
 fn quote_property_key(agent: &Agent, product: &mut Wtf8Buf, key: PropertyKey) {
