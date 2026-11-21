@@ -19198,3 +19198,212 @@ last undefinedundefinedundefinedundefinedundefinedfalsefalse 0 1,2,32"##;
         other => panic!("{other:?}"),
     }
 }
+
+/// `typeof v === "number"` and the jump on it are one instruction that asks
+/// the value for its type and makes no String, for `===`, `!==`, `==` and
+/// `!=` with the name of a type on the right; what Typeof takes as a
+/// Reference (a name that may not be bound, a property, a getter) goes the
+/// general way, where the operator is what it was. Every type by every
+/// operator on values of every kind, each line with what the operator
+/// itself gives; the tests of `if`, the conditional operator, `&&` and
+/// `||`, `while`, `do`-`while` and `for`; Strings that name no type, and
+/// operands the other way round; names not bound, globals, properties,
+/// getters that count and that throw, a name before its declaration, a
+/// closure's names, `this` and `arguments`, strict code. What is expected
+/// is what Node prints for the same script.
+#[test]
+fn typeof_compared_with_the_name_of_a_type_is_the_type_of_the_value() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(types_compared_with_their_names)
+        .expect("thread")
+        .join()
+        .expect("checks");
+}
+
+fn types_compared_with_their_names() {
+    let script = r##"var out = [];
+function say(s) { out.push(String(s)); }
+function note(label, f) { try { say(label + '=' + String(f())); } catch (e) { say(label + '!' + e.name); } }
+function t_undefined_seq(v) { if (typeof v === "undefined") return 1; return 0; }
+function t_undefined_sne(v) { if (typeof v !== "undefined") return 1; return 0; }
+function t_undefined_leq(v) { if (typeof v == "undefined") return 1; return 0; }
+function t_undefined_lne(v) { if (typeof v != "undefined") return 1; return 0; }
+function t_boolean_seq(v) { if (typeof v === "boolean") return 1; return 0; }
+function t_boolean_sne(v) { if (typeof v !== "boolean") return 1; return 0; }
+function t_boolean_leq(v) { if (typeof v == "boolean") return 1; return 0; }
+function t_boolean_lne(v) { if (typeof v != "boolean") return 1; return 0; }
+function t_string_seq(v) { if (typeof v === "string") return 1; return 0; }
+function t_string_sne(v) { if (typeof v !== "string") return 1; return 0; }
+function t_string_leq(v) { if (typeof v == "string") return 1; return 0; }
+function t_string_lne(v) { if (typeof v != "string") return 1; return 0; }
+function t_symbol_seq(v) { if (typeof v === "symbol") return 1; return 0; }
+function t_symbol_sne(v) { if (typeof v !== "symbol") return 1; return 0; }
+function t_symbol_leq(v) { if (typeof v == "symbol") return 1; return 0; }
+function t_symbol_lne(v) { if (typeof v != "symbol") return 1; return 0; }
+function t_number_seq(v) { if (typeof v === "number") return 1; return 0; }
+function t_number_sne(v) { if (typeof v !== "number") return 1; return 0; }
+function t_number_leq(v) { if (typeof v == "number") return 1; return 0; }
+function t_number_lne(v) { if (typeof v != "number") return 1; return 0; }
+function t_bigint_seq(v) { if (typeof v === "bigint") return 1; return 0; }
+function t_bigint_sne(v) { if (typeof v !== "bigint") return 1; return 0; }
+function t_bigint_leq(v) { if (typeof v == "bigint") return 1; return 0; }
+function t_bigint_lne(v) { if (typeof v != "bigint") return 1; return 0; }
+function t_object_seq(v) { if (typeof v === "object") return 1; return 0; }
+function t_object_sne(v) { if (typeof v !== "object") return 1; return 0; }
+function t_object_leq(v) { if (typeof v == "object") return 1; return 0; }
+function t_object_lne(v) { if (typeof v != "object") return 1; return 0; }
+function t_function_seq(v) { if (typeof v === "function") return 1; return 0; }
+function t_function_sne(v) { if (typeof v !== "function") return 1; return 0; }
+function t_function_leq(v) { if (typeof v == "function") return 1; return 0; }
+function t_function_lne(v) { if (typeof v != "function") return 1; return 0; }
+var tests = [t_undefined_seq, t_undefined_sne, t_undefined_leq, t_undefined_lne, t_boolean_seq, t_boolean_sne, t_boolean_leq, t_boolean_lne, t_string_seq, t_string_sne, t_string_leq, t_string_lne, t_symbol_seq, t_symbol_sne, t_symbol_leq, t_symbol_lne, t_number_seq, t_number_sne, t_number_leq, t_number_lne, t_bigint_seq, t_bigint_sne, t_bigint_leq, t_bigint_lne, t_object_seq, t_object_sne, t_object_leq, t_object_lne, t_function_seq, t_function_sne, t_function_leq, t_function_lne];
+function Klass() {}
+class Cls { m() {} static s() {} }
+function* gen() {}
+async function asy() {}
+var values = [undefined, null, true, false, 0, -0, 1, -1, 1.5, 0.1 + 0.2, 1e300, NaN, Infinity, 4294967296, 9007199254740993, '', 'a', 'seven77', 'eight888', 'a longer string of text', Symbol(), Symbol.iterator, Symbol.for('k'), 0n, 1n, 123456789012345678901234567890n, {}, [], Object.create(null), function () {}, () => 1, Klass, Cls, new Cls(), Cls.prototype.m, gen, gen(), asy, Math.max, Math, JSON, Object, parseInt, (function () {}).bind(null), new Proxy({}, {}), new Proxy(function () {}, {}), new Proxy(Cls, {}), new Date(0), /x/, new Map(), new Set(), new WeakMap(), new Uint8Array(2), new Float64Array(1), new ArrayBuffer(4), new DataView(new ArrayBuffer(4)), new String('s'), new Number(1), new Boolean(false), Object(Symbol()), Object(1n), new Error('e'), Promise.resolve(1), (function () { return arguments; })(), [1, 2][Symbol.iterator](), new Map().entries(), 'abc'[Symbol.iterator](), globalThis];
+// One line for every value: what the operator itself gives, then each test's answer.
+for (var i = 0; i < values.length; i++) {
+  var row = '';
+  for (var t = 0; t < tests.length; t++) row += tests[t](values[i]);
+  say(i + ' ' + typeof values[i] + ' ' + row);
+}
+note('if and else', function () { function f(v) { if (typeof v === 'number') return 'n'; else if (typeof v !== 'string') return 'o'; else return 's'; } return f(1) + f('a') + f(null) + f(undefined) + f(2.5); });
+note('conditional', function () { function f(v) { return typeof v === 'undefined' ? 'u' : typeof v === 'boolean' ? 'b' : typeof v != 'function' ? 'x' : 'f'; } return f() + f(true) + f(f) + f(1) + f(null); });
+note('and or', function () { function f(v, w) { if (typeof v === 'number' && typeof w === 'string') return 1; if (typeof v === 'object' || typeof w === 'function') return 2; if (!(typeof v !== 'symbol')) return 3; return 0; } return '' + f(1, 'a') + f(1, 2) + f(null, 2) + f(1, f) + f(Symbol(), 1) + f('s', 's'); });
+note('values of the test', function () { function f(v) { var a = typeof v === 'number', b = typeof v !== 'number', c = typeof v == 'string' || typeof v === 'bigint', d = (typeof v === 'object') + 1; return [a, b, c, d].join(); } return f(1) + ' ' + f('s') + ' ' + f(1n) + ' ' + f({}); });
+note('while', function () { var list = [1, 2, 3.5, 'x', 4, null, 5], n = 0, cur = list[0]; while (typeof cur === 'number') { n++; if (n > 20) break; cur = list[n]; } var m = 0, at = 0; do { cur = list[at++]; if (at > 20) break; if (typeof cur !== 'number') continue; m += cur; } while (typeof cur !== 'object'); return n + ' ' + m + ' ' + at; });
+note('do while back', function () { var list = [1, 2, 3, 'x'], n = 0, cur = list[0]; do { n++; if (n > 20) break; cur = list[n]; } while (typeof cur === 'number'); var k = 0; cur = list[0]; do { k++; if (k > 20) break; cur = list[k]; } while (typeof cur != 'string'); return n + ' ' + k; });
+note('for', function () { var list = ['a', 'b', 3, 'c'], s = ''; for (var i = 0, cur = list[0]; typeof cur === 'string'; cur = list[++i]) { if (i > 20) break; s += cur; } for (var j = 0, c2 = list[0]; !(typeof c2 === 'number'); c2 = list[++j]) { if (j > 20) break; s += j; } return s; });
+note('names that are no type', function () { function f(v) { var r = ''; if (typeof v === 'Number') r += 'a'; if (typeof v === 'nmber') r += 'b'; if (typeof v === '') r += 'c'; if (typeof v !== 'numbe') r += 'd'; if (typeof v === 'number ') r += 'e'; if (typeof v == 'null') r += 'f'; if (typeof v === 'undefined\0') r += 'g'; if (typeof v != 'array') r += 'h'; return r; } return f(1) + f(null) + f([]) + f(undefined); });
+note('other operands', function () { function f(v, name) { var r = ''; if ('number' === typeof v) r += 'a'; if (typeof v === name) r += 'b'; if (typeof v === typeof name) r += 'c'; if (typeof v === 1) r += 'd'; if (typeof v == 1) r += 'e'; if (typeof v === null) r += 'f'; if (typeof v < 'o') r += 'g'; if (typeof typeof v === 'string') r += 'h'; if (typeof (0, v) === 'number') r += 'i'; if (typeof -v === 'number') r += 'j'; if (typeof !v === 'boolean') r += 'k'; if (typeof (v + '') === 'string') r += 'l'; if (typeof void v === 'undefined') r += 'm'; return r; } return f(1, 'number') + ' ' + f('s', 'string') + ' ' + f({}, 'x'); });
+// What Typeof takes as a Reference: names that are not bound, properties, getters.
+note('names not bound', function () { var r = ''; if (typeof notDeclaredAnywhere === 'undefined') r += 'a'; if (typeof notDeclaredAnywhere !== 'undefined') r += 'b'; if (typeof notDeclaredAnywhere == 'undefined') r += 'c'; if (typeof notDeclaredAnywhere === 'object') r += 'd'; while (typeof notDeclaredAnywhere !== 'undefined') { r += 'e'; break; } return r; });
+var globalNumber = 5, globalFunction = function () {}; let globalLet = 's';
+note('globals', function () { var r = ''; if (typeof globalNumber === 'number') r += 'a'; if (typeof globalFunction === 'function') r += 'b'; if (typeof globalLet === 'string') r += 'c'; if (typeof globalThis === 'object') r += 'd'; if (typeof Math !== 'undefined') r += 'e'; if (typeof undefined === 'undefined') r += 'f'; if (typeof NaN === 'number') r += 'g'; if (typeof globalNumber !== 'number') r += 'h'; return r; });
+note('properties', function () { var calls = 0; var o = { n: 1, s: 's', get g() { calls++; return calls; }, f: function () {}, nil: null }; var r = ''; if (typeof o.n === 'number') r += 'a'; if (typeof o.s !== 'string') r += 'b'; if (typeof o.g === 'number') r += 'c'; if (typeof o.g !== 'number') r += 'd'; if (typeof o.missing === 'undefined') r += 'e'; if (typeof o.f === 'function') r += 'f'; if (typeof o.nil === 'object') r += 'g'; if (typeof o['n'] === 'number') r += 'h'; var k = 's'; if (typeof o[k] === 'string') r += 'i'; if (typeof [1][0] === 'number') r += 'j'; if (typeof 'abc'.length === 'number') r += 'k'; return r + calls; });
+note('a getter that throws', function () { var o = { get g() { throw new RangeError('g'); } }; if (typeof o.g === 'number') return 'no'; return 'no either'; });
+note('a property of nothing', function () { var o = null; if (typeof o.x === 'undefined') return 'no'; return 'no either'; });
+note('before its declaration', function () { if (typeof later === 'undefined') return 'no'; let later = 1; return later; });
+note('outer before its declaration', function () { function f() { if (typeof later2 === 'number') return 'n'; return 'other'; } var r; try { r = f(); } catch (e) { r = e.name; } let later2 = 1; return r + f(); });
+note('var before its assignment', function () { var r = ''; if (typeof v9 === 'undefined') r += 'a'; var v9 = 1; if (typeof v9 === 'number') r += 'b'; return r; });
+note('closures', function () { var outer = 1, fn = function () {}; function f() { var r = ''; if (typeof outer === 'number') r += 'a'; if (typeof fn === 'function') r += 'b'; if (typeof f === 'function') r += 'c'; outer = 's'; if (typeof outer === 'string') r += 'd'; if (typeof outer !== 'number') r += 'e'; return r; } return f() + f(); });
+note('this and arguments', function () { function f() { var r = ''; if (typeof this === 'object') r += 'o'; if (typeof this === 'undefined') r += 'u'; if (typeof this === 'number') r += 'n'; if (typeof arguments === 'object') r += 'a'; if (typeof arguments[0] === 'string') r += 's'; return r; } function g() { 'use strict'; var r = ''; if (typeof this === 'undefined') r += 'u'; if (typeof this === 'number') r += 'n'; if (typeof this === 'object') r += 'o'; return r; } return f() + ' ' + f.call(5, 's') + ' ' + g() + ' ' + g.call(5) + ' ' + g.call(null); });
+note('strict', function () { 'use strict'; function f(v) { if (typeof v === 'number') return 1; if (typeof v !== 'object') return 2; return 3; } var r = '' + f(1) + f('s') + f(null); try { if (typeof notDeclaredAnywhere === 'undefined') r += 'u'; } catch (e) { r += e.name; } return r; });
+note('with a change in between', function () { function f(v) { var r = ''; if (typeof v === 'number') { v = 's'; } if (typeof v === 'string') { r += 's'; v = null; } if (typeof v === 'object') r += 'o'; return r; } return f(1) + f('x') + f({}) + f(undefined); });
+note('switch and comma', function () { function f(v) { switch (typeof v) { case 'number': return 'n'; case 'string': return 's'; default: return 'd'; } } function g(v) { var n = 0; if (n++, typeof v === 'number') return n; return -n; } return f(1) + f('a') + f(null) + g(1) + g('a'); });
+note('long', function () { var vals = [1, 'a', null, undefined, {}, [], true, 0, '', 2.5, function () {}, 1n, Symbol()], hits = 0; for (var i = 0; i < 20000; i++) { var v = vals[i % 13]; if (typeof v === 'number') hits++; else if (typeof v === 'string') hits += 2; else if (typeof v === 'function') hits += 5; else if (typeof v == 'object') hits += 7; else if (typeof v !== 'bigint') hits += 11; else if (!v) hits += 3; } return hits; });
+note('a value that is the name', function () { function f(v) { var r = ''; if (v === 'number') r += 'a'; if (v !== 'string') r += 'b'; if (v == 'object') r += 'c'; if (v != 'undefined') r += 'd'; if (!v === 'boolean') r += 'e'; if (-v == 'number') r += 'f'; return r; } return f('number') + ' ' + f('string') + ' ' + f(1) + ' ' + f('object') + ' ' + f(undefined) + ' ' + f('undefined'); });
+note('with something computed before', function () { var o = { s: 's', n: 2 }, r = ''; if ((1, typeof notDeclaredAnywhere === 'number')) r += 'a'; if ((1, typeof notDeclaredAnywhere === 'undefined')) r += 'b'; if (('s', typeof o.n === 'string')) r += 'c'; if (('s', typeof o.n == 'number')) r += 'd'; if ((o, typeof globalLet !== 'object')) r += 'e'; if ((r, typeof globalNumber === 'string')) r += 'f'; var t = 5; t = 'x'; if (typeof notDeclaredAnywhere === 'string') r += 'g'; t = 6; if (typeof o.s === 'number') r += 'h'; return r; });
+note('joined with a text', function () { function f(v) { var r = ''; if (typeof v + '' === 'number') r += 'a'; if ('' + typeof v == 'number') r += 'b'; if (typeof v + 's' === 'numbers') r += 'c'; if ((typeof v).length === 6) r += 'd'; if (typeof v.length === 'number') r += 'e'; return r; } return f(1) + ' ' + f('s') + ' ' + f([]); });
+note('nothing left behind', function () { function f(v) { if (typeof v === 'number') { } } function g(v) { if (typeof v !== 'string') { } else { } } function h(v) { while (typeof v === 'object') break; } function k(v) { typeof v === 'number' ? 0 : 1; } function m(v) { for (var turns = 0; typeof v == 'boolean';) { if (++turns > 20) return 'endless'; v = 1; } } var arrow = (v) => { if (typeof v === 'function') { } }; return [f(1), f('s'), g(1), g('s'), h(null), h(1), k(1), k('s'), m(true), m(0), arrow(f), arrow(1)].join() + [1, 's', null].map(function (v) { if (typeof v === 'number') { } }).join(); });
+note('the value of a statement with the test', function () { var q9 = 5, turns9 = 0; return [eval("'first'; { let q = 5; if (typeof q === 'number') { } }"), eval("'first'; { let q = 5; if (typeof q !== 'number') { } else { } }"), eval("'first'; { let q = 5; if (typeof q === 'string') { } }"), eval("'first'; { let q = 5; while (typeof q === 'string') { if (++turns9 > 20) break; } }"), eval("'first'; { let q = 5; do { if (++turns9 > 40) break; } while (typeof q === 'string'); }"), eval("'first'; { const q = 's'; for (; typeof q == 'number';) { if (++turns9 > 60) break; } }"), eval("'first'; if (typeof q9 === 'number') { }"), (0, eval)("'first'; { let q = 5; if (typeof q != 'string') { } }"), eval("'first'; { let q = 5; L: { if (typeof q === 'number') break L; } }"), eval("'first'; { let q = 5; if (typeof q === 'number') 'then'; else 'else'; }"), eval("'first'; { let q = 5; typeof q === 'number' ? 'yes' : 'no'; }")].map(String).join(); });
+out.join("\n")"##;
+    let expected = r##"0 undefined 10100101010101010101010101010101
+1 object 01010101010101010101010110100101
+2 boolean 01011010010101010101010101010101
+3 boolean 01011010010101010101010101010101
+4 number 01010101010101011010010101010101
+5 number 01010101010101011010010101010101
+6 number 01010101010101011010010101010101
+7 number 01010101010101011010010101010101
+8 number 01010101010101011010010101010101
+9 number 01010101010101011010010101010101
+10 number 01010101010101011010010101010101
+11 number 01010101010101011010010101010101
+12 number 01010101010101011010010101010101
+13 number 01010101010101011010010101010101
+14 number 01010101010101011010010101010101
+15 string 01010101101001010101010101010101
+16 string 01010101101001010101010101010101
+17 string 01010101101001010101010101010101
+18 string 01010101101001010101010101010101
+19 string 01010101101001010101010101010101
+20 symbol 01010101010110100101010101010101
+21 symbol 01010101010110100101010101010101
+22 symbol 01010101010110100101010101010101
+23 bigint 01010101010101010101101001010101
+24 bigint 01010101010101010101101001010101
+25 bigint 01010101010101010101101001010101
+26 object 01010101010101010101010110100101
+27 object 01010101010101010101010110100101
+28 object 01010101010101010101010110100101
+29 function 01010101010101010101010101011010
+30 function 01010101010101010101010101011010
+31 function 01010101010101010101010101011010
+32 function 01010101010101010101010101011010
+33 object 01010101010101010101010110100101
+34 function 01010101010101010101010101011010
+35 function 01010101010101010101010101011010
+36 object 01010101010101010101010110100101
+37 function 01010101010101010101010101011010
+38 function 01010101010101010101010101011010
+39 object 01010101010101010101010110100101
+40 object 01010101010101010101010110100101
+41 function 01010101010101010101010101011010
+42 function 01010101010101010101010101011010
+43 function 01010101010101010101010101011010
+44 object 01010101010101010101010110100101
+45 function 01010101010101010101010101011010
+46 function 01010101010101010101010101011010
+47 object 01010101010101010101010110100101
+48 object 01010101010101010101010110100101
+49 object 01010101010101010101010110100101
+50 object 01010101010101010101010110100101
+51 object 01010101010101010101010110100101
+52 object 01010101010101010101010110100101
+53 object 01010101010101010101010110100101
+54 object 01010101010101010101010110100101
+55 object 01010101010101010101010110100101
+56 object 01010101010101010101010110100101
+57 object 01010101010101010101010110100101
+58 object 01010101010101010101010110100101
+59 object 01010101010101010101010110100101
+60 object 01010101010101010101010110100101
+61 object 01010101010101010101010110100101
+62 object 01010101010101010101010110100101
+63 object 01010101010101010101010110100101
+64 object 01010101010101010101010110100101
+65 object 01010101010101010101010110100101
+66 object 01010101010101010101010110100101
+67 object 01010101010101010101010110100101
+if and else=nsoon
+conditional=ubfxx
+and or=102230
+values of the test=true,false,false,1 false,true,true,1 false,true,true,1 false,true,false,2
+while=3 10.5 6
+do while back=3 3
+for=ab01
+names that are no type=dhdhdhdh
+other operands=abghijklm bchjklm hjklm
+names not bound=ac
+globals=abcdefg
+properties=acefghijk2
+a getter that throws!RangeError
+a property of nothing!TypeError
+before its declaration!ReferenceError
+outer before its declaration=ReferenceErrorn
+var before its assignment=ab
+closures=abcdebcde
+this and arguments=oa oas u n o
+strict=123u
+with a change in between=sosoo
+switch and comma=nsd1-1
+long=101543
+a value that is the name=abd d bd bcd bd b
+with something computed before=bde
+joined with a text=abcd de de
+nothing left behind=,,,,,,,,,,,,,
+the value of a statement with the test=undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,then,yes"##;
+    let (mut engine, _, _) = limited(64 << 20, (6 << 20) / 4 * 3);
+    match engine.evaluate(script, false) {
+        Ok(Completion::String(found)) => {
+            assert_eq!(
+                std::string::String::from_utf8(found).expect("text"),
+                expected
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+}
