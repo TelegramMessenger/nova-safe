@@ -2059,6 +2059,41 @@ twenty-one runs, a step of the particles is 0.1 to 3.4% less and the call of a c
 more, which is more than its instructions say: both are to be taken again on a quiet machine
 before this arm is counted as kept.
 
+A method of a Map, a Set, a Date, a RegExp, a Promise, a TypedArray or an Array is found where
+the cache of the read places it, in the prototype, and was then read the general way: the kind of
+the object that has it asked, its storage and the length of that taken by three functions, and
+what is there handed back as one of the two things it could be. A hundred instructions for one
+slot, which a turn of `m.get(1)` stepped one instruction at a time showed as a third of the 330
+that finding `get` was. The slot is read as the slot of a prototype is read for an ordinary
+object now, where the object that has the property is an ordinary one or an Array (whose named
+properties are in an ordinary object); any other holder is asked as before, and so is a slot
+that holds no value, an accessor. Finding the method is 306 instructions for 343 on a Map, 304
+for 341 on a Set and a RegExp, 297 for 334 on a Date, 296 for 333 on a Promise, 358 for 395 on a
+TypedArray and 266 for 302 on an Array, where an ordinary object's inherited method is 175
+(QuickJS 97 to 110 for all of them). `a.push(i); a.pop()` is 1100 for 1163, and the case of the
+suite that does that retires 3.9% less; the others are within 0.3%.
+
+Two things were measured and left. Told by their kind before a function and a TypedArray are
+asked for, the five commonest of these were eleven instructions shorter again, and a property of
+a function (`f.call`) ten longer and the length of a TypedArray seven: not taken. And the call of
+`m.get` itself is 396 instructions, a fifth of them the hash of the key: that is SipHash under
+keys a script does not know, which is there so that a script cannot make keys that collide, and
+stays.
+
+The test has the methods of each kind read and called, a property of the receiver's own beside
+them and one that shadows an inherited one, a method replaced on the prototype, a property added
+there and removed, an accessor there (called once for each read with the receiver as its this
+value, one with no getter, a value made an accessor in its place and back), another prototype
+given to the receiver and none, subclasses of Map and of Array, ordinary objects that inherit from
+the two prototypes, the names a TypedArray never looks for in its prototype, a frozen prototype,
+a Proxy in the chain, and twelve kinds of receiver through one read. It fails with the slot
+beside the right one read, with a slot that holds no value taken for undefined (the getter is
+then not called), and with the receiver read in place of the object that has the property. It
+passes with either kind of holder asked the general way again, which is the same answer by the
+longer way, and without the question whether the place is one of the holder's own kind: no cache
+keeps such a place today, and the general way that the question leads to stops the engine if one
+ever does, where the slot read would answer with whatever is there.
+
 ### 5. Array and typed array elements
 
 `a[i]` was 11-19x through the same Reference path with a generic property key.
