@@ -2919,6 +2919,23 @@ changed; a zero divisor not asked for (the engine stops). Which way a division g
 say, and cannot: with the try at two integers taken out, or put into the arm that has none, it
 passes, the quotients being the same.
 
+The instructions that have their operator as an argument found what the operator does in two
+steps: the number in the argument was looked up for the kind of the operator, by one table, and
+the kind for the code that does it, by another: nineteen of the seventy-two machine instructions
+that `i & 7` is, which a turn stepped one instruction at a time shows in its order. The operators
+had numbers of their own, eleven of the twelve kinds counted through (the power is not fused).
+Numbered in the order of their kinds, with the power's place left among them and given to
+nothing, the number is the kind less a constant, and the compiler makes one table of the two.
+Each such operation on two integers is four to five instructions shorter (a loop of `i & 7` 172 a
+turn for 177, of four shifts 422 for 440, of a subtraction, a product and a remainder 495 for
+517), those on doubles are what they were, and nothing is longer. The cases that add and mask
+integers retire 3.5% less, a `let` in every turn 3.3%, a comparison in a loop 2.9%, a `switch`
+2.7%, a grid of two dimensions 2.3%, the reads of a variable of an enclosing function 1.4%, and
+the calls and the properties a half to one percent. A test of the kinds says that the numbers
+are in their order, that the power has none and that nothing else has one: with two numbers
+exchanged it fails, and the tests of the operators with it; with a number given to the power it
+fails alone, the power being then worked out the general way.
+
 ### 7. Building strings
 
 Every string is interned: creating one hashed all of it. Appending in a loop therefore hashed the whole string on
