@@ -841,6 +841,20 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     strict
                 } else if let Some(equal) = self.recent_instruction(0, Instruction::IsLooselyEqual)
                 {
+                    // `typeof v == "number"`: two Strings are loosely equal
+                    // where they are strictly equal, so this is the test
+                    // of the value's type too.
+                    if let Some(comparison) = strict.result_comparison()
+                        && let Some(constant) =
+                            self.recent_instruction(1, Instruction::StoreConstant)
+                        && let Some(type_named) =
+                            self.type_named_by_constant(self.operand_bytes(constant))
+                        && self.recent_instruction(2, Instruction::Load).is_some()
+                        && let Some(type_of) = self.recent_instruction(3, Instruction::Typeof)
+                    {
+                        self.drop_recent_instructions(type_of, 4);
+                        return self.add_type_comparison(comparison, type_named);
+                    }
                     self.drop_recent_instructions(equal, 1);
                     loose
                 } else if let Some(equal) =
@@ -864,6 +878,15 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
                     // the jump on it by one instruction.
                     let constant = self.operand_bytes(equal);
                     self.drop_recent_instructions(equal, 1);
+                    // `typeof v === "number"`: the Typeof too, where the
+                    // constant names a type; the test is then of the
+                    // value's type.
+                    if let Some(type_named) = self.type_named_by_constant(constant)
+                        && let Some(type_of) = self.recent_instruction(0, Instruction::Typeof)
+                    {
+                        self.drop_recent_instructions(type_of, 1);
+                        return self.add_type_comparison(comparison, type_named);
+                    }
                     return self.add_result_comparison(comparison, constant);
                 } else {
                     instruction
@@ -1033,6 +1056,32 @@ impl<'agent, 'gc, 'scope> ExecutableContext<'agent, 'gc, 'scope> {
         }
         self.push_instruction(instruction);
         self.add_jump_index()
+    }
+
+    /// JumpIfResultComparesWithConstant for `typeof` of what was just
+    /// computed and the name of a type: `comparison` is the strict equality
+    /// and jump it stands for ([`Instruction::result_comparison`]),
+    /// `type_named` the place of the name in [`Instruction::TYPE_NAMES`].
+    fn add_type_comparison(&mut self, comparison: IndexType, type_named: IndexType) -> JumpIndex {
+        debug_assert!(usize::from(comparison) >= Instruction::RESULT_COMPARISON_STRICT);
+        let comparison = comparison - Instruction::RESULT_COMPARISON_STRICT as IndexType
+            + Instruction::RESULT_COMPARISON_TYPE as IndexType;
+        self.add_result_comparison(comparison, type_named.to_ne_bytes())
+    }
+
+    /// The place in [`Instruction::TYPE_NAMES`] of the type that the
+    /// constant of a StoreConstant names, if it is a String that names
+    /// one: `operand` is the instruction's argument.
+    fn type_named_by_constant(&self, operand: [u8; 2]) -> Option<IndexType> {
+        let constant = *self
+            .constants
+            .get(usize::from(u16::from_ne_bytes(operand)))?;
+        let name = String::try_from(constant).ok()?;
+        let name = name.to_string_lossy_(self.agent);
+        let place = Instruction::TYPE_NAMES
+            .iter()
+            .position(|type_name| *type_name == name)?;
+        IndexType::try_from(place).ok()
     }
 
     /// JumpIfResultComparesWithConstant: which comparison and jump it makes

@@ -4321,8 +4321,28 @@ impl Vm {
         let Some(left) = vm.result else {
             return Plain::No;
         };
-        let right = tables.constant(instr.get_second_index(), gc).unbind();
         let comparison = instr.get_first_index();
+        if comparison >= Instruction::RESULT_COMPARISON_TYPE {
+            // `typeof` of the value and its comparison with the name of a
+            // type: nothing is run for it, and no String is made. As
+            // Typeof, a name that may not be bound comes with its
+            // Reference and goes the general way.
+            if vm.reference.is_some() {
+                return Plain::No;
+            }
+            let jumps = Self::value_has_type(agent, left, instr.get_second_index(), gc)
+                == (comparison == Instruction::RESULT_COMPARISON_TYPE);
+            vm.result = None;
+            if jumps {
+                let from = *ip;
+                *ip = Instr::window_jump_target(window);
+                if *ip < from {
+                    return Plain::Looped;
+                }
+            }
+            return Plain::Done;
+        }
+        let right = tables.constant(instr.get_second_index(), gc).unbind();
         let jumps = if comparison >= Instruction::RESULT_COMPARISON_STRICT {
             Self::strictly_equal(agent, left, right)
                 == (comparison == Instruction::RESULT_COMPARISON_STRICT)
@@ -4361,6 +4381,45 @@ impl Vm {
             }
         }
         Plain::Done
+    }
+
+    /// Whether `typeof value` is the type whose name is at `place` in
+    /// [`Instruction::TYPE_NAMES`]. The types of the primitives are told
+    /// by the kind of the value alone; "object" and "function" by what the
+    /// operator gives, which asks an object whether it is called. A place
+    /// that is none of them is no type.
+    // Kept out of the loop of instructions: its arm calls it.
+    #[inline(never)]
+    fn value_has_type(agent: &Agent, value: Value, place: usize, gc: NoGcScope) -> bool {
+        match place {
+            0 => matches!(value, Value::Undefined),
+            1 => matches!(value, Value::Boolean(_)),
+            2 => matches!(value, Value::String(_) | Value::SmallString(_)),
+            3 => matches!(value, Value::Symbol(_)),
+            4 => matches!(
+                value,
+                Value::Number(_) | Value::Integer(_) | Value::SmallF64(_)
+            ),
+            5 => matches!(value, Value::BigInt(_) | Value::SmallBigInt(_)),
+            6 | 7 => Some(typeof_operator(agent, value, gc)) == Self::type_name(place),
+            _ => false,
+        }
+    }
+
+    /// The String that `typeof` gives for the type at `place` in
+    /// [`Instruction::TYPE_NAMES`].
+    pub(crate) fn type_name(place: usize) -> Option<String<'static>> {
+        Some(match place {
+            0 => BUILTIN_STRING_MEMORY.undefined,
+            1 => BUILTIN_STRING_MEMORY.boolean,
+            2 => BUILTIN_STRING_MEMORY.string,
+            3 => BUILTIN_STRING_MEMORY.symbol,
+            4 => BUILTIN_STRING_MEMORY.number,
+            5 => BUILTIN_STRING_MEMORY.bigint,
+            6 => BUILTIN_STRING_MEMORY.object,
+            7 => BUILTIN_STRING_MEMORY.function,
+            _ => return None,
+        })
     }
 
     /// One of the instructions that end a loop: a step of a local where

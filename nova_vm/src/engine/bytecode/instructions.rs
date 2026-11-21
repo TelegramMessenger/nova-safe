@@ -1405,6 +1405,28 @@ impl Instruction {
     pub(crate) const RESULT_COMPARISON_NOT: usize = 4;
     /// See [`Instruction::result_comparison`].
     pub(crate) const RESULT_COMPARISON_STRICT: usize = 8;
+    /// In the first argument of
+    /// [`Instruction::JumpIfResultComparesWithConstant`], from here on: the
+    /// comparison is `typeof` of what was just computed with the name of a
+    /// type (`typeof v === "number"`), the Typeof, the comparison with the
+    /// String and the jump on it as one instruction. Jump where it is the
+    /// type, and one more where it is not; the second argument is then no
+    /// constant but the place of the type's name in
+    /// [`Instruction::TYPE_NAMES`]. What Typeof takes is taken the same
+    /// way: a value, or a Reference to read, which goes the general way.
+    pub(crate) const RESULT_COMPARISON_TYPE: usize = 10;
+    /// What `typeof` gives, in the order the second argument of such a
+    /// comparison counts them.
+    pub(crate) const TYPE_NAMES: [&'static str; 8] = [
+        "undefined",
+        "boolean",
+        "string",
+        "symbol",
+        "number",
+        "bigint",
+        "object",
+        "function",
+    ];
 
     /// In the second argument of [`Instruction::StepValueWithCache`]: the
     /// step is `--`.
