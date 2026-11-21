@@ -871,6 +871,15 @@ pub(crate) enum Instruction {
     /// The same for `a ?? b`: the jump where the value is neither
     /// undefined nor null.
     JumpIfNotNullishKeep,
+    /// A local tested for being true, and the jump where it is not: the
+    /// test of `if (x)`, `while (x)` and `x ? a : b` on a variable in a
+    /// stack slot. GetValueFromIndex and JumpIfNot as one instruction,
+    /// whose arguments are the slot, nothing, and the jump target; the
+    /// result register is left empty, as the two leave it.
+    JumpIfIndexNot,
+    /// The same with the jump where the local is true: `if (!x)`, and the
+    /// test at the end of a `do`-`while`.
+    JumpIfIndexTrue,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
@@ -879,8 +888,6 @@ pub(crate) enum Instruction {
     // reads instructions with care, and the loop leaves the byte to the
     // general way, which ends as it did. A new instruction takes the
     // first of them.
-    Unused243,
-    Unused244,
     Unused245,
     Unused246,
     Unused247,
@@ -900,9 +907,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused243
-            | Instruction::Unused244
-            | Instruction::Unused245
+        Instruction::Unused245
             | Instruction::Unused246
             | Instruction::Unused247
             | Instruction::Unused248
@@ -949,6 +954,8 @@ impl Instruction {
             | Self::JumpIfIndexNotStrictlyEqualIndex
             | Self::JumpIfIndexStrictlyEqualConstant
             | Self::JumpIfIndexStrictlyEqualIndex
+            | Self::JumpIfIndexNot
+            | Self::JumpIfIndexTrue
             | Self::GetIndexPropertyWithCache
             | Self::GetIndexPropertyWithCacheKeepReference
             | Self::LoadIndexPropertyWithCachePushThis
@@ -1825,6 +1832,16 @@ impl Instr {
                     ip, self.kind, key, arg1, slot
                 );
             }
+            4 if matches!(
+                self.kind,
+                Instruction::JumpIfIndexNot | Instruction::JumpIfIndexTrue
+            ) =>
+            {
+                let [slot, _] = self.args.two_args();
+                let instructions = exe.get_instructions(agent);
+                let target = Self::wide_jump_target(instructions.code(), ip + 9);
+                eprintln!("  {}: {:?}({}, {})", ip, self.kind, slot, target);
+            }
             4 => {
                 let [arg0, arg1] = self.args.two_args();
                 let instructions = exe.get_instructions(agent);
@@ -2160,8 +2177,8 @@ impl Instruction {
         const JUMPIFTRUEKEEP: u8 = Instruction::JumpIfTrueKeep.as_u8();
         const JUMPIFNOTKEEP: u8 = Instruction::JumpIfNotKeep.as_u8();
         const JUMPIFNOTNULLISHKEEP: u8 = Instruction::JumpIfNotNullishKeep.as_u8();
-        const UNUSED243: u8 = Instruction::Unused243.as_u8();
-        const UNUSED244: u8 = Instruction::Unused244.as_u8();
+        const JUMPIFINDEXNOT: u8 = Instruction::JumpIfIndexNot.as_u8();
+        const JUMPIFINDEXTRUE: u8 = Instruction::JumpIfIndexTrue.as_u8();
         const UNUSED245: u8 = Instruction::Unused245.as_u8();
         const UNUSED246: u8 = Instruction::Unused246.as_u8();
         const UNUSED247: u8 = Instruction::Unused247.as_u8();
@@ -2748,8 +2765,8 @@ impl Instruction {
             JUMPIFTRUEKEEP => Some(Instruction::JumpIfTrueKeep),
             JUMPIFNOTKEEP => Some(Instruction::JumpIfNotKeep),
             JUMPIFNOTNULLISHKEEP => Some(Instruction::JumpIfNotNullishKeep),
-            UNUSED243 => Some(Instruction::Unused243),
-            UNUSED244 => Some(Instruction::Unused244),
+            JUMPIFINDEXNOT => Some(Instruction::JumpIfIndexNot),
+            JUMPIFINDEXTRUE => Some(Instruction::JumpIfIndexTrue),
             UNUSED245 => Some(Instruction::Unused245),
             UNUSED246 => Some(Instruction::Unused246),
             UNUSED247 => Some(Instruction::Unused247),
@@ -2767,7 +2784,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() >= Instruction::Unused243.as_u8()
+        self.as_u8() >= Instruction::Unused245.as_u8()
     }
 }
 
@@ -2822,7 +2839,7 @@ mod tests {
             assert_eq!(kind.as_u8(), byte);
             assert_eq!(
                 kind.is_unused(),
-                byte > Instruction::JumpIfNotNullishKeep.as_u8()
+                byte > Instruction::JumpIfIndexTrue.as_u8()
             );
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
@@ -2841,14 +2858,16 @@ mod tests {
         assert!(!Instruction::StepIndex.is_unused());
         assert!(!Instruction::JumpIfTrueKeep.is_unused());
         assert!(!Instruction::JumpIfNotNullishKeep.is_unused());
-        assert!(Instruction::Unused243.is_unused());
+        assert!(!Instruction::JumpIfIndexNot.is_unused());
+        assert!(!Instruction::JumpIfIndexTrue.is_unused());
+        assert!(Instruction::Unused245.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused243.as_u8()];
+        let code = [Instruction::Unused245.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }

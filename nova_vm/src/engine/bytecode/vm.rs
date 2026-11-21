@@ -3124,6 +3124,31 @@ impl Vm {
                     vm.result = None;
                 }
             }
+            // A local tested for being true, and the jump on it: `if (x)`,
+            // `while (x)`, `x ? a : b` of a variable in a stack slot. The
+            // register is emptied, as the test of a value read into it
+            // empties it.
+            Instruction::JumpIfIndexNot | Instruction::JumpIfIndexTrue => {
+                step!(JumpIfIndexNot, JumpIfIndexTrue);
+                let value = vm.stack[instr.get_first_index()];
+                // What a variable that is tested mostly holds is answered
+                // here: a call for it was a third of the instruction.
+                let truthy = match value {
+                    Value::Boolean(value) => value,
+                    Value::Undefined | Value::Null => false,
+                    Value::Integer(integer) => integer.into_i64() != 0,
+                    Value::Object(_) => true,
+                    _ => to_boolean(agent, value),
+                };
+                vm.result = None;
+                if truthy == (instr.kind == Instruction::JumpIfIndexTrue) {
+                    let from = *ip;
+                    *ip = Instr::window_jump_target(window);
+                    if *ip < from {
+                        return Plain::Looped;
+                    }
+                }
+            }
             // The test of most loops, on two Numbers: before the body with
             // the jump out where it fails, or after it with the jump back
             // where it holds.
@@ -6176,7 +6201,10 @@ impl Vm {
             // which has left its value in the result register.
             | Instruction::JumpIfTrueKeep
             | Instruction::JumpIfNotKeep
-            | Instruction::JumpIfNotNullishKeep => {
+            | Instruction::JumpIfNotNullishKeep
+            // And these two for any value of the local.
+            | Instruction::JumpIfIndexNot
+            | Instruction::JumpIfIndexTrue => {
                 unreachable!("hot instruction not handled before execute_cold_instruction")
             }
             Instruction::Return => return Ok(ContinuationKind::Return),
