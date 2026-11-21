@@ -880,6 +880,12 @@ pub(crate) enum Instruction {
     /// The same with the jump where the local is true: `if (!x)`, and the
     /// test at the end of a `do`-`while`.
     JumpIfIndexTrue,
+    /// Empty the reference register. A Reference that was kept for an
+    /// assignment or a call which is then not made (the left side of
+    /// `o.p ||= v` that decides, the function of `o.f?.()` that is null or
+    /// undefined) stays in the register past the expression otherwise,
+    /// where a call of a value or a `typeof` of one takes it for its own.
+    DropReference,
     // The bytes that are no instruction, each with a kind of its own, so
     // that every byte is a kind: the loop of a `Vm` then reads the kind
     // of an instruction without asking whether its byte is one, a test
@@ -888,7 +894,6 @@ pub(crate) enum Instruction {
     // reads instructions with care, and the loop leaves the byte to the
     // general way, which ends as it did. A new instruction takes the
     // first of them.
-    Unused245,
     Unused246,
     Unused247,
     Unused248,
@@ -907,8 +912,7 @@ const _EVERY_BYTE_IS_A_KIND: () = assert!(Instruction::Unused255.as_u8() == u8::
 /// `match` that has an arm for every kind and is to stay one.
 macro_rules! unused_kinds {
     () => {
-        Instruction::Unused245
-            | Instruction::Unused246
+        Instruction::Unused246
             | Instruction::Unused247
             | Instruction::Unused248
             | Instruction::Unused249
@@ -2188,7 +2192,7 @@ impl Instruction {
         const JUMPIFNOTNULLISHKEEP: u8 = Instruction::JumpIfNotNullishKeep.as_u8();
         const JUMPIFINDEXNOT: u8 = Instruction::JumpIfIndexNot.as_u8();
         const JUMPIFINDEXTRUE: u8 = Instruction::JumpIfIndexTrue.as_u8();
-        const UNUSED245: u8 = Instruction::Unused245.as_u8();
+        const DROPREFERENCE: u8 = Instruction::DropReference.as_u8();
         const UNUSED246: u8 = Instruction::Unused246.as_u8();
         const UNUSED247: u8 = Instruction::Unused247.as_u8();
         const UNUSED248: u8 = Instruction::Unused248.as_u8();
@@ -2776,7 +2780,7 @@ impl Instruction {
             JUMPIFNOTNULLISHKEEP => Some(Instruction::JumpIfNotNullishKeep),
             JUMPIFINDEXNOT => Some(Instruction::JumpIfIndexNot),
             JUMPIFINDEXTRUE => Some(Instruction::JumpIfIndexTrue),
-            UNUSED245 => Some(Instruction::Unused245),
+            DROPREFERENCE => Some(Instruction::DropReference),
             UNUSED246 => Some(Instruction::Unused246),
             UNUSED247 => Some(Instruction::Unused247),
             UNUSED248 => Some(Instruction::Unused248),
@@ -2793,7 +2797,7 @@ impl Instruction {
     /// Whether this is the kind of a byte that is no instruction.
     #[inline(always)]
     pub(crate) const fn is_unused(self) -> bool {
-        self.as_u8() >= Instruction::Unused245.as_u8()
+        self.as_u8() >= Instruction::Unused246.as_u8()
     }
 }
 
@@ -2846,10 +2850,7 @@ mod tests {
         for byte in 0..=u8::MAX {
             let kind = Instruction::from_u8(byte).expect("every byte is a kind");
             assert_eq!(kind.as_u8(), byte);
-            assert_eq!(
-                kind.is_unused(),
-                byte > Instruction::JumpIfIndexTrue.as_u8()
-            );
+            assert_eq!(kind.is_unused(), byte > Instruction::DropReference.as_u8());
             assert_eq!(Instruction::try_from(byte).is_ok(), !kind.is_unused());
             if kind.is_unused() {
                 assert_eq!(kind.argument_count(), 0);
@@ -2869,7 +2870,8 @@ mod tests {
         assert!(!Instruction::JumpIfNotNullishKeep.is_unused());
         assert!(!Instruction::JumpIfIndexNot.is_unused());
         assert!(!Instruction::JumpIfIndexTrue.is_unused());
-        assert!(Instruction::Unused245.is_unused());
+        assert!(!Instruction::DropReference.is_unused());
+        assert!(Instruction::Unused246.is_unused());
         assert!(Instruction::Unused255.is_unused());
     }
 
@@ -2916,7 +2918,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Invalid bytecode instruction")]
     fn code_with_a_byte_that_is_no_instruction_is_not_read() {
-        let code = [Instruction::Unused245.as_u8()];
+        let code = [Instruction::Unused246.as_u8()];
         let mut ip = 0;
         let _ = Instr::consume_instruction(&code, &mut ip);
     }

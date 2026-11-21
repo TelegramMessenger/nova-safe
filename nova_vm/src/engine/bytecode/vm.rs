@@ -3180,6 +3180,10 @@ impl Vm {
                 step!(PopReference);
                 vm.execute_pop_reference()
             }
+            Instruction::DropReference => {
+                step!(DropReference);
+                vm.reference = None;
+            }
             Instruction::PushReferenceAndLoad => {
                 step!(PushReferenceAndLoad);
                 vm.execute_push_reference(agent);
@@ -3537,6 +3541,12 @@ impl Vm {
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                     return Plain::No;
                 };
+                // The long way reads the name through a Reference that it
+                // makes of it and takes from the register: none is left
+                // there, whichever way the name was read. One that an
+                // earlier expression left would be the this value of the
+                // call of what was read here.
+                vm.reference = None;
                 vm.result = Some(value.unbind());
             }
             // The same variable, pushed: an operand or an argument.
@@ -3547,6 +3557,7 @@ impl Vm {
                 let Some(value) = binding_value_at_site(agent, site, name, gc) else {
                     return Plain::No;
                 };
+                vm.reference = None;
                 vm.result = None;
                 vm.stack.push(value.unbind());
             }
@@ -3571,6 +3582,7 @@ impl Vm {
                 } else {
                     kept
                 };
+                vm.reference = None;
                 vm.result = Some(value);
             }
             Instruction::LoadBindingAtSiteOnce => {
@@ -3590,6 +3602,7 @@ impl Vm {
                 } else {
                     kept
                 };
+                vm.reference = None;
                 vm.result = None;
                 vm.stack.push(value);
             }
@@ -6015,6 +6028,7 @@ impl Vm {
             | Instruction::PopStack
             | Instruction::PushReference
             | Instruction::PopReference
+            | Instruction::DropReference
             | Instruction::PushReferenceAndLoad
             | Instruction::LoadFromIndexStoreConstant
             | Instruction::LoadFromIndexGetFromIndex
@@ -6242,6 +6256,7 @@ impl Vm {
             | Instruction::InitializeReferencedBinding
             | Instruction::PushReference
             | Instruction::PopReference
+            | Instruction::DropReference
             | Instruction::EvaluatePropertyAccessWithIdentifierKey
             | Instruction::EvaluatePropertyAccessWithExpressionKey
             | Instruction::LoadFromIndex

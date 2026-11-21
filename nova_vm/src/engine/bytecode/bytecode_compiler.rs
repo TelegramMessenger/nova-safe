@@ -2749,6 +2749,11 @@ impl<'a, 's, 'gc, 'scope> CompileEvaluation<'a, 's, 'gc, 'scope> for ast::ChainE
                 // All optional chains come here with a copy of their null or
                 // undefined baseValue on the stack. Pop it off.
                 ctx.add_instruction(Instruction::Store);
+                // The function of an optional call that is null or undefined
+                // was read with its Reference kept for the call, which is
+                // not made: nothing that follows is to find it in the
+                // register.
+                ctx.add_instruction(Instruction::DropReference);
                 // Replace any possible null with undefined.
                 ctx.add_instruction_with_constant(Instruction::StoreConstant, Value::Undefined);
                 ctx.set_jump_target_here(jump_over_return_undefined);

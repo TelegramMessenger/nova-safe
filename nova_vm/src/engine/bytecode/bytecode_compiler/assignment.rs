@@ -586,6 +586,13 @@ pub(super) fn compile_assignment_expression<'s, 'gc>(
                 // Pop lref off the reference stack.
                 ctx.add_instruction(Instruction::PopReference);
             }
+            if lref.has_reference() {
+                // The Reference was kept for an assignment that is not made
+                // here: nothing that follows is to find it in the register
+                // (a call of a value, a `typeof` of one, would take it for
+                // its own).
+                ctx.add_instruction(Instruction::DropReference);
+            }
             // Phi-join: after this both branches finally unify.
             if let Some(jump_over_else) = jump_to_return_rval {
                 ctx.set_jump_target_here(jump_over_else);
