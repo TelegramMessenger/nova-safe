@@ -119,6 +119,19 @@ pub(super) fn execute_array_push<'gc>(
         unreachable!();
     };
     let len = array.len(agent);
+    // The Array of the literal takes its next element as a plain one where
+    // nothing stands against that: it has no element descriptors, it can
+    // grow (its length is writable, and it takes new properties), and the
+    // element is the one after its last. CreateDataPropertyOrThrow defines
+    // and asks no prototype, so that is all of it; it made a descriptor of
+    // the value, looked for the key and for the length, and applied the
+    // descriptor, for every element of an Array that is spread.
+    if len < u32::MAX - 1
+        && array.takes_plain_elements(agent)
+        && array.unbind().push(agent, value.unbind()).is_ok()
+    {
+        return Ok(());
+    }
     let key = PropertyKey::Integer(len.into());
     let array = array.unbind();
     let value = value.unbind();

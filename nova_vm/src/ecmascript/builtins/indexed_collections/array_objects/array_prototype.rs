@@ -440,6 +440,38 @@ impl ArrayPrototype {
                         gc.into_nogc(),
                     ));
                 }
+                // An Array whose elements are all there as plain values,
+                // into an Array that takes them as plain elements after
+                // its last (see ArrayPush of an array literal): each turn
+                // of the steps below then finds the element, reads it and
+                // defines it, with nothing run, which is the elements
+                // appended. One by one through the steps, each was looked
+                // for, read and defined the general way.
+                if let (Value::Array(source), Object::Array(target)) = (e.get(agent), a.get(agent))
+                    && source != target
+                    && i64::from(source.len(agent)) == len
+                    && i64::from(target.len(agent)) == n
+                    && n + len < i64::from(u32::MAX)
+                    && source.is_trivial(agent)
+                    && source.is_dense(agent)
+                    && target.takes_plain_elements(agent)
+                {
+                    agent.poll_interrupt(gc.nogc()).unbind()?;
+                    let count = source.len(agent);
+                    if let Err(err) = target.reserve(agent, count) {
+                        return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
+                    }
+                    for index in 0..count as usize {
+                        let Some(&Some(element)) = source.as_slice(agent).get(index) else {
+                            unreachable!("a dense Array has every element up to its length")
+                        };
+                        if let Err(err) = target.push(agent, element.unbind()) {
+                            return Err(agent.throw_allocation_exception(err, gc.into_nogc()));
+                        }
+                    }
+                    n += len;
+                    continue;
+                }
                 // iii. Let k be 0.
                 let mut k = 0;
                 // iv. Repeat, while k < len,
