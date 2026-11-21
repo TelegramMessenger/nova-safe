@@ -81,10 +81,30 @@ pub const MAX_STRING_LENGTH: usize = (1 << 30) - 1;
 /// allocates, whatever the heap limit.
 pub const MAX_BUFFER_BYTES: usize = 1 << 31;
 
+/// What ran between two polls of the host: counted in the tests of this
+/// module only, which hold the interval that the countdown promises.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct Work {
+    /// Instructions and steps of native loops since the last poll.
+    since_poll: u32,
+    /// The most of them between two polls.
+    most: u32,
+    polls: u32,
+    total: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct Limits {
     /// Counts down to the next interrupt poll.
     pub(crate) countdown: u32,
+    /// Steps that the running `Vm` took out of the countdown for the
+    /// instructions it runs without counting them one by one
+    /// ([`Agent::lend_steps`]): a poll starts the countdown again without
+    /// them, as they are still to be made.
+    lent: u32,
+    #[cfg(test)]
+    work: Work,
     termination: Option<TerminationReason>,
     heap_limit: Option<usize>,
     /// Whether an allocation the heap limit refuses terminates the script.
@@ -107,6 +127,9 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             countdown: POLL_INTERVAL,
+            lent: 0,
+            #[cfg(test)]
+            work: Work::default(),
             termination: None,
             heap_limit: None,
             refusal_terminates: false,
@@ -302,6 +325,7 @@ impl Agent {
     /// exception handlers work again.
     pub fn take_termination(&mut self) -> Option<TerminationReason> {
         self.limits.countdown = POLL_INTERVAL;
+        self.limits.lent = 0;
         self.limits.termination.take()
     }
 
@@ -318,6 +342,8 @@ impl Agent {
         if self.limits.termination.is_none() {
             self.limits.termination = Some(reason);
         }
+        // Nothing that is given back makes the countdown longer again.
+        self.limits.lent = 0;
         self.limits.countdown = 1;
     }
 
@@ -339,6 +365,8 @@ impl Agent {
     /// iteration.
     #[inline(always)]
     pub fn poll_interrupt<'a>(&mut self, gc: NoGcScope<'a, '_>) -> JsResult<'a, ()> {
+        #[cfg(test)]
+        self.count_work();
         self.limits.countdown -= 1;
         if self.limits.countdown == 0 {
             self.poll_interrupt_now(gc)
@@ -376,11 +404,65 @@ impl Agent {
         }
     }
 
+    /// Takes half of what is left of the countdown out of it, for the
+    /// instructions that the loop of a `Vm` runs without counting them one
+    /// by one: it stops after as many steps as this returns, and gives back
+    /// what it did not make ([`Agent::return_steps`]) before anything else
+    /// runs instructions. The host is asked first where the countdown has
+    /// run out, so that what is lent is never nothing.
+    ///
+    /// The other half stays for the native loops that the instructions
+    /// call meanwhile, which count their steps as ever: what is lent and
+    /// what they count are never more than [`POLL_INTERVAL`] together
+    /// between two polls.
+    #[inline(always)]
+    pub(crate) fn lend_steps<'a>(&mut self, gc: NoGcScope<'a, '_>) -> JsResult<'a, u32> {
+        self.limits.lent = 0;
+        if self.limits.countdown <= 1 {
+            self.poll_interrupt_now(gc)?;
+        }
+        let lent = self.limits.countdown / 2;
+        self.limits.countdown -= lent;
+        self.limits.lent = lent;
+        Ok(lent)
+    }
+
+    /// One instruction that the loop of a `Vm` runs, or one step of a
+    /// native loop.
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn count_work(&mut self) {
+        self.limits.work.since_poll += 1;
+        self.limits.work.total += 1;
+    }
+
+    /// Puts the steps that were lent and not made back into the countdown:
+    /// `unused` of them, and never more than were lent.
+    #[inline(always)]
+    pub(crate) fn return_steps(&mut self, unused: usize) {
+        let lent = self.limits.lent;
+        self.limits.lent = 0;
+        self.limits.countdown += if unused < lent as usize {
+            unused as u32
+        } else {
+            lent
+        };
+    }
+
     /// For engines that run without a GC scope (the RegExp matcher): true
     /// when the running script must end. The caller then returns
     /// [`Agent::termination_error`].
     pub fn should_terminate(&mut self) -> bool {
-        self.limits.countdown = POLL_INTERVAL;
+        #[cfg(test)]
+        {
+            let work = &mut self.limits.work;
+            work.most = work.most.max(work.since_poll);
+            work.since_poll = 0;
+            work.polls += 1;
+        }
+        // The steps lent are made after this poll: they are part of what
+        // may pass before the next one.
+        self.limits.countdown = POLL_INTERVAL - self.limits.lent.min(POLL_INTERVAL / 2);
         if self.limits.termination.is_none() {
             self.check_termination_conditions();
         }
@@ -646,6 +728,7 @@ impl Agent {
         self.limits.stack_base = stack_address();
         self.limits.termination = None;
         self.limits.countdown = POLL_INTERVAL;
+        self.limits.lent = 0;
     }
 
     /// Called after a garbage collection: records the live heap size and
@@ -674,5 +757,272 @@ impl Agent {
         {
             self.terminate(TerminationReason::OutOfMemory);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::POLL_INTERVAL;
+    use crate::{
+        ecmascript::{Agent, AgentOptions, DefaultHostHooks, String, initialize_default_realm},
+        engine::{Bindable, GcScope},
+    };
+
+    /// Runs `source` and returns the most instructions and steps of native
+    /// loops that passed between two polls of the host, how many polls
+    /// there were, and how much ran in all.
+    fn work_between_polls(source: &str) -> (u32, u32, u64) {
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        agent.limits.work = Default::default();
+        let source_text = String::from_string(&mut agent, source.to_string(), gc.nogc());
+        let result = agent.run_script(source_text.unbind(), gc.reborrow());
+        assert!(result.is_ok(), "the script throws: {source}");
+        let work = &agent.limits.work;
+        (work.most.max(work.since_poll), work.polls, work.total)
+    }
+
+    /// No more than the interval runs between two polls, and the host is
+    /// not asked much more often than the interval says either.
+    fn holds_the_interval(name: &str, source: &str) {
+        let (most, polls, total) = work_between_polls(source);
+        assert!(
+            most <= POLL_INTERVAL,
+            "{name}: {most} instructions and steps between two polls"
+        );
+        assert!(
+            total >= u64::from(POLL_INTERVAL) * 8,
+            "{name}: only {total} instructions and steps, which shows little"
+        );
+        // An instruction is a few bytes, each a step of the countdown.
+        let least = total / u64::from(POLL_INTERVAL);
+        assert!(
+            u64::from(polls) >= least && u64::from(polls) <= least * 12 + 16,
+            "{name}: {polls} polls for {total} instructions and steps"
+        );
+    }
+
+    fn repeated(statement: &str, times: usize) -> std::string::String {
+        statement.repeat(times)
+    }
+
+    /// No instruction of the loop of a `Vm` counts steps of its own so far:
+    /// the two ways of counting are put together here as such an
+    /// instruction would, a native loop running while steps are lent.
+    #[test]
+    fn steps_lent_and_steps_of_native_loops_share_the_interval() {
+        let (mut gc, mut scope) = GcScope::create_root();
+        let gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        let mut seed = 0x2545_f491_u32;
+        let mut next = |below: u32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) % below
+        };
+        for turn in 0..20_000 {
+            let lent = agent.lend_steps(gc.nogc()).unwrap();
+            assert!(lent >= 1 && lent <= POLL_INTERVAL / 2);
+            // Mostly a few instructions, sometimes all that were lent.
+            let made = if turn % 7 == 0 {
+                lent
+            } else {
+                next(lent.min(40) + 1)
+            };
+            let before = next(made + 1);
+            for _ in 0..before {
+                agent.count_work();
+            }
+            // A native loop of a length that the script chooses.
+            let steps = match turn % 5 {
+                0 => next(3 * POLL_INTERVAL),
+                1 => next(300),
+                _ => 0,
+            };
+            for _ in 0..steps {
+                agent.poll_interrupt(gc.nogc()).unwrap();
+            }
+            for _ in before..made {
+                agent.count_work();
+            }
+            agent.return_steps((lent - made) as usize);
+            assert!(agent.limits.countdown >= 1 && agent.limits.countdown <= POLL_INTERVAL);
+            assert!(agent.limits.work.since_poll <= POLL_INTERVAL);
+        }
+        let work = &agent.limits.work;
+        assert!(work.polls > 1000);
+        assert!(
+            work.most <= POLL_INTERVAL,
+            "{} instructions and steps between two polls",
+            work.most
+        );
+        // More is never given back than was lent.
+        let lent = agent.lend_steps(gc.nogc()).unwrap();
+        let countdown = agent.limits.countdown;
+        agent.return_steps(usize::MAX);
+        assert_eq!(agent.limits.countdown, countdown + lent);
+        agent.return_steps(usize::MAX);
+        assert_eq!(agent.limits.countdown, countdown + lent);
+    }
+
+    #[test]
+    fn a_straight_line_is_polled() {
+        holds_the_interval(
+            "global statements",
+            &format!("var x = 0; {} x", repeated("x = x + 1; ", 40_000)),
+        );
+        holds_the_interval(
+            "local statements",
+            &format!(
+                "(function () {{ let x = 0; {} return x; }})()",
+                repeated("x = x + 1; ", 60_000)
+            ),
+        );
+        holds_the_interval(
+            "calls of a native function",
+            &format!("var x = 0; {} x", repeated("x = Math.abs(x) + 1; ", 20_000)),
+        );
+        holds_the_interval(
+            "calls in place",
+            &format!(
+                "function f(a) {{ return a + 1; }} var x = 0; {} x",
+                repeated("x = f(x); ", 20_000)
+            ),
+        );
+    }
+
+    #[test]
+    fn loops_are_polled() {
+        holds_the_interval("empty", "for (let i = 0; i < 300000; i++) {}");
+        holds_the_interval(
+            "sum",
+            "let s = 0; for (let i = 0; i < 200000; i++) { s += i; } s",
+        );
+        holds_the_interval(
+            "in a function",
+            "(function () { let s = 0, i = 0; while (i < 200000) { s += i; i++; } \
+             do { i--; } while (i > 0); let n = 100000; while (n) { n--; } return s; })()",
+        );
+        holds_the_interval(
+            "a long body",
+            &format!(
+                "(function () {{ let x = 0; for (let i = 0; i < 60; i++) {{ {} }} return x; }})()",
+                repeated("x = x + 1; ", 3000)
+            ),
+        );
+        holds_the_interval(
+            "a body that is mostly passed over",
+            &format!(
+                "(function () {{ let x = 0; for (let i = 0; i < 100000; i++) {{ \
+                 if (i < 0) {{ {} }} x += i & 3; }} return x; }})()",
+                repeated("x = x + 1; ", 2000)
+            ),
+        );
+        holds_the_interval(
+            "a switch",
+            &format!(
+                "(function () {{ let x = 0; for (let i = 0; i < 100000; i++) {{ \
+                 switch (i & 7) {{ case 0: {body} break; case 1: x += 1; break; \
+                 case 2: {body} break; case 3: x += 3; continue; case 4: {body} break; \
+                 default: x += 5; }} }} return x; }})()",
+                body = repeated("x = x + 1; ", 20)
+            ),
+        );
+        holds_the_interval(
+            "tests that jump",
+            "(function () { let a = 0, b = null, o = { k: 1 }, n = 0; \
+             for (let i = 0; i < 100000; i++) { \
+             a = (i & 1) || (i & 2) || 7; b = b ?? i; n += (i % 3 === 0) ? 1 : (a && o.k) ? 2 : 3; \
+             if (i === 5 || typeof b !== 'number' || o.k == null) { n--; } \
+             if (!(i & 1)) continue; n++; } return n; })()",
+        );
+        holds_the_interval(
+            "nested",
+            "let n = 0; for (let i = 0; i < 400; i++) { for (let j = 0; j < 400; j++) { n += j; } } n",
+        );
+        holds_the_interval(
+            "iterations",
+            "(function () { const a = []; for (let i = 0; i < 3000; i++) a.push(i); \
+             const o = {}; for (let i = 0; i < 200; i++) o['k' + i] = i; let n = 0; \
+             for (let t = 0; t < 20; t++) { for (const v of a) n += v; for (const k in o) n += o[k]; \
+             for (const [i, v] of a.entries()) n += i - v; } return n; })()",
+        );
+    }
+
+    #[test]
+    fn calls_are_polled() {
+        holds_the_interval(
+            "recursion",
+            "function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); } fib(22)",
+        );
+        holds_the_interval(
+            "closures, methods and accessors",
+            "(function () { function counter() { let c = 0; return () => ++c; } \
+             const next = counter(); \
+             const o = { v: 1, get g() { return this.v; }, set s(x) { this.v = x; }, \
+             m(x) { return x + this.v; } }; const b = o.m.bind(o); let n = 0; \
+             for (let i = 0; i < 30000; i++) { n += next() + o.g + o.m(i) + b(i); o.s = i & 7; } \
+             return n; })()",
+        );
+        holds_the_interval(
+            "classes",
+            "(function () { class A { constructor(x) { this.x = x; } get d() { return this.x * 2; } } \
+             class B extends A { y = 1; constructor(x) { super(x); this.z = x; } \
+             sum() { return this.x + this.y + this.z + this.d; } } \
+             class C extends B { w = 2; } let n = 0; \
+             for (let i = 0; i < 20000; i++) { n += new B(i).sum() + new C(i).w + new A(i).d; } \
+             return n; })()",
+        );
+        holds_the_interval(
+            "generators",
+            "(function () { function* count(n) { for (let i = 0; i < n; i++) yield i; } \
+             function* twice(n) { yield* count(n); yield* count(n); } let n = 0; \
+             for (let t = 0; t < 200; t++) { for (const v of twice(100)) n += v; } \
+             const g = count(40000); for (let r = g.next(); !r.done; r = g.next()) n += r.value; \
+             return n; })()",
+        );
+        holds_the_interval(
+            "functions that native loops call",
+            "(function () { const a = []; for (let i = 0; i < 2000; i++) a.push(i); let n = 0; \
+             for (let t = 0; t < 10; t++) { a.forEach((v) => { n += v; }); \
+             n += a.map((v) => v * 2).filter((v) => v % 3 === 0).reduce((s, v) => s + v, 0); \
+             a.slice().sort((x, y) => y - x); } \
+             function walk(d) { return d === 0 ? 1 : [0, 1, 2].map(() => walk(d - 1)).reduce((s, v) => s + v, 0); } \
+             return n + walk(8); })()",
+        );
+        holds_the_interval(
+            "what is thrown and caught",
+            "(function () { function f(i) { if (i & 1) throw new Error('odd'); return i; } \
+             let n = 0; for (let i = 0; i < 20000; i++) { \
+             try { n += f(i); } catch (e) { n -= 1; } finally { n += 2; } } return n; })()",
+        );
+    }
+
+    #[test]
+    fn native_loops_among_instructions_are_polled() {
+        holds_the_interval(
+            "searches",
+            "(function () { const a = []; for (let i = 0; i < 1500; i++) a.push(i); let n = 0; \
+             for (let i = 0; i < 3000; i++) { n += a.indexOf(1400 + (i & 63)) + (a.includes(-1) ? 1 : 0); \
+             n += a.lastIndexOf(i); } return n; })()",
+        );
+        holds_the_interval(
+            "short searches in a long loop",
+            "(function () { const a = [1, 2, 3, 4, 5, 6, 7, 8]; let n = 0; \
+             for (let i = 0; i < 60000; i++) { n += a.indexOf(i & 15); } return n; })()",
+        );
+        holds_the_interval(
+            "arrays built and joined",
+            "(function () { let n = 0; for (let i = 0; i < 300; i++) { \
+             const a = new Array(500).fill(i); a.reverse(); n += a.join('').length + a.concat(a).length; \
+             n += a.slice(10).length + String(i).padStart(40, 'x').length; } return n; })()",
+        );
+        holds_the_interval(
+            "text",
+            "(function () { let s = ''; let n = 0; for (let i = 0; i < 20000; i++) { \
+             s += 'ab'; if (s.length > 2000) { n += s.indexOf('ba', 1000) + s.split('a').length; s = ''; } \
+             n += 'x'.repeat(i & 31).length; } return n; })()",
+        );
     }
 }

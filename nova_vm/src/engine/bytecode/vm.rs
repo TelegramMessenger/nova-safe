@@ -91,6 +91,8 @@ enum Plain {
     Done,
     /// Executed, and it jumped backwards: one turn of a loop.
     Looped,
+    /// Executed, and it jumped forwards.
+    Skipped,
     /// Not executed and nothing changed: the instruction is not a plain one,
     /// or its operands are not what the short way takes.
     No,
@@ -147,9 +149,13 @@ enum Completion {
     Stepped,
 }
 
-/// The steps a backward jump or a call counts for in the interrupt countdown:
-/// the instructions on the way to it are not counted one by one.
-const STEPS_PER_TURN: u32 = 8;
+/// The steps that starting a `Vm` counts for in the interrupt countdown, on
+/// top of the instructions it then runs.
+const STEPS_PER_RUN: u32 = 8;
+
+/// The bytes of a window after its first: the loop of a `Vm` reads an
+/// instruction where the windows end at least this far after it.
+const WINDOW_REST: usize = Instr::WINDOW - 1;
 
 /// VM exception handler.
 #[derive(Debug)]
@@ -1053,16 +1059,16 @@ impl Vm {
         let collections_depth = agent.stack_ref_collections.borrow().len();
         let print_internals = agent.options.print_internals;
         // The host is asked whether to interrupt, and the heap limit checked,
-        // every so many calls and turns of loops: a script cannot run long
-        // without either.
-        if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
+        // every so many instructions (see the windows below) and steps of
+        // native loops: a script cannot run long without either.
+        if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_RUN, gc.nogc()) {
             return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc()));
         }
         // A collection is looked for where one can have become due: when the
         // code starts, after an instruction that is not plain (the plain ones
         // allocate nothing on the heap but the Number an operator gives,
-        // and run only once between two of these places), and on every turn
-        // of a loop, where the poll above can have asked for one.
+        // and run only once between two of these places), on every turn
+        // of a loop, and after every poll, which can have asked for one.
         if agent.check_gc() {
             self.trigger_gc(agent, gc.reborrow());
         }
@@ -1078,6 +1084,15 @@ impl Vm {
             tables: base_executable.get_tables(agent),
             stack_depth,
             collections_depth,
+        };
+        // How far the end of the windows (below) is ahead of the instruction
+        // pointer, which says how many steps of the interrupt countdown this
+        // Vm holds: those for its first instructions here. It goes with the
+        // instruction pointer from the code that calls a function in place
+        // to that function and back.
+        let mut ahead = match agent.lend_steps(gc.nogc()) {
+            Ok(lent) => WINDOW_REST + lent as usize,
+            Err(err) => return ExecutionResult::Throw(err.unbind().bind(gc.into_nogc())),
         };
         loop {
             // The executable is looked up through its rooted handle after
@@ -1110,11 +1125,27 @@ impl Vm {
             // one of them goes the other way, where the end of the code
             // goes.
             let instructions = code_tables.padded();
-            let windows: &[u8] = if print_internals { &[] } else { instructions };
+            let window_source: &[u8] = if print_internals { &[] } else { instructions };
+            // The same look counts the instructions for the interrupt
+            // countdown, which were counted one by one: the windows end
+            // where the steps that the countdown lent run out
+            // ([`Agent::lend_steps`]), `limit` being that end as if the
+            // code went on forever. An instruction moves towards it by its
+            // length, which is one step at least; a jump keeps its distance
+            // to it but for one step, whatever it passes over or goes back
+            // by. The instruction that does not find its window there is
+            // read the other way, where what is left of the steps is given
+            // back, the host is asked if the countdown has run out, and
+            // steps are lent again. So no more instructions than the
+            // countdown has steps run between two polls, in a straight
+            // line, in a loop or in calls, and none of them counts.
+            let mut limit = ip + ahead;
+            let mut windows = window_source.get(..limit).unwrap_or(window_source);
             // The tables as three slices, which stay what they are while
             // this code runs: a collection rewrites their entries in place.
             let tables = code_tables.view();
             let change = loop {
+                let at = ip;
                 let (instr, window) = if let Some(window) = windows
                     .get(ip..)
                     .and_then(|rest| rest.first_chunk::<{ Instr::WINDOW }>())
@@ -1127,6 +1158,29 @@ impl Vm {
                     else {
                         break Change::End;
                     };
+                    // Not the end of the code: the steps lent are made (or
+                    // the instructions are printed, each read this way).
+                    self.ip = ip;
+                    agent.return_steps(Self::steps_left(limit, ip));
+                    limit = ip + WINDOW_REST;
+                    match agent.lend_steps(gc.nogc()) {
+                        Ok(lent) => limit += lent as usize,
+                        // No handler of the running code sees this one.
+                        Err(err) => break Change::Throw(err.unbind()),
+                    }
+                    windows = window_source.get(..limit).unwrap_or(window_source);
+                    if agent.check_gc() {
+                        self.trigger_gc(agent, gc.reborrow());
+                        code = executable.get(agent);
+                        collections = agent.heap.collections;
+                        if agent.termination().is_some() {
+                            // The heap is over its limit after the
+                            // collection that the poll asked for.
+                            agent.return_steps(Self::steps_left(limit, ip));
+                            limit = ip + WINDOW_REST;
+                            break Change::Throw(agent.termination_error(gc.nogc()).unbind());
+                        }
+                    }
                     if print_internals {
                         Self::print_executing(instr.kind);
                     }
@@ -1140,6 +1194,8 @@ impl Vm {
                     };
                     (instr, window)
                 };
+                #[cfg(test)]
+                agent.count_work();
                 // Most of what runs is plain: it goes straight to the next
                 // instruction, with no result to look at and nothing to
                 // release. Every instruction leaves `ip` after itself
@@ -1156,17 +1212,25 @@ impl Vm {
                     gc.nogc(),
                 ) {
                     Plain::Done => continue,
+                    Plain::Skipped => {
+                        limit = limit + ip - at - 1;
+                        windows = window_source.get(..limit).unwrap_or(window_source);
+                        continue;
+                    }
                     Plain::Looped => {
-                        self.ip = ip;
-                        if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
-                            // No handler of the running code sees this one.
-                            break Change::Throw(err.unbind());
-                        }
+                        limit = limit + ip - at - 1;
                         if agent.check_gc() {
+                            self.ip = ip;
                             self.trigger_gc(agent, gc.reborrow());
                             code = executable.get(agent);
                             collections = agent.heap.collections;
+                            // A collection that finds the heap over its
+                            // limit ends the script: at the next
+                            // instruction, which asks for steps anew.
+                            agent.return_steps(Self::steps_left(limit, ip));
+                            limit = ip + WINDOW_REST;
                         }
+                        windows = window_source.get(..limit).unwrap_or(window_source);
                         continue;
                     }
                     // A call of a function that this Vm runs itself.
@@ -1225,6 +1289,7 @@ impl Vm {
                                 Self::print_exiting();
                             }
                             if self.depth == 0 {
+                                agent.return_steps(Self::steps_left(limit, ip));
                                 let result = self.result.unwrap_or(Value::Undefined);
                                 return ExecutionResult::Return(result.bind(gc.into_nogc()));
                             }
@@ -1234,6 +1299,10 @@ impl Vm {
                     Plain::No => {}
                 }
                 self.ip = ip;
+                // What the instruction runs counts its own steps, a Vm
+                // that it starts among it: this one holds none meanwhile.
+                agent.return_steps(Self::steps_left(limit, ip));
+                limit = ip + WINDOW_REST;
                 let result = Self::execute_instruction(
                     agent,
                     self,
@@ -1299,24 +1368,27 @@ impl Vm {
                     }
                 }
                 // A jump, or the handler of what was thrown.
-                let turned = self.ip < ip;
                 ip = self.ip;
+                limit = ip + WINDOW_REST;
                 agent.stack_refs.get_mut().truncate(stack_depth);
                 agent
                     .stack_ref_collections
                     .get_mut()
                     .truncate(collections_depth);
-                if turned {
-                    // One turn of a loop whose jump back was not a plain
-                    // one (a test at its end, on operands that are not
-                    // integers): the host is asked here too.
-                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
-                        break Change::Throw(err.unbind());
-                    }
+                // Steps for the instructions that follow: the host is asked
+                // first where the countdown has run out, as after a run of
+                // instructions that are not plain, each a step.
+                match agent.lend_steps(gc.nogc()) {
+                    Ok(lent) => limit += lent as usize,
+                    Err(err) => break Change::Throw(err.unbind()),
                 }
                 if agent.check_gc() {
                     self.trigger_gc(agent, gc.reborrow());
+                    // As after the collection of a turn of a loop.
+                    agent.return_steps(Self::steps_left(limit, ip));
+                    limit = ip + WINDOW_REST;
                 }
+                windows = window_source.get(..limit).unwrap_or(window_source);
                 if agent.heap.collections != collections {
                     // The instruction ran a collection, or one was due.
                     code = executable.get(agent);
@@ -1325,7 +1397,16 @@ impl Vm {
             };
             // The running code changes: to a function called in place of
             // its call, or back to the code that made such a call, where
-            // the function returns or throws.
+            // the function returns or throws. The steps that are left go
+            // with the instruction pointer, or back to the countdown
+            // before anything but the loop above runs instructions.
+            ahead = limit.saturating_sub(ip);
+            macro_rules! return_steps {
+                () => {{
+                    agent.return_steps(ahead.saturating_sub(WINDOW_REST));
+                    ahead = WINDOW_REST;
+                }};
+            }
             let mut thrown = None;
             running = Running {
                 executable,
@@ -1340,17 +1421,17 @@ impl Vm {
                     if print_internals {
                         self.print_internals(agent, running.executable.clone(), gc.nogc());
                     }
-                    // As for the code a Vm is started with: the host is
-                    // asked, and a collection that is due is run.
-                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
-                        thrown = Some(err.unbind());
-                    } else if agent.check_gc() {
+                    // As for the code a Vm is started with: a collection
+                    // that is due is run.
+                    if agent.check_gc() {
                         self.trigger_gc(agent, gc.reborrow());
                         running.code = running.executable.get(agent);
+                        return_steps!();
                     }
                 }
                 Change::End if self.depth == 0 => {
                     self.ip = ip;
+                    agent.return_steps(ahead.saturating_sub(WINDOW_REST));
                     break;
                 }
                 Change::Return | Change::End => {
@@ -1366,12 +1447,15 @@ impl Vm {
                         // The rest of `new` of a derived class or of
                         // `super(…)`, in the calling code: its handlers
                         // have what this throws.
+                        return_steps!();
                         thrown = self.finish_construction(agent, settled, gc.reborrow());
                         running.code = running.executable.get(agent);
                     }
                 }
                 Change::Throw(error) => thrown = Some(error),
                 Change::Terminate => {
+                    // Out of an instruction that is not plain: no steps
+                    // are held.
                     while self.depth != 0 {
                         running = self.leave_function_thrown(agent, running);
                     }
@@ -1380,13 +1464,12 @@ impl Vm {
                 Change::Resume(generator, instr) => {
                     running = self.enter_generator(agent, instr, generator, ip, running, gc.nogc());
                     // As for the code a Vm is started with, which a
-                    // generator resumed by a call of its own is: the host
-                    // is asked, and a collection that is due is run.
-                    if let Err(err) = agent.poll_interrupt_steps(STEPS_PER_TURN, gc.nogc()) {
-                        thrown = Some(err.unbind());
-                    } else if agent.check_gc() {
+                    // generator resumed by a call of its own is: a
+                    // collection that is due is run.
+                    if agent.check_gc() {
                         self.trigger_gc(agent, gc.reborrow());
                         running.code = running.executable.get(agent);
+                        return_steps!();
                     }
                 }
                 Change::Yield(plain) => {
@@ -1404,6 +1487,7 @@ impl Vm {
                         // object already, which the step reads as any
                         // other's: in the calling code, whose handlers an
                         // error of that reading goes to.
+                        return_steps!();
                         let step = with_vm_gc(
                             agent,
                             self,
@@ -1431,6 +1515,7 @@ impl Vm {
                 // What the running code did not handle goes to the nearest
                 // handler of the code that called it in place; with none,
                 // the Vm ends with the error.
+                return_steps!();
                 loop {
                     if self.depth == 0 {
                         if print_internals {
@@ -2736,6 +2821,24 @@ impl Vm {
         }
     }
 
+    /// How many of the steps that the interrupt countdown lent are left
+    /// where the next instruction is at `ip` and the windows end at `limit`.
+    #[inline(always)]
+    fn steps_left(limit: usize, ip: usize) -> usize {
+        limit.saturating_sub(ip + WINDOW_REST)
+    }
+
+    /// What an instruction that jumped made of the loop: the instruction
+    /// pointer was at `from` after the instruction, and is at `to`.
+    #[inline(always)]
+    fn jumped(from: usize, to: usize) -> Plain {
+        if to < from {
+            Plain::Looped
+        } else {
+            Plain::Skipped
+        }
+    }
+
     #[inline(never)]
     #[cold]
     fn trigger_gc(&mut self, agent: &mut Agent, gc: GcScope) {
@@ -3064,7 +3167,9 @@ impl Vm {
                 vm.result = step.unbind();
                 if step.is_none() {
                     // Iterator finished: jump to escape the iterator loop.
+                    let from = *ip;
                     *ip = instr.get_jump_slot();
+                    return Self::jumped(from, *ip);
                 }
             }
             Instruction::PushReference => {
@@ -3084,24 +3189,22 @@ impl Vm {
                 step!(Jump);
                 let from = *ip;
                 execute_jump(agent, ip, instr);
-                if *ip < from {
-                    return Plain::Looped;
-                }
+                return Self::jumped(from, *ip);
             }
             Instruction::JumpIfNot => {
                 step!(JumpIfNot);
                 let from = *ip;
                 execute_jump_if_not(agent, vm, ip, instr);
-                if *ip < from {
-                    return Plain::Looped;
+                if *ip != from {
+                    return Self::jumped(from, *ip);
                 }
             }
             Instruction::JumpIfTrue => {
                 step!(JumpIfTrue);
                 let from = *ip;
                 execute_jump_if_true(agent, vm, ip, instr);
-                if *ip < from {
-                    return Plain::Looped;
+                if *ip != from {
+                    return Self::jumped(from, *ip);
                 }
             }
             // `a || b`, `a && b` and `a ?? b` whose value is used: the jump
@@ -3117,9 +3220,7 @@ impl Vm {
                 if Self::keeps_and_jumps(agent, instr.kind, value) {
                     let from = *ip;
                     *ip = instr.get_jump_slot();
-                    if *ip < from {
-                        return Plain::Looped;
-                    }
+                    return Self::jumped(from, *ip);
                 } else {
                     vm.result = None;
                 }
@@ -3138,9 +3239,7 @@ impl Vm {
                 if truthy == (instr.kind == Instruction::JumpIfIndexTrue) {
                     let from = *ip;
                     *ip = Instr::window_jump_target(window);
-                    if *ip < from {
-                        return Plain::Looped;
-                    }
+                    return Self::jumped(from, *ip);
                 }
             }
             // The test of most loops, on two Numbers: before the body with
@@ -3343,9 +3442,7 @@ impl Vm {
                 if equal == jumps_if_equal {
                     let from = *ip;
                     *ip = instr.get_jump_slot();
-                    if *ip < from {
-                        return Plain::Looped;
-                    }
+                    return Self::jumped(from, *ip);
                 }
             }
             // The tests of a `switch` on literals: its cases only follow it.
@@ -3353,7 +3450,9 @@ impl Vm {
                 step!(JumpToCase);
                 let value = vm.stack[instr.get_first_index()];
                 if let Some(target) = code.switch_target(agent, instr.get_second_index(), value) {
+                    let from = *ip;
                     *ip = target;
+                    return Self::jumped(from, *ip);
                 }
             }
             Instruction::UpdateEmpty => {
@@ -4300,9 +4399,7 @@ impl Vm {
         if jumps {
             let from = *ip;
             *ip = instr.get_jump_slot();
-            if *ip < from {
-                return Plain::Looped;
-            }
+            return Self::jumped(from, *ip);
         }
         Plain::Done
     }
@@ -4364,9 +4461,7 @@ impl Vm {
         if jumps {
             let from = *ip;
             *ip = Instr::window_jump_target(window);
-            if *ip < from {
-                return Plain::Looped;
-            }
+            return Self::jumped(from, *ip);
         }
         Plain::Done
     }
@@ -4409,9 +4504,7 @@ impl Vm {
             if jumps {
                 let from = *ip;
                 *ip = Instr::window_jump_target(window);
-                if *ip < from {
-                    return Plain::Looped;
-                }
+                return Self::jumped(from, *ip);
             }
             return Plain::Done;
         }
@@ -4449,9 +4542,7 @@ impl Vm {
         if jumps {
             let from = *ip;
             *ip = Instr::window_jump_target(window);
-            if *ip < from {
-                return Plain::Looped;
-            }
+            return Self::jumped(from, *ip);
         }
         Plain::Done
     }
@@ -4564,9 +4655,7 @@ impl Vm {
         if holds {
             let from = *ip;
             *ip = Instr::window_jump_target(window);
-            if *ip < from {
-                return Plain::Looped;
-            }
+            return Self::jumped(from, *ip);
         }
         Plain::Done
     }
