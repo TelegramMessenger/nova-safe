@@ -11,9 +11,9 @@ use crate::{
     ecmascript::{
         Agent, ArrayConstructor, ArrayPrototype, BUILTIN_STRING_MEMORY, BuiltinFunctionHeapData,
         ExceptionType, ExecutionContext, Function, FunctionInternalProperties, FunctionPrototype,
-        InternalSlots, JsResult, MapPrototype, MathObject, NumberConstructor, NumberPrototype,
-        Object, ObjectPrototype, OrdinaryObject, PropertyKey, Realm, ScopedValuesIterator, String,
-        StringConstructor, StringPrototype, Value, function_handle,
+        GlobalObject, InternalSlots, JsResult, MapPrototype, MathObject, NumberConstructor,
+        NumberPrototype, Object, ObjectPrototype, OrdinaryObject, PropertyKey, Realm,
+        ScopedValuesIterator, String, StringConstructor, StringPrototype, Value, function_handle,
     },
     engine::{Bindable, GcScope, HeapRootCollection, NoGcScope, ScopedArgumentsData},
     heap::{
@@ -399,6 +399,15 @@ pub(crate) enum DirectBuiltin {
     MathPow,
     MathRandom,
     DateNow,
+    /// `isNaN` and `isFinite` of the global object, of a Number.
+    IsNaN,
+    IsFinite,
+    /// The four of the Number constructor that ask what a value is, of
+    /// any value: none converts it.
+    NumberIsFinite,
+    NumberIsInteger,
+    NumberIsNaN,
+    NumberIsSafeInteger,
     /// `f.call(thisArg, ...)` of a function that is one of these.
     FunctionCall,
     ObjectHasOwnProperty,
@@ -443,7 +452,9 @@ impl DirectBuiltin {
                     ObjectPrototype::is_has_own_property(function)
                         .then_some(Self::ObjectHasOwnProperty)
                 })
-                .or_else(|| NumberPrototype::is_to_fixed(function).then_some(Self::NumberToFixed)),
+                .or_else(|| NumberPrototype::is_to_fixed(function).then_some(Self::NumberToFixed))
+                .or_else(|| NumberConstructor::direct_builtin(function))
+                .or_else(|| GlobalObject::direct_builtin(function)),
             Behaviour::Constructor(function) => {
                 if StringConstructor::is_constructor(function) {
                     Some(Self::StringCall)
@@ -567,6 +578,16 @@ impl DirectBuiltin {
             | Self::StringPadEnd => {
                 let string = String::try_from(this?).ok()?;
                 StringPrototype::run_direct(agent, self, string, arguments, gc)
+            }
+            Self::IsNaN | Self::IsFinite => {
+                GlobalObject::is_one_directly(agent, self, arguments).map(Value::from)
+            }
+            Self::NumberIsFinite
+            | Self::NumberIsInteger
+            | Self::NumberIsNaN
+            | Self::NumberIsSafeInteger => {
+                let value = arguments.first().copied().unwrap_or(Value::Undefined);
+                Some(NumberConstructor::is_one_directly(agent, self, value).into())
             }
             Self::StringCall => StringConstructor::call_directly(agent, arguments, gc),
             Self::NumberCall => NumberConstructor::call_directly(agent, arguments, gc),
