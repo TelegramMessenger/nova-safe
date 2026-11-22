@@ -7123,7 +7123,7 @@ fn bigint_binary_operator<'a>(
             lnum.magnitude_bits(agent),
             rnum.magnitude_bits(agent),
         );
-        agent.charge_steps(steps);
+        agent.poll_interrupt_steps(steps, gc)?;
     }
     match op_text {
         // a. If opText is **, return ? BigInt::exponentiate(lnum, rnum).

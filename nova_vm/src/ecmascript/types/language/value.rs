@@ -846,7 +846,7 @@ impl<'a> Value<'a> {
         };
         match self.to_string(agent, gc) {
             Ok(result) => result,
-            _ => map_object_to_static_string_repr(self),
+            _ => static_string_repr(self),
         }
     }
 
@@ -858,9 +858,9 @@ impl<'a> Value<'a> {
             // string instead (the result of `String(symbol)`).
             return symbol_idx.unbind().descriptive_string(agent, gc);
         };
-        match try_result_into_js(self.try_to_string(agent, gc)).unwrap() {
-            Some(result) => result,
-            None => map_object_to_static_string_repr(self),
+        match try_result_into_js(self.try_to_string(agent, gc)) {
+            Ok(Some(result)) => result,
+            _ => static_string_repr(self),
         }
     }
 
@@ -1562,7 +1562,10 @@ impl HeapMarkAndSweep for Value<'static> {
     }
 }
 
-fn map_object_to_static_string_repr(value: Value) -> String<'static> {
+fn static_string_repr(value: Value) -> String<'static> {
+    if value.is_bigint() {
+        return BUILTIN_STRING_MEMORY.BigInt;
+    }
     match Object::try_from(value).unwrap() {
         Object::BoundFunction(_)
         | Object::BuiltinFunction(_)

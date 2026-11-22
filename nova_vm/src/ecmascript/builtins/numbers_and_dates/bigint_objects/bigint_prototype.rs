@@ -77,9 +77,7 @@ impl BigIntPrototype {
         // 2. If radix is undefined, let radixMV be 10.
         if radix.is_undefined() || radix == Value::from(10u8) {
             // 5. Return BigInt::toString(x, 10).
-            Ok(BigInt::to_string_radix_10(agent, x.get(agent), gc.nogc())
-                .unbind()
-                .into())
+            Ok(BigInt::to_string_radix_10(agent, x.get(agent), gc.into_nogc())?.into())
         } else {
             // 3. Else, let radixMV be ? ToIntegerOrInfinity(radix).
             let radix = to_integer_or_infinity(agent, radix.unbind(), gc.reborrow()).unbind()?;
@@ -95,7 +93,7 @@ impl BigIntPrototype {
             }
             let radix = radix.into_i64() as u32;
             // 5. Return BigInt::toString(x, radixMV).
-            Ok(BigInt::to_string_radix_n(agent, x.get(agent), radix, gc).into())
+            Ok(BigInt::to_string_radix_n(agent, x.get(agent), radix, gc)?.into())
         }
     }
 

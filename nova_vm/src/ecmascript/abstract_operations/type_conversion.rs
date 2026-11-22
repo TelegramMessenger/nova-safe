@@ -1069,7 +1069,7 @@ pub(crate) fn string_to_big_int<'a>(
         num_bigint::BigInt::parse_bytes(string_to_convert.as_bytes(), base.unwrap_or(10));
 
     if let Some(num_big_int) = num_big_int {
-        agent.charge_steps(work);
+        agent.poll_interrupt_steps(work, nogc)?;
         BigInt::from_num_bigint(agent, num_big_int).check_size(agent, nogc)
     } else {
         let message =
@@ -1226,7 +1226,7 @@ pub(crate) fn to_string_primitive<'gc>(
         }
         // 8. If argument is a BigInt, return BigInt::toString(argument, 10).
         Primitive::BigInt(_) | Primitive::SmallBigInt(_) => {
-            Ok(BigInt::to_string_radix_10(agent, BigInt::try_from(argument).unwrap(), gc).unbind())
+            BigInt::to_string_radix_10(agent, BigInt::try_from(argument).unwrap(), gc)
         }
     }
 }
@@ -1409,14 +1409,14 @@ pub(crate) fn to_property_key_complex<'a, 'gc>(
     let gc = gc.into_nogc();
     let key = key.bind(gc);
 
-    Ok(to_property_key_primitive(agent, key, gc))
+    to_property_key_primitive(agent, key, gc)
 }
 
 pub(crate) fn to_property_key_primitive<'a>(
     agent: &mut Agent,
     primitive: Primitive<'a>,
     gc: NoGcScope<'a, '_>,
-) -> PropertyKey<'a> {
+) -> JsResult<'a, PropertyKey<'a>> {
     // 2. If Type(key) is Symbol, then
     //    a. Return key.
     // Note: We can reuse the fast path and non-standard special case handler:
@@ -1424,7 +1424,7 @@ pub(crate) fn to_property_key_primitive<'a>(
     // our non-standard parsing of integer strings back into integer property
     // keys here as well.
     if let Some(key) = to_property_key_simple(agent, primitive, gc) {
-        key
+        Ok(key)
     } else {
         // Key was still not simple: This mean it's a heap allocated f64,
         // BigInt, or non-negative-zero f32: These should never be safe
@@ -1432,7 +1432,7 @@ pub(crate) fn to_property_key_primitive<'a>(
         // stringifying.
 
         // 3. Return ! ToString(key).
-        to_string_primitive(agent, primitive, gc).unwrap().into()
+        Ok(to_string_primitive(agent, primitive, gc)?.into())
     }
 }
 

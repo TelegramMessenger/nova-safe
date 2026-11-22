@@ -407,19 +407,6 @@ impl Agent {
         }
     }
 
-    /// Counts `steps` steps of work done outside the interpreter loop (one
-    /// large BigInt operation) without polling: the next poll then asks the
-    /// host at once if the countdown ran out.
-    #[inline]
-    pub(crate) fn charge_steps(&mut self, steps: u64) {
-        let steps = u32::try_from(steps).unwrap_or(u32::MAX);
-        if self.limits.countdown <= steps {
-            self.limits.countdown = 1;
-        } else {
-            self.limits.countdown -= steps;
-        }
-    }
-
     /// The instructions that may run before the host is asked again, for a
     /// `Vm` that starts with none waiting for it: what the last such `Vm`
     /// left ([`Agent::set_steps_before_poll`]), or a whole interval after a
@@ -888,6 +875,36 @@ mod tests {
         assert_eq!(agent.limits.work.polls, 2);
         assert_eq!(agent.limits.work.most, POLL_INTERVAL);
         assert_eq!(agent.steps_before_poll(), VM_POLL_BUDGET as usize);
+    }
+
+    #[test]
+    fn bigint_work_polls_before_the_bytecode_window_ends() {
+        let polls = |bits| {
+            let source =
+                format!("let a = (1n << {bits}n) - 1n; for (let i = 0; i < 12; i++) a * a;");
+            work_between_polls(&source).1
+        };
+        assert!(polls(40_000) >= polls(8) + 12);
+    }
+
+    #[test]
+    fn interrupted_bigint_keys_and_diagnostics_return_normally() {
+        use crate::ecmascript::{
+            BigInt, JsError, TerminationReason, Value, to_property_key_primitive,
+        };
+
+        let (mut gc, mut scope) = GcScope::create_root();
+        let mut gc = GcScope::new(&mut gc, &mut scope);
+        let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
+        initialize_default_realm(&mut agent, gc.reborrow());
+        let bigint = BigInt::from_num_bigint(&mut agent, num_bigint::BigInt::from(1) << 1024);
+        agent.terminate(TerminationReason::Interrupted);
+        assert!(to_property_key_primitive(&mut agent, bigint.into(), gc.nogc()).is_err());
+        let value = Value::from(bigint);
+        let diagnostic = value.try_string_repr(&mut agent, gc.nogc());
+        assert_eq!(diagnostic.as_str(&agent), Some("BigInt"));
+        let diagnostic = JsError::new(value).to_string(&mut agent, gc.reborrow());
+        assert_eq!(diagnostic.as_str(&agent), Some("BigInt"));
     }
 
     #[test]

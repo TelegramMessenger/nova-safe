@@ -48,8 +48,9 @@ pub(crate) fn throw_bigint_too_large<'a>(agent: &mut Agent, gc: NoGcScope<'a, '_
 /// (schoolbook or Karatsuba multiplication, division, radix conversion):
 /// one step per 128 limb products, so the largest operation (2^20 by 2^20
 /// bits, a few milliseconds) counts as about two million steps.
-pub(crate) fn bigint_work_steps(a_bits: u64, b_bits: u64) -> u64 {
-    (a_bits / 64 + 1).saturating_mul(b_bits / 64 + 1) / 128
+pub(crate) fn bigint_work_steps(a_bits: u64, b_bits: u64) -> u32 {
+    let steps = (a_bits / 64 + 1).saturating_mul(b_bits / 64 + 1) / 128;
+    u32::try_from(steps).unwrap_or(u32::MAX)
 }
 use num_bigint::{Sign, ToBigInt, TryFromBigIntError};
 use std::ops::{BitAnd, BitOr, BitXor};
@@ -392,7 +393,7 @@ impl<'a> BigInt<'a> {
             return Err(throw_bigint_too_large(agent, gc));
         }
         let result_bits = base_bits.saturating_mul(u64::from(exponent));
-        agent.charge_steps(bigint_work_steps(result_bits, result_bits));
+        agent.poll_interrupt_steps(bigint_work_steps(result_bits, result_bits), gc)?;
 
         let result = match base {
             BigInt::SmallBigInt(base) => {
@@ -807,17 +808,17 @@ impl<'a> BigInt<'a> {
         x: Self,
         radix: u32,
         gc: NoGcScope<'gc, '_>,
-    ) -> String<'gc> {
+    ) -> JsResult<'gc, String<'gc>> {
         let bits = x.magnitude_bits(agent);
-        agent.charge_steps(bigint_work_steps(bits, bits));
-        String::from_string(
+        agent.poll_interrupt_steps(bigint_work_steps(bits, bits), gc)?;
+        Ok(String::from_string(
             agent,
             match x {
                 BigInt::SmallBigInt(x) => i64_to_radix_string(x.into_i64(), radix),
                 BigInt::BigInt(x) => x.get(agent).to_str_radix(radix),
             },
             gc,
-        )
+        ))
     }
 
     // ### [6.1.6.2.21 BigInt::toString ( x, radix )](https://tc39.es/ecma262/#sec-numeric-types-bigint-tostring)
@@ -825,17 +826,17 @@ impl<'a> BigInt<'a> {
         agent: &mut Agent,
         x: Self,
         gc: NoGcScope<'gc, '_>,
-    ) -> String<'gc> {
+    ) -> JsResult<'gc, String<'gc>> {
         let bits = x.magnitude_bits(agent);
-        agent.charge_steps(bigint_work_steps(bits, bits));
-        String::from_string(
+        agent.poll_interrupt_steps(bigint_work_steps(bits, bits), gc)?;
+        Ok(String::from_string(
             agent,
             match x {
                 BigInt::SmallBigInt(x) => x.into_i64().to_string(),
                 BigInt::BigInt(x) => x.get(agent).to_string(),
             },
             gc,
-        )
+        ))
     }
 }
 

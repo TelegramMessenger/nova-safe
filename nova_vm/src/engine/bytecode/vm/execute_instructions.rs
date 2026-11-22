@@ -1135,7 +1135,8 @@ fn handle_keep_reference<'gc>(
         if let Ok(referenced_name) =
             Primitive::try_from(reference.referenced_name_value().bind(gc.nogc()))
         {
-            let referenced_name = to_property_key_primitive(agent, referenced_name, gc.nogc());
+            let referenced_name =
+                to_property_key_primitive(agent, referenced_name, gc.nogc()).unbind()?;
             reference.set_referenced_name_to_property_key(referenced_name);
             Ok(reference.clone().bind(gc.into_nogc()))
         } else {
@@ -3080,7 +3081,7 @@ pub(super) fn execute_has_property<'gc>(
     };
     // 6. Return ? HasProperty(rval, ? ToPropertyKey(lval)).
     let property_key = if let Ok(lval) = Primitive::try_from(lval) {
-        to_property_key_primitive(agent, lval, gc.nogc())
+        to_property_key_primitive(agent, lval, gc.nogc()).unbind()?
     } else {
         let scoped_rval = rval.scope(agent, gc.nogc());
         let lval = lval.unbind();

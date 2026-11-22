@@ -394,7 +394,8 @@ Counting only calls and backward jumps left straight-line code without an interr
 limits the bytecode window used for dispatch and carries the remaining allowance through jumps, calls
 and generator resumes. The VM and native loops each get 2,048 steps, so together they execute at most
 4,096 instructions and native loop steps between host polls. Straight-line dispatch still needs only
-its existing window check.
+its existing window check. BigInt arithmetic and conversions poll directly when their estimated work
+uses the native allowance, even with space left in the bytecode window.
 
 A collection is no longer looked for before every instruction either, only where one can have become due: when
 code starts, after an instruction that is not plain, and on every turn of a loop.
@@ -3121,6 +3122,11 @@ tells Numbers from the rest itself, made it 1048 bytes shorter, the loop adding 
 and one of doubles 4%. What is kept leaves the arms as they were but for one thing: operands that
 are not Numbers, under an operator that is no comparison, go on to the call that was there, where
 they left at once.
+
+The current representation shares one byte buffer across successive versions of a growing string.
+A read borrows its range and freezes the buffer. Later appends or prepends can start a new buffer,
+so converting an existing string inside a JavaScript call needs no flattening allocation. Operations
+that produce new text, including array joins and JSON output, still check the allocation limit.
 
 ### 8. Other string work
 

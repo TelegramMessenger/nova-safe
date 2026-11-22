@@ -33,11 +33,11 @@ use crate::{
         AbstractModuleMethods, Environment, ErrorHeapData, ExecutionContext, Function,
         GraphLoadingStateRecord, HostDefined, Limits, ModuleRequest, Object, OrdinaryObject,
         PrivateEnvironment, PrivateName, Promise, PromiseReactionJob, PromiseResolveJob,
-        PromiseResolveThenableJob,
-        PropertyKey, PropertyLookupCache, Realm, RealmRecord, Reference, Referrer, ScriptOrModule,
-        SourceCode, SourceTextModule, String, Symbol, Value, ValueRootRepr,
-        get_identifier_reference, initialize_default_realm, initialize_host_defined_realm,
-        parse_script, script_evaluation, to_string, try_get_identifier_reference,
+        PromiseResolveThenableJob, PropertyKey, PropertyLookupCache, Realm, RealmRecord, Reference,
+        Referrer, ScriptOrModule, SourceCode, SourceTextModule, String, Symbol, Value,
+        ValueRootRepr, get_identifier_reference, initialize_default_realm,
+        initialize_host_defined_realm, parse_script, script_evaluation,
+        try_get_identifier_reference,
     },
     engine::{
         Bindable, GcScope, Global, HeapRootCollection, HeapRootData, HeapRootRef, NoGcScope,
@@ -101,7 +101,7 @@ impl<'a> JsError<'a> {
     /// [`Value`]: crate::ecmascript::Value
     /// [`String`]: crate::ecmascript::String
     pub fn to_string<'gc>(self, agent: &mut Agent, gc: GcScope<'gc, '_>) -> String<'gc> {
-        to_string(agent, self.0, gc).unwrap()
+        self.0.string_repr(agent, gc)
     }
 }
 
