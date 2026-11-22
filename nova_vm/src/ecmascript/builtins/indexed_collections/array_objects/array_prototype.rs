@@ -1830,6 +1830,11 @@ impl ArrayPrototype {
             let nogc = gc.nogc();
             let array = array.bind(nogc);
             let sep = separator.get(agent).bind(nogc);
+            let inline_separator = match &sep {
+                String::SmallString(s) => Some(s.as_wtf8()),
+                String::String(_) => None,
+            };
+            let separator_bytes = sep.len_(agent);
             while k < len {
                 let text = match array.as_slice(agent).get(k).copied().flatten() {
                     Some(Value::Undefined | Value::Null) => None,
@@ -1844,12 +1849,26 @@ impl ArrayPrototype {
                     None => break,
                 };
                 if k > 0 {
-                    // As below, for every element after the first.
                     agent.poll_interrupt(nogc).unbind()?;
-                    append(agent, &mut r, sep, nogc).unbind()?;
                 }
-                if let Some(text) = text {
-                    append(agent, &mut r, text, nogc).unbind()?;
+                let value = text.as_ref().map(|text| text.as_wtf8_(agent));
+                let projected = r.len()
+                    .saturating_add(if k > 0 { separator_bytes } else { 0 })
+                    .saturating_add(value.map_or(0, |v| v.len()));
+                if projected / 4096 == r.len() / 4096 {
+                    if k > 0 {
+                        r.push_wtf8(inline_separator.unwrap_or_else(|| sep.as_wtf8_(agent)));
+                    }
+                    if let Some(value) = value {
+                        r.push_wtf8(value);
+                    }
+                } else {
+                    if k > 0 {
+                        append(agent, &mut r, sep, nogc).unbind()?;
+                    }
+                    if let Some(text) = text {
+                        append(agent, &mut r, text, nogc).unbind()?;
+                    }
                 }
                 k += 1;
             }
