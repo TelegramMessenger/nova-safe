@@ -43,9 +43,10 @@ impl TerminationReason {
     }
 }
 
-/// Instructions (or native loop steps, or RegExp matcher steps) between two
-/// interrupt polls.
+/// Maximum combined VM instructions and native loop steps between host polls.
 pub(crate) const POLL_INTERVAL: u32 = 4096;
+const VM_POLL_BUDGET: u32 = POLL_INTERVAL / 2;
+const NATIVE_POLL_BUDGET: u32 = POLL_INTERVAL - VM_POLL_BUDGET;
 
 /// Allocations between two garbage collections when no heap limit is near.
 const GC_ALLOCATION_INTERVAL: usize = 2 * 1024 * 1024;
@@ -97,13 +98,12 @@ pub(crate) struct Work {
 
 #[derive(Debug)]
 pub(crate) struct Limits {
-    /// Counts down to the next interrupt poll.
+    /// Counts the steps of native loops down to the next interrupt poll.
     pub(crate) countdown: u32,
-    /// Steps that the running `Vm` took out of the countdown for the
-    /// instructions it runs without counting them one by one
-    /// ([`Agent::lend_steps`]): a poll starts the countdown again without
-    /// them, as they are still to be made.
-    lent: u32,
+    /// The instructions that may run before the next interrupt poll, where
+    /// no `Vm` is running or waiting that holds the count
+    /// ([`Agent::steps_before_poll`]).
+    steps_before_poll: u32,
     #[cfg(test)]
     work: Work,
     termination: Option<TerminationReason>,
@@ -132,8 +132,8 @@ pub(crate) struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            countdown: POLL_INTERVAL,
-            lent: 0,
+            countdown: NATIVE_POLL_BUDGET,
+            steps_before_poll: VM_POLL_BUDGET,
             #[cfg(test)]
             work: Work::default(),
             termination: None,
@@ -204,8 +204,9 @@ impl Limits {
                     // next poll, before it is judged.)
                     Some(ratio) => {
                         let estimated = |counted: usize| counted.saturating_mul(256) / ratio;
-                        interval
-                            .min((estimated(headroom) / 2).max(estimated(MIN_GC_ALLOCATION_INTERVAL)))
+                        interval.min(
+                            (estimated(headroom) / 2).max(estimated(MIN_GC_ALLOCATION_INTERVAL)),
+                        )
                     }
                     // The allocation counter sees less than the estimate
                     // finds live afterwards (element and property storage
@@ -331,8 +332,8 @@ impl Agent {
     /// Returns why the last script was terminated and clears it, so that
     /// exception handlers work again.
     pub fn take_termination(&mut self) -> Option<TerminationReason> {
-        self.limits.countdown = POLL_INTERVAL;
-        self.limits.lent = 0;
+        self.limits.countdown = NATIVE_POLL_BUDGET;
+        self.limits.steps_before_poll = VM_POLL_BUDGET;
         self.limits.termination.take()
     }
 
@@ -349,8 +350,6 @@ impl Agent {
         if self.limits.termination.is_none() {
             self.limits.termination = Some(reason);
         }
-        // Nothing that is given back makes the countdown longer again.
-        self.limits.lent = 0;
         self.limits.countdown = 1;
     }
 
@@ -411,27 +410,33 @@ impl Agent {
         }
     }
 
-    /// Takes half of what is left of the countdown out of it, for the
-    /// instructions that the loop of a `Vm` runs without counting them one
-    /// by one: it stops after as many steps as this returns, and gives back
-    /// what it did not make ([`Agent::return_steps`]) before anything else
-    /// runs instructions. The host is asked first where the countdown has
-    /// run out, so that what is lent is never nothing.
-    ///
-    /// The other half stays for the native loops that the instructions
-    /// call meanwhile, which count their steps as ever: what is lent and
-    /// what they count are never more than [`POLL_INTERVAL`] together
-    /// between two polls.
-    #[inline(always)]
-    pub(crate) fn lend_steps<'a>(&mut self, gc: NoGcScope<'a, '_>) -> JsResult<'a, u32> {
-        self.limits.lent = 0;
-        if self.limits.countdown <= 1 {
-            self.poll_interrupt_now(gc)?;
-        }
-        let lent = self.limits.countdown / 2;
-        self.limits.countdown -= lent;
-        self.limits.lent = lent;
-        Ok(lent)
+    /// The instructions that may run before the host is asked again, for a
+    /// `Vm` that starts with none waiting for it: what the last such `Vm`
+    /// left ([`Agent::set_steps_before_poll`]), or a whole interval after a
+    /// poll. A `Vm` counts them itself while it runs, by where its
+    /// instruction pointer is, and hands the count to the one it calls and
+    /// back: this is where it rests between two of them.
+    #[inline]
+    pub(crate) fn steps_before_poll(&self) -> usize {
+        self.limits.steps_before_poll as usize
+    }
+
+    /// Leaves the instructions that a `Vm` could still have run before the
+    /// next poll for the next one that starts with none waiting for it.
+    #[inline]
+    pub(crate) fn set_steps_before_poll(&mut self, left: usize) {
+        self.limits.steps_before_poll = left.min(VM_POLL_BUDGET as usize) as u32;
+    }
+
+    /// Asks the host whether to interrupt and checks the heap limit, for
+    /// the loop of a `Vm` that has run its instructions of an interval: the
+    /// instructions it may run before it asks again, or the termination
+    /// error.
+    #[inline(never)]
+    #[cold]
+    pub(crate) fn poll_for_steps<'a>(&mut self, gc: NoGcScope<'a, '_>) -> JsResult<'a, usize> {
+        self.poll_interrupt_now(gc)?;
+        Ok(VM_POLL_BUDGET as usize)
     }
 
     /// One instruction that the loop of a `Vm` runs, or one step of a
@@ -441,19 +446,6 @@ impl Agent {
     pub(crate) fn count_work(&mut self) {
         self.limits.work.since_poll += 1;
         self.limits.work.total += 1;
-    }
-
-    /// Puts the steps that were lent and not made back into the countdown:
-    /// `unused` of them, and never more than were lent.
-    #[inline(always)]
-    pub(crate) fn return_steps(&mut self, unused: usize) {
-        let lent = self.limits.lent;
-        self.limits.lent = 0;
-        self.limits.countdown += if unused < lent as usize {
-            unused as u32
-        } else {
-            lent
-        };
     }
 
     /// For engines that run without a GC scope (the RegExp matcher): true
@@ -467,9 +459,8 @@ impl Agent {
             work.since_poll = 0;
             work.polls += 1;
         }
-        // The steps lent are made after this poll: they are part of what
-        // may pass before the next one.
-        self.limits.countdown = POLL_INTERVAL - self.limits.lent.min(POLL_INTERVAL / 2);
+        self.limits.countdown = NATIVE_POLL_BUDGET;
+        self.limits.steps_before_poll = VM_POLL_BUDGET;
         if self.limits.termination.is_none() {
             self.check_termination_conditions();
         }
@@ -787,8 +778,8 @@ impl Agent {
     pub(crate) fn enter_from_host(&mut self) {
         self.limits.stack_base = stack_address();
         self.limits.termination = None;
-        self.limits.countdown = POLL_INTERVAL;
-        self.limits.lent = 0;
+        self.limits.countdown = NATIVE_POLL_BUDGET;
+        self.limits.steps_before_poll = VM_POLL_BUDGET;
         // The heap as the last collection left it is over the limit: that
         // collection ended a script, and this is another.
         self.limits.live_bytes_of_an_ended_script = self
@@ -825,9 +816,10 @@ impl Agent {
                 self.limits.counted_per_estimated = None;
             }
         }
-        self.heap.gc_alloc_limit = self.heap.gc_alloc_limit.max(
-            (self.limits.live_bytes_after_gc / 2).min(MAX_LIVE_BYTES_GC_ALLOCATION_INTERVAL),
-        );
+        self.heap.gc_alloc_limit = self
+            .heap
+            .gc_alloc_limit
+            .max((self.limits.live_bytes_after_gc / 2).min(MAX_LIVE_BYTES_GC_ALLOCATION_INTERVAL));
         self.limits.update_gc_threshold(self.heap.gc_alloc_limit);
         if let Some(limit) = self.limits.heap_limit
             && self.limits.live_bytes_after_gc > limit
@@ -839,7 +831,7 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::POLL_INTERVAL;
+    use super::{NATIVE_POLL_BUDGET, POLL_INTERVAL, VM_POLL_BUDGET};
     use crate::{
         ecmascript::{Agent, AgentOptions, DefaultHostHooks, String, initialize_default_realm},
         engine::{Bindable, GcScope},
@@ -885,62 +877,41 @@ mod tests {
         statement.repeat(times)
     }
 
-    /// No instruction of the loop of a `Vm` counts steps of its own so far:
-    /// the two ways of counting are put together here as such an
-    /// instruction would, a native loop running while steps are lent.
+    /// The instructions that a Vm did not run before the next poll rest
+    /// with the Agent for the next one: never more than an interval, which
+    /// a poll starts again.
     #[test]
-    fn steps_lent_and_steps_of_native_loops_share_the_interval() {
+    fn the_steps_before_a_poll_rest_with_the_agent() {
         let (mut gc, mut scope) = GcScope::create_root();
         let gc = GcScope::new(&mut gc, &mut scope);
         let mut agent = Agent::new(AgentOptions::default(), &DefaultHostHooks);
-        let mut seed = 0x2545_f491_u32;
-        let mut next = |below: u32| {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (seed >> 8) % below
-        };
-        for turn in 0..20_000 {
-            let lent = agent.lend_steps(gc.nogc()).unwrap();
-            assert!(lent >= 1 && lent <= POLL_INTERVAL / 2);
-            // Mostly a few instructions, sometimes all that were lent.
-            let made = if turn % 7 == 0 {
-                lent
-            } else {
-                next(lent.min(40) + 1)
-            };
-            let before = next(made + 1);
-            for _ in 0..before {
-                agent.count_work();
-            }
-            // A native loop of a length that the script chooses.
-            let steps = match turn % 5 {
-                0 => next(3 * POLL_INTERVAL),
-                1 => next(300),
-                _ => 0,
-            };
-            for _ in 0..steps {
-                agent.poll_interrupt(gc.nogc()).unwrap();
-            }
-            for _ in before..made {
-                agent.count_work();
-            }
-            agent.return_steps((lent - made) as usize);
-            assert!(agent.limits.countdown >= 1 && agent.limits.countdown <= POLL_INTERVAL);
-            assert!(agent.limits.work.since_poll <= POLL_INTERVAL);
-        }
-        let work = &agent.limits.work;
-        assert!(work.polls > 1000);
-        assert!(
-            work.most <= POLL_INTERVAL,
-            "{} instructions and steps between two polls",
-            work.most
+        assert_eq!(agent.steps_before_poll(), VM_POLL_BUDGET as usize);
+        agent.set_steps_before_poll(17);
+        assert_eq!(agent.steps_before_poll(), 17);
+        agent.set_steps_before_poll(0);
+        assert_eq!(agent.steps_before_poll(), 0);
+        agent.set_steps_before_poll(usize::MAX);
+        assert_eq!(agent.steps_before_poll(), VM_POLL_BUDGET as usize);
+        agent.set_steps_before_poll(3);
+        assert_eq!(
+            agent.poll_for_steps(gc.nogc()).ok(),
+            Some(VM_POLL_BUDGET as usize)
         );
-        // More is never given back than was lent.
-        let lent = agent.lend_steps(gc.nogc()).unwrap();
-        let countdown = agent.limits.countdown;
-        agent.return_steps(usize::MAX);
-        assert_eq!(agent.limits.countdown, countdown + lent);
-        agent.return_steps(usize::MAX);
-        assert_eq!(agent.limits.countdown, countdown + lent);
+        assert_eq!(agent.steps_before_poll(), VM_POLL_BUDGET as usize);
+        assert_eq!(agent.limits.countdown, NATIVE_POLL_BUDGET);
+        for _ in 0..VM_POLL_BUDGET {
+            agent.count_work();
+        }
+        agent.set_steps_before_poll(5);
+        for _ in 0..NATIVE_POLL_BUDGET - 1 {
+            agent.poll_interrupt(gc.nogc()).unwrap();
+        }
+        assert_eq!(agent.limits.work.polls, 1);
+        assert_eq!(agent.steps_before_poll(), 5);
+        agent.poll_interrupt(gc.nogc()).unwrap();
+        assert_eq!(agent.limits.work.polls, 2);
+        assert_eq!(agent.limits.work.most, POLL_INTERVAL);
+        assert_eq!(agent.steps_before_poll(), VM_POLL_BUDGET as usize);
     }
 
     #[test]
@@ -1015,6 +986,14 @@ mod tests {
              if (!(i & 1)) continue; n++; } return n; })()",
         );
         holds_the_interval(
+            "tests that are no plain instructions",
+            "(function () { const o = { valueOf() { return 1; } }, t = 'b'; let a = 'a', n = 0, k = 0; \
+             for (let i = 0; i < 60000; i++) { if (a < t) n++; else n--; } \
+             while (o > 0) { k++; if (k === 40000) break; } \
+             do { k--; } while (k > o); for (const p in { x: 1, y: 2 }) n += p.length; \
+             do { k++; } while (k < 70000 && a < t); return n + k; })()",
+        );
+        holds_the_interval(
             "nested",
             "let n = 0; for (let i = 0; i < 400; i++) { for (let j = 0; j < 400; j++) { n += j; } } n",
         );
@@ -1060,6 +1039,13 @@ mod tests {
              return n; })()",
         );
         holds_the_interval(
+            "delegated iterator result getters",
+            "(function () { let i = 0; const iterable = { [Symbol.iterator]() { return this; }, \
+             next() { return { done: i++ >= 20000, get value() { let sum = 0; \
+             for (let k = 0; k < 32; k++) sum += k; return sum; } }; } }; \
+             function* items() { yield* iterable; } let n = 0; for (const x of items()) n += x; return n; })()",
+        );
+        holds_the_interval(
             "functions that native loops call",
             "(function () { const a = []; for (let i = 0; i < 2000; i++) a.push(i); let n = 0; \
              for (let t = 0; t < 10; t++) { a.forEach((v) => { n += v; }); \
@@ -1067,6 +1053,14 @@ mod tests {
              a.slice().sort((x, y) => y - x); } \
              function walk(d) { return d === 0 ? 1 : [0, 1, 2].map(() => walk(d - 1)).reduce((s, v) => s + v, 0); } \
              return n + walk(8); })()",
+        );
+        holds_the_interval(
+            "patterns that run what they take from",
+            "(function () { function* pair(i) { yield i; yield i + 1; yield i + 2; } \
+             const o = { get x() { return this.n * 2; }, n: 3, get y() { return [this.n, 4]; } }; \
+             let n = 0; for (let i = 0; i < 12000; i++) { const [a, b] = pair(i); \
+             const { x, y: [c, d] } = o; let [e = n, ...rest] = [i, a, b]; \
+             n += a + b + x + c + d + e + rest.length; } return n; })()",
         );
         holds_the_interval(
             "what is thrown and caught",

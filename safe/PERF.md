@@ -390,6 +390,12 @@ backward jumps and at calls (8 steps each) and no longer at every instruction. A
 12.4x to 2.8x, loops from 11.1x to 4.2x, and everything else gained with them. A JavaScript call also takes less
 native stack (1,683 nested calls where there were 1,510).
 
+Counting only calls and backward jumps left straight-line code without an interrupt bound. The VM now
+limits the bytecode window used for dispatch and carries the remaining allowance through jumps, calls
+and generator resumes. The VM and native loops each get 2,048 steps, so together they execute at most
+4,096 instructions and native loop steps between host polls. Straight-line dispatch still needs only
+its existing window check.
+
 A collection is no longer looked for before every instruction either, only where one can have become due: when
 code starts, after an instruction that is not plain, and on every turn of a loop.
 
