@@ -21,10 +21,7 @@ impl Heap {
     /// ArrayBuffer data. Called after a garbage collection, when the vectors
     /// only hold live data.
     pub(crate) fn estimate_live_bytes(&self) -> usize {
-        // Added up without wrapping: the texts of built strings count in
-        // full though they share their pieces, so their sum is no memory
-        // that is there, and is more than an address has bits for where
-        // that is 32. A total that wrapped was a heap found small.
+        // Saturate the estimate on narrow targets.
         let mut total = Saturating(0usize);
         total += self.arrays.len() as usize * 16;
         total += vec_bytes(&self.array_iterators);
@@ -134,8 +131,12 @@ impl Heap {
             }
         }
         total += vec_bytes(&self.strings);
+        total += self
+            .text_buffer_bytes
+            .live
+            .load(std::sync::atomic::Ordering::Relaxed);
         for string in self.strings.iter() {
-            total += string.counted_bytes();
+            total += string.allocated_bytes();
         }
         let value_size = size_of::<Option<Value<'static>>>();
         let key_size = size_of::<PropertyKey<'static>>();

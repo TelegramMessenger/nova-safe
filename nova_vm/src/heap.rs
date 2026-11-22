@@ -184,9 +184,8 @@ pub(crate) struct Heap {
     /// a property under an integer key. While none was, an element added
     /// to an Array past its length is not looked for on its prototypes.
     pub(crate) intrinsic_integer_keys: bool,
-    /// What appended strings may join, and have joined since the strings
-    /// were last measured.
-    pub(crate) text_join_budget: std::sync::Arc<crate::ecmascript::JoinBudget>,
+    /// Allocation counters shared by the buffers of growing strings.
+    pub(crate) text_buffer_bytes: std::sync::Arc<crate::ecmascript::TextBufferBytes>,
     /// Random keys under which Object Shape transition tables hash their
     /// property keys by identity.
     pub(crate) shape_key_hasher: crate::hashing::HandleState,
@@ -403,7 +402,7 @@ impl Heap {
             string_lookup_table: HashTable::with_capacity(0),
             string_hasher: crate::hashing::TextHasher::new(),
             intrinsic_integer_keys: false,
-            text_join_budget: Default::default(),
+            text_buffer_bytes: Default::default(),
             shape_key_hasher: crate::hashing::HandleState::default(),
             symbols: Vec::with_capacity(0),
             #[cfg(feature = "array-buffer")]
@@ -639,7 +638,7 @@ impl Heap {
             &self.strings[left.get_index()],
             right,
             &self.string_hasher,
-            &self.text_join_budget,
+            &self.text_buffer_bytes,
         );
         self.find_or_create_built(data)
     }
@@ -673,7 +672,7 @@ impl Heap {
             left_hash,
             &self.strings[right.get_index()],
             &self.string_hasher,
-            &self.text_join_budget,
+            &self.text_buffer_bytes,
         );
         self.find_or_create_built(data)
     }
@@ -742,7 +741,7 @@ impl Heap {
 
     /// The string of a built text: the one the heap has, or a new one.
     fn find_or_create_built(&mut self, data: StringRecord) -> String<'static> {
-        // Neither text is joined to compare them: a loop that builds the
+        // Comparing the bytes leaves a growing buffer available: a loop that builds the
         // same text again finds, at every step, the string it built before.
         let hash = data.table_hash(&self.string_hasher);
         let found = self.string_lookup_table.find(hash, |heap_string| {

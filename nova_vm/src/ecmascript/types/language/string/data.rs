@@ -5,8 +5,9 @@
 use core::{cell::OnceCell, hash::Hash, num::NonZeroUsize};
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -65,10 +66,9 @@ pub(crate) enum StringBuffer {
     /// A long string that a concatenation made, as one buffer. A script that
     /// appends to it again is building text, and what it gets then is
     /// [`StringBuffer::Built`]; a concatenation that is used as it is pays
-    /// for neither pieces nor joining.
+    /// for sharing growing storage.
     Concatenated(Wtf8Buf),
-    /// A concatenated string with more text put after or before it: see
-    /// [`BuiltText`].
+    /// A range of the buffer that holds successive versions of a growing string.
     Built(Box<BuiltText>),
 }
 
@@ -79,184 +79,184 @@ impl Hash for StringBuffer {
                 wtf8_buf.hash(state)
             }
             StringBuffer::Static(wtf8) => wtf8.hash(state),
-            StringBuffer::Built(text) => text.joined().hash(state),
+            StringBuffer::Built(text) => text.as_wtf8().hash(state),
         }
     }
 }
 
-/// The text of a string that was made by putting more text after or before
-/// another one, kept as the pieces it was put together from. A loop that
-/// builds a string by `s += x` or `s = x + s` makes a new string at every
-/// step; were each one a copy of the last, the loop would copy the whole text
-/// at every step. Here the new string shares the old one's pieces and adds
-/// its own, and its bytes are joined into one buffer the first time
-/// something reads them.
-///
-/// The text is `first`, the `front` pieces from the first one on, the `back`
-/// pieces from the last one back, and `last`. What is appended goes to the
-/// back pieces and what is put before to the front ones, so that either
-/// shares all of the other side.
-///
-/// Towards the middle of the text each piece is at least twice as long as
-/// the one before it: adding to a side takes the next piece into the new one
-/// while it is shorter than that, so a side has no more pieces than its
-/// length has bits (which also bounds how deep dropping them goes), and a
-/// byte is copied a logarithmic number of times.
-///
-/// The two ends of the text are not in a piece until they are long enough
-/// for one ([`EDGE_BYTES`]): most steps of such a loop add a few bytes,
-/// which are then copied next to those of the steps before and allocate no
-/// piece.
+/// Versions of a growing string share one contiguous buffer. A view handed
+/// to a reader freezes the buffer; further growth starts a new one.
 #[derive(Debug, Clone)]
 pub(crate) struct BuiltText {
-    /// The text after `first`, as far as the front pieces go: each piece is
-    /// followed by the next one in the list.
-    front: Option<Arc<Piece>>,
-    /// The text from there to `last`: the last piece first, each preceded by
-    /// the next one in the list.
-    back: Arc<Piece>,
-    /// The start of the text: what was put before it since the last front
-    /// piece was made.
-    first: [u8; EDGE_BYTES],
-    first_len: u8,
-    /// The end of the text: what was appended since the last back piece was
-    /// made.
-    last: [u8; EDGE_BYTES],
-    last_len: u8,
-    /// Bytes of `first` and of the front pieces.
-    front_len: usize,
-    /// Bytes of the whole text.
+    buffer: Arc<TextBuffer>,
+    start: i64,
     len: usize,
     utf16_len: usize,
-    /// Bytes of pieces that making this text allocated.
-    fresh_bytes: usize,
-    /// What the value of a text put before this one is multiplied by
-    /// ([`TextHasher::power`] of `len`), where something was put before it
-    /// or before the text it continues; otherwise 0, which no power is. A
-    /// loop that builds a text from its end has it from the step before.
     power: u64,
-    joined: OnceCell<Wtf8Buf>,
-    budget: Arc<JoinBudget>,
 }
 
-/// What the heap's built strings may join. Joining a text allocates all of
-/// it where no allocation counter is at hand and nothing can be refused, and
-/// a script can hold many long built strings for the price of their
-/// shared pieces; so the bytes joined since the strings were last measured
-/// are counted here, and past `cap` (the heap limit) a join does not
-/// happen: it unwinds with [`TextJoinOverLimit`], which ends the engine as
-/// out of memory. Up to the cap, the next poll or collection sees the count.
-#[derive(Debug, Default)]
-pub(crate) struct JoinBudget {
-    joined: AtomicUsize,
-    /// 0: no cap.
-    cap: AtomicUsize,
+#[derive(Default, Debug)]
+pub(crate) struct TextBufferBytes {
+    pub(crate) live: AtomicUsize,
+    pub(crate) allocated: AtomicUsize,
+    pub(crate) limit: AtomicUsize,
 }
 
-impl JoinBudget {
-    /// Bytes joined since [`JoinBudget::settled`].
-    pub(crate) fn joined(&self) -> usize {
-        self.joined.load(Ordering::Relaxed)
-    }
-
-    /// The strings were measured: joined texts are counted as what they are.
-    pub(crate) fn settled(&self) {
-        self.joined.store(0, Ordering::Relaxed);
-    }
-
-    pub(crate) fn set_cap(&self, cap: Option<usize>) {
-        self.cap.store(cap.unwrap_or(0), Ordering::Relaxed);
-    }
-
-    /// Whether there is a cap at all: with none every join happens.
-    #[inline]
-    pub(crate) fn has_cap(&self) -> bool {
-        self.cap.load(Ordering::Relaxed) != 0
-    }
-
-    /// Whether texts of `bytes` in all can be joined now: what
-    /// [`BuiltText::joined`] asks of each as it joins it.
-    #[inline]
-    pub(crate) fn admits(&self, bytes: usize) -> bool {
-        let cap = self.cap.load(Ordering::Relaxed);
-        cap == 0 || self.joined().saturating_add(bytes) <= cap
-    }
-}
-
-/// The payload a join past the heap limit unwinds with ([`JoinBudget`]): an
-/// embedder that catches unwinds reports it as out of memory. The Agent must
-/// not run again after it.
-#[derive(Debug)]
-pub struct TextJoinOverLimit;
-
-/// How many bytes of its start and of its end a built text keeps out of its
-/// pieces ([`BuiltText::first`], [`BuiltText::last`]).
-const EDGE_BYTES: usize = 31;
-
-/// A piece of one side of a built text, and the next piece of that side
-/// towards the middle of the text.
-#[derive(Debug)]
-struct Piece {
-    bytes: Box<[u8]>,
-    next: Option<Arc<Piece>>,
-}
-
-impl Piece {
-    /// The pieces of a side that has `first` and then `second` beyond
-    /// `inward`, at the end of the text or at its start, and how many bytes
-    /// that allocated. The pieces that the new one takes in are found before
-    /// anything is allocated, so that it is allocated once, whatever it
-    /// takes in.
-    fn grown(
-        inward: Option<&Arc<Piece>>,
-        first: &[u8],
-        second: &[u8],
-        at_end: bool,
-    ) -> (Arc<Piece>, usize) {
-        let mut len = first.len() + second.len();
-        let mut taken = 0usize;
-        let mut kept = inward;
-        while let Some(next) = kept
-            && next.bytes.len() < len.saturating_mul(2)
-        {
-            len += next.bytes.len();
-            taken += 1;
-            kept = next.next.as_ref();
-        }
-        let mut bytes = Vec::with_capacity(len);
-        if at_end {
-            // The pieces are linked from the last one back, and few are
-            // taken in: each is walked to, the first of them first.
-            for nth in (0..taken).rev() {
-                let mut piece = inward;
-                for _ in 0..nth {
-                    piece = piece.and_then(|piece| piece.next.as_ref());
-                }
-                if let Some(piece) = piece {
-                    bytes.extend_from_slice(&piece.bytes);
-                }
-            }
-            bytes.extend_from_slice(first);
-            bytes.extend_from_slice(second);
+impl TextBufferBytes {
+    fn capacity(&self, len: usize, needed: usize) -> usize {
+        let cap = self.limit.load(Ordering::Relaxed);
+        let cap = if cap == 0 {
+            StringRecord::MAX_UTF8_LENGTH
         } else {
-            bytes.extend_from_slice(first);
-            bytes.extend_from_slice(second);
-            let mut piece = inward;
-            for _ in 0..taken {
-                if let Some(current) = piece {
-                    bytes.extend_from_slice(&current.bytes);
-                    piece = current.next.as_ref();
-                }
+            cap.min(StringRecord::MAX_UTF8_LENGTH)
+        };
+        needed.max(len.saturating_add((len / 4).max(64)).min(cap))
+    }
+}
+
+#[derive(Debug)]
+struct TextBuffer {
+    growing: Mutex<Option<TextBytes>>,
+    frozen: OnceLock<TextBytes>,
+    accounting: Arc<TextBufferBytes>,
+}
+
+#[derive(Default, Debug)]
+struct TextBytes {
+    first: i64,
+    bytes: VecDeque<u8>,
+}
+
+impl TextBytes {
+    fn range(&self, start: i64, len: usize) -> std::ops::Range<usize> {
+        let index = usize::try_from(start - self.first).unwrap();
+        index..index + len
+    }
+
+    fn add(&mut self, bytes: &[u8], after: bool, capacity: usize) {
+        let len = self.bytes.len() + bytes.len();
+        if len > self.bytes.capacity() {
+            self.bytes.reserve_exact(capacity - self.bytes.len());
+        }
+        if after {
+            self.bytes.extend(bytes);
+        } else {
+            self.first -= bytes.len() as i64;
+            for &byte in bytes.iter().rev() {
+                self.bytes.push_front(byte);
             }
         }
-        debug_assert_eq!(bytes.len(), len);
-        let piece = Arc::new(Piece {
-            bytes: bytes.into_boxed_slice(),
-            next: kept.cloned(),
-        });
-        // With the two counts that the piece is shared by.
-        let allocated = len + core::mem::size_of::<Piece>() + 2 * core::mem::size_of::<usize>();
-        (piece, allocated)
+    }
+}
+
+impl TextBuffer {
+    const OVERHEAD: usize = core::mem::size_of::<Self>() + 2 * core::mem::size_of::<usize>();
+
+    fn account(&self, bytes: usize) {
+        self.accounting.live.fetch_add(bytes, Ordering::Relaxed);
+        self.accounting
+            .allocated
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+                Some(total.saturating_add(bytes))
+            })
+            .unwrap();
+    }
+
+    fn with_bytes<T>(&self, f: impl FnOnce(&[u8], i64) -> T) -> T {
+        if let Some(text) = self.frozen.get() {
+            return f(text.bytes.as_slices().0, text.first);
+        }
+        let mut growing = self.growing.lock().unwrap();
+        if let Some(text) = growing.as_mut() {
+            let first = text.first;
+            return f(text.bytes.make_contiguous(), first);
+        }
+        let text = self.frozen.get().unwrap();
+        f(text.bytes.as_slices().0, text.first)
+    }
+
+    fn frozen(&self) -> &TextBytes {
+        if let Some(frozen) = self.frozen.get() {
+            return frozen;
+        }
+        let mut growing = self.growing.lock().unwrap();
+        if let Some(mut text) = growing.take() {
+            text.bytes.make_contiguous();
+            self.frozen.set(text).unwrap();
+        }
+        self.frozen.get().unwrap()
+    }
+}
+
+impl Drop for TextBuffer {
+    fn drop(&mut self) {
+        let text = self
+            .frozen
+            .get()
+            .or_else(|| self.growing.get_mut().unwrap().as_ref())
+            .unwrap();
+        self.accounting
+            .live
+            .fetch_sub(text.bytes.capacity() + Self::OVERHEAD, Ordering::Relaxed);
+    }
+}
+
+impl BuiltText {
+    fn as_wtf8(&self) -> Wtf8Str<'_> {
+        let text = self.buffer.frozen();
+        Wtf8Str::from_wtf8_bytes(&text.bytes.as_slices().0[text.range(self.start, self.len)])
+    }
+
+    fn with_bytes<T>(&self, f: impl FnOnce(&[u8]) -> T) -> T {
+        self.buffer.with_bytes(|bytes, first| {
+            let start = usize::try_from(self.start - first).unwrap();
+            f(&bytes[start..start + self.len])
+        })
+    }
+
+    fn is_text(&self, bytes: &[u8]) -> bool {
+        self.len == bytes.len() && self.with_bytes(|ours| ours == bytes)
+    }
+
+    fn same_text(&self, other: &Self) -> bool {
+        if self.len != other.len {
+            return false;
+        }
+        if Arc::ptr_eq(&self.buffer, &other.buffer) {
+            return self.start == other.start
+                || self.buffer.with_bytes(|all, first| {
+                    let a = (self.start - first) as usize;
+                    let b = (other.start - first) as usize;
+                    all[a..a + self.len] == all[b..b + self.len]
+                });
+        }
+        if Arc::as_ptr(&self.buffer) < Arc::as_ptr(&other.buffer) {
+            self.with_bytes(|ours| other.is_text(ours))
+        } else {
+            other.with_bytes(|theirs| self.is_text(theirs))
+        }
+    }
+
+    fn existing_extension(&self, added: &[u8], after: bool) -> Option<i64> {
+        let start = if after {
+            self.start
+        } else {
+            self.start - added.len() as i64
+        };
+        let edge = if after {
+            self.start + self.len as i64
+        } else {
+            start
+        };
+        self.buffer.with_bytes(|all, first| {
+            let offset = usize::try_from(edge - first).ok()?;
+            let available = all.get(offset..)?.get(..added.len())?;
+            (available == added).then_some(start)
+        })
+    }
+
+    fn can_extend(&self, text: &TextBytes) -> bool {
+        self.start == text.first && self.len == text.bytes.len()
     }
 }
 
@@ -267,225 +267,6 @@ fn utf16_len_of(bytes: &[u8]) -> usize {
         .iter()
         .map(|&byte| usize::from(byte & 0xC0 != 0x80) + usize::from(byte >= 0xF0))
         .sum()
-}
-
-/// A walk over one side of a built text from its edge towards the middle of
-/// the text, in the chunks the side keeps its bytes in: what the text keeps
-/// of that edge, then the side's pieces. On the back side a chunk's end is
-/// taken first, on the front side its start.
-struct Walk<'a> {
-    /// What is left of the chunk being walked.
-    chunk: &'a [u8],
-    /// The piece after it in the walk.
-    piece: Option<&'a Arc<Piece>>,
-}
-
-impl<'a> Walk<'a> {
-    /// Goes on to the next chunk that has bytes when this one has none left;
-    /// the chunk stays empty where the side ends.
-    fn fill(&mut self) {
-        while self.chunk.is_empty()
-            && let Some(piece) = self.piece
-        {
-            self.chunk = &piece.bytes;
-            self.piece = piece.next.as_ref();
-        }
-    }
-
-    /// Whether the side is `bytes`.
-    fn is(mut self, mut bytes: &'a [u8], from_end: bool) -> bool {
-        loop {
-            self.fill();
-            if self.chunk.is_empty() {
-                return bytes.is_empty();
-            }
-            let Some(rest) = bytes.len().checked_sub(self.chunk.len()) else {
-                return false;
-            };
-            let (taken, left) = if from_end {
-                let (left, taken) = bytes.split_at(rest);
-                (taken, left)
-            } else {
-                bytes.split_at(self.chunk.len())
-            };
-            if taken != self.chunk {
-                return false;
-            }
-            bytes = left;
-            self.chunk = &[];
-        }
-    }
-
-    /// Whether two sides of as many bytes are the same. Texts that continue
-    /// one text share its pieces, and from where both walks come to the
-    /// same piece the rest is the same without being looked at.
-    fn same(mut self, mut other: Walk<'a>, from_end: bool) -> bool {
-        loop {
-            if self.chunk.is_empty() && other.chunk.is_empty() {
-                match (self.piece, other.piece) {
-                    (Some(ours), Some(theirs)) if Arc::ptr_eq(ours, theirs) => return true,
-                    (None, None) => return true,
-                    _ => {}
-                }
-            }
-            self.fill();
-            other.fill();
-            let shared = self.chunk.len().min(other.chunk.len());
-            if shared == 0 {
-                return self.chunk.is_empty() && other.chunk.is_empty();
-            }
-            if from_end {
-                let (ours_rest, ours) = self.chunk.split_at(self.chunk.len() - shared);
-                let (theirs_rest, theirs) = other.chunk.split_at(other.chunk.len() - shared);
-                if ours != theirs {
-                    return false;
-                }
-                self.chunk = ours_rest;
-                other.chunk = theirs_rest;
-            } else {
-                let (ours, ours_rest) = self.chunk.split_at(shared);
-                let (theirs, theirs_rest) = other.chunk.split_at(shared);
-                if ours != theirs {
-                    return false;
-                }
-                self.chunk = ours_rest;
-                other.chunk = theirs_rest;
-            }
-        }
-    }
-}
-
-impl BuiltText {
-    /// The walk over the front side.
-    fn front_walk(&self) -> Walk<'_> {
-        Walk {
-            chunk: self.first(),
-            piece: self.front.as_ref(),
-        }
-    }
-
-    /// The walk over the back side.
-    fn back_walk(&self) -> Walk<'_> {
-        Walk {
-            chunk: self.last(),
-            piece: Some(&self.back),
-        }
-    }
-
-    /// Whether the text is `bytes`, learned from the pieces: nothing is
-    /// joined for it.
-    fn is_text(&self, bytes: &[u8]) -> bool {
-        if let Some(joined) = self.joined.get() {
-            return joined.as_bytes() == bytes;
-        }
-        if self.len != bytes.len() {
-            return false;
-        }
-        let (front, back) = bytes.split_at(self.front_len);
-        self.back_walk().is(back, true) && self.front_walk().is(front, false)
-    }
-
-    /// Whether two texts are the same, learned from the pieces of both:
-    /// nothing is joined for it. The text a loop builds again, step by
-    /// step, is found to be the one it built before by what each step added
-    /// ([`Walk::same`]).
-    fn same_text(&self, other: &BuiltText) -> bool {
-        if self.len != other.len {
-            return false;
-        }
-        if self.front_len == other.front_len {
-            return self.back_walk().same(other.back_walk(), true)
-                && self.front_walk().same(other.front_walk(), false);
-        }
-        // Put together in other ways: chunk by chunk from the start.
-        let (ours, theirs) = (self.chunks(), other.chunks());
-        let (mut ours, mut theirs) = (ours.into_iter(), theirs.into_iter());
-        let (mut one, mut two): (&[u8], &[u8]) = (&[], &[]);
-        loop {
-            while one.is_empty()
-                && let Some(next) = ours.next()
-            {
-                one = next;
-            }
-            while two.is_empty()
-                && let Some(next) = theirs.next()
-            {
-                two = next;
-            }
-            let shared = one.len().min(two.len());
-            if shared == 0 {
-                return one.is_empty() && two.is_empty();
-            }
-            if one[..shared] != two[..shared] {
-                return false;
-            }
-            one = &one[shared..];
-            two = &two[shared..];
-        }
-    }
-
-    /// The chunks of the text from its start.
-    fn chunks(&self) -> Vec<&[u8]> {
-        let mut chunks = vec![self.first()];
-        let mut piece = self.front.as_ref();
-        while let Some(current) = piece {
-            chunks.push(&current.bytes);
-            piece = current.next.as_ref();
-        }
-        let back = chunks.len();
-        let mut piece = Some(&self.back);
-        while let Some(current) = piece {
-            chunks.push(&current.bytes);
-            piece = current.next.as_ref();
-        }
-        chunks[back..].reverse();
-        chunks.push(self.last());
-        chunks
-    }
-
-    /// The text as one buffer, joined on the first call.
-    fn joined(&self) -> Wtf8Str<'_> {
-        self.joined
-            .get_or_init(|| {
-                // Whoever gives a text to what reads it has asked first
-                // where it could say no (`Agent::check_text_joins`): what
-                // is refused here was reached some other way, through an
-                // object or a list, by code that cannot be told no.
-                if !self.budget.admits(self.len) {
-                    // Without the panic hook: this is the heap limit at
-                    // work, not a fault to report.
-                    std::panic::resume_unwind(Box::new(TextJoinOverLimit));
-                }
-                self.budget.joined.fetch_add(self.len, Ordering::Relaxed);
-                let mut text = Wtf8Buf::with_capacity(self.len);
-                for bytes in self.chunks() {
-                    text.push_wtf8(Wtf8Str::from_wtf8_bytes(bytes));
-                }
-                text
-            })
-            .as_wtf8()
-    }
-
-    /// The start of the text that is in no piece.
-    fn first(&self) -> &[u8] {
-        &self.first[..usize::from(self.first_len)]
-    }
-
-    /// The end of the text that is in no piece.
-    fn last(&self) -> &[u8] {
-        &self.last[..usize::from(self.last_len)]
-    }
-}
-
-/// What a built text of `len` bytes counts for against the heap limit, with
-/// the one buffer it was joined into where it was: its text, the buffer and
-/// its record. The texts of built strings are no memory that is there (one
-/// that doubles itself thirty times over has a gigabyte of text in a few
-/// pieces), and what they come to is not let wrap: the same text again
-/// came to a few bytes where an address has 32 bits.
-fn built_text_counted_bytes(len: usize, joined: bool) -> usize {
-    len.saturating_add(if joined { len } else { 0 })
-        .saturating_add(core::mem::size_of::<BuiltText>())
 }
 
 impl StringRecord {
@@ -533,9 +314,7 @@ impl StringRecord {
         hasher.table_hash(self.text_hash(hasher))
     }
 
-    /// Whether the string's text is `bytes`. A built text is not joined to
-    /// learn it: the string table asks this of every string whose hash is
-    /// that of a new one, and a join is the whole text copied.
+    /// Compares the bytes for interning without freezing a growing buffer.
     pub(crate) fn text_is(&self, bytes: &[u8]) -> bool {
         match &self.data {
             StringBuffer::Built(text) => text.is_text(bytes),
@@ -543,44 +322,22 @@ impl StringRecord {
         }
     }
 
-    /// Whether the string's text is `left` and then `right`, with nothing
-    /// joined or put together to learn it.
+    /// Compares two spans with the stored bytes without freezing the buffer.
     pub(crate) fn text_is_both(&self, left: &[u8], right: &[u8]) -> bool {
         if self.len() != left.len() + right.len() {
             return false;
         }
+        let matches = |bytes: &[u8]| {
+            let (start, end) = bytes.split_at(left.len());
+            start == left && end == right
+        };
         match &self.data {
-            StringBuffer::Built(text) if text.joined.get().is_none() => {
-                // Chunk by chunk: the text has no one buffer to split.
-                let mut expected = [left, right].into_iter();
-                let mut wanted: &[u8] = &[];
-                for mut chunk in text.chunks() {
-                    while !chunk.is_empty() {
-                        while wanted.is_empty() {
-                            match expected.next() {
-                                Some(next) => wanted = next,
-                                None => return false,
-                            }
-                        }
-                        let shared = chunk.len().min(wanted.len());
-                        if chunk[..shared] != wanted[..shared] {
-                            return false;
-                        }
-                        chunk = &chunk[shared..];
-                        wanted = &wanted[shared..];
-                    }
-                }
-                true
-            }
-            _ => {
-                let (start, end) = self.as_bytes().split_at(left.len());
-                start == left && end == right
-            }
+            StringBuffer::Built(text) => text.with_bytes(matches),
+            _ => matches(self.as_bytes()),
         }
     }
 
-    /// Whether two strings have the same text, with neither joined to learn
-    /// it ([`StringRecord::text_is`]).
+    /// Whether two strings have the same bytes.
     pub(crate) fn same_text(&self, other: &StringRecord) -> bool {
         match (&self.data, &other.data) {
             (StringBuffer::Built(ours), StringBuffer::Built(theirs)) => ours.same_text(theirs),
@@ -622,202 +379,150 @@ impl StringRecord {
         }
     }
 
-    /// `left` with `right` appended (no surrogate pair joined across the
-    /// two). Nothing is joined, and the text of `left` is not read for the
-    /// hash: the new text shares the pieces of `left`, or starts them with a
-    /// copy of it.
+    pub(crate) fn growth_allocation(&self, added: &[u8], after: bool) -> usize {
+        if let StringBuffer::Built(text) = &self.data
+            && text.buffer.frozen.get().is_none()
+            && let Some(bytes) = text.buffer.growing.lock().unwrap().as_ref()
+            && text.can_extend(bytes)
+        {
+            let needed = bytes.bytes.len() + added.len();
+            return if needed <= bytes.bytes.capacity() {
+                0
+            } else {
+                text.buffer.accounting.capacity(bytes.bytes.len(), needed)
+            };
+        }
+        if let StringBuffer::Built(text) = &self.data
+            && text.existing_extension(added, after).is_some()
+        {
+            return 0;
+        }
+        self.new_buffer_allocation(added.len())
+    }
+
+    pub(crate) fn new_buffer_allocation(&self, added: usize) -> usize {
+        self.len()
+            .saturating_add(added)
+            .saturating_add(TextBuffer::OVERHEAD)
+    }
+
     pub(crate) fn appended(
         left: &StringRecord,
         right: &[u8],
         hasher: &TextHasher,
-        budget: &Arc<JoinBudget>,
+        accounting: &Arc<TextBufferBytes>,
     ) -> StringRecord {
-        let len = left.len() + right.len();
-        assert!(len <= Self::MAX_UTF8_LENGTH, "String is too long.");
-        let utf16_len = left.counted_utf16_len() + utf16_len_of(right);
-        let hash = hasher.appended(left.text_hash(hasher), right);
-        let mut last = [0u8; EDGE_BYTES];
-        let mut last_len = 0;
-        let mut power = 0;
-        let (front, first, first_len, front_len, back, fresh_bytes) = match &left.data {
-            StringBuffer::Built(text) => {
-                if text.power != 0 {
-                    power = multiply_text(text.power, hasher.power(right.len()));
-                }
-                let held = text.last();
-                let (back, fresh_bytes) = if held.len() + right.len() <= EDGE_BYTES {
-                    last_len = held.len() + right.len();
-                    last[..held.len()].copy_from_slice(held);
-                    last[held.len()..last_len].copy_from_slice(right);
-                    (text.back.clone(), 0)
-                } else {
-                    Piece::grown(Some(&text.back), held, right, true)
-                };
-                (
-                    text.front.clone(),
-                    text.first,
-                    text.first_len,
-                    text.front_len,
-                    back,
-                    fresh_bytes,
-                )
+        let power = match &left.data {
+            StringBuffer::Built(text) if text.power != 0 => {
+                multiply_text(text.power, hasher.power(right.len()))
             }
-            _ => {
-                let (whole, whole_bytes) = Piece::grown(None, left.as_bytes(), &[], true);
-                let (back, fresh_bytes) = if right.len() <= EDGE_BYTES {
-                    last_len = right.len();
-                    last[..last_len].copy_from_slice(right);
-                    (whole, whole_bytes)
-                } else {
-                    let (back, fresh_bytes) = Piece::grown(Some(&whole), &[], right, true);
-                    (back, whole_bytes + fresh_bytes)
-                };
-                (None, [0u8; EDGE_BYTES], 0, 0, back, fresh_bytes)
-            }
+            _ => 0,
         };
-        let data = StringBuffer::Built(Box::new(BuiltText {
-            front,
-            back,
-            first,
-            first_len,
-            last,
-            // At most EDGE_BYTES.
-            last_len: last_len as u8,
-            front_len,
-            len,
-            utf16_len,
-            fresh_bytes,
+        left.extended(
+            right,
+            true,
+            hasher.appended(left.text_hash(hasher), right),
             power,
-            joined: OnceCell::new(),
-            budget: budget.clone(),
-        }));
-        StringRecord {
-            data,
-            mapping: OnceCell::new(),
-            hash,
-        }
+            accounting,
+        )
     }
 
-    /// `right` with `left`, of value `left_hash`, put before it (no
-    /// surrogate pair joined across the two). Nothing is joined, and the
-    /// text of `right` is not read for the hash: the new text shares the
-    /// pieces of `right`, or starts them with a copy of it.
     pub(crate) fn prepended(
         left: &[u8],
         left_hash: u64,
         right: &StringRecord,
         hasher: &TextHasher,
-        budget: &Arc<JoinBudget>,
+        accounting: &Arc<TextBufferBytes>,
     ) -> StringRecord {
-        let len = left.len() + right.len();
-        assert!(len <= Self::MAX_UTF8_LENGTH, "String is too long.");
-        let utf16_len = utf16_len_of(left) + right.counted_utf16_len();
         let right_power = match &right.data {
             StringBuffer::Built(text) if text.power != 0 => text.power,
             _ => hasher.power(right.len()),
         };
         let hash = TextHasher::joined_by(left_hash, right.text_hash(hasher), right_power);
         let power = multiply_text(right_power, hasher.power(left.len()));
-        let mut first = [0u8; EDGE_BYTES];
-        let mut first_len = 0;
-        let (front, back, last, last_len, front_len, fresh_bytes) = match &right.data {
-            StringBuffer::Built(text) => {
-                let held = text.first();
-                let (front, fresh_bytes) = if left.len() + held.len() <= EDGE_BYTES {
-                    first_len = left.len() + held.len();
-                    first[..left.len()].copy_from_slice(left);
-                    first[left.len()..first_len].copy_from_slice(held);
-                    (text.front.clone(), 0)
-                } else {
-                    let (front, fresh_bytes) = Piece::grown(text.front.as_ref(), left, held, false);
-                    (Some(front), fresh_bytes)
-                };
-                (
-                    front,
-                    text.back.clone(),
-                    text.last,
-                    text.last_len,
-                    text.front_len + left.len(),
-                    fresh_bytes,
-                )
-            }
-            _ => {
-                let (whole, whole_bytes) = Piece::grown(None, right.as_bytes(), &[], true);
-                let (front, fresh_bytes) = if left.len() <= EDGE_BYTES {
-                    first_len = left.len();
-                    first[..first_len].copy_from_slice(left);
-                    (None, whole_bytes)
-                } else {
-                    let (front, fresh_bytes) = Piece::grown(None, left, &[], false);
-                    (Some(front), whole_bytes + fresh_bytes)
-                };
-                (front, whole, [0u8; EDGE_BYTES], 0, left.len(), fresh_bytes)
-            }
-        };
-        let data = StringBuffer::Built(Box::new(BuiltText {
-            front,
-            back,
-            first,
-            // At most EDGE_BYTES.
-            first_len: first_len as u8,
-            last,
-            last_len,
-            front_len,
-            len,
-            utf16_len,
-            fresh_bytes,
-            power,
-            joined: OnceCell::new(),
-            budget: budget.clone(),
-        }));
-        StringRecord {
-            data,
+        right.extended(left, false, hash, power, accounting)
+    }
+
+    fn extended(
+        &self,
+        added: &[u8],
+        after: bool,
+        hash: u64,
+        power: u64,
+        accounting: &Arc<TextBufferBytes>,
+    ) -> StringRecord {
+        let len = self.len() + added.len();
+        assert!(len <= Self::MAX_UTF8_LENGTH, "String is too long.");
+        let utf16_len = self.counted_utf16_len() + utf16_len_of(added);
+        let make = |buffer, start| StringRecord {
+            data: StringBuffer::Built(Box::new(BuiltText {
+                buffer,
+                start,
+                len,
+                utf16_len,
+                power,
+            })),
             mapping: OnceCell::new(),
             hash,
+        };
+        if let StringBuffer::Built(text) = &self.data
+            && text.buffer.frozen.get().is_none()
+            && let Some(bytes) = text.buffer.growing.lock().unwrap().as_mut()
+            && text.can_extend(bytes)
+        {
+            let before = bytes.bytes.capacity();
+            let needed = bytes.bytes.len() + added.len();
+            bytes.add(
+                added,
+                after,
+                text.buffer.accounting.capacity(bytes.bytes.len(), needed),
+            );
+            if bytes.bytes.capacity() != before {
+                text.buffer.account(bytes.bytes.capacity() - before);
+            }
+            let start = if after {
+                text.start
+            } else {
+                text.start - added.len() as i64
+            };
+            return make(Arc::clone(&text.buffer), start);
         }
-    }
-
-    /// The bytes that reading the text joins into one buffer: those of a
-    /// built text that has not been joined, none of any other.
-    #[inline]
-    pub(crate) fn bytes_to_join(&self) -> usize {
+        if let StringBuffer::Built(text) = &self.data
+            && let Some(start) = text.existing_extension(added, after)
+        {
+            return make(Arc::clone(&text.buffer), start);
+        }
+        let mut bytes = TextBytes {
+            first: 0,
+            bytes: VecDeque::with_capacity(len),
+        };
+        let mut copy = |current: &[u8]| {
+            if after {
+                bytes.bytes.extend(current);
+                bytes.bytes.extend(added);
+            } else {
+                bytes.bytes.extend(added);
+                bytes.bytes.extend(current);
+            }
+        };
         match &self.data {
-            StringBuffer::Built(text) if text.joined.get().is_none() => text.len,
-            _ => 0,
+            StringBuffer::Built(text) => text.with_bytes(copy),
+            _ => copy(self.as_bytes()),
         }
+        let capacity = bytes.bytes.capacity();
+        let buffer = Arc::new(TextBuffer {
+            growing: Mutex::new(Some(bytes)),
+            frozen: OnceLock::new(),
+            accounting: Arc::clone(accounting),
+        });
+        buffer.account(capacity + TextBuffer::OVERHEAD);
+        make(buffer, 0)
     }
 
-    /// What making the record allocated: for a built string its own pieces,
-    /// not the text it shares, so that a loop that builds a text is not
-    /// charged the whole text at every step.
     pub(crate) fn allocated_bytes(&self) -> usize {
         match &self.data {
-            StringBuffer::Built(text) => text.fresh_bytes + core::mem::size_of::<BuiltText>(),
+            StringBuffer::Built(_) => core::mem::size_of::<BuiltText>(),
             _ => self.len(),
-        }
-    }
-
-    /// What a string that lives on counts for against the heap limit: all of
-    /// its text, also where a built string shares it with others. The
-    /// pieces make building fast, not free: every built string can be
-    /// read, and reading joins its whole text, so the strings a script may
-    /// keep are those whose joined texts fit the limit together.
-    pub(crate) fn counted_bytes(&self) -> usize {
-        match &self.data {
-            StringBuffer::Built(text) => {
-                built_text_counted_bytes(text.len, text.joined.get().is_some())
-            }
-            _ => self.len(),
-        }
-    }
-
-    /// Called by the collector for a string that lives on: a built text
-    /// that was joined becomes that one buffer and lets go of its pieces.
-    fn settle(&mut self) {
-        if let StringBuffer::Built(text) = &mut self.data
-            && let Some(joined) = text.joined.take()
-        {
-            self.data = StringBuffer::Concatenated(joined);
         }
     }
 
@@ -1143,7 +848,7 @@ impl StringRecord {
         match &self.data {
             StringBuffer::Owned(buf) | StringBuffer::Concatenated(buf) => buf.as_wtf8(),
             StringBuffer::Static(buf) => *buf,
-            StringBuffer::Built(text) => text.joined(),
+            StringBuffer::Built(text) => text.as_wtf8(),
         }
     }
 
@@ -1211,7 +916,6 @@ impl HeapMarkAndSweep for StringRecord {
             mapping: _,
             hash: _,
         } = self;
-        self.settle();
     }
 }
 
@@ -1219,36 +923,18 @@ impl HeapMarkAndSweep for StringRecord {
 mod tests {
     use super::*;
 
-    /// The lengths of the pieces of one side of a built text, from its edge.
-    fn piece_lengths(record: &StringRecord, back: bool) -> Vec<usize> {
-        let StringBuffer::Built(text) = &record.data else {
-            panic!("not a built text");
-        };
-        let mut lengths = Vec::new();
-        let mut piece = if back {
-            Some(&text.back)
-        } else {
-            text.front.as_ref()
-        };
-        while let Some(current) = piece {
-            lengths.push(current.bytes.len());
-            piece = current.next.as_ref();
-        }
-        lengths
-    }
+    const SAMPLE_WIDTH: usize = 31;
 
     fn concatenation(text: &str, hasher: &TextHasher) -> StringRecord {
         StringRecord::from_concatenation(Wtf8Buf::from_str(text), hasher.text(text.as_bytes()))
     }
 
     /// A text built in steps, each of which appends so many characters or
-    /// puts them before (`false`): at every step it has the hash, the length
-    /// and the few pieces it should, and the text it was built from is what
-    /// it was.
+    /// puts them before (`false`), checking lengths, hashes and saved versions.
     fn built_in_steps(steps: impl Iterator<Item = (bool, usize)>) {
         const CHARS: [char; 9] = ['a', 'ж', 'z', '中', 'q', '😀', 'k', 'é', 'x'];
         let hasher = TextHasher::new();
-        let budget = Arc::new(JoinBudget::default());
+        let budget = Arc::new(TextBufferBytes::default());
         let mut expected = std::string::String::from("the start of the text");
         let mut text = concatenation(&expected, &hasher);
         for (step, (after, size)) in steps.enumerate() {
@@ -1281,13 +967,6 @@ mod tests {
             {
                 assert_eq!(built.power, hasher.power(expected.len()), "step {step}");
             }
-            for back in [true, false] {
-                let lengths = piece_lengths(&next, back);
-                assert!(lengths.len() <= usize::BITS as usize, "step {step}");
-                for pair in lengths.windows(2) {
-                    assert!(pair[1] >= 2 * pair[0], "step {step}: {lengths:?}");
-                }
-            }
             assert!(next.text_is(expected.as_bytes()), "step {step}");
             // The text before is what it was, whatever was added to it.
             if step % 97 == 0 {
@@ -1311,7 +990,7 @@ mod tests {
         (from, to): (usize, usize),
         steps: &[(bool, usize)],
         hasher: &TextHasher,
-        budget: &Arc<JoinBudget>,
+        budget: &Arc<TextBufferBytes>,
     ) -> StringRecord {
         let bytes = text.as_bytes();
         let (mut start, mut end) = (from, to);
@@ -1335,37 +1014,52 @@ mod tests {
         record
     }
 
-    /// The string table asks of a new string whether it is one it has, and
-    /// a loop that builds a text again makes, at every step, the string it
-    /// made before. Texts are compared by their pieces: none is joined for
-    /// it, however they were put together.
-    /// What built texts count for is added up without wrapping: a text of
-    /// nearly all that an address can count, with the buffer it was joined
-    /// into, is that much and not a few bytes.
     #[test]
-    fn the_bytes_a_built_text_counts_for_do_not_wrap() {
-        use super::{BuiltText, built_text_counted_bytes};
-        let record = core::mem::size_of::<BuiltText>();
-        assert_eq!(built_text_counted_bytes(0, false), record);
-        assert_eq!(built_text_counted_bytes(1000, false), 1000 + record);
-        assert_eq!(built_text_counted_bytes(1000, true), 2000 + record);
-        let half = usize::MAX / 2;
-        assert_eq!(built_text_counted_bytes(half, false), half + record);
-        assert_eq!(built_text_counted_bytes(half, true), usize::MAX);
-        assert_eq!(built_text_counted_bytes(half + 1, true), usize::MAX);
-        assert_eq!(built_text_counted_bytes(usize::MAX - 1, false), usize::MAX);
-        assert_eq!(built_text_counted_bytes(usize::MAX, true), usize::MAX);
-        // As where an address has 32 bits: two texts of three quarters of
-        // what it counts.
-        let quarter = (u32::MAX / 4) as usize;
-        let two = built_text_counted_bytes(3 * quarter, true);
-        assert!(two >= 6 * quarter && two > u32::MAX as usize / 2);
+    fn growing_buffers_charge_once_and_keep_borrowed_versions() {
+        let accounting = Arc::new(TextBufferBytes::default());
+        let hasher = TextHasher::new();
+        let base = concatenation("original text", &hasher);
+        let first = StringRecord::appended(&base, b"!", &hasher, &accounting);
+        let longer = StringRecord::appended(&first, b"++", &hasher, &accounting);
+        let before =
+            StringRecord::prepended(b"-", hasher.text(b"-"), &longer, &hasher, &accounting);
+        let held = accounting.live.load(Ordering::Relaxed);
+        assert_eq!(accounting.allocated.load(Ordering::Relaxed), held);
+        assert!(held >= before.len() + TextBuffer::OVERHEAD);
+        assert!(held < before.len() + TextBuffer::OVERHEAD + 128);
+        assert_eq!(first.growth_allocation(b"++", true), 0);
+        let borrowed = first.as_bytes();
+        assert_eq!(before.as_bytes(), b"-original text!++");
+        assert_eq!(accounting.live.load(Ordering::Relaxed), held);
+        let fork = StringRecord::appended(&first, b"?", &hasher, &accounting);
+        assert_eq!(borrowed, b"original text!");
+        assert_eq!(fork.as_bytes(), b"original text!?");
+        assert_eq!(
+            accounting.live.load(Ordering::Relaxed),
+            held + first.new_buffer_allocation(1)
+        );
+        drop((first, longer, before));
+        assert_eq!(
+            accounting.live.load(Ordering::Relaxed),
+            fork.len() + TextBuffer::OVERHEAD
+        );
+        drop(fork);
+        assert_eq!(accounting.live.load(Ordering::Relaxed), 0);
+        accounting
+            .allocated
+            .store(usize::MAX - 1, Ordering::Relaxed);
+        let final_text = StringRecord::appended(&base, b"!", &hasher, &accounting);
+        assert_eq!(final_text.as_bytes(), b"original text!");
+        assert_eq!(accounting.allocated.load(Ordering::Relaxed), usize::MAX);
     }
 
+    /// The string table asks of a new string whether it is one it has, and
+    /// a loop that builds a text again makes, at every step, the string it
+    /// made before. Comparing their bytes leaves both buffers growable.
     #[test]
-    fn built_texts_are_compared_without_being_joined() {
+    fn built_texts_are_compared_without_freezing_their_buffers() {
         let hasher = TextHasher::new();
-        let budget = Arc::new(JoinBudget::default());
+        let budget = Arc::new(TextBufferBytes::default());
         let text: std::string::String = (0..5000usize)
             .map(|at| char::from(b'a' + ((at * 7 + at / 13) % 26) as u8))
             .collect();
@@ -1375,7 +1069,7 @@ mod tests {
             ((0, 21), &[(true, 5)]),
             (
                 (0, 21),
-                &[(true, EDGE_BYTES), (true, 1), (true, EDGE_BYTES + 1)],
+                &[(true, SAMPLE_WIDTH), (true, 1), (true, SAMPLE_WIDTH + 1)],
             ),
             (
                 (0, 21),
@@ -1394,7 +1088,7 @@ mod tests {
             ((4979, 5000), &[(false, 2)]),
             (
                 (4979, 5000),
-                &[(false, EDGE_BYTES), (false, 1), (false, EDGE_BYTES + 1)],
+                &[(false, SAMPLE_WIDTH), (false, 1), (false, SAMPLE_WIDTH + 1)],
             ),
             ((4700, 5000), &[(false, 300), (false, 7)]),
             ((2400, 2700), &[(true, 1), (false, 2)]),
@@ -1478,8 +1172,8 @@ mod tests {
                 assert!(!one.same_text(&four) && !four.same_text(&one));
             }
         }
-        assert_eq!(budget.joined(), 0, "a comparison joined a text");
-        // A text that was joined is compared as it is.
+
+        // A frozen buffer is compared by the same operations.
         let joined = built(&text, (0, 21), &[(true, 7)], &hasher, &budget);
         assert_eq!(joined.as_bytes(), text.as_bytes());
         assert!(joined.text_is(text.as_bytes()));
@@ -1495,15 +1189,13 @@ mod tests {
     }
 
     #[test]
-    fn a_built_text_has_few_pieces_whatever_is_added() {
+    fn a_built_text_keeps_its_versions_whatever_is_added() {
         for after in [true, false] {
-            // One character at a time, and sizes around what a text keeps
-            // of its ends.
+            // One character at a time, then varying widths.
             built_in_steps(core::iter::repeat_n((after, 1), 3000));
-            built_in_steps((0..600).map(|step| (after, EDGE_BYTES - 2 + step % 5)));
+            built_in_steps((0..600).map(|step| (after, SAMPLE_WIDTH - 2 + step % 5)));
             built_in_steps((0..400).map(|step| (after, [1, 70, 3, 31, 32, 200, 5][step % 7])));
-            // Each shorter than the one before: no piece takes in the next
-            // one by being merely longer than it.
+            // Decreasing and increasing widths.
             built_in_steps((1..=300).rev().map(|size| (after, size)));
             // And each longer.
             built_in_steps((1..=300).map(|size| (after, size)));

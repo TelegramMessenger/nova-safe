@@ -135,7 +135,7 @@ pub(crate) fn heap_gc(agent: &mut Agent, root_realms: &mut [Option<Realm<'static
             strings,
             string_lookup_table: _,
             string_hasher: _,
-            text_join_budget: _,
+            text_buffer_bytes: _,
             shape_key_hasher: _,
             symbols,
             #[cfg(feature = "array-buffer")]
@@ -902,7 +902,7 @@ fn sweep(
         strings,
         string_lookup_table,
         string_hasher: _,
-        text_join_budget: _,
+        text_buffer_bytes: _,
         shape_key_hasher: _,
         symbols,
         #[cfg(feature = "array-buffer")]

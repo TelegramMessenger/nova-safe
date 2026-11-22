@@ -280,12 +280,11 @@ pub(crate) fn completion(
     match result {
         Ok(value) => {
             if let Ok(string) = JsString::try_from(value) {
-                // A text that the memory limit leaves no room to read is
-                // what the script fails with, as an allocation it had no
-                // room for.
-                if let Err(refused) = agent.check_text_joins(Some(value), &[], gc.nogc()) {
-                    let thrown = refused.value().unbind();
-                    return Err(self::error(agent, shared, thrown, gc));
+                let len = string.len(agent);
+                if len > COPIED_UNASKED
+                    && let Err(refused) = agent.check_allocation(len, gc.nogc())
+                {
+                    return Err(self::error(agent, shared, refused.value().unbind(), gc));
                 }
                 Ok(Completion::String(
                     string.as_wtf8(agent).as_bytes().to_vec(),

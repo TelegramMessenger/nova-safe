@@ -1776,6 +1776,19 @@ impl ArrayPrototype {
         arguments: ArgumentsList,
         mut gc: GcScope<'gc, '_>,
     ) -> JsResult<'gc, Value<'gc>> {
+        fn append<'gc>(
+            agent: &mut Agent,
+            output: &mut Wtf8Buf,
+            text: String,
+            gc: NoGcScope<'gc, '_>,
+        ) -> JsResult<'gc, ()> {
+            let bytes = output.len().saturating_add(text.len_(agent));
+            if bytes / 4096 != output.len() / 4096 {
+                agent.check_string_length(bytes, gc)?;
+            }
+            output.push_wtf8(text.as_wtf8_(agent));
+            Ok(())
+        }
         let nogc = gc.nogc();
         let this_value = this_value.bind(nogc);
         let separator = arguments.get(0).scope(agent, nogc);
@@ -1817,12 +1830,6 @@ impl ArrayPrototype {
             let nogc = gc.nogc();
             let array = array.bind(nogc);
             let sep = separator.get(agent).bind(nogc);
-            // The length of R when it was last held to the limits of a
-            // string and of the heap. That is asked again once R has grown
-            // by a page since, not at every element: the question goes to
-            // the host for what it has counted, and was a twelfth of
-            // joining twenty thousand short pieces.
-            let mut checked = 0;
             while k < len {
                 let text = match array.as_slice(agent).get(k).copied().flatten() {
                     Some(Value::Undefined | Value::Null) => None,
@@ -1839,14 +1846,10 @@ impl ArrayPrototype {
                 if k > 0 {
                     // As below, for every element after the first.
                     agent.poll_interrupt(nogc).unbind()?;
-                    if r.len() - checked >= 4096 {
-                        agent.check_string_length(r.len(), nogc).unbind()?;
-                        checked = r.len();
-                    }
-                    r.push_wtf8(sep.as_wtf8_(agent));
+                    append(agent, &mut r, sep, nogc).unbind()?;
                 }
                 if let Some(text) = text {
-                    r.push_wtf8(text.as_wtf8_(agent));
+                    append(agent, &mut r, text, nogc).unbind()?;
                 }
                 k += 1;
             }
@@ -1864,7 +1867,7 @@ impl ArrayPrototype {
                     .unbind()?
                     .bind(gc.nogc());
                 // ii. Set R to the string-concatenation of R and S.
-                r.push_wtf8(s.as_wtf8_(agent));
+                append(agent, &mut r, s, gc.nogc()).unbind()?;
             }
             k = 1;
         }
@@ -1872,7 +1875,7 @@ impl ArrayPrototype {
             agent.poll_interrupt(gc.nogc()).unbind()?;
             agent.check_string_length(r.len(), gc.nogc()).unbind()?;
             // a. If k > 0, set R to the string-concatenation of R and sep.
-            r.push_wtf8(separator.get(agent).as_wtf8_(agent));
+            append(agent, &mut r, separator.get(agent), gc.nogc()).unbind()?;
             // b. Let element be ? Get(O, ! ToString(𝔽(k))).
             let element = get(
                 agent,
@@ -1889,7 +1892,7 @@ impl ArrayPrototype {
                     .unbind()?
                     .bind(gc.nogc());
                 // ii. Set R to the string-concatenation of R and S.
-                r.push_wtf8(s.as_wtf8_(agent));
+                append(agent, &mut r, s, gc.nogc()).unbind()?;
             }
             // d. Set k to k + 1.
         }

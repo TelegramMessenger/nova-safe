@@ -16,8 +16,10 @@
 //! [`GcAgent::run_in_realm`]: crate::ecmascript::GcAgent::run_in_realm
 //! [`GcAgent::run_job`]: crate::ecmascript::GcAgent::run_job
 
+use std::sync::atomic::Ordering;
+
 use crate::{
-    ecmascript::{Agent, ExceptionType, JsError, JsResult, String, Value},
+    ecmascript::{Agent, ExceptionType, JsError, JsResult, String},
     engine::NoGcScope,
     engine::{HeapRootCollection, HeapRootData},
     heap::ArenaAccess,
@@ -230,7 +232,10 @@ impl Agent {
     /// [`Agent::set_heap_limit_refusal_terminates`]).
     pub fn set_heap_limit(&mut self, limit: Option<usize>) {
         self.limits.heap_limit = limit;
-        self.heap.text_join_budget.set_cap(limit);
+        self.heap
+            .text_buffer_bytes
+            .limit
+            .store(limit.unwrap_or(0), Ordering::Relaxed);
         self.limits.update_gc_threshold(self.heap.gc_alloc_limit);
     }
 
@@ -286,7 +291,12 @@ impl Agent {
             .live_bytes_after_gc
             .saturating_add(self.heap.alloc_counter)
             .saturating_add(self.heap.data_bytes_since_gc)
-            .saturating_add(self.heap.text_join_budget.joined())
+            .saturating_add(
+                self.heap
+                    .text_buffer_bytes
+                    .allocated
+                    .load(Ordering::Relaxed),
+            )
             .saturating_add(self.root_stack_bytes())
     }
 
@@ -486,10 +496,11 @@ impl Agent {
                     .live_bytes_after_gc
                     .saturating_add(self.root_stack_bytes()),
             };
-            // Text joined since the last collection counts as allocated
-            // since then: the collection lets go of the pieces it was
-            // joined from.
-            let joined = self.heap.text_join_budget.joined();
+            let text_allocations = self
+                .heap
+                .text_buffer_bytes
+                .allocated
+                .load(Ordering::Relaxed);
             // A script entered after one that the limit ended is over the
             // limit from its first instruction, by what the last collection
             // found: that says nothing of what it has let go of since
@@ -499,7 +510,7 @@ impl Agent {
             if (known
                 && ((self.heap.alloc_counter == 0
                     && self.heap.data_bytes_since_gc == 0
-                    && joined == 0)
+                    && text_allocations == 0)
                     || uncollectable > limit))
                 // A native loop that allocates never reaches the collection
                 // the next instruction would run.
@@ -543,46 +554,6 @@ impl Agent {
             return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
         }
         Ok(())
-    }
-
-    /// Whether the texts among a this value and arguments can be read:
-    /// reading a built text joins it into one buffer of its length, which
-    /// takes room under the heap limit as any allocation does (see
-    /// `JoinBudget`). A text that shares its pieces with others costs
-    /// little to make and all of its length to read.
-    #[inline]
-    pub(crate) fn text_joins_admitted(&self, this: Option<Value>, arguments: &[Value]) -> bool {
-        let budget = &self.heap.text_join_budget;
-        if !budget.has_cap() {
-            return true;
-        }
-        let mut bytes = 0usize;
-        for value in this.iter().chain(arguments) {
-            if let Value::String(text) = value {
-                bytes = bytes.saturating_add(text.get(self).bytes_to_join());
-            }
-        }
-        bytes == 0 || budget.admits(bytes)
-    }
-
-    /// Refuses a call whose this value and arguments have texts among them
-    /// that the heap limit leaves no room to read, as it refuses one
-    /// allocation that it has no room for: with a RangeError, or by ending
-    /// the script where a refusal does
-    /// ([`Agent::set_heap_limit_refusal_terminates`]). The function called
-    /// reads them where it cannot be told no; asked here, before it runs,
-    /// the script is told, and the engine goes on.
-    pub fn check_text_joins<'a>(
-        &mut self,
-        this: Option<Value>,
-        arguments: &[Value],
-        gc: NoGcScope<'a, '_>,
-    ) -> JsResult<'a, ()> {
-        if self.text_joins_admitted(this, arguments) {
-            Ok(())
-        } else {
-            Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc))
-        }
     }
 
     /// Whether `bytes` more cannot fit under the heap limit. The estimate
@@ -683,52 +654,51 @@ impl Agent {
         b: String,
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, ()> {
+        if a.is_empty_string() || b.is_empty_string() {
+            return Ok(());
+        }
         let bytes = a.len_(self).saturating_add(b.len_(self));
         if bytes <= 4096 {
             return Ok(());
         }
-        // Appending to a string that is being built allocates what is
-        // appended, not the whole text again: the text only has to fit the
-        // limit, which reading it is then held to.
-        if a.is_being_built_(self) {
-            if bytes > MAX_STRING_LENGTH {
-                return Err(self.throw_exception_with_static_message(
-                    ExceptionType::RangeError,
-                    "Invalid string length",
-                    gc,
-                ));
-            }
-            if self.limits.heap_limit.is_some_and(|limit| bytes > limit) {
-                return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
-            }
-            // A few bytes more are let through as a short string is above:
-            // the poll after it holds the heap to the limit.
-            let added = b.len_(self);
-            if added <= 4096 {
-                return Ok(());
-            }
-            return self.check_allocation(added, gc);
+        if bytes > MAX_STRING_LENGTH {
+            return Err(self.throw_exception_with_static_message(
+                ExceptionType::RangeError,
+                "Invalid string length",
+                gc,
+            ));
         }
-        // And what is put before one: the left string, which is not being
-        // built here, is what is allocated.
-        if b.is_being_built_(self) {
-            if bytes > MAX_STRING_LENGTH {
-                return Err(self.throw_exception_with_static_message(
-                    ExceptionType::RangeError,
-                    "Invalid string length",
-                    gc,
-                ));
-            }
-            if self.limits.heap_limit.is_some_and(|limit| bytes > limit) {
-                return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
-            }
-            let added = a.len_(self);
-            if added <= 4096 {
-                return Ok(());
-            }
-            return self.check_allocation(added, gc);
+        let Some(limit) = self.limits.heap_limit else {
+            return Ok(());
+        };
+        if bytes > limit {
+            return Err(self.throw_out_of_memory(ALLOCATION_REFUSED, gc));
         }
-        self.check_string_length(bytes, gc)
+        let growth = if let String::String(text) = a
+            && text.get(self).is_being_built()
+        {
+            let added = b.as_wtf8_(self);
+            if added.initial_trail_surrogate().is_some() {
+                text.get(self).new_buffer_allocation(b.len_(self))
+            } else {
+                text.get(self).growth_allocation(added.as_bytes(), true)
+            }
+        } else if let String::String(text) = b
+            && text.get(self).is_being_built()
+        {
+            let added = a.as_wtf8_(self);
+            if added.final_lead_surrogate().is_some() {
+                text.get(self).new_buffer_allocation(a.len_(self))
+            } else {
+                text.get(self).growth_allocation(added.as_bytes(), false)
+            }
+        } else {
+            bytes
+        };
+        if growth > 4096 {
+            self.check_allocation(growth, gc)?;
+        }
+        Ok(())
     }
 
     /// [`Agent::check_concat_length`] for a list of strings.
@@ -737,6 +707,9 @@ impl Agent {
         strings: &[String],
         gc: NoGcScope<'a, '_>,
     ) -> JsResult<'a, ()> {
+        if let [left, right] = strings {
+            return self.check_concat_length(*left, *right, gc);
+        }
         let bytes = strings
             .iter()
             .fold(0usize, |total, s| total.saturating_add(s.len_(self)));
@@ -803,7 +776,10 @@ impl Agent {
     pub(crate) fn after_gc(&mut self) {
         self.limits.live_bytes_of_an_ended_script = false;
         self.heap.data_bytes_since_gc = 0;
-        self.heap.text_join_budget.settled();
+        self.heap
+            .text_buffer_bytes
+            .allocated
+            .store(0, Ordering::Relaxed);
         let estimated = self.heap.estimate_live_bytes();
         match self.host_hooks.allocated_bytes() {
             Some(counted) => {

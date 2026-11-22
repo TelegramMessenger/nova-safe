@@ -796,7 +796,7 @@ fn serialize_json_property_value<'a, 'b>(
         // 8. If value is a String, return QuoteJSONString(value).
         Value::String(_) | Value::SmallString(_) => {
             let value = String::try_from(value).unwrap();
-            quote_json_string(agent, &mut state.result, value);
+            quote_json_string(agent, &mut state.result, value, gc.nogc()).unbind()?;
         }
         // 9. If value is a Number, then
         Value::Number(_) | Value::SmallF64(_) | Value::Integer(_) => {
@@ -838,8 +838,36 @@ fn serialize_json_property_value<'a, 'b>(
 /// returns a String. It wraps value in 0x0022 (QUOTATION MARK) code units and
 /// escapes certain other code units within it. This operation interprets value
 /// as a sequence of UTF-16 encoded code points, as described in 6.1.4.
-fn quote_json_string(agent: &Agent, product: &mut Wtf8Buf, value: String) {
-    product.reserve(value.len_(agent) + 2);
+fn quote_json_string<'gc>(
+    agent: &mut Agent,
+    product: &mut Wtf8Buf,
+    value: String,
+    gc: NoGcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
+    let len = value.len_(agent);
+    let largest = product
+        .len()
+        .saturating_add(len.saturating_mul(6))
+        .saturating_add(2);
+    let mut reserve = len.saturating_add(2);
+    if largest / 4096 != product.len() / 4096 {
+        reserve = value
+            .as_wtf8_(agent)
+            .code_points()
+            .fold(2usize, |size, point| {
+                let bytes = match point.to_u32() {
+                    8 | 9 | 10 | 12 | 13 | 34 | 92 => 2,
+                    0..=31 | 0xD800..=0xDFFF => 6,
+                    0..=0x7F => 1,
+                    0..=0x7FF => 2,
+                    0..=0xFFFF => 3,
+                    _ => 4,
+                };
+                size.saturating_add(bytes)
+            });
+        agent.check_string_length(product.len().saturating_add(reserve), gc)?;
+    }
+    product.reserve(reserve);
     // 1. Let product be the String value consisting solely of the code unit
     //    0x0022 (QUOTATION MARK).
     product.push(CodePoint::from_char('"'));
@@ -880,6 +908,7 @@ fn quote_json_string(agent: &Agent, product: &mut Wtf8Buf, value: String) {
     //    0x0022 (QUOTATION MARK).
     product.push(CodePoint::from_char('"'));
     // 4. Return product.
+    Ok(())
 }
 
 /// Steps 2.a to 2.c of QuoteJSONString for one code point.
@@ -943,7 +972,12 @@ fn quote_json_code_point(product: &mut Wtf8Buf, c: CodePoint) {
     }
 }
 
-fn quote_property_key(agent: &Agent, product: &mut Wtf8Buf, key: PropertyKey) {
+fn quote_property_key<'gc>(
+    agent: &mut Agent,
+    product: &mut Wtf8Buf,
+    key: PropertyKey,
+    gc: NoGcScope<'gc, '_>,
+) -> JsResult<'gc, ()> {
     if let PropertyKey::Integer(key) = key {
         let key = key.into_i64();
         product.reserve(6);
@@ -953,8 +987,9 @@ fn quote_property_key(agent: &Agent, product: &mut Wtf8Buf, key: PropertyKey) {
         // Symbol keys do not get serialised into JSON.
         debug_assert!(key.is_string());
         let key = key.into_value_unchecked();
-        quote_json_string(agent, product, String::try_from(key).unwrap())
+        quote_json_string(agent, product, String::try_from(key).unwrap(), gc)?;
     }
+    Ok(())
 }
 
 /// ### [25.5.2.5 SerializeJSONObject ( state, value )](https://tc39.es/ecma262/#sec-serializejsonobject)
@@ -1099,7 +1134,8 @@ fn serialize_json_object<'a, 'b>(
         }
 
         // i. Let member be QuoteJSONString(P).
-        quote_property_key(agent, &mut state.result, p.get(agent, gc.nogc()));
+        quote_property_key(agent, &mut state.result, p.get(agent, gc.nogc()), gc.nogc())
+            .unbind()?;
         // ii. Set member to the string-concatenation of member and ":".
         // iii. If state.[[Gap]] is not the empty String, then
         // 1. Set member to the string-concatenation of member and the code unit 0x0020 (SPACE).

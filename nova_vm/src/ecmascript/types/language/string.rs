@@ -7,7 +7,6 @@ mod data;
 pub(crate) mod search;
 
 use crate::width::usize_from_i64;
-pub use data::TextJoinOverLimit;
 pub(crate) use data::*;
 
 pub use small_string::SmallString;
@@ -283,6 +282,14 @@ impl<'a> String<'a> {
             String(Wtf8Buf),
         }
         let strings = strings.as_ref();
+        if let [left, right] = strings {
+            if left.is_empty_string() {
+                return right.unbind().bind(gc);
+            }
+            if right.is_empty_string() {
+                return left.unbind().bind(gc);
+            }
+        }
         // More text appended to a string that a concatenation made, the step
         // of every loop that builds text: the result shares the left string's
         // text and continues its hash, and copies and hashes only what is

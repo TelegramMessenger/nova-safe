@@ -214,12 +214,9 @@ int32_t nova_engine_set_memory_limit(const nova_engine *engine, size_t bytes);
  * limit, uncaught, the call ends with NOVA_OUT_OF_MEMORY. true: it ends the
  * script with NOVA_OUT_OF_MEMORY wherever it happens, as going past the limit
  * does, and no try/catch, promise reaction or getter keeps the script going.
- * Text that a script appended to is joined into one buffer when it is read:
- * a call that is given more of it than the limit has room to read (a method
- * of the text, a function that takes it, a host function) is refused in the
- * same way before it runs, and the engine goes on. A function that reaches
- * such a text through an object or a list and cannot read it ends the
- * engine: NOVA_OUT_OF_MEMORY once, NOVA_DEAD after. */
+ * Reading saved versions of a growing string uses their shared storage.
+ * Building an output string or copying it for the host obeys the policy
+ * above, including for strings reached through objects and arrays. */
 int32_t nova_engine_set_out_of_memory_fatal(const nova_engine *engine, bool fatal);
 
 int32_t nova_engine_collect_garbage(const nova_engine *engine);

@@ -39,8 +39,8 @@ use nova_vm::{
     ecmascript::{
         Agent, AgentOptions, Behaviour, BuiltinFunctionArgs, CompiledScript as VmCompiledScript,
         Function, GcAgent, InternalMethods, Job, Object, PropertyDescriptor, PropertyKey,
-        RealmRoot, String as JsString, TextJoinOverLimit, Value, create_builtin_function,
-        parse_module, parse_script, script_evaluation,
+        RealmRoot, String as JsString, Value, create_builtin_function, parse_module, parse_script,
+        script_evaluation,
     },
     engine::{Bindable, GcScope, Global, Scopable},
 };
@@ -108,13 +108,8 @@ pub enum Error {
     /// [`Host::should_interrupt`] ended the script.
     Interrupted,
     /// The script went past the memory limit, or was refused an allocation
-    /// that the limit had no room for and did not catch that. Text that was
-    /// appended to is joined when it is read, which takes room as an
-    /// allocation does: a call that is given more of it than the limit can
-    /// read is refused the same way, and the engine goes on. Only where a
-    /// function reaches such a text through an object or a list, and cannot
-    /// read it, is the engine dead as well: every later call returns
-    /// [`Error::Dead`].
+    /// that the limit had no room for and did not catch that. A later call
+    /// can use the engine again.
     OutOfMemory,
     /// The engine panicked, now or earlier; it never runs again.
     Dead(String),
@@ -261,17 +256,6 @@ impl Engine {
         drop(guard);
         match result {
             Ok(result) => result,
-            // Reading the script's strings would have taken more than the
-            // memory limit, where nothing could be refused: a function was
-            // reading a text that it reached through an object or a list
-            // (one it is given itself is held to the limit before it
-            // runs, and refused as an allocation is). The unwind went
-            // through the engine as a panic does, so it never runs again,
-            // but this is the limit at work.
-            Err(payload) if payload.is::<TextJoinOverLimit>() => {
-                self.kill("out of memory".to_owned());
-                Err(Error::OutOfMemory)
-            }
             Err(payload) => {
                 let reason = panic_text(&*payload);
                 self.kill(reason.clone());

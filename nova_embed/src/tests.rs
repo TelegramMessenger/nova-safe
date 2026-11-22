@@ -1139,11 +1139,9 @@ fn appended_strings_are_the_strings_they_spell() {
     }
 }
 
-/// A string that is being built is not copied until it is read: building is
-/// linear, and what reading the kept strings then allocates counts against
-/// the memory limit like any other allocation.
+/// Successive versions can share a backing allocation and remain readable under the limit.
 #[test]
-fn text_joined_on_reading_counts_against_the_memory_limit() {
+fn a_growing_text_and_its_saved_prefixes_share_their_storage() {
     let mut engine = fatal(8 << 20);
     let started = std::time::Instant::now();
     assert_eq!(
@@ -1154,8 +1152,7 @@ fn text_joined_on_reading_counts_against_the_memory_limit() {
         Ok(Completion::String("2000000:nkchunk:107".into()))
     );
     assert!(started.elapsed() < std::time::Duration::from_secs(20));
-    // Strings that are kept count for their whole text each, shared or not:
-    // 300 of them fit, are read (each read joins one) and still fit.
+    // Reading every saved prefix leaves the shared text in one buffer.
     let mut engine = fatal(8 << 20);
     assert_eq!(
         engine.evaluate(
@@ -1178,38 +1175,21 @@ fn text_joined_on_reading_counts_against_the_memory_limit() {
         engine.evaluate("keep[299].length + keep[0].charCodeAt(0)", false),
         Ok(Completion::Number(300.0 + 600.0 * 30.0 + 120.0))
     );
-    // More of them than the limit has room for cost little to make, sharing
-    // their pieces, but cannot all be read: the joins stop at the limit,
-    // and with them the script.
     let mut engine = fatal(8 << 20);
-    let made = engine.evaluate(
-        "var keep = []; var s = 'x'.repeat(300); for (var i = 0; i < 3000; i++) { s += 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'; keep.push(s); } keep.length",
-        false,
+    assert_eq!(
+        engine.evaluate(
+            "var keep = []; var s = 'x'.repeat(300); for (var i = 0; i < 3000; i++) { s += 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'; keep.push(s); } keep.length",
+            false,
+        ),
+        Ok(Completion::Number(3000.0)),
     );
-    assert!(
-        made == Ok(Completion::Number(3000.0)) || made == Err(Error::OutOfMemory),
-        "{made:?}"
+    assert_eq!(
+        engine.evaluate(
+            "var n = 0; for (var k = 0; k < keep.length; k++) n += keep[k].charCodeAt(0); n",
+            false,
+        ),
+        Ok(Completion::Number(360000.0)),
     );
-    if made.is_ok() {
-        assert_eq!(
-            engine.evaluate(
-                "var n = 0; for (var k = 0; k < keep.length; k++) n += keep[k].charCodeAt(0); n",
-                false
-            ),
-            Err(Error::OutOfMemory)
-        );
-        // What stopped it is the host's poll, which finds the heap over
-        // its limit by the texts joined so far, or the call that is given
-        // a text which the limit has no room to join: either ends the
-        // script, and the engine goes on.
-        assert!(engine.dead_reason().is_none());
-        assert!(matches!(
-            engine.evaluate("1", false),
-            Ok(Completion::Number(_)) | Err(Error::OutOfMemory)
-        ));
-    }
-    // A text of half the limit is built and read: the pieces and the joined
-    // copy do not both stay.
     let mut engine = fatal(8 << 20);
     assert_eq!(
         engine.evaluate(
@@ -21528,18 +21508,9 @@ fn a_script_entered_after_the_limit_ended_one_is_collected_before_it_is_judged()
     assert!(engine.memory_used() < 4 << 20);
 }
 
-/// Texts that share their pieces cost little to make and all of their
-/// length to read. Where a script gives more of them to a function than
-/// the memory limit leaves room to read, the call is refused as an
-/// allocation that the limit has no room for is: with a RangeError that
-/// the script can catch, after which it and the engine go on, or by
-/// ending the script with OutOfMemory where that is what a refusal does.
-/// The engine is not ended either way: a later call and a job that was
-/// waiting run. (Reading such texts used to stop inside what read them,
-/// which ended the engine for good, whatever a refusal was to do.)
+/// Copies of direct and nested text obey the allocation policy; queued work survives either refusal.
 #[test]
-fn texts_that_the_limit_cannot_read_are_refused_and_the_engine_goes_on() {
-    // Three thousand texts of up to 90 KB, of 90 KB of pieces in all.
+fn copies_of_shared_text_obey_the_limit_and_the_engine_goes_on() {
     let make = "var keep = []; var s = 'x'.repeat(300); for (var i = 0; i < 3000; i++) { s += 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'; keep.push(s); } keep.length";
     // Four hundred of them, about 14 MB to read, in one call.
     let many = "''.concat.apply('', keep.slice(1000, 1400))";
@@ -21559,7 +21530,10 @@ fn texts_that_the_limit_cannot_read_are_refused_and_the_engine_goes_on() {
         .unwrap();
     // Caught, by a function of the engine and by one of the host, which is
     // not called.
-    for call in [many, "__take.apply(null, keep.slice(1000, 1400))"] {
+    let copies = "__take.apply(null, Array(8).fill('A'.repeat(1200000) + 'B'))";
+    let json = "JSON.stringify({ lines: keep.slice(1000, 1400) })";
+    let join = "keep.slice(1000, 1400).join(',')";
+    for call in [many, copies, json, join] {
         let script = format!(
             "var caught = 'none'; try {{ {call}; }} catch (e) {{ caught = e.name + ':' + (e instanceof RangeError); }} caught"
         );
@@ -21608,14 +21582,10 @@ fn texts_that_the_limit_cannot_read_are_refused_and_the_engine_goes_on() {
         engine.evaluate("later", false),
         Ok(Completion::Number(120.0))
     );
-    // All of them read one by one: refused where the texts read since the
-    // last collection have left no room, unless the host's poll finds the
-    // heap over its limit first, which ends the script. The engine lives.
-    let read_all = "var caught = 'none'; try { for (var k = 0; k < keep.length; k++) keep[k].charCodeAt(0); } catch (e) { caught = e.name; } caught";
-    let read = engine.evaluate(read_all, false);
-    assert!(
-        read == Ok(Completion::String("RangeError".into())) || read == Err(Error::OutOfMemory),
-        "{read:?}"
+    let read_all = "var n = 0; for (var k = 0; k < keep.length; k++) n += keep[k].charCodeAt(0); n";
+    assert_eq!(
+        engine.evaluate(read_all, false),
+        Ok(Completion::Number(360000.0))
     );
     assert!(engine.dead_reason().is_none());
     assert_eq!(
@@ -21628,6 +21598,15 @@ fn texts_that_the_limit_cannot_read_are_refused_and_the_engine_goes_on() {
     // Where a refusal ends the script, it ends there, and no `catch` has
     // it: with OutOfMemory, and the engine goes on.
     let mut engine = fatal(8 << 20);
+    engine
+        .register_function("__take", 7, 0, ArgumentMode::Values)
+        .unwrap();
+    engine
+        .evaluate(
+            "Promise.resolve().then(() => { globalThis.later = 7; });",
+            false,
+        )
+        .unwrap();
     assert_eq!(engine.evaluate(make, false), Ok(Completion::Number(3000.0)));
     assert_eq!(
         engine.evaluate(
@@ -21641,7 +21620,25 @@ fn texts_that_the_limit_cannot_read_are_refused_and_the_engine_goes_on() {
         engine.evaluate("typeof ran + ':' + keep[3].charCodeAt(0)", false),
         Ok(Completion::String("undefined:120".into()))
     );
-    assert_eq!(engine.evaluate(read_all, false), Err(Error::OutOfMemory));
+    for call in [copies, json, join] {
+        assert_eq!(
+            engine.evaluate(
+                &format!("try {{ {call}; }} catch (e) {{}} globalThis.ran = 1;"),
+                false
+            ),
+            Err(Error::OutOfMemory),
+        );
+        assert_eq!(
+            engine.evaluate("typeof ran", false),
+            Ok(Completion::String("undefined".into())),
+        );
+    }
+    assert_eq!(
+        engine.evaluate(read_all, false),
+        Ok(Completion::Number(360000.0))
+    );
+    assert_eq!(engine.run_pending_job(), Ok(true));
+    assert_eq!(engine.evaluate("later", false), Ok(Completion::Number(7.0)));
     assert!(engine.dead_reason().is_none());
     assert_eq!(
         engine.evaluate("keep = null; 1 + 1", false),
